@@ -1698,6 +1698,14 @@ describe("POST /api/subscription/webhook", () => {
         }),
       );
     }
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "invoice_paid",
+      expect.objectContaining({
+        subscription_mrr_dollars: 29,
+        attributed_mrr_dollars: 29,
+        retained_mrr_dollars: 29,
+      }),
+    );
   });
 
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
@@ -2063,12 +2071,18 @@ describe("POST /api/subscription/webhook", () => {
         userId: "user_paid",
         tier: "pro-plus",
         org_id: "org_hackerai",
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
         $set: { subscription_tier: "free" },
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.objectContaining({
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
         $insert_id: cancellationCompletionInsertId("sub_hackerai_deleted"),
       }),
     );
@@ -2647,6 +2661,9 @@ describe("POST /api/subscription/webhook", () => {
         org_id: "org_deleted_payment_failed",
         tier: "ultra",
         cancellation_reason: "payment_failed",
+        churn_type: "involuntary",
+        voluntary_churn: false,
+        involuntary_churn: true,
         stripe_event_id: "evt_subscription_deleted_payment_failed",
         $set: { subscription_tier: "free" },
       }),

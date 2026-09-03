@@ -24,6 +24,7 @@ import {
   billingPaymentRecoveryInsertId,
   cancellationCompletionInsertId,
   paidFunnelProperties,
+  subscriptionChurnHealthProperties,
 } from "@/lib/analytics/paid-funnel";
 import {
   logStripeWebhookMissingSignature,
@@ -756,6 +757,15 @@ function emitInvoicePaidRevenueAnalytics({
     invoicePrice.lookup_key,
   );
   const attributedRevenueDollars = amountPaidDollars / userIds.length;
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: invoicePrice,
+    quantity: subscription.items?.data[0]?.quantity ?? 1,
+    fallbackTotalIntervalAmountDollars: amountPaidDollars,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / userIds.length;
 
   for (const uid of userIds) {
     phLogger.event(
@@ -774,6 +784,9 @@ function emitInvoicePaidRevenueAnalytics({
           invoice.attempt_count > 1 && { recovery_result: "recovered" }),
         amount_paid_dollars: amountPaidDollars,
         attributed_revenue_dollars: attributedRevenueDollars,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        retained_mrr_dollars: attributedMrrDollars,
         user_count: userIds.length,
         currency: invoice.currency,
         stripe_event_id: stripeEventId,
@@ -2146,6 +2159,14 @@ async function recordCancellationCompleted(args: {
     args.subscription.metadata,
     args.price?.lookup_key,
   );
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: args.price,
+    quantity: args.subscription.items?.data[0]?.quantity ?? 1,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / args.userIds.length;
 
   let updatedCount = 0;
   try {
@@ -2189,6 +2210,12 @@ async function recordCancellationCompleted(args: {
         billing_interval: priceBillingInterval(args.price),
         billing_interval_count: args.price?.recurring?.interval_count,
         cancellation_reason: stripeCancellationReason,
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        at_risk_mrr_dollars: attributedMrrDollars,
         cancellation_completion_type: args.completionType,
         cancel_at_period_end: args.subscription.cancel_at_period_end,
         stripe_customer_id: args.customerId,
@@ -2258,6 +2285,14 @@ async function handleSubscriptionDeleted(
   }
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
+  const subscriptionMrr = subscriptionMrrDollars({
+    price,
+    quantity: subscription.items?.data[0]?.quantity ?? 1,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / userIds.length;
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
   );
@@ -2278,6 +2313,10 @@ async function handleSubscriptionDeleted(
       tier,
       org_id: orgId,
       cancellation_reason: cancellationReason,
+      ...subscriptionChurnHealthProperties(cancellationReason),
+      subscription_mrr_dollars: subscriptionMrr,
+      attributed_mrr_dollars: attributedMrrDollars,
+      lost_mrr_dollars: attributedMrrDollars,
       stripe_event_id: stripeEventId,
       stripe_event_type: "customer.subscription.deleted",
       $insert_id: `subscription_cancelled:${stripeEventId}:${uid}`,

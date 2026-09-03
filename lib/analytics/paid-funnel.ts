@@ -150,3 +150,22 @@ export function paidFunnelProperties(properties: Record<string, unknown> = {}) {
     paid_funnel_event_version: PAID_FUNNEL_EVENT_VERSION,
   };
 }
+
+export function subscriptionChurnHealthProperties(
+  reason: string | null | undefined,
+) {
+  const churnType =
+    reason === "payment_failed"
+      ? "involuntary"
+      : reason === "cancellation_requested"
+        ? "voluntary"
+        : reason === "payment_disputed"
+          ? "dispute"
+          : "unknown";
+
+  return {
+    churn_type: churnType,
+    voluntary_churn: churnType === "voluntary",
+    involuntary_churn: churnType === "involuntary",
+  };
+}

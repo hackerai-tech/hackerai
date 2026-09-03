@@ -145,11 +145,11 @@ import {
 } from "@/lib/api/agent-endpoints";
 import { phLogger } from "@/lib/posthog/server";
 import {
-  captureDeepSeekV4Pro0813ExperimentExposure,
-  evaluateDeepSeekV4Pro0813Experiment,
-  getActiveDeepSeekV4Pro0813ExperimentAssignment,
-  getDeepSeekV4Pro0813ExperimentContext,
-} from "@/lib/experiments/deepseek-v4-pro-0813";
+  capturePaidModelQualityExperimentExposure,
+  evaluatePaidModelQualityExperiment,
+  getActivePaidModelQualityExperimentAssignment,
+  getPaidModelQualityExperimentContext,
+} from "@/lib/experiments/paid-model-quality";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2653,15 +2653,17 @@ export const agentLongTask = task({
         );
       }
 
-      const deepSeekV4Pro0813Experiment =
-        await evaluateDeepSeekV4Pro0813Experiment({
+      const paidModelQualityExperiment =
+        await evaluatePaidModelQualityExperiment({
           posthog,
           userId,
+          mode,
+          subscription,
           selectedModel,
           requestId: ctx.run.id,
         });
-      if (deepSeekV4Pro0813Experiment) {
-        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
+      if (paidModelQualityExperiment) {
+        selectedModel = paidModelQualityExperiment.modelKey;
       }
       const notesEnabled = userCustomization?.include_notes ?? true;
 
@@ -2934,14 +2936,14 @@ export const agentLongTask = task({
               });
             }
 
-            const activeDeepSeekV4Pro0813Experiment =
-              getActiveDeepSeekV4Pro0813ExperimentAssignment(
-                deepSeekV4Pro0813Experiment,
+            const activePaidModelQualityExperiment =
+              getActivePaidModelQualityExperimentAssignment(
+                paidModelQualityExperiment,
                 selectedModel,
               );
             const routingExperimentContext =
-              getDeepSeekV4Pro0813ExperimentContext(
-                activeDeepSeekV4Pro0813Experiment,
+              getPaidModelQualityExperimentContext(
+                activePaidModelQualityExperiment,
               );
 
             const freeMonthlyBudgetSnapshot =
@@ -4453,7 +4455,7 @@ export const agentLongTask = task({
 
             let result;
             try {
-              captureDeepSeekV4Pro0813ExperimentExposure({
+              capturePaidModelQualityExperimentExposure({
                 posthog,
                 userId,
                 subscription,
@@ -4461,7 +4463,7 @@ export const agentLongTask = task({
                 selectedModelOverride,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: activeDeepSeekV4Pro0813Experiment,
+                assignment: activePaidModelQualityExperiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {

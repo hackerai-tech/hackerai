@@ -638,6 +638,56 @@ describe("captureAgentCompletionAnalytics", () => {
       },
     });
   });
+
+  it("adds a cross-mode model-quality outcome only for an active experiment", () => {
+    const capture = jest.fn();
+
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "user_123",
+      chatId: "chat_123",
+      endpoint: "/api/chat",
+      mode: "ask",
+      subscription: "pro-plus",
+      sandboxInfo: null,
+      outcome: "success",
+      chatLogger: undefined,
+      selectedModel: "model-deepseek-v4-pro",
+      configuredModelId: "deepseek/deepseek-v4-pro",
+      responseModel: "deepseek/deepseek-v4-pro",
+      fallbackServed: false,
+      finishReason: "stop",
+      activeModelStreamDurationMs: 9_000,
+      requestToFirstModelChunkMs: 700,
+      providerRecoveryAttempts: 0,
+      experiment: {
+        key: "paid_standard_model_quality_v1",
+        variant: "test",
+      },
+    });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith({
+      distinctId: "user_123",
+      event: "paid_model_quality_run_completed",
+      properties: expect.objectContaining({
+        experiment_key: "paid_standard_model_quality_v1",
+        experiment_variant: "test",
+        "$feature/paid_standard_model_quality_v1": "test",
+        subscription_tier: "pro-plus",
+        mode: "ask",
+        selected_model: "model-deepseek-v4-pro",
+        configured_model: "deepseek/deepseek-v4-pro",
+        outcome: "success",
+        successful_run: true,
+        fallback_served: false,
+        active_model_stream_duration_ms: 9_000,
+        request_to_first_model_chunk_ms: 700,
+        provider_recovery_attempts: 0,
+        $process_person_profile: false,
+      }),
+    });
+  });
 });
 
 describe("captureUsageCost", () => {

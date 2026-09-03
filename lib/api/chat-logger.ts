@@ -34,6 +34,7 @@ import {
   getExperimentAnalyticsProperties,
   type ExperimentAnalyticsContext,
 } from "@/lib/analytics/experiment-context";
+import { capturePaidModelQualityRun } from "@/lib/experiments/paid-model-quality";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
@@ -1628,6 +1629,23 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  capturePaidModelQualityRun({
+    posthog,
+    userId,
+    experiment: args.experiment,
+    subscription,
+    mode,
+    selectedModel: args.selectedModel,
+    configuredModel: args.configuredModelId,
+    responseModel: args.responseModel,
+    outcome,
+    finishReason: args.finishReason,
+    fallbackServed: args.fallbackServed,
+    activeModelStreamDurationMs: args.activeModelStreamDurationMs,
+    requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
+    providerRecoveryAttempts: args.providerRecoveryAttempts,
+    stepLimitReached: args.stepLimitTelemetry?.stepLimitReached,
+  });
   captureAgentRun({
     posthog,
     userId,
