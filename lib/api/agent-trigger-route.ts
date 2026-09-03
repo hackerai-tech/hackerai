@@ -577,14 +577,26 @@ export const createAgentTriggerPost =
           let stagedSandbox: any = null;
           let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
           try {
-            uploadResult = await uploadSandboxFiles(sandboxFiles, async () => {
-              const { sandbox } = await getSandboxWithFallbackGuard({
-                sandboxManager,
-                requireLocalSandbox: true,
-              });
-              stagedSandbox = sandbox;
-              return sandbox;
-            });
+            uploadResult = await uploadSandboxFiles(
+              sandboxFiles,
+              async () => {
+                const { sandbox } = await getSandboxWithFallbackGuard({
+                  sandboxManager,
+                  requireLocalSandbox: true,
+                });
+                stagedSandbox = sandbox;
+                return sandbox;
+              },
+              {
+                logContext: {
+                  service: "hackerai-web",
+                  requestId:
+                    req.headers.get("x-vercel-id")?.slice(0, 128) ?? undefined,
+                  userId,
+                  chatId,
+                },
+              },
+            );
           } finally {
             await stagedSandbox?.close?.().catch(() => {});
           }

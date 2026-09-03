@@ -35,6 +35,7 @@ export type SandboxUploadResult = {
 export type SandboxUploadFailureReason =
   | "local_command_no_response"
   | "local_command_unavailable"
+  | "local_file_prepare_failed"
   | "windows_command_syntax"
   | "sandbox_placement_failure"
   | "sandbox_operation_timeout"
@@ -71,7 +72,7 @@ type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
 type UploadSandboxFilesOptions = {
   retryWithFreshSandboxOnTransientFailure?: boolean | (() => boolean);
   logContext?: {
-    service: "agent-long" | "chat-handler";
+    service: "agent-long" | "chat-handler" | "hackerai-web";
     requestId?: string;
     userId: string;
     chatId: string;
@@ -109,7 +110,9 @@ const extractCommandExitCode = (error: unknown): number | null => {
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  const match = message.match(/\bexit status (\d+)\b/i);
+  const match =
+    message.match(/\b(?:exit status|exitCode:|curl exit)\s*(\d+)\b/i) ??
+    message.match(/\bcurl:\s*\((\d+)\)/i);
   if (!match) return null;
 
   return Number.parseInt(match[1], 10);
@@ -144,6 +147,7 @@ const LOCAL_COMMAND_NO_RESPONSE_PATTERN =
   /\bCommand timeout after \d+ms\b[^\n]*\bpublished:\s*\d+ms\b[^\n]*\bfirstMsg:\s*no\b[^\n]*\bconnectionId=/i;
 const LOCAL_COMMAND_UNAVAILABLE_PATTERN =
   /\blocal sandbox connection\b.*\bis not subscribed to the command relay\b/i;
+const LOCAL_FILE_PREPARE_FAILURE_PATTERN = /\bFailed to prepare local file\b/i;
 const WINDOWS_COMMAND_SYNTAX_PATTERN =
   /\bthe syntax of the command is incorrect\b|\bis not recognized as an internal or external command\b/i;
 const FILE_TRANSFER_TIMEOUT_PATTERN =
@@ -185,6 +189,9 @@ const classifySandboxUploadFailureReason = (
   }
   if (WINDOWS_COMMAND_SYNTAX_PATTERN.test(message)) {
     return "windows_command_syntax";
+  }
+  if (LOCAL_FILE_PREPARE_FAILURE_PATTERN.test(message)) {
+    return "local_file_prepare_failed";
   }
   if (sandboxReadinessReason === "placement_failure") {
     return "sandbox_placement_failure";
@@ -968,20 +975,6 @@ const redactSensitiveValues = (
   return message;
 };
 
-const describeSandboxFileForLog = (file: SandboxFile) => {
-  if (file.kind === "url") {
-    return {
-      kind: file.kind,
-      urlLength: file.url.length,
-      protocol: file.url.split("://")[0],
-    };
-  }
-  return {
-    kind: file.kind,
-    sourcePath: "[redacted-local-path]",
-  };
-};
-
 const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
@@ -1022,6 +1015,7 @@ const shouldRetryWithFreshSandbox = (
 const uploadSandboxFilesOnce = async (
   sandboxFiles: SandboxFile[],
   sandbox: any,
+  options?: UploadSandboxFilesOptions,
 ): Promise<SandboxUploadResult> => {
   const results = await Promise.allSettled(
     sandboxFiles.map((file) => stageSandboxFile(sandbox, file)),
@@ -1030,20 +1024,6 @@ const uploadSandboxFilesOnce = async (
   const failedIndices = results
     .map((r, i) => (r.status === "rejected" ? i : -1))
     .filter((i) => i !== -1);
-
-  if (failedIndices.length > 0) {
-    console.error(
-      `Failed uploading ${failedIndices.length}/${sandboxFiles.length} files to sandbox:`,
-    );
-    failedIndices.forEach((i) => {
-      const file = sandboxFiles[i];
-      const result = results[i] as PromiseRejectedResult;
-      console.error("  -", {
-        ...describeSandboxFileForLog(file),
-        error: redactSandboxUploadError(file, result.reason),
-      });
-    });
-  }
 
   const pathRewrites = results.flatMap((result) =>
     result.status === "fulfilled" && result.value ? [result.value] : [],
@@ -1054,6 +1034,45 @@ const uploadSandboxFilesOnce = async (
       (results[i] as PromiseRejectedResult).reason,
     ),
   );
+
+  if (failureDetails.length > 0) {
+    const primaryFailure = failureDetails[0];
+    const failureReasonCounts = failureDetails.reduce<Record<string, number>>(
+      (counts, failure) => {
+        counts[failure.reason] = (counts[failure.reason] ?? 0) + 1;
+        return counts;
+      },
+      {},
+    );
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        event: "sandbox_attachment_staging_failed",
+        service: options?.logContext?.service ?? "chat-handler",
+        environment:
+          process.env.TRIGGER_ENV ??
+          process.env.VERCEL_ENV ??
+          process.env.NODE_ENV ??
+          "unknown",
+        request_id: options?.logContext?.requestId ?? null,
+        user_id: options?.logContext?.userId ?? null,
+        chat_id: options?.logContext?.chatId ?? null,
+        failed_count: failureDetails.length,
+        total_count: sandboxFiles.length,
+        failure_reason: primaryFailure.reason,
+        failure_reason_counts: failureReasonCounts,
+        failure_kind: primaryFailure.kind,
+        ...(primaryFailure.kind === "localPath"
+          ? { source_path: "[redacted-local-path]" }
+          : {}),
+        failure_exit_code: extractCommandExitCode(primaryFailure.error),
+        transient_sandbox_command: primaryFailure.transientSandboxCommand,
+        sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        protocol: primaryFailure.protocol ?? null,
+      }),
+    );
+  }
 
   return {
     failedCount: failedIndices.length,
@@ -1279,7 +1298,11 @@ export const uploadSandboxFiles = async (
     }
   }
 
-  const firstResult = await uploadSandboxFilesOnce(sandboxFiles, sandbox);
+  const firstResult = await uploadSandboxFilesOnce(
+    sandboxFiles,
+    sandbox,
+    options,
+  );
 
   if (
     firstResult.failedCount > 0 &&
@@ -1305,6 +1328,7 @@ export const uploadSandboxFiles = async (
       const retryResult = await uploadSandboxFilesOnce(
         sandboxFiles,
         refreshedSandbox,
+        options,
       );
       return { ...retryResult, retriedWithFreshSandbox: true };
     } catch (error) {
