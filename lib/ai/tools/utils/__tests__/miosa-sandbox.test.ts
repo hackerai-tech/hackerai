@@ -1,14 +1,20 @@
 const mockGetOrCreate = jest.fn();
+const mockList = jest.fn();
 
 jest.mock("@miosa/sdk", () => ({
   Miosa: jest.fn(() => ({
     sandboxes: {
       getOrCreate: (...args: unknown[]) => mockGetOrCreate(...args),
+      list: (...args: unknown[]) => mockList(...args),
     },
   })),
 }));
 
-import { ensureMiosaSandboxConnection, MiosaSandbox } from "../miosa-sandbox";
+import {
+  ensureMiosaSandboxConnection,
+  MiosaSandbox,
+  terminateMiosaSandboxesForUser,
+} from "../miosa-sandbox";
 
 const createSdkSandbox = () => ({
   id: "miosa-1",
@@ -99,6 +105,26 @@ describe("MIOSA sandbox adapter", () => {
       "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
     );
     expect(mockGetOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("destroys every persistent sandbox belonging to the requested user", async () => {
+    const firstDestroy = jest.fn().mockResolvedValue(undefined);
+    const secondDestroy = jest.fn().mockResolvedValue(undefined);
+    mockList.mockResolvedValue([
+      { state: "running", destroy: firstDestroy },
+      { state: "paused", destroy: secondDestroy },
+    ]);
+
+    await expect(terminateMiosaSandboxesForUser("user-1")).resolves.toEqual({
+      total: 2,
+      killed: 2,
+      alreadyGone: 0,
+    });
+    expect(mockList).toHaveBeenCalledWith({
+      externalUserId: expect.stringMatching(/^hackerai-[a-f0-9]{24}$/),
+    });
+    expect(firstDestroy).toHaveBeenCalledTimes(1);
+    expect(secondDestroy).toHaveBeenCalledTimes(1);
   });
 
   it("maps streaming stdout, stderr, and exit status", async () => {
