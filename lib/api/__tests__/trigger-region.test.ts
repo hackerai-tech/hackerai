@@ -21,6 +21,22 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).toBe("eu-central-1");
   });
 
+  test("routes European country data to eu-central-1 without a continent header", () => {
+    expect(
+      getTriggerRegionForVercelRequest(requestWithHeaders({}), {
+        country: "DE",
+      }),
+    ).toBe("eu-central-1");
+  });
+
+  test("normalizes European country data", () => {
+    expect(
+      getTriggerRegionForVercelRequest(requestWithHeaders({}), {
+        country: " gb ",
+      }),
+    ).toBe("eu-central-1");
+  });
+
   test("routes US east requests to us-east-1", () => {
     expect(
       getTriggerRegionForVercelRequest(requestWithHeaders({}), {

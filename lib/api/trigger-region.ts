@@ -16,6 +16,66 @@ type Coordinates = {
 type UsTriggerRunRegion = Exclude<TriggerRunRegion, "eu-central-1">;
 
 const NORTH_AMERICAN_COUNTRY_CODES = new Set(["CA", "MX", "US"]);
+const EUROPEAN_COUNTRY_CODES = new Set([
+  "AD",
+  "AL",
+  "AM",
+  "AT",
+  "AX",
+  "AZ",
+  "BA",
+  "BE",
+  "BG",
+  "BY",
+  "CH",
+  "CY",
+  "CZ",
+  "DE",
+  "DK",
+  "EE",
+  "ES",
+  "FI",
+  "FO",
+  "FR",
+  "GB",
+  "GE",
+  "GG",
+  "GI",
+  "GR",
+  "HR",
+  "HU",
+  "IE",
+  "IM",
+  "IS",
+  "IT",
+  "JE",
+  "KZ",
+  "LI",
+  "LT",
+  "LU",
+  "LV",
+  "MC",
+  "MD",
+  "ME",
+  "MK",
+  "MT",
+  "NL",
+  "NO",
+  "PL",
+  "PT",
+  "RO",
+  "RS",
+  "RU",
+  "SE",
+  "SI",
+  "SJ",
+  "SK",
+  "SM",
+  "TR",
+  "UA",
+  "VA",
+  "XK",
+]);
 
 const VERCEL_REGION_TO_US_TRIGGER_REGION = new Map<string, UsTriggerRunRegion>([
   ["CLE1", "us-east-1"],
@@ -117,6 +177,15 @@ function isNorthAmericanRequest(
   );
 }
 
+function isEuropeanRequest(
+  continent: string | null,
+  country: string | null,
+): boolean {
+  return (
+    continent === "EU" || (!!country && EUROPEAN_COUNTRY_CODES.has(country))
+  );
+}
+
 export function getTriggerRegionForVercelRequest(
   request: {
     headers: Headers;
@@ -126,11 +195,11 @@ export function getTriggerRegionForVercelRequest(
   const continent = normalizeVercelValue(
     request.headers.get("x-vercel-ip-continent"),
   );
-  if (continent === "EU") return "eu-central-1";
-
   const country = normalizeVercelValue(
     userLocation?.country ?? request.headers.get("x-vercel-ip-country"),
   );
+  if (isEuropeanRequest(continent, country)) return "eu-central-1";
+
   if (!isNorthAmericanRequest(continent, country)) {
     return undefined;
   }
