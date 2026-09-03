@@ -598,12 +598,6 @@ const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
   "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
 
-const DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN = [
-  "model-glm-5.3-flash",
-  "model-deepseek-v4-pro-0813",
-  "model-glm-5.3",
-] as const satisfies readonly ModelName[];
-
 const LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN = [
   "model-deepseek-v4-flash-0731",
   "model-deepseek-v4-pro-0813",
@@ -628,7 +622,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN,
+  "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
@@ -968,6 +962,9 @@ export function buildProviderOptions(
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  // Free Ask is intentionally fast/non-reasoning even when a caller supplies
+  // a reasoning override. DeepSeek V4 Flash 0731 defaults to reasoning on.
+  const isFreeAsk = mode === "ask" && modelName === "ask-model-free";
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
@@ -1029,7 +1026,9 @@ export function buildProviderOptions(
 
   return {
     openrouter: {
-      ...(!usesDefaultGlmFlashAgentReasoning && { reasoning }),
+      ...(!usesDefaultGlmFlashAgentReasoning && {
+        reasoning: isFreeAsk ? { enabled: false } : reasoning,
+      }),
       ...(options.hasPdfAttachments && isDeepSeekV4
         ? {
             plugins: [

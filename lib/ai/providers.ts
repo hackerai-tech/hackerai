@@ -1226,7 +1226,7 @@ export const getOpenRouterProviderRoutingForModel = (
 
 const buildProviderMap = (
   or: OpenRouterInstance,
-  freeAskModelSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
   ({
