@@ -199,9 +199,11 @@ function subscriptionInvoiceLine(
   subscriptionId: string,
   priceId: string,
   amount: number,
+  quantity?: number,
 ) {
   return {
     amount,
+    ...(quantity !== undefined && { quantity }),
     subscription: subscriptionId,
     parent: {
       type: "subscription_item_details",
@@ -1601,7 +1603,7 @@ describe("POST /api/subscription/webhook", () => {
         object: {
           id: "in_historical_price",
           customer: "cus_historical_price",
-          amount_paid: 2900,
+          amount_paid: 5800,
           currency: "usd",
           billing_reason: "subscription_create",
           parent: {
@@ -1614,7 +1616,8 @@ describe("POST /api/subscription/webhook", () => {
               subscriptionInvoiceLine(
                 "sub_historical_price",
                 "price_pro_29",
-                2900,
+                5800,
+                2,
               ),
             ],
           },
@@ -1678,6 +1681,8 @@ describe("POST /api/subscription/webhook", () => {
       expect.objectContaining({
         stripePriceId: "price_pro_29",
         plan: "pro-monthly-plan-29-experiment",
+        quantity: 2,
+        mrrDollars: 58,
       }),
     );
     expect(mockConvexMutation).toHaveBeenCalledWith(
@@ -1701,9 +1706,9 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "invoice_paid",
       expect.objectContaining({
-        subscription_mrr_dollars: 29,
-        attributed_mrr_dollars: 29,
-        retained_mrr_dollars: 29,
+        subscription_mrr_dollars: 58,
+        attributed_mrr_dollars: 58,
+        retained_mrr_dollars: 58,
       }),
     );
   });

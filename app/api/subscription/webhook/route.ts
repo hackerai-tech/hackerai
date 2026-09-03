@@ -145,11 +145,11 @@ function invoiceLineIsProration(line: Stripe.InvoiceLineItem): boolean {
   );
 }
 
-/** Return the immutable Price ID recorded on a subscription invoice line. */
-async function invoiceSubscriptionPriceId(
+/** Return immutable billing details recorded on a subscription invoice line. */
+async function invoiceSubscriptionBillingDetails(
   invoice: Stripe.Invoice,
   subscriptionId: string,
-): Promise<string | undefined> {
+): Promise<{ priceId: string; quantity?: number } | undefined> {
   const lines = await invoiceLineItems(invoice);
   const candidates = lines.filter(
     (line) => invoiceLineSubscriptionId(line) === subscriptionId,
@@ -163,7 +163,15 @@ async function invoiceSubscriptionPriceId(
   );
   const selectedLine =
     recurringLine ?? candidates.find((line) => invoiceLinePriceId(line));
-  return selectedLine ? invoiceLinePriceId(selectedLine) : undefined;
+  const priceId = selectedLine ? invoiceLinePriceId(selectedLine) : undefined;
+  return priceId
+    ? {
+        priceId,
+        ...(typeof selectedLine?.quantity === "number" && {
+          quantity: selectedLine.quantity,
+        }),
+      }
+    : undefined;
 }
 
 /**
@@ -643,6 +651,7 @@ async function recordSubscriptionRevenue({
   orgId,
   tier,
   subscription,
+  invoiceQuantity,
   reason,
 }: {
   invoice: Stripe.Invoice;
@@ -652,6 +661,7 @@ async function recordSubscriptionRevenue({
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  invoiceQuantity?: number;
   reason: string;
 }) {
   const grossRevenueDollars = centsToDollars(
@@ -668,7 +678,7 @@ async function recordSubscriptionRevenue({
     reason === "subscription_create" || reason === "subscription_cycle"
       ? subscriptionMrrDollars({
           price: invoicePrice,
-          quantity: item?.quantity ?? 1,
+          quantity: invoiceQuantity ?? item?.quantity ?? 1,
           fallbackTotalIntervalAmountDollars: grossRevenueDollars,
         })
       : undefined;
@@ -696,7 +706,7 @@ async function recordSubscriptionRevenue({
         stripeInvoiceId: invoice.id,
         stripePriceId: invoicePrice.id,
         plan: invoicePrice.lookup_key ?? tier,
-        quantity: item?.quantity,
+        quantity: invoiceQuantity ?? item?.quantity,
         userCount: userIds.length,
         description: reason,
       }),
@@ -721,7 +731,7 @@ async function recordSubscriptionRevenue({
             stripeInvoiceId: invoice.id,
             stripePriceId: invoicePrice.id,
             plan: invoicePrice.lookup_key ?? tier,
-            quantity: item?.quantity,
+            quantity: invoiceQuantity ?? item?.quantity,
             userCount: userIds.length,
             description: reason,
           }),
@@ -739,6 +749,7 @@ function emitInvoicePaidRevenueAnalytics({
   orgId,
   tier,
   subscription,
+  invoiceQuantity,
 }: {
   invoice: Stripe.Invoice;
   invoicePrice: Stripe.Price;
@@ -748,6 +759,7 @@ function emitInvoicePaidRevenueAnalytics({
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  invoiceQuantity?: number;
 }) {
   const amountPaidDollars = centsToDollars(invoice.amount_paid);
   if (amountPaidDollars <= 0 || userIds.length === 0) return;
@@ -759,7 +771,7 @@ function emitInvoicePaidRevenueAnalytics({
   const attributedRevenueDollars = amountPaidDollars / userIds.length;
   const subscriptionMrr = subscriptionMrrDollars({
     price: invoicePrice,
-    quantity: subscription.items?.data[0]?.quantity ?? 1,
+    quantity: invoiceQuantity ?? subscription.items?.data[0]?.quantity ?? 1,
     fallbackTotalIntervalAmountDollars: amountPaidDollars,
   });
   const attributedMrrDollars =
@@ -1053,17 +1065,19 @@ async function handleInvoicePaid(
   const { tier, subscription } = resolved;
   const entitlementItem = subscription.items?.data[0];
   const entitlementPrice = entitlementItem?.price;
-  const invoicePriceId = await invoiceSubscriptionPriceId(
+  const invoiceBillingDetails = await invoiceSubscriptionBillingDetails(
     invoice,
     subscriptionId,
   );
-  if (!invoicePriceId) {
+  if (!invoiceBillingDetails) {
     phLogger.warn("invoice_paid_historical_price_missing", {
       stripe_invoice_id: invoice.id,
       stripe_subscription_id: subscriptionId,
     });
     throw new Error("Historical subscription Price missing from paid invoice");
   }
+  const { priceId: invoicePriceId, quantity: invoiceQuantity } =
+    invoiceBillingDetails;
 
   let invoicePrice: Stripe.Price;
   if (entitlementPrice?.id === invoicePriceId) {
@@ -1145,6 +1159,7 @@ async function handleInvoicePaid(
       orgId: orgId ?? undefined,
       tier,
       subscription,
+      invoiceQuantity,
       reason: resetMode.reason,
     });
   } catch (error) {
@@ -1168,6 +1183,7 @@ async function handleInvoicePaid(
     orgId: orgId ?? undefined,
     tier,
     subscription,
+    invoiceQuantity,
   });
 
   if (resetMode.mode === "skip") {
