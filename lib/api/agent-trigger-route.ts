@@ -593,7 +593,7 @@ export const createAgentTriggerPost =
                   requestId:
                     req.headers.get("x-vercel-id")?.slice(0, 128) ?? undefined,
                   userId,
-                  chatId,
+                  chatId: chatId.slice(0, 128),
                 },
               },
             );
