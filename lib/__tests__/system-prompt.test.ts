@@ -614,7 +614,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
-  it("warns about false-positive port scans only in the cloud sandbox", async () => {
+  it("keeps the false-positive port-scan warning specific to E2B", async () => {
     const cloudPrompt = await systemPrompt(
       "user_123",
       "agent",
@@ -625,6 +625,17 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "full_access",
       false,
       "e2b",
+    );
+    const miosaPrompt = await systemPrompt(
+      "user_123",
+      "agent",
+      "pro",
+      "agent-model",
+      null,
+      null,
+      "full_access",
+      false,
+      "miosa",
     );
     const localPrompt = await systemPrompt(
       "user_123",
@@ -657,6 +668,10 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(portScanningPolicy).toBeDefined();
     expect(portScanningPolicy).not.toMatch(
       /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
+    );
+    expect(miosaPrompt).not.toContain("Port-scanning limitation:");
+    expect(miosaPrompt).not.toContain(
+      "Cloud Agent networking can produce false-positive port results",
     );
     expect(localPrompt).not.toContain("Port-scanning limitation:");
     expect(localPrompt).not.toContain(
