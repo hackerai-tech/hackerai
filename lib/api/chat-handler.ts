@@ -100,14 +100,15 @@ import {
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
 import {
+  getMessagesByChatId,
+  getNotes,
+  getUserCustomization,
   handleInitialChatAndUserMessage,
+  prepareForNewStream,
   saveMessage,
+  startStream,
   updateChat,
   updateChatTitle,
-  getMessagesByChatId,
-  getUserCustomization,
-  prepareForNewStream,
-  startStream,
 } from "@/lib/db/actions";
 import {
   createCancellationSubscriber,
@@ -347,25 +348,46 @@ export const createChatHandler = () => {
         });
       }
 
-      const userCustomization = await getUserCustomization({ userId });
-
-      const fetched = await getMessagesByChatId({
-        chatId,
-        userId,
-        subscription,
-        newMessages: requestMessages,
-        regenerate,
-        mode,
-        useClientMessagesForRegenerate,
-      });
+      // These reads only depend on the authenticated user, so overlap them
+      // instead of paying one Convex round-trip after another before the
+      // model call. Mirrors the Trigger agent route's preflight.
+      const [userCustomization, fetched] = await Promise.all([
+        getUserCustomization({ userId }),
+        getMessagesByChatId({
+          chatId,
+          userId,
+          subscription,
+          newMessages: requestMessages,
+          regenerate,
+          mode,
+          useClientMessagesForRegenerate,
+        }),
+      ]);
       const { chat, isNewChat, fileTokens } = fetched;
-      const projectContext = await resolveProjectExecutionContext({
-        chat,
-        requestedProjectId,
-        userId,
-        mode,
-        sandboxPreference,
-      });
+
+      // Notes are injected right before streaming. Start the fetch now so it
+      // overlaps the remaining preflight instead of adding a serial
+      // round-trip at the end. getNotes never rejects (it returns [] on error).
+      const shouldIncludeNotes = userCustomization?.include_notes ?? true;
+      const preloadedNotes = shouldIncludeNotes
+        ? getNotes({ userId, subscription })
+        : undefined;
+
+      const [projectContext, baseExtraUsageConfig] = await Promise.all([
+        resolveProjectExecutionContext({
+          chat,
+          requestedProjectId,
+          userId,
+          mode,
+          sandboxPreference,
+        }),
+        buildExtraUsageConfig({
+          userId,
+          subscription,
+          userCustomization,
+          organizationId,
+        }),
+      ]);
       const truncatedMessages =
         subscription === "free"
           ? stripImageAttachments(fetched.truncatedMessages)
@@ -375,13 +397,6 @@ export const createChatHandler = () => {
         (chat?.todos as unknown as Todo[]) || [],
         { regenerate },
       );
-
-      const baseExtraUsageConfig = await buildExtraUsageConfig({
-        userId,
-        subscription,
-        userCustomization,
-        organizationId,
-      });
       const extraUsageAvailable = canUseExtraUsage(baseExtraUsageConfig);
       selectedModelOverride =
         normalizeMaxModelForSubscription(selectedModelOverride, subscription, {
@@ -937,16 +952,15 @@ export const createChatHandler = () => {
 
             // Inject notes into messages instead of system prompt
             // to keep the system prompt stable for prompt caching
-            const shouldIncludeNotes = userCustomization?.include_notes ?? true;
             const noteInjectionOpts = {
               userId,
               subscription,
               shouldIncludeNotes,
             };
-            finalMessages = await injectNotesIntoMessages(
-              finalMessages,
-              noteInjectionOpts,
-            );
+            finalMessages = await injectNotesIntoMessages(finalMessages, {
+              ...noteInjectionOpts,
+              preloadedNotes,
+            });
 
             // Mutable stream state — updated in-place by the shared runner.
             const state = initAgentStreamState(
@@ -1414,6 +1428,7 @@ export const createChatHandler = () => {
               ctxSystemTokens,
               ctxMaxTokens,
               streamStartTime,
+              onModelChunk: () => chatLogger?.markFirstChunk(),
               contextUsageOn,
               isReasoningModel,
               platformAuthorized,

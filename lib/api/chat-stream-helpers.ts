@@ -1123,15 +1123,22 @@ export async function injectNotesIntoMessages(
     userId: string;
     subscription: SubscriptionTier;
     shouldIncludeNotes: boolean;
+    /**
+     * Notes fetch started earlier in the request so it overlaps other
+     * preflight work instead of adding a round-trip right before the model
+     * call. Falls back to fetching here when absent.
+     */
+    preloadedNotes?: Promise<Awaited<ReturnType<typeof getNotes>>>;
   },
 ): Promise<UIMessage[]> {
   if (!opts.shouldIncludeNotes) return messages;
 
   try {
-    const notes = await getNotes({
-      userId: opts.userId,
-      subscription: opts.subscription,
-    });
+    const notes = await (opts.preloadedNotes ??
+      getNotes({
+        userId: opts.userId,
+        subscription: opts.subscription,
+      }));
     const notesContent = generateNotesSection(notes);
     if (!notesContent) return messages;
 
