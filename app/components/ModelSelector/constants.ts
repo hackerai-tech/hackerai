@@ -37,7 +37,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
-    poweredBy: "Z.ai GLM 5.3 Flash",
+    poweredBy: "DeepSeek V4 Flash 0731",
     thinking: true,
   },
   {

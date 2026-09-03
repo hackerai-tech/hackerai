@@ -1226,8 +1226,8 @@ export const getOpenRouterProviderRoutingForModel = (
 
 const buildProviderMap = (
   or: OpenRouterInstance,
-  freeAskModelSlug = GLM_5_3_FLASH_SLUG,
-  freeAgentModelSlug = GLM_5_3_FLASH_SLUG,
+  freeAskModelSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  freeAgentModelSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
   ({
     "ask-model": or(GROK_4_6_SLUG),
@@ -1252,6 +1252,7 @@ const buildProviderMap = (
     "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-agent": or(GLM_5_3_FLASH_SLUG),
     "model-deepseek-v4-flash-vision": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
+    "model-deepseek-v4-flash-vision-pro": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
@@ -1284,6 +1285,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-glm-5.3-flash-pro": "August 2026",
   "model-glm-5.3-flash-agent": "August 2026",
   "model-deepseek-v4-flash-vision": "August 2026",
+  "model-deepseek-v4-flash-vision-pro": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
   "title-generator-model": "May 2025",
@@ -1311,6 +1313,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-agent": "Z.ai GLM 5.3 Flash",
   "model-deepseek-v4-flash-vision": "DeepSeek V4 Flash Vision",
+  "model-deepseek-v4-flash-vision-pro": "DeepSeek V4 Flash Vision",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
@@ -1337,8 +1340,12 @@ export function isAnthropicModel(modelName: string): boolean {
 /** Returns whether a provider key uses a DeepSeek V4 route. */
 export function isDeepSeekModel(modelName: string): boolean {
   return (
+    modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
     modelName === "agent-auto-review-model" ||
     modelName === "model-deepseek-v4-flash-0731" ||
+    modelName === "model-deepseek-v4-flash-vision" ||
+    modelName === "model-deepseek-v4-flash-vision-pro" ||
     modelName === "model-deepseek-v4-pro" ||
     modelName === "model-deepseek-v4-pro-0813"
   );
@@ -1376,12 +1383,11 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   const normalized = modelName.toLowerCase();
 
   return (
-    normalized === "ask-model-free" ||
-    normalized === "agent-model-free" ||
     normalized === "model-glm-5.3-flash" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||
     normalized === "model-deepseek-v4-flash-vision" ||
+    normalized === "model-deepseek-v4-flash-vision-pro" ||
     normalized.includes("z-ai/glm-5.3-flash") ||
     normalized.includes("deepseek-v4-flash-vision") ||
     isKimiModel(normalized) ||
@@ -1400,20 +1406,18 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to GLM 5.3 Flash in Agent and DeepSeek V4 Flash
- * 0731 in Ask. Pro maps to DeepSeek V4 Pro 0813 and Max to Grok 4.6 in both
- * modes; media-aware promotion happens in `selectModel`.
+ * key instead). Standard maps to DeepSeek V4 Flash 0731, Pro to DeepSeek V4
+ * Pro 0813, and Max to Grok 4.6 in both modes; media-aware promotion happens
+ * in `selectModel`.
  */
 export function resolveTierToProviderKey(
   tier: SelectedModel,
-  mode: ChatMode,
+  _mode: ChatMode,
 ): ModelName | null {
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return mode === "agent"
-        ? "model-glm-5.3-flash-agent"
-        : "model-deepseek-v4-flash-0731";
+      return "model-deepseek-v4-flash-0731";
     case "hackerai-pro":
       return "model-deepseek-v4-pro-0813";
     case "hackerai-max":

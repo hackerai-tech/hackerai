@@ -610,6 +610,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Record the first model chunk (first call wins within a request)
+     */
+    markFirstChunk() {
+      builder.markFirstChunk();
+    },
+
+    /**
      * Set sandbox execution info
      */
     setSandbox(info: ChatWideEvent["sandbox"] | null) {

@@ -109,13 +109,14 @@ describe("proxy", () => {
   });
 
   it.each([
+    "/api/analytics-consent",
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
     "/api/cron/platform-costs/convex",
     "/api/cron/platform-costs/vercel",
   ])(
-    "bypasses AuthKit for the independently authenticated endpoint %s",
+    "bypasses AuthKit for the public or independently authenticated endpoint %s",
     async (pathname) => {
       const { default: proxy } = await import("../proxy");
 

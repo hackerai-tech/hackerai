@@ -140,16 +140,17 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_6_BASE_PRICING,
   "fallback-agent-model": GROK_4_6_BASE_PRICING,
   "fallback-ask-model": GROK_4_6_BASE_PRICING,
-  // Free Ask and Agent use GLM 5.3 Flash. Keep the undiscounted ceiling so usage
-  // accounting remains conservative if launch pricing changes.
-  "ask-model-free": GLM_5_3_FLASH_PRICING,
-  "agent-model-free": GLM_5_3_FLASH_PRICING,
+  // Free Ask retains the original Flash route while free Agent uses the 0731
+  // revision. Provider fallbacks are reconciled against their served model.
+  "ask-model-free": DEEPSEEK_V4_FLASH_PRICING,
+  "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
   "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
   "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_VISION_PRICING,
+  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_FLASH_VISION_PRICING,
   // Persisted Max compatibility key; the active provider route is Kimi K3.
   "model-opus-4.6": KIMI_K3_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.

@@ -37,10 +37,9 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Pro Plus Auto mirrors the mode-specific Standard route: Agent uses GLM
- *   5.3 Flash and Ask uses DeepSeek V4 Flash 0731. Ultra Auto uses DeepSeek
- *   V4 Pro 0813. Explicit Pro uses Pro 0813, and Max uses Grok 4.6. Images
- *   retain their existing direct or auxiliary vision behavior.
+ *   Paid Agent Auto and Standard use DeepSeek V4 Flash 0731. Ask Ultra Auto
+ *   and explicit Pro use DeepSeek V4 Pro 0813, while Max uses Grok 4.6.
+ *   Eligible image turns use DeepSeek V4 Flash Vision before fallbacks.
  * @returns Model name to use
  */
 export function selectModel(
@@ -61,28 +60,26 @@ export function selectModel(
     subscription,
     options,
   );
-  // Paid Standard/Pro image prompts use GLM Flash directly, with DeepSeek
-  // Vision configured as its provider fallback. The auxiliary treatment is
-  // reserved for MiniMax summary recovery after both direct routes fail.
+  // Paid Standard/Pro image prompts use DeepSeek Vision directly, with GLM
+  // Flash configured as its first provider fallback. The auxiliary treatment
+  // is reserved for MiniMax summary recovery after direct routes fail.
   // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
   const isFreeAsk = !isAgent && subscription === "free";
   const hasAskImage =
     !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
-  const paidStandardTextModel: ModelName = isAgent
-    ? "model-glm-5.3-flash-agent"
-    : "model-deepseek-v4-flash-0731";
+  const paidStandardTextModel: ModelName = "model-deepseek-v4-flash-0731";
   const paidAutoTextModel: ModelName =
-    subscription === "ultra"
+    !isAgent && subscription === "ultra"
       ? "model-deepseek-v4-pro-0813"
       : paidStandardTextModel;
   const directVisionModel: ModelName =
     allowedSelectedModel === "hackerai-pro" ||
     ((!allowedSelectedModel || allowedSelectedModel === "auto") &&
       paidAutoTextModel === "model-deepseek-v4-pro-0813")
-      ? "model-glm-5.3-flash-pro"
-      : "model-glm-5.3-flash";
+      ? "model-deepseek-v4-flash-vision-pro"
+      : "model-deepseek-v4-flash-vision";
   if (
     options.directGlmVisionEnabled &&
     hasImageAttachment &&

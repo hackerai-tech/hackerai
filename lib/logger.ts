@@ -134,9 +134,19 @@ export interface ChatWideEvent {
     };
   };
 
+  // Time from wide-event creation (request parsed) to the first provider
+  // call. Everything before the stream — auth, Convex reads, rate limits,
+  // tokenizer passes — lands here, so a slow first token can be attributed
+  // to preflight versus the provider.
+  preflight?: {
+    duration_ms: number;
+  };
+
   // Stream execution
   stream?: {
     duration_ms: number;
+    // Stream start to the first model chunk. Absent when no chunk arrived.
+    first_chunk_ms?: number;
     finish_reason?: string;
     was_aborted: boolean;
     was_preemptive_timeout: boolean;
@@ -237,7 +247,9 @@ export interface ChatWideEvent {
 export class WideEventBuilder {
   private event: Partial<ChatWideEvent>;
   private toolCalls: Array<{ name: string; sandbox_type?: string }> = [];
+  private readonly createdAtMs = Date.now();
   private streamStartTime?: number;
+  private firstChunkTime?: number;
   private anthropicPromptRepairCount = 0;
 
   constructor(requestId: string, chatId: string, endpoint: ChatApiEndpoint) {
@@ -421,6 +433,20 @@ export class WideEventBuilder {
    */
   startStream(): this {
     this.streamStartTime = Date.now();
+    this.event.preflight = {
+      duration_ms: this.streamStartTime - this.createdAtMs,
+    };
+    return this;
+  }
+
+  /**
+   * Record the first model chunk. First call wins so provider retries and
+   * fallbacks do not move the measurement.
+   */
+  markFirstChunk(): this {
+    if (this.firstChunkTime === undefined) {
+      this.firstChunkTime = Date.now();
+    }
     return this;
   }
 
@@ -469,6 +495,10 @@ export class WideEventBuilder {
   }): this {
     this.event.stream = {
       duration_ms: this.streamStartTime ? Date.now() - this.streamStartTime : 0,
+      ...(this.streamStartTime !== undefined &&
+        this.firstChunkTime !== undefined && {
+          first_chunk_ms: this.firstChunkTime - this.streamStartTime,
+        }),
       finish_reason: result.finishReason,
       was_aborted: result.wasAborted,
       was_preemptive_timeout: result.wasPreemptiveTimeout,

@@ -141,7 +141,9 @@ const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
 const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
 const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
-const STANDARD_AGENT_TEXT_MODEL = "model-glm-5.3-flash-agent";
+const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
+const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
+const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
 const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
@@ -206,6 +208,12 @@ export const resolveAgentModelAfterSummarization = (
   if (modelName === PRO_AGENT_GLM_VISION_MODEL) {
     return PRO_AGENT_TEXT_MODEL;
   }
+  if (modelName === STANDARD_AGENT_DEEPSEEK_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
   return modelName;
 };
 
@@ -226,11 +234,12 @@ export const resolveAgentModelForImageToolResults = (
       (!selectedModelOverride &&
         (modelName === "model-deepseek-v4-pro" ||
           modelName === "model-deepseek-v4-pro-0813" ||
-          modelName === PRO_AGENT_GLM_VISION_MODEL))
+          modelName === PRO_AGENT_GLM_VISION_MODEL ||
+          modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL))
     ) {
-      return PRO_AGENT_GLM_VISION_MODEL;
+      return PRO_AGENT_DEEPSEEK_VISION_MODEL;
     }
-    return STANDARD_AGENT_GLM_VISION_MODEL;
+    return STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
   }
   if (
     selectedModelOverride === "hackerai-pro" ||
@@ -238,10 +247,10 @@ export const resolveAgentModelForImageToolResults = (
       (modelName === "model-deepseek-v4-pro" ||
         modelName === "model-deepseek-v4-pro-0813"))
   ) {
-    return PRO_AGENT_VISION_MODEL;
+    return PRO_AGENT_DEEPSEEK_VISION_MODEL;
   }
   if (isDeepSeekModel(modelName)) {
-    return STANDARD_AGENT_VISION_MODEL;
+    return STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
   }
   return modelName;
 };

@@ -1345,6 +1345,7 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_subagent", ["subagent_id"])
+    .index("by_user_id", ["user_id"])
     .index("by_parent_run", ["parent_trigger_run_id"])
     .index("by_parent_run_and_consumed_at", [
       "parent_trigger_run_id",
@@ -1377,6 +1378,7 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_subagent", ["subagent_id"])
+    .index("by_user_id", ["user_id"])
     .index("by_parent_run", ["parent_trigger_run_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
