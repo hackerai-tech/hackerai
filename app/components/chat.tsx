@@ -1608,6 +1608,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     return () => setChatReset(null);
   }, [
     setChatReset,
+    setHasUserDismissedRateLimitWarning,
     setMessages,
     setStreamedTitle,
     setTodos,
@@ -1739,7 +1740,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (coerced) {
       setSelectedModel(coerced);
     }
-  }, [chatData, isExistingChat, chatId]);
+  }, [chatData, isExistingChat, chatId, setSelectedModel]);
 
   // Persist picker preferences (model + mode) when the user toggles them.
   // Debounced so quick toggles don't spam Convex; baseline is seeded from the
@@ -1920,12 +1921,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Intentionally reads messageQueueRef at cleanup time (latest value).
   useEffect(() => {
     return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       if (messageQueueRef.current.length > 0) {
         clearQueue();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, clearQueue]);
+  }, [chatId, clearQueue, messageQueueRef]);
 
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
