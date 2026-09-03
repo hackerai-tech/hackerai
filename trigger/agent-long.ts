@@ -2617,6 +2617,7 @@ export const agentLongTask = task({
           ? await selectCloudSandboxProvider({
               userId,
               environment: ctx.environment.type,
+              triggerRegion,
               featureFlagClient: posthog,
             })
           : ({

@@ -1,9 +1,12 @@
+import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+
 export type CloudSandboxProvider = "miosa" | "e2b";
 export type CloudSandboxSelectionReason =
   | "configured"
   | "miosa_rollout"
   | "miosa_rollout_control"
-  | "miosa_configuration_unavailable";
+  | "miosa_configuration_unavailable"
+  | "miosa_europe_region";
 
 export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
   "miosa_cloud_sandbox_rollout_v1";
@@ -51,11 +54,16 @@ export function normalizeCloudSandboxFlagEnvironment(
 export async function selectCloudSandboxProvider(options: {
   userId: string;
   environment: string;
+  triggerRegion?: TriggerRunRegion;
   featureFlagClient?: FeatureFlagClient | null;
 }): Promise<{
   provider: CloudSandboxProvider;
   reason: CloudSandboxSelectionReason;
 }> {
+  if (options.triggerRegion === "eu-central-1") {
+    return { provider: "e2b", reason: "miosa_europe_region" };
+  }
+
   if (process.env.CLOUD_SANDBOX_PROVIDER) {
     return { provider: getCloudSandboxProvider(), reason: "configured" };
   }

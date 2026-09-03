@@ -63,6 +63,7 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
 import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
@@ -492,6 +493,10 @@ export const createChatHandler = () => {
           ? await selectCloudSandboxProvider({
               userId,
               environment: process.env.VERCEL_ENV ?? "development",
+              triggerRegion: getTriggerRegionForVercelRequest(
+                req,
+                userLocation,
+              ),
               featureFlagClient: posthog,
             })
           : ({
