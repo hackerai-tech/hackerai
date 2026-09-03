@@ -159,11 +159,11 @@ import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { buildAgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import {
-  capturePaidModelQualityExperimentExposure,
-  evaluatePaidModelQualityExperiment,
-  getActivePaidModelQualityExperimentAssignment,
-  getPaidModelQualityExperimentContext,
-} from "@/lib/experiments/paid-model-quality";
+  captureDeepSeekV4Pro0813ExperimentExposure,
+  evaluateDeepSeekV4Pro0813Experiment,
+  getActiveDeepSeekV4Pro0813ExperimentAssignment,
+  getDeepSeekV4Pro0813ExperimentContext,
+} from "@/lib/experiments/deepseek-v4-pro-0813";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -476,17 +476,15 @@ export const createChatHandler = () => {
         );
       }
 
-      const paidModelQualityExperiment =
-        await evaluatePaidModelQualityExperiment({
+      const deepSeekV4Pro0813Experiment =
+        await evaluateDeepSeekV4Pro0813Experiment({
           posthog: (posthog ??= PostHogClient()),
           userId,
-          mode,
-          subscription,
           selectedModel,
           requestId: req.headers.get("x-vercel-id") ?? undefined,
         });
-      if (paidModelQualityExperiment) {
-        selectedModel = paidModelQualityExperiment.modelKey;
+      if (deepSeekV4Pro0813Experiment) {
+        selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
@@ -623,13 +621,13 @@ export const createChatHandler = () => {
         });
       }
 
-      const activePaidModelQualityExperiment =
-        getActivePaidModelQualityExperimentAssignment(
-          paidModelQualityExperiment,
+      const activeDeepSeekV4Pro0813Experiment =
+        getActiveDeepSeekV4Pro0813ExperimentAssignment(
+          deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      const routingExperimentContext = getPaidModelQualityExperimentContext(
-        activePaidModelQualityExperiment,
+      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
+        activeDeepSeekV4Pro0813Experiment,
       );
 
       const freeMonthlyBudgetSnapshot =
@@ -1493,7 +1491,7 @@ export const createChatHandler = () => {
 
             let result;
             try {
-              capturePaidModelQualityExperimentExposure({
+              captureDeepSeekV4Pro0813ExperimentExposure({
                 posthog,
                 userId,
                 subscription,
@@ -1501,7 +1499,7 @@ export const createChatHandler = () => {
                 selectedModelOverride,
                 selectedModel,
                 configuredModel: configuredModelId,
-                assignment: activePaidModelQualityExperiment,
+                assignment: activeDeepSeekV4Pro0813Experiment,
               });
               result = await createStream(selectedModel);
             } catch (error) {
