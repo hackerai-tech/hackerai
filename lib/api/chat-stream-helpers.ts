@@ -685,7 +685,6 @@ export function isExplicitDeepSeekProSelectionForRetry({
 }
 
 const HIGH_REASONING_MODELS = [
-  "agent-model-free",
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -694,7 +693,6 @@ const HIGH_REASONING_MODELS = [
   "model-glm-5.2",
   "model-glm-5.3",
   "model-glm-5.3-flash-pro",
-  "model-glm-5.3-flash-agent",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -971,10 +969,13 @@ export function buildProviderOptions(
       })
     : fallbackSlugs;
   // OpenRouter applies one reasoning configuration to both the primary model
-  // and every provider fallback. Standard GLM vision uses low, legacy Standard
-  // Grok vision uses medium, and Pro/full reasoning routes remain high.
+  // and every provider fallback. Ask GLM vision uses high, legacy Standard Grok
+  // vision uses medium, and Pro/full reasoning routes remain high. Agent GLM
+  // Flash routes omit this option so each provider model uses its default.
   const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
   const isStandardGlmFlashVision = modelName === "model-glm-5.3-flash";
+  const usesDefaultGlmFlashAgentReasoning =
+    mode === "agent" && modelId === GLM_5_3_FLASH_SLUG;
   const routesThroughHighReasoningModel =
     isGrok45 ||
     isGrok46 ||
@@ -987,7 +988,7 @@ export function buildProviderOptions(
   const reasoning = isStandardGlmFlashVision
     ? {
         enabled: true,
-        effort: "low",
+        effort: "high",
       }
     : isMediumGrok45Vision
       ? {
@@ -1016,7 +1017,7 @@ export function buildProviderOptions(
 
   return {
     openrouter: {
-      reasoning,
+      ...(!usesDefaultGlmFlashAgentReasoning && { reasoning }),
       ...(options.hasPdfAttachments && isDeepSeekV4
         ? {
             plugins: [

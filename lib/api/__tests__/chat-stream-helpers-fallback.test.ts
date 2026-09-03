@@ -41,7 +41,6 @@ const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 const HIGH_REASONING_ROUTES = [
   "ask-model",
   "agent-model",
-  "agent-model-free",
   "model-grok-4.5-pro",
   "model-grok-4.6",
   "model-grok-4.6-pro",
@@ -51,7 +50,6 @@ const HIGH_REASONING_ROUTES = [
   "model-opus-4.6",
   "model-glm-5.2",
   "model-glm-5.3",
-  "model-glm-5.3-flash-agent",
   "model-kimi-k3",
   "fallback-agent-model",
   "fallback-ask-model",
@@ -175,12 +173,12 @@ describe("buildProviderOptions fallback chain", () => {
   });
 
   it.each([
-    ["model-glm-5.3-flash", "low"],
+    ["model-glm-5.3-flash", "high"],
     ["model-glm-5.3-flash-pro", "high"],
   ] as const)(
-    "routes %s directly with %s reasoning and DeepSeek Vision fallback",
+    "routes Ask %s directly with %s reasoning and DeepSeek Vision fallback",
     (modelName, effort) => {
-      const opts = buildProviderOptions(true, "user-1", modelName, "agent");
+      const opts = buildProviderOptions(false, "user-1", modelName, "ask");
       expect(opts.openrouter).toMatchObject({
         reasoning: { enabled: true, effort },
         models: [DEEPSEEK_VISION_SLUG],
@@ -281,7 +279,7 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter.models).toHaveLength(3);
   });
 
-  it("runs free Agent on GLM Flash high and falls back through DeepSeek Flash, Pro 0813, and GLM 5.3", () => {
+  it("runs free Agent on the GLM Flash default and falls back through DeepSeek Flash, Pro 0813, and GLM 5.3", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -289,14 +287,14 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "high" },
       provider: { sort: "latency", data_collection: "deny" },
       models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
+    expect(opts.openrouter).not.toHaveProperty("reasoning");
   });
 
-  it("uses the same high-reasoning fallback route for the paid GLM Agent treatment", () => {
+  it("uses provider-default reasoning for the paid GLM Agent route", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",
@@ -304,12 +302,28 @@ describe("buildProviderOptions fallback chain", () => {
       "agent",
     );
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: true, effort: "high" },
       provider: { sort: "latency", data_collection: "deny" },
       models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
+    expect(opts.openrouter).not.toHaveProperty("reasoning");
   });
+
+  it.each([
+    "agent-model-free",
+    "model-glm-5.3-flash-agent",
+    "model-glm-5.3-flash",
+    "model-glm-5.3-flash-pro",
+  ] as const)(
+    "keeps Agent %s on provider-default reasoning even when an override is supplied",
+    (modelName) => {
+      const opts = buildProviderOptions(true, "user-1", modelName, "agent", {
+        reasoningOverride: { enabled: true, effort: "high" },
+      });
+
+      expect(opts.openrouter).not.toHaveProperty("reasoning");
+    },
+  );
 
   it("falls back from explicit DeepSeek Pro ask model through GLM 5.3 then Kimi K3", () => {
     const opts = buildProviderOptions(
