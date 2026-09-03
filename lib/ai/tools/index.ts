@@ -160,7 +160,8 @@ export const createTools = (
             request_id: triggerRunId ?? chatId,
             chat_id: chatId,
             sandbox_id: sandboxId,
-            provider: "miosa",
+            sandbox_type: "cloud",
+            sandbox_provider: "miosa",
             error:
               error instanceof Error
                 ? redactSensitiveErrorMessage(error.message)
@@ -255,6 +256,8 @@ export const createTools = (
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         provider,
+        sandbox_type: "cloud",
+        sandbox_provider: provider,
         provider_selection_reason:
           provider === runtimePolicy.cloudSandboxProvider
             ? (runtimePolicy.cloudSandboxSelectionReason ?? "configured")
@@ -270,7 +273,7 @@ export const createTools = (
           provider === "miosa"
             ? process.env.MIOSA_TEMPLATE_ID
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
-        cloud_sandbox_provider_event_version: 7,
+        cloud_sandbox_provider_event_version: 8,
       });
     }
   };

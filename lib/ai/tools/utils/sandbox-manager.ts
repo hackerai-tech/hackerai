@@ -58,7 +58,7 @@ export class DefaultSandboxManager implements SandboxManager {
 
   getSandboxInfo(): SandboxInfo | null {
     return {
-      type: "e2b",
+      type: "cloud",
       provider: this.activeCloudProvider,
     };
   }
@@ -71,7 +71,7 @@ export class DefaultSandboxManager implements SandboxManager {
     if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
       return undefined;
     }
-    return "e2b";
+    return "cloud";
   }
 
   async getSandbox(): Promise<{

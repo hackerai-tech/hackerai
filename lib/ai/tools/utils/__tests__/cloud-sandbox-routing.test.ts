@@ -75,11 +75,23 @@ describe("cloud sandbox provider routing", () => {
     expect(mockEnsureMiosa).toHaveBeenCalledTimes(1);
     expect(mockEnsureE2B).toHaveBeenCalledTimes(1);
     expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_failed",
+      expect.objectContaining({
+        provider: "miosa",
+        sandbox_type: "cloud",
+        sandbox_provider: "miosa",
+        cloud_sandbox_acquisition_failed_event_version: 4,
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
       "cloud_sandbox_provider_fallback",
       expect.objectContaining({
         from_provider: "miosa",
         to_provider: "e2b",
+        sandbox_type: "cloud",
+        sandbox_provider: "e2b",
         error_name: "Error",
+        cloud_sandbox_provider_fallback_event_version: 2,
       }),
     );
   });

@@ -23,8 +23,8 @@ describe("captureToolCalls", () => {
     const posthog = { capture };
     const chatLogger = {
       getToolCalls: () => [
-        { name: "run_terminal_cmd", sandbox_type: "e2b" },
-        { name: "run_terminal_cmd", sandbox_type: "e2b" },
+        { name: "run_terminal_cmd", sandbox_type: "cloud" },
+        { name: "run_terminal_cmd", sandbox_type: "cloud" },
         { name: "open_url" },
         { name: "run_terminal_cmd", sandbox_type: "remote-connection" },
       ],
@@ -242,7 +242,7 @@ describe("captureAgentRun", () => {
         chatId: "chat_slow",
         mode: "agent",
         subscription: "pro",
-        sandboxInfo: { type: "e2b", provider: "e2b" },
+        sandboxInfo: { type: "cloud", provider: "e2b" },
         outcome: "success",
         selectedModel: "agent-model",
         configuredModelId: "deepseek/deepseek-v4-pro",
@@ -355,7 +355,7 @@ describe("captureAgentRun", () => {
       chatId: "chat_123",
       mode: "agent",
       subscription: "free",
-      sandboxInfo: { type: "e2b" },
+      sandboxInfo: { type: "cloud" },
       outcome: "success",
       selectedModel: "agent-model-free",
       configuredModelId: "deepseek/deepseek-v4-flash-0731",
@@ -434,7 +434,7 @@ describe("captureAgentRun", () => {
       chatId: "chat_123",
       mode: "ask",
       subscription: "pro",
-      sandboxInfo: { type: "e2b" },
+      sandboxInfo: { type: "cloud" },
       outcome: "success",
       selectedModel: "agent-model",
       configuredModelId: "deepseek/deepseek-v4-pro",
@@ -549,7 +549,7 @@ describe("captureAgentCompletionAnalytics", () => {
       endpoint: "/api/agent-long",
       mode: "agent",
       subscription: "free",
-      sandboxInfo: { type: "e2b" },
+      sandboxInfo: { type: "cloud" },
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
       selectedModel: "agent-model-free",
@@ -572,7 +572,7 @@ describe("captureAgentCompletionAnalytics", () => {
         configured_model: "deepseek/deepseek-v4-flash-0731",
         response_model: "deepseek/deepseek-v4-flash-0731",
         fallback_served: false,
-        sandbox_type: "e2b",
+        sandbox_type: "cloud",
       },
     });
   });
@@ -587,7 +587,7 @@ describe("captureAgentCompletionAnalytics", () => {
       endpoint: "/api/agent-long",
       mode: "agent",
       subscription: "pro",
-      sandboxInfo: { type: "e2b" },
+      sandboxInfo: { type: "cloud" },
       outcome: "success",
       chatLogger: { getToolCalls: () => [{ name: "web_search" }] } as any,
       selectedModel: "agent-model",
@@ -634,7 +634,7 @@ describe("captureAgentCompletionAnalytics", () => {
         runtime_slow: false,
         response_model: "deepseek/deepseek-v4-pro",
         fallback_served: false,
-        sandbox_type: "e2b",
+        sandbox_type: "cloud",
       },
     });
   });

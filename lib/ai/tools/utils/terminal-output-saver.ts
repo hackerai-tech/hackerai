@@ -105,6 +105,20 @@ const canRetryDesktopRelayFailure = (
     category === "relay_unavailable" ||
     category === "unknown");
 
+const getPersistenceSandboxFields = (
+  provider: TerminalOutputPersistenceProvider,
+): {
+  sandbox_type: "cloud" | "desktop" | "remote-connection";
+  sandbox_provider?: "miosa" | "e2b";
+} => {
+  if (provider === "miosa" || provider === "e2b") {
+    return { sandbox_type: "cloud", sandbox_provider: provider };
+  }
+  return {
+    sandbox_type: provider === "desktop" ? "desktop" : "remote-connection",
+  };
+};
+
 const emitPersistenceFailure = (args: {
   provider: TerminalOutputPersistenceProvider;
   attemptCount: number;
@@ -115,6 +129,8 @@ const emitPersistenceFailure = (args: {
   telemetry?: TerminalOutputPersistenceTelemetry;
 }): void => {
   const fields = {
+    ...getPersistenceSandboxFields(args.provider),
+    // Retained for existing dashboards; use sandbox_provider for cloud backend.
     provider: args.provider,
     attempt_count: args.attemptCount,
     result: args.result,
@@ -218,6 +234,7 @@ export async function saveFullOutputToFile(
           environment: telemetry?.environment ?? "unknown",
           request_id: telemetry?.requestId ?? null,
           trace_id: telemetry?.triggerRunId ?? null,
+          ...getPersistenceSandboxFields(provider),
           provider,
           failure_category: classifyTerminalOutputPersistenceFailure(err),
         }),

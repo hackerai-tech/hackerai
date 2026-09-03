@@ -76,6 +76,8 @@ const recordAcquisitionFailure = (options: {
     chat_id: options.context?.chatId,
     trigger_run_id: options.context?.triggerRunId,
     provider: options.provider,
+    sandbox_type: "cloud",
+    sandbox_provider: options.provider,
     cloud_sandbox_transport:
       options.provider === "miosa" ? "miosa_sdk" : "e2b_sdk",
     subscription: options.context?.subscription,
@@ -86,7 +88,7 @@ const recordAcquisitionFailure = (options: {
     duration_ms: Date.now() - options.startedAt,
     error_name:
       options.error instanceof Error ? options.error.name : "UnknownError",
-    cloud_sandbox_acquisition_failed_event_version: 3,
+    cloud_sandbox_acquisition_failed_event_version: 4,
   });
 };
 
@@ -142,9 +144,11 @@ export async function ensureCloudSandboxConnection(options: {
         trigger_run_id: options.context?.triggerRunId,
         from_provider: "miosa",
         to_provider: "e2b",
+        sandbox_type: "cloud",
+        sandbox_provider: "e2b",
         fallback_stage: "acquisition",
         error_name: error instanceof Error ? error.name : "UnknownError",
-        cloud_sandbox_provider_fallback_event_version: 1,
+        cloud_sandbox_provider_fallback_event_version: 2,
       });
     }
   }

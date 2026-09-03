@@ -1661,7 +1661,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         used_via_npx: false,
         interactive: false,
         is_background: false,
-        agent_browser_usage_event_version: 1,
+        agent_browser_usage_event_version: 2,
       }),
     );
     expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");

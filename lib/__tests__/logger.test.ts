@@ -1,4 +1,17 @@
-import { logger } from "../logger";
+import { createWideEventBuilder, logger } from "../logger";
+
+describe("sandbox logging", () => {
+  it("records Miosa as a cloud sandbox without labeling its type as E2B", () => {
+    const event = createWideEventBuilder("chat_123", "/api/agent-long")
+      .setSandbox({ type: "cloud", provider: "miosa" })
+      .build();
+
+    expect(event.sandbox).toEqual({
+      type: "cloud",
+      provider: "miosa",
+    });
+  });
+});
 
 describe("logger error redaction", () => {
   it("redacts presigned URLs from runtime error messages and stacks", () => {

@@ -536,7 +536,7 @@ export class HybridSandboxManager implements SandboxManager {
   getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
       return {
-        type: "e2b",
+        type: "cloud",
         provider: this.activeCloudProvider,
       };
     }
@@ -550,7 +550,7 @@ export class HybridSandboxManager implements SandboxManager {
       return undefined;
     }
     if (!this.isLocal) {
-      return "e2b";
+      return "cloud";
     }
     return this.sandboxPreference === "desktop"
       ? "desktop"

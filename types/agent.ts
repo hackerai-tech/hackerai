@@ -19,11 +19,13 @@ export type AnySandbox = Sandbox | MiosaSandbox | CentrifugoSandbox;
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 
-export type SandboxType = "e2b" | "desktop" | "remote-connection";
+/** Execution environment category used in runtime logs and analytics. */
+export type SandboxType = "cloud" | "desktop" | "remote-connection";
 
 export interface SandboxInfo {
   type: SandboxType;
   name?: string;
+  /** Concrete cloud backend. Omitted for user-owned execution hosts. */
   provider?: CloudSandboxProvider;
 }
 

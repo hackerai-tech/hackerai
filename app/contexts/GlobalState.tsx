@@ -617,7 +617,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     const now = new Date().toISOString();
     const agentFirstProperties = {
       experiment_key: agentDefaultDecision.experimentKey,
-      first_experience_event_version: 3,
+      first_experience_event_version: 4,
       variant: "agent_first",
       assignment_type: "deterministic_eligibility",
       assignment_unit: "authenticated_user",
@@ -630,7 +630,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       selection_reason: agentDefaultDecision.selectionReason,
       default_applied: true,
       has_local_sandbox: hasLocalSandbox,
-      sandbox_type: sandboxType,
+      sandbox_type: sandboxType === "e2b" ? "cloud" : sandboxType,
       sandbox_preference: sandboxType,
       surface: "new_chat",
       previous_saved_mode: savedModePresent,

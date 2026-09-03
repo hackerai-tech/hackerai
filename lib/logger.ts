@@ -157,7 +157,7 @@ export interface ChatWideEvent {
 
   // Sandbox execution
   sandbox?: {
-    type: "e2b" | "desktop" | "remote-connection";
+    type: "cloud" | "desktop" | "remote-connection";
     name?: string;
     provider?: "miosa" | "e2b";
   };

@@ -20,9 +20,11 @@ import {
   isCloudSandbox,
   isE2BSandbox,
   isMiosaSandbox,
+  getSandboxInfoForInstance,
+  getSandboxLogFields,
 } from "../utils/sandbox-types";
 
-// Mock E2B sandbox (has jupyterUrl property - this is how isE2BSandbox detects it)
+// Mock E2B sandbox (the fallback cloud shape after MIOSA/Centrifugo checks).
 const createMockE2BSandbox = () => ({
   jupyterUrl: "http://localhost:8888",
   commands: { run: jest.fn() },
@@ -90,6 +92,44 @@ describe("Sandbox Capabilities for Network Tools", () => {
       expect(isCloudSandbox(miosaSandbox as any)).toBe(true);
       expect(isCloudSandbox(centrifugoSandbox as any)).toBe(false);
       expect(isE2BSandbox(null)).toBe(false);
+    });
+
+    it("separates the cloud environment type from its concrete provider", () => {
+      const e2bSandbox = createMockE2BSandbox();
+      const miosaSandbox = createMockMiosaSandbox();
+
+      expect(getSandboxInfoForInstance(e2bSandbox as any)).toEqual({
+        type: "cloud",
+        provider: "e2b",
+      });
+      expect(getSandboxInfoForInstance(miosaSandbox as any)).toEqual({
+        type: "cloud",
+        provider: "miosa",
+      });
+      expect(getSandboxLogFields(miosaSandbox as any)).toEqual({
+        sandbox_type: "cloud",
+        sandbox_provider: "miosa",
+      });
+    });
+
+    it("distinguishes desktop from remote local connections", () => {
+      const desktop = {
+        sandboxKind: "centrifugo" as const,
+        getConnectionInfo: () => ({ name: "Laptop", isDesktop: true }),
+      };
+      const remote = {
+        sandboxKind: "centrifugo" as const,
+        getConnectionInfo: () => ({ name: "Server", isDesktop: false }),
+      };
+
+      expect(getSandboxInfoForInstance(desktop as any)).toEqual({
+        type: "desktop",
+        name: "Laptop",
+      });
+      expect(getSandboxInfoForInstance(remote as any)).toEqual({
+        type: "remote-connection",
+        name: "Server",
+      });
     });
   });
 });

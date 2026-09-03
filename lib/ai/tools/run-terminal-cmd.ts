@@ -445,9 +445,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 });
               }
               if (isMiosaSandbox(sandbox)) {
-                const { createMiosaPtyHandle } = await import(
-                  "./utils/miosa-pty-adapter"
-                );
+                const { createMiosaPtyHandle } =
+                  await import("./utils/miosa-pty-adapter");
                 return createMiosaPtyHandle(sandbox, {
                   cols,
                   rows,
@@ -836,6 +835,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               processId: number | null;
               terminationError?: unknown;
             }) => {
+              const sandboxInfo = sandboxManager.getSandboxInfo();
               console.warn(
                 JSON.stringify({
                   timestamp: new Date().toISOString(),
@@ -852,8 +852,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   output_truncated: handler?.wasTruncated() ?? false,
                   output_full_output_capped:
                     handler?.wasFullOutputCapped() ?? false,
-                  sandbox_type:
-                    sandboxManager.getSandboxType("run_terminal_cmd"),
+                  ...(sandboxInfo?.type && {
+                    sandbox_type: sandboxInfo.type,
+                  }),
+                  ...(sandboxInfo?.provider && {
+                    sandbox_provider: sandboxInfo.provider,
+                  }),
                   pid: fields.processId ?? undefined,
                   termination_attempted: fields.terminationAttempted,
                   termination_succeeded: fields.terminationSucceeded,

@@ -1,7 +1,7 @@
 import type { Sandbox } from "@e2b/code-interpreter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
 import type { MiosaSandbox } from "./miosa-sandbox";
-import type { AnySandbox } from "@/types";
+import type { AnySandbox, SandboxInfo } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 
 export interface OsInfo {
@@ -41,8 +41,8 @@ export function isCentrifugoSandbox(
 /**
  * Type guard to check if a sandbox is an E2B Sandbox.
  *
- * Any non-Centrifugo sandbox is treated as E2B. PTY availability should be
- * checked at the call site via `sandbox.pty`, not in this discriminator.
+ * Any sandbox that is neither Centrifugo nor MIOSA is treated as E2B. PTY
+ * availability should be checked at the call site via `sandbox.pty`, not here.
  */
 export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
   if (sandbox === null) return false;
@@ -75,6 +75,39 @@ export function getCloudSandboxProviderForInstance(
   if (isMiosaSandbox(sandbox)) return "miosa";
   if (isE2BSandbox(sandbox)) return "e2b";
   return null;
+}
+
+/** Canonical runtime identity used by sandbox logs and analytics. */
+export function getSandboxInfoForInstance(sandbox: AnySandbox): SandboxInfo {
+  const provider = getCloudSandboxProviderForInstance(sandbox);
+  if (provider) return { type: "cloud", provider };
+
+  if (!isCentrifugoSandbox(sandbox)) {
+    return { type: "cloud", provider: "e2b" };
+  }
+  const connection =
+    typeof sandbox.getConnectionInfo === "function"
+      ? sandbox.getConnectionInfo()
+      : undefined;
+  const isDesktop =
+    connection?.isDesktop ??
+    (typeof sandbox.supportsNativeFileRelay === "function" &&
+      sandbox.supportsNativeFileRelay());
+  return {
+    type: isDesktop ? "desktop" : "remote-connection",
+    ...(connection?.name && { name: connection.name }),
+  };
+}
+
+export function getSandboxLogFields(sandbox: AnySandbox): {
+  sandbox_type: SandboxInfo["type"];
+  sandbox_provider?: CloudSandboxProvider;
+} {
+  const info = getSandboxInfoForInstance(sandbox);
+  return {
+    sandbox_type: info.type,
+    ...(info.provider && { sandbox_provider: info.provider }),
+  };
 }
 
 /**
