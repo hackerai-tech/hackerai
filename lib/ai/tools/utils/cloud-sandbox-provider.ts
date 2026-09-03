@@ -6,6 +6,7 @@ export type CloudSandboxSelectionReason =
   | "miosa_rollout"
   | "miosa_rollout_control"
   | "miosa_configuration_unavailable"
+  | "miosa_region_unavailable"
   | "miosa_europe_region";
 
 export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
@@ -60,6 +61,10 @@ export async function selectCloudSandboxProvider(options: {
   provider: CloudSandboxProvider;
   reason: CloudSandboxSelectionReason;
 }> {
+  if (!options.triggerRegion) {
+    return { provider: "e2b", reason: "miosa_region_unavailable" };
+  }
+
   if (options.triggerRegion === "eu-central-1") {
     return { provider: "e2b", reason: "miosa_europe_region" };
   }

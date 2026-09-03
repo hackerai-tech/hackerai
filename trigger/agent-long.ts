@@ -2250,6 +2250,9 @@ export type AgentLongPayload = {
   selectedModel?: SelectedModel;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
+  /** Request-derived region; undefined when geography could not be verified. */
+  requestRegion?: TriggerRunRegion;
+  /** Actual Trigger.dev execution and generated-file storage region. */
   triggerRegion?: TriggerRunRegion;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
@@ -2339,6 +2342,7 @@ export const agentLongTask = task({
       selectedModel: rawSelectedModelOverride,
       autoReviewAssignment,
       userLocation,
+      requestRegion,
       triggerRegion = "us-east-1",
       isAutoContinue,
       isAutomaticContinuation,
@@ -2617,7 +2621,7 @@ export const agentLongTask = task({
           ? await selectCloudSandboxProvider({
               userId,
               environment: ctx.environment.type,
-              triggerRegion,
+              triggerRegion: requestRegion,
               featureFlagClient: posthog,
             })
           : ({

@@ -87,6 +87,20 @@ describe("cloud sandbox provider selection", () => {
     expect(evaluateFlags).not.toHaveBeenCalled();
   });
 
+  it("keeps E2B when the request region cannot be verified", async () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-unknown-region",
+        environment: "PREVIEW",
+      }),
+    ).resolves.toEqual({
+      provider: "e2b",
+      reason: "miosa_region_unavailable",
+    });
+  });
+
   it("selects MIOSA only for an enabled rollout assignment with complete configuration", async () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.MIOSA_API_KEY = "msk_test";
@@ -130,6 +144,7 @@ describe("cloud sandbox provider selection", () => {
         selectCloudSandboxProvider({
           userId: "user-1",
           environment: "PREVIEW",
+          triggerRegion: "us-east-1",
           featureFlagClient: { evaluateFlags },
         }),
       ).resolves.toEqual({

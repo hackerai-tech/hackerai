@@ -463,8 +463,8 @@ export const createAgentTriggerPost =
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
-      const triggerRegion =
-        getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
+      const requestRegion = getTriggerRegionForVercelRequest(req, userLocation);
+      const triggerRegion = requestRegion ?? "us-east-1";
       const genericDelegationFlagPromise =
         agentPermissionMode === "full_access"
           ? getPostHogFeatureFlagForUser("agent-generic-delegation-v1", userId)
@@ -688,6 +688,7 @@ export const createAgentTriggerPost =
         selectedModel: selectedModelOverride,
         autoReviewAssignment,
         userLocation,
+        requestRegion,
         triggerRegion,
         isAutoContinue,
         isAutomaticContinuation,
