@@ -113,7 +113,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("ask-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
@@ -276,7 +276,7 @@ describe("provider registry", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free") as { modelId: string }).modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,

@@ -140,9 +140,9 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_6_BASE_PRICING,
   "fallback-agent-model": GROK_4_6_BASE_PRICING,
   "fallback-ask-model": GROK_4_6_BASE_PRICING,
-  // Free Ask retains the original Flash route while free Agent uses the 0731
-  // revision. Provider fallbacks are reconciled against their served model.
-  "ask-model-free": DEEPSEEK_V4_FLASH_PRICING,
+  // Both free routes use the 0731 revision. Provider fallbacks are reconciled
+  // against their served model.
+  "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
   "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,
