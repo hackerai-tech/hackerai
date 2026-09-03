@@ -59,6 +59,17 @@ function toUint8Array(data: unknown): Uint8Array {
   return new TextEncoder().encode(String(data ?? ""));
 }
 
+async function deleteTerminalSession(
+  sandbox: MiosaSandbox,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await sandbox.sdkSandbox.terminal.delete(sessionId);
+  } catch {
+    // Best effort: preserve the original connection error for the caller.
+  }
+}
+
 /**
  * Create a PtyHandle for a MIOSA sandbox.
  *
@@ -81,11 +92,32 @@ export async function createMiosaPtyHandle(
     ...(opts.envs ? { env: opts.envs } : {}),
   })) as Record<string, unknown>;
 
-  const { sessionId, wsUrl } = readTerminalSession(created);
+  const rawSessionId = created.session_id ?? created.sessionId;
+  let terminalSession: TerminalSession;
+  try {
+    terminalSession = readTerminalSession(created);
+  } catch (error) {
+    if (typeof rawSessionId === "string" && rawSessionId !== "") {
+      await deleteTerminalSession(sandbox, rawSessionId);
+    }
+    throw error;
+  }
+  const { sessionId, wsUrl } = terminalSession;
+  let deletePromise: Promise<void> | undefined;
+  const deleteRemoteSession = (): Promise<void> => {
+    deletePromise ??= deleteTerminalSession(sandbox, sessionId);
+    return deletePromise;
+  };
 
-  const ws = new WebSocket(wsUrl, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(wsUrl, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+  } catch (error) {
+    await deleteRemoteSession();
+    throw error;
+  }
 
   const listeners = new Set<(bytes: Uint8Array) => void>();
   let exitResolved = false;
@@ -114,36 +146,52 @@ export async function createMiosaPtyHandle(
     }
   });
 
-  ws.on("close", (code) => settleExited(code === 1000 ? 0 : null));
-  ws.on("error", () => settleExited(null));
-
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      try {
-        ws.terminate();
-      } catch {
-        // already gone
-      }
-      reject(
-        new Error(
-          `${LOG_PREFIX} timed out after ${CONNECT_TIMEOUT_MS}ms connecting to the terminal stream`,
-        ),
-      );
-    }, CONNECT_TIMEOUT_MS);
-
-    ws.once("open", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    ws.once("error", (err) => {
-      clearTimeout(timer);
-      reject(
-        err instanceof Error
-          ? err
-          : new Error(`${LOG_PREFIX} terminal stream failed to open`),
-      );
-    });
+  ws.on("close", (code) => {
+    settleExited(code === 1000 ? 0 : null);
+    if (code !== 1000) void deleteRemoteSession();
   });
+  ws.on("error", () => {
+    settleExited(null);
+    void deleteRemoteSession();
+  });
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        try {
+          ws.terminate();
+        } catch {
+          // already gone
+        }
+        reject(
+          new Error(
+            `${LOG_PREFIX} timed out after ${CONNECT_TIMEOUT_MS}ms connecting to the terminal stream`,
+          ),
+        );
+      }, CONNECT_TIMEOUT_MS);
+
+      ws.once("open", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      ws.once("error", (err) => {
+        clearTimeout(timer);
+        reject(
+          err instanceof Error
+            ? err
+            : new Error(`${LOG_PREFIX} terminal stream failed to open`),
+        );
+      });
+    });
+  } catch (error) {
+    try {
+      ws.terminate();
+    } catch {
+      // already gone
+    }
+    await deleteRemoteSession();
+    throw error;
+  }
 
   const send = (payload: Uint8Array | string): void => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -169,11 +217,7 @@ export async function createMiosaPtyHandle(
     async kill(): Promise<void> {
       // Delete the server-side session first: closing only the socket would
       // leave the PTY running in the sandbox until it idled out.
-      try {
-        await sandbox.sdkSandbox.terminal.delete(sessionId);
-      } catch {
-        // Best effort — the close below still frees the local side.
-      }
+      await deleteRemoteSession();
       try {
         ws.close();
       } catch {

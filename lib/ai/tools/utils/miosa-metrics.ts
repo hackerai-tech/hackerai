@@ -88,13 +88,24 @@ export async function sampleMiosaMetrics(
 
     const cpuA = field(lines, "CPU_A:");
     const cpuB = field(lines, "CPU_B:");
-    const memTotalKb = Number(field(lines, "MEM_TOTAL:"));
-    const memAvailKb = Number(field(lines, "MEM_AVAIL:"));
+    const memTotal = field(lines, "MEM_TOTAL:");
+    const memAvail = field(lines, "MEM_AVAIL:");
+    const memTotalKb = Number(memTotal);
+    const memAvailKb = Number(memAvail);
     const diskUsedKb = Number(field(lines, "DISK_USED:"));
     const diskTotalKb = Number(field(lines, "DISK_TOTAL:"));
 
     if (!cpuA || !cpuB) return null;
-    if (!Number.isFinite(memTotalKb) || memTotalKb <= 0) return null;
+    if (
+      !memTotal?.trim() ||
+      !memAvail?.trim() ||
+      !Number.isFinite(memTotalKb) ||
+      memTotalKb <= 0 ||
+      !Number.isFinite(memAvailKb) ||
+      memAvailKb < 0
+    ) {
+      return null;
+    }
 
     const cpuPct = cpuPctFromStat(cpuA, cpuB);
     const memPct = ((memTotalKb - memAvailKb) / memTotalKb) * 100;

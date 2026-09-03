@@ -180,7 +180,7 @@ export class MiosaSandbox {
 
       const stdout: string[] = [];
       const stderr: string[] = [];
-      let exitCode = 0;
+      let exitCode: number | null = null;
       const processIdPath = `/tmp/hackerai-foreground-${randomUUID()}.pid`;
       const streamedCommand = options.signal
         ? `setsid bash -lc ${shellQuote(
@@ -252,6 +252,10 @@ export class MiosaSandbox {
         if (abortHandler) {
           options.signal?.removeEventListener("abort", abortHandler);
         }
+      }
+
+      if (exitCode === null) {
+        throw new Error("MIOSA command stream ended without an exit event");
       }
 
       return {

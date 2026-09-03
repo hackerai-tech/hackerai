@@ -130,6 +130,20 @@ describe("MIOSA sandbox adapter", () => {
     expect(onStderr).toHaveBeenCalledWith("warning\n");
   });
 
+  it("rejects a command stream that ends without an exit event", async () => {
+    const sdkSandbox = createSdkSandbox();
+    async function* stream() {
+      yield { type: "stdout", line: "partial output" };
+      yield { type: "timeout" };
+    }
+    sdkSandbox.exec.stream.mockImplementation(stream);
+    const sandbox = new MiosaSandbox(sdkSandbox as never);
+
+    await expect(sandbox.commands.run("example")).rejects.toThrow(
+      "MIOSA command stream ended without an exit event",
+    );
+  });
+
   it("starts background commands without waiting for their completion", async () => {
     const sdkSandbox = createSdkSandbox();
     sdkSandbox.exec.run.mockResolvedValue({

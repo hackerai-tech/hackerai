@@ -101,6 +101,26 @@ describe("sampleMiosaMetrics", () => {
     expect(metrics).toBeNull();
   });
 
+  it("returns null when MemAvailable is missing or invalid", async () => {
+    const missing = await sampleMiosaMetrics(
+      sandboxReturning({
+        stdout: probeOutput({ memAvail: "" }),
+        stderr: "",
+        exitCode: 0,
+      }),
+    );
+    const invalid = await sampleMiosaMetrics(
+      sandboxReturning({
+        stdout: probeOutput({ memAvail: "MEM_AVAIL:not-a-number" }),
+        stderr: "",
+        exitCode: 0,
+      }),
+    );
+
+    expect(missing).toBeNull();
+    expect(invalid).toBeNull();
+  });
+
   it("tolerates a guest that reports no disk figures", async () => {
     const metrics = await sampleMiosaMetrics(
       sandboxReturning({

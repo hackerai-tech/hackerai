@@ -416,9 +416,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             interactive: true,
             isBackground: false,
           });
-          const agentBrowserEnv = isE2B
-            ? getAgentBrowserRuntimeEnv(command)
-            : undefined;
+          const agentBrowserEnv =
+            isE2B || isMiosaSandbox(sandbox)
+              ? getAgentBrowserRuntimeEnv(command)
+              : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
@@ -1169,7 +1170,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                     signal: abortSignal,
                   }
-                : commonOptions;
+                : isMiosaSandbox(sandboxInstance)
+                  ? {
+                      ...commonOptions,
+                      ...(agentBrowserEnv && { envVars: agentBrowserEnv }),
+                    }
+                  : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)
