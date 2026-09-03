@@ -84,7 +84,13 @@ describe("security validation subagent runtime contracts", () => {
       "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
     );
     const child = read("trigger/subagent.ts");
-    expect(child).toContain("triggerRegion: payload.triggerRegion");
+    expect(child).toContain("triggerRegion,");
+    expect(child).toContain("actualRegion: ctx.run.region");
+    expectMarkerOrder(
+      child,
+      "assertTriggerRunRegion({",
+      "setConvexUrl(payload.convexUrl)",
+    );
     expectMarkerOrder(
       child,
       "setConvexUrl(payload.convexUrl)",

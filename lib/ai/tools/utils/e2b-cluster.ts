@@ -1,4 +1,7 @@
-import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  EUROPE_TRIGGER_RUN_REGION,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
 
 export const E2B_EU_DOMAIN = "e2b-juliett.dev";
 
@@ -14,6 +17,15 @@ export type E2BClusterConfig = {
   template: string;
   connectionOptions?: E2BConnectionOptions;
 };
+
+export class E2BRegionUnavailableError extends Error {
+  readonly code = "E2B_EU_REGION_UNAVAILABLE";
+
+  constructor() {
+    super("The European E2B sandbox region is not configured");
+    this.name = "E2BRegionUnavailableError";
+  }
+}
 
 const envValue = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
@@ -42,11 +54,7 @@ const getEuClusterConfig = (): E2BClusterConfig | null => {
   };
 };
 
-/**
- * US stays first so users keep their existing sandbox until it disappears or
- * is intentionally replaced. EU is an optional second cluster, enabled only
- * when its separate API key is present.
- */
+/** Keep discovery and creation inside the region selected at request ingress. */
 export const getE2BClusterRouting = (
   triggerRegion?: TriggerRunRegion,
 ): {
@@ -56,9 +64,18 @@ export const getE2BClusterRouting = (
   const us = getUsClusterConfig();
   const eu = getEuClusterConfig();
 
+  if (triggerRegion === EUROPE_TRIGGER_RUN_REGION) {
+    if (!eu) throw new E2BRegionUnavailableError();
+
+    return {
+      discoveryClusters: [eu],
+      createCluster: eu,
+    };
+  }
+
   return {
-    discoveryClusters: eu ? [us, eu] : [us],
-    createCluster: triggerRegion === "eu-central-1" && eu ? eu : us,
+    discoveryClusters: [us],
+    createCluster: us,
   };
 };
 

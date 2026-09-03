@@ -63,7 +63,7 @@ import {
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
-import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
+import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
@@ -322,6 +322,8 @@ export const createChatHandler = () => {
         releaseFreeRunLock = lock.release;
       }
       const userLocation = geolocation(req);
+      const { triggerRegion: executionRegion, requestRegionClass } =
+        getRegionalExecutionContextForVercelRequest(req, userLocation);
 
       // Add user context to logger (only region, not full location for privacy)
       chatLogger.setUser({
@@ -493,10 +495,8 @@ export const createChatHandler = () => {
           ? await selectCloudSandboxProvider({
               userId,
               environment: process.env.VERCEL_ENV ?? "development",
-              triggerRegion: getTriggerRegionForVercelRequest(
-                req,
-                userLocation,
-              ),
+              triggerRegion: executionRegion,
+              requestRegionClass,
               featureFlagClient: posthog,
             })
           : ({
@@ -769,6 +769,7 @@ export const createChatHandler = () => {
               {
                 cloudSandboxProvider: cloudSandboxSelection.provider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
+                triggerRegion: executionRegion,
               },
             );
 

@@ -3,6 +3,30 @@ import type { S3StorageRegion } from "@/lib/constants/s3";
 
 export type TriggerRunRegion = S3StorageRegion;
 
+export const DEFAULT_TRIGGER_RUN_REGION: TriggerRunRegion = "us-east-1";
+export const EUROPE_TRIGGER_RUN_REGION: TriggerRunRegion = "eu-central-1";
+
+export type RequestRegionClass = "europe" | "outside_europe" | "unknown";
+
+export type RegionalExecutionContext = {
+  triggerRegion: TriggerRunRegion;
+  requestRegionClass: RequestRegionClass;
+};
+
+type TriggerEnvironmentType =
+  "DEVELOPMENT" | "PREVIEW" | "PRODUCTION" | "STAGING";
+
+export class TriggerRegionMismatchError extends Error {
+  readonly code = "TRIGGER_REGION_MISMATCH";
+
+  constructor(requestedRegion: TriggerRunRegion, actualRegion?: string) {
+    super(
+      `Trigger run region mismatch: required ${requestedRegion}, received ${actualRegion ?? "unknown"}`,
+    );
+    this.name = "TriggerRegionMismatchError";
+  }
+}
+
 type VercelGeoLocation = Pick<
   Geo,
   "country" | "region" | "latitude" | "longitude"
@@ -198,7 +222,7 @@ export function getTriggerRegionForVercelRequest(
   const country = normalizeVercelValue(
     userLocation?.country ?? request.headers.get("x-vercel-ip-country"),
   );
-  if (isEuropeanRequest(continent, country)) return "eu-central-1";
+  if (isEuropeanRequest(continent, country)) return EUROPE_TRIGGER_RUN_REGION;
 
   if (!isNorthAmericanRequest(continent, country)) {
     return undefined;
@@ -214,4 +238,68 @@ export function getTriggerRegionForVercelRequest(
   return vercelRegion
     ? VERCEL_REGION_TO_US_TRIGGER_REGION.get(vercelRegion)
     : undefined;
+}
+
+export function getExecutionRegionForVercelRequest(
+  request: Parameters<typeof getTriggerRegionForVercelRequest>[0],
+  userLocation?: VercelGeoLocation,
+): TriggerRunRegion {
+  return (
+    getTriggerRegionForVercelRequest(request, userLocation) ??
+    DEFAULT_TRIGGER_RUN_REGION
+  );
+}
+
+export function getRequestRegionClassForVercelRequest(
+  request: Parameters<typeof getTriggerRegionForVercelRequest>[0],
+  userLocation?: VercelGeoLocation,
+): RequestRegionClass {
+  const continent = normalizeVercelValue(
+    request.headers.get("x-vercel-ip-continent"),
+  );
+  const country = normalizeVercelValue(
+    userLocation?.country ?? request.headers.get("x-vercel-ip-country"),
+  );
+
+  if (isEuropeanRequest(continent, country)) return "europe";
+  if (continent || country) return "outside_europe";
+  return "unknown";
+}
+
+export function getRegionalExecutionContextForVercelRequest(
+  request: Parameters<typeof getTriggerRegionForVercelRequest>[0],
+  userLocation?: VercelGeoLocation,
+): RegionalExecutionContext {
+  return {
+    triggerRegion: getExecutionRegionForVercelRequest(request, userLocation),
+    requestRegionClass: getRequestRegionClassForVercelRequest(
+      request,
+      userLocation,
+    ),
+  };
+}
+
+/**
+ * Trigger.dev ignores per-run region selection in local development. For a
+ * deployed European run, however, continuing outside the requested region
+ * would cross the residency boundary before any sandbox policy could help.
+ */
+export function assertTriggerRunRegion(options: {
+  requestedRegion: TriggerRunRegion;
+  actualRegion?: string;
+  environmentType: TriggerEnvironmentType;
+}): void {
+  if (
+    options.environmentType === "DEVELOPMENT" ||
+    options.requestedRegion !== EUROPE_TRIGGER_RUN_REGION
+  ) {
+    return;
+  }
+
+  if (options.actualRegion !== options.requestedRegion) {
+    throw new TriggerRegionMismatchError(
+      options.requestedRegion,
+      options.actualRegion,
+    );
+  }
 }

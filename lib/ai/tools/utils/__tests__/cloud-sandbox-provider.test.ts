@@ -87,12 +87,28 @@ describe("cloud sandbox provider selection", () => {
     expect(evaluateFlags).not.toHaveBeenCalled();
   });
 
-  it("keeps E2B when the request region cannot be verified", async () => {
+  it("keeps E2B when request geography is unknown", async () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
 
     await expect(
       selectCloudSandboxProvider({
         userId: "user-unknown-region",
+        environment: "PREVIEW",
+        triggerRegion: "us-east-1",
+        requestRegionClass: "unknown",
+      }),
+    ).resolves.toEqual({
+      provider: "e2b",
+      reason: "miosa_region_unavailable",
+    });
+  });
+
+  it("keeps E2B when legacy callers provide no region evidence", async () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-without-region-evidence",
         environment: "PREVIEW",
       }),
     ).resolves.toEqual({
@@ -113,6 +129,7 @@ describe("cloud sandbox provider selection", () => {
         userId: "user-1",
         environment: "PREVIEW",
         triggerRegion: "us-east-1",
+        requestRegionClass: "outside_europe",
         featureFlagClient: { evaluateFlags },
       }),
     ).resolves.toEqual({ provider: "miosa", reason: "miosa_rollout" });
@@ -145,6 +162,7 @@ describe("cloud sandbox provider selection", () => {
           userId: "user-1",
           environment: "PREVIEW",
           triggerRegion: "us-east-1",
+          requestRegionClass: "outside_europe",
           featureFlagClient: { evaluateFlags },
         }),
       ).resolves.toEqual({

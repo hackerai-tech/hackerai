@@ -1,4 +1,8 @@
-import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  EUROPE_TRIGGER_RUN_REGION,
+  type RequestRegionClass,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
 
 export type CloudSandboxProvider = "miosa" | "e2b";
 export type CloudSandboxSelectionReason =
@@ -56,17 +60,24 @@ export async function selectCloudSandboxProvider(options: {
   userId: string;
   environment: string;
   triggerRegion?: TriggerRunRegion;
+  requestRegionClass?: RequestRegionClass;
   featureFlagClient?: FeatureFlagClient | null;
 }): Promise<{
   provider: CloudSandboxProvider;
   reason: CloudSandboxSelectionReason;
 }> {
-  if (!options.triggerRegion) {
-    return { provider: "e2b", reason: "miosa_region_unavailable" };
+  if (
+    options.triggerRegion === EUROPE_TRIGGER_RUN_REGION ||
+    options.requestRegionClass === "europe"
+  ) {
+    return { provider: "e2b", reason: "miosa_europe_region" };
   }
 
-  if (options.triggerRegion === "eu-central-1") {
-    return { provider: "e2b", reason: "miosa_europe_region" };
+  if (
+    options.requestRegionClass === "unknown" ||
+    (!options.requestRegionClass && !options.triggerRegion)
+  ) {
+    return { provider: "e2b", reason: "miosa_region_unavailable" };
   }
 
   if (process.env.CLOUD_SANDBOX_PROVIDER) {

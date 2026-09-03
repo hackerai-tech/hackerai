@@ -18,7 +18,13 @@ import {
   UIMessage,
 } from "ai";
 import type { Geo } from "@vercel/functions";
-import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  assertTriggerRunRegion,
+  DEFAULT_TRIGGER_RUN_REGION,
+  EUROPE_TRIGGER_RUN_REGION,
+  type RequestRegionClass,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
@@ -2250,10 +2256,10 @@ export type AgentLongPayload = {
   selectedModel?: SelectedModel;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
-  /** Request-derived region; undefined when geography could not be verified. */
-  requestRegion?: TriggerRunRegion;
   /** Actual Trigger.dev execution and generated-file storage region. */
   triggerRegion?: TriggerRunRegion;
+  /** Request geography kept separate from Trigger's execution placement. */
+  requestRegionClass?: RequestRegionClass;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
   regenerate?: boolean;
@@ -2320,6 +2326,16 @@ export const agentLongTask = task({
   },
 
   run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal }) => {
+    const triggerRegion = payload.triggerRegion ?? DEFAULT_TRIGGER_RUN_REGION;
+    const requestRegionClass =
+      payload.requestRegionClass ??
+      (triggerRegion === EUROPE_TRIGGER_RUN_REGION ? "europe" : "unknown");
+    assertTriggerRunRegion({
+      requestedRegion: triggerRegion,
+      actualRegion: ctx.run.region,
+      environmentType: ctx.environment.type,
+    });
+
     // Point the Convex client at the correct per-branch preview deployment.
     // NEXT_PUBLIC_CONVEX_URL in Trigger.dev's env vars only reflects the
     // main deployment; preview branches each have their own Convex URL.
@@ -2342,8 +2358,6 @@ export const agentLongTask = task({
       selectedModel: rawSelectedModelOverride,
       autoReviewAssignment,
       userLocation,
-      requestRegion,
-      triggerRegion = "us-east-1",
       isAutoContinue,
       isAutomaticContinuation,
       regenerate,
@@ -2621,7 +2635,8 @@ export const agentLongTask = task({
           ? await selectCloudSandboxProvider({
               userId,
               environment: ctx.environment.type,
-              triggerRegion: requestRegion,
+              triggerRegion,
+              requestRegionClass,
               featureFlagClient: posthog,
             })
           : ({

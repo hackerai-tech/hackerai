@@ -1,4 +1,9 @@
-import { getTriggerRegionForVercelRequest } from "../trigger-region";
+import {
+  assertTriggerRunRegion,
+  getExecutionRegionForVercelRequest,
+  getRegionalExecutionContextForVercelRequest,
+  getTriggerRegionForVercelRequest,
+} from "../trigger-region";
 
 function requestWithHeaders(headers: Record<string, string | undefined>) {
   return {
@@ -127,6 +132,33 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).toBeUndefined();
   });
 
+  test("resolves an explicit default for downstream execution", () => {
+    expect(getExecutionRegionForVercelRequest(requestWithHeaders({}))).toBe(
+      "us-east-1",
+    );
+  });
+
+  test("keeps user geography separate from the default execution region", () => {
+    expect(
+      getRegionalExecutionContextForVercelRequest(requestWithHeaders({})),
+    ).toEqual({
+      triggerRegion: "us-east-1",
+      requestRegionClass: "unknown",
+    });
+  });
+
+  test("classifies a known non-European request independently of Trigger placement", () => {
+    expect(
+      getRegionalExecutionContextForVercelRequest(
+        requestWithHeaders({ "x-vercel-ip-continent": "AS" }),
+        { country: "IN" },
+      ),
+    ).toEqual({
+      triggerRegion: "us-east-1",
+      requestRegionClass: "outside_europe",
+    });
+  });
+
   test("normalizes Vercel header values", () => {
     expect(
       getTriggerRegionForVercelRequest(
@@ -135,5 +167,48 @@ describe("getTriggerRegionForVercelRequest", () => {
         }),
       ),
     ).toBe("eu-central-1");
+  });
+
+  test("accepts a deployed European Trigger run in the requested region", () => {
+    expect(() =>
+      assertTriggerRunRegion({
+        requestedRegion: "eu-central-1",
+        actualRegion: "eu-central-1",
+        environmentType: "PREVIEW",
+      }),
+    ).not.toThrow();
+  });
+
+  test("fails a deployed European run when Trigger reports another region", () => {
+    expect(() =>
+      assertTriggerRunRegion({
+        requestedRegion: "eu-central-1",
+        actualRegion: "us-east-1",
+        environmentType: "PRODUCTION",
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        name: "TriggerRegionMismatchError",
+        code: "TRIGGER_REGION_MISMATCH",
+      }),
+    );
+  });
+
+  test("fails closed when a deployed European run has no region evidence", () => {
+    expect(() =>
+      assertTriggerRunRegion({
+        requestedRegion: "eu-central-1",
+        environmentType: "PREVIEW",
+      }),
+    ).toThrow("required eu-central-1, received unknown");
+  });
+
+  test("allows local Trigger development where region selection is unavailable", () => {
+    expect(() =>
+      assertTriggerRunRegion({
+        requestedRegion: "eu-central-1",
+        environmentType: "DEVELOPMENT",
+      }),
+    ).not.toThrow();
   });
 });
