@@ -85,6 +85,8 @@ jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
   isDeepSeekModel: (modelName: string) =>
+    modelName === "ask-model-free" ||
+    modelName === "agent-model-free" ||
     modelName.startsWith("model-deepseek-v4"),
   PDF_PARSER_ENGINE_HEADER: "x-hackerai-openrouter-pdf-parser-engine",
   PDF_PARSER_RECOVERY_HEADER: "x-hackerai-openrouter-pdf-parser-recovery",
@@ -178,17 +180,17 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-deepseek-v4-pro");
   });
 
-  it("infers the Grok 4.5 high route for Pro image tool results", () => {
+  it("infers the DeepSeek vision Pro route for image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro",
         "agent",
         true,
       ),
-    ).toBe("model-grok-4.5-pro");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
-  it("uses Grok 4.5 medium for Standard image tool results", () => {
+  it("uses DeepSeek Flash Vision for Standard image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-flash-0731",
@@ -196,10 +198,10 @@ describe("resolveAgentModelForImageToolResults", () => {
         true,
         "hackerai-standard",
       ),
-    ).toBe("model-grok-4.5");
+    ).toBe("model-deepseek-v4-flash-vision");
   });
 
-  it("uses Grok 4.5 high for Pro image tool results", () => {
+  it("uses DeepSeek Flash Vision Pro for Pro image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro-0813",
@@ -207,10 +209,10 @@ describe("resolveAgentModelForImageToolResults", () => {
         true,
         "hackerai-pro",
       ),
-    ).toBe("model-grok-4.5-pro");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
-  it("uses direct GLM Flash for Standard image tool results", () => {
+  it("uses DeepSeek Flash Vision for Standard image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-flash-0731",
@@ -220,10 +222,10 @@ describe("resolveAgentModelForImageToolResults", () => {
         false,
         true,
       ),
-    ).toBe("model-glm-5.3-flash");
+    ).toBe("model-deepseek-v4-flash-vision");
   });
 
-  it("uses direct GLM Flash Pro for Pro image tool results", () => {
+  it("uses DeepSeek Flash Vision for Pro image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro-0813",
@@ -233,7 +235,7 @@ describe("resolveAgentModelForImageToolResults", () => {
         false,
         true,
       ),
-    ).toBe("model-glm-5.3-flash-pro");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it("keeps the DeepSeek text model during MiniMax summary recovery", () => {
@@ -264,7 +266,7 @@ describe("resolveAgentModelForImageToolResults", () => {
     },
   );
 
-  it("keeps Auto on Grok 4.5 medium after a text retry reached DeepSeek Pro", () => {
+  it("keeps Auto on DeepSeek Vision after a text retry reached DeepSeek Pro", () => {
     expect(
       resolveAgentModelForImageToolResults(
         "model-deepseek-v4-pro-0813",
@@ -272,7 +274,7 @@ describe("resolveAgentModelForImageToolResults", () => {
         true,
         "auto",
       ),
-    ).toBe("model-grok-4.5");
+    ).toBe("model-deepseek-v4-flash-vision");
   });
 
   it("keeps the HackerAI Pro GLM 5.3 fallback active after image tool results", () => {
@@ -281,10 +283,10 @@ describe("resolveAgentModelForImageToolResults", () => {
     ).toBe("model-glm-5.3");
   });
 
-  it("keeps the multimodal free GLM Agent active after image tool results", () => {
+  it("promotes free Agent DeepSeek to its vision route for image tool results", () => {
     expect(
       resolveAgentModelForImageToolResults("agent-model-free", "agent", true),
-    ).toBe("agent-model-free");
+    ).toBe("model-deepseek-v4-flash-vision");
   });
 
   it("does not change Ask routes or multimodal Agent models", () => {
@@ -307,21 +309,25 @@ describe("resolveAgentModelForImageToolResults", () => {
 describe("resolveAgentModelAfterSummarization", () => {
   it("returns Standard and Pro vision routes to their text routes", () => {
     expect(
-      resolveAgentModelAfterSummarization("model-grok-4.5", "agent", false),
-    ).toBe("model-glm-5.3-flash-agent");
+      resolveAgentModelAfterSummarization(
+        "model-deepseek-v4-flash-vision",
+        "agent",
+        false,
+      ),
+    ).toBe("model-deepseek-v4-flash-0731");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
     ).toBe("model-deepseek-v4-pro-0813");
     expect(
       resolveAgentModelAfterSummarization(
-        "model-glm-5.3-flash",
+        "model-deepseek-v4-flash-vision",
         "agent",
         false,
       ),
-    ).toBe("model-glm-5.3-flash-agent");
+    ).toBe("model-deepseek-v4-flash-0731");
     expect(
       resolveAgentModelAfterSummarization(
-        "model-glm-5.3-flash-pro",
+        "model-deepseek-v4-flash-vision-pro",
         "agent",
         false,
       ),
@@ -795,8 +801,8 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
-    ["model-grok-4.5", "model-glm-5.3-flash-agent"],
-    ["model-grok-4.5-pro", "model-deepseek-v4-pro-0813"],
+    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
+    ["model-deepseek-v4-flash-vision-pro", "model-deepseek-v4-pro-0813"],
   ])(
     "switches %s back to %s after a text-only persisted summary",
     async (visionModel, textModel) => {

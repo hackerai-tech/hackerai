@@ -2,7 +2,7 @@ import type { SubscriptionTier } from "@/types";
 
 export const SUBAGENT_FREE_TEXT_MODEL = "agent-model-free";
 export const SUBAGENT_PAID_TEXT_MODEL = "model-deepseek-v4-flash-0731";
-export const SUBAGENT_VISION_MODEL = "model-grok-4.5";
+export const SUBAGENT_VISION_MODEL = "model-deepseek-v4-flash-vision";
 
 export const resolveSubagentTextModel = (
   subscription: SubscriptionTier,

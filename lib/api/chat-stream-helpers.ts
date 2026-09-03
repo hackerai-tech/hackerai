@@ -564,10 +564,10 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Paid Agent Standard uses GLM 5.3 Flash while Ask Standard remains on
- * DeepSeek V4 Flash 0731. Pro uses DeepSeek V4 Pro 0813, and Max uses Grok
- * 4.6. Historical aliases remain recognized for in-flight requests and cost
- * accounting.
+ * Standard uses DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro 0813, and
+ * Max uses Grok 4.6. Image turns use DeepSeek V4 Flash Vision. Both DeepSeek
+ * Flash routes try GLM 5.3 Flash before the established recovery models.
+ * Historical aliases remain recognized for in-flight requests and accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
@@ -593,18 +593,27 @@ const PRO_TEXT_FALLBACK_CHAIN = [
 const OPENROUTER_MAX_FALLBACK_MODELS = 3;
 
 const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
+  "model-glm-5.3-flash",
   "model-deepseek-v4-pro-0813",
-  ...PRO_TEXT_FALLBACK_CHAIN,
+  "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
 
-const FREE_ASK_GLM_FLASH_FALLBACK_CHAIN = [
-  "model-deepseek-v4-flash-0731",
-  ...DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+const DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN = [
+  "model-glm-5.3-flash",
+  "model-deepseek-v4-pro-0813",
+  "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
 
-const AGENT_GLM_FLASH_FALLBACK_CHAIN = [
+const LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN = [
   "model-deepseek-v4-flash-0731",
-  ...DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-deepseek-v4-pro-0813",
+  "model-glm-5.3",
+] as const satisfies readonly ModelName[];
+
+const GLM_FLASH_RECOVERY_FALLBACK_CHAIN = [
+  "model-deepseek-v4-pro-0813",
+  "model-glm-5.3",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
@@ -619,9 +628,9 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": FREE_ASK_GLM_FLASH_FALLBACK_CHAIN,
-  "agent-model-free": AGENT_GLM_FLASH_FALLBACK_CHAIN,
-  "model-glm-5.3-flash-agent": AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "ask-model-free": DEEPSEEK_V4_FLASH_PREVIOUS_FALLBACK_CHAIN,
+  "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
@@ -634,8 +643,10 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-opus-4.6": ["model-grok-4.6"],
   "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
   "model-glm-5.3": ["model-kimi-k3"],
-  "model-glm-5.3-flash": ["model-deepseek-v4-flash-vision"],
-  "model-glm-5.3-flash-pro": ["model-deepseek-v4-flash-vision"],
+  "model-glm-5.3-flash": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-pro": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
   "model-kimi-k3": ["model-grok-4.6"],
@@ -693,6 +704,7 @@ const HIGH_REASONING_MODELS = [
   "model-glm-5.2",
   "model-glm-5.3",
   "model-glm-5.3-flash-pro",
+  "model-deepseek-v4-flash-vision-pro",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -737,17 +749,17 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
+  if (modelName === "model-glm-5.3-flash-agent") {
+    return "model-deepseek-v4-flash-0731";
+  }
   if (
+    modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-glm-5.3-flash-agent"
+    modelName === "model-deepseek-v4-flash-0731" ||
+    modelName === "model-deepseek-v4-flash-vision" ||
+    modelName === "model-deepseek-v4-flash-vision-pro"
   ) {
-    return "model-deepseek-v4-flash-0731";
-  }
-  if (modelName === "model-deepseek-v4-flash-0731") {
-    return "model-deepseek-v4-pro-0813";
-  }
-  if (modelName === "ask-model-free") {
-    return "model-deepseek-v4-flash-0731";
+    return "model-glm-5.3-flash";
   }
   if (modelName === "model-deepseek-v4-pro-0813") {
     return "model-glm-5.3";
@@ -781,7 +793,7 @@ export function getRetryFallbackModel(
     modelName === "model-glm-5.3-flash" ||
     modelName === "model-glm-5.3-flash-pro"
   ) {
-    return "model-deepseek-v4-flash-vision";
+    return "model-deepseek-v4-pro-0813";
   }
   return "model-grok-4.6";
 }
