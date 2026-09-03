@@ -199,9 +199,11 @@ function subscriptionInvoiceLine(
   subscriptionId: string,
   priceId: string,
   amount: number,
+  quantity?: number,
 ) {
   return {
     amount,
+    ...(quantity !== undefined && { quantity }),
     subscription: subscriptionId,
     parent: {
       type: "subscription_item_details",
@@ -1601,7 +1603,7 @@ describe("POST /api/subscription/webhook", () => {
         object: {
           id: "in_historical_price",
           customer: "cus_historical_price",
-          amount_paid: 2900,
+          amount_paid: 5800,
           currency: "usd",
           billing_reason: "subscription_create",
           parent: {
@@ -1614,7 +1616,8 @@ describe("POST /api/subscription/webhook", () => {
               subscriptionInvoiceLine(
                 "sub_historical_price",
                 "price_pro_29",
-                2900,
+                5800,
+                2,
               ),
             ],
           },
@@ -1678,6 +1681,8 @@ describe("POST /api/subscription/webhook", () => {
       expect.objectContaining({
         stripePriceId: "price_pro_29",
         plan: "pro-monthly-plan-29-experiment",
+        quantity: 2,
+        mrrDollars: 58,
       }),
     );
     expect(mockConvexMutation).toHaveBeenCalledWith(
@@ -1698,6 +1703,14 @@ describe("POST /api/subscription/webhook", () => {
         }),
       );
     }
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "invoice_paid",
+      expect.objectContaining({
+        subscription_mrr_dollars: 58,
+        attributed_mrr_dollars: 58,
+        retained_mrr_dollars: 58,
+      }),
+    );
   });
 
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
@@ -2063,12 +2076,18 @@ describe("POST /api/subscription/webhook", () => {
         userId: "user_paid",
         tier: "pro-plus",
         org_id: "org_hackerai",
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
         $set: { subscription_tier: "free" },
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.objectContaining({
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
         $insert_id: cancellationCompletionInsertId("sub_hackerai_deleted"),
       }),
     );
@@ -2647,6 +2666,9 @@ describe("POST /api/subscription/webhook", () => {
         org_id: "org_deleted_payment_failed",
         tier: "ultra",
         cancellation_reason: "payment_failed",
+        churn_type: "involuntary",
+        voluntary_churn: false,
+        involuntary_churn: true,
         stripe_event_id: "evt_subscription_deleted_payment_failed",
         $set: { subscription_tier: "free" },
       }),
