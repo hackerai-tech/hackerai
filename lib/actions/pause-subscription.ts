@@ -6,7 +6,7 @@ import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
-import { evaluateRetentionOffersForUser } from "@/lib/actions/retention-offers";
+import { evaluateRetentionOffersForUser } from "@/lib/billing/retention-offer-evaluation";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
