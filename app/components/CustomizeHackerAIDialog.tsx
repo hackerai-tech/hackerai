@@ -15,13 +15,6 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Plus } from "lucide-react";
 import TextareaAutosize from "react-textarea-autosize";
 
@@ -38,25 +31,12 @@ const predefinedTraits = [
   "Tool-savvy",
 ];
 
-const personalityOptions = [
-  { value: "default", label: "Default", description: "" },
-  { value: "cynic", label: "Cynic", description: "Critical and sarcastic" },
-  { value: "robot", label: "Robot", description: "Efficient and blunt" },
-  {
-    value: "listener",
-    label: "Listener",
-    description: "Thoughtful and supportive",
-  },
-  { value: "nerd", label: "Nerd", description: "Exploratory and enthusiastic" },
-];
-
 export const CustomizeHackerAIDialog = ({
   open,
   onOpenChange,
 }: CustomizeHackerAIDialogProps) => {
   const [nickname, setNickname] = useState("");
   const [occupation, setOccupation] = useState("");
-  const [personality, setPersonality] = useState("default");
   const [traitsText, setTraitsText] = useState("");
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -81,7 +61,6 @@ export const CustomizeHackerAIDialog = ({
     if (userCustomization) {
       setNickname(userCustomization.nickname || "");
       setOccupation(userCustomization.occupation || "");
-      setPersonality(userCustomization.personality || "default");
       setTraitsText(userCustomization.traits || "");
       setAdditionalInfo(userCustomization.additional_info || "");
     }
@@ -112,7 +91,6 @@ export const CustomizeHackerAIDialog = ({
       await saveCustomization({
         nickname: nickname || undefined,
         occupation: occupation || undefined,
-        personality: personality === "default" ? undefined : personality,
         traits: traitsText.trim() || undefined,
         additional_info: additionalInfo || undefined,
       });
@@ -138,14 +116,12 @@ export const CustomizeHackerAIDialog = ({
     if (userCustomization) {
       setNickname(userCustomization.nickname || "");
       setOccupation(userCustomization.occupation || "");
-      setPersonality(userCustomization.personality || "default");
       setTraitsText(userCustomization.traits || "");
       setAdditionalInfo(userCustomization.additional_info || "");
     } else {
       // Reset to empty values if no existing customization
       setNickname("");
       setOccupation("");
-      setPersonality("default");
       setTraitsText("");
       setAdditionalInfo("");
     }
@@ -198,44 +174,6 @@ export const CustomizeHackerAIDialog = ({
                   {occupation.length}/{MAX_CHAR_LIMIT} characters
                 </div>
               )}
-            </div>
-
-            {/* Personality */}
-            <div className="flex flex-col gap-2 px-1">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                <Label className="sm:flex-shrink-0">
-                  What personality should HackerAI have?
-                </Label>
-                <Select value={personality} onValueChange={setPersonality}>
-                  <SelectTrigger className="w-full sm:w-auto">
-                    <SelectValue placeholder="Select personality">
-                      {
-                        personalityOptions.find(
-                          (opt) => opt.value === personality,
-                        )?.label
-                      }
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    {personalityOptions.map((option) => (
-                      <SelectItem
-                        key={option.value}
-                        value={option.value}
-                        className="flex flex-col items-start py-3"
-                      >
-                        <div className="flex flex-col">
-                          <div className="font-medium">{option.label}</div>
-                          {option.value !== "default" && (
-                            <div className="text-xs text-muted-foreground mt-0.5">
-                              {option.description}
-                            </div>
-                          )}
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
             </div>
 
             {/* Traits */}

@@ -4,7 +4,6 @@ import type {
   SubscriptionTier,
   UserCustomization,
 } from "@/types";
-import { getPersonalityInstructions } from "./system-prompt/personality";
 import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
 import {
@@ -488,9 +487,6 @@ export const systemPrompt = async (
     (subscription !== "free" || mode === "agent") &&
     (userCustomization?.include_notes ?? true);
 
-  const personalityInstructions = getPersonalityInstructions(
-    userCustomization?.personality,
-  );
   const agentInstructions = getAgentModeInstructions(mode);
 
   const modelDisplayName = getModelDisplayName(modelName);
@@ -546,11 +542,6 @@ The current date is ${currentDateTime}.`;
     sections.push(
       getNotesDisabledMessage(subscription === "free" && mode !== "agent"),
     );
-  }
-
-  // Add personality instructions at the end
-  if (personalityInstructions) {
-    sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
   }
 
   return sections.filter(Boolean).join("\n\n");
