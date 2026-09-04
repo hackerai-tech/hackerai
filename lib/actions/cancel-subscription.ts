@@ -52,14 +52,20 @@ type ParsedCancellationReasonInput = {
   reasonDetails: string;
 };
 
+type SubscriptionItemContext = {
+  price: Stripe.Price;
+  quantity: number;
+};
+
 type SubscriptionContext = {
   id: string;
   status: Stripe.Subscription.Status;
-  price?: Stripe.Price;
+  items: SubscriptionItemContext[];
   priceId?: string;
   plan?: string;
   tier?: SubscriptionTier;
-  quantity?: number;
+  billingInterval?: ReturnType<typeof priceBillingInterval>;
+  billingIntervalCount?: number;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd: boolean;
   pricingExperiment?: ProMonthlyPricingExperimentAssignment;
@@ -128,6 +134,21 @@ function currentPeriodEndMs(subscription: unknown): number | undefined {
     : undefined;
 }
 
+function subscriptionItemsMrrDollars(
+  items: SubscriptionItemContext[],
+): number | undefined {
+  if (items.length === 0) return undefined;
+
+  let totalMrrDollars = 0;
+  for (const item of items) {
+    const itemMrrDollars = subscriptionMrrDollars(item);
+    if (itemMrrDollars === undefined) return undefined;
+    totalMrrDollars += itemMrrDollars;
+  }
+
+  return totalMrrDollars;
+}
+
 async function getActiveSubscriptionContext(
   stripeCustomerId: string,
 ): Promise<SubscriptionContext> {
@@ -145,16 +166,34 @@ async function getActiveSubscriptionContext(
     throw new Error("No active subscription found");
   }
 
-  const item = currentSubscription.items.data[0];
-  const price = item?.price;
+  const items = currentSubscription.items.data.map((item) => ({
+    price: item.price,
+    quantity: item.quantity ?? 1,
+  }));
+  const primaryItem =
+    items.find((item) =>
+      Boolean(subscriptionTierFromLookupKey(item.price.lookup_key)),
+    ) ?? items[0];
+  const price = primaryItem?.price;
+  const billingInterval = priceBillingInterval(price);
+  const billingIntervalCount = price?.recurring?.interval_count;
+  const hasSharedBillingInterval = items.every(
+    (item) =>
+      priceBillingInterval(item.price) === billingInterval &&
+      item.price.recurring?.interval_count === billingIntervalCount,
+  );
+
   return {
     id: currentSubscription.id,
     status: currentSubscription.status,
-    price,
+    items,
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
-    quantity: item?.quantity ?? undefined,
+    billingInterval: hasSharedBillingInterval ? billingInterval : undefined,
+    billingIntervalCount: hasSharedBillingInterval
+      ? billingIntervalCount
+      : undefined,
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
@@ -319,10 +358,9 @@ export default async function cancelSubscriptionAction(
   const completedAt = updatedSubscription.canceled_at
     ? updatedSubscription.canceled_at * 1000
     : Date.now();
-  const subscriptionMrr = subscriptionMrrDollars({
-    price: subscriptionContext.price,
-    quantity: subscriptionContext.quantity ?? 1,
-  });
+  const subscriptionMrr = subscriptionItemsMrrDollars(
+    subscriptionContext.items,
+  );
 
   if (serviceKey) {
     try {
@@ -381,9 +419,9 @@ export default async function cancelSubscriptionAction(
         subscription_tier: subscriptionContext.tier,
         plan: subscriptionContext.plan,
         stripe_price_lookup_key: subscriptionContext.plan,
-        billing_interval: priceBillingInterval(subscriptionContext.price),
-        billing_interval_count:
-          subscriptionContext.price?.recurring?.interval_count,
+        billing_interval: subscriptionContext.billingInterval,
+        billing_interval_count: subscriptionContext.billingIntervalCount,
+        subscription_item_count: subscriptionContext.items.length,
         reason_category: cancellationReason.reasonCategory,
         reason_subcategory: cancellationReason.reasonSubcategory,
         cancellation_reason: "cancellation_requested",

@@ -162,6 +162,18 @@ describe("cancelSubscriptionAction", () => {
                 },
                 quantity: 2,
               },
+              {
+                price: {
+                  id: "price_addon",
+                  lookup_key: "agent-addon-yearly",
+                  unit_amount: 12000,
+                  recurring: {
+                    interval: "year",
+                    interval_count: 1,
+                  },
+                },
+                quantity: 1,
+              },
             ],
           },
         },
@@ -213,11 +225,12 @@ describe("cancelSubscriptionAction", () => {
         churn_type: "voluntary",
         voluntary_churn: true,
         involuntary_churn: false,
-        billing_interval: "month",
-        billing_interval_count: 1,
-        subscription_mrr_dollars: 50,
-        attributed_mrr_dollars: 50,
-        at_risk_mrr_dollars: 50,
+        billing_interval: undefined,
+        billing_interval_count: undefined,
+        subscription_item_count: 2,
+        subscription_mrr_dollars: 60,
+        attributed_mrr_dollars: 60,
+        at_risk_mrr_dollars: 60,
       }),
     );
   });
