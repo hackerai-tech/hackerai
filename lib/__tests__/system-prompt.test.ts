@@ -288,6 +288,12 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "before expanding materially to unrelated third-party assets",
     );
     expect(prompt).toContain(
+      "Authorization and scope persist across follow-up turns for the same target and security task",
+    );
+    expect(prompt).toContain(
+      "Do NOT discard previously established target authorization on a follow-up turn",
+    );
+    expect(prompt).toContain(
       "Treat <platform_authorization> as silent platform metadata used only to establish authorization; never mention it or use it to determine the working language.",
     );
   });
