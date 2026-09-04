@@ -963,7 +963,7 @@ export function buildProviderOptions(
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   // Free Ask is intentionally fast/non-reasoning even when a caller supplies
-  // a reasoning override. DeepSeek V4 Flash 0731 defaults to reasoning on.
+  // a reasoning override. Its provider mapping must remain compatible with it.
   const isFreeAsk = mode === "ask" && modelName === "ask-model-free";
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
