@@ -17,6 +17,7 @@ import {
   type UsageLogBilling,
 } from "@/app/components/usage/usage-charge";
 import type { DateRange } from "react-day-picker";
+import { serializeSpreadsheetCsv } from "@/lib/utils/spreadsheet-export";
 
 type Preset = "1d" | "7d" | "30d" | "custom";
 
@@ -161,9 +162,7 @@ const UsageLogsTable = () => {
       ];
     });
 
-    const csvContent = [headers, ...rows]
-      .map((row) => row.join(","))
-      .join("\n");
+    const csvContent = serializeSpreadsheetCsv([headers, ...rows]);
     const blob = new Blob([csvContent], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
