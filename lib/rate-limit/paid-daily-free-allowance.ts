@@ -16,13 +16,12 @@ export const PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY =
 /** Ask mode keeps the original per-day request cap. */
 export const PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT = 1;
 export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
-/** Ask mode rollout. Agent mode has its own rollout, see below. */
-export const PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT = 10;
 /**
- * Agent mode on the Auto model: every paid individual user, limited only by
- * the shared daily cost cap (no per-day request cap).
+ * Ask mode rollout. Agent mode on the Auto model is not gated: every paid
+ * plan that reached its monthly limit gets it, capped only by the shared
+ * daily cost cap.
  */
-export const PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT_DEFAULT = 100;
+export const PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT = 10;
 
 /**
  * Reserve one rescue request. `requestLimit <= 0` means "no request cap":
@@ -164,7 +163,9 @@ type PaidDailyFreeAllowanceContext = {
 type PaidDailyFreeAllowancePolicy = {
   /** `null` = no per-day request cap; only the cost cap applies. */
   requestLimit: number | null;
+  /** 100 means ungated: every eligible user gets the allowance. */
   rolloutPercent: number;
+  isEligibleSubscription: (subscription: SubscriptionTier) => boolean;
 };
 
 function envNumber({
@@ -195,19 +196,11 @@ export function getPaidDailyFreeAllowanceRolloutPercent(): number {
   });
 }
 
-export function getPaidDailyFreeAllowanceAgentRolloutPercent(): number {
-  return envNumber({
-    name: "PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT",
-    defaultValue: PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT_DEFAULT,
-    min: 0,
-    max: 100,
-  });
-}
-
 /**
- * Mode-specific allowance policy. Ask keeps the original request cap and
- * gradual rollout; Agent (Auto model only) is cost-capped and fully rolled
- * out. Both modes share the same daily cost pool.
+ * Mode-specific allowance policy. Ask keeps the original request cap,
+ * gradual rollout, and paid-individual scope; Agent (Auto model only) is
+ * ungated for every paid plan and limited only by the cost cap. Both modes
+ * share the same daily cost pool.
  */
 export function getPaidDailyFreeAllowancePolicy(
   mode: ChatMode,
@@ -215,13 +208,24 @@ export function getPaidDailyFreeAllowancePolicy(
   if (mode === "agent") {
     return {
       requestLimit: null,
-      rolloutPercent: getPaidDailyFreeAllowanceAgentRolloutPercent(),
+      rolloutPercent: 100,
+      isEligibleSubscription: (subscription) => subscription !== "free",
     };
   }
   return {
     requestLimit: getPaidDailyFreeAllowanceRequestsPerDay(),
     rolloutPercent: getPaidDailyFreeAllowanceRolloutPercent(),
+    isEligibleSubscription: isPaidIndividualSubscription,
   };
+}
+
+function isEnabledByRollout(userId: string, rolloutPercent: number): boolean {
+  if (rolloutPercent >= 100) return true;
+  return isFeatureEnabled(
+    userId,
+    PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
+    rolloutPercent,
+  );
 }
 
 export function getPaidDailyFreeAllowanceRequestsPerDay(): number {
@@ -296,11 +300,7 @@ function baseStatus(
   );
   const costLimitDollars = getPaidDailyFreeAllowanceCostLimitDollars();
   const costLimitPoints = dollarsToPoints(costLimitDollars);
-  const enabledByRollout = isFeatureEnabled(
-    ctx.userId,
-    PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
-    rolloutPercent,
-  );
+  const enabledByRollout = isEnabledByRollout(ctx.userId, rolloutPercent);
   const { reset } = getCurrentUtcDayWindow();
 
   return {
@@ -326,7 +326,11 @@ function baseStatus(
 function getStaticUnavailableReason(
   ctx: PaidDailyFreeAllowanceContext,
 ): PaidDailyFreeAllowanceUnavailableReason | null {
-  if (!isPaidIndividualSubscription(ctx.subscription)) {
+  if (
+    !getPaidDailyFreeAllowancePolicy(ctx.mode).isEligibleSubscription(
+      ctx.subscription,
+    )
+  ) {
     return "unsupported_subscription";
   }
   if (ctx.capReason !== "monthly_exhausted") return "not_monthly_exhausted";
@@ -361,11 +365,7 @@ export async function getPaidDailyFreeAllowanceStatus(
   const hasRequestCap = requestLimit !== null;
   const costLimitDollars = getPaidDailyFreeAllowanceCostLimitDollars();
   const costLimitPoints = dollarsToPoints(costLimitDollars);
-  const enabledByRollout = isFeatureEnabled(
-    ctx.userId,
-    PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
-    rolloutPercent,
-  );
+  const enabledByRollout = isEnabledByRollout(ctx.userId, rolloutPercent);
   const { bucket, reset } = getCurrentUtcDayWindow();
 
   if (!enabledByRollout) return baseStatus(ctx, "rollout_disabled");

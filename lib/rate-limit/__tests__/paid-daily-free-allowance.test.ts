@@ -13,7 +13,6 @@ describe("paid daily free allowance", () => {
   const redisStore = new Map<string, number>();
   const originalEnv = {
     rollout: process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT,
-    agentRollout: process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT,
     requests: process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY,
     cost: process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD,
     nodeEnv: process.env.NODE_ENV,
@@ -74,7 +73,6 @@ describe("paid daily free allowance", () => {
     redisStore.clear();
     process.env.NODE_ENV = "test";
     process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT = "100";
-    delete process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT;
     delete process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY;
     delete process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD;
     mockCreateRedisClient.mockReturnValue(mockRedis);
@@ -90,12 +88,6 @@ describe("paid daily free allowance", () => {
     } else {
       process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT =
         originalEnv.rollout;
-    }
-    if (originalEnv.agentRollout === undefined) {
-      delete process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT;
-    } else {
-      process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT =
-        originalEnv.agentRollout;
     }
     if (originalEnv.requests === undefined) {
       delete process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY;
@@ -168,6 +160,7 @@ describe("paid daily free allowance", () => {
       unavailableReason: "attachments_not_supported",
     });
 
+    process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT = "10";
     mockIsFeatureEnabled.mockReturnValue(false);
     await expect(
       getPaidDailyFreeAllowanceStatus(eligibleContext),
@@ -177,18 +170,18 @@ describe("paid daily free allowance", () => {
     });
   });
 
-  it("excludes unsupported tiers and rollout-disabled users", async () => {
+  it("excludes unsupported tiers and rollout-disabled users in Ask", async () => {
     const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
     await expect(
       getPaidDailyFreeAllowanceStatus({
         ...eligibleContext,
         subscription: "team",
-        mode: "agent",
       }),
     ).resolves.toMatchObject({
       available: false,
       unavailableReason: "unsupported_subscription",
     });
+    process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT = "10";
     mockIsFeatureEnabled.mockReturnValue(false);
     await expect(
       getPaidDailyFreeAllowanceStatus(eligibleContext),
@@ -201,38 +194,31 @@ describe("paid daily free allowance", () => {
   describe("Agent mode on the Auto model", () => {
     const agentContext = { ...eligibleContext, mode: "agent" as const };
 
-    it("is fully rolled out independently of the Ask rollout", async () => {
+    it("is not gated by the Ask rollout flag", async () => {
       process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT = "10";
-      const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
-
-      await getPaidDailyFreeAllowanceStatus(agentContext);
-      await getPaidDailyFreeAllowanceStatus(eligibleContext);
-
-      expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
-        1,
-        "user_123",
-        "paid-daily-free-allowance",
-        100,
-      );
-      expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
-        2,
-        "user_123",
-        "paid-daily-free-allowance",
-        10,
-      );
-    });
-
-    it("honours an explicit Agent rollout override", async () => {
-      process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT = "25";
+      mockIsFeatureEnabled.mockReturnValue(false);
       const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
 
       await expect(
         getPaidDailyFreeAllowanceStatus(agentContext),
-      ).resolves.toMatchObject({ rolloutPercent: 25 });
+      ).resolves.toMatchObject({
+        available: true,
+        enabledByRollout: true,
+        rolloutPercent: 100,
+      });
+      expect(mockIsFeatureEnabled).not.toHaveBeenCalled();
+
+      await expect(
+        getPaidDailyFreeAllowanceStatus(eligibleContext),
+      ).resolves.toMatchObject({
+        available: false,
+        unavailableReason: "rollout_disabled",
+        rolloutPercent: 10,
+      });
       expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
         "user_123",
         "paid-daily-free-allowance",
-        25,
+        10,
       );
     });
 
@@ -339,9 +325,19 @@ describe("paid daily free allowance", () => {
       ).resolves.toMatchObject({ available: true, requestLimit: 1 });
     });
 
-    it("still excludes free and team subscriptions", async () => {
+    it("covers every paid plan, including Team, but never free", async () => {
       const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
 
+      for (const subscription of [
+        "pro",
+        "pro-plus",
+        "ultra",
+        "team",
+      ] as const) {
+        await expect(
+          getPaidDailyFreeAllowanceStatus({ ...agentContext, subscription }),
+        ).resolves.toMatchObject({ available: true, requestLimit: null });
+      }
       await expect(
         getPaidDailyFreeAllowanceStatus({
           ...agentContext,
@@ -351,9 +347,10 @@ describe("paid daily free allowance", () => {
         available: false,
         unavailableReason: "unsupported_subscription",
       });
+      // Ask keeps the paid-individual scope.
       await expect(
         getPaidDailyFreeAllowanceStatus({
-          ...agentContext,
+          ...eligibleContext,
           subscription: "team",
         }),
       ).resolves.toMatchObject({
