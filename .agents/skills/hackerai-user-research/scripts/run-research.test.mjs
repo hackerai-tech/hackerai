@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import { after, before, test } from "node:test";
 import {
   createProxyDispatcher,
+  formatGatewayError,
   gatewayRequest,
 } from "./run-research.mjs";
 
@@ -83,4 +84,68 @@ test("gateway requests use the configured HTTP proxy", async () => {
 
 test("gateway requests do not create a dispatcher without proxy variables", () => {
   assert.equal(createProxyDispatcher({}), undefined);
+});
+
+test("gateway errors include bounded validation details without rejected input", async () => {
+  await assert.rejects(
+    gatewayRequest(
+      originUrl,
+      "synthetic-test-key",
+      {},
+      {
+        request: async () =>
+          new Response(
+            JSON.stringify({
+              error: "invalid_payload",
+              issues: [
+                {
+                  code: "invalid_type",
+                  path: ["cohortSelectedAt", "private-rejected-input"],
+                  message: "Rejected private value private-rejected-input",
+                  input: "private rejected input",
+                },
+              ],
+            }),
+            {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            },
+          ),
+      },
+    ),
+    (error) => {
+      assert.match(
+        error.message,
+        /cohortSelectedAt\.field: has an invalid type/,
+      );
+      assert.doesNotMatch(error.message, /private rejected input/);
+      assert.doesNotMatch(error.message, /private-rejected-input/);
+      return true;
+    },
+  );
+});
+
+test("gateway error formatting bounds issue count and message length", () => {
+  const error = formatGatewayError(400, {
+    error: "invalid_payload",
+    issues: Array.from({ length: 12 }, (_, index) => ({
+      path: ["field", index, ...Array.from({ length: 20 }, () => "nested")],
+      message: "x".repeat(500),
+    })),
+  });
+
+  assert.match(error, /^Research gateway returned 400: invalid_payload/);
+  assert.match(error, /field\.7\.nested/);
+  assert.doesNotMatch(error, /field\.8\.nested/);
+  assert.doesNotMatch(error, /(?:\.nested){7}/);
+  assert.ok(error.length < 2_300);
+});
+
+test("gateway error formatting allow-lists the top-level error code", () => {
+  const error = formatGatewayError(502, {
+    error: "private-rejected-input",
+    issues: [],
+  });
+
+  assert.equal(error, "Research gateway returned 502: request_failed");
 });

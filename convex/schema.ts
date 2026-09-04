@@ -496,6 +496,8 @@ export default defineSchema({
     user_id: v.string(),
     nickname: v.optional(v.string()),
     occupation: v.optional(v.string()),
+    // Legacy field retained so historical rows remain schema-valid. The
+    // application no longer reads, returns, writes, or applies this value.
     personality: v.optional(v.string()),
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
@@ -1184,6 +1186,7 @@ export default defineSchema({
     user_id: v.string(),
     pseudonym: v.string(),
     evidence_anchor_at: v.optional(v.number()),
+    comparison_group_label: v.optional(v.string()),
     created_at: v.number(),
   })
     .index("by_analysis_and_user", ["analysis_id", "user_id"])
