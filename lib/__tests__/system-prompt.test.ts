@@ -100,6 +100,30 @@ describe("systemPrompt security instructions", () => {
     }
   });
 
+  it("ignores personality values retained on legacy customization rows", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      { personality: "cynic", updated_at: 1 } as Parameters<
+        typeof systemPrompt
+      >[4],
+      null,
+    );
+
+    const baseline = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      null,
+    );
+
+    expect(prompt).toBe(baseline);
+  });
+
   it("shares response style, mistake recovery, and freshness guidance across modes", async () => {
     const askPrompt = await systemPrompt(
       "user_123",

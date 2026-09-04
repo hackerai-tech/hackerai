@@ -444,6 +444,8 @@ export default defineSchema({
     user_id: v.string(),
     nickname: v.optional(v.string()),
     occupation: v.optional(v.string()),
+    // Legacy field retained so historical rows remain schema-valid. The
+    // application no longer reads, returns, writes, or applies this value.
     personality: v.optional(v.string()),
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
