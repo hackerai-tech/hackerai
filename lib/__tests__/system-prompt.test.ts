@@ -112,8 +112,16 @@ describe("systemPrompt security instructions", () => {
       null,
     );
 
-    expect(prompt).not.toContain("<personality>");
-    expect(prompt).not.toContain("cynical, sarcastic AI");
+    const baseline = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      null,
+    );
+
+    expect(prompt).toBe(baseline);
   });
 
   it("shares response style, mistake recovery, and freshness guidance across modes", async () => {
