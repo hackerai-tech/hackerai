@@ -777,16 +777,18 @@ export async function processChatMessages({
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
-  // Check moderation for the last user message
-  const moderationResult = await getModerationResult(
-    cleanedMessages,
-    subscription !== "free",
-  );
+  // Paid users have already accepted HackerAI's authorization terms. Keep
+  // their provider-bound authorization deterministic and avoid transmitting
+  // their prompts to the moderation endpoint. Free users retain the existing
+  // moderation-gated behavior.
+  const platformAuthorized =
+    subscription !== "free" ||
+    (await getModerationResult(cleanedMessages, false)).shouldUncensorResponse;
 
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
-    platformAuthorized: moderationResult.shouldUncensorResponse,
+    platformAuthorized,
   };
 }
