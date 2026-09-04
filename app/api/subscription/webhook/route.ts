@@ -40,6 +40,10 @@ import {
 } from "@/lib/billing/subscription-payment-failure";
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 import {
+  PAUSE_RESUME_CHECKOUT_TYPE,
+  subscriptionPauseFromMetadata,
+} from "@/lib/billing/retention-offers";
+import {
   proMonthlyPricingAssignmentFromMetadata,
   proMonthlyPricingExperimentProperties,
 } from "@/lib/experiments/pro-monthly-pricing";
@@ -1359,26 +1363,37 @@ async function handleInvoicePaid(
         ? undefined
         : subscriptionMrr / userIds.length;
     const paidSeatCount = item?.quantity ?? userIds.length;
+    // A retention pause ending re-creates the subscription server-side. That
+    // is a reactivation, not a new paid start, so keep it out of the paid
+    // start mix and zero the start counters on the analytics event.
+    const resumedFromPause =
+      metadataString(subscription.metadata, "checkoutType") ===
+      PAUSE_RESUME_CHECKOUT_TYPE;
 
-    try {
-      await recordPaidStartMix({
-        invoice,
-        invoicePrice,
-        customerId,
-        userIds,
-        orgId: orgId ?? undefined,
-        tier,
-        subscription,
-      });
-    } catch (error) {
-      console.error("[Subscription Webhook] Failed to record paid start mix:", {
-        error,
-        invoiceId: invoice.id,
-        customerId,
-        userCount: userIds.length,
-        orgId,
-        tier,
-      });
+    if (!resumedFromPause) {
+      try {
+        await recordPaidStartMix({
+          invoice,
+          invoicePrice,
+          customerId,
+          userIds,
+          orgId: orgId ?? undefined,
+          tier,
+          subscription,
+        });
+      } catch (error) {
+        console.error(
+          "[Subscription Webhook] Failed to record paid start mix:",
+          {
+            error,
+            invoiceId: invoice.id,
+            customerId,
+            userCount: userIds.length,
+            orgId,
+            tier,
+          },
+        );
+      }
     }
 
     for (const [index, uid] of userIds.entries()) {
@@ -1386,13 +1401,21 @@ async function handleInvoicePaid(
         userId: uid,
         from_tier: "free",
         to_tier: tier,
-        conversion_type: "free_to_paid",
+        conversion_type: resumedFromPause ? "pause_resume" : "free_to_paid",
+        resumed_from_pause: resumedFromPause,
+        ...(resumedFromPause && {
+          pause_id: metadataString(subscription.metadata, "hackeraiPauseId"),
+          paused_stripe_subscription_id: metadataString(
+            subscription.metadata,
+            "hackeraiResumedFromSubscriptionId",
+          ),
+        }),
         org_id: orgId,
         user_count: userIds.length,
         plan: invoicePrice.lookup_key,
         stripe_price_lookup_key: invoicePrice.lookup_key,
-        paid_account_start_count: index === 0 ? 1 : 0,
-        paid_user_start_count: 1,
+        paid_account_start_count: resumedFromPause ? 0 : index === 0 ? 1 : 0,
+        paid_user_start_count: resumedFromPause ? 0 : 1,
         paid_account_user_count: userIds.length,
         paid_seat_count: paidSeatCount,
         paid_start_plan: invoicePrice.lookup_key ?? tier,
@@ -2183,6 +2206,7 @@ async function recordCancellationCompleted(args: {
     subscriptionMrr === undefined
       ? undefined
       : subscriptionMrr / args.userIds.length;
+  const pauseProperties = retentionPauseProperties(args.subscription);
 
   let updatedCount = 0;
   try {
@@ -2234,6 +2258,7 @@ async function recordCancellationCompleted(args: {
         at_risk_mrr_dollars: attributedMrrDollars,
         cancellation_completion_type: args.completionType,
         cancel_at_period_end: args.subscription.cancel_at_period_end,
+        ...pauseProperties,
         stripe_customer_id: args.customerId,
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
@@ -2241,6 +2266,54 @@ async function recordCancellationCompleted(args: {
         $insert_id: cancellationCompletionInsertId(args.subscription.id),
       }),
     );
+  }
+}
+
+/**
+ * Analytics properties that mark a cancellation as a retention pause so churn
+ * dashboards can separate "paused, resumes later" from a plain cancellation.
+ */
+function retentionPauseProperties(subscription: Stripe.Subscription) {
+  const pause = subscriptionPauseFromMetadata(subscription.metadata);
+  if (!pause) return { retention_pause: false };
+  return {
+    retention_pause: true,
+    retention_offer_accepted: "pause",
+    pause_months: pause.months,
+    pause_resume_at: new Date(pause.resumeAtMs).toISOString(),
+    pause_id: pause.pauseId,
+  };
+}
+
+/** Move the Convex pause record to "paused" once Stripe ends the subscription. */
+async function markRetentionPauseEffective(
+  subscription: Stripe.Subscription,
+  occurredAtMs: number,
+): Promise<void> {
+  const pause = subscriptionPauseFromMetadata(subscription.metadata);
+  if (!pause) return;
+
+  try {
+    const result = await getConvexClient().mutation(
+      api.subscriptionPauses.markPauseEffective,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        stripeSubscriptionId: subscription.id,
+        pausedAt: occurredAtMs,
+      },
+    );
+    if (result.updatedCount === 0) {
+      phLogger.warn("subscription_pause_effective_record_missing", {
+        stripe_subscription_id: subscription.id,
+        pause_id: pause.pauseId,
+      });
+    }
+  } catch (error) {
+    phLogger.error("subscription_pause_effective_update_failed", {
+      stripe_subscription_id: subscription.id,
+      pause_id: pause.pauseId,
+      error,
+    });
   }
 }
 
@@ -2322,6 +2395,8 @@ async function handleSubscriptionDeleted(
     price,
     completionType: "deleted",
   });
+  await markRetentionPauseEffective(subscription, eventOccurredAtMs);
+  const pauseProperties = retentionPauseProperties(subscription);
 
   for (const uid of userIds) {
     phLogger.event("subscription_cancelled", {
@@ -2330,6 +2405,7 @@ async function handleSubscriptionDeleted(
       org_id: orgId,
       cancellation_reason: cancellationReason,
       ...subscriptionChurnHealthProperties(cancellationReason),
+      ...pauseProperties,
       subscription_mrr_dollars: subscriptionMrr,
       attributed_mrr_dollars: attributedMrrDollars,
       lost_mrr_dollars: attributedMrrDollars,

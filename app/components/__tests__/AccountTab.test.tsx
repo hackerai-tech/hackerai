@@ -36,6 +36,7 @@ jest.mock("@/lib/billing/client", () => ({
   getSubscriptionCancellationStatus: mockGetSubscriptionCancellationStatus,
   keepSubscription: mockKeepSubscription,
   redirectToBillingPortal: mockRedirectToBillingPortal,
+  resumeSubscription: jest.fn(),
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -425,5 +426,62 @@ describe("AccountTab", () => {
 
     expect(screen.getByText("No active subscription")).toBeVisible();
     expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  });
+
+  it("shows the scheduled pause and lets the user cancel it", async () => {
+    const currentPeriodEnd = Date.UTC(2026, 9, 1, 12);
+    const resumeAt = Date.UTC(2026, 11, 1, 12);
+    const format = (value: number) =>
+      new Intl.DateTimeFormat(undefined, {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }).format(new Date(value));
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd,
+      pause: { months: 2, pauseEffectiveAt: currentPeriodEnd, resumeAt },
+    } as never);
+    mockKeepSubscription.mockResolvedValue({
+      kept: true,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd,
+      alreadyKept: false,
+      pauseCanceled: true,
+    } as never);
+
+    render(<AccountTab />);
+
+    expect(await screen.findByText("Pause scheduled.")).toBeVisible();
+    expect(
+      screen.getByText(
+        (content) =>
+          content.includes(
+            `Billing pauses after that and resumes automatically on ${format(resumeAt)}.`,
+          ),
+        { selector: "div" },
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Cancellation scheduled."),
+    ).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("Cancel pause")).toBeVisible();
+    });
+    await user.click(screen.getByText("Cancel pause"));
+
+    await waitFor(() => {
+      expect(mockKeepSubscription).toHaveBeenCalledTimes(1);
+    });
+    expect(mockToastSuccess).toHaveBeenCalledWith(
+      "Pause canceled. Your plan will renew as usual.",
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("Pause scheduled.")).not.toBeInTheDocument();
+    });
   });
 });
