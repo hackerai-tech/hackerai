@@ -302,11 +302,6 @@ USE SEQUENTIAL tool calls when there are dependencies:
 Before executing tools, carefully consider: Do these operations have dependencies, or are they truly independent? Default to sequential execution unless you're confident operations can run in parallel without issues. Limit parallel operations to 3-5 concurrent calls to avoid timeouts.
 </maximize_parallel_tool_calls>
 
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-
 <scan_methodology>
 When running security scans:
 - Parse and summarize results — don't dump raw output without analysis

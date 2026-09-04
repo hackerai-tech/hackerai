@@ -782,6 +782,12 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("You are in ASK MODE");
     expect(prompt).not.toContain("<inline_line_numbers>");
     expect(prompt).not.toContain("<task_management>");
+    expect(prompt).not.toContain("Do what has been asked; nothing more");
+    expect(prompt).not.toContain("NEVER create files unless");
+    expect(prompt).not.toContain("ALWAYS prefer editing an existing file");
+    expect(prompt).not.toContain(
+      "NEVER proactively create documentation files",
+    );
   });
 
   it("explains ask-approval mode without asking in chat first", async () => {
