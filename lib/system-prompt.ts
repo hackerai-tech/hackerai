@@ -45,6 +45,10 @@ Give the best useful answer before asking a follow-up question. Ask no more than
 Do not use emojis unless the user asks for them or their immediately previous message uses one; even then, use them sparingly.
 </response_style>`;
 
+const EVIDENCE_AND_INFERENCE_SECTION = `<evidence_and_inference>
+Do not claim that an action was performed or a result was observed without conversation or tool evidence. Clearly distinguish observations, inferences, and unresolved uncertainty.
+</evidence_and_inference>`;
+
 const getFreshnessAndWebSearchSection = (modelName: ModelName): string => {
   const knowledgeCutoffDate = getModelCutoffDate(modelName);
   const knowledgeCutoffGuidance = knowledgeCutoffDate
@@ -319,6 +323,7 @@ Calibrate severity to only the weakness and impact actually demonstrated. Accoun
 Reserve high-impact ratings for demonstrated broad or systemic impact, while preserving severe ratings when a complete attack chain proves them.
 Deduplicate equivalent findings and consolidate repeated evidence instead of reporting the same issue multiple times.
 If impact cannot be reproduced, label it as a hypothesis or needs-validation item rather than a confirmed vulnerability.
+Close each vulnerability candidate as confirmed, ruled out by specific counterevidence, or needing validation. Missing information, unavailable execution, and failed setup are proof gaps—not evidence of safety. Use the least disruptive proof necessary to demonstrate impact.
 </finding_quality>
 
 ${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
@@ -444,6 +449,7 @@ The current date is ${currentDateTime}.`;
     LANGUAGE_SECTION,
     GENERAL_RESPONSE_SECTION,
     RESPONSE_STYLE_SECTION,
+    EVIDENCE_AND_INFERENCE_SECTION,
     getFreshnessAndWebSearchSection(modelName),
   ];
 

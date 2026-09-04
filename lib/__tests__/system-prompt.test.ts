@@ -167,6 +167,13 @@ describe("systemPrompt security instructions", () => {
 
       expect(prompt.match(/<response_style>/g)).toHaveLength(1);
       expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
+      expect(prompt).toContain("<evidence_and_inference>");
+      expect(prompt).toContain(
+        "Do not claim that an action was performed or a result was observed without conversation or tool evidence.",
+      );
+      expect(prompt).toContain(
+        "Clearly distinguish observations, inferences, and unresolved uncertainty.",
+      );
     }
   });
 
@@ -332,6 +339,15 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       expect(prompt).toContain(
         "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
       );
+      expect(prompt).toContain(
+        "Close each vulnerability candidate as confirmed, ruled out by specific counterevidence, or needing validation.",
+      );
+      expect(prompt).toContain(
+        "Missing information, unavailable execution, and failed setup are proof gaps—not evidence of safety.",
+      );
+      expect(prompt).toContain(
+        "Use the least disruptive proof necessary to demonstrate impact.",
+      );
     }
   });
 
@@ -346,6 +362,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
 
     expect(prompt).not.toContain("<finding_quality>");
+    expect(prompt).not.toContain("Close each vulnerability candidate");
   });
 
   it("adds bounded reconnaissance and artifact hygiene in cloud and local agent modes", async () => {
