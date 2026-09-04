@@ -216,13 +216,15 @@ RUN set -eux; \
 # ============================================================================
 ARG TRUFFLEHOG_INSTALLER_COMMIT=363923b901c911a9164f50b6c423f47c15372b1c
 ARG TRIVY_INSTALLER_COMMIT=99fde13b1439de741034e564c22b358b4880bbe8
+ARG TRUFFLEHOG_VERSION=v3.97.1
+ARG TRIVY_VERSION=v0.74.0
 ARG HTTPX_VERSION=1.11.0
 
 RUN set -eux; \
     # Secret scanning tool
-    curl -sSfL "https://raw.githubusercontent.com/trufflesecurity/trufflehog/${TRUFFLEHOG_INSTALLER_COMMIT}/scripts/install.sh" | sh -s -- -b /usr/local/bin && \
+    curl -sSfL "https://raw.githubusercontent.com/trufflesecurity/trufflehog/${TRUFFLEHOG_INSTALLER_COMMIT}/scripts/install.sh" | sh -s -- -b /usr/local/bin "${TRUFFLEHOG_VERSION}" && \
     # Vulnerability scanner for containers and filesystems
-    curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_INSTALLER_COMMIT}/contrib/install.sh" | sh -s -- -b /usr/local/bin && \
+    curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_INSTALLER_COMMIT}/contrib/install.sh" | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}" && \
     # httpx with proper architecture detection
     arch=$(uname -m); \
     if [ "$arch" = "x86_64" ]; then platform="linux_amd64"; \

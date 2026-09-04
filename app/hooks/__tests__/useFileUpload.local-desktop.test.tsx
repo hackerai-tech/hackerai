@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import { useFileUpload } from "../useFileUpload";
 import {
+  getCmdServerInfo,
   getLocalFileMetadata,
   pickLocalFiles,
   readLocalFile,
@@ -42,6 +43,7 @@ jest.mock("../../contexts/GlobalState", () => ({
 jest.mock("@/app/hooks/useTauri", () => ({
   isTauriEnvironment: jest.fn(() => true),
   pickLocalFiles: jest.fn(),
+  getCmdServerInfo: jest.fn(),
   getLocalFileMetadata: jest.fn(),
   readLocalFile: jest.fn(),
   writeGeneratedTextAttachment: jest.fn(),
@@ -89,6 +91,10 @@ describe("useFileUpload desktop-local agent attachments", () => {
     generateS3UploadUrlAction.mockResolvedValue({
       uploadUrl: "https://s3.example/upload",
       s3Key: "users/u1/report.txt",
+    });
+    (getCmdServerInfo as jest.Mock).mockResolvedValue({
+      port: 43123,
+      token: "desktop-session-token",
     });
     saveFile.mockResolvedValue({
       url: "https://s3.example/download",
@@ -140,6 +146,25 @@ describe("useFileUpload desktop-local agent attachments", () => {
     });
     expect(generateS3UploadUrlAction).not.toHaveBeenCalled();
     expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("requests desktop authorization before reading selected file metadata", async () => {
+    (pickLocalFiles as jest.Mock).mockResolvedValue(["/Users/alice/report.txt"]);
+    (getCmdServerInfo as jest.Mock).mockResolvedValue(null);
+
+    const { result } = renderHook(() => useFileUpload("agent"));
+
+    act(() => {
+      result.current.handleAttachClick();
+    });
+
+    await waitFor(() => {
+      expect(getCmdServerInfo).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledWith(
+        "Local computer access is required to attach files.",
+      );
+    });
+    expect(getLocalFileMetadata).not.toHaveBeenCalled();
   });
 
   it("keeps generated pasted text local in desktop Agent mode", async () => {
