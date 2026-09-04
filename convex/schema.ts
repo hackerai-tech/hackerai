@@ -1134,6 +1134,7 @@ export default defineSchema({
     user_id: v.string(),
     pseudonym: v.string(),
     evidence_anchor_at: v.optional(v.number()),
+    comparison_group_label: v.optional(v.string()),
     created_at: v.number(),
   })
     .index("by_analysis_and_user", ["analysis_id", "user_id"])

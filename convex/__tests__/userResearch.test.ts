@@ -336,6 +336,79 @@ describe("userResearch.createRun", () => {
       }),
     ).rejects.toThrow("Every pre_event member requires");
   });
+
+  it("persists complete comparison membership and rejects undersized groups", async () => {
+    const insert = jest.fn(async () => "document-id");
+    const ctx = {
+      db: {
+        query: jest.fn(() => ({
+          withIndex: jest.fn(() => ({
+            unique: jest.fn(async () => null),
+          })),
+        })),
+        insert,
+      },
+    };
+    const { createRun } = await import("../userResearch");
+    const baseArgs = {
+      serviceKey: "service-key",
+      analysisId: "analysis-comparison",
+      question: "How do recurring jobs and friction differ by model cohort?",
+      cohortLabel: "PostHog model conversion comparison",
+      requestedBy: "pm-gateway",
+      cohortSource: "posthog" as const,
+      posthogProjectId: 144137,
+      cohortSelectedAt: Date.UTC(2026, 7, 25),
+      selectionQueryFingerprint:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      selectionLimitations: [],
+      samplingMode: "representative" as const,
+      maxChatsPerUser: 12,
+      model: "x-ai/grok-4.6",
+      reasoningEnabled: true,
+      reasoningEffort: "low" as const,
+    };
+    const members = Array.from({ length: 6 }, (_, index) => ({
+      userId: `user-${index + 1}`,
+      pseudonym: `U${String(index + 1).padStart(2, "0")}`,
+      comparisonGroupLabel: index < 3 ? "Model A" : "Model B",
+    }));
+
+    await createRun.handler(ctx as never, { ...baseArgs, members });
+
+    expect(insert).toHaveBeenCalledWith(
+      "research_run_members",
+      expect.objectContaining({
+        user_id: "user-1",
+        comparison_group_label: "Model A",
+      }),
+    );
+    await expect(
+      createRun.handler({ db: {} } as never, {
+        ...baseArgs,
+        members: members.map((member, index) =>
+          index === 2 ? { ...member, comparisonGroupLabel: "Model B" } : member,
+        ),
+      }),
+    ).rejects.toThrow("at least three members each");
+    await expect(
+      createRun.handler({ db: {} } as never, {
+        ...baseArgs,
+        members: members.map((member) => ({
+          ...member,
+          comparisonGroupLabel: "   ",
+        })),
+      }),
+    ).rejects.toThrow("must not be blank");
+    await expect(
+      createRun.handler({ db: {} } as never, {
+        ...baseArgs,
+        members: members.map((member, index) =>
+          index === 0 ? { ...member, comparisonGroupLabel: "" } : member,
+        ),
+      }),
+    ).rejects.toThrow("must not be blank");
+  });
 });
 
 describe("userResearch.failRun", () => {
