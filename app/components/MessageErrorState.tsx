@@ -177,7 +177,7 @@ export const MessageErrorState = ({
       ? paidDailyFreeAllowance.costRemainingDollars
       : undefined;
   const shouldFocusPaidAllowanceActions =
-    canUsePaidDailyFreeAllowance &&
+    (canUsePaidDailyFreeAllowance || allowanceNeedsAutoModel) &&
     extraUsageCta?.analyticsText === "Add Credits";
   const showRateLimitRetry = !shouldFocusPaidAllowanceActions;
   const showRateLimitUsage =

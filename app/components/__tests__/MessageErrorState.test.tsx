@@ -441,6 +441,12 @@ describe("MessageErrorState", () => {
 
     const hint = screen.getByText(/still get some free usage today on Auto/i);
     expect(hint).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Try Again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    ).toBeVisible();
     expect(hint.textContent).not.toContain("$");
     expect(
       screen.queryByRole("button", {
