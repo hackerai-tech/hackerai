@@ -615,48 +615,45 @@ export const CancelSubscriptionDialog = ({
           </>
         ) : isOfferStep ? (
           <>
-            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
-              <DialogHeader className="gap-3 text-left sm:text-left">
-                <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
-                  Before you cancel
-                </DialogTitle>
-                <DialogDescription className="text-base leading-7">
-                  Take a break instead of starting over later.
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 sm:px-8 sm:py-6">
+              <DialogHeader className="gap-2 text-left sm:text-left">
+                <div className="flex items-center gap-3">
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
+                    <PauseCircle className="size-5" aria-hidden="true" />
+                  </span>
+                  <DialogTitle className="text-2xl leading-tight font-semibold sm:text-3xl">
+                    Pause your plan instead?
+                  </DialogTitle>
+                </div>
+                <DialogDescription className="text-sm leading-6 sm:text-base">
+                  No charges while paused. Your plan comes back automatically
+                  with the same price and your saved card.
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="mt-6 space-y-4">
-                {pauseOffer ? (
-                  <section
-                    aria-labelledby="retention-pause-title"
-                    className="rounded-lg border border-border bg-muted/40 p-5"
-                  >
-                    <div className="flex items-start gap-3">
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
-                        <PauseCircle className="size-5" aria-hidden="true" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <h3
-                          id="retention-pause-title"
-                          className="text-lg font-semibold text-foreground"
-                        >
-                          Pause your plan
-                        </h3>
-                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          {pauseEffectiveDate
-                            ? `Keep ${planName} until ${pauseEffectiveDate}, then pause billing.`
-                            : `Keep ${planName} until the end of your paid period, then pause billing.`}{" "}
-                          {pauseResumeDate
-                            ? `Your plan resumes automatically on ${pauseResumeDate} with the same price and your saved card. No charges in between.`
-                            : "Your plan resumes automatically with the same price and your saved card. No charges in between."}
-                        </p>
-                      </div>
+              {pauseOffer ? (
+                <>
+                  <dl className="mt-4 divide-y divide-border rounded-lg border border-border bg-muted/40 text-sm">
+                    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+                      <dt className="text-muted-foreground">{`${planName} stays active until`}</dt>
+                      <dd className="text-right font-medium text-foreground">
+                        {pauseEffectiveDate ?? "end of paid period"}
+                      </dd>
                     </div>
+                    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+                      <dt className="text-muted-foreground">Resumes on</dt>
+                      <dd className="text-right font-medium text-foreground">
+                        {pauseResumeDate ?? "the scheduled date"}
+                      </dd>
+                    </div>
+                  </dl>
 
+                  <div className="mt-4 space-y-2">
+                    <Label id="pause-duration-label">Pause for</Label>
                     <div
-                      className="mt-4 grid grid-cols-3 gap-2"
+                      className="grid grid-cols-3 gap-2"
                       role="radiogroup"
-                      aria-label="Pause duration"
+                      aria-labelledby="pause-duration-label"
                     >
                       {PAUSE_DURATION_MONTH_OPTIONS.map((months) => {
                         const isSelected = selectedPauseMonths === months;
@@ -677,7 +674,7 @@ export const CancelSubscriptionDialog = ({
                               "h-11 rounded-md border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
                               isSelected
                                 ? "border-violet-500/70 bg-premium-bg text-foreground"
-                                : "border-border bg-background/60 text-foreground hover:bg-muted",
+                                : "border-border bg-muted/40 text-foreground hover:bg-muted",
                             )}
                           >
                             {pluralizeMonths(months)}
@@ -685,40 +682,43 @@ export const CancelSubscriptionDialog = ({
                         );
                       })}
                     </div>
-
-                    <Button
-                      onClick={handleAcceptPause}
-                      disabled={isProcessing}
-                      className="mt-4 h-11 w-full"
-                    >
-                      {isProcessing ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        `Pause for ${pluralizeMonths(selectedPauseMonths)}`
-                      )}
-                    </Button>
-                  </section>
-                ) : null}
-              </div>
+                  </div>
+                </>
+              ) : null}
             </div>
 
-            <div className="flex flex-col-reverse gap-3 border-t border-border px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+            <div className="space-y-2 border-t border-border px-6 py-4 sm:px-8">
               <Button
-                variant="ghost"
-                onClick={handleDeclineOffers}
-                disabled={isProcessing}
-                className="h-11 w-full text-muted-foreground sm:w-auto"
+                onClick={handleAcceptPause}
+                disabled={isProcessing || !pauseOffer}
+                className="h-11 w-full"
               >
-                No thanks, continue to cancel
+                {isProcessing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  `Pause for ${pluralizeMonths(selectedPauseMonths)}`
+                )}
               </Button>
-              <Button
-                variant="outline"
-                onClick={handleBack}
-                disabled={isProcessing}
-                className="h-11 w-full sm:w-36"
-              >
-                Back
-              </Button>
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleBack}
+                  disabled={isProcessing}
+                  className="h-9 px-2"
+                >
+                  Back
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleDeclineOffers}
+                  disabled={isProcessing}
+                  className="h-9 px-2 text-muted-foreground"
+                >
+                  No thanks, continue to cancel
+                </Button>
+              </div>
             </div>
           </>
         ) : isConfirmStep ? (

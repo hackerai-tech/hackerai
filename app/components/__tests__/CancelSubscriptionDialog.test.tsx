@@ -190,7 +190,7 @@ describe("CancelSubscriptionDialog", () => {
     await completeSurvey(user);
 
     expect(
-      await screen.findByRole("heading", { name: "Before you cancel" }),
+      await screen.findByRole("heading", { name: "Pause your plan instead?" }),
     ).toBeVisible();
     expect(mockGetRetentionOffers).toHaveBeenCalledWith({
       reasonCategory: "not_using_enough",
@@ -233,7 +233,7 @@ describe("CancelSubscriptionDialog", () => {
     render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
 
     await completeSurvey(user);
-    await screen.findByRole("heading", { name: "Before you cancel" });
+    await screen.findByRole("heading", { name: "Pause your plan instead?" });
     await user.click(
       screen.getByRole("button", { name: "No thanks, continue to cancel" }),
     );
@@ -263,7 +263,7 @@ describe("CancelSubscriptionDialog", () => {
       }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("heading", { name: "Before you cancel" }),
+      screen.queryByRole("heading", { name: "Pause your plan instead?" }),
     ).not.toBeInTheDocument();
   });
 });
