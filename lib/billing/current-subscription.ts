@@ -30,7 +30,6 @@ export type CurrentSubscriptionContext = {
   quantity: number;
   currentPeriodEndMs?: number;
   metadata: Stripe.Metadata;
-  hasDiscount: boolean;
   defaultPaymentMethodId?: string;
   latestInvoiceId?: string;
   pricingExperiment?: ProMonthlyPricingExperimentAssignment;
@@ -92,7 +91,6 @@ export function toCurrentSubscriptionContext(
     quantity: item?.quantity ?? 1,
     currentPeriodEndMs: subscriptionCurrentPeriodEndMs(subscription),
     metadata: subscription.metadata ?? {},
-    hasDiscount: (subscription.discounts?.length ?? 0) > 0,
     defaultPaymentMethodId:
       stripeObjectId(subscription.default_payment_method) ?? undefined,
     latestInvoiceId: stripeObjectId(subscription.latest_invoice) ?? undefined,

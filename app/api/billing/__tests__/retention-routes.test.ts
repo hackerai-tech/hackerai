@@ -3,7 +3,6 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const mockGetRetentionOffers = jest.fn();
 const mockPauseSubscription = jest.fn();
-const mockAcceptRetentionDiscount = jest.fn();
 const mockResumeSubscription = jest.fn();
 
 jest.mock("@/lib/actions/retention-offers", () => ({
@@ -14,11 +13,6 @@ jest.mock("@/lib/actions/retention-offers", () => ({
 jest.mock("@/lib/actions/pause-subscription", () => ({
   __esModule: true,
   default: mockPauseSubscription,
-}));
-
-jest.mock("@/lib/actions/accept-retention-discount", () => ({
-  __esModule: true,
-  default: mockAcceptRetentionDiscount,
 }));
 
 jest.mock("@/lib/actions/resume-subscription", () => ({
@@ -61,7 +55,6 @@ describe("retention offer API routes", () => {
     mockGetRetentionOffers.mockResolvedValue({
       offersEnabled: true,
       pause: { eligible: true, options: [] },
-      discount: { eligible: false, percentOff: 50, durationMonths: 2 },
     } as never);
     const { POST } = await import("../retention-offers/route");
 
@@ -129,22 +122,6 @@ describe("retention offer API routes", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: BILLING_ERRORS.retentionOfferUnavailable,
-    });
-  });
-
-  it("applies the retention discount", async () => {
-    mockAcceptRetentionDiscount.mockResolvedValue({
-      applied: true,
-      percentOff: 50,
-      durationMonths: 2,
-    } as never);
-    const { POST } = await import("../discount/route");
-
-    const response = await POST(request({ cancellationReason }) as never);
-
-    expect(response.status).toBe(200);
-    expect(mockAcceptRetentionDiscount).toHaveBeenCalledWith({
-      cancellationReason,
     });
   });
 

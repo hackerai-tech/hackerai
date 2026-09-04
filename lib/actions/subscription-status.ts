@@ -5,10 +5,7 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
-import {
-  retentionDiscountFromMetadata,
-  subscriptionPauseFromMetadata,
-} from "@/lib/billing/retention-offers";
+import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
 type CurrentSubscriptionStatus = NonNullable<
@@ -100,9 +97,6 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   const pause = cancelAtPeriodEnd
     ? subscriptionPauseFromMetadata(currentSubscription.metadata)
     : null;
-  const retentionDiscount = retentionDiscountFromMetadata(
-    currentSubscription.metadata,
-  );
   return {
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
@@ -113,15 +107,6 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
         months: pause.months,
         resumeAt: pause.resumeAtMs,
         ...(currentPeriodEnd && { pauseEffectiveAt: currentPeriodEnd }),
-      },
-    }),
-    ...(retentionDiscount && {
-      retentionDiscount: {
-        percentOff: retentionDiscount.percentOff,
-        durationMonths: retentionDiscount.durationMonths,
-        ...(retentionDiscount.appliedAtMs && {
-          appliedAt: retentionDiscount.appliedAtMs,
-        }),
       },
     }),
     ...(latestInvoiceId && { latestInvoiceId }),

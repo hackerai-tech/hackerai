@@ -83,15 +83,15 @@ export default async function pauseSubscriptionAction(
   }
 
   if (
-    !evaluation.eligibility.pause.eligible ||
+    !evaluation.pause.eligible ||
     !subscription.currentPeriodEndMs ||
     !subscription.priceId
   ) {
     phLogger.warn("retention_pause_rejected", {
       ...billingFields,
-      reason: evaluation.eligibility.pause.eligible
+      reason: evaluation.pause.eligible
         ? "missing_subscription_details"
-        : evaluation.eligibility.pause.reason,
+        : evaluation.pause.reason,
     });
     throw new Error(BILLING_ERRORS.retentionOfferUnavailable);
   }

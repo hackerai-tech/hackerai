@@ -14,7 +14,7 @@ const mockUpdateSubscription = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockConvexQuery = jest.fn();
-const mockIsRetentionOffersEnabledForUser = jest.fn();
+const mockIsPauseOfferEnabledForUser = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 const mockPostHogError = jest.fn();
@@ -56,7 +56,7 @@ jest.mock("@/convex/_generated/api", () => ({
 }));
 
 jest.mock("@/lib/billing/retention-offers.server", () => ({
-  isRetentionOffersEnabledForUser: mockIsRetentionOffersEnabledForUser,
+  isPauseOfferEnabledForUser: mockIsPauseOfferEnabledForUser,
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -76,7 +76,6 @@ function proPlusSubscription(overrides: Record<string, unknown> = {}) {
     status: "active",
     cancel_at_period_end: false,
     metadata: { checkoutAttemptId: "ca_1" },
-    discounts: [],
     default_payment_method: "pm_123",
     latest_invoice: "in_123",
     items: {
@@ -118,7 +117,7 @@ describe("pauseSubscriptionAction", () => {
       user: { id: "user_123", createdAt: "2026-06-01T00:00:00.000Z" },
       stripeCustomerId: "cus_123",
     } as never);
-    mockIsRetentionOffersEnabledForUser.mockResolvedValue(true as never);
+    mockIsPauseOfferEnabledForUser.mockResolvedValue(true as never);
     mockConvexQuery.mockResolvedValue(null as never);
     mockConvexMutation.mockImplementation((async (name: string) => {
       if (name === "cancellationReasons.recordCancellationStarted") {
@@ -267,7 +266,7 @@ describe("pauseSubscriptionAction", () => {
   });
 
   it("refuses when the rollout flag is off for the user", async () => {
-    mockIsRetentionOffersEnabledForUser.mockResolvedValue(false as never);
+    mockIsPauseOfferEnabledForUser.mockResolvedValue(false as never);
     const { default: pauseSubscriptionAction } =
       await import("../pause-subscription");
 

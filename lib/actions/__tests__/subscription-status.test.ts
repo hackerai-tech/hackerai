@@ -186,7 +186,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
     );
   });
 
-  it("exposes a scheduled retention pause and an applied discount", async () => {
+  it("exposes a scheduled retention pause", async () => {
     mockListSubscriptions.mockResolvedValue({
       data: [
         {
@@ -198,10 +198,6 @@ describe("getSubscriptionCancellationStatusAction", () => {
             hackeraiPauseId: "pause_1",
             hackeraiPauseMonths: "3",
             hackeraiPauseResumeAt: "1795000000000",
-            hackeraiRetentionDiscountCouponId: "coupon_1",
-            hackeraiRetentionDiscountPercentOff: "50",
-            hackeraiRetentionDiscountDurationMonths: "2",
-            hackeraiRetentionDiscountAppliedAt: "1781000000000",
           },
           items: {
             data: [
@@ -233,11 +229,6 @@ describe("getSubscriptionCancellationStatusAction", () => {
           months: 3,
           resumeAt: 1_795_000_000_000,
           pauseEffectiveAt: 1_782_444_800_000,
-        },
-        retentionDiscount: {
-          percentOff: 50,
-          durationMonths: 2,
-          appliedAt: 1_781_000_000_000,
         },
       }),
     );

@@ -484,23 +484,4 @@ describe("AccountTab", () => {
       expect(screen.queryByText("Pause scheduled.")).not.toBeInTheDocument();
     });
   });
-
-  it("shows an applied retention discount next to the renewal price", async () => {
-    mockGetSubscriptionCancellationStatus.mockResolvedValue({
-      hasActiveSubscription: true,
-      cancelAtPeriodEnd: false,
-      renewalAmountDollars: 60,
-      renewalCurrency: "usd",
-      renewalInterval: "month",
-      renewalIntervalCount: 1,
-      retentionDiscount: { percentOff: 50, durationMonths: 2 },
-    } as never);
-
-    render(<AccountTab />);
-
-    expect(await screen.findByText("Renews at $60 every month")).toBeVisible();
-    expect(
-      screen.getByText("50% off applied to your next 2 renewals"),
-    ).toBeVisible();
-  });
 });

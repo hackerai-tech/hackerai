@@ -1,26 +1,22 @@
-# Retention offers: pause and discount
+# Retention offer: pause subscription
 
-Retention offers appear inside the in-app cancellation dialog after the user
-has answered the cancellation survey. They are gated by the PostHog feature
-flag `hac-retention-offers-v1` and fail closed to the plain cancel flow.
+The pause offer appears inside the in-app cancellation dialog after the user
+has answered the cancellation survey. It is gated by the PostHog feature flag
+`hac-96-pause-subscription-offer` and fails closed to the plain cancel flow.
 
 ## What the user sees
 
 1. Reason and follow-up survey (unchanged).
-2. **Before you cancel** step with up to two cards:
-   - **Pause your plan** for 1, 2, or 3 months.
-   - **Stay for 50% off** the next 2 monthly renewals.
-3. "No thanks, continue to cancel" goes to the existing confirmation step.
+2. **Before you cancel** step with a **Pause your plan** card (1, 2, or 3
+   months) and a "No thanks, continue to cancel" link to the existing
+   confirmation step.
+3. Account settings shows **Pause scheduled** with **Cancel pause** until the
+   paid-through date, and **Your plan is paused / Resume now** afterwards.
 
-Eligibility lives in `lib/billing/retention-offers.ts`:
-
-| Offer    | Tiers            | Reasons                                                         | Other rules                                                              |
-| -------- | ---------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Pause    | Pro, Pro+, Ultra | too expensive, not using enough, hit usage limits, pause, other | monthly, single seat, active, no pause in the last 180 days              |
-| Discount | Pro+, Ultra      | too expensive, not using enough, hit usage limits, other        | monthly, single seat, active, no existing discount, one per subscription |
-
-Pro is intentionally excluded from the discount so the offer cannot
-contaminate the HAC-46 Pro monthly pricing experiment.
+Eligibility lives in `lib/billing/retention-offers.ts`: Pro, Pro+, or Ultra;
+monthly; single seat; subscription `active` or `trialing`; no cancellation
+already scheduled; reason is too expensive, not using enough, hit usage
+limits, temporary pause, or other; no pause requested in the last 180 days.
 
 ## How a pause works
 
@@ -54,14 +50,6 @@ Failure handling:
 Users can cancel a scheduled pause with the existing **Keep plan** action
 (shown as **Cancel pause**), which also clears the Stripe metadata.
 
-## How the discount works
-
-`POST /api/billing/discount` applies a repeating Stripe coupon
-(`percent_off=50`, `duration_in_months=2`). The coupon id is deterministic
-(`hackerai-retention-50-off-2-months`) and is created on first use; set
-`STRIPE_RETENTION_COUPON_ID` to use a hand-made coupon instead. The subscription
-metadata records the acceptance so it can only be granted once.
-
 ## Analytics
 
 Events (all carry `paid_funnel_event_version`):
@@ -75,14 +63,12 @@ Events (all carry `paid_funnel_event_version`):
 - `subscription_started` gets `conversion_type=pause_resume` and zeroed
   paid-start counters on resume.
 
-The Convex cancellation report now includes `retainedCount` (discount) and
-`pausedCount` per reason group.
+The Convex cancellation report now includes `pausedCount` per reason group.
 
 ## Environment
 
-- `RETENTION_OFFERS_ENABLED=true|false` overrides the PostHog flag (local dev
-  or kill switch). Leave unset in production.
-- `STRIPE_RETENTION_COUPON_ID` (optional) overrides the auto-created coupon.
+- `PAUSE_OFFER_ENABLED=true|false` overrides the PostHog flag (local dev or
+  kill switch). Leave unset in production.
 - `CRON_SECRET` protects the resume cron, like the existing platform-cost crons.
 - The Convex schema adds the `subscription_pauses` table; deploy Convex before
   enabling the flag.

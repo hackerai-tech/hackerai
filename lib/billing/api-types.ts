@@ -4,7 +4,7 @@ import type {
 } from "@/lib/billing/cancellation-reasons";
 import type {
   PauseDurationMonths,
-  RetentionOfferIneligibilityReason,
+  PauseOfferIneligibilityReason,
 } from "@/lib/billing/retention-offers";
 import type { SubscriptionTier } from "@/types";
 
@@ -14,12 +14,6 @@ export type SubscriptionPauseStatusSummary = {
   pauseEffectiveAt?: number;
   /** When the plan resumes automatically (ms). */
   resumeAt: number;
-};
-
-export type RetentionDiscountSummary = {
-  percentOff: number;
-  durationMonths: number;
-  appliedAt?: number;
 };
 
 export type SubscriptionCancellationStatus = {
@@ -36,8 +30,6 @@ export type SubscriptionCancellationStatus = {
   renewalIntervalCount?: number;
   /** Present when the scheduled cancellation is a retention pause. */
   pause?: SubscriptionPauseStatusSummary;
-  /** Present when a retention discount is applied to the subscription. */
-  retentionDiscount?: RetentionDiscountSummary;
 };
 
 export type BillingPortalFlow = "payment_method";
@@ -79,20 +71,9 @@ export type RetentionPauseOption = {
 
 export type RetentionPauseOffer = {
   eligible: boolean;
-  reason?: RetentionOfferIneligibilityReason;
+  reason?: PauseOfferIneligibilityReason;
   pauseEffectiveAt?: number;
   options: RetentionPauseOption[];
-};
-
-export type RetentionDiscountOffer = {
-  eligible: boolean;
-  reason?: RetentionOfferIneligibilityReason;
-  percentOff: number;
-  durationMonths: number;
-  currentAmountDollars?: number;
-  discountedAmountDollars?: number;
-  currency?: string;
-  nextRenewalAt?: number;
 };
 
 export type RetentionOffers = {
@@ -100,7 +81,6 @@ export type RetentionOffers = {
   subscriptionTier?: SubscriptionTier;
   plan?: string;
   pause: RetentionPauseOffer;
-  discount: RetentionDiscountOffer;
 };
 
 export type PauseSubscriptionInput = {
@@ -114,20 +94,6 @@ export type PauseSubscriptionResult = {
   pauseEffectiveAt: number;
   resumeAt: number;
   alreadyScheduled: boolean;
-};
-
-export type AcceptRetentionDiscountInput = {
-  cancellationReason: CancellationReasonInput;
-};
-
-export type AcceptRetentionDiscountResult = {
-  applied: true;
-  percentOff: number;
-  durationMonths: number;
-  currentAmountDollars?: number;
-  discountedAmountDollars?: number;
-  currency?: string;
-  nextRenewalAt?: number;
 };
 
 export type ResumeSubscriptionResult = {

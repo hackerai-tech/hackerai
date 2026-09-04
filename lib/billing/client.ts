@@ -1,6 +1,4 @@
 import type {
-  AcceptRetentionDiscountInput,
-  AcceptRetentionDiscountResult,
   BillingPortalFlow,
   CancelSubscriptionInput,
   CancelSubscriptionResult,
@@ -142,18 +140,6 @@ export async function pauseSubscription(
     method: "POST",
     body: JSON.stringify(input),
   });
-}
-
-export async function acceptRetentionDiscount(
-  input: AcceptRetentionDiscountInput,
-): Promise<AcceptRetentionDiscountResult> {
-  return billingFetchJson<AcceptRetentionDiscountResult>(
-    "/api/billing/discount",
-    {
-      method: "POST",
-      body: JSON.stringify(input),
-    },
-  );
 }
 
 export async function resumeSubscription(): Promise<ResumeSubscriptionResult> {

@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
 import {
-  BadgePercent,
   CalendarClock,
   X,
   ChevronDown,
@@ -41,7 +40,6 @@ import {
   resumeSubscription,
 } from "@/lib/billing/client";
 import type {
-  AcceptRetentionDiscountResult,
   BillingPortalFlow,
   PauseSubscriptionResult,
   SubscriptionCancellationStatus,
@@ -163,7 +161,6 @@ const AccountTab = () => {
     ? (currentCancellationStatus?.pause ?? null)
     : null;
   const pauseResumeDate = formatCancellationDate(scheduledPause?.resumeAt);
-  const retentionDiscount = currentCancellationStatus?.retentionDiscount;
   const pausedPlan =
     subscription === "free" &&
     activePause &&
@@ -257,20 +254,6 @@ const AccountTab = () => {
     });
   };
 
-  const handleDiscountApplied = (result: AcceptRetentionDiscountResult) => {
-    setCancellationStatus({
-      ...(currentCancellationStatus ?? {}),
-      subscription,
-      hasActiveSubscription: true,
-      cancelAtPeriodEnd: false,
-      retentionDiscount: {
-        percentOff: result.percentOff,
-        durationMonths: result.durationMonths,
-        appliedAt: Date.now(),
-      },
-    });
-  };
-
   const handleKeepPlan = async () => {
     if (isKeepingPlan) return;
 
@@ -346,14 +329,6 @@ const AccountTab = () => {
             {renewalPrice && (
               <div className="mt-0.5 text-sm text-muted-foreground">
                 Renews at {renewalPrice}
-              </div>
-            )}
-            {retentionDiscount && !cancellationScheduled && (
-              <div className="mt-0.5 flex items-center gap-1.5 text-sm text-muted-foreground">
-                <BadgePercent className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>
-                  {`${retentionDiscount.percentOff}% off applied to your next ${retentionDiscount.durationMonths} renewal${retentionDiscount.durationMonths === 1 ? "" : "s"}`}
-                </span>
               </div>
             )}
           </div>
@@ -662,7 +637,6 @@ const AccountTab = () => {
         onOpenChange={setShowCancelDialog}
         onCancellationCompleted={handleCancellationCompleted}
         onPauseScheduled={handlePauseScheduled}
-        onDiscountApplied={handleDiscountApplied}
       />
     </div>
   );

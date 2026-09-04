@@ -3,23 +3,22 @@
 import { api } from "@/convex/_generated/api";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import type { RetentionOffers } from "@/lib/billing/api-types";
-import { isCancellationReasonCategory } from "@/lib/billing/cancellation-reasons";
 import { CANCELLATION_REASON_INPUT_ERRORS } from "@/lib/billing/cancellation-reason-input";
+import {
+  isCancellationReasonCategory,
+  type CancellationReasonCategory,
+} from "@/lib/billing/cancellation-reasons";
 import {
   getCurrentSubscriptionContext,
   type CurrentSubscriptionContext,
 } from "@/lib/billing/current-subscription";
 import {
   PAUSE_DURATION_MONTH_OPTIONS,
-  RETENTION_DISCOUNT,
   computePauseResumeAt,
-  discountedAmountDollars,
-  evaluateRetentionOfferEligibility,
-  retentionDiscountFromMetadata,
-  type RetentionOfferEligibility,
+  evaluatePauseOfferEligibility,
+  type PauseOfferEligibility,
 } from "@/lib/billing/retention-offers";
-import { isRetentionOffersEnabledForUser } from "@/lib/billing/retention-offers.server";
-import type { CancellationReasonCategory } from "@/lib/billing/cancellation-reasons";
+import { isPauseOfferEnabledForUser } from "@/lib/billing/retention-offers.server";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 
@@ -29,7 +28,7 @@ type GetRetentionOffersInput = {
 
 export type RetentionOfferEvaluation = {
   offersEnabled: boolean;
-  eligibility: RetentionOfferEligibility;
+  pause: PauseOfferEligibility;
   subscription: CurrentSubscriptionContext;
   lastPauseRequestedAtMs?: number;
 };
@@ -56,7 +55,7 @@ async function lastPauseRequestedAt(
   }
 }
 
-/** Shared server-side eligibility check for previewing and accepting offers. */
+/** Shared server-side eligibility check for previewing and accepting the offer. */
 export async function evaluateRetentionOffersForUser(args: {
   userId: string;
   stripeCustomerId: string;
@@ -66,12 +65,12 @@ export async function evaluateRetentionOffersForUser(args: {
   const subscription =
     args.subscription ??
     (await getCurrentSubscriptionContext(args.stripeCustomerId));
-  const offersEnabled = await isRetentionOffersEnabledForUser(args.userId);
+  const offersEnabled = await isPauseOfferEnabledForUser(args.userId);
   const lastPauseRequestedAtMs = offersEnabled
     ? await lastPauseRequestedAt(args.userId)
     : undefined;
 
-  const eligibility = evaluateRetentionOfferEligibility({
+  const pause = evaluatePauseOfferEligibility({
     offersEnabled,
     tier: subscription.tier,
     billingInterval: subscription.billingInterval,
@@ -81,58 +80,34 @@ export async function evaluateRetentionOffersForUser(args: {
     quantity: subscription.quantity,
     reasonCategory: args.reasonCategory,
     currentPeriodEndMs: subscription.currentPeriodEndMs,
-    hasExistingDiscount: subscription.hasDiscount,
-    retentionDiscountAlreadyApplied:
-      retentionDiscountFromMetadata(subscription.metadata) !== null,
     lastPauseRequestedAtMs,
   });
 
-  return { offersEnabled, eligibility, subscription, lastPauseRequestedAtMs };
+  return { offersEnabled, pause, subscription, lastPauseRequestedAtMs };
 }
 
 export function buildRetentionOffers(
   evaluation: RetentionOfferEvaluation,
 ): RetentionOffers {
-  const { eligibility, subscription } = evaluation;
+  const { pause, subscription } = evaluation;
   const periodEndMs = subscription.currentPeriodEndMs;
   const pauseOptions =
-    eligibility.pause.eligible && periodEndMs
+    pause.eligible && periodEndMs
       ? PAUSE_DURATION_MONTH_OPTIONS.map((months) => ({
           months,
           resumeAt: computePauseResumeAt(periodEndMs, months),
         }))
       : [];
-  const currentAmountDollars =
-    subscription.unitAmountDollars === undefined
-      ? undefined
-      : subscription.unitAmountDollars * subscription.quantity;
 
   return {
     offersEnabled: evaluation.offersEnabled,
     subscriptionTier: subscription.tier,
     plan: subscription.plan,
     pause: {
-      eligible: eligibility.pause.eligible,
-      ...(!eligibility.pause.eligible && { reason: eligibility.pause.reason }),
+      eligible: pause.eligible,
+      ...(!pause.eligible && { reason: pause.reason }),
       ...(periodEndMs && { pauseEffectiveAt: periodEndMs }),
       options: pauseOptions,
-    },
-    discount: {
-      eligible: eligibility.discount.eligible,
-      ...(!eligibility.discount.eligible && {
-        reason: eligibility.discount.reason,
-      }),
-      percentOff: RETENTION_DISCOUNT.percentOff,
-      durationMonths: RETENTION_DISCOUNT.durationMonths,
-      ...(currentAmountDollars !== undefined && {
-        currentAmountDollars,
-        discountedAmountDollars: discountedAmountDollars(
-          currentAmountDollars,
-          RETENTION_DISCOUNT.percentOff,
-        ),
-      }),
-      ...(subscription.currency && { currency: subscription.currency }),
-      ...(periodEndMs && { nextRenewalAt: periodEndMs }),
     },
   };
 }

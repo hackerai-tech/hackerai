@@ -14,19 +14,16 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
-  acceptRetentionDiscount,
   cancelSubscription,
   getRetentionOffers,
   pauseSubscription,
 } from "@/lib/billing/client";
 import type {
-  AcceptRetentionDiscountResult,
   PauseSubscriptionResult,
   RetentionOffers,
 } from "@/lib/billing/api-types";
 import { toast } from "sonner";
 import {
-  BadgePercent,
   CheckCircle2,
   Heart,
   Loader2,
@@ -65,7 +62,6 @@ type CancelSubscriptionDialogProps = {
   onOpenChange: (open: boolean) => void;
   onCancellationCompleted?: (result: CancellationResult) => void;
   onPauseScheduled?: (result: PauseSubscriptionResult) => void;
-  onDiscountApplied?: (result: AcceptRetentionDiscountResult) => void;
 };
 
 type CancellationResult = {
@@ -74,9 +70,7 @@ type CancellationResult = {
   alreadyScheduled?: boolean;
 };
 
-type RetentionOfferResult =
-  | { type: "pause"; result: PauseSubscriptionResult }
-  | { type: "discount"; result: AcceptRetentionDiscountResult };
+type RetentionOfferResult = { type: "pause"; result: PauseSubscriptionResult };
 
 type CancellationStep = "reason" | "details" | "offer" | "confirm";
 
@@ -139,30 +133,14 @@ function formatLongDate(timestamp?: number) {
   }).format(new Date(timestamp));
 }
 
-function formatMoney(amount?: number, currency?: string) {
-  if (amount === undefined) return null;
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: "currency",
-      currency: (currency ?? "usd").toUpperCase(),
-      maximumFractionDigits: Number.isInteger(amount) ? 0 : 2,
-    }).format(amount);
-  } catch {
-    return `$${amount}`;
-  }
-}
-
 function pluralizeMonths(months: number) {
   return `${months} month${months === 1 ? "" : "s"}`;
 }
 
 function shownOfferTypes(offers: RetentionOffers): RetentionOfferType[] {
-  const types: RetentionOfferType[] = [];
-  if (offers.pause.eligible && offers.pause.options.length > 0) {
-    types.push("pause");
-  }
-  if (offers.discount.eligible) types.push("discount");
-  return types;
+  return offers.pause.eligible && offers.pause.options.length > 0
+    ? ["pause"]
+    : [];
 }
 
 export const CancelSubscriptionDialog = ({
@@ -170,7 +148,6 @@ export const CancelSubscriptionDialog = ({
   onOpenChange,
   onCancellationCompleted,
   onPauseScheduled,
-  onDiscountApplied,
 }: CancelSubscriptionDialogProps) => {
   const { subscription } = useGlobalState();
   const [isProcessing, setIsProcessing] = useState(false);
@@ -297,9 +274,9 @@ export const CancelSubscriptionDialog = ({
           reason_subcategory: reasonSubcategory,
           offers_shown: offerTypes,
           pause_offered: offerTypes.includes("pause"),
-          discount_offered: offerTypes.includes("discount"),
-          discount_percent_off: nextOffers.discount.percentOff,
-          discount_duration_months: nextOffers.discount.durationMonths,
+          pause_effective_at: nextOffers.pause.pauseEffectiveAt
+            ? new Date(nextOffers.pause.pauseEffectiveAt).toISOString()
+            : undefined,
           ...OFFER_ANALYTICS_CONTEXT,
         }),
       );
@@ -374,45 +351,6 @@ export const CancelSubscriptionDialog = ({
     reasonSubcategory,
     selectedPauseMonths,
   ]);
-
-  const handleAcceptDiscount = useCallback(async () => {
-    const trimmedReasonDetails = reasonDetails.trim();
-    if (!reasonCategory || !reasonSubcategory || !trimmedReasonDetails) {
-      setShowValidation(true);
-      setStep("details");
-      return;
-    }
-
-    setIsProcessing(true);
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    try {
-      const result = await acceptRetentionDiscount({
-        cancellationReason: {
-          reasonCategory,
-          reasonSubcategory,
-          reasonDetails: trimmedReasonDetails,
-        },
-      });
-      if (!openRef.current || requestIdRef.current !== requestId) {
-        return;
-      }
-      setOfferResult({ type: "discount", result });
-      onDiscountApplied?.(result);
-      toast.success("Discount applied");
-    } catch (error) {
-      if (!openRef.current || requestIdRef.current !== requestId) {
-        return;
-      }
-      toast.error(
-        error instanceof Error ? error.message : "Failed to apply discount",
-      );
-    } finally {
-      if (openRef.current && requestIdRef.current === requestId) {
-        setIsProcessing(false);
-      }
-    }
-  }, [onDiscountApplied, reasonCategory, reasonDetails, reasonSubcategory]);
 
   const handleCancelSubscription = useCallback(async () => {
     const trimmedReasonDetails = reasonDetails.trim();
@@ -561,9 +499,7 @@ export const CancelSubscriptionDialog = ({
       ? "Subscription canceled"
       : "Cancellation scheduled"
     : offerResult
-      ? offerResult.type === "pause"
-        ? "Pause scheduled"
-        : "Discount applied"
+      ? "Pause scheduled"
       : isConfirmStep
         ? "Final confirmation"
         : isOfferStep
@@ -588,7 +524,6 @@ export const CancelSubscriptionDialog = ({
     offers?.pause.eligible && offers.pause.options.length > 0
       ? offers.pause
       : null;
-  const discountOffer = offers?.discount.eligible ? offers.discount : null;
   const selectedPauseOption =
     pauseOffer?.options.find(
       (option) => option.months === selectedPauseMonths,
@@ -597,14 +532,6 @@ export const CancelSubscriptionDialog = ({
     null;
   const pauseEffectiveDate = formatLongDate(pauseOffer?.pauseEffectiveAt);
   const pauseResumeDate = formatLongDate(selectedPauseOption?.resumeAt);
-  const discountCurrentPrice = formatMoney(
-    discountOffer?.currentAmountDollars,
-    discountOffer?.currency,
-  );
-  const discountedPrice = formatMoney(
-    discountOffer?.discountedAmountDollars,
-    discountOffer?.currency,
-  );
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -635,40 +562,18 @@ export const CancelSubscriptionDialog = ({
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
               <DialogHeader className="gap-3 text-left sm:text-left">
                 <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
-                  {offerResult.type === "pause"
-                    ? "Pause scheduled"
-                    : "Discount applied"}
+                  Pause scheduled
                 </DialogTitle>
                 <DialogDescription className="text-base leading-7">
-                  {offerResult.type === "pause"
-                    ? `Your ${planName} plan stays active until ${
-                        formatLongDate(offerResult.result.pauseEffectiveAt) ??
-                        "the end of your current billing period"
-                      }. Billing then pauses for ${pluralizeMonths(
-                        offerResult.result.months,
-                      )} and your plan resumes automatically on ${
-                        formatLongDate(offerResult.result.resumeAt) ??
-                        "the resume date"
-                      }. You can resume sooner or cancel the pause from Account settings.`
-                    : `You'll pay ${
-                        formatMoney(
-                          offerResult.result.discountedAmountDollars,
-                          offerResult.result.currency,
-                        ) ?? `${offerResult.result.percentOff}% less`
-                      } instead of ${
-                        formatMoney(
-                          offerResult.result.currentAmountDollars,
-                          offerResult.result.currency,
-                        ) ?? "the regular price"
-                      } for your next ${pluralizeMonths(
-                        offerResult.result.durationMonths,
-                      )}${
-                        formatLongDate(offerResult.result.nextRenewalAt)
-                          ? `, starting ${formatLongDate(
-                              offerResult.result.nextRenewalAt,
-                            )}`
-                          : ""
-                      }. Your plan and usage stay exactly the same.`}
+                  {`Your ${planName} plan stays active until ${
+                    formatLongDate(offerResult.result.pauseEffectiveAt) ??
+                    "the end of your current billing period"
+                  }. Billing then pauses for ${pluralizeMonths(
+                    offerResult.result.months,
+                  )} and your plan resumes automatically on ${
+                    formatLongDate(offerResult.result.resumeAt) ??
+                    "the resume date"
+                  }. You can resume sooner or cancel the pause from Account settings.`}
                 </DialogDescription>
               </DialogHeader>
             </div>
@@ -716,11 +621,7 @@ export const CancelSubscriptionDialog = ({
                   Before you cancel
                 </DialogTitle>
                 <DialogDescription className="text-base leading-7">
-                  {pauseOffer && discountOffer
-                    ? "Two ways to keep your setup without paying full price."
-                    : pauseOffer
-                      ? "Take a break instead of starting over later."
-                      : "Stay on your plan for less."}
+                  Take a break instead of starting over later.
                 </DialogDescription>
               </DialogHeader>
 
@@ -794,50 +695,6 @@ export const CancelSubscriptionDialog = ({
                         <Loader2 className="size-4 animate-spin" />
                       ) : (
                         `Pause for ${pluralizeMonths(selectedPauseMonths)}`
-                      )}
-                    </Button>
-                  </section>
-                ) : null}
-
-                {discountOffer ? (
-                  <section
-                    aria-labelledby="retention-discount-title"
-                    className="rounded-lg border border-border bg-muted/40 p-5"
-                  >
-                    <div className="flex items-start gap-3">
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
-                        <BadgePercent className="size-5" aria-hidden="true" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <h3
-                          id="retention-discount-title"
-                          className="text-lg font-semibold text-foreground"
-                        >
-                          {`Stay for ${discountOffer.percentOff}% off`}
-                        </h3>
-                        <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                          {discountedPrice && discountCurrentPrice
-                            ? `Pay ${discountedPrice} instead of ${discountCurrentPrice} for your next ${pluralizeMonths(
-                                discountOffer.durationMonths,
-                              )}.`
-                            : `${discountOffer.percentOff}% off your next ${pluralizeMonths(
-                                discountOffer.durationMonths,
-                              )}.`}{" "}
-                          Same plan, same usage. You can still cancel anytime.
-                        </p>
-                      </div>
-                    </div>
-
-                    <Button
-                      onClick={handleAcceptDiscount}
-                      disabled={isProcessing}
-                      variant={pauseOffer ? "outline" : "default"}
-                      className="mt-4 h-11 w-full"
-                    >
-                      {isProcessing ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        `Apply ${discountOffer.percentOff}% off`
                       )}
                     </Button>
                   </section>

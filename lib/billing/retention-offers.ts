@@ -4,18 +4,16 @@ import type { CancellationReasonCategory } from "@/lib/billing/cancellation-reas
 import type { SubscriptionTier } from "@/types";
 
 /**
- * Retention offers shown inside the in-app cancellation flow.
+ * Retention "pause" offer shown inside the in-app cancellation flow.
  *
- * - "pause": the plan ends at the paid-through date and is re-created
- *   automatically (same price, saved card) after the chosen number of months.
- * - "discount": a repeating Stripe coupon applied to the next monthly renewals.
- *
- * Eligibility is deliberately conservative and reason-aware so the offers are
- * shown to people whose stated reason the offer can actually address.
+ * The plan ends at the paid-through date and is re-created automatically
+ * (same price, saved card) after the chosen number of months. Eligibility is
+ * deliberately conservative and reason-aware so the offer is shown to people
+ * whose stated reason a pause can actually address.
  */
-export const RETENTION_OFFERS_FLAG_KEY = "hac-retention-offers-v1";
+export const PAUSE_OFFER_FLAG_KEY = "hac-96-pause-subscription-offer";
 
-export type RetentionOfferType = "pause" | "discount";
+export type RetentionOfferType = "pause";
 
 export const PAUSE_DURATION_MONTH_OPTIONS = [1, 2, 3] as const;
 export type PauseDurationMonths = (typeof PAUSE_DURATION_MONTH_OPTIONS)[number];
@@ -28,25 +26,8 @@ export const PAUSE_RESUME_MAX_ATTEMPTS = 3;
 /** Delay between automatic resume retries after a retryable payment failure. */
 export const PAUSE_RESUME_RETRY_DELAY_MS = 24 * 60 * 60 * 1000;
 
-export const RETENTION_DISCOUNT = {
-  percentOff: 50,
-  durationMonths: 2,
-  /** Deterministic Stripe coupon id so the coupon is created at most once. */
-  couponId: "hackerai-retention-50-off-2-months",
-  couponName: "HackerAI retention: 50% off for 2 months",
-} as const;
-
 const PAUSE_ELIGIBLE_TIERS: ReadonlySet<SubscriptionTier> = new Set([
   "pro",
-  "pro-plus",
-  "ultra",
-]);
-
-/**
- * Higher-priced individual tiers only. Pro stays discount-free so the offer
- * cannot contaminate the HAC-46 Pro monthly pricing experiment.
- */
-const DISCOUNT_ELIGIBLE_TIERS: ReadonlySet<SubscriptionTier> = new Set([
   "pro-plus",
   "ultra",
 ]);
@@ -59,13 +40,6 @@ const PAUSE_REASONS: ReadonlySet<CancellationReasonCategory> = new Set([
   "other",
 ]);
 
-const DISCOUNT_REASONS: ReadonlySet<CancellationReasonCategory> = new Set([
-  "too_expensive",
-  "not_using_enough",
-  "hit_usage_limits",
-  "other",
-]);
-
 export const SUBSCRIPTION_PAUSE_METADATA = {
   pauseId: "hackeraiPauseId",
   months: "hackeraiPauseMonths",
@@ -73,16 +47,9 @@ export const SUBSCRIPTION_PAUSE_METADATA = {
   requestedAt: "hackeraiPauseRequestedAt",
 } as const;
 
-export const RETENTION_DISCOUNT_METADATA = {
-  couponId: "hackeraiRetentionDiscountCouponId",
-  percentOff: "hackeraiRetentionDiscountPercentOff",
-  durationMonths: "hackeraiRetentionDiscountDurationMonths",
-  appliedAt: "hackeraiRetentionDiscountAppliedAt",
-} as const;
-
 export const PAUSE_RESUME_CHECKOUT_TYPE = "pause_resume";
 
-export type RetentionOfferIneligibilityReason =
+export type PauseOfferIneligibilityReason =
   | "offers_disabled"
   | "unsupported_tier"
   | "unsupported_billing_interval"
@@ -91,10 +58,9 @@ export type RetentionOfferIneligibilityReason =
   | "reason_not_applicable"
   | "multi_seat"
   | "pause_cooldown"
-  | "discount_already_applied"
   | "missing_period_end";
 
-export type RetentionOfferEligibilityInput = {
+export type PauseOfferEligibilityInput = {
   offersEnabled: boolean;
   tier: SubscriptionTier | undefined;
   billingInterval: string | undefined;
@@ -104,87 +70,58 @@ export type RetentionOfferEligibilityInput = {
   quantity?: number | null;
   reasonCategory: CancellationReasonCategory;
   currentPeriodEndMs: number | undefined;
-  hasExistingDiscount: boolean;
-  retentionDiscountAlreadyApplied: boolean;
   lastPauseRequestedAtMs: number | undefined;
   nowMs?: number;
 };
 
-export type RetentionOfferEligibility = {
-  pause:
-    | { eligible: true }
-    | { eligible: false; reason: RetentionOfferIneligibilityReason };
-  discount:
-    | { eligible: true }
-    | { eligible: false; reason: RetentionOfferIneligibilityReason };
-};
+export type PauseOfferEligibility =
+  | { eligible: true }
+  | { eligible: false; reason: PauseOfferIneligibilityReason };
 
-function sharedIneligibility(
-  input: RetentionOfferEligibilityInput,
-): RetentionOfferIneligibilityReason | null {
-  if (!input.offersEnabled) return "offers_disabled";
+export function evaluatePauseOfferEligibility(
+  input: PauseOfferEligibilityInput,
+): PauseOfferEligibility {
+  if (!input.offersEnabled) {
+    return { eligible: false, reason: "offers_disabled" };
+  }
   if (
     input.subscriptionStatus !== "active" &&
     input.subscriptionStatus !== "trialing"
   ) {
-    return "subscription_not_active";
+    return { eligible: false, reason: "subscription_not_active" };
   }
-  if (input.cancelAtPeriodEnd) return "cancellation_already_scheduled";
+  if (input.cancelAtPeriodEnd) {
+    return { eligible: false, reason: "cancellation_already_scheduled" };
+  }
   if (
     input.billingInterval !== "month" ||
     (input.billingIntervalCount ?? 1) !== 1
   ) {
-    return "unsupported_billing_interval";
+    return { eligible: false, reason: "unsupported_billing_interval" };
   }
-  if ((input.quantity ?? 1) !== 1) return "multi_seat";
-  return null;
-}
-
-export function evaluateRetentionOfferEligibility(
-  input: RetentionOfferEligibilityInput,
-): RetentionOfferEligibility {
-  const shared = sharedIneligibility(input);
-  if (shared) {
-    return {
-      pause: { eligible: false, reason: shared },
-      discount: { eligible: false, reason: shared },
-    };
+  if ((input.quantity ?? 1) !== 1) {
+    return { eligible: false, reason: "multi_seat" };
+  }
+  if (!input.tier || !PAUSE_ELIGIBLE_TIERS.has(input.tier)) {
+    return { eligible: false, reason: "unsupported_tier" };
+  }
+  if (!PAUSE_REASONS.has(input.reasonCategory)) {
+    return { eligible: false, reason: "reason_not_applicable" };
+  }
+  if (!input.currentPeriodEndMs) {
+    return { eligible: false, reason: "missing_period_end" };
   }
 
   const nowMs = input.nowMs ?? Date.now();
-
-  let pause: RetentionOfferEligibility["pause"];
-  if (!input.tier || !PAUSE_ELIGIBLE_TIERS.has(input.tier)) {
-    pause = { eligible: false, reason: "unsupported_tier" };
-  } else if (!PAUSE_REASONS.has(input.reasonCategory)) {
-    pause = { eligible: false, reason: "reason_not_applicable" };
-  } else if (!input.currentPeriodEndMs) {
-    pause = { eligible: false, reason: "missing_period_end" };
-  } else if (
+  if (
     input.lastPauseRequestedAtMs !== undefined &&
     nowMs - input.lastPauseRequestedAtMs <
       PAUSE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000
   ) {
-    pause = { eligible: false, reason: "pause_cooldown" };
-  } else {
-    pause = { eligible: true };
+    return { eligible: false, reason: "pause_cooldown" };
   }
 
-  let discount: RetentionOfferEligibility["discount"];
-  if (!input.tier || !DISCOUNT_ELIGIBLE_TIERS.has(input.tier)) {
-    discount = { eligible: false, reason: "unsupported_tier" };
-  } else if (!DISCOUNT_REASONS.has(input.reasonCategory)) {
-    discount = { eligible: false, reason: "reason_not_applicable" };
-  } else if (
-    input.hasExistingDiscount ||
-    input.retentionDiscountAlreadyApplied
-  ) {
-    discount = { eligible: false, reason: "discount_already_applied" };
-  } else {
-    discount = { eligible: true };
-  }
-
-  return { pause, discount };
+  return { eligible: true };
 }
 
 export function isPauseDurationMonths(
@@ -222,15 +159,6 @@ export function computePauseResumeAt(
   months: PauseDurationMonths,
 ): number {
   return addUtcMonths(currentPeriodEndMs, months);
-}
-
-export function discountedAmountDollars(
-  amountDollars: number,
-  percentOff: number,
-): number {
-  const cents = Math.round(amountDollars * 100);
-  const discountCents = Math.round((cents * percentOff) / 100);
-  return (cents - discountCents) / 100;
 }
 
 export type SubscriptionPauseMetadata = {
@@ -289,52 +217,5 @@ export function clearedSubscriptionPauseMetadata(): Stripe.MetadataParam {
     [SUBSCRIPTION_PAUSE_METADATA.months]: "",
     [SUBSCRIPTION_PAUSE_METADATA.resumeAt]: "",
     [SUBSCRIPTION_PAUSE_METADATA.requestedAt]: "",
-  };
-}
-
-export type RetentionDiscountMetadata = {
-  couponId: string;
-  percentOff: number;
-  durationMonths: number;
-  appliedAtMs?: number;
-};
-
-export function retentionDiscountFromMetadata(
-  metadata: Stripe.Metadata | null | undefined,
-): RetentionDiscountMetadata | null {
-  if (!metadata) return null;
-  const couponId = metadata[RETENTION_DISCOUNT_METADATA.couponId];
-  const percentOff = metadataNumber(
-    metadata[RETENTION_DISCOUNT_METADATA.percentOff],
-  );
-  const durationMonths = metadataNumber(
-    metadata[RETENTION_DISCOUNT_METADATA.durationMonths],
-  );
-  if (!couponId || percentOff === undefined || durationMonths === undefined) {
-    return null;
-  }
-  return {
-    couponId,
-    percentOff,
-    durationMonths,
-    appliedAtMs: metadataNumber(
-      metadata[RETENTION_DISCOUNT_METADATA.appliedAt],
-    ),
-  };
-}
-
-export function retentionDiscountMetadata(args: {
-  couponId: string;
-  appliedAtMs: number;
-}): Stripe.MetadataParam {
-  return {
-    [RETENTION_DISCOUNT_METADATA.couponId]: args.couponId,
-    [RETENTION_DISCOUNT_METADATA.percentOff]: String(
-      RETENTION_DISCOUNT.percentOff,
-    ),
-    [RETENTION_DISCOUNT_METADATA.durationMonths]: String(
-      RETENTION_DISCOUNT.durationMonths,
-    ),
-    [RETENTION_DISCOUNT_METADATA.appliedAt]: String(args.appliedAtMs),
   };
 }

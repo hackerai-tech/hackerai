@@ -7,7 +7,6 @@ import userEvent from "@testing-library/user-event";
 const mockCancelSubscription = jest.fn();
 const mockGetRetentionOffers = jest.fn();
 const mockPauseSubscription = jest.fn();
-const mockAcceptRetentionDiscount = jest.fn();
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockToastSuccess = jest.fn();
 
@@ -21,7 +20,6 @@ jest.mock("@/lib/billing/client", () => ({
   cancelSubscription: mockCancelSubscription,
   getRetentionOffers: mockGetRetentionOffers,
   pauseSubscription: mockPauseSubscription,
-  acceptRetentionDiscount: mockAcceptRetentionDiscount,
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -41,11 +39,8 @@ const CancelSubscriptionDialog = require("../CancelSubscriptionDialog")
 const PAUSE_EFFECTIVE_AT = Date.UTC(2026, 9, 1, 12);
 const PAUSE_RESUME_AT = Date.UTC(2026, 11, 1, 12);
 
-function retentionOffers(
-  overrides: { pause?: boolean; discount?: boolean } = {},
-) {
+function retentionOffers(overrides: { pause?: boolean } = {}) {
   const pause = overrides.pause ?? true;
-  const discount = overrides.discount ?? true;
   return {
     offersEnabled: true,
     subscriptionTier: "pro-plus",
@@ -60,15 +55,6 @@ function retentionOffers(
             { months: 3, resumeAt: Date.UTC(2027, 0, 1, 12) },
           ]
         : [],
-    },
-    discount: {
-      eligible: discount,
-      percentOff: 50,
-      durationMonths: 2,
-      currentAmountDollars: 60,
-      discountedAmountDollars: 30,
-      currency: "usd",
-      nextRenewalAt: PAUSE_EFFECTIVE_AT,
     },
   };
 }
@@ -92,7 +78,7 @@ describe("CancelSubscriptionDialog", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetRetentionOffers.mockResolvedValue(
-      retentionOffers({ pause: false, discount: false }) as never,
+      retentionOffers({ pause: false }) as never,
     );
   });
 
@@ -212,7 +198,7 @@ describe("CancelSubscriptionDialog", () => {
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.retentionOfferImpressed,
       expect.objectContaining({
-        offers_shown: ["pause", "discount"],
+        offers_shown: ["pause"],
         reason_category: "not_using_enough",
       }),
     );
@@ -240,57 +226,6 @@ describe("CancelSubscriptionDialog", () => {
     expect(mockToastSuccess).toHaveBeenCalledWith("Pause scheduled");
   });
 
-  it("applies the retention discount from the offer step", async () => {
-    mockGetRetentionOffers.mockResolvedValue(
-      retentionOffers({ pause: false }) as never,
-    );
-    mockAcceptRetentionDiscount.mockResolvedValue({
-      applied: true,
-      percentOff: 50,
-      durationMonths: 2,
-      currentAmountDollars: 60,
-      discountedAmountDollars: 30,
-      currency: "usd",
-      nextRenewalAt: PAUSE_EFFECTIVE_AT,
-    } as never);
-    const onDiscountApplied = jest.fn();
-    const user = userEvent.setup();
-
-    render(
-      <CancelSubscriptionDialog
-        open={true}
-        onOpenChange={jest.fn()}
-        onDiscountApplied={onDiscountApplied}
-      />,
-    );
-
-    await completeSurvey(user);
-
-    expect(
-      await screen.findByRole("heading", { name: "Stay for 50% off" }),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("heading", { name: "Pause your plan" }),
-    ).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Apply 50% off" }));
-
-    expect(mockAcceptRetentionDiscount).toHaveBeenCalledWith({
-      cancellationReason: {
-        reasonCategory: "not_using_enough",
-        reasonSubcategory: "too_expensive_low_frequency",
-        reasonDetails: "Busy with a contract for a while",
-      },
-    });
-    expect(
-      await screen.findByRole("heading", { name: "Discount applied" }),
-    ).toBeVisible();
-    expect(onDiscountApplied).toHaveBeenCalledWith(
-      expect.objectContaining({ percentOff: 50, durationMonths: 2 }),
-    );
-    expect(mockCancelSubscription).not.toHaveBeenCalled();
-  });
-
   it("continues to the cancellation confirmation when offers are declined", async () => {
     mockGetRetentionOffers.mockResolvedValue(retentionOffers() as never);
     const user = userEvent.setup();
@@ -310,7 +245,7 @@ describe("CancelSubscriptionDialog", () => {
     ).toBeVisible();
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.retentionOfferDeclined,
-      expect.objectContaining({ offers_shown: ["pause", "discount"] }),
+      expect.objectContaining({ offers_shown: ["pause"] }),
     );
   });
 
