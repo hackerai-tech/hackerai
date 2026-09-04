@@ -6,6 +6,7 @@ import {
   normalizePmUserResearchGatewayInput,
   normalizeCohortSynthesis,
   normalizeResearchUserProfile,
+  sanitizeResearchComparisonGroups,
   sanitizeResearchText,
   USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS,
   USER_RESEARCH_MAX_CONTEXT_CHARS,
@@ -175,6 +176,21 @@ describe("user research privacy controls", () => {
         evidenceAnchors: [{ userId: "user-1", anchorAt: 1785841937847 }],
       }),
     );
+  });
+
+  it("rejects comparison labels that collide after privacy sanitization", () => {
+    expect(() =>
+      sanitizeResearchComparisonGroups([
+        {
+          label: "first@example.com",
+          userIds: ["user-1", "user-2", "user-3"],
+        },
+        {
+          label: "second@example.com",
+          userIds: ["user-4", "user-5", "user-6"],
+        },
+      ]),
+    ).toThrow("must remain unique after privacy sanitization");
   });
 
   it("pins Grok 4.6 for text-only research with low reasoning", () => {

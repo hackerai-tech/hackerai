@@ -189,6 +189,7 @@ const requireUniqueResearchUsers = (
   }
 };
 
+/** Convert supported timestamp strings while leaving invalid values for Zod. */
 const normalizeGatewayTimestamp = (value: unknown): unknown => {
   if (typeof value !== "string") return value;
   const normalized = value.trim();
@@ -501,6 +502,30 @@ export const sanitizeResearchText = (value: string): string =>
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{4,}/g, "\n\n\n")
     .trim();
+
+/** Sanitize comparison labels and reject labels that become empty or collide. */
+export const sanitizeResearchComparisonGroups = (
+  groups: Array<{ label: string; userIds: string[] }> | undefined,
+): Array<{ label: string; userIds: string[] }> | undefined => {
+  const sanitized = groups?.map((group) => ({
+    label: sanitizeResearchText(group.label),
+    userIds: group.userIds,
+  }));
+  if (sanitized?.some((group) => !group.label)) {
+    throw new Error(
+      "Comparison group labels must contain privacy-safe descriptive text",
+    );
+  }
+  if (
+    sanitized &&
+    new Set(sanitized.map((group) => group.label)).size !== sanitized.length
+  ) {
+    throw new Error(
+      "Comparison group labels must remain unique after privacy sanitization",
+    );
+  }
+  return sanitized;
+};
 
 export const sanitizeStructuredResearchOutput = <T>(value: T): T => {
   if (typeof value === "string") {

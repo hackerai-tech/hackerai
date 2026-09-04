@@ -107,6 +107,14 @@ For a comparison, also add group membership selected in PostHog:
 
 ```json
 {
+  "userIds": [
+    "internal-user-id-1",
+    "internal-user-id-2",
+    "internal-user-id-3",
+    "internal-user-id-4",
+    "internal-user-id-5",
+    "internal-user-id-6"
+  ],
   "comparisonGroups": [
     {
       "label": "Model rollout A",

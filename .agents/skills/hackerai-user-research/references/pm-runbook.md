@@ -28,7 +28,8 @@ timestamp beside each user ID and provide it as that member's evidence anchor.
 Use a bounded pre-event window; do not use one cohort-wide timestamp.
 For comparative research, retain 2-4 PostHog-selected group labels and their
 internal user IDs. Each group must contain at least three users and every cohort
-user must belong to exactly one group.
+user must belong to exactly one group. Labels may describe a model, rollout, or
+funnel treatment, but must not identify a person or organization.
 
 ## 2. Run through Codex
 

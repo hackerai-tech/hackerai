@@ -218,8 +218,13 @@ export const createRun = mutation({
     }
 
     const comparisonGroupLabels = args.members.flatMap((member) =>
-      member.comparisonGroupLabel ? [member.comparisonGroupLabel] : [],
+      member.comparisonGroupLabel !== undefined
+        ? [member.comparisonGroupLabel]
+        : [],
     );
+    if (comparisonGroupLabels.some((label) => label.trim().length === 0)) {
+      throw new ConvexError("Comparison group labels must not be blank");
+    }
     if (
       comparisonGroupLabels.length > 0 &&
       comparisonGroupLabels.length !== args.members.length
@@ -342,7 +347,7 @@ export const createRun = mutation({
           ...(member.evidenceAnchorAt !== undefined
             ? { evidence_anchor_at: member.evidenceAnchorAt }
             : {}),
-          ...(member.comparisonGroupLabel
+          ...(member.comparisonGroupLabel !== undefined
             ? { comparison_group_label: member.comparisonGroupLabel }
             : {}),
           created_at: now,

@@ -15,6 +15,7 @@ import {
   pmUserResearchPayloadSchema,
   researchSamplingModeSchema,
   researchUserProfileSchema,
+  sanitizeResearchComparisonGroups,
   sanitizeResearchText,
   USER_RESEARCH_MODEL_KEY,
   USER_RESEARCH_MIN_COHORT_SIZE,
@@ -221,15 +222,9 @@ export const pmUserResearch = schemaTask({
     const selectionLimitations = payload.selectionLimitations
       .map(sanitizeResearchText)
       .filter(Boolean);
-    const comparisonGroups = payload.comparisonGroups?.map((group) => ({
-      label: sanitizeResearchText(group.label),
-      userIds: group.userIds,
-    }));
-    if (comparisonGroups?.some((group) => !group.label)) {
-      throw new Error(
-        "Comparison group labels must contain privacy-safe descriptive text",
-      );
-    }
+    const comparisonGroups = sanitizeResearchComparisonGroups(
+      payload.comparisonGroups,
+    );
     const comparisonGroupByUserId = new Map(
       (comparisonGroups ?? []).flatMap((group) =>
         group.userIds.map((userId) => [userId, group.label] as const),

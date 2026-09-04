@@ -391,6 +391,23 @@ describe("userResearch.createRun", () => {
         ),
       }),
     ).rejects.toThrow("at least three members each");
+    await expect(
+      createRun.handler({ db: {} } as never, {
+        ...baseArgs,
+        members: members.map((member) => ({
+          ...member,
+          comparisonGroupLabel: "   ",
+        })),
+      }),
+    ).rejects.toThrow("must not be blank");
+    await expect(
+      createRun.handler({ db: {} } as never, {
+        ...baseArgs,
+        members: members.map((member, index) =>
+          index === 0 ? { ...member, comparisonGroupLabel: "" } : member,
+        ),
+      }),
+    ).rejects.toThrow("must not be blank");
   });
 });
 
