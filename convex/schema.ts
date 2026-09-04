@@ -320,7 +320,16 @@ export default defineSchema({
       ),
     ),
     reason_details_id: v.optional(v.id("cancellation_reason_details")),
-    status: v.union(v.literal("started"), v.literal("completed")),
+    // "retained" means the user accepted a retention offer instead of
+    // cancelling. A pause keeps "started" until Stripe ends the subscription.
+    status: v.union(
+      v.literal("started"),
+      v.literal("completed"),
+      v.literal("retained"),
+    ),
+    retention_offer_accepted: v.optional(
+      v.union(v.literal("pause"), v.literal("discount")),
+    ),
     source: v.union(v.literal("in_app"), v.literal("billing_portal")),
     started_at: v.number(),
     completed_at: v.optional(v.number()),
@@ -363,6 +372,55 @@ export default defineSchema({
       "stripe_subscription_id",
       "created_at",
     ]),
+
+  // Retention "pause" offers. A pause schedules the Stripe subscription to end
+  // at its paid-through date and re-creates it automatically on resume_at with
+  // the same price and the saved payment method.
+  subscription_pauses: defineTable({
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_customer_id: v.string(),
+    stripe_subscription_id: v.string(),
+    stripe_price_id: v.string(),
+    stripe_price_lookup_key: v.optional(v.string()),
+    subscription_tier: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    quantity: v.number(),
+    stripe_payment_method_id: v.optional(v.string()),
+    reason_category: v.optional(v.string()),
+    pause_months: v.number(),
+    requested_at: v.number(),
+    pause_effective_at: v.number(),
+    resume_at: v.number(),
+    status: v.union(
+      v.literal("scheduled"),
+      v.literal("paused"),
+      v.literal("resuming"),
+      v.literal("resumed"),
+      v.literal("resume_failed"),
+      v.literal("canceled"),
+      v.literal("superseded"),
+    ),
+    paused_at: v.optional(v.number()),
+    resume_attempt_count: v.number(),
+    resume_claimed_at: v.optional(v.number()),
+    last_resume_attempt_at: v.optional(v.number()),
+    last_resume_error: v.optional(v.string()),
+    resumed_at: v.optional(v.number()),
+    resumed_stripe_subscription_id: v.optional(v.string()),
+    canceled_at: v.optional(v.number()),
+    updated_at: v.number(),
+  })
+    .index("by_user_requested", ["user_id", "requested_at"])
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"])
+    .index("by_status_resume_at", ["status", "resume_at"]),
 
   // Privacy-safe Stripe lifecycle facts for involuntary churn and recovery.
   // User-selected cancellation survey answers and free text intentionally stay

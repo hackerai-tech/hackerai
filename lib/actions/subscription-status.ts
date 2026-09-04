@@ -5,6 +5,10 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import {
+  retentionDiscountFromMetadata,
+  subscriptionPauseFromMetadata,
+} from "@/lib/billing/retention-offers";
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
 type CurrentSubscriptionStatus = NonNullable<
@@ -91,11 +95,35 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     price?.unit_amount == null
       ? undefined
       : (price.unit_amount * (item.quantity ?? 1)) / 100;
+  const cancelAtPeriodEnd = currentSubscription.cancel_at_period_end === true;
+  const currentPeriodEnd = currentPeriodEndMs(currentSubscription);
+  const pause = cancelAtPeriodEnd
+    ? subscriptionPauseFromMetadata(currentSubscription.metadata)
+    : null;
+  const retentionDiscount = retentionDiscountFromMetadata(
+    currentSubscription.metadata,
+  );
   return {
     hasActiveSubscription: true,
-    cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
-    currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+    cancelAtPeriodEnd,
+    currentPeriodEnd,
     subscriptionStatus: currentSubscription.status,
+    ...(pause && {
+      pause: {
+        months: pause.months,
+        resumeAt: pause.resumeAtMs,
+        ...(currentPeriodEnd && { pauseEffectiveAt: currentPeriodEnd }),
+      },
+    }),
+    ...(retentionDiscount && {
+      retentionDiscount: {
+        percentOff: retentionDiscount.percentOff,
+        durationMonths: retentionDiscount.durationMonths,
+        ...(retentionDiscount.appliedAtMs && {
+          appliedAt: retentionDiscount.appliedAtMs,
+        }),
+      },
+    }),
     ...(latestInvoiceId && { latestInvoiceId }),
     ...(price?.id && { stripePriceId: price.id }),
     ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),

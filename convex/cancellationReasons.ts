@@ -196,6 +196,37 @@ export const recordCancellationStarted = mutation({
   },
 });
 
+/**
+ * Record that the user accepted a retention offer for a started cancellation.
+ * A discount keeps the subscription, so the row becomes "retained". A pause
+ * still ends the subscription later, so the row stays "started" until the
+ * Stripe webhook completes it.
+ */
+export const recordRetentionOfferAccepted = mutation({
+  args: {
+    serviceKey: v.string(),
+    cancellationReasonId: v.id("cancellation_reasons"),
+    retentionOffer: v.union(v.literal("pause"), v.literal("discount")),
+    acceptedAt: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const row = await ctx.db.get(args.cancellationReasonId);
+    if (!row) return null;
+
+    const acceptedAt = args.acceptedAt ?? Date.now();
+    await ctx.db.patch(row._id, {
+      retention_offer_accepted: args.retentionOffer,
+      ...(args.retentionOffer === "discount" &&
+        row.status === "started" && { status: "retained" as const }),
+      updated_at: acceptedAt,
+    });
+    return null;
+  },
+});
+
 export const markCancellationCompleted = mutation({
   args: {
     serviceKey: v.string(),
@@ -267,6 +298,8 @@ export const getCancellationReasonReport = query({
       reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       startedCount: v.number(),
       completedCount: v.number(),
+      retainedCount: v.number(),
+      pausedCount: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -301,6 +334,8 @@ export const getCancellationReasonReport = query({
         reasonSubcategory: CancellationReasonSubcategory | null;
         startedCount: number;
         completedCount: number;
+        retainedCount: number;
+        pausedCount: number;
       }
     >();
 
@@ -335,11 +370,19 @@ export const getCancellationReasonReport = query({
         reasonSubcategory: row.reason_subcategory ?? null,
         startedCount: 0,
         completedCount: 0,
+        retainedCount: 0,
+        pausedCount: 0,
       };
 
       group.startedCount += 1;
       if (row.status === "completed") {
         group.completedCount += 1;
+      }
+      if (row.status === "retained") {
+        group.retainedCount += 1;
+      }
+      if (row.retention_offer_accepted === "pause") {
+        group.pausedCount += 1;
       }
       groups.set(key, group);
     }
@@ -369,7 +412,17 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
       reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       subscriptionTier: v.union(subscriptionTierValidator, v.null()),
       plan: v.union(v.string(), v.null()),
-      status: v.union(v.literal("started"), v.literal("completed"), v.null()),
+      status: v.union(
+        v.literal("started"),
+        v.literal("completed"),
+        v.literal("retained"),
+        v.null(),
+      ),
+      retentionOfferAccepted: v.union(
+        v.literal("pause"),
+        v.literal("discount"),
+        v.null(),
+      ),
       source: v.union(sourceValidator, v.null()),
       recentUsageSegment: v.union(usageSegmentValidator, v.null()),
       recentUsageRequestCount: v.union(v.number(), v.null()),
@@ -416,6 +469,7 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
           subscriptionTier: reason?.subscription_tier ?? null,
           plan: reason?.plan ?? null,
           status: reason?.status ?? null,
+          retentionOfferAccepted: reason?.retention_offer_accepted ?? null,
           source: reason?.source ?? null,
           recentUsageSegment: reason?.recent_usage_segment ?? null,
           recentUsageRequestCount: reason?.recent_usage_request_count ?? null,

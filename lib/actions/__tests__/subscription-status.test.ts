@@ -185,4 +185,61 @@ describe("getSubscriptionCancellationStatusAction", () => {
       }),
     );
   });
+
+  it("exposes a scheduled retention pause and an applied discount", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_paused",
+          status: "active",
+          cancel_at_period_end: true,
+          current_period_end: 1_782_444_800,
+          metadata: {
+            hackeraiPauseId: "pause_1",
+            hackeraiPauseMonths: "3",
+            hackeraiPauseResumeAt: "1795000000000",
+            hackeraiRetentionDiscountCouponId: "coupon_1",
+            hackeraiRetentionDiscountPercentOff: "50",
+            hackeraiRetentionDiscountDurationMonths: "2",
+            hackeraiRetentionDiscountAppliedAt: "1781000000000",
+          },
+          items: {
+            data: [
+              {
+                quantity: 1,
+                price: {
+                  id: "price_ultra",
+                  lookup_key: "ultra-monthly-plan",
+                  unit_amount: 20000,
+                  currency: "usd",
+                  recurring: { interval: "month", interval_count: 1 },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    } as never);
+
+    const { default: getSubscriptionCancellationStatusAction } =
+      await import("../subscription-status");
+
+    await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual(
+      expect.objectContaining({
+        hasActiveSubscription: true,
+        cancelAtPeriodEnd: true,
+        currentPeriodEnd: 1_782_444_800_000,
+        pause: {
+          months: 3,
+          resumeAt: 1_795_000_000_000,
+          pauseEffectiveAt: 1_782_444_800_000,
+        },
+        retentionDiscount: {
+          percentOff: 50,
+          durationMonths: 2,
+          appliedAt: 1_781_000_000_000,
+        },
+      }),
+    );
+  });
 });

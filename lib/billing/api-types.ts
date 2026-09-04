@@ -2,6 +2,25 @@ import type {
   CancellationReasonCategory,
   CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
+import type {
+  PauseDurationMonths,
+  RetentionOfferIneligibilityReason,
+} from "@/lib/billing/retention-offers";
+import type { SubscriptionTier } from "@/types";
+
+export type SubscriptionPauseStatusSummary = {
+  months: PauseDurationMonths;
+  /** When the paid period ends and the pause takes effect (ms). */
+  pauseEffectiveAt?: number;
+  /** When the plan resumes automatically (ms). */
+  resumeAt: number;
+};
+
+export type RetentionDiscountSummary = {
+  percentOff: number;
+  durationMonths: number;
+  appliedAt?: number;
+};
 
 export type SubscriptionCancellationStatus = {
   hasActiveSubscription: boolean;
@@ -15,6 +34,10 @@ export type SubscriptionCancellationStatus = {
   renewalCurrency?: string;
   renewalInterval?: string;
   renewalIntervalCount?: number;
+  /** Present when the scheduled cancellation is a retention pause. */
+  pause?: SubscriptionPauseStatusSummary;
+  /** Present when a retention discount is applied to the subscription. */
+  retentionDiscount?: RetentionDiscountSummary;
 };
 
 export type BillingPortalFlow = "payment_method";
@@ -24,6 +47,8 @@ export type KeepSubscriptionResult = {
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;
   alreadyKept: boolean;
+  /** True when keeping the plan also cancelled a scheduled pause. */
+  pauseCanceled?: boolean;
 };
 
 export type CancellationReasonInput = {
@@ -41,4 +66,73 @@ export type CancelSubscriptionResult = {
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;
   alreadyScheduled: boolean;
+};
+
+export type GetRetentionOffersInput = {
+  reasonCategory: CancellationReasonCategory;
+};
+
+export type RetentionPauseOption = {
+  months: PauseDurationMonths;
+  resumeAt: number;
+};
+
+export type RetentionPauseOffer = {
+  eligible: boolean;
+  reason?: RetentionOfferIneligibilityReason;
+  pauseEffectiveAt?: number;
+  options: RetentionPauseOption[];
+};
+
+export type RetentionDiscountOffer = {
+  eligible: boolean;
+  reason?: RetentionOfferIneligibilityReason;
+  percentOff: number;
+  durationMonths: number;
+  currentAmountDollars?: number;
+  discountedAmountDollars?: number;
+  currency?: string;
+  nextRenewalAt?: number;
+};
+
+export type RetentionOffers = {
+  offersEnabled: boolean;
+  subscriptionTier?: SubscriptionTier;
+  plan?: string;
+  pause: RetentionPauseOffer;
+  discount: RetentionDiscountOffer;
+};
+
+export type PauseSubscriptionInput = {
+  months: PauseDurationMonths;
+  cancellationReason: CancellationReasonInput;
+};
+
+export type PauseSubscriptionResult = {
+  paused: true;
+  months: PauseDurationMonths;
+  pauseEffectiveAt: number;
+  resumeAt: number;
+  alreadyScheduled: boolean;
+};
+
+export type AcceptRetentionDiscountInput = {
+  cancellationReason: CancellationReasonInput;
+};
+
+export type AcceptRetentionDiscountResult = {
+  applied: true;
+  percentOff: number;
+  durationMonths: number;
+  currentAmountDollars?: number;
+  discountedAmountDollars?: number;
+  currency?: string;
+  nextRenewalAt?: number;
+};
+
+export type ResumeSubscriptionResult = {
+  resumed: true;
+  stripeSubscriptionId?: string;
+  /** The customer already had a live subscription, so nothing was created. */
+  alreadyActive: boolean;
 };

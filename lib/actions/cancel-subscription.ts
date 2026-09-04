@@ -9,13 +9,10 @@ import {
 } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import {
-  isCancellationReasonCategory,
-  isCancellationReasonSubcategory,
-  isCancellationReasonSubcategoryForCategory,
-  normalizeCancellationReasonDetails,
-  type CancellationReasonCategory,
-  type CancellationReasonSubcategory,
-} from "@/lib/billing/cancellation-reasons";
+  parseCancellationReasonInput,
+  stripeCancellationFeedback,
+  type CancellationReasonInputLike,
+} from "@/lib/billing/cancellation-reason-input";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -31,20 +28,8 @@ import {
   type ProMonthlyPricingExperimentAssignment,
 } from "@/lib/experiments/pro-monthly-pricing";
 
-type CancellationReasonInput = {
-  reasonCategory?: unknown;
-  reasonSubcategory?: unknown;
-  reasonDetails?: unknown;
-};
-
 type CancelSubscriptionInput = {
-  cancellationReason?: CancellationReasonInput;
-};
-
-type ParsedCancellationReasonInput = {
-  reasonCategory: CancellationReasonCategory;
-  reasonSubcategory: CancellationReasonSubcategory;
-  reasonDetails: string;
+  cancellationReason?: CancellationReasonInputLike;
 };
 
 type SubscriptionContext = {
@@ -57,40 +42,6 @@ type SubscriptionContext = {
   cancelAtPeriodEnd: boolean;
   pricingExperiment?: ProMonthlyPricingExperimentAssignment;
 };
-
-function parseCancellationReasonInput(
-  value: CancelSubscriptionInput["cancellationReason"],
-): ParsedCancellationReasonInput {
-  const reasonCategory = value?.reasonCategory;
-  const reasonSubcategory = value?.reasonSubcategory;
-  const reasonDetails = normalizeCancellationReasonDetails(
-    value?.reasonDetails,
-  );
-
-  if (!isCancellationReasonCategory(reasonCategory)) {
-    throw new Error("Please select the main cancellation reason");
-  }
-
-  if (
-    !isCancellationReasonSubcategory(reasonSubcategory) ||
-    !isCancellationReasonSubcategoryForCategory(
-      reasonCategory,
-      reasonSubcategory,
-    )
-  ) {
-    throw new Error("Please select what best describes the issue");
-  }
-
-  if (!reasonDetails) {
-    throw new Error("Please write a cancellation reason before continuing");
-  }
-
-  return {
-    reasonCategory,
-    reasonSubcategory,
-    reasonDetails,
-  };
-}
 
 function parseCreatedAtMs(value: unknown): number | undefined {
   const raw = (value as { createdAt?: unknown; created_at?: unknown }) ?? {};
@@ -156,16 +107,6 @@ async function getActiveSubscriptionContext(
 
 function shouldCancelImmediately(status: Stripe.Subscription.Status) {
   return status === "past_due" || status === "unpaid";
-}
-
-function stripeCancellationFeedback(
-  reasonCategory: CancellationReasonCategory,
-) {
-  if (reasonCategory === "too_expensive") return "too_expensive";
-  if (reasonCategory === "missing_feature") return "missing_features";
-  if (reasonCategory === "switched_tool") return "switched_service";
-  if (reasonCategory === "not_using_enough") return "unused";
-  return "other";
 }
 
 export default async function cancelSubscriptionAction(

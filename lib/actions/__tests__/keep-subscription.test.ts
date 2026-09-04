@@ -30,6 +30,23 @@ jest.mock("@/lib/actions/billing-context", () => ({
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     event: mockPostHogEvent,
+    warn: jest.fn(),
+  },
+}));
+
+const mockConvexMutation = jest.fn();
+
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({
+    mutation: mockConvexMutation,
+  }),
+}));
+
+jest.mock("@/convex/_generated/api", () => ({
+  api: {
+    subscriptionPauses: {
+      cancelScheduledPause: "subscriptionPauses.cancelScheduledPause",
+    },
   },
 }));
 
@@ -156,5 +173,79 @@ describe("keepSubscriptionAction", () => {
       "No active subscription found",
     );
     expect(mockUpdateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("clears pause metadata and cancels the pause record when keeping a paused plan", async () => {
+    process.env.CONVEX_SERVICE_ROLE_KEY = "service-key";
+    mockConvexMutation.mockResolvedValue({ canceledCount: 1 } as never);
+    mockStripeSubscriptionsList([
+      {
+        id: "sub_paused",
+        status: "active",
+        cancel_at_period_end: true,
+        current_period_end: 1_782_444_800,
+        metadata: {
+          hackeraiPauseId: "pause_1",
+          hackeraiPauseMonths: "2",
+          hackeraiPauseResumeAt: "1795000000000",
+          hackeraiPauseRequestedAt: "1780000000000",
+        },
+        items: {
+          data: [
+            {
+              price: {
+                id: "price_pro_plus",
+                lookup_key: "pro-plus-monthly-plan",
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    mockUpdateSubscription.mockResolvedValue({
+      id: "sub_paused",
+      cancel_at_period_end: false,
+      current_period_end: 1_782_444_800,
+    } as never);
+
+    const { default: keepSubscriptionAction } =
+      await import("../keep-subscription");
+
+    await expect(keepSubscriptionAction()).resolves.toEqual({
+      kept: true,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: 1_782_444_800_000,
+      alreadyKept: false,
+      pauseCanceled: true,
+    });
+
+    expect(mockUpdateSubscription).toHaveBeenCalledWith("sub_paused", {
+      cancel_at_period_end: false,
+      metadata: {
+        hackeraiPauseId: "",
+        hackeraiPauseMonths: "",
+        hackeraiPauseResumeAt: "",
+        hackeraiPauseRequestedAt: "",
+      },
+    });
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "subscriptionPauses.cancelScheduledPause",
+      expect.objectContaining({
+        serviceKey: "service-key",
+        stripeSubscriptionId: "sub_paused",
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.subscriptionPauseCanceled,
+      expect.objectContaining({
+        pause_id: "pause_1",
+        pause_months: 2,
+        pause_record_canceled: true,
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.cancellationReversed,
+      expect.objectContaining({ retention_pause: true }),
+    );
   });
 });
