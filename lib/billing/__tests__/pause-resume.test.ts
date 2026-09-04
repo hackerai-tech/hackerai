@@ -322,4 +322,36 @@ describe("resumePausedSubscription", () => {
       expect.not.objectContaining({ retryAt: expect.anything() }),
     );
   });
+
+  it("still reports resumed when the Convex bookkeeping write fails after creation", async () => {
+    mockConvexMutation.mockImplementation((async (name: string) => {
+      if (name === "subscriptionPauses.claimResume") {
+        return pauseRecord({ status: "resuming", resumeAttemptCount: 1 });
+      }
+      if (name === "subscriptionPauses.markResumeSucceeded") {
+        throw new Error("convex write failed");
+      }
+      return null;
+    }) as never);
+    const { resumePausedSubscription } = await import("../pause-resume");
+
+    const result = await resumePausedSubscription(pauseRecord() as never, {
+      trigger: "cron",
+      now: NOW,
+    });
+
+    expect(result).toEqual({
+      outcome: "resumed",
+      stripeSubscriptionId: "sub_new",
+    });
+    expect(mockCreateSubscription).toHaveBeenCalledTimes(1);
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "subscriptionPauses.markResumeFailed",
+      expect.anything(),
+    );
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "subscription_pause_resume_state_update_failed",
+      expect.objectContaining({ stripe_subscription_id: "sub_new" }),
+    );
+  });
 });

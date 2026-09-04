@@ -5,6 +5,7 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
@@ -22,16 +23,6 @@ function hasCurrentSubscriptionStatus<T extends { status: string }>(
   subscription: T,
 ): subscription is T & { status: CurrentSubscriptionStatus } {
   return isCurrentSubscriptionStatus(subscription.status);
-}
-
-function currentPeriodEndMs(subscription: unknown): number | undefined {
-  const currentPeriodEnd = (subscription as { current_period_end?: unknown })
-    .current_period_end;
-  return typeof currentPeriodEnd === "number" &&
-    Number.isFinite(currentPeriodEnd) &&
-    currentPeriodEnd > 0
-    ? currentPeriodEnd * 1000
-    : undefined;
 }
 
 export default async function getSubscriptionCancellationStatusAction(): Promise<SubscriptionCancellationStatus> {
@@ -93,7 +84,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       ? undefined
       : (price.unit_amount * (item.quantity ?? 1)) / 100;
   const cancelAtPeriodEnd = currentSubscription.cancel_at_period_end === true;
-  const currentPeriodEnd = currentPeriodEndMs(currentSubscription);
+  const currentPeriodEnd = subscriptionCurrentPeriodEndMs(currentSubscription);
   const pause = cancelAtPeriodEnd
     ? subscriptionPauseFromMetadata(currentSubscription.metadata)
     : null;

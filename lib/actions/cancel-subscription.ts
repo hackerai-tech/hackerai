@@ -13,6 +13,7 @@ import {
   stripeCancellationFeedback,
   type CancellationReasonInputLike,
 } from "@/lib/billing/cancellation-reason-input";
+import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -62,16 +63,6 @@ function subscriptionTierFromLookupKey(
   return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
 }
 
-function currentPeriodEndMs(subscription: unknown): number | undefined {
-  const currentPeriodEnd = (subscription as { current_period_end?: unknown })
-    .current_period_end;
-  return typeof currentPeriodEnd === "number" &&
-    Number.isFinite(currentPeriodEnd) &&
-    currentPeriodEnd > 0
-    ? currentPeriodEnd * 1000
-    : undefined;
-}
-
 async function getActiveSubscriptionContext(
   stripeCustomerId: string,
 ): Promise<SubscriptionContext> {
@@ -96,7 +87,7 @@ async function getActiveSubscriptionContext(
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
-    currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+    currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
       currentSubscription.metadata,
@@ -331,7 +322,7 @@ export default async function cancelSubscriptionAction(
     ...(updatedSubscription.cancel_at_period_end
       ? {
           currentPeriodEnd:
-            currentPeriodEndMs(updatedSubscription) ??
+            subscriptionCurrentPeriodEndMs(updatedSubscription) ??
             subscriptionContext.currentPeriodEnd,
         }
       : {}),

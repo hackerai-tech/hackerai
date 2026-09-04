@@ -15,6 +15,7 @@ import {
   subscriptionPauseFromMetadata,
   type SubscriptionPauseMetadata,
 } from "@/lib/billing/retention-offers";
+import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
 import { getConvexClient } from "@/lib/db/convex-client";
 import type Stripe from "stripe";
 import type { SubscriptionTier } from "@/types";
@@ -35,16 +36,6 @@ function subscriptionTierFromLookupKey(
   lookupKey: string | null | undefined,
 ): SubscriptionTier | undefined {
   return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
-}
-
-function currentPeriodEndMs(subscription: unknown): number | undefined {
-  const currentPeriodEnd = (subscription as { current_period_end?: unknown })
-    .current_period_end;
-  return typeof currentPeriodEnd === "number" &&
-    Number.isFinite(currentPeriodEnd) &&
-    currentPeriodEnd > 0
-    ? currentPeriodEnd * 1000
-    : undefined;
 }
 
 async function getActiveSubscriptionContext(
@@ -76,7 +67,7 @@ async function getActiveSubscriptionContext(
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
-    currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+    currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     pause: subscriptionPauseFromMetadata(currentSubscription.metadata),
   };
@@ -198,7 +189,7 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
     kept: true,
     cancelAtPeriodEnd: updatedSubscription.cancel_at_period_end === true,
     currentPeriodEnd:
-      currentPeriodEndMs(updatedSubscription) ??
+      subscriptionCurrentPeriodEndMs(updatedSubscription) ??
       subscriptionContext.currentPeriodEnd,
     alreadyKept: false,
     ...(pause && { pauseCanceled }),

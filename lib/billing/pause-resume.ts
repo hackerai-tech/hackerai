@@ -220,12 +220,23 @@ export async function resumePausedSubscription(
       },
     );
 
-    await convex.mutation(api.subscriptionPauses.markResumeSucceeded, {
-      serviceKey: key,
-      pauseId: claimed.id,
-      resumedStripeSubscriptionId: subscription.id,
-      resumedAt: now,
-    });
+    // The subscription now exists; a failed bookkeeping write must not turn
+    // the outcome into a failure or trigger another creation attempt.
+    try {
+      await convex.mutation(api.subscriptionPauses.markResumeSucceeded, {
+        serviceKey: key,
+        pauseId: claimed.id,
+        resumedStripeSubscriptionId: subscription.id,
+        resumedAt: now,
+      });
+    } catch (markError) {
+      phLogger.error("subscription_pause_resume_state_update_failed", {
+        event: "subscription_pause_resume_state_update_failed",
+        ...analytics,
+        stripe_subscription_id: subscription.id,
+        error: markError,
+      });
+    }
 
     phLogger.event(
       PAID_FUNNEL_EVENTS.subscriptionPauseResumed,
