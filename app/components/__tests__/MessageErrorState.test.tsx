@@ -14,10 +14,14 @@ import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import { getPaidDailyFreeAllowanceCtaText } from "@/lib/limit-pressure";
 
 let mockSubscription: "free" | "pro" = "pro";
+const mockSetSelectedModel = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   GlobalStateProvider: ({ children }: { children: ReactNode }) => children,
-  useGlobalState: () => ({ subscription: mockSubscription }),
+  useGlobalState: () => ({
+    subscription: mockSubscription,
+    setSelectedModel: mockSetSelectedModel,
+  }),
 }));
 
 jest.mock("@/lib/utils/settings-dialog", () => ({
@@ -156,7 +160,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
           costRemainingDollars: 0.25,
         },
       },
@@ -183,7 +187,7 @@ describe("MessageErrorState", () => {
       expect.objectContaining({
         surface: "message_error_state",
         cta_text: getPaidDailyFreeAllowanceCtaText("ask"),
-        allowance_requests_remaining: 1,
+        allowance_requests_today: 0,
         allowance_cost_remaining_dollars: 0.25,
       }),
     );
@@ -334,7 +338,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
           costRemainingDollars: 0.25,
         },
       },
@@ -371,7 +375,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
         },
       },
     );
@@ -394,7 +398,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: false,
-          unavailableReason: "request_limit_reached",
+          unavailableReason: "cost_limit_reached",
         },
       },
     );
@@ -410,5 +414,63 @@ describe("MessageErrorState", () => {
         name: getPaidDailyFreeAllowanceCtaText("ask"),
       }),
     ).toBeNull();
+  });
+
+  it("tells the user to switch to Auto when a specific model blocks the allowance, without an amount", async () => {
+    const user = userEvent.setup();
+    const onRetry = jest.fn();
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You've hit your monthly usage limit.",
+      {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: {
+          type: "paid_daily_free_allowance",
+          available: false,
+          unavailableReason: "unsupported_model",
+          costRemainingDollars: 0.25,
+        },
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={onRetry} mode="agent" />
+      </TestWrapper>,
+    );
+
+    const hint = screen.getByText(/still get some free usage today on Auto/i);
+    expect(hint).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Try Again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    ).toBeVisible();
+    expect(hint.textContent).not.toContain("$");
+    expect(
+      screen.queryByRole("button", {
+        name: getPaidDailyFreeAllowanceCtaText("agent"),
+      }),
+    ).toBeNull();
+    expect(capturePaidDailyFreeAllowanceImpression).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cta_text: "Switch to Auto and continue",
+        allowance_unavailable_reason: "unsupported_model",
+      }),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch to Auto and continue" }),
+    );
+
+    expect(mockSetSelectedModel).toHaveBeenCalledWith("auto");
+    expect(capturePaidDailyFreeAllowanceClick).toHaveBeenCalledWith(
+      expect.objectContaining({ cta_text: "Switch to Auto and continue" }),
+    );
+    expect(onRetry).toHaveBeenCalledWith({
+      limitRescue: { type: "paid_daily_free_allowance" },
+      selectedModel: "auto",
+    });
   });
 });

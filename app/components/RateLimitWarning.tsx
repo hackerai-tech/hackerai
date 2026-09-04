@@ -137,7 +137,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
         return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
       }
       if (data.capReason === "paid_daily_free_allowance_cut_off") {
-        return `Today's free Ask allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;
+        return `Today's free allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;
       }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }

@@ -79,6 +79,15 @@ export function capturePaidDailyFreeAllowanceServerEvent({
   extra?: Record<string, unknown>;
 }) {
   const status = reservation?.status;
+  const now = new Date().toISOString();
+  // Person properties let PostHog split exhausted users into "used the
+  // allowance" vs "did not" for retention, cancellation, and top-up
+  // comparisons without a join.
+  const isRescueStart =
+    event === PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceStarted;
+  const isRescueEnd =
+    event === PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceSucceeded ||
+    event === PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff;
   phLogger.event(
     event,
     paidFunnelProperties({
@@ -88,9 +97,10 @@ export function capturePaidDailyFreeAllowanceServerEvent({
       chat_id: chatId,
       endpoint,
       limit_rescue_type: "paid_daily_free_allowance",
-      paid_daily_free_allowance_request_limit: status?.requestLimit,
-      paid_daily_free_allowance_requests_remaining: status?.requestsRemaining,
+      paid_daily_free_allowance_requests_today: status?.requestsUsed,
       paid_daily_free_allowance_cost_limit_dollars: status?.costLimitDollars,
+      paid_daily_free_allowance_cost_used_today_dollars:
+        status?.costUsedDollars,
       paid_daily_free_allowance_cost_remaining_dollars:
         status?.costRemainingDollars,
       paid_daily_free_allowance_reset_timestamp: status?.resetTimestamp,
@@ -99,7 +109,23 @@ export function capturePaidDailyFreeAllowanceServerEvent({
       ...extra,
       $set: {
         subscription_tier: subscription,
+        ...(isRescueStart && {
+          paid_daily_free_allowance_last_used_at: now,
+          paid_daily_free_allowance_last_used_mode: mode,
+        }),
+        ...(isRescueEnd && {
+          paid_daily_free_allowance_last_completed_at: now,
+          paid_daily_free_allowance_last_cut_off:
+            event === PAID_FUNNEL_EVENTS.paidDailyFreeAllowanceCutOff,
+        }),
       },
+      ...(isRescueStart && {
+        $set_once: {
+          paid_daily_free_allowance_first_used_at: now,
+          paid_daily_free_allowance_first_used_mode: mode,
+          paid_daily_free_allowance_first_used_tier: subscription,
+        },
+      }),
     }),
   );
 }
@@ -111,7 +137,7 @@ export function createPaidDailyFreeAllowanceUsageLogContext(
   return {
     active: true,
     cutOff,
-    requestLimit: reservation.status.requestLimit,
+    requestsToday: reservation.status.requestsUsed,
     costLimitDollars: reservation.status.costLimitDollars,
     resetTimestamp: reservation.status.resetTimestamp,
   };
