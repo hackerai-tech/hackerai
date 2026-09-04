@@ -154,7 +154,13 @@ describe("cancelSubscriptionAction", () => {
                 price: {
                   id: "price_pro",
                   lookup_key: "pro-monthly-plan",
+                  unit_amount: 2500,
+                  recurring: {
+                    interval: "month",
+                    interval_count: 1,
+                  },
                 },
+                quantity: 2,
               },
             ],
           },
@@ -203,6 +209,15 @@ describe("cancelSubscriptionAction", () => {
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.objectContaining({
         $insert_id: cancellationCompletionInsertId("sub_123"),
+        cancellation_reason: "cancellation_requested",
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
+        billing_interval: "month",
+        billing_interval_count: 1,
+        subscription_mrr_dollars: 50,
+        attributed_mrr_dollars: 50,
+        at_risk_mrr_dollars: 50,
       }),
     );
   });

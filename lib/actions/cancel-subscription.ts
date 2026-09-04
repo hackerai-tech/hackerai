@@ -23,7 +23,12 @@ import {
   cancellationCompletionInsertId,
   paidFunnelProperties,
   planLookupKeyToTier,
+  subscriptionChurnHealthProperties,
 } from "@/lib/analytics/paid-funnel";
+import {
+  priceBillingInterval,
+  subscriptionMrrDollars,
+} from "@/lib/billing/subscription-mrr";
 import type { SubscriptionTier } from "@/types";
 import {
   proMonthlyPricingAssignmentFromMetadata,
@@ -50,9 +55,11 @@ type ParsedCancellationReasonInput = {
 type SubscriptionContext = {
   id: string;
   status: Stripe.Subscription.Status;
+  price?: Stripe.Price;
   priceId?: string;
   plan?: string;
   tier?: SubscriptionTier;
+  quantity?: number;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd: boolean;
   pricingExperiment?: ProMonthlyPricingExperimentAssignment;
@@ -138,13 +145,16 @@ async function getActiveSubscriptionContext(
     throw new Error("No active subscription found");
   }
 
-  const price = currentSubscription.items.data[0]?.price;
+  const item = currentSubscription.items.data[0];
+  const price = item?.price;
   return {
     id: currentSubscription.id,
     status: currentSubscription.status,
+    price,
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
+    quantity: item?.quantity ?? undefined,
     currentPeriodEnd: currentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
@@ -309,6 +319,10 @@ export default async function cancelSubscriptionAction(
   const completedAt = updatedSubscription.canceled_at
     ? updatedSubscription.canceled_at * 1000
     : Date.now();
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: subscriptionContext.price,
+    quantity: subscriptionContext.quantity ?? 1,
+  });
 
   if (serviceKey) {
     try {
@@ -367,8 +381,16 @@ export default async function cancelSubscriptionAction(
         subscription_tier: subscriptionContext.tier,
         plan: subscriptionContext.plan,
         stripe_price_lookup_key: subscriptionContext.plan,
+        billing_interval: priceBillingInterval(subscriptionContext.price),
+        billing_interval_count:
+          subscriptionContext.price?.recurring?.interval_count,
         reason_category: cancellationReason.reasonCategory,
         reason_subcategory: cancellationReason.reasonSubcategory,
+        cancellation_reason: "cancellation_requested",
+        ...subscriptionChurnHealthProperties("cancellation_requested"),
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: subscriptionMrr,
+        at_risk_mrr_dollars: subscriptionMrr,
         cancellation_completion_type: cancelImmediately
           ? "immediate_in_app"
           : "scheduled_in_app",
