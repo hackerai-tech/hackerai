@@ -129,6 +129,19 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
   }
 
   const pause = subscriptionContext.pause;
+  if (pause && !process.env.CONVEX_SERVICE_ROLE_KEY) {
+    // Clearing the Stripe pause without cancelling the Convex record would
+    // leave a scheduled resume behind; refuse rather than diverge.
+    const error = new Error("CONVEX_SERVICE_ROLE_KEY is not set");
+    phLogger.error("subscription_pause_cancel_misconfigured", {
+      userId: user.id,
+      org_id: organizationId,
+      stripe_customer_id: stripeCustomerId,
+      stripe_subscription_id: subscriptionContext.id,
+      error,
+    });
+    throw error;
+  }
   const updatedSubscription = await stripe.subscriptions.update(
     subscriptionContext.id,
     {

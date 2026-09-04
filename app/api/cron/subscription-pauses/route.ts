@@ -56,10 +56,25 @@ export async function GET(request: Request) {
     counts.due = due.length;
 
     for (const pause of due) {
-      const result = await resumePausedSubscription(pause, {
-        trigger: "cron",
-        now: Date.now(),
-      });
+      let result: Awaited<ReturnType<typeof resumePausedSubscription>>;
+      try {
+        result = await resumePausedSubscription(pause, {
+          trigger: "cron",
+          now: Date.now(),
+        });
+      } catch (error) {
+        // One broken pause must not block the rest of the batch.
+        counts.failed += 1;
+        phLogger.error("subscription_pause_resume_unhandled", {
+          event: "subscription_pause_resume_unhandled",
+          request_id: requestId,
+          userId: pause.userId,
+          pause_id: pause.id,
+          stripe_customer_id: pause.stripeCustomerId,
+          error,
+        });
+        continue;
+      }
       switch (result.outcome) {
         case "resumed":
           counts.resumed += 1;

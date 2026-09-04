@@ -26,7 +26,11 @@ async function lastPauseRequestedAt(
   userId: string,
 ): Promise<number | undefined> {
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
-  if (!serviceKey) return undefined;
+  if (!serviceKey) {
+    phLogger.error("retention_offer_service_key_missing", { userId });
+    // Fail closed for the pause offer: an unknown history counts as recent.
+    return Date.now();
+  }
 
   try {
     const pause = await getConvexClient().query(

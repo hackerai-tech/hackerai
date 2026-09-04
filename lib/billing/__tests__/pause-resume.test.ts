@@ -139,18 +139,21 @@ describe("resumePausedSubscription", () => {
       "subscriptionPauses.claimResume",
       expect.objectContaining({ pauseId: "pause_1", manual: false, now: NOW }),
     );
-    expect(mockCreateSubscription).toHaveBeenCalledWith({
-      customer: "cus_123",
-      items: [{ price: "price_pro_plus", quantity: 1 }],
-      default_payment_method: "pm_123",
-      payment_behavior: "error_if_incomplete",
-      metadata: expect.objectContaining({
-        checkoutType: "pause_resume",
-        checkoutSource: "pause_resume",
-        hackeraiPauseId: "pause_1",
-        hackeraiResumedFromSubscriptionId: "sub_old",
-      }),
-    });
+    expect(mockCreateSubscription).toHaveBeenCalledWith(
+      {
+        customer: "cus_123",
+        items: [{ price: "price_pro_plus", quantity: 1 }],
+        default_payment_method: "pm_123",
+        payment_behavior: "error_if_incomplete",
+        metadata: expect.objectContaining({
+          checkoutType: "pause_resume",
+          checkoutSource: "pause_resume",
+          hackeraiPauseId: "pause_1",
+          hackeraiResumedFromSubscriptionId: "sub_old",
+        }),
+      },
+      { idempotencyKey: "pause_resume:pause_1:1" },
+    );
     expect(mockConvexMutation).toHaveBeenCalledWith(
       "subscriptionPauses.markResumeSucceeded",
       expect.objectContaining({
@@ -224,6 +227,7 @@ describe("resumePausedSubscription", () => {
 
     expect(mockCreateSubscription).toHaveBeenCalledWith(
       expect.objectContaining({ default_payment_method: "pm_default" }),
+      expect.objectContaining({ idempotencyKey: expect.any(String) }),
     );
   });
 

@@ -139,6 +139,28 @@ describe("GET /api/cron/subscription-pauses", () => {
     );
   });
 
+  it("keeps processing the batch when one resume throws", async () => {
+    mockConvexQuery.mockResolvedValue([
+      { id: "pause_broken", userId: "user_1", stripeCustomerId: "cus_1" },
+      { id: "pause_ok", userId: "user_2", stripeCustomerId: "cus_2" },
+    ] as never);
+    mockResumePausedSubscription
+      .mockRejectedValueOnce(new Error("convex claim failed") as never)
+      .mockResolvedValueOnce({
+        outcome: "resumed",
+        stripeSubscriptionId: "sub_ok",
+      } as never);
+    const { GET } = await import("../route");
+
+    const response = await GET(cronRequest("cron-secret"));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(
+      expect.objectContaining({ due: 2, resumed: 1, failed: 1 }),
+    );
+    expect(mockResumePausedSubscription).toHaveBeenCalledTimes(2);
+  });
+
   it("returns 500 when the due list cannot be loaded", async () => {
     mockConvexQuery.mockRejectedValue(new Error("convex down") as never);
     const { GET } = await import("../route");

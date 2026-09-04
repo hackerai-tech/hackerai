@@ -31,6 +31,7 @@ jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     event: mockPostHogEvent,
     warn: jest.fn(),
+    error: jest.fn(),
   },
 }));
 
@@ -247,5 +248,35 @@ describe("keepSubscriptionAction", () => {
       PAID_FUNNEL_EVENTS.cancellationReversed,
       expect.objectContaining({ retention_pause: true }),
     );
+  });
+
+  it("refuses to clear a pause when the Convex service key is missing", async () => {
+    delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    mockStripeSubscriptionsList([
+      {
+        id: "sub_paused",
+        status: "active",
+        cancel_at_period_end: true,
+        current_period_end: 1_782_444_800,
+        metadata: {
+          hackeraiPauseId: "pause_1",
+          hackeraiPauseMonths: "1",
+          hackeraiPauseResumeAt: "1795000000000",
+        },
+        items: {
+          data: [
+            { price: { id: "price_pro", lookup_key: "pro-monthly-plan" } },
+          ],
+        },
+      },
+    ]);
+
+    const { default: keepSubscriptionAction } =
+      await import("../keep-subscription");
+
+    await expect(keepSubscriptionAction()).rejects.toThrow(
+      "CONVEX_SERVICE_ROLE_KEY is not set",
+    );
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
   });
 });

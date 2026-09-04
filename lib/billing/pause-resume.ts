@@ -198,19 +198,27 @@ export async function resumePausedSubscription(
       };
     }
 
-    const subscription = await stripe.subscriptions.create({
-      customer: claimed.stripeCustomerId,
-      items: [{ price: claimed.stripePriceId, quantity: claimed.quantity }],
-      default_payment_method: paymentMethodId,
-      payment_behavior: "error_if_incomplete",
-      metadata: {
-        checkoutType: PAUSE_RESUME_CHECKOUT_TYPE,
-        checkoutSource: PAUSE_RESUME_CHECKOUT_TYPE,
-        checkoutSurface: manual ? "account_settings" : "pause_resume_cron",
-        hackeraiPauseId: claimed.id,
-        hackeraiResumedFromSubscriptionId: claimed.stripeSubscriptionId,
+    // Scoped to the claim attempt: a retry after a declined card must be a
+    // fresh request, while transport-level retries of this attempt cannot
+    // create a second subscription.
+    const subscription = await stripe.subscriptions.create(
+      {
+        customer: claimed.stripeCustomerId,
+        items: [{ price: claimed.stripePriceId, quantity: claimed.quantity }],
+        default_payment_method: paymentMethodId,
+        payment_behavior: "error_if_incomplete",
+        metadata: {
+          checkoutType: PAUSE_RESUME_CHECKOUT_TYPE,
+          checkoutSource: PAUSE_RESUME_CHECKOUT_TYPE,
+          checkoutSurface: manual ? "account_settings" : "pause_resume_cron",
+          hackeraiPauseId: claimed.id,
+          hackeraiResumedFromSubscriptionId: claimed.stripeSubscriptionId,
+        },
       },
-    });
+      {
+        idempotencyKey: `pause_resume:${claimed.id}:${claimed.resumeAttemptCount}`,
+      },
+    );
 
     await convex.mutation(api.subscriptionPauses.markResumeSucceeded, {
       serviceKey: key,
