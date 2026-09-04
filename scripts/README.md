@@ -93,13 +93,13 @@ pnpm paid-allowance:dev status pro
 pnpm paid-allowance:dev reset pro
 ```
 
-For local manual testing, run the app with the allowance rollout forced on:
+For Agent mode on the Auto model the allowance is fully rolled out (`PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT`, default 100) and capped only by the shared daily cost cap (`PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD`, default 0.25), so no override is needed. Ask mode keeps its gradual rollout and per-day request cap; to test it locally, force the Ask rollout on:
 
 ```bash
 PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT=100 pnpm dev
 ```
 
-Then sign in as the pro test user, send a text-only Ask message, confirm the limit error keeps **Add Credits** primary, and use **Try free Ask** to retry on the allowance route.
+Then sign in as the pro test user, send a text-only Ask message, confirm the limit error keeps **Add Credits** primary, and use **Use free Ask today** to retry on the allowance route. For Agent, keep the model selector on Auto: a user who picked a specific model is not offered the allowance.
 
 ## Other Scripts
 

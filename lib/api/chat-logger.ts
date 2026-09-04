@@ -1730,7 +1730,7 @@ export function captureUsageCost({
   paidDailyFreeAllowance?: {
     active: boolean;
     cutOff?: boolean;
-    requestLimit?: number;
+    requestLimit?: number | null;
     costLimitDollars?: number;
     resetTimestamp?: number;
   };

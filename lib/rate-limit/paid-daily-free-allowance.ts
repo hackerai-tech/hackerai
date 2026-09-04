@@ -4,6 +4,7 @@ import { isFeatureEnabled } from "@/lib/auth/feature-flags";
 import {
   isPaidIndividualSubscription,
   type ChatMode,
+  type SelectedModel,
   type SubscriptionTier,
 } from "@/types";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
@@ -12,10 +13,22 @@ import type { LimitCapReason } from "@/lib/limit-pressure";
 
 export const PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY =
   "paid-daily-free-allowance";
+/** Ask mode keeps the original per-day request cap. */
 export const PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT = 1;
 export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
+/** Ask mode rollout. Agent mode has its own rollout, see below. */
 export const PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT = 10;
+/**
+ * Agent mode on the Auto model: every paid individual user, limited only by
+ * the shared daily cost cap (no per-day request cap).
+ */
+export const PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT_DEFAULT = 100;
 
+/**
+ * Reserve one rescue request. `requestLimit <= 0` means "no request cap":
+ * the request counter is neither checked nor incremented, so Agent rescues
+ * do not consume the Ask request budget; only the shared cost cap applies.
+ */
 const RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT = `
 local requestKey = KEYS[1]
 local costKey = KEYS[2]
@@ -26,7 +39,7 @@ local ttlMs = tonumber(ARGV[3])
 local currentRequests = tonumber(redis.call("GET", requestKey) or "0")
 local currentCost = tonumber(redis.call("GET", costKey) or "0")
 
-if currentRequests >= requestLimit then
+if requestLimit > 0 and currentRequests >= requestLimit then
   return {0, "request_limit_reached", currentRequests, currentCost}
 end
 
@@ -34,9 +47,12 @@ if currentCost >= costLimit then
   return {0, "cost_limit_reached", currentRequests, currentCost}
 end
 
-local nextRequests = redis.call("INCRBY", requestKey, 1)
-if nextRequests == 1 then
-  redis.call("PEXPIRE", requestKey, ttlMs)
+local nextRequests = currentRequests
+if requestLimit > 0 then
+  nextRequests = redis.call("INCRBY", requestKey, 1)
+  if nextRequests == 1 then
+    redis.call("PEXPIRE", requestKey, ttlMs)
+  end
 end
 
 if redis.call("EXISTS", costKey) == 0 then
@@ -64,6 +80,7 @@ return nextCost
 
 export type PaidDailyFreeAllowanceUnavailableReason =
   | "unsupported_mode"
+  | "unsupported_model"
   | "unsupported_subscription"
   | "not_monthly_exhausted"
   | "attachments_not_supported"
@@ -77,9 +94,11 @@ export interface PaidDailyFreeAllowanceStatus {
   available: boolean;
   enabledByRollout: boolean;
   rolloutPercent: number;
-  requestLimit: number;
+  /** `null` when the mode has no per-day request cap (Agent on Auto). */
+  requestLimit: number | null;
   requestsUsed: number;
-  requestsRemaining: number;
+  /** `null` when the mode has no per-day request cap. */
+  requestsRemaining: number | null;
   costLimitDollars: number;
   costUsedDollars: number;
   costRemainingDollars: number;
@@ -118,9 +137,9 @@ export type PaidDailyFreeAllowanceMetadata = {
   available: boolean;
   enabledByRollout: boolean;
   rolloutPercent: number;
-  requestLimit: number;
+  requestLimit: number | null;
   requestsUsed: number;
-  requestsRemaining: number;
+  requestsRemaining: number | null;
   costLimitDollars: number;
   costUsedDollars: number;
   costRemainingDollars: number;
@@ -135,6 +154,17 @@ type PaidDailyFreeAllowanceContext = {
   mode: ChatMode;
   capReason?: LimitCapReason;
   hasAttachments?: boolean;
+  /**
+   * The user's explicit model choice. Agent rescues are only offered on the
+   * Auto model; `undefined`/`null` means no explicit choice, which is Auto.
+   */
+  selectedModel?: SelectedModel | null;
+};
+
+type PaidDailyFreeAllowancePolicy = {
+  /** `null` = no per-day request cap; only the cost cap applies. */
+  requestLimit: number | null;
+  rolloutPercent: number;
 };
 
 function envNumber({
@@ -163,6 +193,35 @@ export function getPaidDailyFreeAllowanceRolloutPercent(): number {
     min: 0,
     max: 100,
   });
+}
+
+export function getPaidDailyFreeAllowanceAgentRolloutPercent(): number {
+  return envNumber({
+    name: "PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT",
+    defaultValue: PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT_DEFAULT,
+    min: 0,
+    max: 100,
+  });
+}
+
+/**
+ * Mode-specific allowance policy. Ask keeps the original request cap and
+ * gradual rollout; Agent (Auto model only) is cost-capped and fully rolled
+ * out. Both modes share the same daily cost pool.
+ */
+export function getPaidDailyFreeAllowancePolicy(
+  mode: ChatMode,
+): PaidDailyFreeAllowancePolicy {
+  if (mode === "agent") {
+    return {
+      requestLimit: null,
+      rolloutPercent: getPaidDailyFreeAllowanceAgentRolloutPercent(),
+    };
+  }
+  return {
+    requestLimit: getPaidDailyFreeAllowanceRequestsPerDay(),
+    rolloutPercent: getPaidDailyFreeAllowanceRolloutPercent(),
+  };
 }
 
 export function getPaidDailyFreeAllowanceRequestsPerDay(): number {
@@ -232,10 +291,11 @@ function baseStatus(
   ctx: PaidDailyFreeAllowanceContext,
   reason?: PaidDailyFreeAllowanceUnavailableReason,
 ): PaidDailyFreeAllowanceStatus {
-  const requestLimit = getPaidDailyFreeAllowanceRequestsPerDay();
+  const { requestLimit, rolloutPercent } = getPaidDailyFreeAllowancePolicy(
+    ctx.mode,
+  );
   const costLimitDollars = getPaidDailyFreeAllowanceCostLimitDollars();
   const costLimitPoints = dollarsToPoints(costLimitDollars);
-  const rolloutPercent = getPaidDailyFreeAllowanceRolloutPercent();
   const enabledByRollout = isFeatureEnabled(
     ctx.userId,
     PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
@@ -276,6 +336,16 @@ function getStaticUnavailableReason(
   if (ctx.mode === "ask" && ctx.hasAttachments) {
     return "attachments_not_supported";
   }
+  // The Agent rescue is an Auto-model fallback. A user who explicitly picked
+  // a premium model is asked to add credits instead of being silently
+  // downgraded.
+  if (
+    ctx.mode === "agent" &&
+    ctx.selectedModel != null &&
+    ctx.selectedModel !== "auto"
+  ) {
+    return "unsupported_model";
+  }
   return null;
 }
 
@@ -285,10 +355,12 @@ export async function getPaidDailyFreeAllowanceStatus(
   const staticReason = getStaticUnavailableReason(ctx);
   if (staticReason) return baseStatus(ctx, staticReason);
 
-  const requestLimit = getPaidDailyFreeAllowanceRequestsPerDay();
+  const { requestLimit, rolloutPercent } = getPaidDailyFreeAllowancePolicy(
+    ctx.mode,
+  );
+  const hasRequestCap = requestLimit !== null;
   const costLimitDollars = getPaidDailyFreeAllowanceCostLimitDollars();
   const costLimitPoints = dollarsToPoints(costLimitDollars);
-  const rolloutPercent = getPaidDailyFreeAllowanceRolloutPercent();
   const enabledByRollout = isFeatureEnabled(
     ctx.userId,
     PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
@@ -303,7 +375,7 @@ export async function getPaidDailyFreeAllowanceStatus(
     if (process.env.NODE_ENV !== "production") {
       return {
         ...baseStatus(ctx),
-        available: requestLimit > 0 && costLimitPoints > 0,
+        available: (!hasRequestCap || requestLimit > 0) && costLimitPoints > 0,
         requestLimit,
         requestsRemaining: requestLimit,
         costLimitDollars,
@@ -334,10 +406,12 @@ export async function getPaidDailyFreeAllowanceStatus(
 
   const requestsUsed = Math.max(0, Number(rawRequestsUsed ?? 0));
   const costUsedPoints = Math.max(0, Number(rawCostUsed ?? 0));
-  const requestsRemaining = Math.max(0, requestLimit - requestsUsed);
+  const requestsRemaining = hasRequestCap
+    ? Math.max(0, requestLimit - requestsUsed)
+    : null;
   const costRemainingPoints = Math.max(0, costLimitPoints - costUsedPoints);
   const unavailableReason =
-    requestsRemaining <= 0
+    requestsRemaining !== null && requestsRemaining <= 0
       ? "request_limit_reached"
       : costRemainingPoints <= 0
         ? "cost_limit_reached"
@@ -345,7 +419,10 @@ export async function getPaidDailyFreeAllowanceStatus(
 
   return {
     type: "paid_daily_free_allowance",
-    available: !unavailableReason && requestLimit > 0 && costLimitPoints > 0,
+    available:
+      !unavailableReason &&
+      (!hasRequestCap || requestLimit > 0) &&
+      costLimitPoints > 0,
     enabledByRollout,
     rolloutPercent,
     requestLimit,
@@ -374,12 +451,18 @@ export async function reservePaidDailyFreeAllowanceRequest(
   const redis = getRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") {
+      const hasRequestCap = status.requestLimit !== null;
       return {
         allowed: true,
         status: {
           ...status,
-          requestsUsed: status.requestsUsed + 1,
-          requestsRemaining: Math.max(0, status.requestsRemaining - 1),
+          requestsUsed: hasRequestCap
+            ? status.requestsUsed + 1
+            : status.requestsUsed,
+          requestsRemaining:
+            status.requestsRemaining === null
+              ? null
+              : Math.max(0, status.requestsRemaining - 1),
           rateLimitSkipped: true,
         },
       };
@@ -411,7 +494,8 @@ export async function reservePaidDailyFreeAllowanceRequest(
     result = (await redis.eval(
       RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
       [requestsKey, costKey],
-      [status.requestLimit, status.costLimitPoints, ttlMs],
+      // 0 tells the script there is no request cap (Agent on Auto).
+      [status.requestLimit ?? 0, status.costLimitPoints, ttlMs],
     )) as [
       number,
       PaidDailyFreeAllowanceUnavailableReason | "ok",
@@ -434,7 +518,10 @@ export async function reservePaidDailyFreeAllowanceRequest(
   const allowed = allowedRaw === 1;
   const requestsUsed = Math.max(0, Number(requestsUsedRaw ?? 0));
   const costUsedPoints = Math.max(0, Number(costUsedRaw ?? 0));
-  const requestsRemaining = Math.max(0, status.requestLimit - requestsUsed);
+  const requestsRemaining =
+    status.requestLimit === null
+      ? null
+      : Math.max(0, status.requestLimit - requestsUsed);
   const costRemainingPoints = Math.max(
     0,
     status.costLimitPoints - costUsedPoints,
@@ -442,7 +529,10 @@ export async function reservePaidDailyFreeAllowanceRequest(
   const blockReason = allowed ? undefined : rawReason;
   const nextStatus: PaidDailyFreeAllowanceStatus = {
     ...status,
-    available: allowed && requestsRemaining > 0 && costRemainingPoints > 0,
+    available:
+      allowed &&
+      (requestsRemaining === null || requestsRemaining > 0) &&
+      costRemainingPoints > 0,
     requestsUsed,
     requestsRemaining,
     costUsedPoints,

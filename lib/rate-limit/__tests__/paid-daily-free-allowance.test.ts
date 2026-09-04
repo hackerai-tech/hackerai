@@ -13,6 +13,7 @@ describe("paid daily free allowance", () => {
   const redisStore = new Map<string, number>();
   const originalEnv = {
     rollout: process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT,
+    agentRollout: process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT,
     requests: process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY,
     cost: process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD,
     nodeEnv: process.env.NODE_ENV,
@@ -26,14 +27,17 @@ describe("paid daily free allowance", () => {
         const [requestLimit, costLimit] = args;
         const requestsUsed = redisStore.get(requestsKey) ?? 0;
         const costUsed = redisStore.get(costKey) ?? 0;
-        if (requestsUsed >= requestLimit) {
+        // Mirrors the Lua script: requestLimit <= 0 means no request cap and
+        // the request counter is left untouched.
+        const hasRequestCap = requestLimit > 0;
+        if (hasRequestCap && requestsUsed >= requestLimit) {
           return [0, "request_limit_reached", requestsUsed, costUsed];
         }
         if (costUsed >= costLimit) {
           return [0, "cost_limit_reached", requestsUsed, costUsed];
         }
-        const nextRequests = requestsUsed + 1;
-        redisStore.set(requestsKey, nextRequests);
+        const nextRequests = hasRequestCap ? requestsUsed + 1 : requestsUsed;
+        if (hasRequestCap) redisStore.set(requestsKey, nextRequests);
         redisStore.set(costKey, costUsed);
         return [1, "ok", nextRequests, costUsed];
       }
@@ -70,6 +74,7 @@ describe("paid daily free allowance", () => {
     redisStore.clear();
     process.env.NODE_ENV = "test";
     process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT = "100";
+    delete process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT;
     delete process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY;
     delete process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD;
     mockCreateRedisClient.mockReturnValue(mockRedis);
@@ -85,6 +90,12 @@ describe("paid daily free allowance", () => {
     } else {
       process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT =
         originalEnv.rollout;
+    }
+    if (originalEnv.agentRollout === undefined) {
+      delete process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT;
+    } else {
+      process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT =
+        originalEnv.agentRollout;
     }
     if (originalEnv.requests === undefined) {
       delete process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY;
@@ -184,6 +195,171 @@ describe("paid daily free allowance", () => {
     ).resolves.toMatchObject({
       available: false,
       unavailableReason: "rollout_disabled",
+    });
+  });
+
+  describe("Agent mode on the Auto model", () => {
+    const agentContext = { ...eligibleContext, mode: "agent" as const };
+
+    it("is fully rolled out independently of the Ask rollout", async () => {
+      process.env.PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT = "10";
+      const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
+
+      await getPaidDailyFreeAllowanceStatus(agentContext);
+      await getPaidDailyFreeAllowanceStatus(eligibleContext);
+
+      expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
+        1,
+        "user_123",
+        "paid-daily-free-allowance",
+        100,
+      );
+      expect(mockIsFeatureEnabled).toHaveBeenNthCalledWith(
+        2,
+        "user_123",
+        "paid-daily-free-allowance",
+        10,
+      );
+    });
+
+    it("honours an explicit Agent rollout override", async () => {
+      process.env.PAID_DAILY_FREE_ALLOWANCE_AGENT_ROLLOUT_PERCENT = "25";
+      const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
+
+      await expect(
+        getPaidDailyFreeAllowanceStatus(agentContext),
+      ).resolves.toMatchObject({ rolloutPercent: 25 });
+      expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
+        "user_123",
+        "paid-daily-free-allowance",
+        25,
+      );
+    });
+
+    it("has no request cap and is limited only by the cost cap", async () => {
+      const {
+        getPaidDailyFreeAllowanceStatus,
+        reservePaidDailyFreeAllowanceRequest,
+        recordPaidDailyFreeAllowanceCost,
+      } = getIsolatedModule();
+
+      await expect(
+        getPaidDailyFreeAllowanceStatus(agentContext),
+      ).resolves.toMatchObject({
+        available: true,
+        requestLimit: null,
+        requestsRemaining: null,
+        costLimitDollars: 0.25,
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        await expect(
+          reservePaidDailyFreeAllowanceRequest(agentContext),
+        ).resolves.toMatchObject({
+          allowed: true,
+          status: { available: true, requestsRemaining: null },
+        });
+      }
+
+      await recordPaidDailyFreeAllowanceCost("user_123", 0.25);
+      await expect(
+        reservePaidDailyFreeAllowanceRequest(agentContext),
+      ).resolves.toMatchObject({
+        allowed: false,
+        blockReason: "cost_limit_reached",
+      });
+    });
+
+    it("does not consume the Ask request budget", async () => {
+      const { reservePaidDailyFreeAllowanceRequest } = getIsolatedModule();
+
+      await reservePaidDailyFreeAllowanceRequest(agentContext);
+      await reservePaidDailyFreeAllowanceRequest(agentContext);
+
+      await expect(
+        reservePaidDailyFreeAllowanceRequest(eligibleContext),
+      ).resolves.toMatchObject({
+        allowed: true,
+        status: { requestsUsed: 1, requestsRemaining: 0 },
+      });
+    });
+
+    it("shares the daily cost pool with Ask", async () => {
+      const {
+        getPaidDailyFreeAllowanceStatus,
+        recordPaidDailyFreeAllowanceCost,
+      } = getIsolatedModule();
+
+      await recordPaidDailyFreeAllowanceCost("user_123", 0.25);
+
+      await expect(
+        getPaidDailyFreeAllowanceStatus(agentContext),
+      ).resolves.toMatchObject({
+        available: false,
+        unavailableReason: "cost_limit_reached",
+      });
+      await expect(
+        getPaidDailyFreeAllowanceStatus(eligibleContext),
+      ).resolves.toMatchObject({
+        available: false,
+        unavailableReason: "cost_limit_reached",
+      });
+    });
+
+    it("is offered only when the user is on the Auto model", async () => {
+      const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
+
+      await expect(
+        getPaidDailyFreeAllowanceStatus({
+          ...agentContext,
+          selectedModel: "auto",
+        }),
+      ).resolves.toMatchObject({ available: true });
+      await expect(
+        getPaidDailyFreeAllowanceStatus({
+          ...agentContext,
+          selectedModel: null,
+        }),
+      ).resolves.toMatchObject({ available: true });
+      await expect(
+        getPaidDailyFreeAllowanceStatus({
+          ...agentContext,
+          selectedModel: "hackerai-pro",
+        }),
+      ).resolves.toMatchObject({
+        available: false,
+        unavailableReason: "unsupported_model",
+      });
+      // Ask is untouched by the model gate.
+      await expect(
+        getPaidDailyFreeAllowanceStatus({
+          ...eligibleContext,
+          selectedModel: "hackerai-max",
+        }),
+      ).resolves.toMatchObject({ available: true, requestLimit: 1 });
+    });
+
+    it("still excludes free and team subscriptions", async () => {
+      const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
+
+      await expect(
+        getPaidDailyFreeAllowanceStatus({
+          ...agentContext,
+          subscription: "free",
+        }),
+      ).resolves.toMatchObject({
+        available: false,
+        unavailableReason: "unsupported_subscription",
+      });
+      await expect(
+        getPaidDailyFreeAllowanceStatus({
+          ...agentContext,
+          subscription: "team",
+        }),
+      ).resolves.toMatchObject({
+        available: false,
+        unavailableReason: "unsupported_subscription",
+      });
     });
   });
 
