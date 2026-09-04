@@ -30,6 +30,18 @@ static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 
 struct PendingDesktopAuthStates(std::sync::Mutex<HashMap<String, SystemTime>>);
 
+struct DesktopBridgeAuthorization(std::sync::atomic::AtomicBool);
+
+fn require_desktop_bridge_authorization(
+    authorization: &tauri::State<'_, DesktopBridgeAuthorization>,
+) -> Result<(), String> {
+    if authorization.0.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err("Desktop access has not been approved in the native application".to_string())
+    }
+}
+
 fn generate_desktop_auth_state() -> String {
     format!(
         "{}{}",
@@ -77,11 +89,34 @@ fn prepare_desktop_auth_state(
 
 /// Get the command server port, session token, and OS info
 #[tauri::command]
-fn get_cmd_server_info() -> CmdServerInfo {
-    CmdServerInfo {
+fn get_cmd_server_info(
+    app: tauri::AppHandle,
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
+) -> Result<CmdServerInfo, String> {
+    if !authorization.0.load(Ordering::Acquire) {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let approved = app
+            .dialog()
+            .message(
+                "Allow HackerAI to read and modify local files and run terminal commands for this application session? Only approve when you intentionally started a local security task.",
+            )
+            .title("Allow local computer access")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "Allow".into(),
+                "Deny".into(),
+            ))
+            .blocking_show();
+        if !approved {
+            return Err("Desktop access was denied by the user".to_string());
+        }
+        authorization.0.store(true, Ordering::Release);
+    }
+
+    Ok(CmdServerInfo {
         port: CMD_SERVER_PORT.load(Ordering::Relaxed),
         token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
-    }
+    })
 }
 
 #[derive(Serialize)]
@@ -166,7 +201,15 @@ fn guess_media_type(path: &std::path::Path) -> String {
 }
 
 #[tauri::command]
-fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
+fn get_local_file_metadata(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
+    path: String,
+) -> Result<LocalFileMetadata, String> {
+    require_desktop_bridge_authorization(&authorization)?;
+    local_file_metadata(path)
+}
+
+fn local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
     let path_buf = PathBuf::from(&path);
     let metadata = fs::metadata(&path_buf).map_err(|e| format!("Metadata error: {}", e))?;
     if !metadata.is_file() {
@@ -245,7 +288,7 @@ fn write_generated_text_attachment(
 ) -> Result<LocalFileMetadata, String> {
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, true)?;
     fs::write(&path, content.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
-    get_local_file_metadata(path.to_string_lossy().to_string())
+    local_file_metadata(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -255,7 +298,7 @@ fn read_generated_text_attachment(
     file_name: String,
 ) -> Result<LocalTextFileData, String> {
     let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
-    let metadata = get_local_file_metadata(path.to_string_lossy().to_string())?;
+    let metadata = local_file_metadata(path.to_string_lossy().to_string())?;
     let content = fs::read_to_string(&metadata.path).map_err(|e| format!("Read error: {}", e))?;
 
     Ok(LocalTextFileData {
@@ -283,10 +326,14 @@ fn remove_generated_text_attachment(
 }
 
 #[tauri::command]
-fn read_local_file(path: String) -> Result<LocalFileData, String> {
+fn read_local_file(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
+    path: String,
+) -> Result<LocalFileData, String> {
+    require_desktop_bridge_authorization(&authorization)?;
     use base64::Engine;
 
-    let metadata = get_local_file_metadata(path.clone())?;
+    let metadata = local_file_metadata(path.clone())?;
     let bytes = fs::read(&path).map_err(|e| format!("Read error: {}", e))?;
 
     Ok(LocalFileData {
@@ -1221,7 +1268,11 @@ async fn dispatch_desktop_file_request(
 /// never needs to fetch an insecure loopback HTTP endpoint. The existing HTTP
 /// handlers remain available for rolling compatibility with older web bundles.
 #[tauri::command]
-async fn desktop_file_request(request: serde_json::Value) -> Result<serde_json::Value, String> {
+async fn desktop_file_request(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    require_desktop_bridge_authorization(&authorization)?;
     dispatch_desktop_file_request(request).await
 }
 
@@ -1249,11 +1300,13 @@ type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>
 
 #[tauri::command]
 async fn execute_command(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     command: String,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
     timeout_ms: Option<u64>,
 ) -> Result<ExecResponse, String> {
+    require_desktop_bridge_authorization(&authorization)?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
@@ -1289,6 +1342,7 @@ async fn execute_command(
 
 #[tauri::command]
 async fn execute_stream_command(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     state: tauri::State<'_, StreamCommandState>,
     command_id: String,
     command: String,
@@ -1297,6 +1351,7 @@ async fn execute_stream_command(
     timeout_ms: Option<u64>,
     on_event: tauri::ipc::Channel<StreamEvent>,
 ) -> Result<(), String> {
+    require_desktop_bridge_authorization(&authorization)?;
     let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
     if let Some(pid) = child.id() {
@@ -1813,6 +1868,7 @@ type PtyState = std::sync::Arc<std::sync::Mutex<pty::PtyManager>>;
 
 #[tauri::command]
 async fn execute_pty_create(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     state: tauri::State<'_, PtyState>,
     session_id: String,
     command: String,
@@ -1822,16 +1878,19 @@ async fn execute_pty_create(
     env: Option<HashMap<String, String>>,
     on_data: tauri::ipc::Channel<String>,
 ) -> Result<pty::PtyCreateResult, String> {
+    require_desktop_bridge_authorization(&authorization)?;
     let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
     manager.create(session_id, command, cols, rows, cwd, env, on_data)
 }
 
 #[tauri::command]
 async fn execute_pty_input(
+    authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     state: tauri::State<'_, PtyState>,
     session_id: String,
     data: String,
 ) -> Result<(), String> {
+    require_desktop_bridge_authorization(&authorization)?;
     let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
     manager.send_input(&session_id, &data)
 }
@@ -2128,6 +2187,9 @@ pub fn run() {
             }
         }))
         .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
+        .manage(DesktopBridgeAuthorization(
+            std::sync::atomic::AtomicBool::new(false),
+        ))
         .manage(
             std::sync::Arc::new(std::sync::Mutex::new(HashMap::<String, u32>::new()))
                 as StreamCommandState,
