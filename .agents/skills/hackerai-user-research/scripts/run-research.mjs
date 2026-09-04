@@ -10,6 +10,8 @@ const POLL_INTERVAL_MS = 5_000;
 const MAX_WAIT_MS = 35 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_PAYLOAD_BYTES = 32 * 1024;
+const MAX_REPORTED_ISSUES = 8;
+const MAX_ISSUE_MESSAGE_CHARS = 240;
 
 function usage() {
   console.log(`Usage: node run-research.mjs --payload /secure/path/request.json [--no-wait]
@@ -52,6 +54,32 @@ export function createProxyDispatcher(env = process.env) {
 
 const proxyDispatcher = createProxyDispatcher();
 
+export function formatGatewayError(status, body) {
+  const code = typeof body?.error === "string" ? body.error : "request_failed";
+  const issues = Array.isArray(body?.issues)
+    ? body.issues.slice(0, MAX_REPORTED_ISSUES).flatMap((issue) => {
+        if (!issue || typeof issue !== "object") return [];
+        const path = Array.isArray(issue.path)
+          ? issue.path
+              .filter(
+                (part) =>
+                  typeof part === "string" || Number.isInteger(part),
+              )
+              .join(".")
+          : "";
+        const message =
+          typeof issue.message === "string"
+            ? issue.message
+                .replace(/[\r\n]+/g, " ")
+                .slice(0, MAX_ISSUE_MESSAGE_CHARS)
+            : "invalid value";
+        return [`${path || "payload"}: ${message}`];
+      })
+    : [];
+  const details = issues.length > 0 ? ` (${issues.join("; ")})` : "";
+  return `Research gateway returned ${status}: ${code}${details}`;
+}
+
 export async function gatewayRequest(
   url,
   key,
@@ -70,8 +98,7 @@ export async function gatewayRequest(
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const code = typeof body.error === "string" ? body.error : "request_failed";
-    throw new Error(`Research gateway returned ${response.status}: ${code}`);
+    throw new Error(formatGatewayError(response.status, body));
   }
   return body;
 }
