@@ -54,6 +54,10 @@ Users can cancel a scheduled pause with the existing **Keep plan** action
 
 Events (all carry `paid_funnel_event_version`):
 
+- `retention_offer_evaluated` (server, every offers request) with
+  `pause_offer_flag_state` (`enabled` / `disabled` / `unavailable`),
+  `pause_offered`, and `pause_ineligibility_reason`; the first place to look
+  when a canceller did not see the offer
 - `retention_offer_impressed` (client, exposure) with `offers_shown`
 - `retention_offer_accepted` / `retention_offer_declined`
 - `subscription_pause_scheduled`, `subscription_pause_canceled`,
@@ -68,7 +72,9 @@ The Convex cancellation report now includes `pausedCount` per reason group.
 ## Environment
 
 - `PAUSE_OFFER_ENABLED=true|false` overrides the PostHog flag (local dev or
-  kill switch). Leave unset in production.
+  kill switch). Leave unset in production. A flag lookup that times out is
+  retried once, then logged as `pause_offer_flag_unavailable` and treated as
+  disabled.
 - `CRON_SECRET` protects the resume cron, like the existing platform-cost crons.
 - The Convex schema adds the `subscription_pauses` table; deploy Convex before
   enabling the flag.

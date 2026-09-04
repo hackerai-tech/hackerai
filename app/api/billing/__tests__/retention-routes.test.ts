@@ -21,7 +21,7 @@ jest.mock("@/lib/actions/resume-subscription", () => ({
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
-  phLogger: { flush: jest.fn() },
+  phLogger: { flush: jest.fn(), event: jest.fn() },
 }));
 
 jest.mock("next/server", () => ({

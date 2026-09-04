@@ -1,9 +1,10 @@
 import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 
 import pauseSubscription from "@/lib/actions/pause-subscription";
 import { billingRouteErrorResponse } from "@/lib/billing/api-response";
 import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
+import { phLogger } from "@/lib/posthog/server";
 
 export const dynamic = "force-dynamic";
 
@@ -35,6 +36,7 @@ function parsePauseSubscriptionInput(
 
 /** Accept the retention "pause" offer instead of cancelling outright. */
 export async function POST(request: NextRequest) {
+  after(() => phLogger.flush());
   try {
     const body = await request.json().catch(() => null);
     const input = parsePauseSubscriptionInput(body);

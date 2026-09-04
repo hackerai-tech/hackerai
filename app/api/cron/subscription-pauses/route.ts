@@ -19,6 +19,7 @@ const MAX_RESUMES_PER_RUN = 50;
  */
 export async function GET(request: Request) {
   const requestId = request.headers.get("x-vercel-id") ?? randomUUID();
+  after(() => phLogger.flush());
   if (!isAuthorizedCronRequest(request)) {
     phLogger.warn("subscription_pause_cron_unauthorized", {
       request_id: requestId,
@@ -98,7 +99,6 @@ export async function GET(request: Request) {
       duration_ms: Date.now() - startedAt,
       ...counts,
     });
-    after(() => phLogger.flush());
     return NextResponse.json({ ok: true, ...counts });
   } catch (error) {
     phLogger.error("subscription_pause_cron_failed", {
@@ -108,7 +108,6 @@ export async function GET(request: Request) {
       ...counts,
       error,
     });
-    after(() => phLogger.flush());
     return NextResponse.json(
       { ok: false, error: "Subscription pause resume run failed", ...counts },
       { status: 500 },
