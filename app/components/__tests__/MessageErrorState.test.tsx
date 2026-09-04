@@ -156,7 +156,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
           costRemainingDollars: 0.25,
         },
       },
@@ -183,7 +183,7 @@ describe("MessageErrorState", () => {
       expect.objectContaining({
         surface: "message_error_state",
         cta_text: getPaidDailyFreeAllowanceCtaText("ask"),
-        allowance_requests_remaining: 1,
+        allowance_requests_today: 0,
         allowance_cost_remaining_dollars: 0.25,
       }),
     );
@@ -334,7 +334,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
           costRemainingDollars: 0.25,
         },
       },
@@ -371,7 +371,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
         },
       },
     );
@@ -394,7 +394,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: false,
-          unavailableReason: "request_limit_reached",
+          unavailableReason: "cost_limit_reached",
         },
       },
     );

@@ -332,7 +332,7 @@ export const MessageErrorState = ({
       from_tier: subscription,
       cap_reason: capReason,
       cta_text: paidDailyFreeAllowanceCtaText,
-      allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
+      allowance_requests_today: paidDailyFreeAllowance?.requestsUsed,
       allowance_cost_remaining_dollars:
         paidDailyFreeAllowance?.costRemainingDollars,
     });
@@ -453,8 +453,8 @@ export const MessageErrorState = ({
                     from_tier: subscription,
                     cap_reason: capReason,
                     cta_text: paidDailyFreeAllowanceCtaText,
-                    allowance_requests_remaining:
-                      paidDailyFreeAllowance?.requestsRemaining,
+                    allowance_requests_today:
+                      paidDailyFreeAllowance?.requestsUsed,
                     allowance_cost_remaining_dollars:
                       paidDailyFreeAllowance?.costRemainingDollars,
                   });
