@@ -354,4 +354,39 @@ describe("resumePausedSubscription", () => {
       expect.objectContaining({ stripe_subscription_id: "sub_new" }),
     );
   });
+
+  it("reconciles a subscription created by an earlier attempt as resumed", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_from_earlier_attempt",
+          status: "active",
+          metadata: { hackeraiPauseId: "pause_1" },
+        },
+      ],
+    } as never);
+    const { resumePausedSubscription } = await import("../pause-resume");
+
+    const result = await resumePausedSubscription(pauseRecord() as never, {
+      trigger: "cron",
+      now: NOW,
+    });
+
+    expect(result).toEqual({
+      outcome: "resumed",
+      stripeSubscriptionId: "sub_from_earlier_attempt",
+    });
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "subscriptionPauses.markResumeSucceeded",
+      expect.objectContaining({
+        pauseId: "pause_1",
+        resumedStripeSubscriptionId: "sub_from_earlier_attempt",
+      }),
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "subscriptionPauses.markPauseSuperseded",
+      expect.anything(),
+    );
+  });
 });

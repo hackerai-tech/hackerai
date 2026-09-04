@@ -155,6 +155,25 @@ export async function resumePausedSubscription(
     const liveSubscription = await findLiveSubscription(
       claimed.stripeCustomerId,
     );
+    if (liveSubscription?.metadata?.hackeraiPauseId === claimed.id) {
+      // A previous attempt created the subscription but could not record it
+      // (for example a Convex outage). Reconcile it as resumed, not superseded.
+      await convex.mutation(api.subscriptionPauses.markResumeSucceeded, {
+        serviceKey: key,
+        pauseId: claimed.id,
+        resumedStripeSubscriptionId: liveSubscription.id,
+        resumedAt: now,
+      });
+      phLogger.info("subscription_pause_resume_reconciled", {
+        event: "subscription_pause_resume_reconciled",
+        ...analytics,
+        stripe_subscription_id: liveSubscription.id,
+      });
+      return {
+        outcome: "resumed",
+        stripeSubscriptionId: liveSubscription.id,
+      };
+    }
     if (liveSubscription) {
       await convex.mutation(api.subscriptionPauses.markPauseSuperseded, {
         serviceKey: key,
