@@ -32,6 +32,7 @@ struct PendingDesktopAuthStates(std::sync::Mutex<HashMap<String, SystemTime>>);
 
 struct DesktopBridgeAuthorization(std::sync::atomic::AtomicBool);
 
+/// Reject privileged desktop bridge calls until the user approves native access.
 fn require_desktop_bridge_authorization(
     authorization: &tauri::State<'_, DesktopBridgeAuthorization>,
 ) -> Result<(), String> {
@@ -201,6 +202,7 @@ fn guess_media_type(path: &std::path::Path) -> String {
 }
 
 #[tauri::command]
+/// Return metadata for a local file after desktop access has been authorized.
 fn get_local_file_metadata(
     authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     path: String,
@@ -209,6 +211,7 @@ fn get_local_file_metadata(
     local_file_metadata(path)
 }
 
+/// Read local file metadata for trusted internal attachment operations.
 fn local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
     let path_buf = PathBuf::from(&path);
     let metadata = fs::metadata(&path_buf).map_err(|e| format!("Metadata error: {}", e))?;
@@ -326,6 +329,7 @@ fn remove_generated_text_attachment(
 }
 
 #[tauri::command]
+/// Read and encode a local file after desktop access has been authorized.
 fn read_local_file(
     authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     path: String,
@@ -1299,6 +1303,7 @@ enum StreamEvent {
 type StreamCommandState = std::sync::Arc<std::sync::Mutex<HashMap<String, u32>>>;
 
 #[tauri::command]
+/// Execute a command and return its captured output after authorization.
 async fn execute_command(
     authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     command: String,
@@ -1341,6 +1346,7 @@ async fn execute_command(
 }
 
 #[tauri::command]
+/// Execute a command while streaming output events after authorization.
 async fn execute_stream_command(
     authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     state: tauri::State<'_, StreamCommandState>,
@@ -1867,6 +1873,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
 type PtyState = std::sync::Arc<std::sync::Mutex<pty::PtyManager>>;
 
 #[tauri::command]
+/// Create an interactive terminal session after desktop access is authorized.
 async fn execute_pty_create(
     authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     state: tauri::State<'_, PtyState>,
@@ -1884,6 +1891,7 @@ async fn execute_pty_create(
 }
 
 #[tauri::command]
+/// Send input to an authorized interactive terminal session.
 async fn execute_pty_input(
     authorization: tauri::State<'_, DesktopBridgeAuthorization>,
     state: tauri::State<'_, PtyState>,
