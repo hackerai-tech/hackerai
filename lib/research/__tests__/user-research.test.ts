@@ -3,8 +3,10 @@ import {
   buildCohortPrompt,
   buildUserProfilePrompt,
   containsUnredactedResearchSecret,
+  normalizePmUserResearchGatewayInput,
   normalizeCohortSynthesis,
   normalizeResearchUserProfile,
+  sanitizeResearchComparisonGroups,
   sanitizeResearchText,
   USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS,
   USER_RESEARCH_MAX_CONTEXT_CHARS,
@@ -12,6 +14,7 @@ import {
   pmUserResearchGatewayRequestSchema,
   USER_RESEARCH_PROVIDER_OPTIONS,
 } from "../user-research";
+import { GROK_4_6_SLUG, myProvider } from "@/lib/ai/providers";
 
 const baseProfile = {
   summary: "A recurring security workflow.",
@@ -110,8 +113,92 @@ describe("user research privacy controls", () => {
     ).toThrow("one evidence anchor for every cohort user");
   });
 
+  it("accepts complete comparison groups and rejects ambiguous membership", () => {
+    const userIds = [
+      "user-1",
+      "user-2",
+      "user-3",
+      "user-4",
+      "user-5",
+      "user-6",
+    ];
+    const request = {
+      question: "How do recurring jobs and friction differ by model cohort?",
+      cohortLabel: "PostHog model conversion comparison",
+      userIds,
+      cohortSelectedAt: Date.UTC(2026, 7, 25),
+      selectionQueryFingerprint:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      comparisonGroups: [
+        { label: "Model A", userIds: userIds.slice(0, 3) },
+        { label: "Model B", userIds: userIds.slice(3) },
+      ],
+    };
+
+    expect(
+      pmUserResearchGatewayRequestSchema.parse(request).comparisonGroups,
+    ).toEqual(request.comparisonGroups);
+    expect(() =>
+      pmUserResearchGatewayRequestSchema.parse({
+        ...request,
+        comparisonGroups: [
+          request.comparisonGroups[0],
+          { label: "Model B", userIds: ["user-3", "user-4", "user-5"] },
+        ],
+      }),
+    ).toThrow("each user may appear in only one comparison group");
+    expect(() =>
+      pmUserResearchGatewayRequestSchema.parse({
+        ...request,
+        comparisonGroups: [
+          request.comparisonGroups[0],
+          { label: "Model B", userIds: ["user-4", "user-5", "user-7"] },
+        ],
+      }),
+    ).toThrow("assign every cohort user exactly once");
+  });
+
+  it("normalizes common PostHog handoff timestamp and fingerprint fields", () => {
+    const normalized = normalizePmUserResearchGatewayInput({
+      cohortSelectedAt: "2026-09-03T16:31:12.688Z",
+      selectionQuerySha256:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      evidenceWindowDays: 30,
+      evidenceAnchors: [{ userId: "user-1", anchorAt: "1785841937847" }],
+    });
+
+    expect(normalized).toEqual(
+      expect.objectContaining({
+        cohortSelectedAt: 1788453072688,
+        selectionQueryFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        samplingMode: "pre_event",
+        evidenceAnchors: [{ userId: "user-1", anchorAt: 1785841937847 }],
+      }),
+    );
+  });
+
+  it("rejects comparison labels that collide after privacy sanitization", () => {
+    expect(() =>
+      sanitizeResearchComparisonGroups([
+        {
+          label: "first@example.com",
+          userIds: ["user-1", "user-2", "user-3"],
+        },
+        {
+          label: "second@example.com",
+          userIds: ["user-4", "user-5", "user-6"],
+        },
+      ]),
+    ).toThrow("must remain unique after privacy sanitization");
+  });
+
   it("pins Grok 4.6 for text-only research with low reasoning", () => {
     expect(USER_RESEARCH_MODEL_KEY).toBe("model-grok-4.6");
+    expect(
+      (myProvider.languageModel(USER_RESEARCH_MODEL_KEY) as { modelId: string })
+        .modelId,
+    ).toBe(GROK_4_6_SLUG);
     expect(USER_RESEARCH_PROVIDER_OPTIONS).toEqual({
       openrouter: {
         reasoning: { enabled: true, effort: "low" },
@@ -282,8 +369,28 @@ ${"QUJD".repeat(16)}
           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         selectionLimitations: [],
         samplingMode: "representative",
+        comparisonGroups: [
+          { label: "Model A", userCount: 10 },
+          { label: "Model B", userCount: 10 },
+        ],
         causalAttributionConfidence: "low",
       },
+      comparisonGroups: [
+        {
+          label: "Model A",
+          pseudonyms: Array.from(
+            { length: 10 },
+            (_, index) => `U${String(index + 1).padStart(2, "0")}`,
+          ),
+        },
+        {
+          label: "Model B",
+          pseudonyms: Array.from(
+            { length: 10 },
+            (_, index) => `U${String(index + 11).padStart(2, "0")}`,
+          ),
+        },
+      ],
       profiles: Array.from({ length: 20 }, (_, index) => ({
         pseudonym: `U${String(index + 1).padStart(2, "0")}`,
         profile: {
@@ -307,10 +414,45 @@ ${"QUJD".repeat(16)}
       })),
     });
     const payload = prompt.split("Synthesize this cohort:\n")[1];
-    const parsed = JSON.parse(payload) as { profiles: Array<unknown> };
+    const parsed = JSON.parse(payload) as {
+      comparisonGroups: Array<{ label: string; pseudonyms: string[] }>;
+      profiles: Array<unknown>;
+    };
 
     expect(prompt.length).toBeLessThan(USER_RESEARCH_MAX_COHORT_CONTEXT_CHARS);
     expect(parsed.profiles).toHaveLength(20);
+    expect(parsed.comparisonGroups).toEqual([
+      {
+        label: "Model A",
+        pseudonyms: [
+          "U01",
+          "U02",
+          "U03",
+          "U04",
+          "U05",
+          "U06",
+          "U07",
+          "U08",
+          "U09",
+          "U10",
+        ],
+      },
+      {
+        label: "Model B",
+        pseudonyms: [
+          "U11",
+          "U12",
+          "U13",
+          "U14",
+          "U15",
+          "U16",
+          "U17",
+          "U18",
+          "U19",
+          "U20",
+        ],
+      },
+    ]);
     expect(payload).toContain("profile-0");
     expect(payload).toContain("profile-19");
     expect(payload).toContain("bug_bounty_hunter");

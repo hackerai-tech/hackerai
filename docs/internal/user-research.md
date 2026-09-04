@@ -18,6 +18,8 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 4. Redacts direct identifiers, targets, secrets, paths, code blocks, and command
    arguments before sending evidence to the model.
 5. Runs one profile worker per user in parallel, then synthesizes the cohort.
+   Comparative runs preserve 2-4 PostHog-selected groups, but expose only
+   sanitized labels and pseudonyms to synthesis.
 6. Stores the audit record, bounded PostHog cohort provenance, structured
    per-user profiles keyed by internal user ID, aggregate report, evidence
    coverage, token usage, and provider cost in Convex. The audit stores only a
@@ -93,6 +95,14 @@ milliseconds. Behavioral evidence remains low-confidence for causal
 attribution even when it immediately precedes the event; combine it with an
 explicit survey or experiment before treating a friction pattern as the reason
 for churn.
+
+For comparative research, pass `comparisonGroups` with 2-4 labeled groups of
+at least three users. Every cohort user must be assigned exactly once. The
+gateway accepts ISO or epoch-millisecond cohort/evidence timestamps and accepts
+`selectionQuerySha256` as a boundary alias for the canonical
+`selectionQueryFingerprint` field. It also infers `pre_event` sampling when an
+evidence window or anchors are supplied. Invalid payload responses include
+bounded, non-sensitive schema issues, which the runner prints for correction.
 
 ### PostHog identity and revenue contract
 
