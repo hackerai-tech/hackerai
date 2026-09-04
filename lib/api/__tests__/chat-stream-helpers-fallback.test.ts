@@ -269,14 +269,14 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("runs free Ask on non-reasoning DeepSeek V4 Flash 0731", () => {
+  it("runs free Ask on the non-reasoning-compatible DeepSeek Flash route", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter).toMatchObject({
       reasoning: { enabled: false },
+      provider: { ignore: ["novita"] },
       models: [GLM_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
-    expect(opts.openrouter).not.toHaveProperty("provider");
     expect(opts.openrouter.models).toHaveLength(3);
   });
 
