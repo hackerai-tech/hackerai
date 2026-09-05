@@ -19,6 +19,7 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
+import { MiosaEnrollmentError } from "../miosa-enrollment";
 
 describe("cloud sandbox provider routing", () => {
   const setSandbox = jest.fn();
@@ -115,6 +116,71 @@ describe("cloud sandbox provider routing", () => {
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "miosa_cloud_sandbox_rollout_exposed",
       expect.objectContaining({ variant: "e2b" }),
+    );
+  });
+
+  it.each([
+    "not_pro",
+    "existing_e2b_workspace",
+    "workspace_discovery_unavailable",
+  ] as const)(
+    "keeps %s enrollment on E2B without recording Miosa exposure or failure",
+    async (reason) => {
+      const sandbox = { sandboxId: "e2b-1" };
+      mockEnsureMiosa.mockRejectedValueOnce(new MiosaEnrollmentError(reason));
+      mockEnsureE2B.mockResolvedValue({ sandbox });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: {
+            provider: "miosa",
+            subscription: "pro",
+            selectionReason: "miosa_rollout",
+          },
+        }),
+      ).resolves.toEqual({ sandbox, provider: "e2b" });
+      expect(mockPostHogEvent.mock.calls.map(([event]) => event)).toEqual([
+        "miosa_cloud_sandbox_enrollment_denied",
+      ]);
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        "miosa_cloud_sandbox_enrollment_denied",
+        expect.objectContaining({ reason }),
+      );
+    },
+  );
+
+  it("preserves an already connected E2B workspace even when treatment is selected", async () => {
+    const sandbox = { sandboxId: "e2b-1" };
+    mockEnsureE2B.mockResolvedValue({ sandbox });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        initialSandbox: sandbox as never,
+        context: { provider: "miosa", subscription: "pro" },
+      }),
+    ).resolves.toEqual({ sandbox, provider: "e2b" });
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+    expect(mockEnsureE2B).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ initialSandbox: sandbox }),
+    );
+  });
+
+  it("still records E2B acquisition failure after enrollment is denied", async () => {
+    mockEnsureMiosa.mockRejectedValueOnce(new MiosaEnrollmentError("not_pro"));
+    mockEnsureE2B.mockRejectedValueOnce(new Error("E2B failed"));
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).rejects.toThrow("E2B failed");
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_failed",
+      expect.objectContaining({ provider: "e2b" }),
     );
   });
 });

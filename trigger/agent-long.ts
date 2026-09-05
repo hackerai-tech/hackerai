@@ -2634,6 +2634,7 @@ export const agentLongTask = task({
         !sandboxPreference || sandboxPreference === "e2b"
           ? await selectCloudSandboxProvider({
               userId,
+              subscription,
               environment: ctx.environment.type,
               triggerRegion,
               requestRegionClass,

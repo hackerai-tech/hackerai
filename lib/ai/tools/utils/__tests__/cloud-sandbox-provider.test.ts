@@ -128,6 +128,7 @@ describe("cloud sandbox provider selection", () => {
       selectCloudSandboxProvider({
         userId: "user-1",
         environment: "PREVIEW",
+        subscription: "pro",
         triggerRegion: "us-east-1",
         requestRegionClass: "outside_europe",
         featureFlagClient: { evaluateFlags },
@@ -137,6 +138,7 @@ describe("cloud sandbox provider selection", () => {
       flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
       personProperties: {
         [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]: "preview",
+        subscription_tier: "pro",
       },
     });
     expect(getFlag).toHaveBeenCalledWith(MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG);

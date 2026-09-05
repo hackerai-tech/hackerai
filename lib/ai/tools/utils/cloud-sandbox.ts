@@ -11,6 +11,10 @@ import {
 import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getConfiguredE2BClustersForCleanup } from "./e2b-cluster";
+import {
+  assertFreshMiosaEnrollment,
+  MiosaEnrollmentError,
+} from "./miosa-enrollment";
 
 export type CloudSandboxAcquisitionContext = {
   provider?: CloudSandboxProvider;
@@ -49,6 +53,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
+  context?: CloudSandboxAcquisitionContext;
 }) =>
   ensureMiosaSandboxConnection(
     {
@@ -61,6 +66,11 @@ const ensureMiosaCloudSandboxConnection = (options: {
         options.initialSandbox && isMiosaSandbox(options.initialSandbox)
           ? options.initialSandbox
           : null,
+      beforeCreate: () =>
+        assertFreshMiosaEnrollment({
+          userId: options.userId,
+          subscription: options.context?.subscription,
+        }),
     },
   );
 
@@ -124,33 +134,52 @@ export async function ensureCloudSandboxConnection(options: {
 }): Promise<{ sandbox: AnySandbox; provider: CloudSandboxProvider }> {
   const startedAt = Date.now();
   const preferredProvider = options.context?.provider ?? "e2b";
-  recordRolloutExposure(options);
 
   if (preferredProvider === "miosa") {
     try {
+      if (options.initialSandbox && isE2BSandbox(options.initialSandbox)) {
+        throw new MiosaEnrollmentError("existing_e2b_workspace");
+      }
       const result = await ensureMiosaCloudSandboxConnection(options);
+      recordRolloutExposure(options);
       return { ...result, provider: "miosa" };
     } catch (error) {
-      recordAcquisitionFailure({
-        userId: options.userId,
-        provider: "miosa",
-        startedAt,
-        error,
-        context: options.context,
-      });
-      phLogger.event("cloud_sandbox_provider_fallback", {
-        userId: options.userId,
-        chat_id: options.context?.chatId,
-        trigger_run_id: options.context?.triggerRunId,
-        from_provider: "miosa",
-        to_provider: "e2b",
-        sandbox_type: "cloud",
-        sandbox_provider: "e2b",
-        fallback_stage: "acquisition",
-        error_name: error instanceof Error ? error.name : "UnknownError",
-        cloud_sandbox_provider_fallback_event_version: 2,
-      });
+      if (error instanceof MiosaEnrollmentError) {
+        phLogger.event("miosa_cloud_sandbox_enrollment_denied", {
+          userId: options.userId,
+          chat_id: options.context?.chatId,
+          trigger_run_id: options.context?.triggerRunId,
+          subscription_tier: options.context?.subscription,
+          reason: error.reason,
+          sandbox_provider: "e2b",
+          sandbox_type: "cloud",
+          miosa_cloud_sandbox_enrollment_denied_event_version: 1,
+        });
+      } else {
+        recordRolloutExposure(options);
+        recordAcquisitionFailure({
+          userId: options.userId,
+          provider: "miosa",
+          startedAt,
+          error,
+          context: options.context,
+        });
+        phLogger.event("cloud_sandbox_provider_fallback", {
+          userId: options.userId,
+          chat_id: options.context?.chatId,
+          trigger_run_id: options.context?.triggerRunId,
+          from_provider: "miosa",
+          to_provider: "e2b",
+          sandbox_type: "cloud",
+          sandbox_provider: "e2b",
+          fallback_stage: "acquisition",
+          error_name: error instanceof Error ? error.name : "UnknownError",
+          cloud_sandbox_provider_fallback_event_version: 2,
+        });
+      }
     }
+  } else {
+    recordRolloutExposure(options);
   }
 
   try {

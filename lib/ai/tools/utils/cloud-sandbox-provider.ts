@@ -3,6 +3,7 @@ import {
   type RequestRegionClass,
   type TriggerRunRegion,
 } from "@/lib/api/trigger-region";
+import type { SubscriptionTier } from "@/types";
 
 export type CloudSandboxProvider = "miosa" | "e2b";
 export type CloudSandboxSelectionReason =
@@ -59,6 +60,7 @@ export function normalizeCloudSandboxFlagEnvironment(
 export async function selectCloudSandboxProvider(options: {
   userId: string;
   environment: string;
+  subscription?: SubscriptionTier;
   triggerRegion?: TriggerRunRegion;
   requestRegionClass?: RequestRegionClass;
   featureFlagClient?: FeatureFlagClient | null;
@@ -102,6 +104,7 @@ export async function selectCloudSandboxProvider(options: {
         personProperties: {
           [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]:
             normalizeCloudSandboxFlagEnvironment(options.environment),
+          subscription_tier: options.subscription ?? "unknown",
         },
       },
     );

@@ -509,6 +509,7 @@ export const createChatHandler = () => {
         isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
           ? await selectCloudSandboxProvider({
               userId,
+              subscription,
               environment: process.env.VERCEL_ENV ?? "development",
               triggerRegion: executionRegion,
               requestRegionClass,

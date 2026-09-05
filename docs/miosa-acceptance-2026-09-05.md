@@ -2,6 +2,44 @@
 
 ## Result
 
+**Latest update, 21:34 UTC: Production activation is blocked.** The replacement
+workspace that passed the earlier deployed tests subsequently entered platform
+state `error`. Reacquisition now returns `SANDBOX_BOOT_FAILED`. Earlier results
+below remain evidence of those test windows, not proof of sustained durability.
+Neither existing sandbox was deleted or replaced during this follow-up.
+
+### Persistent replacement failure — 21:34 UTC follow-up
+
+- Sandbox: `8129585f-2b7c-46f3-bb44-ea7aad9f967d`.
+- Template: `miosa-sandbox-docker`; 4 vCPU / 4,096 MiB / 20,480 MiB.
+- Reacquisition: normal adapter `ensureMiosaSandboxConnection` / SDK
+  `sandboxes.getOrCreate`, using its existing canonical name.
+- SDK error: `MiosaError`, code `SANDBOX_BOOT_FAILED`.
+- Exact message: `Sandbox 8129585f-2b7c-46f3-bb44-ea7aad9f967d entered terminal state 'error' while waiting for readiness`.
+- No request ID or HTTP status was attached to this SDK readiness exception.
+- Metadata read at `2026-09-05T21:34:33.421Z`: state `error`, ready `false`;
+  metadata request ID `GNKKTuSmW2FtcKkAEnME`, operation ID
+  `b41ea907-5219-43b6-bddc-f5f607d3352b`. These IDs identify the returned sandbox
+  metadata, not a proven HTTP request for the exception.
+- Platform `last_error`: `2026-09-05T20:09:00.851225Z`, source
+  `firecracker_exit`, reason `:normal`, template ID `miosa-docker-deploy-runtime`,
+  uptime `12539281` ms.
+- Platform `last_pause`: `2026-09-05T17:24:18.121264Z`, source `manual`.
+  The actor and relationship to the later exit are unverified.
+- The platform error timestamp predates this reacquisition check. This does not
+  establish that our check caused the error or that resume itself failed.
+- Doctor remained healthy. Fleet readiness remained `cold_boot_only`: all six
+  listed sizes had 10 cold-boot and Docker-capable nodes, 0 unavailable and
+  0 warm-ready nodes. This is not the earlier fleet-unavailability issue.
+
+Request to MIOSA: trace the pause, snapshot and Firecracker lifecycle for this
+record; explain why a previously working persistent workspace became terminal;
+provide a non-destructive disk/snapshot recovery procedure and a supported
+client retry policy. Preserve both this record and the older paused record.
+Acceptance must include same-ID/file recovery after hours idle and normal
+pause/resume, not only fresh create or a short pause cycle. Production flag
+`miosa_cloud_sandbox_rollout_v1` remains at 0%; E2B fallback remains unchanged.
+
 Follow-up at 16:39–16:44 UTC: with the user's approval, the old paused record
 was preserved by renaming it (its ID and slug are unchanged), and a fresh
 workspace was created under the canonical per-user name. The initial Preview

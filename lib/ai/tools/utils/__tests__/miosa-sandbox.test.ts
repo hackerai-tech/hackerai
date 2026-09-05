@@ -1,4 +1,5 @@
 const mockGetOrCreate = jest.fn();
+const mockGetByName = jest.fn();
 const mockList = jest.fn();
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmdirSync } from "node:fs";
@@ -7,13 +8,16 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 jest.mock("@miosa/sdk", () => ({
+  NotFoundError: class NotFoundError extends Error {},
   Miosa: jest.fn(() => ({
     sandboxes: {
       getOrCreate: (...args: unknown[]) => mockGetOrCreate(...args),
+      getByName: (...args: unknown[]) => mockGetByName(...args),
       list: (...args: unknown[]) => mockList(...args),
     },
   })),
 }));
+import { NotFoundError } from "@miosa/sdk";
 
 import {
   ensureMiosaSandboxConnection,
@@ -110,6 +114,65 @@ describe("MIOSA sandbox adapter", () => {
     ).rejects.toThrow(
       "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
     );
+    expect(mockGetOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("checks new enrollment only after the canonical workspace is confirmed absent", async () => {
+    mockGetByName.mockRejectedValueOnce(new NotFoundError("missing"));
+    mockGetOrCreate.mockResolvedValue(createSdkSandbox());
+    const beforeCreate = jest.fn(async () => {
+      expect(mockGetOrCreate).not.toHaveBeenCalled();
+    });
+    await ensureMiosaSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { beforeCreate },
+    );
+    expect(beforeCreate).toHaveBeenCalledTimes(1);
+    expect(mockGetByName).toHaveBeenCalledWith(
+      expect.stringMatching(/^hackerai-[a-f0-9]{24}-v2$/),
+    );
+    expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create when the new enrollment guard refuses", async () => {
+    mockGetByName.mockRejectedValueOnce(new NotFoundError("missing"));
+    const beforeCreate = jest
+      .fn()
+      .mockRejectedValue(new Error("existing E2B workspace"));
+    await expect(
+      ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { beforeCreate },
+      ),
+    ).rejects.toThrow("existing E2B workspace");
+    expect(mockGetOrCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(["running", "paused"])(
+    "reuses a %s Miosa assignment without re-enrolling",
+    async (state) => {
+      mockGetByName.mockResolvedValueOnce({ state });
+      mockGetOrCreate.mockResolvedValue(createSdkSandbox());
+      const beforeCreate = jest.fn();
+      await ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { beforeCreate },
+      );
+      expect(beforeCreate).not.toHaveBeenCalled();
+      expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not treat Miosa discovery failure as a missing workspace", async () => {
+    mockGetByName.mockRejectedValueOnce(new Error("network error"));
+    const beforeCreate = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { beforeCreate },
+      ),
+    ).rejects.toThrow("network error");
+    expect(beforeCreate).not.toHaveBeenCalled();
     expect(mockGetOrCreate).not.toHaveBeenCalled();
   });
 

@@ -346,7 +346,10 @@ export class MiosaSandbox {
 
 export async function ensureMiosaSandboxConnection(
   context: SandboxContext,
-  options: { initialSandbox?: MiosaSandbox | null } = {},
+  options: {
+    initialSandbox?: MiosaSandbox | null;
+    beforeCreate?: () => Promise<void>;
+  } = {},
 ): Promise<{ sandbox: MiosaSandbox }> {
   if (options.initialSandbox) {
     return { sandbox: options.initialSandbox };
@@ -362,6 +365,17 @@ export async function ensureMiosaSandboxConnection(
   const startedAt = performance.now();
   const client = await createMiosaClient();
   const externalUserId = externalUserIdForUser(context.userID);
+  if (options.beforeCreate) {
+    const { NotFoundError } = await import("@miosa/sdk");
+    try {
+      // Existing assignments retain their files, even after a plan upgrade or
+      // an earlier E2B fallback. The pilot gate restricts new enrollment only.
+      await client.sandboxes.getByName(sandboxNameForUser(context.userID));
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+      await options.beforeCreate();
+    }
+  }
   const sdkSandbox = await client.sandboxes.getOrCreate({
     name: sandboxNameForUser(context.userID),
     templateId,
