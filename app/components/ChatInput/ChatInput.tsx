@@ -12,7 +12,10 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
-import { readGeneratedTextAttachment } from "@/app/hooks/useTauri";
+import {
+  isTauriEnvironment,
+  readGeneratedTextAttachment,
+} from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
   removeDraft,
@@ -633,7 +636,10 @@ export const ChatInput = ({
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
-    !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
+    !isCheckingProPlan &&
+    subscription === "free" &&
+    isAgentMode(chatMode) &&
+    (!isTauriEnvironment() || freeDesktopAgentOnlyActive);
   const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
     ? isFreeDesktopSandboxAvailable({
         sandboxPreference,

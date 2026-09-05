@@ -60,6 +60,7 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
+import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -443,6 +444,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     userId: string;
     count: number;
   } | null>(null);
+  const [entitlementRefreshFailure, setEntitlementRefreshFailure] = useState<{
+    userId: string;
+    count: number;
+  } | null>(null);
 
   // Rate limit warning dismissal state (persists across chat switches)
   const [
@@ -524,6 +529,16 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       entitlementApiResolvedUserId === user?.id) &&
     !entitlementRefreshRequested &&
     !automaticEntitlementRefreshPending;
+  const tokenFreeAutomaticRefreshExhausted =
+    subscriptionFromEntitlements === "free" &&
+    entitlementRefreshFailure?.userId === user?.id &&
+    (entitlementRefreshFailure?.count ?? 0) >
+      ENTITLEMENT_REFRESH_RETRY_DELAYS_MS.length;
+  const freeSubscriptionResolved =
+    subscriptionResolved &&
+    (!automaticEntitlementRefreshNeeded ||
+      entitlementApiResolvedUserId === user?.id ||
+      tokenFreeAutomaticRefreshExhausted);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -546,6 +561,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     if (!subscriptionResolved) return;
+    if (subscription === "free" && !freeSubscriptionResolved) return;
     const normalizedModel = normalizeSelectedModelForSubscription(
       selectedModel,
       subscription,
@@ -553,7 +569,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     if (normalizedModel !== selectedModel) {
       setSelectedModelRaw(normalizedModel);
     }
-  }, [selectedModel, subscription, subscriptionResolved]);
+  }, [
+    freeSubscriptionResolved,
+    selectedModel,
+    subscription,
+    subscriptionResolved,
+  ]);
 
   const setSelectedModelState = useCallback((model: SelectedModel) => {
     setSelectedModelRaw(model);
@@ -564,6 +585,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     subscriptionFromEntitlements !== "free"
       ? subscriptionFromEntitlements
       : subscription;
+  const agentFirstSubscriptionResolved =
+    paidAgentSubscription === "free"
+      ? freeSubscriptionResolved
+      : subscriptionResolved;
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
@@ -580,7 +605,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       isCheckingProPlan,
       isMobile,
       subscription: paidAgentSubscription,
-      subscriptionResolved,
+      subscriptionResolved: agentFirstSubscriptionResolved,
       userPresent: Boolean(user),
     });
 
@@ -649,6 +674,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     );
   }, [
     chatMode,
+    agentFirstSubscriptionResolved,
     defaultLocalSandboxPreference,
     hasLocalSandbox,
     isCheckingProPlan,
@@ -670,7 +696,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     paidAgentSubscription !== "free";
   const freeDesktopAgentOnlyActive =
     Boolean(user) &&
-    subscriptionResolved &&
+    freeSubscriptionResolved &&
     !isCheckingProPlan &&
     paidAgentSubscription === "free" &&
     isTauriEnvironment();
@@ -701,6 +727,19 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     },
     [agentOnlyActive],
   );
+
+  useAutoSelectNewRemoteConnection({
+    connections: localConnections,
+    enabled: Boolean(user),
+    chatMode: accessibleChatMode,
+    setChatMode,
+    subscription: paidAgentSubscription,
+    freeSubscriptionResolved,
+    sandboxPreference,
+    setSandboxPreference,
+    selectedModel,
+    setSelectedModel: setSelectedModelState,
+  });
 
   useEffect(() => {
     if (!agentOnlyActive) return;
@@ -767,6 +806,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       setSubscription("free");
       entitlementRefreshUserRef.current = null;
       entitlementRefreshFailureRef.current = null;
+      setEntitlementRefreshFailure(null);
       setEntitlementApiResolvedUserId(null);
       return;
     }
@@ -829,6 +869,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         setSubscriptionWithNormalize(tier);
         setEntitlementApiResolvedUserId(user.id);
         entitlementRefreshFailureRef.current = null;
+        setEntitlementRefreshFailure(null);
         // The API response is authoritative for the UI. Refresh AuthKit and the
         // shared access token in the background so a slow token refresh cannot
         // keep the free Ask/Agent selector hidden.
@@ -845,10 +886,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
               ? entitlementRefreshFailureRef.current.count
               : 0;
           const failureCount = previousFailureCount + 1;
-          entitlementRefreshFailureRef.current = {
+          const nextFailure = {
             userId: user.id,
             count: failureCount,
           };
+          entitlementRefreshFailureRef.current = nextFailure;
+          setEntitlementRefreshFailure(nextFailure);
           const retryDelay =
             ENTITLEMENT_REFRESH_RETRY_DELAYS_MS[failureCount - 1];
           if (retryDelay !== undefined) {
