@@ -29,6 +29,9 @@ Creation is two Stripe calls (`create` from the subscription, then `update`
 with the phases) under one idempotency key per acceptance; if the update fails
 the bare schedule is released again so nothing stays attached.
 
+Account status expands `data.schedule` only (Stripe caps expansion at four
+levels) and fetches the pending phase price separately.
+
 While a schedule is attached Stripe rejects direct item changes, so cancel,
 pause, keep, and plan changes call `releaseSubscriptionSchedule` first.
 "Keep current plan" in Account settings releases it and emits

@@ -174,22 +174,42 @@ async function configureDowngradePhases(
   });
 }
 
-/** The price a pending schedule switches to after the current phase, if any. */
-export function pendingScheduledPrice(
+export type PendingPlanChange = {
+  targetPriceId: string;
+  effectiveAtMs: number;
+  /** Missing when the price lookup failed; the change is still pending. */
+  price?: Stripe.Price;
+};
+
+/**
+ * The price a pending schedule switches to after the current phase, if any.
+ * Stripe caps expansion at four levels, so the schedule is expanded on the
+ * subscription and the phase price is fetched on its own.
+ */
+export async function resolvePendingPlanChange(
   schedule: Stripe.SubscriptionSchedule | string | null | undefined,
   currentPriceId: string | undefined,
-): { price: Stripe.Price; effectiveAtMs: number } | undefined {
+): Promise<PendingPlanChange | undefined> {
   if (!schedule || typeof schedule === "string") return undefined;
   if (schedule.status !== "active") return undefined;
 
   const nowSeconds = Math.floor(Date.now() / 1000);
   for (const phase of schedule.phases) {
     if (phase.start_date <= nowSeconds) continue;
-    const item = phase.items[0];
-    const price = item?.price;
-    if (!price || typeof price === "string" || "deleted" in price) continue;
-    if (price.id === currentPriceId) continue;
-    return { price, effectiveAtMs: phase.start_date * 1000 };
+    const targetPriceId = stripeObjectId(phase.items[0]?.price);
+    if (!targetPriceId || targetPriceId === currentPriceId) continue;
+    const effectiveAtMs = phase.start_date * 1000;
+    try {
+      const price = await stripe.prices.retrieve(targetPriceId);
+      return { targetPriceId, effectiveAtMs, price };
+    } catch (error) {
+      phLogger.warn("subscription_schedule_price_lookup_failed", {
+        stripe_subscription_schedule_id: schedule.id,
+        stripe_price_id: targetPriceId,
+        error,
+      });
+      return { targetPriceId, effectiveAtMs };
+    }
   }
   return undefined;
 }

@@ -7,7 +7,7 @@ import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
-import { pendingScheduledPrice } from "@/lib/billing/subscription-schedule";
+import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
@@ -55,7 +55,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule.phases.items.price"],
+      expand: ["data.items.data.price", "data.schedule"],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
@@ -90,10 +90,11 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   const pause = cancelAtPeriodEnd
     ? subscriptionPauseFromMetadata(currentSubscription.metadata)
     : null;
-  const pendingChange = pendingScheduledPrice(
+  const pendingChange = await resolvePendingPlanChange(
     currentSubscription.schedule,
     price?.id,
   );
+  const pendingPrice = pendingChange?.price;
   return {
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
@@ -109,17 +110,14 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     ...(pendingChange && {
       pendingPlanChange: {
         effectiveAt: pendingChange.effectiveAtMs,
-        ...(pendingChange.price.lookup_key && {
-          targetPlan: pendingChange.price.lookup_key,
-          targetTier:
-            planLookupKeyToTier(pendingChange.price.lookup_key) ?? undefined,
+        ...(pendingPrice?.lookup_key && {
+          targetPlan: pendingPrice.lookup_key,
+          targetTier: planLookupKeyToTier(pendingPrice.lookup_key) ?? undefined,
         }),
-        ...(typeof pendingChange.price.unit_amount === "number" && {
-          targetAmountDollars: pendingChange.price.unit_amount / 100,
+        ...(typeof pendingPrice?.unit_amount === "number" && {
+          targetAmountDollars: pendingPrice.unit_amount / 100,
         }),
-        ...(pendingChange.price.currency && {
-          currency: pendingChange.price.currency,
-        }),
+        ...(pendingPrice?.currency && { currency: pendingPrice.currency }),
       },
     }),
     ...(latestInvoiceId && { latestInvoiceId }),

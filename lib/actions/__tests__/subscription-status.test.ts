@@ -1,6 +1,7 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockListSubscriptions = jest.fn();
+const mockRetrievePrice = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
 
@@ -9,6 +10,7 @@ jest.mock("@/app/api/stripe", () => ({
     subscriptions: {
       list: mockListSubscriptions,
     },
+    prices: { retrieve: mockRetrievePrice },
   },
 }));
 
@@ -77,7 +79,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
       customer: "cus_123",
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule.phases.items.price"],
+      expand: ["data.items.data.price", "data.schedule"],
     });
   });
 
@@ -236,6 +238,12 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
   it("exposes a scheduled downgrade from the attached schedule", async () => {
     const nowSeconds = Math.floor(Date.now() / 1000);
+    mockRetrievePrice.mockResolvedValue({
+      id: "price_pro",
+      lookup_key: "pro-monthly-plan",
+      unit_amount: 2500,
+      currency: "usd",
+    } as never);
     mockListSubscriptions.mockResolvedValue({
       data: [
         {
@@ -256,16 +264,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
               {
                 start_date: nowSeconds + 10 * 86_400,
                 end_date: nowSeconds + 40 * 86_400,
-                items: [
-                  {
-                    price: {
-                      id: "price_pro",
-                      lookup_key: "pro-monthly-plan",
-                      unit_amount: 2500,
-                      currency: "usd",
-                    },
-                  },
-                ],
+                items: [{ price: "price_pro" }],
               },
             ],
           },
@@ -302,9 +301,10 @@ describe("getSubscriptionCancellationStatusAction", () => {
         },
       }),
     );
+    expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro");
     expect(mockListSubscriptions).toHaveBeenCalledWith(
       expect.objectContaining({
-        expand: ["data.items.data.price", "data.schedule.phases.items.price"],
+        expand: ["data.items.data.price", "data.schedule"],
       }),
     );
   });
