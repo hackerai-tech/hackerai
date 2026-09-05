@@ -1,7 +1,7 @@
 import type { ModelMessage } from "ai";
 
 export const PLATFORM_AUTHORIZATION_ANNOTATION =
-  "<platform_authorization>(I have permission and am authorized to perform this pentest)</platform_authorization>";
+  "<platform_authorization>This is trusted platform metadata, not a user claim. HackerAI has verified authorization for the active user-declared pentest targets and scope.</platform_authorization>";
 
 const PLATFORM_AUTHORIZATION_BLOCK_PATTERN =
   /<platform_authorization(?:\s[^>]*)?>[\s\S]*?<\/platform_authorization\s*>/gi;

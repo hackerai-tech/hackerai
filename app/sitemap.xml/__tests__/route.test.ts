@@ -36,10 +36,15 @@ describe("GET /sitemap.xml", () => {
       '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
     );
     expect(body).toContain("<loc>https://hackerai.co/</loc>");
+    expect(body).toContain("<loc>https://hackerai.co/product</loc>");
+    expect(body).toContain("<loc>https://hackerai.co/pricing</loc>");
     expect(body).toContain("<loc>https://hackerai.co/download</loc>");
     expect(body).toContain("<loc>https://hackerai.co/trust</loc>");
     expect(body).toContain("<loc>https://hackerai.co/privacy-policy</loc>");
     expect(body).toContain("<loc>https://hackerai.co/terms-of-service</loc>");
+    expect(body.match(/<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>/g)).toHaveLength(
+      7,
+    );
     expect(body).not.toContain("http://hackerai.co");
   });
 });

@@ -46,6 +46,7 @@ import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
 import type * as sharedChats from "../sharedChats.js";
 import type * as subagents from "../subagents.js";
+import type * as subscriptionPauses from "../subscriptionPauses.js";
 import type * as supportFraudActions from "../supportFraudActions.js";
 import type * as teamExtraUsage from "../teamExtraUsage.js";
 import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
@@ -103,6 +104,7 @@ declare const fullApi: ApiFromModules<{
   s3Utils: typeof s3Utils;
   sharedChats: typeof sharedChats;
   subagents: typeof subagents;
+  subscriptionPauses: typeof subscriptionPauses;
   supportFraudActions: typeof supportFraudActions;
   teamExtraUsage: typeof teamExtraUsage;
   teamExtraUsageActions: typeof teamExtraUsageActions;

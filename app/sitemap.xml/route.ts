@@ -1,10 +1,27 @@
+import { PUBLIC_PAGE_LAST_MODIFIED, SITE_URL } from "@/lib/seo/site";
+
+const PUBLIC_URLS = [
+  { path: "/", lastModified: PUBLIC_PAGE_LAST_MODIFIED.home },
+  { path: "/product", lastModified: PUBLIC_PAGE_LAST_MODIFIED.product },
+  { path: "/pricing", lastModified: PUBLIC_PAGE_LAST_MODIFIED.pricing },
+  { path: "/download", lastModified: PUBLIC_PAGE_LAST_MODIFIED.download },
+  { path: "/trust", lastModified: PUBLIC_PAGE_LAST_MODIFIED.trust },
+  {
+    path: "/privacy-policy",
+    lastModified: PUBLIC_PAGE_LAST_MODIFIED.privacy,
+  },
+  {
+    path: "/terms-of-service",
+    lastModified: PUBLIC_PAGE_LAST_MODIFIED.terms,
+  },
+] as const;
+
 const SITEMAP_CONTENT = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://hackerai.co/</loc></url>
-  <url><loc>https://hackerai.co/download</loc></url>
-  <url><loc>https://hackerai.co/trust</loc></url>
-  <url><loc>https://hackerai.co/privacy-policy</loc></url>
-  <url><loc>https://hackerai.co/terms-of-service</loc></url>
+${PUBLIC_URLS.map(
+  ({ path, lastModified }) =>
+    `  <url><loc>${SITE_URL}${path}</loc><lastmod>${lastModified}</lastmod></url>`,
+).join("\n")}
 </urlset>
 `;
 

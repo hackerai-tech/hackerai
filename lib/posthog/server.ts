@@ -42,6 +42,23 @@ export async function getPostHogFeatureFlagValueForUser(
   }
 }
 
+export async function getPostHogFeatureFlagVariantForUser(
+  flagKey: string,
+  userId: string,
+  options?: { sendFeatureFlagEvents?: boolean },
+): Promise<string | undefined> {
+  const client = getClient();
+  if (!client) return undefined;
+  try {
+    const value = options
+      ? await client.getFeatureFlag(flagKey, userId, options)
+      : await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 type LogFields = Record<string, unknown> & {
   userId?: string;
   error?: unknown;

@@ -102,6 +102,7 @@ import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
+import { useBatchedDataStreamAppend } from "@/app/hooks/useBatchedDataStreamAppend";
 import {
   markSidebarTaskVisited,
   removeDraft,
@@ -111,6 +112,7 @@ import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
+import { AcquisitionSurvey } from "./AcquisitionSurvey";
 
 const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
@@ -521,6 +523,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const computerDialogRef = useRef<HTMLDivElement>(null);
   const computerDialogPreviousFocusRef = useRef<HTMLElement | null>(null);
   const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
+  const { appendDataPart, clearDataStream } =
+    useBatchedDataStreamAppend(setDataStream);
   const {
     isLoading: isConvexAuthLoading,
     isAuthenticated: isConvexAuthenticated,
@@ -1004,7 +1008,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         return;
       }
       agentLongHasVisibleProgressRef.current = true;
-      setDataStream((ds) => [...ds, { ...dataPart, __chatId: chatId }]);
+      appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
         case "data-agent-approval-session": {
           const approvalData = dataPart.data as {
@@ -1261,10 +1265,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       ) {
         stopRef.current();
       }
-      setDataStream([]);
+      clearDataStream();
       setIsAutoResuming(false);
     },
-    [setDataStream, setIsAutoResuming],
+    [clearDataStream, setIsAutoResuming],
   );
 
   useEffect(() => {
@@ -1387,10 +1391,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     agentLongRunFallbackAllowedRef.current = true;
     setAgentLongRunId(null);
     agentLongHasVisibleProgressRef.current = false;
-    setDataStream([]);
+    clearDataStream();
     setIsAutoResuming(false);
     dispatchStreaming({ type: "RESET_ON_CHAT_CHANGE" });
-  }, [chatId, setDataStream, setIsAutoResuming]);
+  }, [chatId, clearDataStream, setIsAutoResuming]);
 
   useEffect(() => {
     return () => {
@@ -1604,6 +1608,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     return () => setChatReset(null);
   }, [
     setChatReset,
+    setHasUserDismissedRateLimitWarning,
     setMessages,
     setStreamedTitle,
     setTodos,
@@ -1735,7 +1740,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (coerced) {
       setSelectedModel(coerced);
     }
-  }, [chatData, isExistingChat, chatId]);
+  }, [chatData, isExistingChat, chatId, setSelectedModel]);
 
   // Persist picker preferences (model + mode) when the user toggles them.
   // Debounced so quick toggles don't spam Convex; baseline is seeded from the
@@ -1916,12 +1921,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Intentionally reads messageQueueRef at cleanup time (latest value).
   useEffect(() => {
     return () => {
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       if (messageQueueRef.current.length > 0) {
         clearQueue();
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId, clearQueue]);
+  }, [chatId, clearQueue, messageQueueRef]);
 
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
@@ -2091,6 +2096,24 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
+  const [surveyActivation, setSurveyActivation] = useState<{
+    chatId: string;
+    mode: "ask" | "agent";
+  } | null>(null);
+  useEffect(() => {
+    if (status !== "submitted" && status !== "streaming") return;
+    setSurveyActivation({
+      chatId,
+      mode: chatMode === "agent" ? "agent" : "ask",
+    });
+  }, [chatId, chatMode, status]);
+  const lastMessage = messages.at(-1);
+  const acquisitionSurveyEligible =
+    surveyActivation?.chatId === chatId &&
+    status === "ready" &&
+    lastMessage?.role === "assistant" &&
+    hasVisibleAssistantContent([lastMessage]) &&
+    messages.some((message) => message.role === "user");
 
   return (
     <ConvexErrorBoundary>
@@ -2124,6 +2147,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         isExistingChat={isExistingChat}
         messageCount={messages.length}
         onSubmit={handleSubmit}
+      />
+      <AcquisitionSurvey
+        eligible={acquisitionSurveyEligible}
+        activationMode={surveyActivation?.mode ?? "ask"}
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">

@@ -109,13 +109,15 @@ describe("proxy", () => {
   });
 
   it.each([
+    "/api/analytics-consent",
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
     "/api/cron/platform-costs/convex",
     "/api/cron/platform-costs/vercel",
+    "/api/cron/subscription-pauses",
   ])(
-    "bypasses AuthKit for the independently authenticated endpoint %s",
+    "bypasses AuthKit for the public or independently authenticated endpoint %s",
     async (pathname) => {
       const { default: proxy } = await import("../proxy");
 
@@ -188,6 +190,29 @@ describe("proxy", () => {
       expect(mockAuthkit).not.toHaveBeenCalled();
       expect(mockNextResponseNext).toHaveBeenCalledWith();
       expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["/product", "/pricing"])(
+    "serves the public discovery page %s without authentication",
+    async (pathname) => {
+      mockAuthkit.mockResolvedValue({
+        session: { user: null },
+        headers: new Headers(),
+        authorizationUrl: "https://signin.hackerai.co/login",
+      });
+      const { default: proxy } = await import("../proxy");
+
+      const response = await proxy(
+        createRequest({
+          pathname,
+          accept: "text/html",
+          userAgent: "Mozilla/5.0",
+        }),
+      );
+
+      expect(response).toMatchObject({ kind: "next" });
       expect(mockNextResponseRedirect).not.toHaveBeenCalled();
     },
   );
@@ -341,23 +366,40 @@ describe("proxy", () => {
     ).toBe(false);
   });
 
-  it("does not overwrite existing first-touch attribution", async () => {
+  it("preserves assistant first-touch attribution during signup", async () => {
     mockAuthkit.mockResolvedValue({
       session: { user: null },
       headers: new Headers(),
       authorizationUrl: "https://signin.hackerai.co/login",
     });
+    const { serializeSignedFirstTouchAttribution } =
+      await import("@/lib/analytics/acquisition-cookie");
+    const assistantFirstTouch = serializeSignedFirstTouchAttribution({
+      version: 1,
+      source: "chatgpt",
+      medium: "campaign",
+      referringDomain: "$direct",
+      entrySurface: "product",
+      capturedAt: "2026-09-01T12:00:00.000Z",
+    });
+    expect(assistantFirstTouch).not.toBeNull();
+
     const { default: proxy } = await import("../proxy");
 
     const response = await proxy(
       createRequest({
-        pathname: "/?utm_source=second_touch",
+        pathname: "/signup?utm_source=google",
         accept: "text/html",
         userAgent: "Mozilla/5.0",
-        cookieNames: ["hackerai_first_touch_attribution"],
+        cookieValues: {
+          hackerai_first_touch_attribution: assistantFirstTouch!,
+        },
       }),
     );
 
+    expect(response.cookies.delete).not.toHaveBeenCalledWith(
+      "hackerai_first_touch_attribution",
+    );
     expect(
       response.cookies.set.mock.calls.some(
         ([name]: [string]) => name === "hackerai_first_touch_attribution",

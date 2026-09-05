@@ -24,6 +24,7 @@ import {
   billingPaymentRecoveryInsertId,
   cancellationCompletionInsertId,
   paidFunnelProperties,
+  subscriptionChurnHealthProperties,
 } from "@/lib/analytics/paid-funnel";
 import {
   logStripeWebhookMissingSignature,
@@ -38,6 +39,14 @@ import {
   type BillingFailureProperties,
 } from "@/lib/billing/subscription-payment-failure";
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
+import {
+  PAUSE_RESUME_CHECKOUT_TYPE,
+  subscriptionPauseFromMetadata,
+} from "@/lib/billing/retention-offers";
+import {
+  proMonthlyPricingAssignmentFromMetadata,
+  proMonthlyPricingExperimentProperties,
+} from "@/lib/experiments/pro-monthly-pricing";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -90,6 +99,119 @@ function stripeEventOccurredAtMs(event: Stripe.Event): number {
     event.created > 0
     ? event.created * 1000
     : Date.now();
+}
+
+/** Return every invoice line, following Stripe pagination when necessary. */
+async function invoiceLineItems(
+  invoice: Stripe.Invoice,
+): Promise<Stripe.InvoiceLineItem[]> {
+  let lines = invoice.lines?.data ?? [];
+  if (invoice.lines?.has_more) {
+    lines = [];
+    for await (const line of stripe.invoices.listLineItems(invoice.id, {
+      limit: 100,
+    })) {
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+function invoiceLineSubscriptionId(
+  line: Stripe.InvoiceLineItem,
+): string | undefined {
+  return (
+    stripeObjectId(line.subscription) ??
+    line.parent?.subscription_item_details?.subscription ??
+    line.parent?.invoice_item_details?.subscription ??
+    undefined
+  );
+}
+
+function invoiceLinePriceId(line: Stripe.InvoiceLineItem): string | undefined {
+  return (
+    stripeObjectId(line.pricing?.price_details?.price) ??
+    stripeObjectId(
+      (
+        line as Stripe.InvoiceLineItem & {
+          price?: string | Stripe.Price | null;
+        }
+      ).price,
+    ) ??
+    undefined
+  );
+}
+
+function invoiceLineIsProration(line: Stripe.InvoiceLineItem): boolean {
+  return (
+    line.parent?.subscription_item_details?.proration === true ||
+    line.parent?.invoice_item_details?.proration === true
+  );
+}
+
+/** Return immutable billing details recorded on a subscription invoice line. */
+async function invoiceSubscriptionBillingDetails(
+  invoice: Stripe.Invoice,
+  subscriptionId: string,
+): Promise<{ priceId: string; quantity?: number } | undefined> {
+  const lines = await invoiceLineItems(invoice);
+  const candidates = lines.filter(
+    (line) => invoiceLineSubscriptionId(line) === subscriptionId,
+  );
+
+  const recurringLine = candidates.find(
+    (line) =>
+      !invoiceLineIsProration(line) &&
+      line.amount > 0 &&
+      invoiceLinePriceId(line),
+  );
+  const selectedLine =
+    recurringLine ?? candidates.find((line) => invoiceLinePriceId(line));
+  const priceId = selectedLine ? invoiceLinePriceId(selectedLine) : undefined;
+  return priceId
+    ? {
+        priceId,
+        ...(typeof selectedLine?.quantity === "number" && {
+          quantity: selectedLine.quantity,
+        }),
+      }
+    : undefined;
+}
+
+/**
+ * Attribute a refund only when every positive priced line belongs to the same
+ * subscription and Price. Mixed invoices need explicit line-level evidence
+ * from an operator workflow before they can safely affect subscription revenue.
+ */
+async function subscriptionRefundPriceId(
+  invoice: Stripe.Invoice,
+  subscriptionId: string,
+): Promise<{
+  priceId?: string;
+  billableLineCount: number;
+  targetLineCount: number;
+}> {
+  const billableLines = (await invoiceLineItems(invoice)).filter(
+    (line) => line.amount > 0 && invoiceLinePriceId(line),
+  );
+  const targetLines = billableLines.filter(
+    (line) => invoiceLineSubscriptionId(line) === subscriptionId,
+  );
+  const targetPriceIds = new Set(
+    targetLines
+      .map((line) => invoiceLinePriceId(line))
+      .filter((priceId): priceId is string => Boolean(priceId)),
+  );
+  const isUnambiguous =
+    billableLines.length > 0 &&
+    targetLines.length === billableLines.length &&
+    targetPriceIds.size === 1;
+
+  return {
+    priceId: isUnambiguous ? [...targetPriceIds][0] : undefined,
+    billableLineCount: billableLines.length,
+    targetLineCount: targetLines.length,
+  };
 }
 
 // =============================================================================
@@ -527,19 +649,23 @@ async function setReferralCodesPaidEligibility(args: {
 
 async function recordSubscriptionRevenue({
   invoice,
+  invoicePrice,
   customerId,
   userIds,
   orgId,
   tier,
   subscription,
+  invoiceQuantity,
   reason,
 }: {
   invoice: Stripe.Invoice;
+  invoicePrice: Stripe.Price;
   customerId: string;
   userIds: string[];
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  invoiceQuantity?: number;
   reason: string;
 }) {
   const grossRevenueDollars = centsToDollars(
@@ -549,15 +675,14 @@ async function recordSubscriptionRevenue({
   if (grossRevenueDollars <= 0 || userIds.length === 0) return;
 
   const item = subscription.items?.data[0];
-  const price = item?.price;
   const occurredAt = invoicePaidAtMs(invoice);
   const attributedRevenueDollars = grossRevenueDollars / userIds.length;
   const attributionStrategy = userIds.length > 1 ? "split_evenly" : "direct";
   const mrrDollars =
     reason === "subscription_create" || reason === "subscription_cycle"
       ? subscriptionMrrDollars({
-          price,
-          quantity: item?.quantity ?? 1,
+          price: invoicePrice,
+          quantity: invoiceQuantity ?? item?.quantity ?? 1,
           fallbackTotalIntervalAmountDollars: grossRevenueDollars,
         })
       : undefined;
@@ -583,9 +708,9 @@ async function recordSubscriptionRevenue({
         stripeCustomerId: customerId,
         stripeSubscriptionId: subscription.id,
         stripeInvoiceId: invoice.id,
-        stripePriceId: price?.id,
-        plan: price?.lookup_key ?? tier,
-        quantity: item?.quantity,
+        stripePriceId: invoicePrice.id,
+        plan: invoicePrice.lookup_key ?? tier,
+        quantity: invoiceQuantity ?? item?.quantity,
         userCount: userIds.length,
         description: reason,
       }),
@@ -608,9 +733,9 @@ async function recordSubscriptionRevenue({
             stripeCustomerId: customerId,
             stripeSubscriptionId: subscription.id,
             stripeInvoiceId: invoice.id,
-            stripePriceId: price?.id,
-            plan: price?.lookup_key ?? tier,
-            quantity: item?.quantity,
+            stripePriceId: invoicePrice.id,
+            plan: invoicePrice.lookup_key ?? tier,
+            quantity: invoiceQuantity ?? item?.quantity,
             userCount: userIds.length,
             description: reason,
           }),
@@ -621,26 +746,42 @@ async function recordSubscriptionRevenue({
 
 function emitInvoicePaidRevenueAnalytics({
   invoice,
+  invoicePrice,
   stripeEventId,
   customerId,
   userIds,
   orgId,
   tier,
   subscription,
+  invoiceQuantity,
 }: {
   invoice: Stripe.Invoice;
+  invoicePrice: Stripe.Price;
   stripeEventId: string;
   customerId: string;
   userIds: string[];
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  invoiceQuantity?: number;
 }) {
   const amountPaidDollars = centsToDollars(invoice.amount_paid);
   if (amountPaidDollars <= 0 || userIds.length === 0) return;
 
-  const price = subscription.items?.data[0]?.price;
+  const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+    subscription.metadata,
+    invoicePrice.lookup_key,
+  );
   const attributedRevenueDollars = amountPaidDollars / userIds.length;
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: invoicePrice,
+    quantity: invoiceQuantity ?? subscription.items?.data[0]?.quantity ?? 1,
+    fallbackTotalIntervalAmountDollars: amountPaidDollars,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / userIds.length;
 
   for (const uid of userIds) {
     phLogger.event(
@@ -649,15 +790,19 @@ function emitInvoicePaidRevenueAnalytics({
         userId: uid,
         org_id: orgId,
         subscription_tier: tier,
-        plan: price?.lookup_key ?? tier,
-        billing_interval: priceBillingInterval(price),
-        billing_interval_count: price?.recurring?.interval_count,
+        plan: invoicePrice.lookup_key ?? tier,
+        stripe_price_lookup_key: invoicePrice.lookup_key,
+        billing_interval: priceBillingInterval(invoicePrice),
+        billing_interval_count: invoicePrice.recurring?.interval_count,
         billing_reason: invoice.billing_reason,
         attempt_count: invoice.attempt_count ?? undefined,
         ...(typeof invoice.attempt_count === "number" &&
           invoice.attempt_count > 1 && { recovery_result: "recovered" }),
         amount_paid_dollars: amountPaidDollars,
         attributed_revenue_dollars: attributedRevenueDollars,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        retained_mrr_dollars: attributedMrrDollars,
         user_count: userIds.length,
         currency: invoice.currency,
         stripe_event_id: stripeEventId,
@@ -665,7 +810,9 @@ function emitInvoicePaidRevenueAnalytics({
         stripe_customer_id: customerId,
         stripe_subscription_id: subscription.id,
         stripe_invoice_id: invoice.id,
-        stripe_price_id: price?.id,
+        stripe_price_id: invoicePrice.id,
+        charged_amount_dollars: amountPaidDollars,
+        ...proMonthlyPricingExperimentProperties(pricingExperiment),
         $insert_id: `${PAID_FUNNEL_EVENTS.invoicePaid}:${stripeEventId}:${uid}`,
         $set: {
           subscription_tier: tier,
@@ -677,6 +824,7 @@ function emitInvoicePaidRevenueAnalytics({
 
 async function recordPaidStartMix({
   invoice,
+  invoicePrice,
   customerId,
   userIds,
   orgId,
@@ -684,6 +832,7 @@ async function recordPaidStartMix({
   subscription,
 }: {
   invoice: Stripe.Invoice;
+  invoicePrice: Stripe.Price;
   customerId: string;
   userIds: string[];
   orgId?: string;
@@ -694,7 +843,6 @@ async function recordPaidStartMix({
   if (!paidStartTier || userIds.length === 0) return;
 
   const item = subscription.items?.data[0];
-  const price = item?.price;
   const occurredAt = invoicePaidAtMs(invoice);
   const entityType = orgId ? "organization" : "user";
   const entityId = orgId ?? userIds[0];
@@ -711,18 +859,18 @@ async function recordPaidStartMix({
     occurredAt,
     conversionType: "free_to_paid",
     tier: paidStartTier,
-    plan: price?.lookup_key ?? paidStartTier,
+    plan: invoicePrice.lookup_key ?? paidStartTier,
     paidAccountStartCount: 1,
     paidUserStartCount: userIds.length,
     paidSeatCount,
-    billingInterval: priceBillingInterval(price),
-    billingIntervalCount: price?.recurring?.interval_count,
+    billingInterval: priceBillingInterval(invoicePrice),
+    billingIntervalCount: invoicePrice.recurring?.interval_count,
     quantity: item?.quantity,
     userCount: userIds.length,
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
     stripeInvoiceId: invoice.id,
-    stripePriceId: price?.id,
+    stripePriceId: invoicePrice.id,
   });
 }
 
@@ -919,6 +1067,38 @@ async function handleInvoicePaid(
   }
 
   const { tier, subscription } = resolved;
+  const entitlementItem = subscription.items?.data[0];
+  const entitlementPrice = entitlementItem?.price;
+  const invoiceBillingDetails = await invoiceSubscriptionBillingDetails(
+    invoice,
+    subscriptionId,
+  );
+  if (!invoiceBillingDetails) {
+    phLogger.warn("invoice_paid_historical_price_missing", {
+      stripe_invoice_id: invoice.id,
+      stripe_subscription_id: subscriptionId,
+    });
+    throw new Error("Historical subscription Price missing from paid invoice");
+  }
+  const { priceId: invoicePriceId, quantity: invoiceQuantity } =
+    invoiceBillingDetails;
+
+  let invoicePrice: Stripe.Price;
+  if (entitlementPrice?.id === invoicePriceId) {
+    invoicePrice = entitlementPrice;
+  } else {
+    try {
+      invoicePrice = await stripe.prices.retrieve(invoicePriceId);
+    } catch (error) {
+      phLogger.warn("invoice_paid_historical_price_retrieve_failed", {
+        stripe_invoice_id: invoice.id,
+        stripe_subscription_id: subscriptionId,
+        stripe_price_id: invoicePriceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
 
   // A paid historical invoice does not reactivate its subscription. Only the
   // current invoice of an entitled subscription may restore paid benefits.
@@ -938,7 +1118,7 @@ async function handleInvoicePaid(
       orgId: orgId ?? undefined,
       stripeSubscriptionId: subscription.id,
       tier,
-      price: subscription.items?.data[0]?.price,
+      price: invoicePrice,
       invoicePaidEligible: false,
     });
     phLogger.warn("billing_invoice_paid_ineligible_subscription_skipped", {
@@ -964,7 +1144,7 @@ async function handleInvoicePaid(
   }
 
   const includedUsagePoints = includedUsagePointsForStripePrice(
-    subscription.items?.data[0]?.price?.id,
+    entitlementPrice?.id,
   );
 
   await setReferralCodesPaidEligibility({
@@ -977,11 +1157,13 @@ async function handleInvoicePaid(
   try {
     await recordSubscriptionRevenue({
       invoice,
+      invoicePrice,
       customerId,
       userIds,
       orgId: orgId ?? undefined,
       tier,
       subscription,
+      invoiceQuantity,
       reason: resetMode.reason,
     });
   } catch (error) {
@@ -998,12 +1180,14 @@ async function handleInvoicePaid(
 
   emitInvoicePaidRevenueAnalytics({
     invoice,
+    invoicePrice,
     stripeEventId,
     customerId,
     userIds,
     orgId: orgId ?? undefined,
     tier,
     subscription,
+    invoiceQuantity,
   });
 
   if (resetMode.mode === "skip") {
@@ -1071,7 +1255,7 @@ async function handleInvoicePaid(
     });
   }
 
-  const recoveryPrice = subscription.items?.data[0]?.price;
+  const recoveryPrice = invoicePrice;
   const isRecoveredReset = (
     result: (typeof resetResults)[number] | undefined,
   ): boolean =>
@@ -1142,8 +1326,7 @@ async function handleInvoicePaid(
   }
 
   if (resetMode.reason === "subscription_create") {
-    const item = subscription.items?.data[0];
-    const price = item?.price;
+    const item = entitlementItem;
     const checkoutAttemptId = metadataString(
       subscription.metadata,
       "checkoutAttemptId",
@@ -1165,9 +1348,13 @@ async function handleInvoicePaid(
     );
     const attributedRevenueDollars =
       userIds.length > 0 ? invoiceAmountPaidDollars / userIds.length : 0;
-    const billingInterval = priceBillingInterval(price);
+    const billingInterval = priceBillingInterval(invoicePrice);
+    const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+      subscription.metadata,
+      invoicePrice.lookup_key,
+    );
     const subscriptionMrr = subscriptionMrrDollars({
-      price,
+      price: invoicePrice,
       quantity: item?.quantity ?? 1,
       fallbackTotalIntervalAmountDollars: invoiceAmountPaidDollars,
     });
@@ -1176,25 +1363,37 @@ async function handleInvoicePaid(
         ? undefined
         : subscriptionMrr / userIds.length;
     const paidSeatCount = item?.quantity ?? userIds.length;
+    // A retention pause ending re-creates the subscription server-side. That
+    // is a reactivation, not a new paid start, so keep it out of the paid
+    // start mix and zero the start counters on the analytics event.
+    const resumedFromPause =
+      metadataString(subscription.metadata, "checkoutType") ===
+      PAUSE_RESUME_CHECKOUT_TYPE;
 
-    try {
-      await recordPaidStartMix({
-        invoice,
-        customerId,
-        userIds,
-        orgId: orgId ?? undefined,
-        tier,
-        subscription,
-      });
-    } catch (error) {
-      console.error("[Subscription Webhook] Failed to record paid start mix:", {
-        error,
-        invoiceId: invoice.id,
-        customerId,
-        userCount: userIds.length,
-        orgId,
-        tier,
-      });
+    if (!resumedFromPause) {
+      try {
+        await recordPaidStartMix({
+          invoice,
+          invoicePrice,
+          customerId,
+          userIds,
+          orgId: orgId ?? undefined,
+          tier,
+          subscription,
+        });
+      } catch (error) {
+        console.error(
+          "[Subscription Webhook] Failed to record paid start mix:",
+          {
+            error,
+            invoiceId: invoice.id,
+            customerId,
+            userCount: userIds.length,
+            orgId,
+            tier,
+          },
+        );
+      }
     }
 
     for (const [index, uid] of userIds.entries()) {
@@ -1202,19 +1401,28 @@ async function handleInvoicePaid(
         userId: uid,
         from_tier: "free",
         to_tier: tier,
-        conversion_type: "free_to_paid",
+        conversion_type: resumedFromPause ? "pause_resume" : "free_to_paid",
+        resumed_from_pause: resumedFromPause,
+        ...(resumedFromPause && {
+          pause_id: metadataString(subscription.metadata, "hackeraiPauseId"),
+          paused_stripe_subscription_id: metadataString(
+            subscription.metadata,
+            "hackeraiResumedFromSubscriptionId",
+          ),
+        }),
         org_id: orgId,
         user_count: userIds.length,
-        plan: price?.lookup_key,
-        paid_account_start_count: index === 0 ? 1 : 0,
-        paid_user_start_count: 1,
+        plan: invoicePrice.lookup_key,
+        stripe_price_lookup_key: invoicePrice.lookup_key,
+        paid_account_start_count: resumedFromPause ? 0 : index === 0 ? 1 : 0,
+        paid_user_start_count: resumedFromPause ? 0 : 1,
         paid_account_user_count: userIds.length,
         paid_seat_count: paidSeatCount,
-        paid_start_plan: price?.lookup_key ?? tier,
+        paid_start_plan: invoicePrice.lookup_key ?? tier,
         paid_start_tier: tier,
         billing_interval: billingInterval,
         paid_start_billing_interval: billingInterval ?? "unknown",
-        billing_interval_count: price?.recurring?.interval_count,
+        billing_interval_count: invoicePrice.recurring?.interval_count,
         quantity: item?.quantity,
         checkout_attempt_id: checkoutAttemptId,
         checkout_type:
@@ -1233,7 +1441,9 @@ async function handleInvoicePaid(
         stripe_subscription_id: subscription.id,
         stripe_invoice_id: invoice.id,
         stripe_checkout_session_id: checkoutSessionId,
-        stripe_price_id: price?.id,
+        stripe_price_id: invoicePrice.id,
+        charged_amount_dollars: invoiceAmountPaidDollars,
+        ...proMonthlyPricingExperimentProperties(pricingExperiment),
         $set: {
           subscription_tier: tier,
           last_subscription_started_at: new Date().toISOString(),
@@ -1249,7 +1459,7 @@ async function handleInvoicePaid(
       tier,
       subscription,
       customerId,
-      plan: price?.lookup_key ?? undefined,
+      plan: invoicePrice.lookup_key ?? undefined,
       invoiceId: invoice.id,
       checkoutSessionId,
       checkoutAttemptId,
@@ -1494,6 +1704,161 @@ async function handlePaymentMethodUpdated(args: {
   }
 }
 
+async function handleSubscriptionRefund(
+  refund: Stripe.Refund,
+  stripeEventId: string,
+  stripeEventType: "refund.created" | "refund.updated",
+): Promise<void> {
+  if (refund.status !== "succeeded") return;
+
+  const chargeId = stripeObjectId(refund.charge);
+  if (!chargeId || refund.amount <= 0) return;
+
+  const charge = await stripe.charges.retrieve(chargeId);
+  const invoiceId = stripeObjectId(
+    (charge as Stripe.Charge & { invoice?: string | Stripe.Invoice | null })
+      .invoice,
+  );
+  if (!invoiceId) return;
+
+  const invoice = await stripe.invoices.retrieve(invoiceId);
+  const subscriptionId = invoiceSubscriptionId(invoice);
+  if (!subscriptionId) return;
+
+  const resolved = await resolveSubscription(subscriptionId);
+  if (!resolved || resolved.kind === "legacy_pentestgpt") return;
+
+  const customerId =
+    stripeObjectId(invoice.customer) ?? stripeObjectId(charge.customer);
+  if (!customerId) return;
+
+  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  if (userIds.length === 0) return;
+
+  const refundAttribution = await subscriptionRefundPriceId(
+    invoice,
+    subscriptionId,
+  );
+  const invoicePriceId = refundAttribution.priceId;
+  if (!invoicePriceId) {
+    phLogger.warn("subscription_refund_attribution_unavailable", {
+      stripe_refund_id: refund.id,
+      stripe_invoice_id: invoiceId,
+      stripe_subscription_id: subscriptionId,
+      refund_amount_dollars: centsToDollars(refund.amount),
+      billable_line_count: refundAttribution.billableLineCount,
+      target_subscription_line_count: refundAttribution.targetLineCount,
+      requires_manual_reconciliation: true,
+    });
+    return;
+  }
+  let price: Stripe.Price;
+  try {
+    price = await stripe.prices.retrieve(invoicePriceId);
+  } catch (error) {
+    phLogger.warn("subscription_refund_invoice_price_retrieve_failed", {
+      stripe_invoice_id: invoiceId,
+      stripe_price_id: invoicePriceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+  const refundedTier = price?.lookup_key
+    ? (planLookupKeyToTier(price.lookup_key) ?? resolved.tier)
+    : resolved.tier;
+  const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+    resolved.subscription.metadata,
+    price?.lookup_key,
+  );
+  const refundAmountDollars = centsToDollars(refund.amount);
+  const attributedRefundDollars = refundAmountDollars / userIds.length;
+  const occurredAt = refund.created ? refund.created * 1000 : Date.now();
+
+  await Promise.all([
+    ...userIds.map((userId) =>
+      getConvexClient().mutation(api.unitEconomics.recordRevenueEvent, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        entityType: "user",
+        entityId: userId,
+        userId,
+        organizationId: orgId ?? undefined,
+        source: "subscription",
+        sourceEventId: refund.id,
+        idempotencyKey: `subscription_refund:${refund.id}:user:${userId}`,
+        grossRevenueDollars: -attributedRefundDollars,
+        netRevenueDollars: -attributedRefundDollars,
+        currency: refund.currency,
+        occurredAt,
+        attributionStrategy: userIds.length > 1 ? "split_evenly" : "direct",
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscriptionId,
+        stripeInvoiceId: invoiceId,
+        stripePaymentIntentId: stripeObjectId(refund.payment_intent),
+        stripePriceId: price?.id,
+        plan: price?.lookup_key ?? resolved.tier,
+        userCount: userIds.length,
+        description: "refund",
+      }),
+    ),
+    ...(orgId
+      ? [
+          getConvexClient().mutation(api.unitEconomics.recordRevenueEvent, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            entityType: "organization",
+            entityId: orgId,
+            organizationId: orgId,
+            source: "subscription",
+            sourceEventId: refund.id,
+            idempotencyKey: `subscription_refund:${refund.id}:organization:${orgId}`,
+            grossRevenueDollars: -refundAmountDollars,
+            netRevenueDollars: -refundAmountDollars,
+            currency: refund.currency,
+            occurredAt,
+            attributionStrategy: "organization_pool",
+            stripeCustomerId: customerId,
+            stripeSubscriptionId: subscriptionId,
+            stripeInvoiceId: invoiceId,
+            stripePaymentIntentId: stripeObjectId(refund.payment_intent),
+            stripePriceId: price?.id,
+            plan: price?.lookup_key ?? resolved.tier,
+            userCount: userIds.length,
+            description: "refund",
+          }),
+        ]
+      : []),
+  ]);
+
+  for (const userId of userIds) {
+    phLogger.event(
+      PAID_FUNNEL_EVENTS.subscriptionRefunded,
+      paidFunnelProperties({
+        userId,
+        org_id: orgId,
+        subscription_tier: refundedTier,
+        plan: price?.lookup_key,
+        stripe_price_lookup_key: price?.lookup_key,
+        billing_interval: priceBillingInterval(price),
+        billing_interval_count: price?.recurring?.interval_count,
+        refund_amount_dollars: refundAmountDollars,
+        attributed_refund_dollars: attributedRefundDollars,
+        charged_amount_dollars: -attributedRefundDollars,
+        currency: refund.currency,
+        stripe_event_id: stripeEventId,
+        stripe_event_type: stripeEventType,
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        stripe_invoice_id: invoiceId,
+        stripe_payment_intent_id: stripeObjectId(refund.payment_intent),
+        stripe_charge_id: chargeId,
+        stripe_refund_id: refund.id,
+        stripe_price_id: price?.id,
+        ...proMonthlyPricingExperimentProperties(pricingExperiment),
+        $insert_id: `${PAID_FUNNEL_EVENTS.subscriptionRefunded}:${refund.id}:${userId}`,
+      }),
+    );
+  }
+}
+
 /** Handle checkout.session.completed — attach Checkout Session IDs to saved referral attribution. */
 async function handleCheckoutSessionCompleted(
   session: Stripe.Checkout.Session,
@@ -1565,6 +1930,15 @@ async function handleCheckoutSessionCompleted(
 
   const price = resolved.subscription.items?.data[0]?.price;
   const existingMetadata = resolved.subscription.metadata ?? {};
+  const pricingExperiment =
+    proMonthlyPricingAssignmentFromMetadata(
+      existingMetadata,
+      price?.lookup_key,
+    ) ??
+    proMonthlyPricingAssignmentFromMetadata(
+      session.metadata,
+      price?.lookup_key,
+    );
   if (checkoutAttemptId || checkoutSource || checkoutSurface) {
     try {
       await stripe.subscriptions.update(subscriptionId, {
@@ -1598,9 +1972,9 @@ async function handleCheckoutSessionCompleted(
         checkout_type: checkoutType,
         from_tier: "free",
         to_tier: resolved.tier,
-        plan:
-          metadataString(session.metadata, "requestedPlan") ??
-          price?.lookup_key,
+        plan: price?.lookup_key,
+        requested_plan: metadataString(session.metadata, "requestedPlan"),
+        stripe_price_lookup_key: price?.lookup_key,
         billing_interval: priceBillingInterval(price),
         billing_interval_count: price?.recurring?.interval_count,
         quantity: resolved.subscription.items?.data[0]?.quantity,
@@ -1612,7 +1986,9 @@ async function handleCheckoutSessionCompleted(
         stripe_subscription_id: subscriptionId,
         stripe_checkout_session_id: session.id,
         stripe_price_id: price?.id,
+        charged_amount_dollars: centsToDollars(session.amount_total),
         payment_status: session.payment_status,
+        ...proMonthlyPricingExperimentProperties(pricingExperiment),
         $insert_id: `${PAID_FUNNEL_EVENTS.checkoutSucceeded}:${session.id}`,
         $set: {
           last_checkout_succeeded_at: new Date().toISOString(),
@@ -1818,6 +2194,19 @@ async function recordCancellationCompleted(args: {
     : undefined;
   const completedAt =
     args.completionType === "deleted" ? (canceledAt ?? Date.now()) : Date.now();
+  const pricingExperiment = proMonthlyPricingAssignmentFromMetadata(
+    args.subscription.metadata,
+    args.price?.lookup_key,
+  );
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: args.price,
+    quantity: args.subscription.items?.data[0]?.quantity ?? 1,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / args.userIds.length;
+  const pauseProperties = retentionPauseProperties(args.subscription);
 
   let updatedCount = 0;
   try {
@@ -1857,17 +2246,74 @@ async function recordCancellationCompleted(args: {
         subscription_tier: args.tier,
         org_id: args.orgId,
         plan: args.price?.lookup_key,
+        stripe_price_lookup_key: args.price?.lookup_key,
         billing_interval: priceBillingInterval(args.price),
         billing_interval_count: args.price?.recurring?.interval_count,
         cancellation_reason: stripeCancellationReason,
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        at_risk_mrr_dollars: attributedMrrDollars,
         cancellation_completion_type: args.completionType,
         cancel_at_period_end: args.subscription.cancel_at_period_end,
+        ...pauseProperties,
         stripe_customer_id: args.customerId,
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
+        ...proMonthlyPricingExperimentProperties(pricingExperiment),
         $insert_id: cancellationCompletionInsertId(args.subscription.id),
       }),
     );
+  }
+}
+
+/**
+ * Analytics properties that mark a cancellation as a retention pause so churn
+ * dashboards can separate "paused, resumes later" from a plain cancellation.
+ */
+function retentionPauseProperties(subscription: Stripe.Subscription) {
+  const pause = subscriptionPauseFromMetadata(subscription.metadata);
+  if (!pause) return { retention_pause: false };
+  return {
+    retention_pause: true,
+    retention_offer_accepted: "pause",
+    pause_months: pause.months,
+    pause_resume_at: new Date(pause.resumeAtMs).toISOString(),
+    pause_id: pause.pauseId,
+  };
+}
+
+/** Move the Convex pause record to "paused" once Stripe ends the subscription. */
+async function markRetentionPauseEffective(
+  subscription: Stripe.Subscription,
+  occurredAtMs: number,
+): Promise<void> {
+  const pause = subscriptionPauseFromMetadata(subscription.metadata);
+  if (!pause) return;
+
+  try {
+    const result = await getConvexClient().mutation(
+      api.subscriptionPauses.markPauseEffective,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        stripeSubscriptionId: subscription.id,
+        pausedAt: occurredAtMs,
+      },
+    );
+    if (result.updatedCount === 0) {
+      phLogger.warn("subscription_pause_effective_record_missing", {
+        stripe_subscription_id: subscription.id,
+        pause_id: pause.pauseId,
+      });
+    }
+  } catch (error) {
+    phLogger.error("subscription_pause_effective_update_failed", {
+      stripe_subscription_id: subscription.id,
+      pause_id: pause.pauseId,
+      error,
+    });
   }
 }
 
@@ -1928,6 +2374,14 @@ async function handleSubscriptionDeleted(
   }
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
+  const subscriptionMrr = subscriptionMrrDollars({
+    price,
+    quantity: subscription.items?.data[0]?.quantity ?? 1,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / userIds.length;
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
   );
@@ -1941,6 +2395,8 @@ async function handleSubscriptionDeleted(
     price,
     completionType: "deleted",
   });
+  await markRetentionPauseEffective(subscription, eventOccurredAtMs);
+  const pauseProperties = retentionPauseProperties(subscription);
 
   for (const uid of userIds) {
     phLogger.event("subscription_cancelled", {
@@ -1948,6 +2404,11 @@ async function handleSubscriptionDeleted(
       tier,
       org_id: orgId,
       cancellation_reason: cancellationReason,
+      ...subscriptionChurnHealthProperties(cancellationReason),
+      ...pauseProperties,
+      subscription_mrr_dollars: subscriptionMrr,
+      attributed_mrr_dollars: attributedMrrDollars,
+      lost_mrr_dollars: attributedMrrDollars,
       stripe_event_id: stripeEventId,
       stripe_event_type: "customer.subscription.deleted",
       $insert_id: `subscription_cancelled:${stripeEventId}:${uid}`,
@@ -2023,7 +2484,8 @@ async function handleSubscriptionDeleted(
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
  * - Events: checkout.session.completed, invoice.paid,
  *   invoice.payment_failed, customer.subscription.updated,
- *   customer.subscription.deleted, payment_method.attached, customer.updated
+ *   customer.subscription.deleted, payment_method.attached, customer.updated,
+ *   refund.created, refund.updated
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -2175,6 +2637,15 @@ export async function POST(req: NextRequest) {
           eventOccurredAtMs: stripeEventOccurredAtMs(event),
         });
       }
+      break;
+    }
+    case "refund.created":
+    case "refund.updated": {
+      await handleSubscriptionRefund(
+        event.data.object as Stripe.Refund,
+        event.id,
+        event.type,
+      );
       break;
     }
   }

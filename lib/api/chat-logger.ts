@@ -609,6 +609,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Record the first model chunk (first call wins within a request)
+     */
+    markFirstChunk() {
+      builder.markFirstChunk();
+    },
+
+    /**
      * Set sandbox execution info
      */
     setSandbox(info: ChatWideEvent["sandbox"] | null) {
@@ -956,21 +963,23 @@ export function createChatLogger(config: ChatLoggerConfig) {
               paidDailyFreeAllowance?.available,
             paid_daily_free_allowance_unavailable_reason:
               paidDailyFreeAllowance?.unavailableReason,
-            paid_daily_free_allowance_requests_remaining:
-              paidDailyFreeAllowance?.requestsRemaining,
-            paid_daily_free_allowance_request_limit:
-              paidDailyFreeAllowance?.requestLimit,
+            paid_daily_free_allowance_requests_today:
+              paidDailyFreeAllowance?.requestsUsed,
+            paid_daily_free_allowance_cost_used_today_dollars:
+              paidDailyFreeAllowance?.costUsedDollars,
             paid_daily_free_allowance_cost_remaining_dollars:
               paidDailyFreeAllowance?.costRemainingDollars,
             paid_daily_free_allowance_cost_limit_dollars:
               paidDailyFreeAllowance?.costLimitDollars,
-            paid_daily_free_allowance_rollout_percent:
-              paidDailyFreeAllowance?.rolloutPercent,
             chat_id: config.chatId,
             endpoint: config.endpoint,
             $set: {
               subscription_tier: subscription,
               last_limit_hit_at: new Date().toISOString(),
+              ...(pressure.paidMonthlyExhaustion && {
+                paid_monthly_last_exhausted_at: new Date().toISOString(),
+                paid_monthly_last_exhausted_tier: subscription,
+              }),
             },
           }),
         );
@@ -1723,7 +1732,7 @@ export function captureUsageCost({
   paidDailyFreeAllowance?: {
     active: boolean;
     cutOff?: boolean;
-    requestLimit?: number;
+    requestsToday?: number;
     costLimitDollars?: number;
     resetTimestamp?: number;
   };
@@ -1831,8 +1840,8 @@ export function captureUsageCost({
         paid_daily_free_allowance_active: true,
         paid_daily_free_allowance_cut_off:
           paidDailyFreeAllowance.cutOff === true,
-        paid_daily_free_allowance_request_limit:
-          paidDailyFreeAllowance.requestLimit,
+        paid_daily_free_allowance_requests_today:
+          paidDailyFreeAllowance.requestsToday,
         paid_daily_free_allowance_cost_limit_dollars:
           paidDailyFreeAllowance.costLimitDollars,
         paid_daily_free_allowance_reset_timestamp:

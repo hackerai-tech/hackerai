@@ -69,7 +69,6 @@ import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
-import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
 
 type AgentTriggerMachinePreset = "small-1x" | "small-2x";
 
@@ -465,10 +464,7 @@ export const createAgentTriggerPost =
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
-      const genericDelegationFlagPromise =
-        agentPermissionMode === "full_access"
-          ? getPostHogFeatureFlagForUser("agent-generic-delegation-v1", userId)
-          : Promise.resolve(false);
+      const genericDelegationEnabled = agentPermissionMode === "full_access";
 
       assertFreeAgentGates({
         mode: "agent",
@@ -503,12 +499,10 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
-      const [existingChat, userCustomization, genericDelegationEnabled] =
-        await Promise.all([
-          getChatById({ id: chatId }),
-          getUserCustomization({ userId }),
-          genericDelegationFlagPromise,
-        ]);
+      const [existingChat, userCustomization] = await Promise.all([
+        getChatById({ id: chatId }),
+        getUserCustomization({ userId }),
+      ]);
 
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
@@ -577,14 +571,26 @@ export const createAgentTriggerPost =
           let stagedSandbox: any = null;
           let uploadResult: Awaited<ReturnType<typeof uploadSandboxFiles>>;
           try {
-            uploadResult = await uploadSandboxFiles(sandboxFiles, async () => {
-              const { sandbox } = await getSandboxWithFallbackGuard({
-                sandboxManager,
-                requireLocalSandbox: true,
-              });
-              stagedSandbox = sandbox;
-              return sandbox;
-            });
+            uploadResult = await uploadSandboxFiles(
+              sandboxFiles,
+              async () => {
+                const { sandbox } = await getSandboxWithFallbackGuard({
+                  sandboxManager,
+                  requireLocalSandbox: true,
+                });
+                stagedSandbox = sandbox;
+                return sandbox;
+              },
+              {
+                logContext: {
+                  service: "hackerai-web",
+                  requestId:
+                    req.headers.get("x-vercel-id")?.slice(0, 128) ?? undefined,
+                  userId,
+                  chatId: chatId.slice(0, 128),
+                },
+              },
+            );
           } finally {
             await stagedSandbox?.close?.().catch(() => {});
           }

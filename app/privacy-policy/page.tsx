@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { canonicalMetadata } from "@/lib/seo/site";
 
 export const metadata: Metadata = {
+  ...canonicalMetadata("/privacy-policy"),
   title: "Privacy Policy | HackerAI",
   description:
     "Privacy Policy and data handling practices for HackerAI services.",

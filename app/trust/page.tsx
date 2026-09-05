@@ -9,14 +9,25 @@ import {
   Database,
   ExternalLink as ExternalLinkIcon,
   FileText,
+  Globe,
   KeyRound,
   Network,
   ShieldCheck,
   Terminal,
   Trash2,
 } from "lucide-react";
+import Header from "@/app/components/Header";
+import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
+import {
+  HELP_CENTER_URL as DEFAULT_HELP_CENTER_URL,
+  PUBLIC_PAGE_LAST_MODIFIED,
+  STATUS_PAGE_URL,
+  canonicalMetadata,
+  formatPublicPageDate,
+} from "@/lib/seo/site";
 
 export const metadata: Metadata = {
+  ...canonicalMetadata("/trust"),
   title: "Security & Trust | HackerAI",
   description:
     "How HackerAI handles your data: AI providers, sandbox execution, storage, billing, account security, and subprocessors.",
@@ -36,12 +47,8 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-static";
 
-const LAST_UPDATED = "August 22, 2026";
-
 const HELP_CENTER_URL =
-  process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
-
-const STATUS_PAGE_URL = "https://status.hackerai.co/";
+  process.env.NEXT_PUBLIC_HELP_CENTER_URL || DEFAULT_HELP_CENTER_URL;
 
 interface Subprocessor {
   name: string;
@@ -72,7 +79,7 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "E2B",
-    purpose: "Cloud sandboxes",
+    purpose: "Cloud sandboxes (US, or EU for connections from Europe)",
     dataCategories: "Commands, command output, files inside the sandbox",
   },
   {
@@ -82,7 +89,8 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "Amazon Web Services (S3)",
-    purpose: "File storage",
+    purpose:
+      "File storage (US regions, or eu-central-1 for connections from Europe)",
     dataCategories: "Uploaded files",
   },
   {
@@ -107,7 +115,8 @@ const subprocessors: Subprocessor[] = [
   },
   {
     name: "Trigger.dev",
-    purpose: "Background execution of long-running agent tasks",
+    purpose:
+      "Background execution of long-running agent tasks (US regions, or eu-central-1 for connections from Europe)",
     dataCategories: "Task payloads including conversation context",
   },
   {
@@ -167,28 +176,32 @@ const CheckList = ({ items }: { items: React.ReactNode[] }) => (
   </ul>
 );
 
-export default function TrustPage() {
+function TrustContent() {
   return (
-    <div className="min-h-dvh bg-background px-4 py-12 sm:px-6">
+    <main className="bg-background px-4 py-14 sm:px-6 sm:py-20">
       <div className="mx-auto max-w-4xl">
         {/* Hero */}
         <header className="mb-12 text-center">
           <div className="mx-auto mb-6 flex size-14 items-center justify-center rounded-2xl border border-border bg-card shadow-sm">
-            <ShieldCheck className="size-7 text-foreground" />
+            <ShieldCheck
+              className="size-7 text-foreground"
+              aria-hidden="true"
+            />
           </div>
-          <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+          <h1 className="text-5xl font-medium leading-[1.05] tracking-tight text-foreground sm:text-6xl">
             Security &amp; Trust
           </h1>
-          <p className="mx-auto mt-4 max-w-2xl text-lg leading-relaxed text-muted-foreground">
+          <p className="mx-auto mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
             HackerAI is an AI agent for penetration testing and security work.
             This page describes the data we process, where agent code runs, and
             the services we rely on to operate.
           </p>
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
-              Last updated {LAST_UPDATED}
-            </span>
-          </div>
+          <p className="mt-6 inline-flex items-center rounded-full border border-border bg-card px-3 py-1 text-xs font-medium text-muted-foreground">
+            Last updated{" "}
+            <time className="ml-1" dateTime={PUBLIC_PAGE_LAST_MODIFIED.trust}>
+              {formatPublicPageDate(PUBLIC_PAGE_LAST_MODIFIED.trust)}
+            </time>
+          </p>
         </header>
 
         <div className="space-y-6">
@@ -259,6 +272,28 @@ export default function TrustPage() {
               />
             </Section>
           </div>
+
+          <Section icon={Globe} title="Where your data is processed">
+            <p>
+              Agent runs, new cloud sandboxes, and new file uploads are placed
+              by the location you connect from. Connections from Europe use our
+              EU region (Frankfurt, eu-central-1). Connections from North
+              America use the nearest US region. This is decided per request
+              from your IP address, not from an account setting, so a VPN or
+              travel changes it.
+            </p>
+            <p>
+              Sandboxes and files created before regional placement was
+              introduced stay where they were created until you delete them.
+            </p>
+            <p>
+              The primary database, AI model providers, web search, content
+              moderation, authentication, billing, and analytics are not
+              regional. See the{" "}
+              <InlineLink href="/privacy-policy">Privacy Policy</InlineLink> for
+              international processing.
+            </p>
+          </Section>
 
           <div className="grid gap-6 md:grid-cols-2">
             <Section icon={CreditCard} title="Billing">
@@ -383,8 +418,8 @@ export default function TrustPage() {
             {[
               { href: "/privacy-policy", label: "Privacy Policy" },
               { href: "/terms-of-service", label: "Terms of Service" },
-              { href: HELP_CENTER_URL, label: "Help center" },
-              { href: STATUS_PAGE_URL, label: "Status Page" },
+              { href: HELP_CENTER_URL, label: "Help Center" },
+              { href: STATUS_PAGE_URL, label: "Status page" },
             ].map((link) => (
               <a
                 key={link.href}
@@ -407,6 +442,16 @@ export default function TrustPage() {
           </p>
         </footer>
       </div>
+    </main>
+  );
+}
+
+export default function TrustPage() {
+  return (
+    <div className="min-h-dvh bg-background text-foreground">
+      <Header currentPath="/trust" />
+      <TrustContent />
+      <PublicSiteFooter />
     </div>
   );
 }

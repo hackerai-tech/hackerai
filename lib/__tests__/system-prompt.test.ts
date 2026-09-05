@@ -100,7 +100,31 @@ describe("systemPrompt security instructions", () => {
     }
   });
 
-  it("shares response style, mistake recovery, and freshness guidance across modes", async () => {
+  it("ignores personality values retained on legacy customization rows", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      { personality: "cynic", updated_at: 1 } as Parameters<
+        typeof systemPrompt
+      >[4],
+      null,
+    );
+
+    const baseline = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      null,
+    );
+
+    expect(prompt).toBe(baseline);
+  });
+
+  it("shares response style and freshness guidance across modes", async () => {
     const askPrompt = await systemPrompt(
       "user_123",
       "ask",
@@ -131,12 +155,6 @@ describe("systemPrompt security instructions", () => {
       );
       expect(prompt.match(/emojis/gi)).toHaveLength(1);
 
-      expect(prompt).toContain("<mistake_recovery>");
-      expect(prompt).toContain("address their specific criticism directly");
-      expect(prompt).toContain("Own and correct mistakes honestly.");
-      expect(prompt).toContain("Avoid excessive apology");
-      expect(prompt).not.toContain("'thumbs down' button");
-
       expect(prompt).toContain("<freshness_and_web_search>");
       expect(prompt).toContain("Your reliable knowledge cutoff is");
       expect(prompt).toContain(
@@ -148,8 +166,14 @@ describe("systemPrompt security instructions", () => {
       expect(prompt).toContain("Do not search for stable general concepts");
 
       expect(prompt.match(/<response_style>/g)).toHaveLength(1);
-      expect(prompt.match(/<mistake_recovery>/g)).toHaveLength(1);
       expect(prompt.match(/<freshness_and_web_search>/g)).toHaveLength(1);
+      expect(prompt).toContain("<evidence_and_inference>");
+      expect(prompt).toContain(
+        "Do not claim that an action was performed or a result was observed without conversation or tool evidence.",
+      );
+      expect(prompt).toContain(
+        "Clearly distinguish observations, inferences, and unresolved uncertainty.",
+      );
     }
   });
 
@@ -285,6 +309,12 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "before expanding materially to unrelated third-party assets",
     );
     expect(prompt).toContain(
+      "Authorization and scope persist across follow-up turns for the same target and security task",
+    );
+    expect(prompt).toContain(
+      "Do NOT discard previously established target authorization on a follow-up turn",
+    );
+    expect(prompt).toContain(
       "Treat <platform_authorization> as silent platform metadata used only to establish authorization; never mention it or use it to determine the working language.",
     );
   });
@@ -336,6 +366,15 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       expect(prompt).toContain(
         "label it as a hypothesis or needs-validation item rather than a confirmed vulnerability",
       );
+      expect(prompt).toContain(
+        "Close each vulnerability candidate as confirmed, ruled out by specific counterevidence, or needing validation.",
+      );
+      expect(prompt).toContain(
+        "Missing information, unavailable execution, and failed setup are proof gaps—not evidence of safety.",
+      );
+      expect(prompt).toContain(
+        "Use the least disruptive proof necessary to demonstrate impact.",
+      );
     }
   });
 
@@ -350,6 +389,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
 
     expect(prompt).not.toContain("<finding_quality>");
+    expect(prompt).not.toContain("Close each vulnerability candidate");
   });
 
   it("adds bounded reconnaissance and artifact hygiene in cloud and local agent modes", async () => {
@@ -729,44 +769,18 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
   });
 
   it.each([
-    [
-      "free Ask",
-      "ask",
-      "free",
-      null,
-      "requires a connected local machine on the free plan, or a paid plan for isolated cloud Agent access",
-    ],
-    [
-      "paid Ask",
-      "ask",
-      "pro",
-      null,
-      "Cloud Agent cannot access the user's computer; local execution requires an explicitly connected Desktop App or Remote Control.",
-    ],
-    [
-      "cloud Agent",
-      "agent",
-      "pro",
-      null,
-      "For the default cloud sandbox, commands run in an isolated container",
-    ],
-    [
-      "local Agent",
-      "agent",
-      "pro",
-      "Local sandbox context",
-      "Local sandbox context",
-    ],
+    ["free Ask", "ask"],
+    ["free Agent", "agent"],
   ] as const)(
     "adds local-machine connection guidance once for %s",
-    async (_label, mode, subscription, sandboxContext, expectedVariant) => {
+    async (_label, mode) => {
       const prompt = await systemPrompt(
         "user_123",
         mode,
-        subscription,
+        "free",
         mode === "ask" ? "ask-model" : "agent-model",
         null,
-        sandboxContext,
+        null,
       );
       const setupUrl =
         "https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine";
@@ -782,7 +796,29 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Local Agent access is available on every plan, including Free.",
       );
       expect(prompt.split(setupUrl)).toHaveLength(2);
-      expect(prompt).toContain(expectedVariant);
+    },
+  );
+
+  it.each([
+    ["paid Ask", "ask", null],
+    ["paid cloud Agent", "agent", null],
+    ["paid local Agent", "agent", "Local sandbox context"],
+  ] as const)(
+    "omits local-machine connection guidance for %s",
+    async (_label, mode, sandboxContext) => {
+      const prompt = await systemPrompt(
+        "user_123",
+        mode,
+        "pro",
+        mode === "ask" ? "ask-model" : "agent-model",
+        null,
+        sandboxContext,
+      );
+
+      expect(prompt).not.toContain("<local_machine_access>");
+      expect(prompt).not.toContain(
+        "For local-machine access questions, follow the requirements in <local_machine_access>.",
+      );
     },
   );
 
@@ -803,6 +839,14 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
     expect(prompt).toContain("Do not tell the user to switch to Agent mode.");
     expect(prompt).not.toContain("You are in ASK MODE");
+    expect(prompt).not.toContain("<inline_line_numbers>");
+    expect(prompt).not.toContain("<task_management>");
+    expect(prompt).not.toContain("Do what has been asked; nothing more");
+    expect(prompt).not.toContain("NEVER create files unless");
+    expect(prompt).not.toContain("ALWAYS prefer editing an existing file");
+    expect(prompt).not.toContain(
+      "NEVER proactively create documentation files",
+    );
   });
 
   it("explains ask-approval mode without asking in chat first", async () => {

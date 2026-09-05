@@ -11,7 +11,7 @@ import {
 } from "../model-routing";
 
 describe("subagent model routing", () => {
-  it("uses GLM for free text work and preserves DeepSeek for paid text work", () => {
+  it("uses DeepSeek for free and paid text work", () => {
     expect(resolveSubagentTextModel("free")).toBe(SUBAGENT_FREE_TEXT_MODEL);
     expect(resolveSubagentTextModel("pro")).toBe(SUBAGENT_PAID_TEXT_MODEL);
     expect(
@@ -76,7 +76,7 @@ describe("subagent model routing", () => {
     ).toBe(SUBAGENT_FREE_TEXT_MODEL);
   });
 
-  it("promotes to Grok 4.5 when an image tool result appears", () => {
+  it("promotes to DeepSeek V4 Flash Vision when an image tool result appears", () => {
     expect(
       resolveSubagentModelForImageToolResults(SUBAGENT_FREE_TEXT_MODEL, true),
     ).toBe(SUBAGENT_VISION_MODEL);

@@ -538,6 +538,58 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
       { _id: "fence-user", user_id: userId, started_at: 1 },
       { _id: "fence-other", user_id: otherUserId, started_at: 1 },
     ],
+    subagent_runs: [
+      {
+        _id: "subagent-run-user",
+        subagent_id: "sa-user",
+        user_id: userId,
+        chat_id: "chat-1",
+        status: "completed",
+      },
+      {
+        _id: "subagent-run-other",
+        subagent_id: "sa-other",
+        user_id: otherUserId,
+        chat_id: "chat-other-id",
+        status: "completed",
+      },
+    ],
+    subagent_messages: [
+      {
+        _id: "subagent-message-user",
+        subagent_id: "sa-user",
+        user_id: userId,
+      },
+      {
+        _id: "subagent-message-other",
+        subagent_id: "sa-other",
+        user_id: otherUserId,
+      },
+    ],
+    subagent_events: [
+      {
+        _id: "subagent-event-user",
+        subagent_id: "sa-user",
+        user_id: userId,
+      },
+      {
+        _id: "subagent-event-other",
+        subagent_id: "sa-other",
+        user_id: otherUserId,
+      },
+    ],
+    subagent_work_items: [
+      {
+        _id: "subagent-work-user",
+        subagent_id: "sa-user",
+        user_id: userId,
+      },
+      {
+        _id: "subagent-work-other",
+        subagent_id: "sa-other",
+        user_id: otherUserId,
+      },
+    ],
     research_runs: [
       {
         _id: "research-run",
@@ -640,6 +692,16 @@ describe("userDeletion", () => {
     expect(row(tables, "research_runs", "research-run")).toBeTruthy();
     expect(row(tables, "research_reports", "research-report")).toBeTruthy();
     expect(row(tables, "user_deletion_fences", "fence-user")).toBeTruthy();
+    expect(
+      row(tables, "subagent_events", "subagent-event-user"),
+    ).toBeUndefined();
+    expect(row(tables, "subagent_events", "subagent-event-other")).toBeTruthy();
+    expect(
+      row(tables, "subagent_work_items", "subagent-work-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "subagent_work_items", "subagent-work-other"),
+    ).toBeTruthy();
 
     expect(row(tables, "cancellation_reasons", "cancel-user")).toMatchObject({
       user_id: DELETED_USER_ID,
@@ -744,6 +806,12 @@ describe("userDeletion", () => {
     expect(deletedIds.indexOf("summary-by-chat")).toBeLessThan(
       deletedIds.indexOf("chat-doc"),
     );
+    expect(deletedIds.indexOf("subagent-event-user")).toBeLessThan(
+      deletedIds.indexOf("subagent-run-user"),
+    );
+    expect(deletedIds.indexOf("subagent-work-user")).toBeLessThan(
+      deletedIds.indexOf("subagent-run-user"),
+    );
   });
 
   it("deletes user data through the service-key mutation without auth", async () => {
@@ -841,6 +909,62 @@ describe("userDeletion", () => {
     expect(row(tables, "chat_summaries", "summary-orphan")).toBeUndefined();
     expect(row(tables, "chat_summaries", "summary-latest")).toBeUndefined();
     expect(row(tables, "chat_summaries", "summary-other")).toBeTruthy();
+  });
+
+  it("dry-runs and executes orphan subagent residue cleanup", async () => {
+    const { cleanupDeletedUserResidue } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.subagent_events.push({
+      _id: "subagent-event-orphan",
+      subagent_id: "sa-missing",
+      user_id: "deleted-user",
+    });
+    tables.subagent_work_items.push({
+      _id: "subagent-work-orphan",
+      subagent_id: "sa-missing",
+      user_id: "deleted-user",
+    });
+    const { ctx } = createMockCtx(tables);
+
+    const dryRun = await cleanupDeletedUserResidue.handler(ctx as any, {
+      serviceKey: "service_key",
+      orphanSubagentTable: "subagent_events",
+      orphanNumItems: 100,
+    });
+
+    expect(dryRun.hasMore).toBe(false);
+    expect(dryRun.orphanSubagentRowsTable).toBe("subagent_events");
+    expect(dryRun.orphanSubagentRowsScanned).toBe(3);
+    expect(dryRun.orphanSubagentRowsDeleted).toBe(1);
+    expect(
+      row(tables, "subagent_events", "subagent-event-orphan"),
+    ).toBeTruthy();
+
+    const eventExecute = await cleanupDeletedUserResidue.handler(ctx as any, {
+      serviceKey: "service_key",
+      orphanSubagentTable: "subagent_events",
+      dryRun: false,
+      orphanNumItems: 100,
+    });
+    const workExecute = await cleanupDeletedUserResidue.handler(ctx as any, {
+      serviceKey: "service_key",
+      orphanSubagentTable: "subagent_work_items",
+      dryRun: false,
+      orphanNumItems: 100,
+    });
+
+    expect(eventExecute.orphanSubagentRowsDeleted).toBe(1);
+    expect(workExecute.orphanSubagentRowsDeleted).toBe(1);
+    expect(
+      row(tables, "subagent_events", "subagent-event-orphan"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "subagent_work_items", "subagent-work-orphan"),
+    ).toBeUndefined();
+    expect(row(tables, "subagent_events", "subagent-event-user")).toBeTruthy();
+    expect(
+      row(tables, "subagent_work_items", "subagent-work-other"),
+    ).toBeTruthy();
   });
 
   it("rejects bulk deleted-user residue cleanup in one transaction", async () => {

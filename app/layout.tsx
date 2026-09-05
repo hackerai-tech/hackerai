@@ -17,6 +17,14 @@ import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
 import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
 import { FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME } from "@/lib/analytics/acquisition";
 import { parseFirstTouchAttributionCookie } from "@/lib/analytics/acquisition-cookie";
+import { JsonLd } from "@/components/seo/JsonLd";
+import {
+  ORGANIZATION_JSON_LD,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_URL,
+  WEBSITE_JSON_LD,
+} from "@/lib/seo/site";
 import {
   ANALYTICS_CONSENT_COOKIE_NAME,
   countryCodeFromHeaders,
@@ -33,13 +41,13 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-const APP_NAME = "HackerAI";
+const APP_NAME = SITE_NAME;
 const APP_DEFAULT_TITLE = "HackerAI - AI-Powered Penetration Testing Assistant";
 const APP_TITLE_TEMPLATE = "%s | HackerAI";
-const APP_DESCRIPTION =
-  "HackerAI is an AI pentesting assistant that helps you scan targets, exploit vulnerabilities, analyze findings, and write reports faster.";
+const APP_DESCRIPTION = SITE_DESCRIPTION;
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   applicationName: APP_NAME,
   title: {
     default: APP_DEFAULT_TITLE,
@@ -130,9 +138,10 @@ export default async function RootLayout({
   const firstTouchAttribution = parseFirstTouchAttributionCookie(
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
+  const countryCode = countryCodeFromHeaders(requestHeaders);
   const analyticsConsent = getAnalyticsConsentDecision({
     cookieValue: cookieStore.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
-    countryCode: countryCodeFromHeaders(requestHeaders),
+    countryCode,
     // If a production proxy ever stops providing country data, ask rather
     // than silently placing optional analytics storage on a covered visitor.
     failClosed: process.env.NODE_ENV === "production",
@@ -144,6 +153,7 @@ export default async function RootLayout({
         consentRequired={analyticsConsent.consentRequired}
         firstTouchAttribution={firstTouchAttribution}
         initialConsent={analyticsConsent.consent}
+        initialDecisionResolved={countryCode !== null}
       >
         <AgentAutoReviewAvailabilityProvider>
           <ChunkLoadRecovery />
@@ -174,6 +184,8 @@ export default async function RootLayout({
           content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        <JsonLd data={ORGANIZATION_JSON_LD} />
+        <JsonLd data={WEBSITE_JSON_LD} />
       </head>
       <body className="antialiased h-full">
         <ConvexClientProvider initialAuth={initialAuth}>

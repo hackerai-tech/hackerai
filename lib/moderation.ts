@@ -26,7 +26,8 @@ export async function getModerationResult(
 
   const openai = new OpenAI({ apiKey: openaiApiKey });
 
-  // Find the last user message that exceeds the minimum length
+  // Include recent user context so short follow-ups and authorization
+  // restatements are moderated as continuations of the active request.
   const targetMessage = findTargetMessage(messages, 30);
 
   if (!targetMessage) {
@@ -67,6 +68,7 @@ export async function getModerationResult(
 
 function findTargetMessage(messages: any[], minLength: number): any | null {
   const MIN_FALLBACK_LENGTH = 5;
+  const MAX_CONTEXT_USER_MESSAGES = 3;
   let combinedContent = "";
   let userMessagesChecked = 0;
   const messagesToCombine: any[] = [];
@@ -87,18 +89,20 @@ function findTargetMessage(messages: any[], minLength: number): any | null {
         combinedContent = textContent + " " + combinedContent;
       }
 
-      // Check if we've reached the minimum length
-      if (combinedContent.trim().length >= minLength) {
-        return createCombinedMessage(messagesToCombine);
-      }
-
-      if (userMessagesChecked >= 3) {
-        break; // Stop after checking three user messages
+      if (userMessagesChecked >= MAX_CONTEXT_USER_MESSAGES) {
+        break;
       }
     }
   }
 
-  // If we have some content but it's less than minLength, check if it's at least MIN_FALLBACK_LENGTH
+  if (
+    combinedContent.trim().length >= minLength &&
+    messagesToCombine.length > 0
+  ) {
+    return createCombinedMessage(messagesToCombine);
+  }
+
+  // If the combined context is still short, retain the existing fallback.
   if (
     combinedContent.trim().length >= MIN_FALLBACK_LENGTH &&
     messagesToCombine.length > 0

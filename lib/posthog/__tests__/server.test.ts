@@ -26,6 +26,7 @@ jest.mock("@/lib/posthog/logs", () => ({
 const {
   getPostHogFeatureFlagForUser,
   getPostHogFeatureFlagValueForUser,
+  getPostHogFeatureFlagVariantForUser,
   phLogger,
 } = require("../server") as typeof import("../server");
 
@@ -67,6 +68,38 @@ describe("phLogger", () => {
     await expect(
       getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBeNull();
+  });
+
+  it("evaluates multivariate flags and ignores non-variant values", async () => {
+    mockGetFeatureFlag.mockResolvedValueOnce("test");
+    await expect(
+      getPostHogFeatureFlagVariantForUser(
+        "hac46-pro-monthly-29-pricing",
+        "user_123",
+        { sendFeatureFlagEvents: false },
+      ),
+    ).resolves.toBe("test");
+    expect(mockGetFeatureFlag).toHaveBeenLastCalledWith(
+      "hac46-pro-monthly-29-pricing",
+      "user_123",
+      { sendFeatureFlagEvents: false },
+    );
+
+    mockGetFeatureFlag.mockResolvedValueOnce(true);
+    await expect(
+      getPostHogFeatureFlagVariantForUser(
+        "hac46-pro-monthly-29-pricing",
+        "user_123",
+      ),
+    ).resolves.toBeUndefined();
+
+    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagVariantForUser(
+        "hac46-pro-monthly-29-pricing",
+        "user_123",
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("keeps info and warning records in Logs without duplicating product events", () => {

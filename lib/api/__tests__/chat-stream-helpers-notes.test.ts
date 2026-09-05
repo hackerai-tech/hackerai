@@ -7,6 +7,7 @@
  */
 
 import {
+  injectNotesIntoMessages,
   replaceNotesBlock,
   refreshNotesInModelMessages,
 } from "@/lib/api/chat-stream-helpers";
@@ -345,5 +346,54 @@ describe("refreshNotesInModelMessages", () => {
     expect(text).toContain("<resume_context>");
     expect(text).toContain("New Note");
     expect(text).not.toContain("Old Note");
+  });
+});
+
+// ── injectNotesIntoMessages preload ─────────────────────────────────────────
+
+describe("injectNotesIntoMessages", () => {
+  beforeEach(() => {
+    mockGetNotes.mockReset();
+  });
+
+  const userMessage = {
+    id: "u1",
+    role: "user" as const,
+    parts: [{ type: "text" as const, text: "hello" }],
+  };
+  const note = {
+    note_id: "note_1",
+    title: "Preloaded",
+    content: "some content",
+    tags: ["general"],
+    updated_at: Date.parse("2024-01-15T00:00:00Z"),
+  };
+
+  it("uses preloaded notes instead of fetching again", async () => {
+    const result = await injectNotesIntoMessages([userMessage], {
+      userId: "user-1",
+      subscription: "pro",
+      shouldIncludeNotes: true,
+      preloadedNotes: Promise.resolve([note] as never),
+    });
+
+    expect(mockGetNotes).not.toHaveBeenCalled();
+    const text = (result[0].parts[0] as { text: string }).text;
+    expect(text).toContain("<notes>");
+    expect(text).toContain("Preloaded");
+  });
+
+  it("falls back to fetching when no preload is provided", async () => {
+    mockGetNotes.mockResolvedValue([note]);
+
+    const result = await injectNotesIntoMessages([userMessage], {
+      userId: "user-1",
+      subscription: "pro",
+      shouldIncludeNotes: true,
+    });
+
+    expect(mockGetNotes).toHaveBeenCalledTimes(1);
+    const text = (result[0].parts[0] as { text: string }).text;
+    expect(text).toContain("Preloaded");
   });
 });

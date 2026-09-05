@@ -25,6 +25,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "research_run_members",
     "research_user_profiles",
     "subagent_messages",
+    "subagent_events",
+    "subagent_work_items",
     "subagent_runs",
   ],
   anonymize: [
@@ -57,6 +59,7 @@ export const USER_DELETION_TABLE_POLICY = {
 
 type AnyDoc = { _id: Id<any>; [key: string]: any };
 type CleanupMode = "execute" | "dryRun";
+type OrphanSubagentTable = "subagent_events" | "subagent_work_items";
 
 // Convex counts full document payloads toward a mutation's 16 MiB read limit.
 // Share one document budget across the entire cleanup pass; the account
@@ -77,6 +80,11 @@ type CleanupStats = {
   orphanChatSummariesScanned: number;
   orphanChatSummariesIsDone: boolean;
   orphanChatSummariesContinueCursor?: string;
+  orphanSubagentRowsTable?: OrphanSubagentTable;
+  orphanSubagentRowsDeleted: number;
+  orphanSubagentRowsScanned: number;
+  orphanSubagentRowsIsDone: boolean;
+  orphanSubagentRowsContinueCursor?: string;
   s3ObjectsQueued: number;
 };
 
@@ -94,6 +102,13 @@ const cleanupStatsValidator = v.object({
   orphanChatSummariesScanned: v.number(),
   orphanChatSummariesIsDone: v.boolean(),
   orphanChatSummariesContinueCursor: v.optional(v.string()),
+  orphanSubagentRowsTable: v.optional(
+    v.union(v.literal("subagent_events"), v.literal("subagent_work_items")),
+  ),
+  orphanSubagentRowsDeleted: v.number(),
+  orphanSubagentRowsScanned: v.number(),
+  orphanSubagentRowsIsDone: v.boolean(),
+  orphanSubagentRowsContinueCursor: v.optional(v.string()),
   s3ObjectsQueued: v.number(),
 });
 
@@ -108,6 +123,9 @@ function createStats(): CleanupStats {
     orphanChatSummariesDeleted: 0,
     orphanChatSummariesScanned: 0,
     orphanChatSummariesIsDone: true,
+    orphanSubagentRowsDeleted: 0,
+    orphanSubagentRowsScanned: 0,
+    orphanSubagentRowsIsDone: true,
     s3ObjectsQueued: 0,
   };
 }
@@ -135,6 +153,12 @@ function mergeStats(target: CleanupStats, source: CleanupStats) {
   target.orphanChatSummariesIsDone = source.orphanChatSummariesIsDone;
   target.orphanChatSummariesContinueCursor =
     source.orphanChatSummariesContinueCursor;
+  target.orphanSubagentRowsTable = source.orphanSubagentRowsTable;
+  target.orphanSubagentRowsDeleted += source.orphanSubagentRowsDeleted;
+  target.orphanSubagentRowsScanned += source.orphanSubagentRowsScanned;
+  target.orphanSubagentRowsIsDone = source.orphanSubagentRowsIsDone;
+  target.orphanSubagentRowsContinueCursor =
+    source.orphanSubagentRowsContinueCursor;
 }
 
 function uniqueDocs<T extends AnyDoc>(docs: Array<T | null | undefined>): T[] {
@@ -445,6 +469,18 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "subagent_messages", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const subagentEventsBatch = await collectByIndexBatch<Doc<"subagent_events">>(
+    ctx,
+    budget,
+    "subagent_events",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const subagentWorkItemsBatch = await collectByIndexBatch<
+    Doc<"subagent_work_items">
+  >(ctx, budget, "subagent_work_items", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const subagentRunsBatch = await collectByIndexBatch<Doc<"subagent_runs">>(
     ctx,
     budget,
@@ -467,6 +503,8 @@ async function cleanupUserDataForUser(
     researchRunMembersBatch,
     researchUserProfilesBatch,
     subagentMessagesBatch,
+    subagentEventsBatch,
+    subagentWorkItemsBatch,
     subagentRunsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
@@ -483,11 +521,15 @@ async function cleanupUserDataForUser(
   const researchRunMembers = researchRunMembersBatch.docs;
   const researchUserProfiles = researchUserProfilesBatch.docs;
   const subagentMessages = subagentMessagesBatch.docs;
+  const subagentEvents = subagentEventsBatch.docs;
+  const subagentWorkItems = subagentWorkItemsBatch.docs;
   const subagentRuns = subagentRunsBatch.docs;
 
   const chatsReadyToDelete =
     messagesBatch.hasMore ||
     subagentMessagesBatch.hasMore ||
+    subagentEventsBatch.hasMore ||
+    subagentWorkItemsBatch.hasMore ||
     subagentRunsBatch.hasMore
       ? []
       : chats.filter((chat) => !incompleteChatIds.has(chat.id));
@@ -499,6 +541,8 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
+  await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);
+  await deleteDocs(ctx, stats, "subagent_work_items", subagentWorkItems, mode);
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
@@ -851,6 +895,43 @@ async function cleanupOrphanChatSummaries(
   return stats;
 }
 
+async function cleanupOrphanSubagentRows(
+  ctx: MutationCtx,
+  mode: CleanupMode,
+  table: OrphanSubagentTable,
+  opts: { cursor?: string | null; numItems: number },
+) {
+  const stats = createStats();
+  const page = await (ctx.db.query(table) as any).paginate({
+    cursor: opts.cursor ?? null,
+    numItems: opts.numItems,
+  });
+
+  stats.orphanSubagentRowsTable = table;
+  stats.orphanSubagentRowsScanned = page.page.length;
+  stats.orphanSubagentRowsIsDone = page.isDone;
+  stats.orphanSubagentRowsContinueCursor = page.continueCursor ?? undefined;
+  stats.hasMore = !page.isDone;
+
+  const orphanRows: Array<Doc<"subagent_events"> | Doc<"subagent_work_items">> =
+    [];
+  for (const row of page.page as Array<
+    Doc<"subagent_events"> | Doc<"subagent_work_items">
+  >) {
+    const run = await firstByIndex<Doc<"subagent_runs">>(
+      ctx,
+      "subagent_runs",
+      "by_subagent_id",
+      (q) => q.eq("subagent_id", row.subagent_id),
+    );
+    if (!run) orphanRows.push(row);
+  }
+
+  stats.orphanSubagentRowsDeleted = orphanRows.length;
+  await deleteDocs(ctx, stats, table, orphanRows, mode);
+  return stats;
+}
+
 /**
  * Preserve the legacy public function as a fail-closed compatibility shim.
  * Account deletion must run through the server route so Trigger runs and
@@ -911,6 +992,9 @@ export const cleanupDeletedUserResidue = mutation({
     userIds: v.optional(v.array(v.string())),
     dryRun: v.optional(v.boolean()),
     deleteOrphanChatSummaries: v.optional(v.boolean()),
+    orphanSubagentTable: v.optional(
+      v.union(v.literal("subagent_events"), v.literal("subagent_work_items")),
+    ),
     orphanCursor: v.optional(v.union(v.string(), v.null())),
     orphanNumItems: v.optional(v.number()),
   },
@@ -921,16 +1005,23 @@ export const cleanupDeletedUserResidue = mutation({
     const mode: CleanupMode = args.dryRun === false ? "execute" : "dryRun";
     const stats = createStats();
     const userIds = args.userIds ?? [];
+    const orphanOperations =
+      Number(args.deleteOrphanChatSummaries === true) +
+      Number(args.orphanSubagentTable !== undefined);
 
-    if (userIds.length === 0 && !args.deleteOrphanChatSummaries) {
+    if (userIds.length === 0 && orphanOperations === 0) {
+      throw new Error("Pass at least one userId or select one orphan cleanup");
+    }
+
+    if (userIds.length > 0 && orphanOperations > 0) {
       throw new Error(
-        "Pass at least one userId or enable deleteOrphanChatSummaries",
+        "Run user data cleanup and orphan cleanup in separate mutations to keep Convex transactions bounded",
       );
     }
 
-    if (userIds.length > 0 && args.deleteOrphanChatSummaries) {
+    if (orphanOperations > 1) {
       throw new Error(
-        "Run user data cleanup and orphan chat summary cleanup in separate mutations to keep Convex transactions bounded",
+        "Run each orphan cleanup in a separate mutation to keep Convex transactions bounded",
       );
     }
 
@@ -950,6 +1041,16 @@ export const cleanupDeletedUserResidue = mutation({
         await cleanupOrphanChatSummaries(ctx, mode, {
           cursor: args.orphanCursor,
           numItems: Math.min(Math.max(args.orphanNumItems ?? 500, 1), 1000),
+        }),
+      );
+    }
+
+    if (args.orphanSubagentTable) {
+      mergeStats(
+        stats,
+        await cleanupOrphanSubagentRows(ctx, mode, args.orphanSubagentTable, {
+          cursor: args.orphanCursor,
+          numItems: Math.min(Math.max(args.orphanNumItems ?? 100, 1), 100),
         }),
       );
     }

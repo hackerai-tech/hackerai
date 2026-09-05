@@ -157,6 +157,37 @@ export function captureAuthenticatedEvent(
   return captureWithPostHogClient(posthog, event, properties, options);
 }
 
+export function captureQueuedAuthenticatedEvent({
+  event,
+  properties = {},
+  dedupeKey,
+}: {
+  event: string;
+  properties?: ClientAnalyticsProperties;
+  dedupeKey: string;
+}) {
+  const userId = authenticatedAnalyticsUserId;
+  if (!userId) return false;
+
+  const options = {
+    uuid: uuidv5([userId, event, dedupeKey].join(":"), uuidv5.URL),
+  };
+
+  if (
+    identifiedAnalyticsUserId === userId &&
+    captureAuthenticatedEvent(event, properties, options)
+  ) {
+    return true;
+  }
+  if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
+
+  queueAuthenticatedEvent({ userId, event, properties, options });
+  void loadPostHogClient()
+    .then(() => flushPendingAuthenticatedEvents(userId))
+    .catch(() => {});
+  return true;
+}
+
 export function captureMessageFeedback({
   messageId,
   feedbackType,
@@ -176,31 +207,13 @@ export function captureMessageFeedback({
     }),
     feedback_event_version: 1,
   };
-  const options = {
-    uuid: uuidv5(
-      [event, messageId, previousFeedbackType ?? "none", feedbackType].join(
-        ":",
-      ),
-      uuidv5.URL,
+  return captureQueuedAuthenticatedEvent({
+    event,
+    properties,
+    dedupeKey: [messageId, previousFeedbackType ?? "none", feedbackType].join(
+      ":",
     ),
-  };
-
-  const userId = authenticatedAnalyticsUserId;
-  if (!userId) return false;
-
-  if (
-    identifiedAnalyticsUserId === userId &&
-    captureAuthenticatedEvent(event, properties, options)
-  ) {
-    return true;
-  }
-  if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
-
-  queueAuthenticatedEvent({ userId, event, properties, options });
-  void loadPostHogClient()
-    .then(() => flushPendingAuthenticatedEvents(userId))
-    .catch(() => {});
-  return true;
+  });
 }
 
 export function addAuthenticatedExceptionStep(

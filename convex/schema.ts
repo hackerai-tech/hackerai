@@ -323,6 +323,9 @@ export default defineSchema({
     ),
     reason_details_id: v.optional(v.id("cancellation_reason_details")),
     status: v.union(v.literal("started"), v.literal("completed")),
+    // Set when the user accepted the pause offer. The row stays "started"
+    // until Stripe ends the paused subscription at the paid-through date.
+    retention_offer_accepted: v.optional(v.literal("pause")),
     source: v.union(v.literal("in_app"), v.literal("billing_portal")),
     started_at: v.number(),
     completed_at: v.optional(v.number()),
@@ -365,6 +368,55 @@ export default defineSchema({
       "stripe_subscription_id",
       "created_at",
     ]),
+
+  // Retention "pause" offers. A pause schedules the Stripe subscription to end
+  // at its paid-through date and re-creates it automatically on resume_at with
+  // the same price and the saved payment method.
+  subscription_pauses: defineTable({
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_customer_id: v.string(),
+    stripe_subscription_id: v.string(),
+    stripe_price_id: v.string(),
+    stripe_price_lookup_key: v.optional(v.string()),
+    subscription_tier: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    quantity: v.number(),
+    stripe_payment_method_id: v.optional(v.string()),
+    reason_category: v.optional(v.string()),
+    pause_months: v.number(),
+    requested_at: v.number(),
+    pause_effective_at: v.number(),
+    resume_at: v.number(),
+    status: v.union(
+      v.literal("scheduled"),
+      v.literal("paused"),
+      v.literal("resuming"),
+      v.literal("resumed"),
+      v.literal("resume_failed"),
+      v.literal("canceled"),
+      v.literal("superseded"),
+    ),
+    paused_at: v.optional(v.number()),
+    resume_attempt_count: v.number(),
+    resume_claimed_at: v.optional(v.number()),
+    last_resume_attempt_at: v.optional(v.number()),
+    last_resume_error: v.optional(v.string()),
+    resumed_at: v.optional(v.number()),
+    resumed_stripe_subscription_id: v.optional(v.string()),
+    canceled_at: v.optional(v.number()),
+    updated_at: v.number(),
+  })
+    .index("by_user_requested", ["user_id", "requested_at"])
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"])
+    .index("by_status_resume_at", ["status", "resume_at"]),
 
   // Privacy-safe Stripe lifecycle facts for involuntary churn and recovery.
   // User-selected cancellation survey answers and free text intentionally stay
@@ -446,6 +498,8 @@ export default defineSchema({
     user_id: v.string(),
     nickname: v.optional(v.string()),
     occupation: v.optional(v.string()),
+    // Legacy field retained so historical rows remain schema-valid. The
+    // application no longer reads, returns, writes, or applies this value.
     personality: v.optional(v.string()),
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
@@ -1134,6 +1188,7 @@ export default defineSchema({
     user_id: v.string(),
     pseudonym: v.string(),
     evidence_anchor_at: v.optional(v.number()),
+    comparison_group_label: v.optional(v.string()),
     created_at: v.number(),
   })
     .index("by_analysis_and_user", ["analysis_id", "user_id"])
@@ -1347,6 +1402,7 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_subagent", ["subagent_id"])
+    .index("by_user_id", ["user_id"])
     .index("by_parent_run", ["parent_trigger_run_id"])
     .index("by_parent_run_and_consumed_at", [
       "parent_trigger_run_id",
@@ -1379,6 +1435,7 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_subagent", ["subagent_id"])
+    .index("by_user_id", ["user_id"])
     .index("by_parent_run", ["parent_trigger_run_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)

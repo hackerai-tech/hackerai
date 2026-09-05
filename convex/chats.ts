@@ -315,6 +315,28 @@ async function deleteSubagentDataForChat(
       await ctx.db.delete(message._id);
     }
     if (transcript.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
+
+    const events = await ctx.db
+      .query("subagent_events")
+      .withIndex("by_subagent", (q) => q.eq("subagent_id", child.subagent_id))
+      .take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1);
+    for (const event of events.slice(0, DELETE_CHAT_SUBAGENT_BATCH_SIZE)) {
+      await ctx.db.delete(event._id);
+    }
+    if (events.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
+
+    const workItems = await ctx.db
+      .query("subagent_work_items")
+      .withIndex("by_subagent", (q) => q.eq("subagent_id", child.subagent_id))
+      .take(DELETE_CHAT_SUBAGENT_BATCH_SIZE + 1);
+    for (const workItem of workItems.slice(
+      0,
+      DELETE_CHAT_SUBAGENT_BATCH_SIZE,
+    )) {
+      await ctx.db.delete(workItem._id);
+    }
+    if (workItems.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
+
     await ctx.db.delete(child._id);
   }
   if (children.length > DELETE_CHAT_SUBAGENT_BATCH_SIZE) return true;
