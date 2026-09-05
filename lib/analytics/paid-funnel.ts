@@ -25,6 +25,7 @@ export const PAID_FUNNEL_EVENTS = {
   retentionOfferImpressed: "retention_offer_impressed",
   retentionOfferAccepted: "retention_offer_accepted",
   retentionOfferDeclined: "retention_offer_declined",
+  retentionDowngradeApplied: "retention_downgrade_applied",
   subscriptionPauseScheduled: "subscription_pause_scheduled",
   subscriptionPauseCanceled: "subscription_pause_canceled",
   subscriptionPauseResumed: "subscription_pause_resumed",

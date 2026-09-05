@@ -12,8 +12,9 @@ import type { SubscriptionTier } from "@/types";
  * whose stated reason a pause can actually address.
  */
 export const PAUSE_OFFER_FLAG_KEY = "hac-96-pause-subscription-offer";
+export const DOWNGRADE_OFFER_FLAG_KEY = "hac-97-downgrade-offer";
 
-export type RetentionOfferType = "pause";
+export type RetentionOfferType = "pause" | "downgrade";
 
 export const PAUSE_DURATION_MONTH_OPTIONS = [1, 2, 3] as const;
 export type PauseDurationMonths = (typeof PAUSE_DURATION_MONTH_OPTIONS)[number];
@@ -39,6 +40,122 @@ const PAUSE_REASONS: ReadonlySet<CancellationReasonCategory> = new Set([
   "hit_usage_limits",
   "other",
 ]);
+
+/**
+ * Downgrade offer: one tier down, same billing interval. Pro has no cheaper
+ * paid tier, so it is never offered a downgrade.
+ */
+export const DOWNGRADE_TARGETS: Partial<
+  Record<SubscriptionTier, { tier: SubscriptionTier; lookupKey: string }>
+> = {
+  "pro-plus": { tier: "pro", lookupKey: "pro-monthly-plan" },
+  ultra: { tier: "pro-plus", lookupKey: "pro-plus-monthly-plan" },
+};
+
+const DOWNGRADE_REASONS: ReadonlySet<CancellationReasonCategory> = new Set([
+  "too_expensive",
+  "not_using_enough",
+  "other",
+]);
+
+export const RETENTION_DOWNGRADE_METADATA = {
+  fromPlan: "hackeraiRetentionDowngradeFromPlan",
+  appliedAt: "hackeraiRetentionDowngradeAppliedAt",
+} as const;
+
+export const RETENTION_DOWNGRADE_CHECKOUT_SOURCE = "retention_downgrade";
+
+export function downgradeTargetForTier(
+  tier: SubscriptionTier | undefined,
+): { tier: SubscriptionTier; lookupKey: string } | undefined {
+  return tier ? DOWNGRADE_TARGETS[tier] : undefined;
+}
+
+export type DowngradeOfferIneligibilityReason =
+  | "offers_disabled"
+  | "no_downgrade_target"
+  | "unsupported_billing_interval"
+  | "subscription_not_active"
+  | "cancellation_already_scheduled"
+  | "reason_not_applicable"
+  | "multi_seat"
+  | "downgrade_already_applied";
+
+export type DowngradeOfferEligibilityInput = {
+  offersEnabled: boolean;
+  tier: SubscriptionTier | undefined;
+  billingInterval: string | undefined;
+  billingIntervalCount?: number | null;
+  subscriptionStatus: Stripe.Subscription.Status | string;
+  cancelAtPeriodEnd: boolean;
+  quantity?: number | null;
+  reasonCategory: CancellationReasonCategory;
+  downgradeAlreadyApplied: boolean;
+};
+
+export type DowngradeOfferEligibility =
+  | { eligible: true; target: { tier: SubscriptionTier; lookupKey: string } }
+  | { eligible: false; reason: DowngradeOfferIneligibilityReason };
+
+export function evaluateDowngradeOfferEligibility(
+  input: DowngradeOfferEligibilityInput,
+): DowngradeOfferEligibility {
+  if (!input.offersEnabled) {
+    return { eligible: false, reason: "offers_disabled" };
+  }
+  const target = downgradeTargetForTier(input.tier);
+  if (!target) {
+    return { eligible: false, reason: "no_downgrade_target" };
+  }
+  if (
+    input.subscriptionStatus !== "active" &&
+    input.subscriptionStatus !== "trialing"
+  ) {
+    return { eligible: false, reason: "subscription_not_active" };
+  }
+  if (input.cancelAtPeriodEnd) {
+    return { eligible: false, reason: "cancellation_already_scheduled" };
+  }
+  if (
+    input.billingInterval !== "month" ||
+    (input.billingIntervalCount ?? 1) !== 1
+  ) {
+    return { eligible: false, reason: "unsupported_billing_interval" };
+  }
+  if ((input.quantity ?? 1) !== 1) {
+    return { eligible: false, reason: "multi_seat" };
+  }
+  if (!DOWNGRADE_REASONS.has(input.reasonCategory)) {
+    return { eligible: false, reason: "reason_not_applicable" };
+  }
+  if (input.downgradeAlreadyApplied) {
+    return { eligible: false, reason: "downgrade_already_applied" };
+  }
+  return { eligible: true, target };
+}
+
+export function retentionDowngradeFromMetadata(
+  metadata: Stripe.Metadata | null | undefined,
+): { fromPlan: string; appliedAtMs?: number } | null {
+  const fromPlan = metadata?.[RETENTION_DOWNGRADE_METADATA.fromPlan];
+  if (!fromPlan) return null;
+  const appliedAt = Number(metadata?.[RETENTION_DOWNGRADE_METADATA.appliedAt]);
+  return {
+    fromPlan,
+    ...(Number.isFinite(appliedAt) &&
+      appliedAt > 0 && { appliedAtMs: appliedAt }),
+  };
+}
+
+export function retentionDowngradeMetadata(args: {
+  fromPlan: string;
+  appliedAtMs: number;
+}): Stripe.MetadataParam {
+  return {
+    [RETENTION_DOWNGRADE_METADATA.fromPlan]: args.fromPlan,
+    [RETENTION_DOWNGRADE_METADATA.appliedAt]: String(args.appliedAtMs),
+  };
+}
 
 export const SUBSCRIPTION_PAUSE_METADATA = {
   pauseId: "hackeraiPauseId",

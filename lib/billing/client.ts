@@ -1,5 +1,7 @@
 import type {
   BillingPortalFlow,
+  DowngradeSubscriptionInput,
+  DowngradeSubscriptionResult,
   CancelSubscriptionInput,
   CancelSubscriptionResult,
   GetRetentionOffersInput,
@@ -140,6 +142,18 @@ export async function pauseSubscription(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function downgradeSubscription(
+  input: DowngradeSubscriptionInput,
+): Promise<DowngradeSubscriptionResult> {
+  return billingFetchJson<DowngradeSubscriptionResult>(
+    "/api/billing/downgrade",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function resumeSubscription(): Promise<ResumeSubscriptionResult> {

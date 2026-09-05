@@ -7,6 +7,8 @@ import userEvent from "@testing-library/user-event";
 const mockCancelSubscription = jest.fn();
 const mockGetRetentionOffers = jest.fn();
 const mockPauseSubscription = jest.fn();
+const mockDowngradeSubscription = jest.fn();
+const mockReloadWithEntitlementRefresh = jest.fn();
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockToastSuccess = jest.fn();
 
@@ -20,6 +22,11 @@ jest.mock("@/lib/billing/client", () => ({
   cancelSubscription: mockCancelSubscription,
   getRetentionOffers: mockGetRetentionOffers,
   pauseSubscription: mockPauseSubscription,
+  downgradeSubscription: mockDowngradeSubscription,
+}));
+
+jest.mock("@/lib/auth/entitlement-refresh-navigation", () => ({
+  reloadWithEntitlementRefresh: mockReloadWithEntitlementRefresh,
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -39,9 +46,23 @@ const CancelSubscriptionDialog = require("../CancelSubscriptionDialog")
 const PAUSE_EFFECTIVE_AT = Date.UTC(2026, 9, 1, 12);
 const PAUSE_RESUME_AT = Date.UTC(2026, 11, 1, 12);
 
-function retentionOffers(overrides: { pause?: boolean } = {}) {
+function retentionOffers(
+  overrides: { pause?: boolean; downgrade?: boolean } = {},
+) {
   const pause = overrides.pause ?? true;
+  const downgrade = overrides.downgrade ?? false;
   return {
+    downgrade: downgrade
+      ? {
+          eligible: true,
+          targetTier: "pro",
+          targetPlan: "pro-monthly-plan",
+          targetAmountDollars: 25,
+          currentAmountDollars: 60,
+          currency: "usd",
+          proratedCreditDollars: 31.5,
+        }
+      : { eligible: false, reason: "no_downgrade_target" },
     offersEnabled: true,
     subscriptionTier: "pro-plus",
     plan: "pro-plus-monthly-plan",
@@ -265,5 +286,93 @@ describe("CancelSubscriptionDialog", () => {
     expect(
       screen.queryByRole("heading", { name: "Pause your plan instead?" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("offers a downgrade next to the pause and switches the plan", async () => {
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ downgrade: true }) as never,
+    );
+    mockDowngradeSubscription.mockResolvedValue({
+      downgraded: true,
+      fromTier: "pro-plus",
+      toTier: "pro",
+      toPlan: "pro-monthly-plan",
+      targetAmountDollars: 25,
+      proratedCreditDollars: 31.5,
+      currency: "usd",
+    } as never);
+    const onDowngradeApplied = jest.fn();
+    const user = userEvent.setup();
+
+    render(
+      <CancelSubscriptionDialog
+        open={true}
+        onOpenChange={jest.fn()}
+        onDowngradeApplied={onDowngradeApplied}
+      />,
+    );
+
+    await completeSurvey(user);
+
+    expect(
+      await screen.findByRole("heading", { name: "Keep your setup for less?" }),
+    ).toBeVisible();
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionOfferImpressed,
+      expect.objectContaining({ offers_shown: ["downgrade", "pause"] }),
+    );
+    // Downgrade is listed first and preselected.
+    expect(
+      screen.getByRole("radio", { name: /switch to pro/i }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/\$31\.50\) is credited/)).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Switch to Pro" }));
+
+    expect(mockDowngradeSubscription).toHaveBeenCalledWith({
+      cancellationReason: {
+        reasonCategory: "not_using_enough",
+        reasonSubcategory: "too_expensive_low_frequency",
+        reasonDetails: "Busy with a contract for a while",
+      },
+    });
+    expect(mockPauseSubscription).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("heading", { name: "You're on Pro" }),
+    ).toBeVisible();
+    expect(onDowngradeApplied).toHaveBeenCalledWith(
+      expect.objectContaining({ toTier: "pro" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(mockReloadWithEntitlementRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the user pick the pause instead of the downgrade", async () => {
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ downgrade: true }) as never,
+    );
+    mockPauseSubscription.mockResolvedValue({
+      paused: true,
+      months: 3,
+      pauseEffectiveAt: PAUSE_EFFECTIVE_AT,
+      resumeAt: Date.UTC(2027, 0, 1, 12),
+      alreadyScheduled: false,
+    } as never);
+    const user = userEvent.setup();
+
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await completeSurvey(user);
+    await screen.findByRole("heading", { name: "Keep your setup for less?" });
+    await user.click(screen.getByRole("radio", { name: "3 months" }));
+    await user.click(
+      screen.getByRole("button", { name: "Pause for 3 months" }),
+    );
+
+    expect(mockPauseSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ months: 3 }),
+    );
+    expect(mockDowngradeSubscription).not.toHaveBeenCalled();
   });
 });

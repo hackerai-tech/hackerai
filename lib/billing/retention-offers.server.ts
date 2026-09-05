@@ -1,47 +1,71 @@
-import { PAUSE_OFFER_FLAG_KEY } from "@/lib/billing/retention-offers";
+import {
+  DOWNGRADE_OFFER_FLAG_KEY,
+  PAUSE_OFFER_FLAG_KEY,
+} from "@/lib/billing/retention-offers";
 import {
   getPostHogFeatureFlagValueForUser,
   phLogger,
 } from "@/lib/posthog/server";
 
-export type PauseOfferFlagState = "enabled" | "disabled" | "unavailable";
+export type RetentionOfferFlagState = "enabled" | "disabled" | "unavailable";
+/** @deprecated Use RetentionOfferFlagState. */
+export type PauseOfferFlagState = RetentionOfferFlagState;
 
 /**
- * The pause offer is staged through the PostHog flag. The environment
- * override exists for local development and incident kill-switches; unset it
- * in production so PostHog stays the source of truth for the rollout.
+ * Retention offers are staged through PostHog flags. The environment
+ * overrides exist for local development and incident kill-switches; leave
+ * them unset in production so PostHog stays the source of truth.
  *
  * A flag lookup that times out or errors returns "unavailable". The offer
  * fails closed in that case, and the state is reported so a slow flag service
  * cannot silently hide the offer from every canceller.
  */
-export async function getPauseOfferFlagState(
-  userId: string,
-): Promise<PauseOfferFlagState> {
-  const override = process.env.PAUSE_OFFER_ENABLED?.trim().toLowerCase();
+export async function getRetentionOfferFlagState(args: {
+  flagKey: string;
+  envOverride: string | undefined;
+  userId: string;
+}): Promise<RetentionOfferFlagState> {
+  const override = args.envOverride?.trim().toLowerCase();
   if (override === "true") return "enabled";
   if (override === "false") return "disabled";
 
   let value = await getPostHogFeatureFlagValueForUser(
-    PAUSE_OFFER_FLAG_KEY,
-    userId,
+    args.flagKey,
+    args.userId,
   );
   if (value === null) {
     // One retry covers the common transient: a cold flag request that hits
     // the client's short timeout.
-    value = await getPostHogFeatureFlagValueForUser(
-      PAUSE_OFFER_FLAG_KEY,
-      userId,
-    );
+    value = await getPostHogFeatureFlagValueForUser(args.flagKey, args.userId);
   }
   if (value === null) {
-    phLogger.warn("pause_offer_flag_unavailable", {
-      userId,
-      flag_key: PAUSE_OFFER_FLAG_KEY,
+    phLogger.warn("retention_offer_flag_unavailable", {
+      userId: args.userId,
+      flag_key: args.flagKey,
     });
     return "unavailable";
   }
   return value ? "enabled" : "disabled";
+}
+
+export async function getPauseOfferFlagState(
+  userId: string,
+): Promise<RetentionOfferFlagState> {
+  return getRetentionOfferFlagState({
+    flagKey: PAUSE_OFFER_FLAG_KEY,
+    envOverride: process.env.PAUSE_OFFER_ENABLED,
+    userId,
+  });
+}
+
+export async function getDowngradeOfferFlagState(
+  userId: string,
+): Promise<RetentionOfferFlagState> {
+  return getRetentionOfferFlagState({
+    flagKey: DOWNGRADE_OFFER_FLAG_KEY,
+    envOverride: process.env.DOWNGRADE_OFFER_ENABLED,
+    userId,
+  });
 }
 
 export async function isPauseOfferEnabledForUser(

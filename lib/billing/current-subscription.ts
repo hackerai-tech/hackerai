@@ -20,6 +20,7 @@ export type CurrentSubscriptionContext = {
   id: string;
   status: Stripe.Subscription.Status;
   cancelAtPeriodEnd: boolean;
+  itemId?: string;
   priceId?: string;
   plan?: string;
   tier?: SubscriptionTier;
@@ -81,6 +82,7 @@ export function toCurrentSubscriptionContext(
     id: subscription.id,
     status: subscription.status,
     cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
+    itemId: item?.id,
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),

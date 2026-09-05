@@ -1,15 +1,43 @@
-# Retention offer: pause subscription
+# Retention offers: pause and downgrade
 
-The pause offer appears inside the in-app cancellation dialog after the user
-has answered the cancellation survey. It is gated by the PostHog feature flag
-`hac-96-pause-subscription-offer` and fails closed to the plain cancel flow.
+Retention offers appear inside the in-app cancellation dialog after the user
+has answered the cancellation survey. Each offer has its own PostHog flag and
+fails closed to the plain cancel flow:
+
+| Offer     | Flag                              | Env override              |
+| --------- | --------------------------------- | ------------------------- |
+| Pause     | `hac-96-pause-subscription-offer` | `PAUSE_OFFER_ENABLED`     |
+| Downgrade | `hac-97-downgrade-offer`          | `DOWNGRADE_OFFER_ENABLED` |
+
+## Downgrade offer
+
+Pro+ and Ultra monthly cancellers citing "too expensive", "not using it
+enough", or "other" are offered one tier down (Pro+ → Pro, Ultra → Pro+).
+Boomerang data drove this shape: most Pro+ and Ultra cancellers who come back
+re-subscribe to the cheaper tier.
+
+Accepting applies the change immediately through the same Stripe plan-change
+path as an upgrade (`proration_behavior: always_invoice`). The unused part of
+the current period becomes customer balance, the webhook migrates usage
+buckets as for any tier change, and the client reloads with
+`refresh=entitlements` so the new tier takes effect. The subscription metadata
+(`hackeraiRetentionDowngrade*`) records the acceptance so it is offered once
+per subscription. The Convex cancellation row is marked `retained`.
+
+Analytics: `retention_offer_evaluated` gains `downgrade_offered`,
+`downgrade_ineligibility_reason`, and `downgrade_target_plan`;
+`retention_offer_impressed` lists both offers in `offers_shown`;
+`retention_offer_accepted` with `retention_offer=downgrade` and
+`retention_downgrade_applied` record acceptance; the webhook's
+`subscription_changed` carries `source=retention_downgrade`.
 
 ## What the user sees
 
 1. Reason and follow-up survey (unchanged).
-2. **Before you cancel** step with a **Pause your plan** card (1, 2, or 3
-   months) and a "No thanks, continue to cancel" link to the existing
-   confirmation step.
+2. Offer step listing the eligible offers as selectable options (downgrade
+   first, then pause with a 1/2/3 month picker), one primary button for the
+   selected option, and a "No thanks, continue to cancel" link to the
+   existing confirmation step.
 3. Account settings shows **Pause scheduled** with **Cancel pause** until the
    paid-through date, and **Your plan is paused / Resume now** afterwards.
 

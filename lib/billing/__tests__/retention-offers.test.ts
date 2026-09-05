@@ -2,6 +2,10 @@ import { describe, expect, it } from "@jest/globals";
 
 import {
   PAUSE_COOLDOWN_DAYS,
+  evaluateDowngradeOfferEligibility,
+  retentionDowngradeFromMetadata,
+  retentionDowngradeMetadata,
+  type DowngradeOfferEligibilityInput,
   addUtcMonths,
   clearedSubscriptionPauseMetadata,
   computePauseResumeAt,
@@ -117,6 +121,94 @@ describe("evaluatePauseOfferEligibility", () => {
         eligibilityInput({ currentPeriodEndMs: undefined }),
       ),
     ).toEqual({ eligible: false, reason: "missing_period_end" });
+  });
+});
+
+function downgradeInput(
+  overrides: Partial<DowngradeOfferEligibilityInput> = {},
+): DowngradeOfferEligibilityInput {
+  return {
+    offersEnabled: true,
+    tier: "pro-plus",
+    billingInterval: "month",
+    billingIntervalCount: 1,
+    subscriptionStatus: "active",
+    cancelAtPeriodEnd: false,
+    quantity: 1,
+    reasonCategory: "too_expensive",
+    downgradeAlreadyApplied: false,
+    ...overrides,
+  };
+}
+
+describe("evaluateDowngradeOfferEligibility", () => {
+  it("offers one tier down for Pro+ and Ultra monthly cancellers", () => {
+    expect(evaluateDowngradeOfferEligibility(downgradeInput())).toEqual({
+      eligible: true,
+      target: { tier: "pro", lookupKey: "pro-monthly-plan" },
+    });
+    expect(
+      evaluateDowngradeOfferEligibility(downgradeInput({ tier: "ultra" })),
+    ).toEqual({
+      eligible: true,
+      target: { tier: "pro-plus", lookupKey: "pro-plus-monthly-plan" },
+    });
+  });
+
+  it("has no downgrade for Pro, Team, or free", () => {
+    for (const tier of ["pro", "team", "free", undefined] as const) {
+      expect(
+        evaluateDowngradeOfferEligibility(downgradeInput({ tier })),
+      ).toEqual({ eligible: false, reason: "no_downgrade_target" });
+    }
+  });
+
+  it("matches the offer to price-related reasons only", () => {
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ reasonCategory: "hit_usage_limits" }),
+      ),
+    ).toEqual({ eligible: false, reason: "reason_not_applicable" });
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ reasonCategory: "not_using_enough" }),
+      ).eligible,
+    ).toBe(true);
+  });
+
+  it("applies the shared subscription rules and the one-per-subscription rule", () => {
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ offersEnabled: false }),
+      ),
+    ).toEqual({ eligible: false, reason: "offers_disabled" });
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ billingInterval: "year" }),
+      ),
+    ).toEqual({ eligible: false, reason: "unsupported_billing_interval" });
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ cancelAtPeriodEnd: true }),
+      ),
+    ).toEqual({ eligible: false, reason: "cancellation_already_scheduled" });
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ downgradeAlreadyApplied: true }),
+      ),
+    ).toEqual({ eligible: false, reason: "downgrade_already_applied" });
+  });
+
+  it("round-trips the downgrade acceptance metadata", () => {
+    const metadata = retentionDowngradeMetadata({
+      fromPlan: "pro-plus-monthly-plan",
+      appliedAtMs: NOW,
+    });
+    expect(retentionDowngradeFromMetadata(metadata as never)).toEqual({
+      fromPlan: "pro-plus-monthly-plan",
+      appliedAtMs: NOW,
+    });
+    expect(retentionDowngradeFromMetadata({})).toBeNull();
   });
 });
 

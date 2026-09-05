@@ -4,6 +4,7 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 const mockGetRetentionOffers = jest.fn();
 const mockPauseSubscription = jest.fn();
 const mockResumeSubscription = jest.fn();
+const mockDowngradeSubscription = jest.fn();
 
 jest.mock("@/lib/actions/retention-offers", () => ({
   __esModule: true,
@@ -13,6 +14,11 @@ jest.mock("@/lib/actions/retention-offers", () => ({
 jest.mock("@/lib/actions/pause-subscription", () => ({
   __esModule: true,
   default: mockPauseSubscription,
+}));
+
+jest.mock("@/lib/actions/downgrade-subscription", () => ({
+  __esModule: true,
+  default: mockDowngradeSubscription,
 }));
 
 jest.mock("@/lib/actions/resume-subscription", () => ({
@@ -123,6 +129,25 @@ describe("retention offer API routes", () => {
     await expect(response.json()).resolves.toEqual({
       error: BILLING_ERRORS.retentionOfferUnavailable,
     });
+  });
+
+  it("switches to the cheaper plan with the survey answers", async () => {
+    mockDowngradeSubscription.mockResolvedValue({
+      downgraded: true,
+      toTier: "pro",
+      toPlan: "pro-monthly-plan",
+    } as never);
+    const { POST } = await import("../downgrade/route");
+
+    const response = await POST(request({ cancellationReason }) as never);
+
+    expect(response.status).toBe(200);
+    expect(mockDowngradeSubscription).toHaveBeenCalledWith({
+      cancellationReason,
+    });
+
+    const rejected = await POST(request({}) as never);
+    expect(rejected.status).toBe(400);
   });
 
   it("resumes a paused plan and maps payment failures to 402", async () => {

@@ -15,15 +15,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   cancelSubscription,
+  downgradeSubscription,
   getRetentionOffers,
   pauseSubscription,
 } from "@/lib/billing/client";
 import type {
+  DowngradeSubscriptionResult,
   PauseSubscriptionResult,
   RetentionOffers,
 } from "@/lib/billing/api-types";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 import { toast } from "sonner";
 import {
+  ArrowDownCircle,
   CheckCircle2,
   Heart,
   Loader2,
@@ -62,6 +66,7 @@ type CancelSubscriptionDialogProps = {
   onOpenChange: (open: boolean) => void;
   onCancellationCompleted?: (result: CancellationResult) => void;
   onPauseScheduled?: (result: PauseSubscriptionResult) => void;
+  onDowngradeApplied?: (result: DowngradeSubscriptionResult) => void;
 };
 
 type CancellationResult = {
@@ -70,7 +75,9 @@ type CancellationResult = {
   alreadyScheduled?: boolean;
 };
 
-type RetentionOfferResult = { type: "pause"; result: PauseSubscriptionResult };
+type RetentionOfferResult =
+  | { type: "pause"; result: PauseSubscriptionResult }
+  | { type: "downgrade"; result: DowngradeSubscriptionResult };
 
 type CancellationStep = "reason" | "details" | "offer" | "confirm";
 
@@ -138,9 +145,25 @@ function pluralizeMonths(months: number) {
 }
 
 function shownOfferTypes(offers: RetentionOffers): RetentionOfferType[] {
-  return offers.pause.eligible && offers.pause.options.length > 0
-    ? ["pause"]
-    : [];
+  const types: RetentionOfferType[] = [];
+  if (offers.downgrade.eligible) types.push("downgrade");
+  if (offers.pause.eligible && offers.pause.options.length > 0) {
+    types.push("pause");
+  }
+  return types;
+}
+
+function formatMoney(amount?: number, currency?: string) {
+  if (amount === undefined) return null;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: (currency ?? "usd").toUpperCase(),
+      maximumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `$${amount}`;
+  }
 }
 
 export const CancelSubscriptionDialog = ({
@@ -148,6 +171,7 @@ export const CancelSubscriptionDialog = ({
   onOpenChange,
   onCancellationCompleted,
   onPauseScheduled,
+  onDowngradeApplied,
 }: CancelSubscriptionDialogProps) => {
   const { subscription } = useGlobalState();
   const [isProcessing, setIsProcessing] = useState(false);
@@ -168,6 +192,8 @@ export const CancelSubscriptionDialog = ({
   const [offers, setOffers] = useState<RetentionOffers | null>(null);
   const [selectedPauseMonths, setSelectedPauseMonths] =
     useState<PauseDurationMonths>(1);
+  const [selectedOffer, setSelectedOffer] =
+    useState<RetentionOfferType>("pause");
   const [step, setStep] = useState<CancellationStep>("reason");
   const openRef = useRef(open);
   const wasOpenRef = useRef(false);
@@ -201,6 +227,7 @@ export const CancelSubscriptionDialog = ({
       setOfferResult(null);
       setOffers(null);
       setSelectedPauseMonths(1);
+      setSelectedOffer("pause");
       setStep("reason");
       return;
     }
@@ -265,6 +292,7 @@ export const CancelSubscriptionDialog = ({
     const offerTypes = nextOffers ? shownOfferTypes(nextOffers) : [];
     if (nextOffers && offerTypes.length > 0) {
       setOffers(nextOffers);
+      setSelectedOffer(offerTypes[0]);
       setStep("offer");
       captureAuthenticatedEvent(
         PAID_FUNNEL_EVENTS.retentionOfferImpressed,
@@ -274,6 +302,10 @@ export const CancelSubscriptionDialog = ({
           reason_subcategory: reasonSubcategory,
           offers_shown: offerTypes,
           pause_offered: offerTypes.includes("pause"),
+          downgrade_offered: offerTypes.includes("downgrade"),
+          downgrade_target_tier: nextOffers.downgrade.eligible
+            ? nextOffers.downgrade.targetTier
+            : undefined,
           pause_effective_at: nextOffers.pause.pauseEffectiveAt
             ? new Date(nextOffers.pause.pauseEffectiveAt).toISOString()
             : undefined,
@@ -351,6 +383,61 @@ export const CancelSubscriptionDialog = ({
     reasonSubcategory,
     selectedPauseMonths,
   ]);
+
+  const handleAcceptDowngrade = useCallback(async () => {
+    const trimmedReasonDetails = reasonDetails.trim();
+    if (!reasonCategory || !reasonSubcategory || !trimmedReasonDetails) {
+      setShowValidation(true);
+      setStep("details");
+      return;
+    }
+
+    setIsProcessing(true);
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    try {
+      const result = await downgradeSubscription({
+        cancellationReason: {
+          reasonCategory,
+          reasonSubcategory,
+          reasonDetails: trimmedReasonDetails,
+        },
+      });
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
+      setOfferResult({ type: "downgrade", result });
+      onDowngradeApplied?.(result);
+      toast.success(`Switched to ${getPlanDisplayName(result.toTier)}`);
+    } catch (error) {
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
+      toast.error(
+        error instanceof Error ? error.message : "Failed to switch plan",
+      );
+    } finally {
+      if (openRef.current && requestIdRef.current === requestId) {
+        setIsProcessing(false);
+      }
+    }
+  }, [onDowngradeApplied, reasonCategory, reasonDetails, reasonSubcategory]);
+
+  const handleAcceptSelectedOffer = useCallback(() => {
+    if (selectedOffer === "downgrade") {
+      void handleAcceptDowngrade();
+      return;
+    }
+    void handleAcceptPause();
+  }, [handleAcceptDowngrade, handleAcceptPause, selectedOffer]);
+
+  const handleOfferResultDone = useCallback(() => {
+    handleOpenChange(false);
+    if (offerResult?.type === "downgrade") {
+      // The tier lives in the WorkOS session; reload so the UI reflects it.
+      reloadWithEntitlementRefresh();
+    }
+  }, [handleOpenChange, offerResult]);
 
   const handleCancelSubscription = useCallback(async () => {
     const trimmedReasonDetails = reasonDetails.trim();
@@ -499,7 +586,9 @@ export const CancelSubscriptionDialog = ({
       ? "Subscription canceled"
       : "Cancellation scheduled"
     : offerResult
-      ? "Pause scheduled"
+      ? offerResult.type === "pause"
+        ? "Pause scheduled"
+        : "Plan switched"
       : isConfirmStep
         ? "Final confirmation"
         : isOfferStep
@@ -532,6 +621,22 @@ export const CancelSubscriptionDialog = ({
     null;
   const pauseEffectiveDate = formatLongDate(pauseOffer?.pauseEffectiveAt);
   const pauseResumeDate = formatLongDate(selectedPauseOption?.resumeAt);
+  const downgradeOffer = offers?.downgrade.eligible ? offers.downgrade : null;
+  const downgradeTargetName = downgradeOffer
+    ? getPlanDisplayName(downgradeOffer.targetTier)
+    : null;
+  const downgradeTargetPrice = formatMoney(
+    downgradeOffer?.targetAmountDollars,
+    downgradeOffer?.currency,
+  );
+  const downgradeCredit = formatMoney(
+    downgradeOffer?.proratedCreditDollars,
+    downgradeOffer?.currency,
+  );
+  const primaryOfferLabel =
+    selectedOffer === "downgrade" && downgradeTargetName
+      ? `Switch to ${downgradeTargetName}`
+      : `Pause for ${pluralizeMonths(selectedPauseMonths)}`;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -562,25 +667,51 @@ export const CancelSubscriptionDialog = ({
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
               <DialogHeader className="gap-3 text-left sm:text-left">
                 <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
-                  Pause scheduled
+                  {offerResult.type === "pause"
+                    ? "Pause scheduled"
+                    : `You're on ${getPlanDisplayName(offerResult.result.toTier)}`}
                 </DialogTitle>
                 <DialogDescription className="text-base leading-7">
-                  {`Your ${planName} plan stays active until ${
-                    formatLongDate(offerResult.result.pauseEffectiveAt) ??
-                    "the end of your current billing period"
-                  }. Billing then pauses for ${pluralizeMonths(
-                    offerResult.result.months,
-                  )} and your plan resumes automatically on ${
-                    formatLongDate(offerResult.result.resumeAt) ??
-                    "the resume date"
-                  }. You can resume sooner or cancel the pause from Account settings.`}
+                  {offerResult.type === "pause"
+                    ? `Your ${planName} plan stays active until ${
+                        formatLongDate(offerResult.result.pauseEffectiveAt) ??
+                        "the end of your current billing period"
+                      }. Billing then pauses for ${pluralizeMonths(
+                        offerResult.result.months,
+                      )} and your plan resumes automatically on ${
+                        formatLongDate(offerResult.result.resumeAt) ??
+                        "the resume date"
+                      }. You can resume sooner or cancel the pause from Account settings.`
+                    : `Your plan is now ${getPlanDisplayName(
+                        offerResult.result.toTier,
+                      )}${
+                        formatMoney(
+                          offerResult.result.targetAmountDollars,
+                          offerResult.result.currency,
+                        )
+                          ? ` at ${formatMoney(
+                              offerResult.result.targetAmountDollars,
+                              offerResult.result.currency,
+                            )} per month`
+                          : ""
+                      }.${
+                        formatMoney(
+                          offerResult.result.proratedCreditDollars,
+                          offerResult.result.currency,
+                        )
+                          ? ` The unused part of your ${planName} month (${formatMoney(
+                              offerResult.result.proratedCreditDollars,
+                              offerResult.result.currency,
+                            )}) is credited to your account and applied to your next invoices.`
+                          : ""
+                      } Your chats, files, and settings stay exactly as they are.`}
                 </DialogDescription>
               </DialogHeader>
             </div>
             <DialogFooter className="border-t border-border px-6 py-5 sm:px-8">
               <Button
                 className="h-11 w-full sm:w-44"
-                onClick={() => handleOpenChange(false)}
+                onClick={handleOfferResultDone}
               >
                 Done
               </Button>
@@ -617,43 +748,104 @@ export const CancelSubscriptionDialog = ({
           <>
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 sm:px-8 sm:py-6">
               <DialogHeader className="gap-2 text-left sm:text-left">
-                <div className="flex items-center gap-3">
-                  <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
-                    <PauseCircle className="size-5" aria-hidden="true" />
-                  </span>
-                  <DialogTitle className="text-2xl leading-tight font-semibold sm:text-3xl">
-                    Pause your plan instead?
-                  </DialogTitle>
-                </div>
+                <DialogTitle className="text-2xl leading-tight font-semibold sm:text-3xl">
+                  {downgradeOffer && pauseOffer
+                    ? "Keep your setup for less?"
+                    : downgradeOffer
+                      ? "Switch to a cheaper plan instead?"
+                      : "Pause your plan instead?"}
+                </DialogTitle>
                 <DialogDescription className="text-sm leading-6 sm:text-base">
-                  No charges while paused. Your plan comes back automatically
-                  with the same price and your saved card.
+                  {downgradeOffer && pauseOffer
+                    ? "Pick an option. Your chats, files, and settings stay as they are."
+                    : downgradeOffer
+                      ? "Your chats, files, and settings stay as they are."
+                      : "No charges while paused. Your plan comes back automatically with the same price and your saved card."}
                 </DialogDescription>
               </DialogHeader>
 
-              {pauseOffer ? (
-                <>
-                  <dl className="mt-4 divide-y divide-border rounded-lg border border-border bg-muted/40 text-sm">
-                    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-                      <dt className="text-muted-foreground">{`${planName} stays active until`}</dt>
-                      <dd className="text-right font-medium text-foreground">
-                        {pauseEffectiveDate ?? "end of paid period"}
-                      </dd>
-                    </div>
-                    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-                      <dt className="text-muted-foreground">Resumes on</dt>
-                      <dd className="text-right font-medium text-foreground">
-                        {pauseResumeDate ?? "the scheduled date"}
-                      </dd>
-                    </div>
-                  </dl>
+              <div
+                className="mt-4 space-y-3"
+                role="radiogroup"
+                aria-label="Alternatives to cancelling"
+              >
+                {downgradeOffer && downgradeTargetName ? (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selectedOffer === "downgrade"}
+                    onClick={() => setSelectedOffer("downgrade")}
+                    disabled={isProcessing}
+                    className={cn(
+                      "flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                      selectedOffer === "downgrade"
+                        ? "border-violet-500/70 bg-premium-bg"
+                        : "border-border bg-muted/40 hover:bg-muted",
+                    )}
+                  >
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
+                      <ArrowDownCircle className="size-5" aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-base font-semibold text-foreground">
+                        {`Switch to ${downgradeTargetName}`}
+                        {downgradeTargetPrice ? (
+                          <span className="font-normal text-muted-foreground">
+                            {` · ${downgradeTargetPrice}/month`}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                        {downgradeCredit
+                          ? `Starts now. The unused part of your ${planName} month (${downgradeCredit}) is credited to your account.`
+                          : `Starts now. The unused part of your ${planName} month is credited to your account.`}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
 
-                  <div className="mt-4 space-y-2">
-                    <Label id="pause-duration-label">Pause for</Label>
+                {pauseOffer ? (
+                  <div
+                    role="radio"
+                    aria-checked={selectedOffer === "pause"}
+                    aria-label="Pause your plan"
+                    tabIndex={0}
+                    onClick={() => setSelectedOffer("pause")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedOffer("pause");
+                      }
+                    }}
+                    className={cn(
+                      "cursor-pointer rounded-lg border p-4 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                      selectedOffer === "pause"
+                        ? "border-violet-500/70 bg-premium-bg"
+                        : "border-border bg-muted/40 hover:bg-muted",
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
+                        <PauseCircle className="size-5" aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="block text-base font-semibold text-foreground">
+                          Pause your plan
+                        </span>
+                        <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                          {pauseEffectiveDate
+                            ? `${planName} stays active until ${pauseEffectiveDate}. `
+                            : ""}
+                          {pauseResumeDate
+                            ? `No charges until it resumes automatically on ${pauseResumeDate}.`
+                            : "No charges while paused. It resumes automatically."}
+                        </span>
+                      </div>
+                    </div>
                     <div
-                      className="grid grid-cols-3 gap-2"
+                      className="mt-3 grid grid-cols-3 gap-2"
                       role="radiogroup"
-                      aria-labelledby="pause-duration-label"
+                      aria-label="Pause duration"
                     >
                       {PAUSE_DURATION_MONTH_OPTIONS.map((months) => {
                         const isSelected = selectedPauseMonths === months;
@@ -668,13 +860,17 @@ export const CancelSubscriptionDialog = ({
                             type="button"
                             role="radio"
                             aria-checked={isSelected}
-                            onClick={() => setSelectedPauseMonths(months)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedOffer("pause");
+                              setSelectedPauseMonths(months);
+                            }}
                             disabled={isProcessing}
                             className={cn(
-                              "h-11 rounded-md border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                              "h-10 rounded-md border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
                               isSelected
-                                ? "border-violet-500/70 bg-premium-bg text-foreground"
-                                : "border-border bg-muted/40 text-foreground hover:bg-muted",
+                                ? "border-violet-500/70 bg-premium-text text-background"
+                                : "border-border bg-background/60 text-foreground hover:bg-muted",
                             )}
                           >
                             {pluralizeMonths(months)}
@@ -683,20 +879,20 @@ export const CancelSubscriptionDialog = ({
                       })}
                     </div>
                   </div>
-                </>
-              ) : null}
+                ) : null}
+              </div>
             </div>
 
             <div className="space-y-2 border-t border-border px-6 py-4 sm:px-8">
               <Button
-                onClick={handleAcceptPause}
-                disabled={isProcessing || !pauseOffer}
+                onClick={handleAcceptSelectedOffer}
+                disabled={isProcessing || (!pauseOffer && !downgradeOffer)}
                 className="h-11 w-full"
               >
                 {isProcessing ? (
                   <Loader2 className="size-4 animate-spin" />
                 ) : (
-                  `Pause for ${pluralizeMonths(selectedPauseMonths)}`
+                  primaryOfferLabel
                 )}
               </Button>
               <div className="flex items-center justify-between gap-2">

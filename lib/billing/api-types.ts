@@ -3,6 +3,7 @@ import type {
   CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
 import type {
+  DowngradeOfferIneligibilityReason,
   PauseDurationMonths,
   PauseOfferIneligibilityReason,
 } from "@/lib/billing/retention-offers";
@@ -76,11 +77,39 @@ export type RetentionPauseOffer = {
   options: RetentionPauseOption[];
 };
 
+export type RetentionDowngradeOffer =
+  | {
+      eligible: true;
+      targetTier: SubscriptionTier;
+      targetPlan: string;
+      targetAmountDollars?: number;
+      currentAmountDollars?: number;
+      currency?: string;
+      /** Credit for the unused part of the current period, applied to future invoices. */
+      proratedCreditDollars?: number;
+    }
+  | { eligible: false; reason: DowngradeOfferIneligibilityReason };
+
 export type RetentionOffers = {
   offersEnabled: boolean;
   subscriptionTier?: SubscriptionTier;
   plan?: string;
   pause: RetentionPauseOffer;
+  downgrade: RetentionDowngradeOffer;
+};
+
+export type DowngradeSubscriptionInput = {
+  cancellationReason: CancellationReasonInput;
+};
+
+export type DowngradeSubscriptionResult = {
+  downgraded: true;
+  fromTier?: SubscriptionTier;
+  toTier: SubscriptionTier;
+  toPlan: string;
+  targetAmountDollars?: number;
+  proratedCreditDollars?: number;
+  currency?: string;
 };
 
 export type PauseSubscriptionInput = {

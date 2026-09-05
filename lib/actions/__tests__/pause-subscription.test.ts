@@ -59,6 +59,7 @@ jest.mock("@/lib/billing/retention-offers.server", () => ({
   isPauseOfferEnabledForUser: mockIsPauseOfferEnabledForUser,
   getPauseOfferFlagState: async (userId: string) =>
     (await mockIsPauseOfferEnabledForUser(userId)) ? "enabled" : "disabled",
+  getDowngradeOfferFlagState: async () => "disabled",
 }));
 
 jest.mock("@/lib/posthog/server", () => ({

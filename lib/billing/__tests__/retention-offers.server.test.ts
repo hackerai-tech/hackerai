@@ -50,8 +50,11 @@ describe("getPauseOfferFlagState", () => {
     mockGetFlagValue.mockResolvedValue(null as never);
     await expect(isPauseOfferEnabledForUser("user_1")).resolves.toBe(false);
     expect(mockWarn).toHaveBeenCalledWith(
-      "pause_offer_flag_unavailable",
-      expect.objectContaining({ userId: "user_1" }),
+      "retention_offer_flag_unavailable",
+      expect.objectContaining({
+        userId: "user_1",
+        flag_key: "hac-96-pause-subscription-offer",
+      }),
     );
   });
 
