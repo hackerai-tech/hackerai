@@ -585,6 +585,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     subscriptionFromEntitlements !== "free"
       ? subscriptionFromEntitlements
       : subscription;
+  const agentFirstSubscriptionResolved =
+    paidAgentSubscription === "free"
+      ? freeSubscriptionResolved
+      : subscriptionResolved;
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
@@ -601,7 +605,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       isCheckingProPlan,
       isMobile,
       subscription: paidAgentSubscription,
-      subscriptionResolved,
+      subscriptionResolved: agentFirstSubscriptionResolved,
       userPresent: Boolean(user),
     });
 
@@ -670,6 +674,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     );
   }, [
     chatMode,
+    agentFirstSubscriptionResolved,
     defaultLocalSandboxPreference,
     hasLocalSandbox,
     isCheckingProPlan,

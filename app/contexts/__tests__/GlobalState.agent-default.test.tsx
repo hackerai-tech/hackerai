@@ -12,6 +12,7 @@ import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import { SHARED_TOKEN_KEY } from "@/lib/auth/shared-token";
 
 const mockUseAutoSelectNewRemoteConnection = jest.fn();
+let mockDesktopBridgeActive = false;
 
 jest.mock("@/app/hooks/useAutoSelectNewRemoteConnection", () => ({
   useAutoSelectNewRemoteConnection: (args: unknown) =>
@@ -26,8 +27,8 @@ jest.mock("@/app/hooks/useSandboxPreference", () => {
     useSandboxPreference: () => ({
       sandboxPreference: "e2b",
       setSandboxPreference,
-      desktopBridgeActive: false,
-      desktopBridgeStatus: "idle",
+      desktopBridgeActive: mockDesktopBridgeActive,
+      desktopBridgeStatus: mockDesktopBridgeActive ? "connected" : "idle",
       retryDesktopBridge,
     }),
   };
@@ -141,6 +142,7 @@ describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useRealTimers();
+    mockDesktopBridgeActive = false;
     delete window.__TAURI_INTERNALS__;
     window.history.pushState({}, "", "/");
     window.localStorage.clear();
@@ -260,6 +262,7 @@ describe("GlobalStateProvider agent defaults", () => {
     window.__TAURI_INTERNALS__ = {};
     window.localStorage.setItem("selected_model", "hackerai-pro");
     mockAuthUser([]);
+    mockDesktopBridgeActive = true;
     let entitlementAttempts = 0;
     global.fetch = jest.fn((input) => {
       if (String(input) === "/api/entitlements") {
@@ -287,6 +290,7 @@ describe("GlobalStateProvider agent defaults", () => {
     expect(screen.getByTestId("selected-model")).toHaveTextContent(
       "hackerai-pro",
     );
+    expect(screen.getByTestId("chat-mode")).toHaveTextContent("ask");
   });
 
   it("forces returning free Desktop users out of saved Ask mode", async () => {
