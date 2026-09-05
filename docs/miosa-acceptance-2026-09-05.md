@@ -2,9 +2,11 @@
 
 ## Result
 
-The upgraded SDK and current platform passed live acceptance through HackerAI's
-adapter. E2B fallback and the Europe exclusion remain unchanged. No rollout,
-template environment variable, or production configuration was changed.
+Fresh sandboxes pass live acceptance through HackerAI's upgraded adapter. The
+preview user's older paused workspace remains blocked by
+`SANDBOX_NOT_RESTORABLE` (details below). E2B fallback and the Europe exclusion
+remain unchanged. No rollout, template environment variable, or production
+configuration was changed.
 
 - Repository: PR #1185, `codex/miosa-sandbox-rollout`.
 - Versions: `@miosa/sdk` **3.2.3**, `@miosa/cli` **1.3.4** (repository and global CLI).
@@ -12,23 +14,24 @@ template environment variable, or production configuration was changed.
 - Shape: **4 vCPU / 4,096 MiB / 20,480 MiB**, verified from returned resource data.
 - Guest kernel: `6.1.155+`.
 - Runtime: `hackerai-agent`, using the existing pinned HackerAI Docker image.
-- Test window: **2026-09-05 15:22–15:51 UTC**.
+- Test window: **2026-09-05 15:22–16:00 UTC**.
 
 ## Live evidence
 
-| Disposable sandbox                     | Ready, including image initialization | Result                                                     |
-| -------------------------------------- | ------------------------------------: | ---------------------------------------------------------- |
-| `3b55860f-3e09-4951-ae4a-4ea8af4da5fa` |                              67.168 s | Core matrix passed; deletion verified                      |
-| `cf248c3b-d440-4e47-90e3-a2d1b905991f` |                              67.532 s | Core matrix passed; deletion verified                      |
-| `4429831f-1674-41cb-8008-c50133d8e1dc` |                              69.115 s | Core and extended matrices passed; deletion verified       |
-| `a0eaf2fa-4ef0-4081-a4f7-bd152860cf39` |                              63.095 s | Post-review core/extended retest passed; deletion verified |
+| Disposable sandbox                     | Ready, including image initialization | Result                                                                |
+| -------------------------------------- | ------------------------------------: | --------------------------------------------------------------------- |
+| `3b55860f-3e09-4951-ae4a-4ea8af4da5fa` |                              67.168 s | Core matrix passed; deletion verified                                 |
+| `cf248c3b-d440-4e47-90e3-a2d1b905991f` |                              67.532 s | Core matrix passed; deletion verified                                 |
+| `4429831f-1674-41cb-8008-c50133d8e1dc` |                              69.115 s | Core and extended matrices passed; deletion verified                  |
+| `a0eaf2fa-4ef0-4081-a4f7-bd152860cf39` |                              63.095 s | Post-review core/extended retest passed; deletion verified            |
+| `58d39c44-e382-4600-bd65-46f12970a441` |                              67.035 s | Final cancellation fix/core/extended retest passed; deletion verified |
 
 The third create returned request ID `GNJ2OrUPmPE_iLYCxqqC`, operation ID
 `ca08849a-0156-403c-b862-81418a4ea81a`, boot path `byoc_host_command`, and a
 platform boot duration of 2,396 ms. Total readiness above includes pulling and
 initializing the HackerAI tools image; it is not the VM boot duration alone.
 
-Core matrix, passed on all four:
+Core matrix, passed on all five:
 
 - Executable running state, exact shape, and installed nmap/nuclei/ffuf/agent-browser.
 - Streaming stdout, stderr, and exit code 7; exact partial chunks, Unicode,
@@ -45,7 +48,7 @@ Core matrix, passed on all four:
 - The helper used by Settings deletion removed the synthetic user's sandbox;
   a subsequent list confirmed no non-destroyed sandbox remained.
 
-Extended matrix, passed on the third and fourth sandboxes:
+Extended matrix, passed on the third, fourth, and fifth sandboxes:
 
 - Background PID and kill; delayed marker did not appear.
 - Attributable, non-decreasing runtime and estimated cost across two samples.
@@ -79,7 +82,7 @@ proven to be a MIOSA platform defect. The older provisioning error is consistent
 with the SDK's stale local-state bug; it does not by itself prove that the VM
 never became ready. The current upgraded path did not reproduce either problem.
 
-This is four fresh sandboxes, not the ten-create stress test requested in the
+This is five fresh sandboxes, not the ten-create stress test requested in the
 earlier engineering spec, and not proof of multi-node placement. Destruction was
 tested after normal execution and a pause/resume cycle, not every lifecycle
 failure state. Long-duration usage accuracy and failure-injected 502/503 recovery
@@ -111,6 +114,10 @@ while awaiting cancellation cleanup, and allow an explicit acceptance-template
 override. A subagent region mismatch now attempts a terminal reservation update
 before loading any task content; its queued-reservation watchdog remains the
 fallback if that control-plane update fails.
+Cancellation polling now exits nonzero if the PID file never appears, rather
+than reporting an unconfirmed stop as `AbortError`. A regression executes the
+full missing-PID polling window, and the fifth live sandbox confirmed normal
+cancellation still works. The final local suite passed 4,755 tests.
 
 ## Remaining platform issue: an older paused workspace cannot resume
 
@@ -139,8 +146,8 @@ Paste-ready support request:
 > `sandbox.resume()` returned HTTP 409, `SANDBOX_NOT_RESTORABLE`:
 > "sandbox is paused but has no usable snapshot to restore; create a fresh sandbox".
 > Request ID: `GNJ3mAemR4-fDsEAOa6G`. Template: `miosa-sandbox-docker`,
-> 4 vCPU / 4 GiB / 20 GiB. Four new disposable sandboxes pass acceptance,
-> including two fresh pause/resume checks, but this older workspace stays paused.
+> 4 vCPU / 4 GiB / 20 GiB. Five new disposable sandboxes pass acceptance,
+> including three fresh pause/resume checks, but this older workspace stays paused.
 > Please determine why its snapshot is unusable and whether its files can be
 > recovered. Do not delete the existing workspace without approval. Please also
 > provide a supported replacement/migration procedure that preserves the old

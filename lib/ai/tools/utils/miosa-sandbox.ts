@@ -38,6 +38,24 @@ type MiosaCommandResult = {
 const shellQuote = (value: string): string =>
   `'${value.replaceAll("'", `'"'"'`)}'`;
 
+export const miosaCancellationCommand = (processIdPath: string): string =>
+  [
+    "for i in $(seq 1 40); do",
+    `if [ -f ${shellQuote(processIdPath)} ]; then`,
+    `pid=$(cat ${shellQuote(processIdPath)})`,
+    'case "$pid" in ""|*[!0-9]*|0|1) exit 1;; esac',
+    'kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true',
+    "sleep 0.2",
+    'if ! kill -KILL -- -"$pid" 2>/dev/null && ! kill -KILL "$pid" 2>/dev/null; then if kill -0 -- -"$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null; then exit 1; fi; fi',
+    `rm -f -- ${shellQuote(processIdPath)}`,
+    "exit 0",
+    "fi",
+    "sleep 0.05",
+    "done",
+    // A missing PID is not evidence that the process group was terminated.
+    "exit 1",
+  ].join("\n");
+
 const externalUserIdForUser = (userId: string): string =>
   `hackerai-${createHash("sha256").update(userId).digest("hex").slice(0, 24)}`;
 
@@ -227,9 +245,7 @@ export class MiosaSandbox {
               abortStarted = true;
               cancellation = this.sdkSandbox.exec
                 .run(
-                  dockerExecCommand(
-                    `for i in $(seq 1 40); do if [ -f ${shellQuote(processIdPath)} ]; then pid=$(cat ${shellQuote(processIdPath)}); kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f -- ${shellQuote(processIdPath)}; break; fi; sleep 0.05; done`,
-                  ),
+                  dockerExecCommand(miosaCancellationCommand(processIdPath)),
                   { timeoutSec: 5 },
                 )
                 .then(

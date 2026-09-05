@@ -1,5 +1,10 @@
 const mockGetOrCreate = jest.fn();
 const mockList = jest.fn();
+import { execFile } from "node:child_process";
+import { mkdtempSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 
 jest.mock("@miosa/sdk", () => ({
   Miosa: jest.fn(() => ({
@@ -13,6 +18,7 @@ jest.mock("@miosa/sdk", () => ({
 import {
   ensureMiosaSandboxConnection,
   MiosaSandbox,
+  miosaCancellationCommand,
   terminateMiosaSandboxesForUser,
 } from "../miosa-sandbox";
 
@@ -367,5 +373,42 @@ describe("MIOSA sandbox adapter", () => {
     await expect(pending).rejects.toThrow(
       "MIOSA command cancellation could not be confirmed",
     );
+  });
+
+  it("reports unconfirmed cancellation after every PID-file check is exhausted", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "miosa-cancel-test-"));
+    const sdk = createSdkSandbox();
+    sdk.exec.stream.mockImplementation(async function* () {
+      await new Promise(() => {});
+    } as never);
+    sdk.exec.run.mockImplementation(async () => {
+      try {
+        await promisify(execFile)(
+          "/bin/bash",
+          [
+            "-c",
+            miosaCancellationCommand(join(directory, "never-created.pid")),
+          ],
+          { timeout: 5000 },
+        );
+        return { stdout: "", stderr: "", exitCode: 0 };
+      } catch (error) {
+        expect(error).toMatchObject({ code: 1 });
+        return { stdout: "", stderr: "", exitCode: 1 };
+      }
+    });
+    try {
+      const controller = new AbortController();
+      const pending = new MiosaSandbox(sdk as never).commands.run("sleep 60", {
+        signal: controller.signal,
+      });
+      controller.abort();
+      await expect(pending).rejects.toThrow(
+        "MIOSA command cancellation could not be confirmed",
+      );
+      expect(sdk.exec.run).toHaveBeenCalledTimes(1);
+    } finally {
+      rmdirSync(directory);
+    }
   });
 });
