@@ -24,6 +24,7 @@ import {
   subscriptionPauseFromMetadata,
   subscriptionPauseMetadata,
 } from "@/lib/billing/retention-offers";
+import { releaseSubscriptionSchedule } from "@/lib/billing/subscription-schedule";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { proMonthlyPricingExperimentProperties } from "@/lib/experiments/pro-monthly-pricing";
 import { phLogger } from "@/lib/posthog/server";
@@ -161,6 +162,11 @@ export default async function pauseSubscriptionAction(
 
   let updatedSubscription: Stripe.Subscription;
   try {
+    // A pending retention downgrade would block the pause update.
+    await releaseSubscriptionSchedule(subscription.scheduleId, {
+      ...billingFields,
+      reason: "pause",
+    });
     updatedSubscription = await stripe.subscriptions.update(subscription.id, {
       cancel_at_period_end: true,
       cancellation_details: {

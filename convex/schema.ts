@@ -320,10 +320,16 @@ export default defineSchema({
       ),
     ),
     reason_details_id: v.optional(v.id("cancellation_reason_details")),
-    status: v.union(v.literal("started"), v.literal("completed")),
-    // Set when the user accepted the pause offer. The row stays "started"
-    // until Stripe ends the paused subscription at the paid-through date.
-    retention_offer_accepted: v.optional(v.literal("pause")),
+    // "retained" means the user accepted an offer that keeps them paying
+    // (downgrade). A pause keeps "started" until Stripe ends the subscription.
+    status: v.union(
+      v.literal("started"),
+      v.literal("completed"),
+      v.literal("retained"),
+    ),
+    retention_offer_accepted: v.optional(
+      v.union(v.literal("pause"), v.literal("downgrade")),
+    ),
     source: v.union(v.literal("in_app"), v.literal("billing_portal")),
     started_at: v.number(),
     completed_at: v.optional(v.number()),

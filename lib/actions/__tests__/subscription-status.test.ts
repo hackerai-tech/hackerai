@@ -1,6 +1,7 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockListSubscriptions = jest.fn();
+const mockRetrievePrice = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
 
@@ -9,6 +10,7 @@ jest.mock("@/app/api/stripe", () => ({
     subscriptions: {
       list: mockListSubscriptions,
     },
+    prices: { retrieve: mockRetrievePrice },
   },
 }));
 
@@ -77,7 +79,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
       customer: "cus_123",
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price"],
+      expand: ["data.items.data.price", "data.schedule"],
     });
   });
 
@@ -230,6 +232,79 @@ describe("getSubscriptionCancellationStatusAction", () => {
           resumeAt: 1_795_000_000_000,
           pauseEffectiveAt: 1_782_444_800_000,
         },
+      }),
+    );
+  });
+
+  it("exposes a scheduled downgrade from the attached schedule", async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    mockRetrievePrice.mockResolvedValue({
+      id: "price_pro",
+      lookup_key: "pro-monthly-plan",
+      unit_amount: 2500,
+      currency: "usd",
+    } as never);
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_pp",
+          status: "active",
+          cancel_at_period_end: false,
+          current_period_end: nowSeconds + 10 * 86_400,
+          metadata: {},
+          schedule: {
+            id: "sub_sched_1",
+            status: "active",
+            phases: [
+              {
+                start_date: nowSeconds - 20 * 86_400,
+                end_date: nowSeconds + 10 * 86_400,
+                items: [{ price: { id: "price_pro_plus" } }],
+              },
+              {
+                start_date: nowSeconds + 10 * 86_400,
+                end_date: nowSeconds + 40 * 86_400,
+                items: [{ price: "price_pro" }],
+              },
+            ],
+          },
+          items: {
+            data: [
+              {
+                quantity: 1,
+                price: {
+                  id: "price_pro_plus",
+                  lookup_key: "pro-plus-monthly-plan",
+                  unit_amount: 6000,
+                  currency: "usd",
+                  recurring: { interval: "month", interval_count: 1 },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    } as never);
+
+    const { default: getSubscriptionCancellationStatusAction } =
+      await import("../subscription-status");
+
+    await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual(
+      expect.objectContaining({
+        cancelAtPeriodEnd: false,
+        pendingPlanChange: {
+          effectiveAt: (nowSeconds + 10 * 86_400) * 1000,
+          targetPlan: "pro-monthly-plan",
+          targetTier: "pro",
+          targetAmountDollars: 25,
+          currency: "usd",
+        },
+      }),
+    );
+    expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro");
+    expect(mockListSubscriptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expand: ["data.items.data.price", "data.schedule"],
       }),
     );
   });

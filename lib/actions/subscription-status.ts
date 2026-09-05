@@ -7,6 +7,8 @@ import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
+import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
+import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
 type CurrentSubscriptionStatus = NonNullable<
@@ -53,7 +55,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price"],
+      expand: ["data.items.data.price", "data.schedule"],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
@@ -88,6 +90,11 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   const pause = cancelAtPeriodEnd
     ? subscriptionPauseFromMetadata(currentSubscription.metadata)
     : null;
+  const pendingChange = await resolvePendingPlanChange(
+    currentSubscription.schedule,
+    price?.id,
+  );
+  const pendingPrice = pendingChange?.price;
   return {
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
@@ -98,6 +105,19 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
         months: pause.months,
         resumeAt: pause.resumeAtMs,
         ...(currentPeriodEnd && { pauseEffectiveAt: currentPeriodEnd }),
+      },
+    }),
+    ...(pendingChange && {
+      pendingPlanChange: {
+        effectiveAt: pendingChange.effectiveAtMs,
+        ...(pendingPrice?.lookup_key && {
+          targetPlan: pendingPrice.lookup_key,
+          targetTier: planLookupKeyToTier(pendingPrice.lookup_key) ?? undefined,
+        }),
+        ...(typeof pendingPrice?.unit_amount === "number" && {
+          targetAmountDollars: pendingPrice.unit_amount / 100,
+        }),
+        ...(pendingPrice?.currency && { currency: pendingPrice.currency }),
       },
     }),
     ...(latestInvoiceId && { latestInvoiceId }),
