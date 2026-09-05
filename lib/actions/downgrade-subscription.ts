@@ -1,8 +1,5 @@
 "use server";
 
-import type Stripe from "stripe";
-
-import { stripe } from "../../app/api/stripe";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
@@ -21,6 +18,7 @@ import {
   RETENTION_DOWNGRADE_CHECKOUT_SOURCE,
   retentionDowngradeMetadata,
 } from "@/lib/billing/retention-offers";
+import { scheduleDowngradeAtPeriodEnd } from "@/lib/billing/subscription-schedule";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { proMonthlyPricingExperimentProperties } from "@/lib/experiments/pro-monthly-pricing";
 import { phLogger } from "@/lib/posthog/server";
@@ -41,10 +39,11 @@ function parseCreatedAtMs(value: unknown): number | undefined {
 }
 
 /**
- * Accept the "switch to a cheaper plan" retention offer. The change applies
- * immediately with Stripe proration, so the unused part of the current period
- * becomes account credit and the webhook migrates usage buckets the same way
- * it does for any plan change.
+ * Accept the "switch to a cheaper plan" retention offer. The change is
+ * scheduled for the end of the paid period through a Stripe Subscription
+ * Schedule: the user keeps the current plan until then, the next renewal is
+ * at the cheaper price, and no credit or proration is involved. The webhook
+ * treats the phase transition like any other plan change.
  */
 export default async function downgradeSubscriptionAction(
   input: DowngradeSubscriptionInput,
@@ -67,7 +66,11 @@ export default async function downgradeSubscriptionAction(
     stripe_subscription_id: subscription.id,
   };
 
-  if (!downgrade.eligible || !downgradeTarget || !subscription.itemId) {
+  if (
+    !downgrade.eligible ||
+    !downgradeTarget ||
+    !subscription.currentPeriodEndMs
+  ) {
     phLogger.warn("retention_downgrade_rejected", {
       ...billingFields,
       reason: downgrade.eligible
@@ -120,64 +123,35 @@ export default async function downgradeSubscriptionAction(
     });
   }
 
-  // Proration dates are rounded to the minute so a client retry inside the
-  // same minute replays the original Stripe response instead of creating a
-  // second proration invoice.
-  const prorationDateSeconds = Math.floor(now / 60_000) * 60;
-  let updatedSubscription: Stripe.Subscription;
+  const fromPlan = subscription.plan ?? subscription.tier ?? "unknown";
+  let scheduled: Awaited<ReturnType<typeof scheduleDowngradeAtPeriodEnd>>;
   try {
-    updatedSubscription = await stripe.subscriptions.update(
-      subscription.id,
-      {
-        items: [
-          {
-            id: subscription.itemId,
-            price: downgradeTarget.priceId,
-            quantity: 1,
-          },
-        ],
-        proration_behavior: "always_invoice",
-        proration_date: prorationDateSeconds,
-        // A downgrade only credits, so nothing can be left pending. Fail
-        // loudly rather than report an unapplied change as a downgrade.
-        payment_behavior: "error_if_incomplete",
-        metadata: {
-          ...subscription.metadata,
-          checkoutType: "subscription_change",
-          checkoutSource: RETENTION_DOWNGRADE_CHECKOUT_SOURCE,
-          checkoutSurface: "cancel_subscription_dialog",
-          checkoutReason: cancellationReason.reasonCategory,
-          ...retentionDowngradeMetadata({
-            fromPlan: subscription.plan ?? subscription.tier ?? "unknown",
-            appliedAtMs: prorationDateSeconds * 1000,
-          }),
-        },
+    scheduled = await scheduleDowngradeAtPeriodEnd({
+      subscription: subscription.subscription,
+      targetPriceId: downgradeTarget.priceId,
+      phaseMetadata: {
+        ...subscription.metadata,
+        checkoutType: "subscription_change",
+        checkoutSource: RETENTION_DOWNGRADE_CHECKOUT_SOURCE,
+        checkoutSurface: "cancel_subscription_dialog",
+        checkoutReason: cancellationReason.reasonCategory,
+        ...retentionDowngradeMetadata({ fromPlan, scheduledAtMs: now }),
       },
-      {
-        idempotencyKey: `retention_downgrade:${subscription.id}:${downgradeTarget.priceId}:${prorationDateSeconds}`,
+      scheduleMetadata: {
+        purpose: "retention_downgrade",
+        userId: user.id,
+        fromPlan,
+        toPlan: downgradeTarget.lookupKey,
+        reasonCategory: cancellationReason.reasonCategory,
       },
-    );
+    });
   } catch (error) {
-    phLogger.error("retention_downgrade_stripe_update_failed", {
+    phLogger.error("retention_downgrade_schedule_failed", {
       ...billingFields,
       target_price_id: downgradeTarget.priceId,
       error,
     });
     throw error;
-  }
-
-  const appliedPriceId = updatedSubscription.items?.data?.[0]?.price?.id;
-  if (
-    updatedSubscription.pending_update ||
-    (appliedPriceId && appliedPriceId !== downgradeTarget.priceId)
-  ) {
-    phLogger.error("retention_downgrade_not_applied", {
-      ...billingFields,
-      target_price_id: downgradeTarget.priceId,
-      applied_price_id: appliedPriceId,
-      pending_update: Boolean(updatedSubscription.pending_update),
-    });
-    throw new Error(BILLING_ERRORS.retentionOfferUnavailable);
   }
 
   if (serviceKey && cancellationReasonId) {
@@ -218,12 +192,13 @@ export default async function downgradeSubscriptionAction(
         ? undefined
         : subscription.unitAmountDollars * subscription.quantity,
     target_amount_dollars: downgradeTarget.unitAmountDollars,
-    prorated_credit_dollars: downgradeTarget.proratedCreditDollars,
     currency: downgradeTarget.currency,
+    effective_at: new Date(scheduled.effectiveAtMs).toISOString(),
     surface: "cancel_subscription_dialog",
     source: "account_settings",
     stripe_customer_id: stripeCustomerId,
     stripe_subscription_id: subscription.id,
+    stripe_subscription_schedule_id: scheduled.scheduleId,
     stripe_price_id: subscription.priceId,
     target_stripe_price_id: downgradeTarget.priceId,
     ...proMonthlyPricingExperimentProperties(subscription.pricingExperiment),
@@ -231,28 +206,24 @@ export default async function downgradeSubscriptionAction(
 
   phLogger.event(PAID_FUNNEL_EVENTS.retentionOfferAccepted, {
     ...offerProperties,
-    $insert_id: `${PAID_FUNNEL_EVENTS.retentionOfferAccepted}:downgrade:${subscription.id}`,
+    $insert_id: `${PAID_FUNNEL_EVENTS.retentionOfferAccepted}:downgrade:${scheduled.scheduleId}`,
   });
-  phLogger.event(PAID_FUNNEL_EVENTS.retentionDowngradeApplied, {
+  phLogger.event(PAID_FUNNEL_EVENTS.retentionDowngradeScheduled, {
     ...offerProperties,
-    subscription_status: updatedSubscription.status,
-    $insert_id: `${PAID_FUNNEL_EVENTS.retentionDowngradeApplied}:${subscription.id}`,
+    $insert_id: `${PAID_FUNNEL_EVENTS.retentionDowngradeScheduled}:${scheduled.scheduleId}`,
     $set: {
-      subscription_tier: downgrade.target.tier,
-      last_retention_downgrade_at: new Date(now).toISOString(),
+      last_retention_downgrade_scheduled_at: new Date(now).toISOString(),
     },
   });
 
   return {
-    downgraded: true,
+    scheduled: true,
+    effectiveAt: scheduled.effectiveAtMs,
     fromTier: subscription.tier,
     toTier: downgrade.target.tier,
     toPlan: downgradeTarget.lookupKey,
     ...(downgradeTarget.unitAmountDollars !== undefined && {
       targetAmountDollars: downgradeTarget.unitAmountDollars,
-    }),
-    ...(downgradeTarget.proratedCreditDollars !== undefined && {
-      proratedCreditDollars: downgradeTarget.proratedCreditDollars,
     }),
     ...(downgradeTarget.currency && { currency: downgradeTarget.currency }),
   };

@@ -16,6 +16,10 @@ import {
   type SubscriptionPauseMetadata,
 } from "@/lib/billing/retention-offers";
 import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  releaseSubscriptionSchedule,
+  subscriptionScheduleId,
+} from "@/lib/billing/subscription-schedule";
 import { getConvexClient } from "@/lib/db/convex-client";
 import type Stripe from "stripe";
 import type { SubscriptionTier } from "@/types";
@@ -27,6 +31,7 @@ type SubscriptionContext = {
   tier?: SubscriptionTier;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd: boolean;
+  scheduleId?: string;
   pause: SubscriptionPauseMetadata | null;
 };
 
@@ -69,6 +74,7 @@ async function getActiveSubscriptionContext(
     tier: subscriptionTierFromLookupKey(price?.lookup_key),
     currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
+    scheduleId: subscriptionScheduleId(currentSubscription),
     pause: subscriptionPauseFromMetadata(currentSubscription.metadata),
   };
 }
@@ -111,11 +117,40 @@ export default async function keepSubscriptionAction(): Promise<KeepSubscription
     await getActiveSubscriptionContext(stripeCustomerId);
 
   if (!subscriptionContext.cancelAtPeriodEnd) {
+    // "Keep plan" while a retention downgrade is scheduled: release the
+    // schedule so the subscription keeps renewing on the current price.
+    const planChangeCanceled = await releaseSubscriptionSchedule(
+      subscriptionContext.scheduleId,
+      {
+        userId: user.id,
+        org_id: organizationId,
+        stripe_customer_id: stripeCustomerId,
+        stripe_subscription_id: subscriptionContext.id,
+        reason: "keep_plan",
+      },
+    );
+    if (planChangeCanceled) {
+      phLogger.event(
+        PAID_FUNNEL_EVENTS.retentionDowngradeCanceled,
+        paidFunnelProperties({
+          userId: user.id,
+          org_id: organizationId,
+          subscription_tier: subscriptionContext.tier,
+          plan: subscriptionContext.plan,
+          stripe_customer_id: stripeCustomerId,
+          stripe_subscription_id: subscriptionContext.id,
+          stripe_subscription_schedule_id: subscriptionContext.scheduleId,
+          stripe_price_id: subscriptionContext.priceId,
+          $insert_id: `${PAID_FUNNEL_EVENTS.retentionDowngradeCanceled}:${subscriptionContext.scheduleId}`,
+        }),
+      );
+    }
     return {
       kept: true,
       cancelAtPeriodEnd: false,
       currentPeriodEnd: subscriptionContext.currentPeriodEnd,
-      alreadyKept: true,
+      alreadyKept: !planChangeCanceled,
+      ...(planChangeCanceled && { planChangeCanceled: true }),
     };
   }
 

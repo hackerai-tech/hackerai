@@ -16,19 +16,27 @@ enough", or "other" are offered one tier down (Pro+ → Pro, Ultra → Pro+).
 Boomerang data drove this shape: most Pro+ and Ultra cancellers who come back
 re-subscribe to the cheaper tier.
 
-Accepting applies the change immediately through the same Stripe plan-change
-path as an upgrade (`proration_behavior: always_invoice`). The unused part of
-the current period becomes customer balance, the webhook migrates usage
-buckets as for any tier change, and the client reloads with
-`refresh=entitlements` so the new tier takes effect. The subscription metadata
-(`hackeraiRetentionDowngrade*`) records the acceptance so it is offered once
-per subscription. The Convex cancellation row is marked `retained`.
+Accepting schedules the change for the end of the paid period through a
+Stripe Subscription Schedule (`lib/billing/subscription-schedule.ts`): phase 1
+keeps the current items until the paid-through date, phase 2 switches to the
+cheaper price for one period with `proration_behavior: none`, and
+`end_behavior: release` hands the subscription back to normal renewals on the
+new price. Nothing is charged or credited today. The phase metadata sets
+`checkoutSource=retention_downgrade` on the subscription when it switches, so
+the webhook's tier-change handling and `subscription_changed` work unchanged.
+
+While a schedule is attached Stripe rejects direct item changes, so cancel,
+pause, keep, and plan changes call `releaseSubscriptionSchedule` first.
+"Keep current plan" in Account settings releases it and emits
+`retention_downgrade_canceled`. A subscription with a schedule attached is not
+offered another downgrade (`downgrade_already_scheduled`). The Convex
+cancellation row is marked `retained`.
 
 Analytics: `retention_offer_evaluated` gains `downgrade_offered`,
 `downgrade_ineligibility_reason`, and `downgrade_target_plan`;
 `retention_offer_impressed` lists both offers in `offers_shown`;
 `retention_offer_accepted` with `retention_offer=downgrade` and
-`retention_downgrade_applied` record acceptance; the webhook's
+`retention_downgrade_scheduled` record acceptance; the webhook's
 `subscription_changed` carries `source=retention_downgrade`.
 
 ## What the user sees

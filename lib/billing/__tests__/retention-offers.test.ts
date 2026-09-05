@@ -136,7 +136,7 @@ function downgradeInput(
     cancelAtPeriodEnd: false,
     quantity: 1,
     reasonCategory: "too_expensive",
-    downgradeAlreadyApplied: false,
+    downgradeAlreadyScheduled: false,
     ...overrides,
   };
 }
@@ -194,19 +194,19 @@ describe("evaluateDowngradeOfferEligibility", () => {
     ).toEqual({ eligible: false, reason: "cancellation_already_scheduled" });
     expect(
       evaluateDowngradeOfferEligibility(
-        downgradeInput({ downgradeAlreadyApplied: true }),
+        downgradeInput({ downgradeAlreadyScheduled: true }),
       ),
-    ).toEqual({ eligible: false, reason: "downgrade_already_applied" });
+    ).toEqual({ eligible: false, reason: "downgrade_already_scheduled" });
   });
 
   it("round-trips the downgrade acceptance metadata", () => {
     const metadata = retentionDowngradeMetadata({
       fromPlan: "pro-plus-monthly-plan",
-      appliedAtMs: NOW,
+      scheduledAtMs: NOW,
     });
     expect(retentionDowngradeFromMetadata(metadata as never)).toEqual({
       fromPlan: "pro-plus-monthly-plan",
-      appliedAtMs: NOW,
+      scheduledAtMs: NOW,
     });
     expect(retentionDowngradeFromMetadata({})).toBeNull();
   });

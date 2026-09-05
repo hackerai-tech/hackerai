@@ -24,7 +24,6 @@ import type {
   PauseSubscriptionResult,
   RetentionOffers,
 } from "@/lib/billing/api-types";
-import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 import { toast } from "sonner";
 import {
   ArrowDownCircle,
@@ -206,13 +205,8 @@ export const CancelSubscriptionDialog = ({
         requestIdRef.current += 1;
       }
       onOpenChange(nextOpen);
-      if (!nextOpen && offerResult?.type === "downgrade") {
-        // The tier lives in the WorkOS session; reload so the UI reflects it
-        // however the dialog was closed.
-        reloadWithEntitlementRefresh();
-      }
     },
-    [offerResult, onOpenChange],
+    [onOpenChange],
   );
 
   useEffect(() => {
@@ -413,7 +407,7 @@ export const CancelSubscriptionDialog = ({
       }
       setOfferResult({ type: "downgrade", result });
       onDowngradeApplied?.(result);
-      toast.success(`Switched to ${getPlanDisplayName(result.toTier)}`);
+      toast.success(`Switch to ${getPlanDisplayName(result.toTier)} scheduled`);
     } catch (error) {
       if (!openRef.current || requestIdRef.current !== requestId) {
         return;
@@ -589,7 +583,7 @@ export const CancelSubscriptionDialog = ({
     : offerResult
       ? offerResult.type === "pause"
         ? "Pause scheduled"
-        : "Plan switched"
+        : "Switch scheduled"
       : isConfirmStep
         ? "Final confirmation"
         : isOfferStep
@@ -630,10 +624,7 @@ export const CancelSubscriptionDialog = ({
     downgradeOffer?.targetAmountDollars,
     downgradeOffer?.currency,
   );
-  const downgradeCredit = formatMoney(
-    downgradeOffer?.proratedCreditDollars,
-    downgradeOffer?.currency,
-  );
+  const downgradeEffectiveDate = formatLongDate(downgradeOffer?.effectiveAt);
   const primaryOfferLabel =
     selectedOffer === "downgrade" && downgradeTargetName
       ? `Switch to ${downgradeTargetName}`
@@ -670,7 +661,7 @@ export const CancelSubscriptionDialog = ({
                 <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
                   {offerResult.type === "pause"
                     ? "Pause scheduled"
-                    : `You're on ${getPlanDisplayName(offerResult.result.toTier)}`}
+                    : `Switching to ${getPlanDisplayName(offerResult.result.toTier)}`}
                 </DialogTitle>
                 <DialogDescription className="text-base leading-7">
                   {offerResult.type === "pause"
@@ -683,7 +674,10 @@ export const CancelSubscriptionDialog = ({
                         formatLongDate(offerResult.result.resumeAt) ??
                         "the resume date"
                       }. You can resume sooner or cancel the pause from Account settings.`
-                    : `Your plan is now ${getPlanDisplayName(
+                    : `You keep ${planName} until ${
+                        formatLongDate(offerResult.result.effectiveAt) ??
+                        "the end of your current billing period"
+                      }. From then your plan is ${getPlanDisplayName(
                         offerResult.result.toTier,
                       )}${
                         formatMoney(
@@ -695,17 +689,7 @@ export const CancelSubscriptionDialog = ({
                               offerResult.result.currency,
                             )} per month`
                           : ""
-                      }.${
-                        formatMoney(
-                          offerResult.result.proratedCreditDollars,
-                          offerResult.result.currency,
-                        )
-                          ? ` The unused part of your ${planName} month (${formatMoney(
-                              offerResult.result.proratedCreditDollars,
-                              offerResult.result.currency,
-                            )}) is credited to your account and applied to your next invoices.`
-                          : ""
-                      } Your chats, files, and settings stay exactly as they are.`}
+                      }. Nothing is charged today. You can keep ${planName} instead anytime before then from Account settings.`}
                 </DialogDescription>
               </DialogHeader>
             </div>
@@ -760,7 +744,7 @@ export const CancelSubscriptionDialog = ({
                   {downgradeOffer && pauseOffer
                     ? "Pick an option. Your chats, files, and settings stay as they are."
                     : downgradeOffer
-                      ? "Your chats, files, and settings stay as they are."
+                      ? "Nothing changes until your renewal. Your chats, files, and settings stay as they are."
                       : "No charges while paused. Your plan comes back automatically with the same price and your saved card."}
                 </DialogDescription>
               </DialogHeader>
@@ -797,9 +781,9 @@ export const CancelSubscriptionDialog = ({
                         ) : null}
                       </span>
                       <span className="mt-1 block text-sm leading-6 text-muted-foreground">
-                        {downgradeCredit
-                          ? `Starts now. The unused part of your ${planName} month (${downgradeCredit}) is credited to your account.`
-                          : `Starts now. The unused part of your ${planName} month is credited to your account.`}
+                        {downgradeEffectiveDate
+                          ? `Keep ${planName} until ${downgradeEffectiveDate}, then renew as ${downgradeTargetName}. Nothing changes today.`
+                          : `Keep ${planName} until your renewal, then switch to ${downgradeTargetName}. Nothing changes today.`}
                       </span>
                     </span>
                   </button>

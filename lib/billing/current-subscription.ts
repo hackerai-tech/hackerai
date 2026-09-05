@@ -21,6 +21,8 @@ export type CurrentSubscriptionContext = {
   status: Stripe.Subscription.Status;
   cancelAtPeriodEnd: boolean;
   itemId?: string;
+  /** Attached Stripe schedule, when a plan change is pending. */
+  scheduleId?: string;
   priceId?: string;
   plan?: string;
   tier?: SubscriptionTier;
@@ -83,6 +85,7 @@ export function toCurrentSubscriptionContext(
     status: subscription.status,
     cancelAtPeriodEnd: subscription.cancel_at_period_end === true,
     itemId: item?.id,
+    scheduleId: stripeObjectId(subscription.schedule ?? undefined) ?? undefined,
     priceId: price?.id,
     plan: price?.lookup_key ?? undefined,
     tier: subscriptionTierFromLookupKey(price?.lookup_key),

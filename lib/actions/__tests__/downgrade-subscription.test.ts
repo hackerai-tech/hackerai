@@ -12,7 +12,9 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 const mockListSubscriptions = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockListPrices = jest.fn();
-const mockCreatePreview = jest.fn();
+const mockCreateSchedule = jest.fn();
+const mockUpdateSchedule = jest.fn();
+const mockReleaseSchedule = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockConvexQuery = jest.fn();
@@ -28,7 +30,11 @@ jest.mock("@/app/api/stripe", () => ({
       update: mockUpdateSubscription,
     },
     prices: { list: mockListPrices },
-    invoices: { createPreview: mockCreatePreview },
+    subscriptionSchedules: {
+      create: mockCreateSchedule,
+      update: mockUpdateSchedule,
+      release: mockReleaseSchedule,
+    },
   },
 }));
 
@@ -139,46 +145,29 @@ describe("downgradeSubscriptionAction", () => {
         },
       ],
     } as never);
-    mockCreatePreview.mockResolvedValue({
-      id: "upcoming_in_1",
-      lines: {
-        has_more: false,
-        data: [
-          {
-            amount: -3150,
-            parent: {
-              subscription_item_details: {
-                proration: true,
-                subscription_item: "si_pp",
-              },
-            },
-          },
-          {
-            amount: -500,
-            parent: {
-              subscription_item_details: {
-                proration: false,
-                subscription_item: "si_pp",
-              },
-            },
-          },
-          {
-            amount: 1312,
-            parent: {
-              subscription_item_details: {
-                proration: true,
-                subscription_item: "si_pp",
-              },
-            },
-          },
-        ],
-      },
+    mockCreateSchedule.mockResolvedValue({
+      id: "sub_sched_1",
+      phases: [
+        {
+          start_date: PERIOD_END_SECONDS - 30 * 86_400,
+          end_date: PERIOD_END_SECONDS,
+          items: [{ price: "price_pro_plus", quantity: 1 }],
+          discounts: [],
+        },
+      ],
     } as never);
-    mockUpdateSubscription.mockResolvedValue({
-      ...proPlusSubscription(),
-      status: "active",
-      pending_update: null,
-      items: { data: [{ id: "si_pp", price: { id: "price_pro" } }] },
+    mockUpdateSchedule.mockResolvedValue({
+      id: "sub_sched_1",
+      phases: [
+        {
+          start_date: PERIOD_END_SECONDS - 30 * 86_400,
+          end_date: PERIOD_END_SECONDS,
+        },
+        {
+          start_date: PERIOD_END_SECONDS,
+          end_date: PERIOD_END_SECONDS + 30 * 86_400,
+        },
+      ],
     } as never);
   });
 
@@ -190,17 +179,17 @@ describe("downgradeSubscriptionAction", () => {
     }
   });
 
-  it("switches Pro+ to Pro immediately with proration and records the retention", async () => {
+  it("schedules Pro+ to Pro at the paid-through date and records the retention", async () => {
     const { default: downgradeSubscriptionAction } =
       await import("../downgrade-subscription");
 
     await expect(downgradeSubscriptionAction(validInput)).resolves.toEqual({
-      downgraded: true,
+      scheduled: true,
+      effectiveAt: PERIOD_END_SECONDS * 1000,
       fromTier: "pro-plus",
       toTier: "pro",
       toPlan: "pro-monthly-plan",
       targetAmountDollars: 25,
-      proratedCreditDollars: 31.5,
       currency: "usd",
     });
 
@@ -209,25 +198,37 @@ describe("downgradeSubscriptionAction", () => {
       active: true,
       limit: 1,
     });
-    expect(mockUpdateSubscription).toHaveBeenCalledWith(
-      "sub_pp",
-      expect.objectContaining({
-        items: [{ id: "si_pp", price: "price_pro", quantity: 1 }],
-        proration_behavior: "always_invoice",
-        payment_behavior: "error_if_incomplete",
-        metadata: expect.objectContaining({
-          checkoutAttemptId: "ca_1",
-          checkoutType: "subscription_change",
-          checkoutSource: "retention_downgrade",
-          hackeraiRetentionDowngradeFromPlan: "pro-plus-monthly-plan",
-        }),
+    expect(mockCreateSchedule).toHaveBeenCalledWith({
+      from_subscription: "sub_pp",
+    });
+    expect(mockUpdateSchedule).toHaveBeenCalledWith("sub_sched_1", {
+      end_behavior: "release",
+      metadata: expect.objectContaining({
+        purpose: "retention_downgrade",
+        fromPlan: "pro-plus-monthly-plan",
+        toPlan: "pro-monthly-plan",
       }),
-      expect.objectContaining({
-        idempotencyKey: expect.stringMatching(
-          /^retention_downgrade:sub_pp:price_pro:\d+$/,
-        ),
-      }),
-    );
+      phases: [
+        {
+          items: [{ price: "price_pro_plus", quantity: 1 }],
+          start_date: PERIOD_END_SECONDS - 30 * 86_400,
+          end_date: PERIOD_END_SECONDS,
+          proration_behavior: "none",
+        },
+        {
+          items: [{ price: "price_pro", quantity: 1 }],
+          end_date: expect.any(Number),
+          proration_behavior: "none",
+          metadata: expect.objectContaining({
+            checkoutAttemptId: "ca_1",
+            checkoutType: "subscription_change",
+            checkoutSource: "retention_downgrade",
+            hackeraiRetentionDowngradeFromPlan: "pro-plus-monthly-plan",
+          }),
+        },
+      ],
+    });
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
     expect(mockConvexMutation).toHaveBeenCalledWith(
       "cancellationReasons.recordRetentionOfferAccepted",
       expect.objectContaining({
@@ -241,20 +242,21 @@ describe("downgradeSubscriptionAction", () => {
         retention_offer: "downgrade",
         from_tier: "pro-plus",
         to_tier: "pro",
+        stripe_subscription_schedule_id: "sub_sched_1",
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
-      PAID_FUNNEL_EVENTS.retentionDowngradeApplied,
+      PAID_FUNNEL_EVENTS.retentionDowngradeScheduled,
       expect.objectContaining({
-        $set: expect.objectContaining({ subscription_tier: "pro" }),
+        effective_at: new Date(PERIOD_END_SECONDS * 1000).toISOString(),
       }),
     );
   });
 
-  it("does not report a downgrade that Stripe left pending", async () => {
-    mockUpdateSubscription.mockResolvedValue({
-      ...proPlusSubscription(),
-      pending_update: { expires_at: 1 },
+  it("replaces an already attached schedule instead of stacking one", async () => {
+    mockReleaseSchedule.mockResolvedValue({ id: "sub_sched_old" } as never);
+    mockListSubscriptions.mockResolvedValue({
+      data: [proPlusSubscription({ schedule: "sub_sched_old" })],
     } as never);
     const { default: downgradeSubscriptionAction } =
       await import("../downgrade-subscription");
@@ -262,13 +264,10 @@ describe("downgradeSubscriptionAction", () => {
     await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
       BILLING_ERRORS.retentionOfferUnavailable,
     );
-    expect(mockConvexMutation).not.toHaveBeenCalledWith(
-      "cancellationReasons.recordRetentionOfferAccepted",
-      expect.anything(),
-    );
-    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
-      PAID_FUNNEL_EVENTS.retentionDowngradeApplied,
-      expect.anything(),
+    expect(mockCreateSchedule).not.toHaveBeenCalled();
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "retention_downgrade_rejected",
+      expect.objectContaining({ reason: "downgrade_already_scheduled" }),
     );
   });
 
@@ -293,23 +292,30 @@ describe("downgradeSubscriptionAction", () => {
     );
   });
 
-  it("still offers the switch when the proration preview fails", async () => {
-    mockCreatePreview.mockRejectedValue(new Error("preview down") as never);
+  it("refuses non-price reasons and a disabled flag", async () => {
     const { default: downgradeSubscriptionAction } =
       await import("../downgrade-subscription");
 
-    const result = await downgradeSubscriptionAction(validInput);
+    await expect(
+      downgradeSubscriptionAction({
+        cancellationReason: {
+          reasonCategory: "hit_usage_limits",
+          reasonSubcategory: "insufficient_included_usage",
+          reasonDetails: "Ran out of usage",
+        },
+      }),
+    ).rejects.toThrow(BILLING_ERRORS.retentionOfferUnavailable);
 
-    expect(result).toMatchObject({ downgraded: true, toTier: "pro" });
-    expect(result).not.toHaveProperty("proratedCreditDollars");
-    expect(mockUpdateSubscription).toHaveBeenCalledTimes(1);
+    mockDowngradeFlag.mockResolvedValue("disabled" as never);
+    await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
+      BILLING_ERRORS.retentionOfferUnavailable,
+    );
+
+    expect(mockCreateSchedule).not.toHaveBeenCalled();
   });
 
-  it("refuses Pro, non-price reasons, repeat offers, and a disabled flag", async () => {
-    const { default: downgradeSubscriptionAction } =
-      await import("../downgrade-subscription");
-
-    mockListSubscriptions.mockResolvedValueOnce({
+  it("refuses Pro, which has no cheaper paid tier", async () => {
+    mockListSubscriptions.mockResolvedValue({
       data: [
         proPlusSubscription({
           items: {
@@ -331,38 +337,16 @@ describe("downgradeSubscriptionAction", () => {
         }),
       ],
     } as never);
+    const { default: downgradeSubscriptionAction } =
+      await import("../downgrade-subscription");
+
     await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
       BILLING_ERRORS.retentionOfferUnavailable,
     );
-
-    await expect(
-      downgradeSubscriptionAction({
-        cancellationReason: {
-          reasonCategory: "hit_usage_limits",
-          reasonSubcategory: "insufficient_included_usage",
-          reasonDetails: "Ran out of usage",
-        },
-      }),
-    ).rejects.toThrow(BILLING_ERRORS.retentionOfferUnavailable);
-
-    mockListSubscriptions.mockResolvedValueOnce({
-      data: [
-        proPlusSubscription({
-          metadata: {
-            hackeraiRetentionDowngradeFromPlan: "ultra-monthly-plan",
-          },
-        }),
-      ],
-    } as never);
-    await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
-      BILLING_ERRORS.retentionOfferUnavailable,
+    expect(mockPostHogWarn).toHaveBeenCalledWith(
+      "retention_downgrade_rejected",
+      expect.objectContaining({ reason: "no_downgrade_target" }),
     );
-
-    mockDowngradeFlag.mockResolvedValueOnce("disabled" as never);
-    await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
-      BILLING_ERRORS.retentionOfferUnavailable,
-    );
-
-    expect(mockUpdateSubscription).not.toHaveBeenCalled();
+    expect(mockCreateSchedule).not.toHaveBeenCalled();
   });
 });

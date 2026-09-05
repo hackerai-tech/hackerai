@@ -31,6 +31,8 @@ export type SubscriptionCancellationStatus = {
   renewalIntervalCount?: number;
   /** Present when the scheduled cancellation is a retention pause. */
   pause?: SubscriptionPauseStatusSummary;
+  /** Present when a cheaper plan is scheduled for the next renewal. */
+  pendingPlanChange?: SubscriptionPendingPlanChange;
 };
 
 export type BillingPortalFlow = "payment_method";
@@ -42,6 +44,8 @@ export type KeepSubscriptionResult = {
   alreadyKept: boolean;
   /** True when keeping the plan also cancelled a scheduled pause. */
   pauseCanceled?: boolean;
+  /** True when keeping the plan cancelled a scheduled downgrade. */
+  planChangeCanceled?: boolean;
 };
 
 export type CancellationReasonInput = {
@@ -85,8 +89,8 @@ export type RetentionDowngradeOffer =
       targetAmountDollars?: number;
       currentAmountDollars?: number;
       currency?: string;
-      /** Credit for the unused part of the current period, applied to future invoices. */
-      proratedCreditDollars?: number;
+      /** When the cheaper plan takes effect: the current paid-through date (ms). */
+      effectiveAt?: number;
     }
   | { eligible: false; reason: DowngradeOfferIneligibilityReason };
 
@@ -103,13 +107,23 @@ export type DowngradeSubscriptionInput = {
 };
 
 export type DowngradeSubscriptionResult = {
-  downgraded: true;
+  scheduled: true;
+  /** When the cheaper plan takes effect (ms). */
+  effectiveAt: number;
   fromTier?: SubscriptionTier;
   toTier: SubscriptionTier;
   toPlan: string;
   targetAmountDollars?: number;
-  proratedCreditDollars?: number;
   currency?: string;
+};
+
+/** A plan change already scheduled on the subscription. */
+export type SubscriptionPendingPlanChange = {
+  targetTier?: SubscriptionTier;
+  targetPlan?: string;
+  targetAmountDollars?: number;
+  currency?: string;
+  effectiveAt: number;
 };
 
 export type PauseSubscriptionInput = {

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
 import {
+  ArrowDownCircle,
   CalendarClock,
   X,
   ChevronDown,
@@ -41,6 +42,7 @@ import {
 } from "@/lib/billing/client";
 import type {
   BillingPortalFlow,
+  DowngradeSubscriptionResult,
   PauseSubscriptionResult,
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
@@ -161,6 +163,16 @@ const AccountTab = () => {
     ? (currentCancellationStatus?.pause ?? null)
     : null;
   const pauseResumeDate = formatCancellationDate(scheduledPause?.resumeAt);
+  const pendingPlanChange =
+    !cancellationScheduled && currentCancellationStatus?.pendingPlanChange
+      ? currentCancellationStatus.pendingPlanChange
+      : null;
+  const pendingPlanChangeDate = formatCancellationDate(
+    pendingPlanChange?.effectiveAt,
+  );
+  const pendingPlanChangeName = getPlanDisplayName(
+    pendingPlanChange?.targetTier,
+  );
   const pausedPlan =
     subscription === "free" &&
     activePause &&
@@ -254,10 +266,27 @@ const AccountTab = () => {
     });
   };
 
+  const handleDowngradeScheduled = (result: DowngradeSubscriptionResult) => {
+    setCancellationStatus({
+      ...(currentCancellationStatus ?? {}),
+      subscription,
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      pendingPlanChange: {
+        targetTier: result.toTier,
+        targetPlan: result.toPlan,
+        targetAmountDollars: result.targetAmountDollars,
+        currency: result.currency,
+        effectiveAt: result.effectiveAt,
+      },
+    });
+  };
+
   const handleKeepPlan = async () => {
     if (isKeepingPlan) return;
 
     const wasPause = Boolean(scheduledPause);
+    const wasPlanChange = Boolean(pendingPlanChange);
     setIsKeepingPlan(true);
     try {
       const result = await keepSubscription();
@@ -268,11 +297,14 @@ const AccountTab = () => {
         cancelAtPeriodEnd: result.cancelAtPeriodEnd,
         currentPeriodEnd: result.currentPeriodEnd,
         pause: undefined,
+        pendingPlanChange: undefined,
       });
       toast.success(
         wasPause
           ? "Pause canceled. Your plan will renew as usual."
-          : "Cancellation removed. Your plan will renew as usual.",
+          : wasPlanChange
+            ? "Plan change canceled. Your current plan will renew as usual."
+            : "Cancellation removed. Your plan will renew as usual.",
       );
     } catch (error) {
       toast.error(
@@ -403,6 +435,32 @@ const AccountTab = () => {
                         </span>
                       </DropdownMenuItem>
                     </>
+                  ) : pendingPlanChange ? (
+                    <>
+                      <DropdownMenuItem disabled>
+                        <ArrowDownCircle className="h-4 w-4" />
+                        <span>{`Switching to ${pendingPlanChangeName}`}</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={handleKeepPlan}
+                        disabled={isKeepingPlan}
+                      >
+                        {isKeepingPlan ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Undo2 className="h-4 w-4" />
+                        )}
+                        <span>Keep current plan</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onClick={handleCancelSubscription}
+                      >
+                        <X className="h-4 w-4" />
+                        <span>Cancel subscription</span>
+                      </DropdownMenuItem>
+                    </>
                   ) : noActiveSubscription ? (
                     <DropdownMenuItem disabled>
                       <CalendarClock className="h-4 w-4" />
@@ -455,6 +513,17 @@ const AccountTab = () => {
             {pauseResumeDate
               ? `Billing pauses after that and resumes automatically on ${pauseResumeDate}.`
               : `Billing pauses after that for ${scheduledPause.months} month${scheduledPause.months === 1 ? "" : "s"}.`}
+          </div>
+        )}
+
+        {pendingPlanChange && (
+          <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {`Switching to ${pendingPlanChangeName}.`}
+            </span>{" "}
+            {pendingPlanChangeDate
+              ? `Your current plan stays active until ${pendingPlanChangeDate}, then renews as ${pendingPlanChangeName}.`
+              : `Your current plan stays active until your renewal, then switches to ${pendingPlanChangeName}.`}
           </div>
         )}
 
@@ -637,6 +706,7 @@ const AccountTab = () => {
         onOpenChange={setShowCancelDialog}
         onCancellationCompleted={handleCancellationCompleted}
         onPauseScheduled={handlePauseScheduled}
+        onDowngradeApplied={handleDowngradeScheduled}
       />
     </div>
   );

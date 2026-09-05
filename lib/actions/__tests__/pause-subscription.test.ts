@@ -19,11 +19,16 @@ const mockPostHogEvent = jest.fn();
 const mockPostHogWarn = jest.fn();
 const mockPostHogError = jest.fn();
 
+const mockReleaseSchedule = jest.fn();
+
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: {
       list: mockListSubscriptions,
       update: mockUpdateSubscription,
+    },
+    subscriptionSchedules: {
+      release: mockReleaseSchedule,
     },
   },
 }));
@@ -221,6 +226,20 @@ describe("pauseSubscriptionAction", () => {
       PAID_FUNNEL_EVENTS.subscriptionPauseScheduled,
       expect.objectContaining({ pause_id: "pause_1" }),
     );
+  });
+
+  it("releases a pending downgrade schedule before scheduling the pause", async () => {
+    mockReleaseSchedule.mockResolvedValue({ id: "sub_sched_1" } as never);
+    mockListSubscriptions.mockResolvedValue({
+      data: [proPlusSubscription({ schedule: "sub_sched_1" })],
+    } as never);
+    const { default: pauseSubscriptionAction } =
+      await import("../pause-subscription");
+
+    await pauseSubscriptionAction(validInput);
+
+    expect(mockReleaseSchedule).toHaveBeenCalledWith("sub_sched_1");
+    expect(mockUpdateSubscription).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsupported durations before touching billing", async () => {

@@ -13,7 +13,6 @@ import {
   computePauseResumeAt,
   evaluateDowngradeOfferEligibility,
   evaluatePauseOfferEligibility,
-  retentionDowngradeFromMetadata,
   type DowngradeOfferEligibility,
   type PauseOfferEligibility,
 } from "@/lib/billing/retention-offers";
@@ -30,8 +29,6 @@ export type DowngradeTargetPrice = {
   lookupKey: string;
   unitAmountDollars?: number;
   currency?: string;
-  /** Prorated credit for the unused part of the current period, in dollars. */
-  proratedCreditDollars?: number;
 };
 
 export type RetentionOfferEvaluation = {
@@ -78,12 +75,10 @@ function priceAmountDollars(price: Stripe.Price): number | undefined {
 }
 
 /**
- * Resolve the Stripe price for the downgrade target and preview the prorated
- * credit. The preview is best effort: the offer still shows without it.
+ * Resolve the Stripe price for the downgrade target. Fails closed for the
+ * downgrade only, so a Stripe error cannot hide the pause offer.
  */
 export async function resolveDowngradeTargetPrice(args: {
-  subscription: CurrentSubscriptionContext;
-  stripeCustomerId: string;
   lookupKey: string;
 }): Promise<DowngradeTargetPrice | undefined> {
   let price: Stripe.Price | undefined;
@@ -95,7 +90,6 @@ export async function resolveDowngradeTargetPrice(args: {
     });
     price = prices.data[0];
   } catch (error) {
-    // Fail closed for the downgrade only; the pause offer must still show.
     phLogger.warn("retention_downgrade_target_price_lookup_failed", {
       lookup_key: args.lookupKey,
       error,
@@ -109,52 +103,12 @@ export async function resolveDowngradeTargetPrice(args: {
     return undefined;
   }
 
-  const target: DowngradeTargetPrice = {
+  return {
     priceId: price.id,
     lookupKey: args.lookupKey,
     unitAmountDollars: priceAmountDollars(price),
     currency: price.currency,
   };
-
-  if (!args.subscription.itemId) return target;
-
-  try {
-    const preview = await stripe.invoices.createPreview({
-      customer: args.stripeCustomerId,
-      subscription: args.subscription.id,
-      subscription_details: {
-        items: [{ id: args.subscription.itemId, price: price.id, quantity: 1 }],
-        proration_behavior: "always_invoice",
-        proration_date: Math.floor(Date.now() / 1000),
-      },
-    });
-    const lines: Stripe.InvoiceLineItem[] = [...preview.lines.data];
-    if (preview.lines.has_more) {
-      for await (const line of stripe.invoices.listLineItems(preview.id, {
-        limit: 100,
-      })) {
-        lines.push(line);
-      }
-    }
-    let credit = 0;
-    for (const line of lines) {
-      const details = line.parent?.subscription_item_details;
-      const isProrationForItem =
-        details?.proration === true &&
-        details.subscription_item === args.subscription.itemId;
-      if (isProrationForItem && line.amount < 0) {
-        credit += Math.abs(line.amount) / 100;
-      }
-    }
-    target.proratedCreditDollars = Math.round(credit * 100) / 100;
-  } catch (error) {
-    phLogger.warn("retention_downgrade_preview_failed", {
-      stripe_subscription_id: args.subscription.id,
-      error,
-    });
-  }
-
-  return target;
 }
 
 /** Shared server-side eligibility check for previewing and accepting offers. */
@@ -196,14 +150,11 @@ export async function evaluateRetentionOffersForUser(args: {
   const downgrade = evaluateDowngradeOfferEligibility({
     ...shared,
     offersEnabled: downgradeFlagState === "enabled",
-    downgradeAlreadyApplied:
-      retentionDowngradeFromMetadata(subscription.metadata) !== null,
+    downgradeAlreadyScheduled: Boolean(subscription.scheduleId),
   });
 
   const downgradeTarget = downgrade.eligible
     ? await resolveDowngradeTargetPrice({
-        subscription,
-        stripeCustomerId: args.stripeCustomerId,
         lookupKey: downgrade.target.lookupKey,
       })
     : undefined;
@@ -263,9 +214,7 @@ export function buildRetentionOffers(
             ...(downgradeTarget.currency && {
               currency: downgradeTarget.currency,
             }),
-            ...(downgradeTarget.proratedCreditDollars !== undefined && {
-              proratedCreditDollars: downgradeTarget.proratedCreditDollars,
-            }),
+            ...(periodEndMs && { effectiveAt: periodEndMs }),
           }
         : {
             eligible: false,
@@ -300,7 +249,6 @@ export function retentionOfferEvaluationProperties(
         : "no_downgrade_target"
       : downgrade.reason,
     downgrade_target_plan: downgradeTarget?.lookupKey,
-    downgrade_prorated_credit_dollars: downgradeTarget?.proratedCreditDollars,
     stripe_subscription_id: subscription.id,
     stripe_price_id: subscription.priceId,
   };

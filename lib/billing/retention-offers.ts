@@ -60,7 +60,7 @@ const DOWNGRADE_REASONS: ReadonlySet<CancellationReasonCategory> = new Set([
 
 export const RETENTION_DOWNGRADE_METADATA = {
   fromPlan: "hackeraiRetentionDowngradeFromPlan",
-  appliedAt: "hackeraiRetentionDowngradeAppliedAt",
+  scheduledAt: "hackeraiRetentionDowngradeScheduledAt",
 } as const;
 
 export const RETENTION_DOWNGRADE_CHECKOUT_SOURCE = "retention_downgrade";
@@ -79,7 +79,7 @@ export type DowngradeOfferIneligibilityReason =
   | "cancellation_already_scheduled"
   | "reason_not_applicable"
   | "multi_seat"
-  | "downgrade_already_applied";
+  | "downgrade_already_scheduled";
 
 export type DowngradeOfferEligibilityInput = {
   offersEnabled: boolean;
@@ -90,7 +90,8 @@ export type DowngradeOfferEligibilityInput = {
   cancelAtPeriodEnd: boolean;
   quantity?: number | null;
   reasonCategory: CancellationReasonCategory;
-  downgradeAlreadyApplied: boolean;
+  /** A Stripe schedule is already attached (a pending plan change). */
+  downgradeAlreadyScheduled: boolean;
 };
 
 export type DowngradeOfferEligibility =
@@ -128,32 +129,35 @@ export function evaluateDowngradeOfferEligibility(
   if (!DOWNGRADE_REASONS.has(input.reasonCategory)) {
     return { eligible: false, reason: "reason_not_applicable" };
   }
-  if (input.downgradeAlreadyApplied) {
-    return { eligible: false, reason: "downgrade_already_applied" };
+  if (input.downgradeAlreadyScheduled) {
+    return { eligible: false, reason: "downgrade_already_scheduled" };
   }
   return { eligible: true, target };
 }
 
 export function retentionDowngradeFromMetadata(
   metadata: Stripe.Metadata | null | undefined,
-): { fromPlan: string; appliedAtMs?: number } | null {
+): { fromPlan: string; scheduledAtMs?: number } | null {
   const fromPlan = metadata?.[RETENTION_DOWNGRADE_METADATA.fromPlan];
   if (!fromPlan) return null;
-  const appliedAt = Number(metadata?.[RETENTION_DOWNGRADE_METADATA.appliedAt]);
+  const scheduledAt = Number(
+    metadata?.[RETENTION_DOWNGRADE_METADATA.scheduledAt],
+  );
   return {
     fromPlan,
-    ...(Number.isFinite(appliedAt) &&
-      appliedAt > 0 && { appliedAtMs: appliedAt }),
+    ...(Number.isFinite(scheduledAt) &&
+      scheduledAt > 0 && { scheduledAtMs: scheduledAt }),
   };
 }
 
+/** Applied to the subscription by the schedule when the cheaper phase starts. */
 export function retentionDowngradeMetadata(args: {
   fromPlan: string;
-  appliedAtMs: number;
+  scheduledAtMs: number;
 }): Stripe.MetadataParam {
   return {
     [RETENTION_DOWNGRADE_METADATA.fromPlan]: args.fromPlan,
-    [RETENTION_DOWNGRADE_METADATA.appliedAt]: String(args.appliedAtMs),
+    [RETENTION_DOWNGRADE_METADATA.scheduledAt]: String(args.scheduledAtMs),
   };
 }
 

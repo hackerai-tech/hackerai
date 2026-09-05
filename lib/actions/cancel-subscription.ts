@@ -14,6 +14,10 @@ import {
   type CancellationReasonInputLike,
 } from "@/lib/billing/cancellation-reason-input";
 import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  releaseSubscriptionSchedule,
+  subscriptionScheduleId,
+} from "@/lib/billing/subscription-schedule";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 import {
@@ -54,6 +58,7 @@ type SubscriptionContext = {
   billingIntervalCount?: number;
   currentPeriodEnd?: number;
   cancelAtPeriodEnd: boolean;
+  scheduleId?: string;
   pricingExperiment?: ProMonthlyPricingExperimentAssignment;
 };
 
@@ -138,6 +143,7 @@ async function getActiveSubscriptionContext(
       : undefined,
     currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
+    scheduleId: subscriptionScheduleId(currentSubscription),
     pricingExperiment: proMonthlyPricingAssignmentFromMetadata(
       currentSubscription.metadata,
       price?.lookup_key,
@@ -258,6 +264,12 @@ export default async function cancelSubscriptionAction(
 
   let updatedSubscription: Stripe.Subscription;
   try {
+    // A pending retention downgrade would block the cancellation update.
+    await releaseSubscriptionSchedule(subscriptionContext.scheduleId, {
+      ...billingFields,
+      stripe_subscription_id: subscriptionContext.id,
+      reason: "cancellation",
+    });
     const cancellationDetails = {
       feedback: stripeCancellationFeedback(cancellationReason.reasonCategory),
       comment: cancellationReason.reasonDetails,

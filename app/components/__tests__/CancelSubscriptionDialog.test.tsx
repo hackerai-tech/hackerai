@@ -60,7 +60,7 @@ function retentionOffers(
           targetAmountDollars: 25,
           currentAmountDollars: 60,
           currency: "usd",
-          proratedCreditDollars: 31.5,
+          effectiveAt: PAUSE_EFFECTIVE_AT,
         }
       : { eligible: false, reason: "no_downgrade_target" },
     offersEnabled: true,
@@ -293,12 +293,12 @@ describe("CancelSubscriptionDialog", () => {
       retentionOffers({ downgrade: true }) as never,
     );
     mockDowngradeSubscription.mockResolvedValue({
-      downgraded: true,
+      scheduled: true,
+      effectiveAt: PAUSE_EFFECTIVE_AT,
       fromTier: "pro-plus",
       toTier: "pro",
       toPlan: "pro-monthly-plan",
       targetAmountDollars: 25,
-      proratedCreditDollars: 31.5,
       currency: "usd",
     } as never);
     const onDowngradeApplied = jest.fn();
@@ -325,7 +325,9 @@ describe("CancelSubscriptionDialog", () => {
     expect(
       screen.getByRole("radio", { name: /switch to pro/i }),
     ).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText(/\$31\.50\) is credited/)).toBeVisible();
+    expect(
+      screen.getByText(/Keep Pro until .*, then renew as Pro\./),
+    ).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Switch to Pro" }));
 
@@ -338,14 +340,15 @@ describe("CancelSubscriptionDialog", () => {
     });
     expect(mockPauseSubscription).not.toHaveBeenCalled();
     expect(
-      await screen.findByRole("heading", { name: "You're on Pro" }),
+      await screen.findByRole("heading", { name: "Switching to Pro" }),
     ).toBeVisible();
+    expect(screen.getByText(/Nothing is charged today/)).toBeVisible();
     expect(onDowngradeApplied).toHaveBeenCalledWith(
       expect.objectContaining({ toTier: "pro" }),
     );
 
     await user.click(screen.getByRole("button", { name: "Done" }));
-    expect(mockReloadWithEntitlementRefresh).toHaveBeenCalledTimes(1);
+    expect(mockReloadWithEntitlementRefresh).not.toHaveBeenCalled();
   });
 
   it("lets the user pick the pause instead of the downgrade", async () => {
