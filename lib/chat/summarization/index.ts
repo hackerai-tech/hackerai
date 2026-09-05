@@ -15,7 +15,7 @@ import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
-import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
+import { isCloudSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import type { ProviderPromptPressure } from "./provider-pressure";
@@ -804,7 +804,7 @@ const saveTranscriptToSandbox = async (
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const transcriptId = uuidv4();
-      const dir = isE2BSandbox(sandbox)
+      const dir = isCloudSandbox(sandbox)
         ? "/home/user/agent-transcripts"
         : "/tmp/agent-transcripts";
       const path = `${dir}/${transcriptId}.json`;
@@ -812,14 +812,14 @@ const saveTranscriptToSandbox = async (
       // E2B needs an explicit mkdir since its files.write doesn't create parents.
       // CentrifugoSandbox's files.write already calls ensureDirectory internally
       // with proper Windows path/shell handling, so skip the raw mkdir for it.
-      if (isE2BSandbox(sandbox)) {
+      if (isCloudSandbox(sandbox)) {
         await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
       }
 
       // Save as structured JSON — model messages (mid-stream, with separate
       // tool-call/tool-result parts) when available, otherwise UI messages
       const content = JSON.stringify(modelMessages ?? messages, null, 2);
-      if (isE2BSandbox(sandbox)) {
+      if (isCloudSandbox(sandbox)) {
         // E2B uploads via HTTP — no shell argument limits, string is fine
         await sandbox.files.write(path, content);
       } else {

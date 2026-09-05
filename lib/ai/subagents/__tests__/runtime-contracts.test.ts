@@ -84,12 +84,35 @@ describe("security validation subagent runtime contracts", () => {
       "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
     );
     const child = read("trigger/subagent.ts");
-    expect(child).toContain("triggerRegion: payload.triggerRegion");
+    expect(child).toContain("triggerRegion,");
+    expect(child).toContain("actualRegion: ctx.run.region");
+    expectMarkerOrder(
+      child,
+      "await assertSubagentRunRegion(",
+      "setConvexUrl(payload.convexUrl)",
+    );
     expectMarkerOrder(
       child,
       "setConvexUrl(payload.convexUrl)",
       "getSubagent(payload.subagentId)",
     );
+    expectMarkerOrder(
+      child,
+      "await assertSubagentRunRegion(",
+      "getSubagent(payload.subagentId)",
+    );
+    const regionGuard = child.slice(
+      child.indexOf("await assertSubagentRunRegion("),
+      child.indexOf("const row = await getSubagent(payload.subagentId)"),
+    );
+    expectMarkerOrder(
+      regionGuard,
+      "setConvexUrl(payload.convexUrl)",
+      "await finishSubagent({",
+    );
+    expect(regionGuard).toContain("subagentId: payload.subagentId");
+    expect(regionGuard).toContain("triggerRunId: ctx.run.id");
+    expect(regionGuard).toContain("...failure");
   });
 
   it("blocks parent completion until a claimed result reaches a successful synthesis step", () => {

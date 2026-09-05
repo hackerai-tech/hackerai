@@ -89,7 +89,12 @@ To use the agent locally:
 2. In the Trigger.dev dashboard → your project → **Environment Variables**,
    add the env vars the task needs to run (these live on the worker, not on
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
-   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, one cloud sandbox provider, plus any keys you use
+   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, and `E2B_API_KEY`. Add
+   both `MIOSA_API_KEY` and `MIOSA_TEMPLATE_ID=miosa-sandbox-docker` only for
+   the MIOSA rollout or explicit MIOSA testing. The Miosa adapter starts the
+   digest-pinned HackerAI Kali image inside that Docker-enabled sandbox; E2B
+   remains the cloud fallback.
+   Add any other keys you use
    (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, S3, etc.).
 3. Start the worker in a third terminal:
 

@@ -1,7 +1,15 @@
-import { getCloudSandboxProvider } from "../cloud-sandbox-provider";
+import {
+  getCloudSandboxProvider,
+  MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY,
+  MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG,
+  normalizeCloudSandboxFlagEnvironment,
+  selectCloudSandboxProvider,
+} from "../cloud-sandbox-provider";
 
 describe("cloud sandbox provider selection", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+  const originalMiosaKey = process.env.MIOSA_API_KEY;
+  const originalMiosaTemplate = process.env.MIOSA_TEMPLATE_ID;
 
   afterEach(() => {
     if (originalProvider === undefined) {
@@ -9,6 +17,22 @@ describe("cloud sandbox provider selection", () => {
     } else {
       process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
     }
+    if (originalMiosaKey === undefined) delete process.env.MIOSA_API_KEY;
+    else process.env.MIOSA_API_KEY = originalMiosaKey;
+    if (originalMiosaTemplate === undefined) {
+      delete process.env.MIOSA_TEMPLATE_ID;
+    } else {
+      process.env.MIOSA_TEMPLATE_ID = originalMiosaTemplate;
+    }
+  });
+
+  it.each([
+    ["PREVIEW", "preview"],
+    ["PRODUCTION", "production"],
+    ["STAGING", "staging"],
+    ["DEVELOPMENT", "development"],
+  ])("normalizes the %s execution environment", (environment, expected) => {
+    expect(normalizeCloudSandboxFlagEnvironment(environment)).toBe(expected);
   });
 
   it("defaults to E2B", () => {
@@ -20,6 +44,136 @@ describe("cloud sandbox provider selection", () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "e2b";
     expect(getCloudSandboxProvider()).toBe("e2b");
   });
+
+  it("honors an explicit MIOSA provider", () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+    expect(getCloudSandboxProvider()).toBe("miosa");
+  });
+
+  it("keeps E2B in Europe even when MIOSA is explicitly configured", async () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-eu",
+        environment: "PREVIEW",
+        triggerRegion: "eu-central-1",
+      }),
+    ).resolves.toEqual({
+      provider: "e2b",
+      reason: "miosa_europe_region",
+    });
+  });
+
+  it("does not evaluate the MIOSA rollout for Europe", async () => {
+    delete process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.MIOSA_API_KEY = "msk_test";
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-kali-promoted";
+    const evaluateFlags = jest.fn(async () => ({
+      getFlag: () => true,
+    }));
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-eu",
+        environment: "PREVIEW",
+        triggerRegion: "eu-central-1",
+        featureFlagClient: { evaluateFlags },
+      }),
+    ).resolves.toEqual({
+      provider: "e2b",
+      reason: "miosa_europe_region",
+    });
+    expect(evaluateFlags).not.toHaveBeenCalled();
+  });
+
+  it("keeps E2B when request geography is unknown", async () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-unknown-region",
+        environment: "PREVIEW",
+        triggerRegion: "us-east-1",
+        requestRegionClass: "unknown",
+      }),
+    ).resolves.toEqual({
+      provider: "e2b",
+      reason: "miosa_region_unavailable",
+    });
+  });
+
+  it("keeps E2B when legacy callers provide no region evidence", async () => {
+    process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-without-region-evidence",
+        environment: "PREVIEW",
+      }),
+    ).resolves.toEqual({
+      provider: "e2b",
+      reason: "miosa_region_unavailable",
+    });
+  });
+
+  it("selects MIOSA only for an enabled rollout assignment with complete configuration", async () => {
+    delete process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.MIOSA_API_KEY = "msk_test";
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-kali-promoted";
+    const getFlag = jest.fn(() => true);
+    const evaluateFlags = jest.fn(async () => ({ getFlag }));
+
+    await expect(
+      selectCloudSandboxProvider({
+        userId: "user-1",
+        environment: "PREVIEW",
+        subscription: "pro",
+        triggerRegion: "us-east-1",
+        requestRegionClass: "outside_europe",
+        featureFlagClient: { evaluateFlags },
+      }),
+    ).resolves.toEqual({ provider: "miosa", reason: "miosa_rollout" });
+    expect(evaluateFlags).toHaveBeenCalledWith("user-1", {
+      flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
+      personProperties: {
+        [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]: "preview",
+        subscription_tier: "pro",
+      },
+    });
+    expect(getFlag).toHaveBeenCalledWith(MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG);
+  });
+
+  it.each([
+    ["API key", undefined, "hackerai-kali-promoted"],
+    ["template ID", "msk_test", undefined],
+  ])(
+    "keeps E2B when the MIOSA %s is unavailable",
+    async (_missingField, apiKey, templateId) => {
+      delete process.env.CLOUD_SANDBOX_PROVIDER;
+      if (apiKey === undefined) delete process.env.MIOSA_API_KEY;
+      else process.env.MIOSA_API_KEY = apiKey;
+      if (templateId === undefined) delete process.env.MIOSA_TEMPLATE_ID;
+      else process.env.MIOSA_TEMPLATE_ID = templateId;
+      const evaluateFlags = jest.fn(async () => ({
+        getFlag: () => true,
+      }));
+
+      await expect(
+        selectCloudSandboxProvider({
+          userId: "user-1",
+          environment: "PREVIEW",
+          triggerRegion: "us-east-1",
+          requestRegionClass: "outside_europe",
+          featureFlagClient: { evaluateFlags },
+        }),
+      ).resolves.toEqual({
+        provider: "e2b",
+        reason: "miosa_configuration_unavailable",
+      });
+      expect(evaluateFlags).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed for an unsupported provider", () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "unknown-provider";

@@ -167,6 +167,8 @@ export default defineSchema({
     share_id: v.optional(v.string()),
     share_date: v.optional(v.number()),
     pinned_at: v.optional(v.number()),
+    // Persisted user preference (`e2b` means managed cloud), not the runtime
+    // telemetry `sandbox_type`. Cloud provider selection happens per run.
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
     project_id: v.optional(v.id("projects")),

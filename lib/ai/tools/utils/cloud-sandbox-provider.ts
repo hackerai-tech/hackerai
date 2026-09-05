@@ -1,19 +1,118 @@
-export type CloudSandboxProvider = "e2b";
+import {
+  EUROPE_TRIGGER_RUN_REGION,
+  type RequestRegionClass,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
+import type { SubscriptionTier } from "@/types";
+
+export type CloudSandboxProvider = "miosa" | "e2b";
+export type CloudSandboxSelectionReason =
+  | "configured"
+  | "miosa_rollout"
+  | "miosa_rollout_control"
+  | "miosa_configuration_unavailable"
+  | "miosa_region_unavailable"
+  | "miosa_europe_region";
+
+export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
+  "miosa_cloud_sandbox_rollout_v1";
+export const MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY = "hackerai_environment";
 
 /**
- * Resolve the configured cloud sandbox provider, defaulting to E2B and
- * rejecting unsupported values instead of silently selecting a provider.
+ * Resolve an explicit provider override. Without one, production request
+ * routing is decided by {@link selectCloudSandboxProvider}.
  */
 export function getCloudSandboxProvider(): CloudSandboxProvider {
   const configured = process.env.CLOUD_SANDBOX_PROVIDER?.trim();
-  if (configured === "e2b") {
+  if (configured === "e2b" || configured === "miosa") {
     return configured;
   }
   if (configured) {
     throw new Error(
-      `Unsupported CLOUD_SANDBOX_PROVIDER: ${configured}. Expected e2b.`,
+      `Unsupported CLOUD_SANDBOX_PROVIDER: ${configured}. Expected miosa or e2b.`,
     );
   }
 
   return "e2b";
+}
+
+type FeatureFlagClient = {
+  evaluateFlags: (
+    distinctId: string,
+    options?: {
+      flagKeys?: string[];
+      personProperties?: Record<string, string>;
+    },
+  ) => Promise<{ getFlag: (flagKey: string) => unknown }>;
+};
+
+export function normalizeCloudSandboxFlagEnvironment(
+  environment: string,
+): string {
+  return environment.trim().toLowerCase();
+}
+
+/**
+ * Selects the request's preferred cloud provider. Callers supply their
+ * execution environment explicitly so durable workers do not infer deployment
+ * context from NODE_ENV.
+ */
+export async function selectCloudSandboxProvider(options: {
+  userId: string;
+  environment: string;
+  subscription?: SubscriptionTier;
+  triggerRegion?: TriggerRunRegion;
+  requestRegionClass?: RequestRegionClass;
+  featureFlagClient?: FeatureFlagClient | null;
+}): Promise<{
+  provider: CloudSandboxProvider;
+  reason: CloudSandboxSelectionReason;
+}> {
+  if (
+    options.triggerRegion === EUROPE_TRIGGER_RUN_REGION ||
+    options.requestRegionClass === "europe"
+  ) {
+    return { provider: "e2b", reason: "miosa_europe_region" };
+  }
+
+  if (
+    options.requestRegionClass === "unknown" ||
+    (!options.requestRegionClass && !options.triggerRegion)
+  ) {
+    return { provider: "e2b", reason: "miosa_region_unavailable" };
+  }
+
+  if (process.env.CLOUD_SANDBOX_PROVIDER) {
+    return { provider: getCloudSandboxProvider(), reason: "configured" };
+  }
+
+  if (
+    !process.env.MIOSA_API_KEY?.trim() ||
+    !process.env.MIOSA_TEMPLATE_ID?.trim()
+  ) {
+    return {
+      provider: "e2b",
+      reason: "miosa_configuration_unavailable",
+    };
+  }
+
+  try {
+    const flags = await options.featureFlagClient?.evaluateFlags(
+      options.userId,
+      {
+        flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
+        personProperties: {
+          [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]:
+            normalizeCloudSandboxFlagEnvironment(options.environment),
+          subscription_tier: options.subscription ?? "unknown",
+        },
+      },
+    );
+    const enabled = flags?.getFlag(MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG) === true;
+    return enabled
+      ? { provider: "miosa", reason: "miosa_rollout" }
+      : { provider: "e2b", reason: "miosa_rollout_control" };
+  } catch {
+    return { provider: "e2b", reason: "miosa_rollout_control" };
+  }
 }

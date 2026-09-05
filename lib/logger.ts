@@ -167,9 +167,9 @@ export interface ChatWideEvent {
 
   // Sandbox execution
   sandbox?: {
-    type: "e2b" | "desktop" | "remote-connection";
+    type: "cloud" | "desktop" | "remote-connection";
     name?: string;
-    provider?: "e2b";
+    provider?: "miosa" | "e2b";
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done

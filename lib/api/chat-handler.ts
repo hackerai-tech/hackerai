@@ -62,6 +62,8 @@ import {
 } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
+import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   captureAgentBudgetAbort,
   captureAgentCompletionAnalytics,
@@ -321,6 +323,8 @@ export const createChatHandler = () => {
         releaseFreeRunLock = lock.release;
       }
       const userLocation = geolocation(req);
+      const { triggerRegion: executionRegion, requestRegionClass } =
+        getRegionalExecutionContextForVercelRequest(req, userLocation);
 
       // Add user context to logger (only region, not full location for privacy)
       chatLogger.setUser({
@@ -501,6 +505,20 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
+      const cloudSandboxSelection =
+        isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
+          ? await selectCloudSandboxProvider({
+              userId,
+              subscription,
+              environment: process.env.VERCEL_ENV ?? "development",
+              triggerRegion: executionRegion,
+              requestRegionClass,
+              featureFlagClient: posthog,
+            })
+          : ({
+              provider: "e2b",
+              reason: "miosa_rollout_control",
+            } as const);
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {
@@ -765,6 +783,11 @@ export const createChatHandler = () => {
               projectContext.workingDirectory,
               undefined,
               auxiliaryVision,
+              {
+                cloudSandboxProvider: cloudSandboxSelection.provider,
+                cloudSandboxSelectionReason: cloudSandboxSelection.reason,
+                triggerRegion: executionRegion,
+              },
             );
 
             // Helper to send file metadata via stream for resumable stream clients
@@ -920,6 +943,9 @@ export const createChatHandler = () => {
               selectedModel,
               userCustomization,
               sandboxContext,
+              "full_access",
+              false,
+              cloudSandboxSelection.provider,
             );
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
@@ -1045,7 +1071,7 @@ export const createChatHandler = () => {
                 // Wait for it so its provider cost is included exactly once.
                 await titlePromise;
                 // Add cloud sandbox session cost (duration-based).
-                const sandboxUsage = getSandboxSessionUsage();
+                const sandboxUsage = await getSandboxSessionUsage();
                 const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;

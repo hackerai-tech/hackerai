@@ -3,6 +3,30 @@ import type { S3StorageRegion } from "@/lib/constants/s3";
 
 export type TriggerRunRegion = S3StorageRegion;
 
+export const DEFAULT_TRIGGER_RUN_REGION: TriggerRunRegion = "us-east-1";
+export const EUROPE_TRIGGER_RUN_REGION: TriggerRunRegion = "eu-central-1";
+
+export type RequestRegionClass = "europe" | "outside_europe" | "unknown";
+
+export type RegionalExecutionContext = {
+  triggerRegion: TriggerRunRegion;
+  requestRegionClass: RequestRegionClass;
+};
+
+type TriggerEnvironmentType =
+  "DEVELOPMENT" | "PREVIEW" | "PRODUCTION" | "STAGING";
+
+export class TriggerRegionMismatchError extends Error {
+  readonly code = "TRIGGER_REGION_MISMATCH";
+
+  constructor(requestedRegion: TriggerRunRegion, actualRegion?: string) {
+    super(
+      `Trigger run region mismatch: required ${requestedRegion}, received ${actualRegion ?? "unknown"}`,
+    );
+    this.name = "TriggerRegionMismatchError";
+  }
+}
+
 type VercelGeoLocation = Pick<
   Geo,
   "country" | "region" | "latitude" | "longitude"
@@ -16,6 +40,66 @@ type Coordinates = {
 type UsTriggerRunRegion = Exclude<TriggerRunRegion, "eu-central-1">;
 
 const NORTH_AMERICAN_COUNTRY_CODES = new Set(["CA", "MX", "US"]);
+const EUROPEAN_COUNTRY_CODES = new Set([
+  "AD",
+  "AL",
+  "AM",
+  "AT",
+  "AX",
+  "AZ",
+  "BA",
+  "BE",
+  "BG",
+  "BY",
+  "CH",
+  "CY",
+  "CZ",
+  "DE",
+  "DK",
+  "EE",
+  "ES",
+  "FI",
+  "FO",
+  "FR",
+  "GB",
+  "GE",
+  "GG",
+  "GI",
+  "GR",
+  "HR",
+  "HU",
+  "IE",
+  "IM",
+  "IS",
+  "IT",
+  "JE",
+  "KZ",
+  "LI",
+  "LT",
+  "LU",
+  "LV",
+  "MC",
+  "MD",
+  "ME",
+  "MK",
+  "MT",
+  "NL",
+  "NO",
+  "PL",
+  "PT",
+  "RO",
+  "RS",
+  "RU",
+  "SE",
+  "SI",
+  "SJ",
+  "SK",
+  "SM",
+  "TR",
+  "UA",
+  "VA",
+  "XK",
+]);
 
 const VERCEL_REGION_TO_US_TRIGGER_REGION = new Map<string, UsTriggerRunRegion>([
   ["CLE1", "us-east-1"],
@@ -117,6 +201,15 @@ function isNorthAmericanRequest(
   );
 }
 
+function isEuropeanRequest(
+  continent: string | null,
+  country: string | null,
+): boolean {
+  return (
+    continent === "EU" || (!!country && EUROPEAN_COUNTRY_CODES.has(country))
+  );
+}
+
 export function getTriggerRegionForVercelRequest(
   request: {
     headers: Headers;
@@ -126,11 +219,11 @@ export function getTriggerRegionForVercelRequest(
   const continent = normalizeVercelValue(
     request.headers.get("x-vercel-ip-continent"),
   );
-  if (continent === "EU") return "eu-central-1";
-
   const country = normalizeVercelValue(
     userLocation?.country ?? request.headers.get("x-vercel-ip-country"),
   );
+  if (isEuropeanRequest(continent, country)) return EUROPE_TRIGGER_RUN_REGION;
+
   if (!isNorthAmericanRequest(continent, country)) {
     return undefined;
   }
@@ -145,4 +238,65 @@ export function getTriggerRegionForVercelRequest(
   return vercelRegion
     ? VERCEL_REGION_TO_US_TRIGGER_REGION.get(vercelRegion)
     : undefined;
+}
+
+export function getExecutionRegionForVercelRequest(
+  request: Parameters<typeof getTriggerRegionForVercelRequest>[0],
+  userLocation?: VercelGeoLocation,
+): TriggerRunRegion {
+  return (
+    getTriggerRegionForVercelRequest(request, userLocation) ??
+    DEFAULT_TRIGGER_RUN_REGION
+  );
+}
+
+export function getRequestRegionClassForVercelRequest(
+  request: Parameters<typeof getTriggerRegionForVercelRequest>[0],
+  userLocation?: VercelGeoLocation,
+): RequestRegionClass {
+  const continent = normalizeVercelValue(
+    request.headers.get("x-vercel-ip-continent"),
+  );
+  const country = normalizeVercelValue(
+    userLocation?.country ?? request.headers.get("x-vercel-ip-country"),
+  );
+
+  if (isEuropeanRequest(continent, country)) return "europe";
+  if (continent || country) return "outside_europe";
+  return "unknown";
+}
+
+export function getRegionalExecutionContextForVercelRequest(
+  request: Parameters<typeof getTriggerRegionForVercelRequest>[0],
+  userLocation?: VercelGeoLocation,
+): RegionalExecutionContext {
+  return {
+    triggerRegion: getExecutionRegionForVercelRequest(request, userLocation),
+    requestRegionClass: getRequestRegionClassForVercelRequest(
+      request,
+      userLocation,
+    ),
+  };
+}
+
+/**
+ * Trigger.dev ignores per-run region selection in local development. Deployed
+ * runs must confirm actual placement before using the requested region for
+ * storage or sandbox policy, including MIOSA's non-European eligibility.
+ */
+export function assertTriggerRunRegion(options: {
+  requestedRegion: TriggerRunRegion;
+  actualRegion?: string;
+  environmentType: TriggerEnvironmentType;
+}): void {
+  if (options.environmentType === "DEVELOPMENT") {
+    return;
+  }
+
+  if (options.actualRegion !== options.requestedRegion) {
+    throw new TriggerRegionMismatchError(
+      options.requestedRegion,
+      options.actualRegion,
+    );
+  }
 }

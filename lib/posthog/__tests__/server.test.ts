@@ -2,11 +2,14 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockCapture = jest.fn();
 const mockCaptureException = jest.fn();
+const mockGetFlag = jest.fn();
 const mockGetFeatureFlag = jest.fn();
+const mockEvaluateFlags = jest.fn();
 const mockPostHogClient = jest.fn(() => ({
   capture: mockCapture,
   captureException: mockCaptureException,
   getFeatureFlag: mockGetFeatureFlag,
+  evaluateFlags: mockEvaluateFlags,
 }));
 const mockEmitPostHogLog = jest.fn(() => true);
 
@@ -31,22 +34,25 @@ describe("phLogger", () => {
   beforeEach(() => {
     mockCapture.mockClear();
     mockCaptureException.mockClear();
+    mockGetFlag.mockReset();
     mockGetFeatureFlag.mockReset();
+    mockEvaluateFlags.mockReset();
     mockPostHogClient.mockClear();
     mockEmitPostHogLog.mockClear();
   });
 
   it("evaluates boolean flags for the authenticated distinct id and fails closed", async () => {
-    mockGetFeatureFlag.mockResolvedValueOnce(true);
+    mockGetFlag.mockReturnValueOnce(true);
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
     await expect(
       getPostHogFeatureFlagForUser("agent-subagents", "user_123"),
     ).resolves.toBe(true);
-    expect(mockGetFeatureFlag).toHaveBeenCalledWith(
-      "agent-subagents",
-      "user_123",
-    );
+    expect(mockEvaluateFlags).toHaveBeenCalledWith("user_123", {
+      flagKeys: ["agent-subagents"],
+    });
+    expect(mockGetFlag).toHaveBeenCalledWith("agent-subagents");
 
-    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
       getPostHogFeatureFlagForUser("agent-subagents", "user_123"),
     ).resolves.toBe(false);

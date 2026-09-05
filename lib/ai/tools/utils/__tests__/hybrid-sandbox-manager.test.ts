@@ -30,6 +30,7 @@ import {
 import {
   assertAgentApprovalSandboxIdentity,
   assertLocalSandboxFallbackAllowed,
+  getAgentApprovalSandboxIdentity,
   getSandboxFallbackErrorMessage,
   getSandboxFallbackPromptReminder,
   getSandboxWithFallbackGuard,
@@ -436,6 +437,38 @@ describe("HybridSandboxManager prompt-time fallback", () => {
         expectedSandboxIdentity: "connection:desktop-a",
       }),
     ).toThrow("selected sandbox changed after approval");
+  });
+
+  it("keeps MIOSA approvals isolated from E2B", () => {
+    const miosa = { sandboxKind: "miosa" as const } as never;
+    const e2b = { commands: {} } as never;
+
+    expect(getAgentApprovalSandboxIdentity(miosa)).toBe("miosa");
+    expect(getAgentApprovalSandboxIdentity(e2b)).toBe("e2b");
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: miosa,
+        expectedSandboxIdentity: "e2b",
+      }),
+    ).toThrow("selected sandbox changed after approval");
+  });
+
+  it("advertises interactive PTY after a local preference falls back to MIOSA", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { provider: "miosa" },
+    );
+
+    await expect(manager.supportsInteractivePty()).resolves.toBe(true);
   });
 
   it("blocks Desktop-local attachment preparation when Desktop falls back", () => {

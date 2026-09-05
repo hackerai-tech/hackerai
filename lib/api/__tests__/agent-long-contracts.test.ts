@@ -1820,7 +1820,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       stepIndexArgIdx,
     );
     const sandboxCostIdx = agentStreamRunnerSrc.indexOf(
-      "ctx.getSandboxCostDollars?.() ?? 0",
+      "await ctx.getSandboxCostDollars?.()",
       upstreamCostArgIdx,
     );
     const triggerRunCostIdx = agentStreamRunnerSrc.indexOf(
@@ -2160,7 +2160,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const userLocation = geolocation(req)",
     );
     const routingIdx = routeSrc.indexOf(
-      "getTriggerRegionForVercelRequest(req, userLocation)",
+      "getRegionalExecutionContextForVercelRequest",
       userLocationIdx,
     );
     const triggerOptionsIdx = routeSrc.indexOf(
@@ -2200,6 +2200,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(triggerIdx).toBeGreaterThan(sessionRegionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
+    expect(routeSrc).toContain("requestRegionClass");
   });
 
   test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
@@ -2225,21 +2226,76 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
 
-  test("agent-long uses E2B for tools and prompt", () => {
-    const providerIdx = taskSrc.indexOf(
-      'const cloudSandboxProvider = "e2b" as const;',
-    );
+  test("agent-long uses the selected cloud provider for tools and prompt", () => {
+    const providerIdx = taskSrc.indexOf("const cloudSandboxSelection =");
     const toolsIdx = taskSrc.indexOf("createTools(", providerIdx);
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
 
     expect(providerIdx).toBeGreaterThan(-1);
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "selectCloudSandboxProvider({",
+    );
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "environment: ctx.environment.type",
+    );
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain("triggerRegion");
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "requestRegionClass",
+    );
     expect(toolsIdx).toBeGreaterThan(providerIdx);
     expect(promptIdx).toBeGreaterThan(toolsIdx);
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
       "cloudSandboxProvider",
     );
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "cloudSandboxSelectionReason: cloudSandboxSelection.reason",
+    );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
+    );
+  });
+
+  test("agent-long validates European Trigger placement before processing payload data", () => {
+    const runIdx = taskSrc.indexOf(
+      "run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal })",
+    );
+    const regionAssertionIdx = taskSrc.indexOf(
+      "assertTriggerRunRegion({",
+      runIdx,
+    );
+    const convexSelectionIdx = taskSrc.indexOf(
+      "if (payload.convexUrl)",
+      runIdx,
+    );
+
+    expect(runIdx).toBeGreaterThan(-1);
+    expect(regionAssertionIdx).toBeGreaterThan(runIdx);
+    expect(convexSelectionIdx).toBeGreaterThan(regionAssertionIdx);
+    expect(taskSrc.slice(regionAssertionIdx, convexSelectionIdx)).toContain(
+      "actualRegion: ctx.run.region",
+    );
+  });
+
+  test("direct chat carries its ingress execution region into sandbox routing", () => {
+    const regionIdx = chatHandlerSrc.indexOf(
+      "getRegionalExecutionContextForVercelRequest",
+    );
+    const providerIdx = chatHandlerSrc.indexOf(
+      "const cloudSandboxSelection =",
+      regionIdx,
+    );
+    const toolsIdx = chatHandlerSrc.indexOf("createTools(", providerIdx);
+
+    expect(regionIdx).toBeGreaterThan(-1);
+    expect(providerIdx).toBeGreaterThan(regionIdx);
+    expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
+      "triggerRegion: executionRegion",
+    );
+    expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
+      "requestRegionClass",
+    );
+    expect(chatHandlerSrc.slice(toolsIdx, toolsIdx + 1_500)).toContain(
+      "triggerRegion: executionRegion",
     );
   });
 
