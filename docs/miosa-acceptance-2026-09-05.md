@@ -16,7 +16,9 @@ Neither existing sandbox was deleted or replaced during this follow-up.
   `sandboxes.getOrCreate`, using its existing canonical name.
 - SDK error: `MiosaError`, code `SANDBOX_BOOT_FAILED`.
 - Exact message: `Sandbox 8129585f-2b7c-46f3-bb44-ea7aad9f967d entered terminal state 'error' while waiting for readiness`.
-- No request ID or HTTP status was attached to this SDK readiness exception.
+- No request ID was attached. The installed SDK constructs this readiness error
+  locally with `status=502` and `retryable=false`; this is not proof of a
+  server HTTP 502 response.
 - Metadata read at `2026-09-05T21:34:33.421Z`: state `error`, ready `false`;
   metadata request ID `GNKKTuSmW2FtcKkAEnME`, operation ID
   `b41ea907-5219-43b6-bddc-f5f607d3352b`. These IDs identify the returned sandbox
