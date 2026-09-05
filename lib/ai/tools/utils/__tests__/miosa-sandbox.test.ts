@@ -149,6 +149,32 @@ describe("MIOSA sandbox adapter", () => {
     expect(onStderr.mock.calls).toEqual([["warn\n"]]);
   });
 
+  it("waits for the abortable process group and preserves its late output and exit status", async () => {
+    const sdk = createSdkSandbox();
+    sdk.exec.stream.mockImplementation(async function* () {
+      yield { type: "stdout", data: "before\n" };
+      await Promise.resolve();
+      yield { type: "stdout", data: "after\n" };
+      yield { type: "stderr", data: "late-warning\n" };
+      yield { type: "exit", exit_code: 7 };
+    } as never);
+    const signal = new AbortController().signal;
+    await expect(
+      new MiosaSandbox(sdk as never).commands.run("sleep 2; exit 7", {
+        signal,
+      }),
+    ).resolves.toEqual({
+      stdout: "before\nafter\n",
+      stderr: "late-warning\n",
+      exitCode: 7,
+    });
+    expect(sdk.exec.stream).toHaveBeenCalledWith(
+      expect.stringContaining("setsid --wait bash -lc"),
+      { signal },
+    );
+    expect(sdk.exec.run).not.toHaveBeenCalled();
+  });
+
   it("destroys every persistent sandbox belonging to the requested user", async () => {
     const firstDestroy = jest.fn().mockResolvedValue(undefined);
     const secondDestroy = jest.fn().mockResolvedValue(undefined);
@@ -278,7 +304,7 @@ describe("MIOSA sandbox adapter", () => {
     await expect(command).rejects.toMatchObject({ name: "AbortError" });
     expect(sdkSandbox.exec.stream).toHaveBeenCalledWith(
       expect.stringMatching(
-        /docker exec[\s\S]*hackerai-agent[\s\S]*setsid bash -lc/,
+        /docker exec[\s\S]*hackerai-agent[\s\S]*setsid --wait bash -lc/,
       ),
       { signal: controller.signal },
     );

@@ -2,6 +2,15 @@
 
 ## Result
 
+Follow-up at 16:39–16:44 UTC: with the user's approval, the old paused record
+was preserved by renaming it (its ID and slug are unchanged), and a fresh
+workspace was created under the canonical per-user name. The initial Preview
+Agent acceptance passed on MIOSA, but a reconnect test exposed premature
+completion in HackerAI's abortable command wrapper. The `setsid --wait` fix
+preserves delayed output and the real exit status; see the follow-up below.
+
+### Earlier acceptance result
+
 Fresh sandboxes pass live acceptance through HackerAI's upgraded adapter. The
 preview user's older paused workspace remains blocked by
 `SANDBOX_NOT_RESTORABLE` (details below). E2B fallback and the Europe exclusion
@@ -152,6 +161,42 @@ Paste-ready support request:
 > recovered. Do not delete the existing workspace without approval. Please also
 > provide a supported replacement/migration procedure that preserves the old
 > record and makes idempotent per-user acquisition recover safely.
+
+## Preview replacement and abortable-stream follow-up
+
+- Old record: `109fefeb-978a-4458-8ea6-f31368f1dd95`, still paused. Preserved
+  name: `hackerai-849c4d7c0265fbd71711f90e-v2-preserved-20260905`; slug
+  `109fefeb` unchanged. No old data was deleted or migrated.
+- Replacement: `8129585f-2b7c-46f3-bb44-ea7aad9f967d`, canonical name
+  `hackerai-849c4d7c0265fbd71711f90e-v2`, tools ready at 16:41:13 UTC.
+  This is intentionally retained as the user's persistent Preview workspace.
+- Preview chat: `5ab2b804-20bb-4f4b-9271-2d06ae16d25d`, deployment
+  `hackerai-2za9ckd2w-hackerai.vercel.app`, Trigger worker `20260905.4`,
+  verified Preview Convex URL `https://dusty-kiwi-899.convex.cloud`.
+- Run `run_06g74siahml0ap7vdhhq1hqne1` completed successfully. Final log span
+  `b2751c515eb8fb89` reports `sandbox.provider=miosa`, `sandbox.type=cloud`,
+  boot reuse 1,979 ms. Tools, file create/read/delete and interactive PTY passed.
+  Reload preserved the result. Test file deletion was independently verified.
+- Reconnect run `run_06g74sp9op53ddupba071eo1e1` exposed missing final stdout.
+  Direct adapter reproduction passed three times without an AbortSignal and
+  failed three times with a non-aborted AbortSignal: the late stdout disappeared
+  and completion incorrectly reported exit 0.
+- Cause: `setsid` can fork when launched as a process-group leader inside Docker.
+  Without `--wait`, its parent exits before the wrapped command completes.
+  Agent foreground commands always pass a signal and therefore use this wrapper.
+- Fix: `setsid --wait` retains process-group cancellation while waiting for the
+  child and forwarding its exit status. Three live repetitions after the fix
+  preserved both stdout markers, delayed stderr and exit 7. The acceptance script
+  now explicitly tests a non-aborted signal with delayed output and nonzero exit.
+- E2B fallback, European routing and environment settings remain unchanged.
+  PostHog event-level absence of fallback has not been independently queried.
+- Full post-fix live matrix passed on disposable sandbox
+  `48c0d72b-6a91-4573-9f4f-337b6f93146d` (16:44:32–16:46:14 UTC), including
+  abortable delayed output, cancellation, PTY, files, localhost scan, reconnect,
+  background termination, usage, port exposure and pause/resume. Deletion was
+  verified. Request ID `GNJ6fJISEp4Md2IBp-9D`; operation ID
+  `5a46d636-9e73-4799-9849-6fec4827c4e6`. Targeted tests: 4 suites / 71 tests;
+  TypeScript and formatting checks passed.
 
 ## Reproduce
 

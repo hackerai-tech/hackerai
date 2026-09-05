@@ -199,8 +199,11 @@ export class MiosaSandbox {
       const stderr: string[] = [];
       let exitCode: number | null = null;
       const processIdPath = `/tmp/hackerai-foreground-${randomUUID()}.pid`;
+      // setsid may fork when Docker makes it a process-group leader. Wait for
+      // that child so exec does not report success before its final output or
+      // lose the command's actual exit status.
       const streamedCommand = options.signal
-        ? `setsid bash -lc ${shellQuote(
+        ? `setsid --wait bash -lc ${shellQuote(
             `echo $$ > ${shellQuote(processIdPath)}; bash -lc ${shellQuote(command)}; status=$?; rm -f -- ${shellQuote(processIdPath)}; exit $status`,
           )}`
         : command;

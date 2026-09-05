@@ -127,6 +127,29 @@ for (let attempt = 1; attempt <= attempts; attempt++) {
       assert.equal(stderr.join(""), r.stderr);
       return { stdoutChunks: stdout.length, stderrChunks: stderr.length };
     });
+    await check("abortable_stream_waits_for_child_exit", async () => {
+      const stdout: string[] = [],
+        stderr: string[] = [];
+      const started = Date.now();
+      const r = await sandbox.commands.run(
+        "printf 'before\\n'; sleep 2; printf 'after\\n'; printf 'late-warning\\n' >&2; exit 7",
+        {
+          // Agent foreground commands always carry a signal, even when the
+          // user never cancels. Exercise that process-group wrapper too.
+          signal: new AbortController().signal,
+          timeoutMs: 10000,
+          onStdout: (s) => stdout.push(s),
+          onStderr: (s) => stderr.push(s),
+        },
+      );
+      assert.equal(r.exitCode, 7);
+      assert.equal(r.stdout, "before\nafter\n");
+      assert.equal(r.stderr, "late-warning\n");
+      assert.equal(stdout.join(""), r.stdout);
+      assert.equal(stderr.join(""), r.stderr);
+      assert.ok(Date.now() - started >= 2000, "returned before child exited");
+      return { stdoutChunks: stdout.length, stderrChunks: stderr.length };
+    });
     await check("files_container_namespace", async () => {
       const content = "snow 雪, quote ', trailing\n\n";
       for (const path of [
