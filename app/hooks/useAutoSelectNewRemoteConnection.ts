@@ -68,7 +68,7 @@ interface UseAutoSelectNewRemoteConnectionArgs {
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
   subscription: SubscriptionTier;
-  subscriptionResolved: boolean;
+  freeSubscriptionResolved: boolean;
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
   selectedModel: SelectedModel;
@@ -82,7 +82,7 @@ export function useAutoSelectNewRemoteConnection({
   chatMode,
   setChatMode,
   subscription,
-  subscriptionResolved,
+  freeSubscriptionResolved,
   sandboxPreference,
   setSandboxPreference,
   selectedModel,
@@ -95,7 +95,7 @@ export function useAutoSelectNewRemoteConnection({
       }
 
       if (
-        subscriptionResolved &&
+        freeSubscriptionResolved &&
         subscription === "free" &&
         selectedModel !== "auto"
       ) {
@@ -119,7 +119,7 @@ export function useAutoSelectNewRemoteConnection({
       setSandboxPreference,
       setSelectedModel,
       subscription,
-      subscriptionResolved,
+      freeSubscriptionResolved,
     ],
   );
 

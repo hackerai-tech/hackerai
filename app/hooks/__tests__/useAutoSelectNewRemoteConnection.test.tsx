@@ -29,7 +29,7 @@ function makeProps() {
     chatMode: "ask" as const,
     setChatMode: jest.fn(),
     subscription: "free" as const,
-    subscriptionResolved: true,
+    freeSubscriptionResolved: true,
     sandboxPreference: "e2b",
     setSandboxPreference: jest.fn(),
     selectedModel: "hackerai-pro" as const,
@@ -113,7 +113,7 @@ describe("useAutoSelectNewRemoteConnection", () => {
     const props = {
       ...makeProps(),
       subscription: "free" as const,
-      subscriptionResolved: false,
+      freeSubscriptionResolved: false,
       selectedModel: "hackerai-pro" as const,
     };
     const { rerender } = renderHook(

@@ -525,6 +525,17 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       entitlementApiResolvedUserId === user?.id) &&
     !entitlementRefreshRequested &&
     !automaticEntitlementRefreshPending;
+  const entitlementRefreshFailure = entitlementRefreshFailureRef.current;
+  const tokenFreeAutomaticRefreshExhausted =
+    subscriptionFromEntitlements === "free" &&
+    entitlementRefreshFailure?.userId === user?.id &&
+    (entitlementRefreshFailure?.count ?? 0) >
+      ENTITLEMENT_REFRESH_RETRY_DELAYS_MS.length;
+  const freeSubscriptionResolved =
+    subscriptionResolved &&
+    (!automaticEntitlementRefreshNeeded ||
+      entitlementApiResolvedUserId === user?.id ||
+      tokenFreeAutomaticRefreshExhausted);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -709,7 +720,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     chatMode: accessibleChatMode,
     setChatMode,
     subscription: paidAgentSubscription,
-    subscriptionResolved,
+    freeSubscriptionResolved,
     sandboxPreference,
     setSandboxPreference,
     selectedModel,
