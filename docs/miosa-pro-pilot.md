@@ -18,6 +18,9 @@ creation and short pause/resume tests is insufficient to clear this regression.
   a workspace has terminated. Read E2B state directly, including all templates.
 - Do not delete, pause, migrate, or reset a workspace to make a user eligible.
 - Retain E2B fallback and existing region, authorization, and paid-plan gates.
+- Deployed parent/subagent runs must confirm actual Trigger placement matches
+  the requested region before content loading and provider selection. Missing
+  or mismatched placement fails closed, including requests for US execution.
 
 ## How it works
 

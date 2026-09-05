@@ -280,19 +280,16 @@ export function getRegionalExecutionContextForVercelRequest(
 }
 
 /**
- * Trigger.dev ignores per-run region selection in local development. For a
- * deployed European run, however, continuing outside the requested region
- * would cross the residency boundary before any sandbox policy could help.
+ * Trigger.dev ignores per-run region selection in local development. Deployed
+ * runs must confirm actual placement before using the requested region for
+ * storage or sandbox policy, including MIOSA's non-European eligibility.
  */
 export function assertTriggerRunRegion(options: {
   requestedRegion: TriggerRunRegion;
   actualRegion?: string;
   environmentType: TriggerEnvironmentType;
 }): void {
-  if (
-    options.environmentType === "DEVELOPMENT" ||
-    options.requestedRegion !== EUROPE_TRIGGER_RUN_REGION
-  ) {
+  if (options.environmentType === "DEVELOPMENT") {
     return;
   }
 

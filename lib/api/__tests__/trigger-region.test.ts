@@ -203,6 +203,38 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).toThrow("required eu-central-1, received unknown");
   });
 
+  test.each(["us-east-1", "us-west-2"] as const)(
+    "validates actual placement for deployed %s runs before provider selection",
+    (requestedRegion) => {
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion,
+          actualRegion: requestedRegion,
+          environmentType: "PREVIEW",
+        }),
+      ).not.toThrow();
+      for (const actualRegion of ["eu-central-1", "unknown", undefined]) {
+        expect(() =>
+          assertTriggerRunRegion({
+            requestedRegion,
+            actualRegion,
+            environmentType: "PRODUCTION",
+          }),
+        ).toThrow(expect.objectContaining({ code: "TRIGGER_REGION_MISMATCH" }));
+      }
+    },
+  );
+
+  test("does not silently substitute another US storage region", () => {
+    expect(() =>
+      assertTriggerRunRegion({
+        requestedRegion: "us-west-2",
+        actualRegion: "us-east-1",
+        environmentType: "PREVIEW",
+      }),
+    ).toThrow("required us-west-2, received us-east-1");
+  });
+
   test("allows local Trigger development where region selection is unavailable", () => {
     expect(() =>
       assertTriggerRunRegion({
