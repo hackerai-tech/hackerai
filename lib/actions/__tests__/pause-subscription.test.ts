@@ -57,6 +57,8 @@ jest.mock("@/convex/_generated/api", () => ({
 
 jest.mock("@/lib/billing/retention-offers.server", () => ({
   isPauseOfferEnabledForUser: mockIsPauseOfferEnabledForUser,
+  getPauseOfferFlagState: async (userId: string) =>
+    (await mockIsPauseOfferEnabledForUser(userId)) ? "enabled" : "disabled",
 }));
 
 jest.mock("@/lib/posthog/server", () => ({

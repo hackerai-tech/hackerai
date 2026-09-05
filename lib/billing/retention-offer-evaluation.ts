@@ -11,12 +11,16 @@ import {
   evaluatePauseOfferEligibility,
   type PauseOfferEligibility,
 } from "@/lib/billing/retention-offers";
-import { isPauseOfferEnabledForUser } from "@/lib/billing/retention-offers.server";
+import {
+  getPauseOfferFlagState,
+  type PauseOfferFlagState,
+} from "@/lib/billing/retention-offers.server";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
 
 export type RetentionOfferEvaluation = {
   offersEnabled: boolean;
+  flagState: PauseOfferFlagState;
   pause: PauseOfferEligibility;
   subscription: CurrentSubscriptionContext;
   lastPauseRequestedAtMs?: number;
@@ -58,7 +62,8 @@ export async function evaluateRetentionOffersForUser(args: {
   const subscription =
     args.subscription ??
     (await getCurrentSubscriptionContext(args.stripeCustomerId));
-  const offersEnabled = await isPauseOfferEnabledForUser(args.userId);
+  const flagState = await getPauseOfferFlagState(args.userId);
+  const offersEnabled = flagState === "enabled";
   const lastPauseRequestedAtMs = offersEnabled
     ? await lastPauseRequestedAt(args.userId)
     : undefined;
@@ -76,7 +81,34 @@ export async function evaluateRetentionOffersForUser(args: {
     lastPauseRequestedAtMs,
   });
 
-  return { offersEnabled, pause, subscription, lastPauseRequestedAtMs };
+  return {
+    offersEnabled,
+    flagState,
+    pause,
+    subscription,
+    lastPauseRequestedAtMs,
+  };
+}
+
+/** Privacy-safe analytics properties describing an offer evaluation. */
+export function retentionOfferEvaluationProperties(
+  evaluation: RetentionOfferEvaluation,
+  reasonCategory: CancellationReasonCategory,
+) {
+  const { pause, subscription } = evaluation;
+  return {
+    subscription_tier: subscription.tier,
+    plan: subscription.plan,
+    stripe_price_lookup_key: subscription.plan,
+    billing_interval: subscription.billingInterval,
+    subscription_status: subscription.status,
+    reason_category: reasonCategory,
+    pause_offer_flag_state: evaluation.flagState,
+    pause_offered: pause.eligible,
+    pause_ineligibility_reason: pause.eligible ? undefined : pause.reason,
+    stripe_subscription_id: subscription.id,
+    stripe_price_id: subscription.priceId,
+  };
 }
 
 export function buildRetentionOffers(
