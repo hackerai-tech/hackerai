@@ -962,8 +962,8 @@ export function buildProviderOptions(
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
-  // Free Ask is intentionally fast/non-reasoning even when a caller supplies
-  // a reasoning override. Its provider mapping must remain compatible with it.
+  // Free Ask keeps mandatory reasoning low even when a caller supplies a
+  // different reasoning override.
   const isFreeAsk = mode === "ask" && modelName === "ask-model-free";
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
@@ -1027,7 +1027,7 @@ export function buildProviderOptions(
   return {
     openrouter: {
       ...(!usesDefaultGlmFlashAgentReasoning && {
-        reasoning: isFreeAsk ? { enabled: false } : reasoning,
+        reasoning: isFreeAsk ? { enabled: true, effort: "low" } : reasoning,
       }),
       ...(options.hasPdfAttachments && isDeepSeekV4
         ? {
