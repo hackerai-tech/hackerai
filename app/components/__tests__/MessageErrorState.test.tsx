@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import { getPaidDailyFreeAllowanceCtaText } from "@/lib/limit-pressure";
+import { resetExtraUsageResumeRetryGuardForTests } from "@/lib/chat/extra-usage-resume-retry";
 
 let mockSubscription: "free" | "pro" = "pro";
 const mockSetSelectedModel = jest.fn();
@@ -51,6 +52,7 @@ jest.mock("convex/react", () => ({
 const { TestWrapper } = require("../testUtils");
 const { MessageErrorState } = require("../MessageErrorState");
 const {
+  captureAuthenticatedEvent,
   capturePaidDailyFreeAllowanceClick,
   capturePaidDailyFreeAllowanceImpression,
 } = require("@/lib/analytics/client");
@@ -59,6 +61,8 @@ const { openSettingsDialog } = require("@/lib/utils/settings-dialog");
 describe("MessageErrorState", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    window.sessionStorage.clear();
+    resetExtraUsageResumeRetryGuardForTests();
     mockSubscription = "pro";
     mockConvexAction.mockResolvedValue({
       hasPaymentMethod: true,
@@ -327,6 +331,47 @@ describe("MessageErrorState", () => {
 
     expect(onRetry).toHaveBeenCalledTimes(1);
     expect(window.location.search).not.toContain("extra-usage-resume");
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "extra_usage_resume_retry",
+      expect.objectContaining({ source: "extra-usage-resume", retried: true }),
+    );
+  });
+
+  it("does not retry again when the resume flag reappears after a failed retry", () => {
+    const onRetry = jest.fn();
+    const renderWithFlag = () => {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        "/c/chat_1?extra-usage-resume=true",
+      );
+      return render(
+        <TestWrapper>
+          <MessageErrorState
+            error={
+              new ChatSDKError("rate_limit:chat", "Limit reached", {
+                capReason: "monthly_exhausted",
+              })
+            }
+            onRetry={onRetry}
+          />
+        </TestWrapper>,
+      );
+    };
+
+    renderWithFlag().unmount();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+
+    renderWithFlag();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(window.location.search).not.toContain("extra-usage-resume");
+    expect(captureAuthenticatedEvent).toHaveBeenLastCalledWith(
+      "extra_usage_resume_retry",
+      expect.objectContaining({
+        retried: false,
+        skipped_reason: "already_retried",
+      }),
+    );
   });
 
   it("offers the daily allowance for a structured Agent stream error", () => {

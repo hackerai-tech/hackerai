@@ -39,6 +39,7 @@ import {
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
 import type { RetryOptions } from "../hooks/useChatHandlers";
+import { decideExtraUsageResumeRetry } from "@/lib/chat/extra-usage-resume-retry";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 interface MessageErrorStateProps {
@@ -197,23 +198,31 @@ export const MessageErrorState = ({
       ),
     );
 
+  // Retry the stopped task once after returning from an extra-usage purchase
+  // or payment update. The decision is guarded per chat so a flag that comes
+  // back on the URL after a failed retry cannot fire the retry in a loop.
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const shouldResume =
-      url.searchParams.get("extra-usage-resume") === "true" ||
-      url.searchParams.get("extra-usage-payment-retry") === "true";
+    let storage: Storage | null = null;
+    try {
+      storage = window.sessionStorage;
+    } catch {
+      storage = null;
+    }
+    const decision = decideExtraUsageResumeRetry({
+      href: window.location.href,
+      storage,
+    });
+    if (!decision.flagged) return;
 
-    if (!shouldResume) return;
-
-    url.searchParams.delete("extra-usage-resume");
-    url.searchParams.delete("extra-usage-payment-retry");
-    window.history.replaceState(
-      window.history.state,
-      "",
-      url.pathname + url.search + url.hash,
-    );
-    onRetry();
-  }, [onRetry]);
+    window.history.replaceState(window.history.state, "", decision.nextUrl);
+    captureAuthenticatedEvent("extra_usage_resume_retry", {
+      source: decision.source,
+      retried: decision.retry,
+      ...(decision.retry ? {} : { skipped_reason: decision.reason }),
+      cap_reason: capReason,
+    });
+    if (decision.retry) onRetry();
+  }, [onRetry, capReason]);
 
   const handlePurchaseCredits = async (amountDollars: number) => {
     setIsPurchasing(true);
