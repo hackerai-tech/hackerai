@@ -40,36 +40,32 @@ describe("processChatMessages authorization metadata", () => {
     process.env.OPENAI_API_KEY = originalOpenAiApiKey;
   });
 
-  it("returns the authorization decision without changing provider-ready UI messages", async () => {
-    mockModerationsCreate.mockResolvedValue({
-      results: [
-        {
-          categories: { illicit: true },
-          category_scores: { illicit: 0.5 },
-        },
-      ],
-    });
-    const messages = [
-      makeMessage("Verifica la sicurezza della mia API autorizzata"),
-    ];
-    const snapshot = JSON.parse(JSON.stringify(messages));
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "always authorizes %s requests without calling moderation",
+    async (subscription) => {
+      const messages = [
+        makeMessage("Verifica la sicurezza della mia API autorizzata"),
+      ];
+      const snapshot = JSON.parse(JSON.stringify(messages));
 
-    const result = await processChatMessages({
-      messages,
-      mode: "ask",
-      userId: "user-1",
-      subscription: "pro",
-    });
+      const result = await processChatMessages({
+        messages,
+        mode: "ask",
+        userId: "user-1",
+        subscription,
+      });
 
-    expect(result.platformAuthorized).toBe(true);
-    expect(result.processedMessages).toEqual(snapshot);
-    expect(messages).toEqual(snapshot);
-    expect(JSON.stringify(result.processedMessages)).not.toContain(
-      "<platform_authorization>",
-    );
-  });
+      expect(result.platformAuthorized).toBe(true);
+      expect(mockModerationsCreate).not.toHaveBeenCalled();
+      expect(result.processedMessages).toEqual(snapshot);
+      expect(messages).toEqual(snapshot);
+      expect(JSON.stringify(result.processedMessages)).not.toContain(
+        "<platform_authorization>",
+      );
+    },
+  );
 
-  it("returns no provider authorization when moderation does not allow it", async () => {
+  it("keeps free-user authorization gated by moderation", async () => {
     mockModerationsCreate.mockResolvedValue({
       results: [
         {
@@ -83,12 +79,34 @@ describe("processChatMessages authorization metadata", () => {
       messages: [makeMessage("Explain this ordinary application behavior")],
       mode: "agent",
       userId: "user-1",
-      subscription: "pro",
+      subscription: "free",
     });
 
     expect(result.platformAuthorized).toBe(false);
+    expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(result.processedMessages)).not.toContain(
       "<platform_authorization>",
     );
+  });
+
+  it("keeps moderation-approved authorization for free users", async () => {
+    mockModerationsCreate.mockResolvedValue({
+      results: [
+        {
+          categories: { illicit: true },
+          category_scores: { illicit: 0.5 },
+        },
+      ],
+    });
+
+    const result = await processChatMessages({
+      messages: [makeMessage("Test my authorized API for an auth bypass")],
+      mode: "agent",
+      userId: "user-1",
+      subscription: "free",
+    });
+
+    expect(result.platformAuthorized).toBe(true);
+    expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
   });
 });
