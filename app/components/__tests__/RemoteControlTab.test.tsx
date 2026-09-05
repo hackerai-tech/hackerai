@@ -16,25 +16,9 @@ type MockConnection = {
 };
 
 let mockConnections: MockConnection[] | undefined;
-let mockChatMode: "ask" | "agent";
-let mockSubscription: "free" | "pro";
-let mockSandboxPreference: string;
-let mockSelectedModel: "auto" | "hackerai-standard" | "hackerai-pro";
-
 const mockGetToken = jest.fn<() => Promise<{ token: string }>>();
 const mockRegenerateToken = jest.fn<() => Promise<{ token: string }>>();
 const mockWriteText = jest.fn<(text: string) => Promise<void>>();
-const mockSetChatMode = jest.fn((mode: "ask" | "agent") => {
-  mockChatMode = mode;
-});
-const mockSetSandboxPreference = jest.fn((preference: string) => {
-  mockSandboxPreference = preference;
-});
-const mockSetSelectedModel = jest.fn(
-  (model: "auto" | "hackerai-standard" | "hackerai-pro") => {
-    mockSelectedModel = model;
-  },
-);
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
@@ -53,13 +37,6 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
-    chatMode: mockChatMode,
-    setChatMode: mockSetChatMode,
-    subscription: mockSubscription,
-    sandboxPreference: mockSandboxPreference,
-    setSandboxPreference: mockSetSandboxPreference,
-    selectedModel: mockSelectedModel,
-    setSelectedModel: mockSetSelectedModel,
     localConnections: mockConnections,
   }),
 }));
@@ -107,10 +84,6 @@ describe("RemoteControlTab", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockConnections = [];
-    mockChatMode = "ask";
-    mockSubscription = "free";
-    mockSandboxPreference = "e2b";
-    mockSelectedModel = "hackerai-pro";
     mockGetToken.mockResolvedValue({ token: "test-token" });
     mockRegenerateToken.mockResolvedValue({ token: "regenerated-token" });
     mockWriteText.mockResolvedValue(undefined);
@@ -120,32 +93,25 @@ describe("RemoteControlTab", () => {
     });
   });
 
-  it("selects agent mode with the new local connection after an empty baseline", async () => {
+  it("hides setup when a new local connection appears", async () => {
     const { rerender } = render(<RemoteControlTab />);
 
-    expect(mockSetChatMode).not.toHaveBeenCalled();
     expect(screen.getByText("No active connections")).toBeInTheDocument();
 
     mockConnections = [remoteConnection];
     rerender(<RemoteControlTab />);
 
-    await waitFor(() => {
-      expect(mockSetSandboxPreference).toHaveBeenCalledWith("conn-remote-1");
-    });
-    expect(mockSetSelectedModel).toHaveBeenCalledWith("auto");
-    expect(mockSetChatMode).toHaveBeenCalledWith("agent");
-    expect(toast.success).toHaveBeenCalledWith(
-      "Local sandbox connected. Switched to Agent mode.",
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Connect another machine" }),
+      ).toBeInTheDocument(),
     );
-    expect(
-      screen.getByRole("button", { name: "Connect another machine" }),
-    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Copy connect command" }),
     ).not.toBeInTheDocument();
   });
 
-  it("does not switch modes when an existing connection appears on initial query load", async () => {
+  it("treats existing connections as the initial UI baseline", async () => {
     mockConnections = undefined;
     const { rerender } = render(<RemoteControlTab />);
 
@@ -155,10 +121,7 @@ describe("RemoteControlTab", () => {
     await waitFor(() => {
       expect(screen.getByText("devbox")).toBeInTheDocument();
     });
-    expect(mockSetSandboxPreference).not.toHaveBeenCalled();
-    expect(mockSetSelectedModel).not.toHaveBeenCalled();
-    expect(mockSetChatMode).not.toHaveBeenCalled();
-    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.queryByText("Quick Start")).not.toBeInTheDocument();
   });
 
   it("shows a desktop bridge as an active connection", () => {

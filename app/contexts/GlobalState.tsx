@@ -60,6 +60,7 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
+import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -701,6 +702,18 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     },
     [agentOnlyActive],
   );
+
+  useAutoSelectNewRemoteConnection({
+    connections: localConnections,
+    enabled: Boolean(user),
+    chatMode: accessibleChatMode,
+    setChatMode,
+    subscription: paidAgentSubscription,
+    sandboxPreference,
+    setSandboxPreference,
+    selectedModel,
+    setSelectedModel: setSelectedModelState,
+  });
 
   useEffect(() => {
     if (!agentOnlyActive) return;
