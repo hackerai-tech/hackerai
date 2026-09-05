@@ -229,17 +229,12 @@ const getDefaultSandboxEnvironmentSection = (
   const systemEnvironment =
     provider === "miosa"
       ? `- OS: isolated Linux sandbox (with internet access)
-- Compute: provider-assigned. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
+- Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: privileged sandbox user`
       : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;
-  const installedTools =
-    provider === "miosa"
-      ? `Tool availability:
-- The MIOSA template provides general Python and Node command execution. Do not assume a security CLI or browser package is installed; probe with \`command -v <tool>\` before relying on it.
-- Install a missing package only when it is necessary for the user's task and safe to install in the isolated sandbox.`
-      : `${PREINSTALLED_PENTESTING_TOOLS}
+  const installedTools = `${PREINSTALLED_PENTESTING_TOOLS}
 
 ${SANDBOX_TOOL_RECIPES_SECTION}
 

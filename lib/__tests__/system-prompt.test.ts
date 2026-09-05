@@ -202,7 +202,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("Golang 1.24.2");
   });
 
-  it("does not claim E2B-only tools for MIOSA rollout sandboxes", async () => {
+  it("describes the HackerAI tools container for MIOSA sandboxes", async () => {
     const prompt = await systemPrompt(
       "user_123",
       "agent",
@@ -215,14 +215,9 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "miosa",
     );
 
-    expect(prompt).toContain(
-      "The MIOSA template provides general Python and Node command execution.",
-    );
-    expect(prompt).toContain("probe with `command -v <tool>`");
-    expect(prompt).not.toContain("Pre-installed Pentesting Tools:");
-    expect(prompt).not.toContain(
-      "agent-browser is installed in the cloud sandbox",
-    );
+    expect(prompt).toContain("4 vCPU");
+    expect(prompt).toContain("Pre-installed Pentesting Tools:");
+    expect(prompt).toContain("agent-browser is installed in the cloud sandbox");
   });
 
   it("keeps all three Agent approval mode contracts distinct", async () => {

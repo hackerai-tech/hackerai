@@ -792,6 +792,16 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
+              if (isMiosaSandbox(sandboxInstance)) {
+                commandAbortController.abort();
+                if (!runPromise) return false;
+                try {
+                  await runPromise;
+                  return false;
+                } catch (error) {
+                  return error instanceof Error && error.name === "AbortError";
+                }
+              }
               if (isCentrifugoSandbox(sandboxInstance)) {
                 if (cancelCentrifugoCommand) {
                   return cancelCentrifugoCommand();
@@ -1173,6 +1183,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 : isMiosaSandbox(sandboxInstance)
                   ? {
                       ...commonOptions,
+                      signal: is_background
+                        ? abortSignal
+                        : commandAbortController.signal,
                       ...(agentBrowserEnv && { envVars: agentBrowserEnv }),
                     }
                   : commonOptions;

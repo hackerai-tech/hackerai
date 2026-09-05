@@ -926,7 +926,61 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     expect(browserCall?.[1]).toMatchObject({
       envVars: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      cwd: "/home/user",
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  test("confirms MIOSA request cancellation using the execution signal", async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const start = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let executionSignal: AbortSignal | undefined;
+    const sandbox = {
+      sandboxKind: "miosa" as const,
+      commands: {
+        run: jest.fn(
+          async (command: string, opts?: { signal?: AbortSignal }) => {
+            if (command === "echo ready")
+              return { stdout: "ready\n", stderr: "", exitCode: 0 };
+            executionSignal = opts?.signal;
+            started();
+            return new Promise<never>((_, reject) =>
+              opts?.signal?.addEventListener(
+                "abort",
+                () => reject(new DOMException("Aborted", "AbortError")),
+                { once: true },
+              ),
+            );
+          },
+        ),
+      },
+    };
+    const { context } = makeContext({ sandbox });
+    const pending = runTool(
+      createRunTerminalCmd(context),
+      {
+        command: "sleep 60",
+        brief: "wait",
+        is_background: false,
+        interactive: false,
+        timeout: 30,
+      },
+      controller.signal,
+    ) as Promise<{ result: { exitCode: number; error: string } }>;
+    await start;
+    controller.abort();
+    const result = await pending;
+    expect(executionSignal?.aborted).toBe(true);
+    expect(result.result.exitCode).toBe(130);
+    expect(result.result.error).toBe("Command execution aborted by user");
+    expect(
+      sandbox.commands.run.mock.calls.filter(
+        ([command]) => command !== "echo ready",
+      ),
+    ).toHaveLength(1);
   });
 
   test("injects the idle timeout into MIOSA interactive browser shells", async () => {

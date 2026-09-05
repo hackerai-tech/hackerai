@@ -4,6 +4,7 @@ import type {
   Sandbox as MiosaSdkSandbox,
 } from "@miosa/sdk";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
+import { createMiosaFiles } from "./miosa-files";
 
 const MIOSA_SANDBOX_VERSION = "v2";
 const MIOSA_ACTIVITY_TIMEOUT_SECONDS = 24 * 60 * 60;
@@ -42,11 +43,6 @@ const externalUserIdForUser = (userId: string): string =>
 
 const sandboxNameForUser = (userId: string): string =>
   `${externalUserIdForUser(userId)}-${MIOSA_SANDBOX_VERSION}`;
-
-const normalizeStreamLine = (line: unknown): string => {
-  const value = typeof line === "string" ? line : String(line ?? "");
-  return value.endsWith("\n") ? value : `${value}\n`;
-};
 
 const dockerExecCommand = (
   command: string,
@@ -131,13 +127,15 @@ const bootPathFromMiosa = (
 
 /**
  * Adapts the MIOSA SDK to the command/file surface used by HackerAI tools.
- * Interactive PTY sessions are intentionally not advertised until the public
- * SDK exposes an input/resize stream in addition to terminal creation.
  */
 export class MiosaSandbox {
   readonly sandboxKind = "miosa" as const;
 
-  constructor(readonly sdkSandbox: MiosaSdkSandbox) {}
+  readonly files: ReturnType<typeof createMiosaFiles>;
+
+  constructor(readonly sdkSandbox: MiosaSdkSandbox) {
+    this.files = createMiosaFiles(sdkSandbox);
+  }
 
   get sandboxId(): string {
     return this.sdkSandbox.id;
@@ -153,6 +151,7 @@ export class MiosaSandbox {
       }
 
       const sdkOptions = {
+        ...(options.signal && { signal: options.signal }),
         ...(options.timeoutMs && {
           timeoutSec: Math.max(1, Math.ceil(options.timeoutMs / 1000)),
         }),
@@ -199,13 +198,13 @@ export class MiosaSandbox {
             continue;
           }
           if (event.type === "stderr") {
-            const chunk = normalizeStreamLine(event.line);
+            const chunk = event.data ?? event.line;
             stderr.push(chunk);
             options.onStderr?.(chunk);
             continue;
           }
           if (event.type === "stdout" || "line" in event) {
-            const chunk = normalizeStreamLine(event.line);
+            const chunk = event.data ?? event.line;
             stdout.push(chunk);
             options.onStdout?.(chunk);
           }
@@ -217,23 +216,38 @@ export class MiosaSandbox {
         "AbortError",
       );
       let abortHandler: (() => void) | undefined;
+      let cancellation: Promise<unknown> | undefined;
       const abortPromise = options.signal
         ? new Promise<never>((_, reject) => {
             let abortStarted = false;
             abortHandler = () => {
               if (abortStarted) return;
               abortStarted = true;
-              void this.sdkSandbox.exec
+              cancellation = this.sdkSandbox.exec
                 .run(
                   dockerExecCommand(
                     `for i in $(seq 1 40); do if [ -f ${shellQuote(processIdPath)} ]; then pid=$(cat ${shellQuote(processIdPath)}); kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; sleep 0.2; kill -KILL -- -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; rm -f -- ${shellQuote(processIdPath)}; break; fi; sleep 0.05; done`,
                   ),
                   { timeoutSec: 5 },
                 )
-                .finally(() => {
-                  void stream.return?.().catch(() => undefined);
-                  reject(abortError);
-                });
+                .then(
+                  (result) => {
+                    if (result.exitCode !== 0) {
+                      const error = new Error(
+                        "MIOSA command cancellation could not be confirmed",
+                      );
+                      reject(error);
+                      throw error;
+                    }
+                    void stream.return?.().catch(() => undefined);
+                    reject(abortError);
+                  },
+                  (error) => {
+                    reject(error);
+                    throw error;
+                  },
+                );
+              void cancellation.catch(() => undefined);
             };
             options.signal!.addEventListener("abort", abortHandler, {
               once: true,
@@ -252,6 +266,10 @@ export class MiosaSandbox {
         if (abortHandler) {
           options.signal?.removeEventListener("abort", abortHandler);
         }
+        if (options.signal?.aborted) {
+          await cancellation;
+          throw abortError;
+        }
       }
 
       if (exitCode === null) {
@@ -259,8 +277,8 @@ export class MiosaSandbox {
       }
 
       return {
-        stdout: stdout.join("").replace(/\n$/, ""),
-        stderr: stderr.join("").replace(/\n$/, ""),
+        stdout: stdout.join(""),
+        stderr: stderr.join(""),
         exitCode,
       };
     },
@@ -269,55 +287,6 @@ export class MiosaSandbox {
         dockerExecCommand(`kill -9 ${pid}`),
       );
       return result.exitCode === 0;
-    },
-  };
-
-  readonly files = {
-    write: async (
-      path: string,
-      content: string | Buffer | ArrayBuffer,
-    ): Promise<void> => {
-      const normalized =
-        content instanceof ArrayBuffer ? new Uint8Array(content) : content;
-      await this.sdkSandbox.files.write(path, normalized);
-    },
-    read: (path: string): Promise<string> =>
-      this.sdkSandbox.files.readText(path),
-    readText: async (path: string): Promise<string> =>
-      this.sdkSandbox.files.readText(path),
-    list: async (
-      path: string,
-    ): Promise<Array<{ name: string; path?: string }>> =>
-      (await this.sdkSandbox.files.list(path)).entries,
-    stat: (path: string) => this.sdkSandbox.files.stat(path),
-    exists: async (path: string): Promise<boolean> => {
-      try {
-        await this.sdkSandbox.files.stat(path);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    getInfo: async (path: string) => {
-      const info = await this.sdkSandbox.files.stat(path);
-      return {
-        type: (info.isDir ?? info.is_dir) ? "dir" : "file",
-        size: info.size,
-        symlinkTarget: undefined,
-        modifiedTime: info.modifiedAt
-          ? new Date(info.modifiedAt)
-          : info.modified_at
-            ? new Date(info.modified_at)
-            : undefined,
-      };
-    },
-    remove: async (path: string): Promise<void> => {
-      const result = await this.sdkSandbox.exec.run(
-        `rm -rf -- ${shellQuote(path)}`,
-      );
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr || `Failed to remove ${path}`);
-      }
     },
   };
 
@@ -377,6 +346,11 @@ export async function ensureMiosaSandboxConnection(
       sandboxVersion: MIOSA_SANDBOX_VERSION,
     },
   });
+  if (sdkSandbox.state !== "running") {
+    throw new Error(
+      `MIOSA readiness returned non-running state: ${sdkSandbox.state}`,
+    );
+  }
   const runtimeImage =
     process.env.MIOSA_RUNTIME_IMAGE?.trim() || DEFAULT_MIOSA_RUNTIME_IMAGE;
   await initializeMiosaRuntime(sdkSandbox, runtimeImage);

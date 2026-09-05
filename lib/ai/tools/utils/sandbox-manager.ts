@@ -129,6 +129,6 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   async supportsInteractivePty(): Promise<boolean> {
-    return this.activeCloudProvider === "e2b";
+    return true;
   }
 }

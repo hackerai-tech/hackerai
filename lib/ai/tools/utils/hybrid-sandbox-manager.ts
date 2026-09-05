@@ -559,7 +559,7 @@ export class HybridSandboxManager implements SandboxManager {
 
   async supportsInteractivePty(): Promise<boolean> {
     if (!this.isLocal) {
-      return this.activeCloudProvider === "e2b";
+      return true;
     }
 
     const connection = await this.getPreferredOrFallbackConnection();

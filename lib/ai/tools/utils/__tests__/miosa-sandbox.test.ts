@@ -107,6 +107,42 @@ describe("MIOSA sandbox adapter", () => {
     expect(mockGetOrCreate).not.toHaveBeenCalled();
   });
 
+  it("does not initialize or expose a sandbox that is not running", async () => {
+    const sdk = createSdkSandbox();
+    sdk.state = "provisioning";
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const setSandbox = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection({ userID: "user-1", setSandbox }),
+    ).rejects.toThrow("non-running state: provisioning");
+    expect(setSandbox).not.toHaveBeenCalled();
+    expect(sdk.exec.stream).not.toHaveBeenCalled();
+  });
+
+  it("preserves stream chunks, trailing newlines, carriage returns and Unicode", async () => {
+    const sdk = createSdkSandbox();
+    sdk.exec.stream.mockImplementation(async function* () {
+      yield { type: "stdout", data: "part" };
+      yield { type: "stdout", data: "ial\n\n雪\r" };
+      yield { type: "stderr", data: "warn\n" };
+      yield { type: "exit", exit_code: 7 };
+    } as never);
+    const onStdout = jest.fn();
+    const onStderr = jest.fn();
+    await expect(
+      new MiosaSandbox(sdk as never).commands.run("test", {
+        onStdout,
+        onStderr,
+      }),
+    ).resolves.toEqual({
+      stdout: "partial\n\n雪\r",
+      stderr: "warn\n",
+      exitCode: 7,
+    });
+    expect(onStdout.mock.calls).toEqual([["part"], ["ial\n\n雪\r"]]);
+    expect(onStderr.mock.calls).toEqual([["warn\n"]]);
+  });
+
   it("destroys every persistent sandbox belonging to the requested user", async () => {
     const firstDestroy = jest.fn().mockResolvedValue(undefined);
     const secondDestroy = jest.fn().mockResolvedValue(undefined);
@@ -152,8 +188,8 @@ describe("MIOSA sandbox adapter", () => {
       ),
       { timeoutSec: 2 },
     );
-    expect(onStdout).toHaveBeenCalledWith("hello\n");
-    expect(onStderr).toHaveBeenCalledWith("warning\n");
+    expect(onStdout).toHaveBeenCalledWith("hello");
+    expect(onStderr).toHaveBeenCalledWith("warning");
   });
 
   it("rejects a command stream that ends without an exit event", async () => {
@@ -217,7 +253,7 @@ describe("MIOSA sandbox adapter", () => {
       expect.stringMatching(
         /docker exec[\s\S]*hackerai-agent[\s\S]*setsid bash -lc/,
       ),
-      {},
+      { signal: controller.signal },
     );
     expect(sdkSandbox.exec.run).toHaveBeenCalledWith(
       expect.stringMatching(
@@ -245,6 +281,26 @@ describe("MIOSA sandbox adapter", () => {
         /docker exec --workdir '\/home\/user\/workspace' --env 'TARGET_HOST=example\.com' 'hackerai-agent'/,
       ),
       {},
+    );
+  });
+
+  it("does not report confirmed cancellation when the remote kill command fails", async () => {
+    const sdk = createSdkSandbox();
+    sdk.exec.stream.mockImplementation(async function* () {
+      await new Promise(() => {});
+    } as never);
+    sdk.exec.run.mockResolvedValue({
+      stdout: "",
+      stderr: "unavailable",
+      exitCode: 1,
+    });
+    const controller = new AbortController();
+    const pending = new MiosaSandbox(sdk as never).commands.run("sleep 60", {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toThrow(
+      "MIOSA command cancellation could not be confirmed",
     );
   });
 });

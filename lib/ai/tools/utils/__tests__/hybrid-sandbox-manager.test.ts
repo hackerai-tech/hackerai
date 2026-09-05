@@ -453,7 +453,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     ).toThrow("selected sandbox changed after approval");
   });
 
-  it("does not advertise interactive PTY after a local preference falls back to MIOSA", async () => {
+  it("advertises interactive PTY after a local preference falls back to MIOSA", async () => {
     const manager = new HybridSandboxManager(
       "user-1",
       jest.fn(),
@@ -468,7 +468,7 @@ describe("HybridSandboxManager prompt-time fallback", () => {
       { provider: "miosa" },
     );
 
-    await expect(manager.supportsInteractivePty()).resolves.toBe(false);
+    await expect(manager.supportsInteractivePty()).resolves.toBe(true);
   });
 
   it("blocks Desktop-local attachment preparation when Desktop falls back", () => {
