@@ -88,7 +88,7 @@ describe("security validation subagent runtime contracts", () => {
     expect(child).toContain("actualRegion: ctx.run.region");
     expectMarkerOrder(
       child,
-      "assertTriggerRunRegion({",
+      "await assertSubagentRunRegion(",
       "setConvexUrl(payload.convexUrl)",
     );
     expectMarkerOrder(
@@ -96,6 +96,23 @@ describe("security validation subagent runtime contracts", () => {
       "setConvexUrl(payload.convexUrl)",
       "getSubagent(payload.subagentId)",
     );
+    expectMarkerOrder(
+      child,
+      "await assertSubagentRunRegion(",
+      "getSubagent(payload.subagentId)",
+    );
+    const regionGuard = child.slice(
+      child.indexOf("await assertSubagentRunRegion("),
+      child.indexOf("const row = await getSubagent(payload.subagentId)"),
+    );
+    expectMarkerOrder(
+      regionGuard,
+      "setConvexUrl(payload.convexUrl)",
+      "await finishSubagent({",
+    );
+    expect(regionGuard).toContain("subagentId: payload.subagentId");
+    expect(regionGuard).toContain("triggerRunId: ctx.run.id");
+    expect(regionGuard).toContain("...failure");
   });
 
   it("blocks parent completion until a claimed result reaches a successful synthesis step", () => {

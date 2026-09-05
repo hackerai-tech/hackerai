@@ -163,6 +163,27 @@ describe("MIOSA sandbox adapter", () => {
     expect(secondDestroy).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores malformed stream payloads without calling text consumers", async () => {
+    const sdk = createSdkSandbox();
+    sdk.exec.stream.mockImplementation(async function* () {
+      yield { type: "stdout" };
+      yield { type: "stderr", data: null };
+      yield { type: "stdout", data: 7 };
+      yield { type: "stdout", line: "valid\n" };
+      yield { type: "exit", exit_code: 0 };
+    } as never);
+    const onStdout = jest.fn();
+    const onStderr = jest.fn();
+    await expect(
+      new MiosaSandbox(sdk as never).commands.run("test", {
+        onStdout,
+        onStderr,
+      }),
+    ).resolves.toEqual({ stdout: "valid\n", stderr: "", exitCode: 0 });
+    expect(onStdout.mock.calls).toEqual([["valid\n"]]);
+    expect(onStderr).not.toHaveBeenCalled();
+  });
+
   it("maps streaming stdout, stderr, and exit status", async () => {
     const sdkSandbox = createSdkSandbox();
     async function* stream() {
@@ -283,6 +304,50 @@ describe("MIOSA sandbox adapter", () => {
       {},
     );
   });
+
+  it.each([
+    new DOMException("native abort", "AbortError"),
+    new Error("stream transport failed"),
+  ])(
+    "waits for cancellation cleanup after stream rejection: %s",
+    async (error) => {
+      const sdk = createSdkSandbox();
+      const controller = new AbortController();
+      sdk.exec.stream.mockImplementation(async function* () {
+        await new Promise<void>((_, reject) => {
+          controller.signal.addEventListener("abort", () => reject(error), {
+            once: true,
+          });
+        });
+      } as never);
+      let finishKill!: () => void;
+      sdk.exec.run.mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          finishKill = resolve;
+        });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+      const pending = new MiosaSandbox(sdk as never).commands.run("sleep 60", {
+        signal: controller.signal,
+      });
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      controller.abort();
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(settled).toBe(false);
+      finishKill();
+      if (error.name === "AbortError")
+        await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      else await expect(pending).rejects.toBe(error);
+    },
+  );
 
   it("does not report confirmed cancellation when the remote kill command fails", async () => {
     const sdk = createSdkSandbox();

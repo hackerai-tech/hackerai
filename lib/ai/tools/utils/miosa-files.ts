@@ -51,23 +51,22 @@ export function createMiosaFiles(sandbox: Sandbox) {
   };
   const transfer = async <T>(operation: (stage: string) => Promise<T>) => {
     const stage = `/home/user/.hackerai-transfer-${randomUUID()}`;
-    let failed = false;
+    const cleanup = async () => {
+      const result = await sandbox.exec.run(`rm -f -- ${quote(stage)}`, {
+        timeoutSec: 10,
+      });
+      if (result.exitCode !== 0)
+        throw new Error("MIOSA file transfer cleanup failed");
+    };
+    let result: T;
     try {
-      return await operation(stage);
+      result = await operation(stage);
     } catch (error) {
-      failed = true;
+      await cleanup().catch(() => undefined);
       throw error;
-    } finally {
-      try {
-        const cleanup = await sandbox.exec.run(`rm -f -- ${quote(stage)}`, {
-          timeoutSec: 10,
-        });
-        if (cleanup.exitCode !== 0)
-          throw new Error("MIOSA file transfer cleanup failed");
-      } catch (error) {
-        if (!failed) throw error;
-      }
     }
+    await cleanup();
+    return result;
   };
   const read = (path: string) =>
     transfer(async (stage) => {

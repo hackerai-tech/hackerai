@@ -199,12 +199,14 @@ export class MiosaSandbox {
           }
           if (event.type === "stderr") {
             const chunk = event.data ?? event.line;
+            if (typeof chunk !== "string") continue;
             stderr.push(chunk);
             options.onStderr?.(chunk);
             continue;
           }
           if (event.type === "stdout" || "line" in event) {
             const chunk = event.data ?? event.line;
+            if (typeof chunk !== "string") continue;
             stdout.push(chunk);
             options.onStdout?.(chunk);
           }
@@ -256,21 +258,36 @@ export class MiosaSandbox {
           })
         : null;
 
+      let streamFailed = false;
+      let streamError: unknown;
       try {
         if (abortPromise) {
           await Promise.race([consumeStream(), abortPromise]);
         } else {
           await consumeStream();
         }
+      } catch (error) {
+        streamFailed = true;
+        streamError = error;
       } finally {
         if (abortHandler) {
           options.signal?.removeEventListener("abort", abortHandler);
         }
-        if (options.signal?.aborted) {
-          await cancellation;
-          throw abortError;
-        }
       }
+      // Native stream abort may settle before the remote process-group kill.
+      // Await that cleanup even after rejection; never claim a confirmed abort
+      // if cleanup failed, or mask an unrelated stream failure after cleanup.
+      if (options.signal?.aborted) {
+        await cancellation;
+        if (
+          streamFailed &&
+          !(streamError instanceof Error && streamError.name === "AbortError")
+        ) {
+          throw streamError;
+        }
+        throw abortError;
+      }
+      if (streamFailed) throw streamError;
 
       if (exitCode === null) {
         throw new Error("MIOSA command stream ended without an exit event");

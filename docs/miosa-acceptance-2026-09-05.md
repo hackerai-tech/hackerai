@@ -12,22 +12,23 @@ template environment variable, or production configuration was changed.
 - Shape: **4 vCPU / 4,096 MiB / 20,480 MiB**, verified from returned resource data.
 - Guest kernel: `6.1.155+`.
 - Runtime: `hackerai-agent`, using the existing pinned HackerAI Docker image.
-- Test window: **2026-09-05 15:22–15:28 UTC**.
+- Test window: **2026-09-05 15:22–15:51 UTC**.
 
 ## Live evidence
 
-| Disposable sandbox                     | Ready, including image initialization | Result                                               |
-| -------------------------------------- | ------------------------------------: | ---------------------------------------------------- |
-| `3b55860f-3e09-4951-ae4a-4ea8af4da5fa` |                              67.168 s | Core matrix passed; deletion verified                |
-| `cf248c3b-d440-4e47-90e3-a2d1b905991f` |                              67.532 s | Core matrix passed; deletion verified                |
-| `4429831f-1674-41cb-8008-c50133d8e1dc` |                              69.115 s | Core and extended matrices passed; deletion verified |
+| Disposable sandbox                     | Ready, including image initialization | Result                                                     |
+| -------------------------------------- | ------------------------------------: | ---------------------------------------------------------- |
+| `3b55860f-3e09-4951-ae4a-4ea8af4da5fa` |                              67.168 s | Core matrix passed; deletion verified                      |
+| `cf248c3b-d440-4e47-90e3-a2d1b905991f` |                              67.532 s | Core matrix passed; deletion verified                      |
+| `4429831f-1674-41cb-8008-c50133d8e1dc` |                              69.115 s | Core and extended matrices passed; deletion verified       |
+| `a0eaf2fa-4ef0-4081-a4f7-bd152860cf39` |                              63.095 s | Post-review core/extended retest passed; deletion verified |
 
 The third create returned request ID `GNJ2OrUPmPE_iLYCxqqC`, operation ID
 `ca08849a-0156-403c-b862-81418a4ea81a`, boot path `byoc_host_command`, and a
 platform boot duration of 2,396 ms. Total readiness above includes pulling and
 initializing the HackerAI tools image; it is not the VM boot duration alone.
 
-Core matrix, passed on all three:
+Core matrix, passed on all four:
 
 - Executable running state, exact shape, and installed nmap/nuclei/ffuf/agent-browser.
 - Streaming stdout, stderr, and exit code 7; exact partial chunks, Unicode,
@@ -44,7 +45,7 @@ Core matrix, passed on all three:
 - The helper used by Settings deletion removed the synthetic user's sandbox;
   a subsequent list confirmed no non-destroyed sandbox remained.
 
-Extended matrix, passed on the third sandbox:
+Extended matrix, passed on the third and fourth sandboxes:
 
 - Background PID and kill; delayed marker did not appear.
 - Attributable, non-decreasing runtime and estimated cost across two samples.
@@ -78,12 +79,72 @@ proven to be a MIOSA platform defect. The older provisioning error is consistent
 with the SDK's stale local-state bug; it does not by itself prove that the VM
 never became ready. The current upgraded path did not reproduce either problem.
 
-This is three fresh sandboxes, not the ten-create stress test requested in the
+This is four fresh sandboxes, not the ten-create stress test requested in the
 earlier engineering spec, and not proof of multi-node placement. Destruction was
 tested after normal execution and a pause/resume cycle, not every lifecycle
 failure state. Long-duration usage accuracy and failure-injected 502/503 recovery
 remain unverified. Live adapter acceptance is separate from the deployed preview
 chat journey; record that verification separately before calling rollout complete.
+
+## Deployed preview verification
+
+Commit `631ef556` deployed to Vercel Preview and Trigger worker `20260905.2`.
+The real chat completed command, stream, file lifecycle, and interactive checks,
+and its response survived reload. However, run
+`run_06g74eflhk9u7bg567p9ulate1` logged `sandbox.provider: e2b`.
+**This is not deployed MIOSA acceptance.** A local evaluation using the preview
+PostHog project key returned `true` for the MIOSA flag and the same test user;
+the worker's selection/fallback reason remains unverified. No flag or credential
+was changed to force a passing result.
+
+The branch alias resolved to `hackerai-oadwx4t7b-hackerai.vercel.app`. Its build
+logs and Convex metadata identify the branch's actual backend as
+`hackerai-development:hackerai-52290:preview/codex-miosa-sandbox-rollout`,
+`https://dusty-kiwi-899.convex.cloud`. The configured default URL
+`diligent-blackbird-710` is overridden by the existing Convex preview build;
+Trigger receives the correct branch URL in its payload. This difference was
+initially treated as a wrong-target alarm; the first test run was canceled
+before tools executed, then the branch identity was verified before retrying.
+
+Review follow-ups guard malformed stream payloads, preserve original errors
+while awaiting cancellation cleanup, and allow an explicit acceptance-template
+override. A subagent region mismatch now attempts a terminal reservation update
+before loading any task content; its queued-reservation watchdog remains the
+fallback if that control-plane update fails.
+
+## Remaining platform issue: an older paused workspace cannot resume
+
+An authenticated, read-only-command resume probe against the preview user's
+existing sandbox failed before executing any command:
+
+- UTC: **2026-09-05 15:51:37.060**.
+- Sandbox: `109fefeb-978a-4458-8ea6-f31368f1dd95`.
+- Template: `miosa-sandbox-docker`; shape 4 vCPU / 4,096 MiB / 20,480 MiB.
+- SDK: `3.2.3`; error class `ValidationError`.
+- HTTP **409**, code **`SANDBOX_NOT_RESTORABLE`**.
+- Message: **`sandbox is paused but has no usable snapshot to restore; create a fresh sandbox`**.
+- Request ID: **`GNJ3mAemR4-fDsEAOa6G`**.
+- No new build or template was involved; the sandbox already existed and was
+  paused. Readback confirmed it remained paused. It was not destroyed/replaced.
+
+`getOrCreate` resumes the stable per-user sandbox before checking readiness, so
+this error would trigger HackerAI's existing E2B fallback. This is a direct SDK
+reproduction, not a retrieved error from the preview worker's fallback event;
+that event-level correlation remains unverified.
+
+Paste-ready support request:
+
+> SDK 3.2.3 cannot resume existing Docker sandbox
+> `109fefeb-978a-4458-8ea6-f31368f1dd95`. At 2026-09-05 15:51:37.060 UTC,
+> `sandbox.resume()` returned HTTP 409, `SANDBOX_NOT_RESTORABLE`:
+> "sandbox is paused but has no usable snapshot to restore; create a fresh sandbox".
+> Request ID: `GNJ3mAemR4-fDsEAOa6G`. Template: `miosa-sandbox-docker`,
+> 4 vCPU / 4 GiB / 20 GiB. Four new disposable sandboxes pass acceptance,
+> including two fresh pause/resume checks, but this older workspace stays paused.
+> Please determine why its snapshot is unusable and whether its files can be
+> recovered. Do not delete the existing workspace without approval. Please also
+> provide a supported replacement/migration procedure that preserves the old
+> record and makes idempotent per-user acquisition recover safely.
 
 ## Reproduce
 
@@ -97,5 +158,7 @@ Alternatively omit `--cli-auth` and supply `MIOSA_API_KEY` securely through the
 environment. This is a billable live test. It uses random synthetic users,
 creates only disposable test data, and requests sandbox deletion in `finally`,
 including after acquisition failure. It never changes deployment configuration.
+An explicitly supplied `MIOSA_TEMPLATE_ID` is respected; otherwise the test uses
+`miosa-sandbox-docker`, and the normal adapter initializes the pinned tools image.
 If cleanup fails, the JSON result includes the synthetic external user ID for
 targeted reconciliation. Never paste credentials into commands or support logs.

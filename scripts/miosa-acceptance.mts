@@ -24,7 +24,8 @@ assert.ok(
   process.env.MIOSA_API_KEY,
   "Set MIOSA_API_KEY or explicitly pass --cli-auth",
 );
-process.env.MIOSA_TEMPLATE_ID = "miosa-sandbox-docker";
+process.env.MIOSA_TEMPLATE_ID =
+  process.env.MIOSA_TEMPLATE_ID?.trim() || "miosa-sandbox-docker";
 const client = new Miosa({
   apiKey: process.env.MIOSA_API_KEY,
   ...(process.env.MIOSA_BASE_URL && { baseUrl: process.env.MIOSA_BASE_URL }),

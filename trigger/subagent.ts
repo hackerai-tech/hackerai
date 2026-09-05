@@ -122,10 +122,10 @@ import {
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import {
-  assertTriggerRunRegion,
   DEFAULT_TRIGGER_RUN_REGION,
   type TriggerRunRegion,
 } from "@/lib/api/trigger-region";
+import { assertSubagentRunRegion } from "@/lib/ai/subagents/region-guard";
 
 const loadPersistedTerminalOutput = async (
   subagentId: string,
@@ -370,11 +370,21 @@ export const subagentTask = task({
   ): Promise<SubagentTaskOutput> => {
     const startedAt = Date.now();
     const triggerRegion = payload.triggerRegion ?? DEFAULT_TRIGGER_RUN_REGION;
-    assertTriggerRunRegion({
-      requestedRegion: triggerRegion,
-      actualRegion: ctx.run.region,
-      environmentType: ctx.environment.type,
-    });
+    await assertSubagentRunRegion(
+      {
+        requestedRegion: triggerRegion,
+        actualRegion: ctx.run.region,
+        environmentType: ctx.environment.type,
+      },
+      async (failure) => {
+        if (payload.convexUrl) setConvexUrl(payload.convexUrl);
+        await finishSubagent({
+          subagentId: payload.subagentId,
+          triggerRunId: ctx.run.id,
+          ...failure,
+        });
+      },
+    );
 
     // The parent Agent run may be using a branch-specific Convex deployment.
     // Trigger preview workers otherwise inherit the dashboard's main URL and
