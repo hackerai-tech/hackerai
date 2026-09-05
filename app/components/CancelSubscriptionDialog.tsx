@@ -206,8 +206,13 @@ export const CancelSubscriptionDialog = ({
         requestIdRef.current += 1;
       }
       onOpenChange(nextOpen);
+      if (!nextOpen && offerResult?.type === "downgrade") {
+        // The tier lives in the WorkOS session; reload so the UI reflects it
+        // however the dialog was closed.
+        reloadWithEntitlementRefresh();
+      }
     },
-    [onOpenChange],
+    [offerResult, onOpenChange],
   );
 
   useEffect(() => {
@@ -433,11 +438,7 @@ export const CancelSubscriptionDialog = ({
 
   const handleOfferResultDone = useCallback(() => {
     handleOpenChange(false);
-    if (offerResult?.type === "downgrade") {
-      // The tier lives in the WorkOS session; reload so the UI reflects it.
-      reloadWithEntitlementRefresh();
-    }
-  }, [handleOpenChange, offerResult]);
+  }, [handleOpenChange]);
 
   const handleCancelSubscription = useCallback(async () => {
     const trimmedReasonDetails = reasonDetails.trim();

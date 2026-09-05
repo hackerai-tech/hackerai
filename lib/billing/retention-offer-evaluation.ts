@@ -86,12 +86,22 @@ export async function resolveDowngradeTargetPrice(args: {
   stripeCustomerId: string;
   lookupKey: string;
 }): Promise<DowngradeTargetPrice | undefined> {
-  const prices = await stripe.prices.list({
-    lookup_keys: [args.lookupKey],
-    active: true,
-    limit: 1,
-  });
-  const price = prices.data[0];
+  let price: Stripe.Price | undefined;
+  try {
+    const prices = await stripe.prices.list({
+      lookup_keys: [args.lookupKey],
+      active: true,
+      limit: 1,
+    });
+    price = prices.data[0];
+  } catch (error) {
+    // Fail closed for the downgrade only; the pause offer must still show.
+    phLogger.warn("retention_downgrade_target_price_lookup_failed", {
+      lookup_key: args.lookupKey,
+      error,
+    });
+    return undefined;
+  }
   if (!price) {
     phLogger.error("retention_downgrade_target_price_missing", {
       lookup_key: args.lookupKey,
@@ -118,9 +128,23 @@ export async function resolveDowngradeTargetPrice(args: {
         proration_date: Math.floor(Date.now() / 1000),
       },
     });
+    const lines: Stripe.InvoiceLineItem[] = [...preview.lines.data];
+    if (preview.lines.has_more) {
+      for await (const line of stripe.invoices.listLineItems(preview.id, {
+        limit: 100,
+      })) {
+        lines.push(line);
+      }
+    }
     let credit = 0;
-    for (const line of preview.lines.data) {
-      if (line.amount < 0) credit += Math.abs(line.amount) / 100;
+    for (const line of lines) {
+      const details = line.parent?.subscription_item_details;
+      const isProrationForItem =
+        details?.proration === true &&
+        details.subscription_item === args.subscription.itemId;
+      if (isProrationForItem && line.amount < 0) {
+        credit += Math.abs(line.amount) / 100;
+      }
     }
     target.proratedCreditDollars = Math.round(credit * 100) / 100;
   } catch (error) {

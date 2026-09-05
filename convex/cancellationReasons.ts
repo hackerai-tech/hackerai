@@ -209,21 +209,43 @@ export const recordRetentionOfferAccepted = mutation({
     retentionOffer: v.union(v.literal("pause"), v.literal("downgrade")),
     acceptedAt: v.optional(v.number()),
   },
-  returns: v.null(),
+  returns: v.object({
+    recorded: v.boolean(),
+    reason: v.optional(
+      v.union(
+        v.literal("not_found"),
+        v.literal("already_decided"),
+        v.literal("different_offer_accepted"),
+      ),
+    ),
+  }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
     const row = await ctx.db.get(args.cancellationReasonId);
-    if (!row) return null;
+    if (!row) return { recorded: false, reason: "not_found" as const };
+    // Repeating the same offer is idempotent; a different offer on a row that
+    // already accepted one, or a row that already completed, is rejected so
+    // the stored state cannot disagree with Stripe.
+    if (row.retention_offer_accepted === args.retentionOffer) {
+      return { recorded: true };
+    }
+    if (row.retention_offer_accepted) {
+      return { recorded: false, reason: "different_offer_accepted" as const };
+    }
+    if (row.status !== "started") {
+      return { recorded: false, reason: "already_decided" as const };
+    }
 
     const acceptedAt = args.acceptedAt ?? Date.now();
     await ctx.db.patch(row._id, {
       retention_offer_accepted: args.retentionOffer,
-      ...(args.retentionOffer === "downgrade" &&
-        row.status === "started" && { status: "retained" as const }),
+      ...(args.retentionOffer === "downgrade" && {
+        status: "retained" as const,
+      }),
       updated_at: acceptedAt,
     });
-    return null;
+    return { recorded: true };
   },
 });
 

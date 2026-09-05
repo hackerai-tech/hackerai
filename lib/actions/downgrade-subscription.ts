@@ -120,31 +120,43 @@ export default async function downgradeSubscriptionAction(
     });
   }
 
+  // Proration dates are rounded to the minute so a client retry inside the
+  // same minute replays the original Stripe response instead of creating a
+  // second proration invoice.
+  const prorationDateSeconds = Math.floor(now / 60_000) * 60;
   let updatedSubscription: Stripe.Subscription;
   try {
-    updatedSubscription = await stripe.subscriptions.update(subscription.id, {
-      items: [
-        {
-          id: subscription.itemId,
-          price: downgradeTarget.priceId,
-          quantity: 1,
+    updatedSubscription = await stripe.subscriptions.update(
+      subscription.id,
+      {
+        items: [
+          {
+            id: subscription.itemId,
+            price: downgradeTarget.priceId,
+            quantity: 1,
+          },
+        ],
+        proration_behavior: "always_invoice",
+        proration_date: prorationDateSeconds,
+        // A downgrade only credits, so nothing can be left pending. Fail
+        // loudly rather than report an unapplied change as a downgrade.
+        payment_behavior: "error_if_incomplete",
+        metadata: {
+          ...subscription.metadata,
+          checkoutType: "subscription_change",
+          checkoutSource: RETENTION_DOWNGRADE_CHECKOUT_SOURCE,
+          checkoutSurface: "cancel_subscription_dialog",
+          checkoutReason: cancellationReason.reasonCategory,
+          ...retentionDowngradeMetadata({
+            fromPlan: subscription.plan ?? subscription.tier ?? "unknown",
+            appliedAtMs: prorationDateSeconds * 1000,
+          }),
         },
-      ],
-      proration_behavior: "always_invoice",
-      proration_date: Math.floor(now / 1000),
-      payment_behavior: "pending_if_incomplete",
-      metadata: {
-        ...subscription.metadata,
-        checkoutType: "subscription_change",
-        checkoutSource: RETENTION_DOWNGRADE_CHECKOUT_SOURCE,
-        checkoutSurface: "cancel_subscription_dialog",
-        checkoutReason: cancellationReason.reasonCategory,
-        ...retentionDowngradeMetadata({
-          fromPlan: subscription.plan ?? subscription.tier ?? "unknown",
-          appliedAtMs: now,
-        }),
       },
-    });
+      {
+        idempotencyKey: `retention_downgrade:${subscription.id}:${downgradeTarget.priceId}:${prorationDateSeconds}`,
+      },
+    );
   } catch (error) {
     phLogger.error("retention_downgrade_stripe_update_failed", {
       ...billingFields,
@@ -152,6 +164,20 @@ export default async function downgradeSubscriptionAction(
       error,
     });
     throw error;
+  }
+
+  const appliedPriceId = updatedSubscription.items?.data?.[0]?.price?.id;
+  if (
+    updatedSubscription.pending_update ||
+    (appliedPriceId && appliedPriceId !== downgradeTarget.priceId)
+  ) {
+    phLogger.error("retention_downgrade_not_applied", {
+      ...billingFields,
+      target_price_id: downgradeTarget.priceId,
+      applied_price_id: appliedPriceId,
+      pending_update: Boolean(updatedSubscription.pending_update),
+    });
+    throw new Error(BILLING_ERRORS.retentionOfferUnavailable);
   }
 
   if (serviceKey && cancellationReasonId) {
