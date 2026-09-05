@@ -20,6 +20,7 @@ interface UseNewRemoteConnectionArgs {
   onNewConnection: (connection: RemoteConnection) => void;
 }
 
+/** Detects remote connections added after the current session baseline. */
 export function useNewRemoteConnection({
   connections,
   enabled = true,
@@ -67,18 +68,21 @@ interface UseAutoSelectNewRemoteConnectionArgs {
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
   subscription: SubscriptionTier;
+  subscriptionResolved: boolean;
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
 }
 
+/** Selects a newly connected remote machine from any mounted app surface. */
 export function useAutoSelectNewRemoteConnection({
   connections,
   enabled,
   chatMode,
   setChatMode,
   subscription,
+  subscriptionResolved,
   sandboxPreference,
   setSandboxPreference,
   selectedModel,
@@ -90,7 +94,11 @@ export function useAutoSelectNewRemoteConnection({
         setSandboxPreference(connection.connectionId);
       }
 
-      if (subscription === "free" && selectedModel !== "auto") {
+      if (
+        subscriptionResolved &&
+        subscription === "free" &&
+        selectedModel !== "auto"
+      ) {
         setSelectedModel("auto");
       }
 
@@ -111,6 +119,7 @@ export function useAutoSelectNewRemoteConnection({
       setSandboxPreference,
       setSelectedModel,
       subscription,
+      subscriptionResolved,
     ],
   );
 

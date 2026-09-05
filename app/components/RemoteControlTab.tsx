@@ -33,6 +33,7 @@ interface LocalConnection {
   isDesktop: boolean;
 }
 
+/** Renders connection status and setup controls for local Remote Control. */
 const RemoteControlTab = () => {
   const [token, setToken] = useState<string | null>(null);
   const [isPreparingCommand, setIsPreparingCommand] = useState(false);

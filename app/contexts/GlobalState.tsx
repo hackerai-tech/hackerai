@@ -709,6 +709,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     chatMode: accessibleChatMode,
     setChatMode,
     subscription: paidAgentSubscription,
+    subscriptionResolved,
     sandboxPreference,
     setSandboxPreference,
     selectedModel,

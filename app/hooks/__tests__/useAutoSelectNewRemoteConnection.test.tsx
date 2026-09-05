@@ -29,6 +29,7 @@ function makeProps() {
     chatMode: "ask" as const,
     setChatMode: jest.fn(),
     subscription: "free" as const,
+    subscriptionResolved: true,
     sandboxPreference: "e2b",
     setSandboxPreference: jest.fn(),
     selectedModel: "hackerai-pro" as const,
@@ -106,6 +107,25 @@ describe("useAutoSelectNewRemoteConnection", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "Local machine connected and selected.",
     );
+  });
+
+  it("preserves the model while subscription entitlements are unresolved", () => {
+    const props = {
+      ...makeProps(),
+      subscription: "free" as const,
+      subscriptionResolved: false,
+      selectedModel: "hackerai-pro" as const,
+    };
+    const { rerender } = renderHook(
+      (currentProps) => useAutoSelectNewRemoteConnection(currentProps),
+      { initialProps: props },
+    );
+
+    rerender({ ...props, connections: [remoteConnection] });
+
+    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1");
+    expect(props.setSelectedModel).not.toHaveBeenCalled();
+    expect(props.setChatMode).toHaveBeenCalledWith("agent");
   });
 
   it("resets its baseline when authentication is disabled", () => {

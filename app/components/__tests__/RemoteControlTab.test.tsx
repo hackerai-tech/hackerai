@@ -67,6 +67,16 @@ const remoteConnection: MockConnection = {
   isDesktop: false,
 };
 
+const secondRemoteConnection: MockConnection = {
+  ...remoteConnection,
+  connectionId: "conn-remote-2",
+  name: "Second Machine",
+  osInfo: {
+    ...remoteConnection.osInfo!,
+    hostname: "second-devbox",
+  },
+};
+
 const desktopConnection: MockConnection = {
   connectionId: "conn-desktop-1",
   name: "HackerAI Desktop",
@@ -94,11 +104,17 @@ describe("RemoteControlTab", () => {
   });
 
   it("hides setup when a new local connection appears", async () => {
+    mockConnections = [remoteConnection];
     const { rerender } = render(<RemoteControlTab />);
 
-    expect(screen.getByText("No active connections")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect another machine" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Copy connect command" }),
+    ).toBeInTheDocument();
 
-    mockConnections = [remoteConnection];
+    mockConnections = [remoteConnection, secondRemoteConnection];
     rerender(<RemoteControlTab />);
 
     await waitFor(() =>
