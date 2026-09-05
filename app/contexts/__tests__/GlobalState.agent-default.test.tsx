@@ -255,6 +255,40 @@ describe("GlobalStateProvider agent defaults", () => {
     ).toBe(false);
   });
 
+  it("preserves the paid model between a failed Tauri refresh and its retry", async () => {
+    jest.useFakeTimers();
+    window.__TAURI_INTERNALS__ = {};
+    window.localStorage.setItem("selected_model", "hackerai-pro");
+    mockAuthUser([]);
+    let entitlementAttempts = 0;
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        entitlementAttempts += 1;
+        return Promise.resolve({ ok: false });
+      }
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(entitlementAttempts).toBe(1);
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(screen.getByTestId("free-desktop-agent-only")).toHaveTextContent(
+      "false",
+    );
+    expect(screen.getByTestId("selected-model")).toHaveTextContent(
+      "hackerai-pro",
+    );
+  });
+
   it("forces returning free Desktop users out of saved Ask mode", async () => {
     window.__TAURI_INTERNALS__ = {};
     window.localStorage.setItem("chat_mode", "ask");

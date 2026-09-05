@@ -561,6 +561,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     if (!subscriptionResolved) return;
+    if (subscription === "free" && !freeSubscriptionResolved) return;
     const normalizedModel = normalizeSelectedModelForSubscription(
       selectedModel,
       subscription,
@@ -568,7 +569,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     if (normalizedModel !== selectedModel) {
       setSelectedModelRaw(normalizedModel);
     }
-  }, [selectedModel, subscription, subscriptionResolved]);
+  }, [
+    freeSubscriptionResolved,
+    selectedModel,
+    subscription,
+    subscriptionResolved,
+  ]);
 
   const setSelectedModelState = useCallback((model: SelectedModel) => {
     setSelectedModelRaw(model);
@@ -685,7 +691,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     paidAgentSubscription !== "free";
   const freeDesktopAgentOnlyActive =
     Boolean(user) &&
-    subscriptionResolved &&
+    freeSubscriptionResolved &&
     !isCheckingProPlan &&
     paidAgentSubscription === "free" &&
     isTauriEnvironment();
