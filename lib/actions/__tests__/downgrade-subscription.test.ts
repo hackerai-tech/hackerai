@@ -198,9 +198,14 @@ describe("downgradeSubscriptionAction", () => {
       active: true,
       limit: 1,
     });
-    expect(mockCreateSchedule).toHaveBeenCalledWith({
-      from_subscription: "sub_pp",
-    });
+    expect(mockCreateSchedule).toHaveBeenCalledWith(
+      { from_subscription: "sub_pp" },
+      {
+        idempotencyKey: expect.stringMatching(
+          /^retention-downgrade:sub_pp:\d+$/,
+        ),
+      },
+    );
     expect(mockUpdateSchedule).toHaveBeenCalledWith("sub_sched_1", {
       end_behavior: "release",
       metadata: expect.objectContaining({
@@ -251,6 +256,25 @@ describe("downgradeSubscriptionAction", () => {
         effective_at: new Date(PERIOD_END_SECONDS * 1000).toISOString(),
       }),
     );
+  });
+
+  it("releases the bare schedule when configuring the phases fails", async () => {
+    mockUpdateSchedule.mockRejectedValue(
+      new Error("stripe update failed") as never,
+    );
+    mockReleaseSchedule.mockResolvedValue({ id: "sub_sched_1" } as never);
+    const { default: downgradeSubscriptionAction } =
+      await import("../downgrade-subscription");
+
+    await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
+      "stripe update failed",
+    );
+    expect(mockReleaseSchedule).toHaveBeenCalledWith("sub_sched_1");
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "cancellationReasons.recordRetentionOfferAccepted",
+      expect.anything(),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalled();
   });
 
   it("replaces an already attached schedule instead of stacking one", async () => {

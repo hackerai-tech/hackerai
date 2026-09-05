@@ -137,6 +137,7 @@ function downgradeInput(
     quantity: 1,
     reasonCategory: "too_expensive",
     downgradeAlreadyScheduled: false,
+    currentPeriodEndMs: NOW + 10 * 86_400_000,
     ...overrides,
   };
 }
@@ -197,6 +198,14 @@ describe("evaluateDowngradeOfferEligibility", () => {
         downgradeInput({ downgradeAlreadyScheduled: true }),
       ),
     ).toEqual({ eligible: false, reason: "downgrade_already_scheduled" });
+  });
+
+  it("requires a paid-through date to schedule the switch", () => {
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({ currentPeriodEndMs: undefined }),
+      ),
+    ).toEqual({ eligible: false, reason: "missing_period_end" });
   });
 
   it("round-trips the downgrade acceptance metadata", () => {

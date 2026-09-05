@@ -92,21 +92,62 @@ export async function scheduleDowngradeAtPeriodEnd(args: {
   /** Applied to the subscription when the new phase starts. */
   phaseMetadata: Stripe.MetadataParam;
   scheduleMetadata: Stripe.MetadataParam;
+  /** Stable per acceptance attempt so a network retry cannot attach a second schedule. */
+  idempotencyKey: string;
 }): Promise<ScheduledPlanChange> {
   await releaseSubscriptionSchedule(subscriptionScheduleId(args.subscription), {
     stripe_subscription_id: args.subscription.id,
     reason: "replaced_by_retention_downgrade",
   });
 
-  const created = await stripe.subscriptionSchedules.create({
-    from_subscription: args.subscription.id,
-  });
+  const created = await stripe.subscriptionSchedules.create(
+    { from_subscription: args.subscription.id },
+    { idempotencyKey: args.idempotencyKey },
+  );
+
+  // Creating from a subscription attaches the schedule immediately; only the
+  // update below turns it into a downgrade. If that fails, release the bare
+  // schedule so the subscription is left exactly as it was and the offer can
+  // be accepted again.
+  let updated: Stripe.SubscriptionSchedule;
+  try {
+    updated = await configureDowngradePhases(created, args);
+  } catch (error) {
+    await releaseSubscriptionSchedule(created.id, {
+      stripe_subscription_id: args.subscription.id,
+      reason: "retention_downgrade_rollback",
+    }).catch((releaseError) => {
+      phLogger.error("subscription_schedule_rollback_failed", {
+        stripe_subscription_id: args.subscription.id,
+        stripe_subscription_schedule_id: created.id,
+        error: releaseError,
+      });
+    });
+    throw error;
+  }
+
+  const nextPhase = updated.phases[1];
+  return {
+    scheduleId: updated.id,
+    effectiveAtMs:
+      (nextPhase?.start_date ?? created.phases[0]?.end_date ?? 0) * 1000,
+  };
+}
+
+async function configureDowngradePhases(
+  created: Stripe.SubscriptionSchedule,
+  args: {
+    targetPriceId: string;
+    phaseMetadata: Stripe.MetadataParam;
+    scheduleMetadata: Stripe.MetadataParam;
+  },
+): Promise<Stripe.SubscriptionSchedule> {
   const currentPhase = created.phases[0];
   if (!currentPhase) {
     throw new Error("Stripe schedule was created without a current phase");
   }
 
-  const updated = await stripe.subscriptionSchedules.update(created.id, {
+  return stripe.subscriptionSchedules.update(created.id, {
     end_behavior: "release",
     metadata: args.scheduleMetadata,
     phases: [
@@ -131,12 +172,6 @@ export async function scheduleDowngradeAtPeriodEnd(args: {
       },
     ],
   });
-
-  const nextPhase = updated.phases[1];
-  return {
-    scheduleId: updated.id,
-    effectiveAtMs: (nextPhase?.start_date ?? currentPhase.end_date) * 1000,
-  };
 }
 
 /** The price a pending schedule switches to after the current phase, if any. */

@@ -144,6 +144,7 @@ export default async function downgradeSubscriptionAction(
         toPlan: downgradeTarget.lookupKey,
         reasonCategory: cancellationReason.reasonCategory,
       },
+      idempotencyKey: `retention-downgrade:${subscription.id}:${now}`,
     });
   } catch (error) {
     phLogger.error("retention_downgrade_schedule_failed", {

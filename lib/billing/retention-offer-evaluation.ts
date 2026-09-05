@@ -151,6 +151,7 @@ export async function evaluateRetentionOffersForUser(args: {
     ...shared,
     offersEnabled: downgradeFlagState === "enabled",
     downgradeAlreadyScheduled: Boolean(subscription.scheduleId),
+    currentPeriodEndMs: subscription.currentPeriodEndMs,
   });
 
   const downgradeTarget = downgrade.eligible

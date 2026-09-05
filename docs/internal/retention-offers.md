@@ -25,6 +25,10 @@ new price. Nothing is charged or credited today. The phase metadata sets
 `checkoutSource=retention_downgrade` on the subscription when it switches, so
 the webhook's tier-change handling and `subscription_changed` work unchanged.
 
+Creation is two Stripe calls (`create` from the subscription, then `update`
+with the phases) under one idempotency key per acceptance; if the update fails
+the bare schedule is released again so nothing stays attached.
+
 While a schedule is attached Stripe rejects direct item changes, so cancel,
 pause, keep, and plan changes call `releaseSubscriptionSchedule` first.
 "Keep current plan" in Account settings releases it and emits

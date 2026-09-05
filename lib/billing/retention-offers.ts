@@ -79,7 +79,8 @@ export type DowngradeOfferIneligibilityReason =
   | "cancellation_already_scheduled"
   | "reason_not_applicable"
   | "multi_seat"
-  | "downgrade_already_scheduled";
+  | "downgrade_already_scheduled"
+  | "missing_period_end";
 
 export type DowngradeOfferEligibilityInput = {
   offersEnabled: boolean;
@@ -92,6 +93,8 @@ export type DowngradeOfferEligibilityInput = {
   reasonCategory: CancellationReasonCategory;
   /** A Stripe schedule is already attached (a pending plan change). */
   downgradeAlreadyScheduled: boolean;
+  /** The paid-through date the switch is scheduled for. */
+  currentPeriodEndMs?: number;
 };
 
 export type DowngradeOfferEligibility =
@@ -131,6 +134,9 @@ export function evaluateDowngradeOfferEligibility(
   }
   if (input.downgradeAlreadyScheduled) {
     return { eligible: false, reason: "downgrade_already_scheduled" };
+  }
+  if (!input.currentPeriodEndMs) {
+    return { eligible: false, reason: "missing_period_end" };
   }
   return { eligible: true, target };
 }
