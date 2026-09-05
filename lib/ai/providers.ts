@@ -1226,9 +1226,9 @@ export const getOpenRouterProviderRoutingForModel = (
 
 const buildProviderMap = (
   or: OpenRouterInstance,
-  // The 0731 endpoint rejects disabled reasoning, so keep non-reasoning Free
-  // Ask on the previous Flash route. Free Agent still uses 0731 with reasoning.
-  freeAskModelSlug = DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  // DeepSeek V4 Flash requires reasoning. Free Ask uses the same current model
+  // as Free Agent, with a lower reasoning effort set per request.
+  freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
   ({
