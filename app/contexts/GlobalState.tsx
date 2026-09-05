@@ -444,6 +444,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     userId: string;
     count: number;
   } | null>(null);
+  const [entitlementRefreshFailure, setEntitlementRefreshFailure] = useState<{
+    userId: string;
+    count: number;
+  } | null>(null);
 
   // Rate limit warning dismissal state (persists across chat switches)
   const [
@@ -525,7 +529,6 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       entitlementApiResolvedUserId === user?.id) &&
     !entitlementRefreshRequested &&
     !automaticEntitlementRefreshPending;
-  const entitlementRefreshFailure = entitlementRefreshFailureRef.current;
   const tokenFreeAutomaticRefreshExhausted =
     subscriptionFromEntitlements === "free" &&
     entitlementRefreshFailure?.userId === user?.id &&
@@ -792,6 +795,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       setSubscription("free");
       entitlementRefreshUserRef.current = null;
       entitlementRefreshFailureRef.current = null;
+      setEntitlementRefreshFailure(null);
       setEntitlementApiResolvedUserId(null);
       return;
     }
@@ -854,6 +858,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         setSubscriptionWithNormalize(tier);
         setEntitlementApiResolvedUserId(user.id);
         entitlementRefreshFailureRef.current = null;
+        setEntitlementRefreshFailure(null);
         // The API response is authoritative for the UI. Refresh AuthKit and the
         // shared access token in the background so a slow token refresh cannot
         // keep the free Ask/Agent selector hidden.
@@ -870,10 +875,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
               ? entitlementRefreshFailureRef.current.count
               : 0;
           const failureCount = previousFailureCount + 1;
-          entitlementRefreshFailureRef.current = {
+          const nextFailure = {
             userId: user.id,
             count: failureCount,
           };
+          entitlementRefreshFailureRef.current = nextFailure;
+          setEntitlementRefreshFailure(nextFailure);
           const retryDelay =
             ENTITLEMENT_REFRESH_RETRY_DELAYS_MS[failureCount - 1];
           if (retryDelay !== undefined) {
