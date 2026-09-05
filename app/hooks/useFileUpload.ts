@@ -23,6 +23,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
+  getCmdServerInfo,
   getLocalFileMetadata,
   isTauriEnvironment,
   pickLocalFiles,
@@ -738,6 +739,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     async (paths: string[]) => {
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
+        return;
+      }
+
+      const bridgeInfo = await getCmdServerInfo();
+      if (!bridgeInfo) {
+        toast.error("Local computer access is required to attach files.");
         return;
       }
 

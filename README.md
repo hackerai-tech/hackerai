@@ -15,6 +15,18 @@
 
 </div>
 
+## What HackerAI is for
+
+HackerAI is an AI-assisted penetration-testing workbench. It can help review
+source code, investigate suspected vulnerabilities, run authorized security
+workflows, and collect evidence for remediation. It is not an antivirus and it
+does not replace endpoint protection, human code review, or professional
+security validation.
+
+Run it in an isolated environment and only against systems and data you are
+authorized to test. Local file and terminal access requires native user consent,
+and a task should receive no more access than it needs.
+
 ## Getting started
 
 ### Prerequisites
