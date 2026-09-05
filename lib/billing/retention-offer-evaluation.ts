@@ -15,9 +15,10 @@ import {
   evaluatePauseOfferEligibility,
   type DowngradeOfferEligibility,
   type PauseOfferEligibility,
+  type DowngradeReasonPolicy,
 } from "@/lib/billing/retention-offers";
 import {
-  getDowngradeOfferFlagState,
+  getDowngradeOfferFlag,
   getPauseOfferFlagState,
   type RetentionOfferFlagState,
 } from "@/lib/billing/retention-offers.server";
@@ -35,6 +36,7 @@ export type RetentionOfferEvaluation = {
   offersEnabled: boolean;
   flagState: RetentionOfferFlagState;
   downgradeFlagState: RetentionOfferFlagState;
+  downgradeReasonPolicy: DowngradeReasonPolicy;
   pause: PauseOfferEligibility;
   downgrade: DowngradeOfferEligibility;
   downgradeTarget?: DowngradeTargetPrice;
@@ -121,9 +123,9 @@ export async function evaluateRetentionOffersForUser(args: {
   const subscription =
     args.subscription ??
     (await getCurrentSubscriptionContext(args.stripeCustomerId));
-  const [flagState, downgradeFlagState] = await Promise.all([
+  const [flagState, downgradeFlag] = await Promise.all([
     getPauseOfferFlagState(args.userId),
-    getDowngradeOfferFlagState(args.userId),
+    getDowngradeOfferFlag(args.userId),
   ]);
   const offersEnabled = flagState === "enabled";
   const lastPauseRequestedAtMs = offersEnabled
@@ -149,7 +151,8 @@ export async function evaluateRetentionOffersForUser(args: {
 
   const downgrade = evaluateDowngradeOfferEligibility({
     ...shared,
-    offersEnabled: downgradeFlagState === "enabled",
+    offersEnabled: downgradeFlag.state === "enabled",
+    reasonPolicy: downgradeFlag.reasonPolicy,
     downgradeAlreadyScheduled: Boolean(subscription.scheduleId),
     currentPeriodEndMs: subscription.currentPeriodEndMs,
   });
@@ -163,7 +166,8 @@ export async function evaluateRetentionOffersForUser(args: {
   return {
     offersEnabled,
     flagState,
-    downgradeFlagState,
+    downgradeFlagState: downgradeFlag.state,
+    downgradeReasonPolicy: downgradeFlag.reasonPolicy,
     pause,
     downgrade:
       downgrade.eligible && !downgradeTarget
@@ -243,6 +247,7 @@ export function retentionOfferEvaluationProperties(
     pause_offered: pause.eligible,
     pause_ineligibility_reason: pause.eligible ? undefined : pause.reason,
     downgrade_offer_flag_state: evaluation.downgradeFlagState,
+    downgrade_offer_variant: evaluation.downgradeReasonPolicy,
     downgrade_offered: downgrade.eligible && Boolean(downgradeTarget),
     downgrade_ineligibility_reason: downgrade.eligible
       ? downgradeTarget

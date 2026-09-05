@@ -200,6 +200,31 @@ describe("evaluateDowngradeOfferEligibility", () => {
     ).toEqual({ eligible: false, reason: "downgrade_already_scheduled" });
   });
 
+  it("widens the reasons under the all_reasons policy but never for usage limits", () => {
+    for (const reasonCategory of [
+      "missing_feature",
+      "switched_tool",
+      "temporary_pause",
+    ] as const) {
+      expect(
+        evaluateDowngradeOfferEligibility(
+          downgradeInput({ reasonCategory, reasonPolicy: "all_reasons" }),
+        ).eligible,
+      ).toBe(true);
+      expect(
+        evaluateDowngradeOfferEligibility(downgradeInput({ reasonCategory })),
+      ).toEqual({ eligible: false, reason: "reason_not_applicable" });
+    }
+    expect(
+      evaluateDowngradeOfferEligibility(
+        downgradeInput({
+          reasonCategory: "hit_usage_limits",
+          reasonPolicy: "all_reasons",
+        }),
+      ),
+    ).toEqual({ eligible: false, reason: "reason_not_applicable" });
+  });
+
   it("requires a paid-through date to schedule the switch", () => {
     expect(
       evaluateDowngradeOfferEligibility(

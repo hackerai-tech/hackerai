@@ -65,7 +65,7 @@ jest.mock("@/convex/_generated/api", () => ({
 
 jest.mock("@/lib/billing/retention-offers.server", () => ({
   getPauseOfferFlagState: mockPauseFlag,
-  getDowngradeOfferFlagState: mockDowngradeFlag,
+  getDowngradeOfferFlag: mockDowngradeFlag,
   isPauseOfferEnabledForUser: async () => false,
 }));
 
@@ -126,7 +126,10 @@ describe("downgradeSubscriptionAction", () => {
       stripeCustomerId: "cus_123",
     } as never);
     mockPauseFlag.mockResolvedValue("disabled" as never);
-    mockDowngradeFlag.mockResolvedValue("enabled" as never);
+    mockDowngradeFlag.mockResolvedValue({
+      state: "enabled",
+      reasonPolicy: "price_reasons",
+    } as never);
     mockConvexQuery.mockResolvedValue(null as never);
     mockConvexMutation.mockImplementation((async (name: string) =>
       name === "cancellationReasons.recordCancellationStarted"
@@ -330,7 +333,10 @@ describe("downgradeSubscriptionAction", () => {
       }),
     ).rejects.toThrow(BILLING_ERRORS.retentionOfferUnavailable);
 
-    mockDowngradeFlag.mockResolvedValue("disabled" as never);
+    mockDowngradeFlag.mockResolvedValue({
+      state: "disabled",
+      reasonPolicy: "price_reasons",
+    } as never);
     await expect(downgradeSubscriptionAction(validInput)).rejects.toThrow(
       BILLING_ERRORS.retentionOfferUnavailable,
     );

@@ -1,6 +1,9 @@
 import type Stripe from "stripe";
 
-import type { CancellationReasonCategory } from "@/lib/billing/cancellation-reasons";
+import {
+  CANCELLATION_REASON_OPTIONS,
+  type CancellationReasonCategory,
+} from "@/lib/billing/cancellation-reasons";
 import type { SubscriptionTier } from "@/types";
 
 /**
@@ -52,11 +55,43 @@ export const DOWNGRADE_TARGETS: Partial<
   ultra: { tier: "pro-plus", lookupKey: "pro-plus-monthly-plan" },
 };
 
-const DOWNGRADE_REASONS: ReadonlySet<CancellationReasonCategory> = new Set([
-  "too_expensive",
-  "not_using_enough",
-  "other",
-]);
+/**
+ * Which cancellation reasons see the downgrade offer. `price_reasons` is the
+ * default mapping; `all_reasons` is the flag variant that tests whether the
+ * offer also converts people who cite quality, features, or a competitor.
+ * Usage-limit cancellers never see it: a cheaper tier makes that worse.
+ */
+export const DOWNGRADE_REASON_POLICIES = [
+  "price_reasons",
+  "all_reasons",
+] as const;
+export type DowngradeReasonPolicy = (typeof DOWNGRADE_REASON_POLICIES)[number];
+export const DEFAULT_DOWNGRADE_REASON_POLICY: DowngradeReasonPolicy =
+  "price_reasons";
+
+export function parseDowngradeReasonPolicy(
+  value: unknown,
+): DowngradeReasonPolicy | undefined {
+  return DOWNGRADE_REASON_POLICIES.find((policy) => policy === value);
+}
+
+const DOWNGRADE_REASONS_BY_POLICY: Record<
+  DowngradeReasonPolicy,
+  ReadonlySet<CancellationReasonCategory>
+> = {
+  price_reasons: new Set(["too_expensive", "not_using_enough", "other"]),
+  all_reasons: new Set(
+    CANCELLATION_REASON_OPTIONS.map((option) => option.value).filter(
+      (value) => value !== "hit_usage_limits",
+    ),
+  ),
+};
+
+export function downgradeReasonsForPolicy(
+  policy: DowngradeReasonPolicy,
+): ReadonlySet<CancellationReasonCategory> {
+  return DOWNGRADE_REASONS_BY_POLICY[policy];
+}
 
 export const RETENTION_DOWNGRADE_METADATA = {
   fromPlan: "hackeraiRetentionDowngradeFromPlan",
@@ -93,6 +128,8 @@ export type DowngradeOfferEligibilityInput = {
   reasonCategory: CancellationReasonCategory;
   /** A Stripe schedule is already attached (a pending plan change). */
   downgradeAlreadyScheduled: boolean;
+  /** Defaults to the price-related reasons. */
+  reasonPolicy?: DowngradeReasonPolicy;
   /** The paid-through date the switch is scheduled for. */
   currentPeriodEndMs?: number;
 };
@@ -129,7 +166,10 @@ export function evaluateDowngradeOfferEligibility(
   if ((input.quantity ?? 1) !== 1) {
     return { eligible: false, reason: "multi_seat" };
   }
-  if (!DOWNGRADE_REASONS.has(input.reasonCategory)) {
+  const reasons = downgradeReasonsForPolicy(
+    input.reasonPolicy ?? DEFAULT_DOWNGRADE_REASON_POLICY,
+  );
+  if (!reasons.has(input.reasonCategory)) {
     return { eligible: false, reason: "reason_not_applicable" };
   }
   if (input.downgradeAlreadyScheduled) {

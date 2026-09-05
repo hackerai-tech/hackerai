@@ -4,10 +4,10 @@ Retention offers appear inside the in-app cancellation dialog after the user
 has answered the cancellation survey. Each offer has its own PostHog flag and
 fails closed to the plain cancel flow:
 
-| Offer     | Flag                              | Env override              |
-| --------- | --------------------------------- | ------------------------- |
-| Pause     | `hac-96-pause-subscription-offer` | `PAUSE_OFFER_ENABLED`     |
-| Downgrade | `hac-97-downgrade-offer`          | `DOWNGRADE_OFFER_ENABLED` |
+| Offer     | Flag                                                               | Env override                                                   |
+| --------- | ------------------------------------------------------------------ | -------------------------------------------------------------- |
+| Pause     | `hac-96-pause-subscription-offer`                                  | `PAUSE_OFFER_ENABLED`                                          |
+| Downgrade | `hac-97-downgrade-offer` (variants `price_reasons`, `all_reasons`) | `DOWNGRADE_OFFER_ENABLED` (`true`, `false`, or a variant name) |
 
 ## Downgrade offer
 
@@ -121,3 +121,13 @@ The Convex cancellation report now includes `pausedCount` per reason group.
 - `CRON_SECRET` protects the resume cron, like the existing platform-cost crons.
 - The Convex schema adds the `subscription_pauses` table; deploy Convex before
   enabling the flag.
+
+## Downgrade reason policy
+
+The downgrade flag is multivariate. `price_reasons` (the default, and what a
+boolean `true` maps to) shows the offer for "too expensive", "not using it
+enough", and "other". `all_reasons` shows it for every reason except "hit
+usage limits", where a cheaper tier would make the problem worse. The variant
+is recorded as `downgrade_offer_variant` on `retention_offer_evaluated`,
+`retention_offer_accepted`, and `retention_downgrade_scheduled`, so acceptance
+by reason can be compared per variant.

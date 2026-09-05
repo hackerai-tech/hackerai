@@ -185,6 +185,7 @@ export default async function downgradeSubscriptionAction(
     reason_category: cancellationReason.reasonCategory,
     reason_subcategory: cancellationReason.reasonSubcategory,
     retention_offer: "downgrade",
+    downgrade_offer_variant: evaluation.downgradeReasonPolicy,
     from_tier: subscription.tier,
     to_tier: downgrade.target.tier,
     to_plan: downgradeTarget.lookupKey,
