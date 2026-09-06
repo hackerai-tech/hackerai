@@ -237,6 +237,9 @@ export default defineSchema({
     file_ids: v.optional(v.array(v.id("files"))),
     feedback_id: v.optional(v.id("feedback")),
     source_message_id: v.optional(v.string()),
+    // Legacy Preview data from the superseded conversation-turn rollout.
+    // New writes and routing do not read or populate this field.
+    conversation_turn: v.optional(v.number()),
     update_time: v.number(),
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
