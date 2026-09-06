@@ -2024,6 +2024,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
+  test("OCR preprocessing failures never trigger generic baseline recovery", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/!\(error instanceof AbliterationVisionError\)/);
+      expect(source).toMatch(
+        /const shouldAttemptProviderRetry\s*=\s*!\(\s*state\.providerError instanceof AbliterationVisionError\s*\)\s*&&/,
+      );
+    }
+  });
+
   test("Abliteration routing switches to OpenRouter after three generation steps", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(

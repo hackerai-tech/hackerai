@@ -7,6 +7,14 @@ const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
+const mockDescribeImage = jest.fn(async () => ({
+  description: "Visible image text",
+}));
+
+jest.mock("@/lib/chat/auxiliary-vision", () => ({
+  describeImageWithAuxiliaryVision: (...args: unknown[]) =>
+    mockDescribeImage(...args),
+}));
 
 jest.mock("server-only", () => ({}));
 jest.mock("ai", () => ({
@@ -479,6 +487,9 @@ describe("retry served-model telemetry", () => {
 describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockDescribeImage
+      .mockReset()
+      .mockResolvedValue({ description: "Visible image text" });
     mockStreamText.mockImplementation((options) => options);
   });
 
@@ -569,6 +580,224 @@ describe("createAgentStream repeated compaction", () => {
     expect(onModelStepSelected).toHaveBeenLastCalledWith(
       "model-deepseek-v4-flash-0731",
     );
+  });
+
+  it.each([
+    {
+      source: "attachments",
+      message: {
+        role: "user",
+        content: Array.from({ length: 9 }, () => ({
+          type: "image",
+          image: "https://example.test/image.png",
+        })),
+      },
+    },
+    {
+      source: "persisted tool images",
+      message: {
+        role: "tool",
+        content: Array.from({ length: 5 }, (_, index) => ({
+          type: "tool-result",
+          toolCallId: `view-${index}`,
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "image-data", data: "test", mediaType: "image/png" },
+            ],
+          },
+        })),
+      },
+    },
+  ])(
+    "checks serialized initial $source before choosing a provider",
+    async ({ message }) => {
+      jest
+        .requireMock("ai")
+        .convertToModelMessages.mockResolvedValueOnce([message]);
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Inspect the images")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        }),
+      )) as any;
+      expect(stream.model.modelId).toBe("model-abliterated");
+      expect(JSON.stringify(stream.messages)).toContain("image_description");
+      expect(JSON.stringify(stream.messages)).not.toContain(
+        '"type":"image-data"',
+      );
+      expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
+    },
+  );
+
+  it("does not start the main provider when initial OCR fails", async () => {
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: Array.from({ length: 5 }, (_, i) => ({
+          type: "image",
+          image: `https://example.test/${i}.png`,
+        })),
+      },
+    ]);
+    mockDescribeImage.mockRejectedValue(new Error("Auxiliary API failure"));
+    await expect(
+      createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Inspect images")], {
+          usedTokens: 1000,
+          maxTokens: 128000,
+        }),
+      ),
+    ).rejects.toHaveProperty("name", "AbliterationVisionError");
+    expect(mockStreamText).not.toHaveBeenCalled();
+  });
+
+  it("propagates late OCR failure instead of retrying the prepare-step fallback", async () => {
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect images")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    mockDescribeImage.mockRejectedValue(new Error("Auxiliary API failure"));
+    await expect(
+      stream.prepareStep({
+        stepNumber: 1,
+        steps: [],
+        messages: [
+          {
+            role: "user",
+            content: Array.from({ length: 5 }, (_, i) => ({
+              type: "image",
+              image: `https://example.test/${i}.png`,
+            })),
+          },
+        ],
+      }),
+    ).rejects.toHaveProperty("name", "AbliterationVisionError");
+    expect(mockDescribeImage).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not preprocess images for baseline providers", async () => {
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: Array.from({ length: 5 }, (_, i) => ({
+          type: "image",
+          image: `https://example.test/${i}.png`,
+        })),
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "model-grok-4.6",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect images")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    expect(stream.model.modelId).toBe("model-grok-4.6");
+    expect(mockDescribeImage).not.toHaveBeenCalled();
+  });
+
+  it("keeps Abliteration and describes images when tools exceed the request cap", async () => {
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        platformAuthorized: true,
+        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect the lab")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+    const attachments = {
+      role: "user",
+      content: Array.from({ length: 4 }, () => ({
+        type: "image",
+        image: "https://example.test/image.png",
+      })),
+    };
+    const prepare = (messages: unknown[], stepNumber: number) =>
+      stream.prepareStep({
+        stepNumber,
+        steps: [],
+        messages,
+      });
+    expect((await prepare([attachments], 0)).model.modelId).toBe(
+      "model-abliterated",
+    );
+    const prepared = await prepare(
+      [
+        attachments,
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "view-1",
+              toolName: "file",
+              output: {
+                type: "content",
+                value: [
+                  { type: "image-data", data: "test", mediaType: "image/png" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      1,
+    );
+    expect(prepared.model.modelId).toBe("model-abliterated");
+    expect(JSON.stringify(prepared.messages)).toContain("image_description");
+    expect(JSON.stringify(prepared.messages)).not.toContain(
+      PLATFORM_AUTHORIZATION_ANNOTATION,
+    );
+    expect(
+      (await prepare([{ role: "user", content: "Compacted context" }], 2)).model
+        .modelId,
+    ).toBe("model-abliterated");
   });
 
   it("preserves the generation-step position across replacement streams", async () => {

@@ -2,6 +2,7 @@ import {
   evaluateAbliteratedModel,
   ABLITERATED_EXPERIMENT_KEY,
 } from "../abliterated-model";
+import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
 import type { SelectedModel, SubscriptionTier } from "@/types";
 import {
@@ -69,6 +70,28 @@ describe("moderation-gated Abliteration assignment", () => {
       ],
     },
   ] as unknown as UIMessage[];
+  const imageAttachmentHistory = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `image-attachment-${index}`,
+      role: "user" as const,
+      parts: [
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: `https://example.test/private-${index}.png`,
+        },
+      ],
+    })) as unknown as UIMessage[];
+  const imageAttachmentTurn = (count: number) =>
+    [
+      {
+        id: "image-attachment-turn",
+        role: "user" as const,
+        parts: imageAttachmentHistory(count).flatMap((message) =>
+          message.parts.map((part) => ({ ...part })),
+        ),
+      },
+    ] as unknown as UIMessage[];
   const defaults = {
     userId: "u",
     subscription: "pro" as SubscriptionTier,
@@ -131,6 +154,57 @@ describe("moderation-gated Abliteration assignment", () => {
       }),
     ).toBeUndefined();
     expect(getFeatureFlag).not.toHaveBeenCalled();
+  });
+  it("keeps a request at the Abliteration image limit eligible", async () => {
+    const getFeatureFlag = jest.fn().mockResolvedValue("test");
+
+    await expect(
+      evaluateAbliteratedModel({
+        ...defaults,
+        messages: imageAttachmentHistory(ABLITERATION_MAX_IMAGES_PER_REQUEST),
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
+  });
+  it("keeps over-limit image requests eligible for vision preprocessing", async () => {
+    const getFeatureFlag = jest.fn().mockResolvedValue("test");
+
+    await expect(
+      evaluateAbliteratedModel({
+        ...defaults,
+        messages: imageAttachmentTurn(ABLITERATION_MAX_IMAGES_PER_REQUEST + 1),
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
+  });
+  it("keeps over-limit image history eligible across messages", async () => {
+    const getFeatureFlag = jest.fn().mockResolvedValue("test");
+    const messages = imageAttachmentHistory(
+      ABLITERATION_MAX_IMAGES_PER_REQUEST,
+    );
+    messages.push({
+      id: "combined-image-turn",
+      role: "user",
+      parts: [
+        { type: "text", text: "Inspect the full image history" },
+        {
+          type: "file",
+          mediaType: "image/jpeg",
+          url: "https://example.test/final-private.jpg",
+        },
+      ],
+    } as unknown as UIMessage);
+
+    await expect(
+      evaluateAbliteratedModel({
+        ...defaults,
+        messages,
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
   });
   it.each([
     {

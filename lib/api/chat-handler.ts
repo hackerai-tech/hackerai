@@ -101,6 +101,7 @@ import {
   shouldRetryAbliterationApiError,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
+import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
 import { NextRequest } from "next/server";
 import {
   getMessagesByChatId,
@@ -1605,6 +1606,7 @@ export const createChatHandler = () => {
               // If provider returns an API error before streaming, retry with fallback.
               if (
                 isProviderApiError(error) &&
+                !(error instanceof AbliterationVisionError) &&
                 !isRetryWithFallback &&
                 (isAutoModel ||
                   shouldRecoverVisionApiError ||
@@ -1858,6 +1860,9 @@ export const createChatHandler = () => {
                       const retryModelSlug =
                         trackedProvider.languageModel(retryModel).modelId;
                       const shouldAttemptProviderRetry =
+                        !(
+                          state.providerError instanceof AbliterationVisionError
+                        ) &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         (isAutoModel ||
                           shouldRetryWithVisionSummary ||

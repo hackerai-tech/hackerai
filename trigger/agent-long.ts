@@ -65,6 +65,7 @@ import {
   BudgetMonitor,
   captureBudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
+import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
@@ -4569,6 +4570,7 @@ export const agentLongTask = task({
               if (
                 isProviderApiError(error) &&
                 !isInvalidImageInputError(error) &&
+                !(error instanceof AbliterationVisionError) &&
                 !isRetryWithFallback &&
                 (isAutoModel ||
                   shouldRecoverVisionApiError ||
@@ -4790,6 +4792,9 @@ export const agentLongTask = task({
                         providerDisconnectContinuation,
                       );
                       const shouldAttemptProviderRetry =
+                        !(
+                          state.providerError instanceof AbliterationVisionError
+                        ) &&
                         (shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults ||
                           shouldRetryWithVisionSummary ||

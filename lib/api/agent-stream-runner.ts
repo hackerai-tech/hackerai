@@ -1,5 +1,10 @@
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
+import {
+  AbliterationVisionError,
+  createAbliterationVisionPreprocessor,
+} from "@/lib/chat/abliteration-vision";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -1038,13 +1043,26 @@ export async function createAgentStream(
       },
     );
   };
-  const prepareProviderMessages = (
+  const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    userId: ctx.userId,
+    chatId: ctx.chatId,
+    abortSignal,
+    onCost: (cost) => {
+      ctx.usageTracker.providerCost += cost;
+      ctx.usageTracker.nonModelCost += cost;
+      ctx.chatLogger?.getBuilder().addToolCost(cost);
+    },
+  });
+  const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
-  ): ModelMessage[] => {
-    const providerMessages = providerPdfAttachmentsDisabled
-      ? omitPdfFilePartsFromModelMessages(messages)
+  ): Promise<ModelMessage[]> => {
+    const visionMessages = isAbliterationModel(effectiveModelName)
+      ? await preprocessAbliterationImages(messages)
       : messages;
+    const providerMessages = providerPdfAttachmentsDisabled
+      ? omitPdfFilePartsFromModelMessages(visionMessages)
+      : visionMessages;
     const nonEmptyMessages = filterEmptyAssistantMessages(providerMessages);
     let repairedMessages = nonEmptyMessages;
 
@@ -1114,10 +1132,6 @@ export async function createAgentStream(
     });
     return latestProviderRequestDiagnostics;
   };
-  const initialModelInfo = getEffectiveModelInfo();
-  const initialProviderOptions = getStepProviderOptions(
-    initialModelInfo.modelName,
-  );
   const promptSerializationTools = createPromptSerializationTools(ctx.tools);
   const initialSerializationStartedAt = Date.now();
   let initialSerializedMessages: ModelMessage[];
@@ -1134,7 +1148,11 @@ export async function createAgentStream(
       Date.now() - initialSerializationStartedAt,
     );
   }
-  const initialModelMessages = prepareProviderMessages(
+  const initialModelInfo = getEffectiveModelInfo();
+  const initialProviderOptions = getStepProviderOptions(
+    initialModelInfo.modelName,
+  );
+  const initialModelMessages = await prepareProviderMessages(
     initialSerializedMessages,
     initialModelInfo.modelName,
   );
@@ -1328,7 +1346,7 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
-              const preparedMessages = prepareProviderMessages(
+              const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
               );
@@ -1504,7 +1522,7 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
-                const preparedMessages = prepareProviderMessages(
+                const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
                 );
@@ -1572,13 +1590,13 @@ export async function createAgentStream(
         const providerOptions = getStepProviderOptions(
           effectiveModelInfo.modelName,
         );
-        const preparedMessages = prepareProviderMessages(
+        const preparedMessages = (await prepareProviderMessages(
           addCacheBreakpointToLastUserMessage(
             updatedMessages,
             effectiveModelInfo.modelName,
           ) as ModelMessage[],
           effectiveModelInfo.modelName,
-        ) as typeof messages;
+        )) as typeof messages;
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
           requestedSlug: effectiveModelInfo.requestedSlug,
@@ -1607,6 +1625,8 @@ export async function createAgentStream(
             : {}),
         };
       } catch (error) {
+        if (error instanceof AbliterationVisionError || abortSignal.aborted)
+          throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
           // Expected on user stop
         } else {
@@ -1616,10 +1636,10 @@ export async function createAgentStream(
         const providerOptions = getStepProviderOptions(
           fallbackModelInfo.modelName,
         );
-        const fallbackMessages = prepareProviderMessages(
+        const fallbackMessages = (await prepareProviderMessages(
           rollingModelMessages,
           fallbackModelInfo.modelName,
-        ) as typeof messages;
+        )) as typeof messages;
         recordProviderRequestDiagnostics({
           modelName: fallbackModelInfo.modelName,
           requestedSlug: lastRequestedSlug,
