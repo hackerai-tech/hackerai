@@ -434,6 +434,7 @@ export default defineSchema({
       v.literal("customer.subscription.deleted"),
       v.literal("payment_method.attached"),
       v.literal("customer.updated"),
+      v.literal("customer.subscription.updated"),
     ),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
