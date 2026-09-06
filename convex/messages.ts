@@ -1258,14 +1258,14 @@ export const deleteLastAssistantMessage = mutation({
       // Walk backwards from newest message and collect the entire trailing chain:
       // assistant messages + hidden (auto-continue) user messages.
       // Stop at the first non-hidden user message so regenerate targets the original request.
-      const trailingMessages = await ctx.db
+      const trailingMessages = ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("desc")
-        .collect();
+        .order("desc");
 
-      const messagesToDelete: typeof trailingMessages = [];
-      for (const msg of trailingMessages) {
+      // Do not load the rest of a long conversation just to regenerate its tail.
+      const messagesToDelete: Doc<"messages">[] = [];
+      for await (const msg of trailingMessages) {
         if (msg.role === "assistant") {
           messagesToDelete.push(msg);
         } else if (msg.role === "user" && msg.is_hidden) {

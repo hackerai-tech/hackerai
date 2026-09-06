@@ -460,6 +460,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
   return (
     <div
       ref={setDraggableNodeRef}
+      style={
+        isDropdownOpen ||
+        showRenameDialog ||
+        showShareDialog ||
+        showMoveProjectDialog ||
+        showCreateProjectDialog ||
+        showDeleteDialog ||
+        isDragging
+          ? undefined
+          : { contentVisibility: "auto", containIntrinsicSize: "auto 20px" }
+      }
       className={`group relative flex w-full cursor-pointer select-none items-center rounded-lg py-2 pe-0.5 ${rowStartPaddingClass} hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -777,13 +788,15 @@ const ChatItem: React.FC<ChatItemProps> = ({
       </Dialog>
 
       {/* Share Dialog */}
-      <ShareDialog
-        open={showShareDialog}
-        onOpenChange={setShowShareDialog}
-        chatId={id}
-        chatTitle={taskTitle}
-        existingShareId={shareId}
-      />
+      {showShareDialog && (
+        <ShareDialog
+          open={showShareDialog}
+          onOpenChange={setShowShareDialog}
+          chatId={id}
+          chatTitle={taskTitle}
+          existingShareId={shareId}
+        />
+      )}
 
       {showMoveProjectDialog ? (
         <MoveChatToProjectDialog
@@ -848,4 +861,4 @@ const ChatItem: React.FC<ChatItemProps> = ({
   );
 };
 
-export default ChatItem;
+export default React.memo(ChatItem);

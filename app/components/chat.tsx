@@ -97,6 +97,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
@@ -515,6 +516,14 @@ function ForkAutoSendEffect({
 }
 
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
+  return (
+    <ConvexErrorBoundary>
+      <ChatContent autoResume={autoResume} />
+    </ConvexErrorBoundary>
+  );
+};
+
+const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
@@ -2116,7 +2125,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     messages.some((message) => message.role === "user");
 
   return (
-    <ConvexErrorBoundary>
+    <>
       <StreamEffects
         key={chatId}
         chatId={chatId}
@@ -2198,7 +2207,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       role="status"
                       data-testid="chat-timeline-loading"
                     >
-                      Loading task…
+                      <SlowLoadingNotice key={chatId} label="Loading task…" />
                     </div>
                   ) : (
                     <Messages
@@ -2348,6 +2357,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           </div>
         )}
       </div>
-    </ConvexErrorBoundary>
+    </>
   );
 };

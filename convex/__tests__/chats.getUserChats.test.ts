@@ -140,6 +140,37 @@ describe("getUserChats", () => {
     ).rejects.toThrow("unexpected");
   });
 
+  it.each(["sidebar", "task"])(
+    "surfaces %s database failures instead of claiming history is missing",
+    async (surface) => {
+      const error = new Error("database unavailable");
+      const ctx = {
+        auth: {
+          getUserIdentity: jest
+            .fn<any>()
+            .mockResolvedValue({ subject: "user-123" }),
+        },
+        db: {
+          query: jest.fn(() => {
+            throw error;
+          }),
+        },
+      };
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(
+          surface === "sidebar"
+            ? getUserChats.handler(ctx as any, {
+                paginationOpts: { numItems: 28, cursor: null },
+              })
+            : getChatByIdFromClient.handler(ctx as any, { id: "task-1" }),
+        ).rejects.toThrow(error);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it("returns pinned project tasks in the global pinned results", async () => {
     const pinnedProjectTask = {
       _id: "pinned-doc",
