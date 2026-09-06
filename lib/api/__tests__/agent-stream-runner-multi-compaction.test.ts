@@ -619,6 +619,16 @@ describe("createAgentStream repeated compaction", () => {
       }),
       expect.anything(),
     );
+
+    expect(
+      await stream.stopWhen[0]({
+        steps: Array.from(
+          { length: state.configuredMaxSteps - state.agentStepCount },
+          () => ({}),
+        ),
+      }),
+    ).toBe(true);
+    expect(state.stoppedDueToStepLimit).toBe(true);
   });
 
   it("reports the first provider chunk to startup timing", async () => {

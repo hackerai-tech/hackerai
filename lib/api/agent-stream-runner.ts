@@ -1651,7 +1651,8 @@ export async function createAgentStream(
 
     stopWhen: [
       async ({ steps }) => {
-        if (steps.length < configuredMaxSteps) return false;
+        const completedGenerationSteps = generationStepOffset + steps.length;
+        if (completedGenerationSteps < configuredMaxSteps) return false;
         const gate = ctx.subagentCompletionGate;
         if (gate) {
           try {
@@ -1660,10 +1661,10 @@ export async function createAgentStream(
             const hasUnconsumed =
               completionState.unconsumedSubagentIds.length > 0;
             const withinActiveReserve =
-              steps.length <
+              completedGenerationSteps <
               configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS;
             const withinResultReserve =
-              steps.length <=
+              completedGenerationSteps <=
               configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS;
             if (
               (hasActive && withinActiveReserve) ||
@@ -1676,7 +1677,7 @@ export async function createAgentStream(
           } catch {
             if (
               hasObservedSubagents &&
-              steps.length <
+              completedGenerationSteps <
                 configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS
             ) {
               return false;
