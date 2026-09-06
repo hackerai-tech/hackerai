@@ -85,7 +85,9 @@ describe("moderation-gated Abliteration assignment", () => {
         selectedModelOverride,
         posthog: { getFeatureFlag },
       });
-      expect(result?.modelKey).toBe("model-abliterated");
+      expect(result).toMatchObject({
+        modelKey: "model-abliterated",
+      });
       expect(getFeatureFlag).toHaveBeenCalledWith(
         ABLITERATED_EXPERIMENT_KEY,
         "u",

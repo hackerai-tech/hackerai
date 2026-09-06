@@ -1482,6 +1482,11 @@ export const createChatHandler = () => {
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
               abliteratedTelemetry,
+              ...(activeAbliteratedExperiment?.variant === "test" && {
+                abliteratedStepRouting: {
+                  baselineModel: activeAbliteratedExperiment.baselineModel,
+                },
+              }),
               onProviderRequestStart: createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
@@ -1506,6 +1511,10 @@ export const createChatHandler = () => {
               ctxMaxTokens,
               streamStartTime,
               onModelChunk: () => chatLogger?.markFirstChunk(),
+              onModelStepSelected: (modelName) => {
+                activeModelName = modelName;
+                setCurrentModelName(modelName);
+              },
               contextUsageOn,
               isReasoningModel,
               platformAuthorized,
@@ -1559,6 +1568,9 @@ export const createChatHandler = () => {
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
             ) => {
+              if (modelName !== selectedModel) {
+                streamCtx.abliteratedStepRouting = undefined;
+              }
               activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;

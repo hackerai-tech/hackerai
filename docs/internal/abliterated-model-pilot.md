@@ -16,6 +16,14 @@ Auto uses the base model because its baseline is Standard. The existing moderati
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
+Abliteration is limited to model-generation steps one through three within each
+Ask response or Agent run. The shared AI SDK loop uses the assigned Abliteration
+model for zero-based step indexes 0–2, then switches step 4 and every later step to
+the request's saved OpenRouter baseline. The counter resets for each new response
+or run; an Agent run can continue through its existing 500-step cap. Provider retry
+attempts do not advance the completed-step counter. An Abliteration provider error
+still disables the treatment route immediately for the replacement stream.
+
 Because Large v2 is text-only, image attachments and image-view tool results use
 the multimodal base `abliterated-model` for every selector, including Pro and Max.
 PDFs, files without an image media type, and other unsupported file inputs retain
@@ -49,21 +57,18 @@ summaries, titles, and approval reviewers retain their existing models.
 
 ## Environment and rollout record
 
-Definitions read back on 2026-09-06; both are deliberately **inactive** pending
-verified runtime configuration, full application testing, and internal-user testing.
+Definitions read back on 2026-09-06 after Production enrollment was expanded.
 
-| Environment | PostHog project       | Flag ID | Key                           | Configured rollout                                            |
-| ----------- | --------------------- | ------- | ----------------------------- | ------------------------------------------------------------- |
-| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | 100% of eligible paid users, forced test                      |
-| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | 2% enrollment; 50/50 control/test, approximately 1% treatment |
+| Environment | PostHog project       | Flag ID | Key                           | Configured rollout                                                       |
+| ----------- | --------------------- | ------- | ----------------------------- | ------------------------------------------------------------------------ |
+| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | Active; 100% of eligible paid users, forced test                         |
+| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | Active; 100% enrollment, 50/50 control/test, approximately 50% treatment |
 
 Both definitions target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
 The server supplies the current trusted subscription and enforces the remaining
-eligibility checks. The production definition is a prepared public-pilot setting,
-not an activated internal allowlist. Before first activation, replace its group
-with an explicit internal allowlist; validate there before restoring the small
-public pilot. Keep internal validation out of the causal readout. Never apply
-Preview's 100% test split to Production.
+eligibility checks. Production evaluates the explicit test-user override first,
+then the broader paid-user experiment group. Keep override traffic out of the
+causal readout. Never apply Preview's 100% test split to Production.
 
 Before any deployment/configuration work, independently verify the intended
 Convex account, project, designated deployment, URL, and custom domain, and the
@@ -77,14 +82,16 @@ for `ABLITERATION_API_KEY`. Verify the worker's actual PostHog project key, not 
 the Vercel setting. Local credential presence in both developer folders was checked;
 remote credentials and runtime project selections remain unverified.
 
-The initial code/key release needs a new Vercel deployment and a new Trigger
-worker deployment. Afterwards, a flag-only change is evaluated on the next Ask
-request or new Agent run; it does not reroute an already-running stream.
+Routing-code changes need a new Vercel deployment and a new Trigger worker
+deployment. A flag-only change is evaluated on the next Ask request or new Agent
+run; it does not reroute an already-running stream.
 
 ## Event contract
 
 All new server events carry `experiment_key`, `experiment_variant`,
-`$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode and tier.
+`$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode, tier,
+and `generation_step_limit`. Provider-attempt and provider-outcome events also
+carry the one-based `generation_step` and `within_abliteration_step_limit`.
 Eligibility identifies `assigned_platform_authorization_context`; each provider
 attempt identifies its actual `platform_authorization_context` as `not_appended`
 for an Abliteration model or `standard` for a control/fallback provider.
@@ -174,7 +181,7 @@ It loads only the provider credential, uses synthetic arithmetic and an in-memor
 tool, exercises the registered provider plus tool IDs and telemetry, caps output
 and duration, and does not ingest PostHog events. It is not full app verification.
 
-Before activation, on the verified Preview custom URL:
+For release verification on the verified Preview custom URL:
 
 1. Use a disposable paid-user Ask chat and an eligible synthetic authorized lab
    request. Confirm moderation eligibility, streaming completion, model attribution,
@@ -185,13 +192,18 @@ Before activation, on the verified Preview custom URL:
    model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
    Unit tests cover deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
+   In Direct Ask and Agent, force one response/run through at least four sequential
+   model-generation steps. Confirm steps 1–3 use the assigned Abliteration route and
+   step 4 onward uses the exact OpenRouter baseline without flag re-evaluation. Start
+   a new response/run and confirm its generation-step counter starts again at one.
 3. Force the flag off/control and a provider outage. Verify fallback completes,
    assignment stays unchanged in outcomes/costs, replacement messages can be rated,
    and no duplicate tool action occurs.
 4. Stop, regenerate, rate, reload, and reconnect the disposable response. Confirm
    message linkage, terminal outcomes, token/cost attribution, and no content in
    analytics. Clean up the test chats. Repeat the bounded journey on the production
-   custom domain for the internal allowlist before the public pilot.
+   custom domain for the explicit test-user override and sampled treatment cohort
+   before any further rollout expansion.
 
 References: [provider models](https://docs.abliteration.ai/models),
 [provider pricing](https://docs.abliteration.ai/pricing),

@@ -6,7 +6,8 @@ import {
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
-import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
+import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
+import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
 type StreamOptions = Parameters<
@@ -47,6 +48,7 @@ export class AbliteratedModelTelemetry {
       selected_model_override: args.selectedModelOverride ?? "auto",
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
+      generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
       moderation_eligible: true,
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,
@@ -80,7 +82,7 @@ export class AbliteratedModelTelemetry {
     this.capture("abliterated_model_message_linked", {});
   }
 
-  wrap(model: LanguageModel): LanguageModel {
+  wrap(model: LanguageModel, stepIndex: number): LanguageModel {
     if (typeof model === "string" || model.specificationVersion !== "v3")
       return model;
     return wrapLanguageModel({
@@ -98,6 +100,9 @@ export class AbliteratedModelTelemetry {
           let responseModel = model.modelId;
           const common = () => ({
             attempt,
+            generation_step: stepIndex + 1,
+            within_abliteration_step_limit:
+              stepIndex < ABLITERATION_MAX_GENERATION_STEPS,
             requested_model: model.modelId,
             response_model: responseModel,
             platform_authorization_context: isAbliterationModel(model.modelId)

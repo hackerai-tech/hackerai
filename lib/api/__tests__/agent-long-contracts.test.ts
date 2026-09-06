@@ -1500,7 +1500,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(languageModel\) \?\? languageModel;[\s\S]{0,150}guardLanguageModelProviderResponse\(telemetryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(languageModel, stepIndex\) \?\? languageModel;[\s\S]{0,150}guardLanguageModelProviderResponse\(telemetryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1828,7 +1828,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       sandboxCostIdx,
     );
     const budgetCostIdx = agentStreamRunnerSrc.indexOf(
-      "ctx.usageTracker.computeCostDollars(modelName) +",
+      "ctx.usageTracker.computeCostDollars(activeStepModelName) +",
       triggerRunCostIdx,
     );
 
@@ -2022,6 +2022,24 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         /shouldRetryAbliterationApiError\(\s*abliteratedExperiment,\s*error,?\s*\)/,
       );
     }
+  });
+
+  test("Abliteration routing switches to OpenRouter after three generation steps", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /abliteratedStepRouting:[\s\S]{0,150}baselineModel/,
+      );
+      expect(source).toMatch(
+        /if \(modelName !== selectedModel\) \{\s*streamCtx\.abliteratedStepRouting = undefined;/,
+      );
+      expect(source).not.toMatch(
+        /conversationTurn|getConversationTurnCountByChatId/,
+      );
+    }
+    expect(agentStreamRunnerSrc).toMatch(
+      /resolveAbliterationModelForGenerationStep\(\{[\s\S]{0,250}stepIndex/,
+    );
+    expect(routeSrc).not.toMatch(/conversationTurn/);
   });
 
   test("provider content blocks preserve their classification and complete after the error stream", () => {

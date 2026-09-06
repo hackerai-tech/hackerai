@@ -4158,6 +4158,11 @@ export const agentLongTask = task({
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               abliteratedTelemetry,
+              ...(activeAbliteratedExperiment?.variant === "test" && {
+                abliteratedStepRouting: {
+                  baselineModel: activeAbliteratedExperiment.baselineModel,
+                },
+              }),
               onProviderRequestStart: createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
@@ -4206,6 +4211,12 @@ export const agentLongTask = task({
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onModelChunk: runTimingTracker.recordFirstModelChunk,
+              onModelStepSelected: (modelName) => {
+                activeModelName = modelName;
+                terminalRequestedModelSlug =
+                  trackedProvider.languageModel(modelName).modelId;
+                setCurrentModelName(modelName);
+              },
               onStartupPhaseDuration:
                 runTimingTracker.recordStartupPhaseDuration,
               registerBackgroundWork: registerBackgroundRunWork,
@@ -4256,6 +4267,9 @@ export const agentLongTask = task({
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
             ) => {
+              if (modelName !== selectedModel) {
+                streamCtx.abliteratedStepRouting = undefined;
+              }
               activeModelName = modelName;
               terminalRequestedModelSlug =
                 trackedProvider.languageModel(modelName).modelId;
