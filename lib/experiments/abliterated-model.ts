@@ -55,8 +55,10 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
     ),
   );
 
-// Abliteration applies this cap to the complete provider request, not each
-// message or upload action. Count the provider-visible history at that scope.
+/**
+ * Rejects attachment histories above the request-wide cap before assignment.
+ * Serialized tool images are checked by the stream runner before provider selection.
+ */
 const messagesExceedImageLimit = (messages: UIMessage[]): boolean => {
   let imageCount = 0;
 

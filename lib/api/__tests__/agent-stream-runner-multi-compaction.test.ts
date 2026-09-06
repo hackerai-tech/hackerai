@@ -571,33 +571,58 @@ describe("createAgentStream repeated compaction", () => {
     );
   });
 
-  it("checks serialized initial images before choosing a provider", async () => {
-    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
-      {
+  it.each([
+    {
+      source: "attachments",
+      message: {
         role: "user",
         content: Array.from({ length: 9 }, () => ({
           type: "image",
           image: "https://example.test/image.png",
         })),
       },
-    ]);
-    const stream = (await createAgentStream(
-      "model-abliterated",
-      createTestStreamContext({
-        trackedProvider: {
-          languageModel: (name: string) => ({ modelId: name }),
-        },
-        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
-        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-        usageTracker: {},
-      }) as any,
-      initAgentStreamState([uiMessage("initial", "Inspect the images")], {
-        usedTokens: 1_000,
-        maxTokens: 128_000,
-      }),
-    )) as any;
-    expect(stream.model.modelId).toBe("model-grok-4.6");
-  });
+    },
+    {
+      source: "persisted tool images",
+      message: {
+        role: "tool",
+        content: Array.from({ length: 5 }, (_, index) => ({
+          type: "tool-result",
+          toolCallId: `view-${index}`,
+          toolName: "file",
+          output: {
+            type: "content",
+            value: [
+              { type: "image-data", data: "test", mediaType: "image/png" },
+            ],
+          },
+        })),
+      },
+    },
+  ])(
+    "checks serialized initial $source before choosing a provider",
+    async ({ message }) => {
+      jest
+        .requireMock("ai")
+        .convertToModelMessages.mockResolvedValueOnce([message]);
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Inspect the images")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        }),
+      )) as any;
+      expect(stream.model.modelId).toBe("model-grok-4.6");
+    },
+  );
 
   it("switches to the baseline when tool images exceed the combined request cap", async () => {
     const stream = (await createAgentStream(
