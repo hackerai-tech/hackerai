@@ -28,6 +28,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   );
   const urlCacheRef = useRef<Map<string, CachedUrl>>(new Map());
   const prefetchedIdsRef = useRef<Set<string>>(new Set());
+  const pendingIdsRef = useRef<Set<string>>(new Set());
 
   // Get cached URL for a file (returns null if expired or not cached)
   const getCachedUrl = useCallback((fileId: string): string | null => {
@@ -76,6 +77,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
             file.mediaType &&
             isSupportedImageMediaType(file.mediaType) &&
             !prefetchedIdsRef.current.has(file.fileId) &&
+            !pendingIdsRef.current.has(file.fileId) &&
             !seenInThisRun.has(file.fileId)
           ) {
             s3ImageFiles.push({
@@ -99,6 +101,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
             isSupportedImageMediaType(part.mediaType) &&
             typeof part.fileId === "string" &&
             !prefetchedIdsRef.current.has(part.fileId) &&
+            !pendingIdsRef.current.has(part.fileId) &&
             !seenInThisRun.has(part.fileId)
           ) {
             s3ImageFiles.push({
@@ -115,20 +118,19 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         return;
       }
 
-      // Batch fetch URLs with deduplicated fileIds, chunked to respect server limit
-      try {
-        const fileIds = s3ImageFiles.map((f) => f.fileId);
-        const chunks: Array<Array<Id<"files">>> = [];
-        for (let i = 0; i < fileIds.length; i += MAX_BATCH_SIZE) {
-          chunks.push(fileIds.slice(i, i + MAX_BATCH_SIZE));
-        }
+      // Reserve all IDs before awaiting so streaming renders cannot enqueue them again.
+      const fileIds = s3ImageFiles.map((f) => f.fileId);
+      for (const fileId of fileIds) pendingIdsRef.current.add(fileId);
+      const chunks: Array<Array<Id<"files">>> = [];
+      for (let i = 0; i < fileIds.length; i += MAX_BATCH_SIZE) {
+        chunks.push(fileIds.slice(i, i + MAX_BATCH_SIZE));
+      }
 
-        const urlMaps = await Promise.all(
-          chunks.map((chunk) => getFileUrlsBatchAction({ fileIds: chunk })),
-        );
-
-        const now = Date.now();
-        for (const urlMap of urlMaps) {
+      // Fetch batches sequentially instead of fanning out with history size.
+      for (const chunk of chunks) {
+        try {
+          const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
+          const now = Date.now();
           if (urlMap && typeof urlMap === "object") {
             for (const [fileId, url] of Object.entries(urlMap) as Array<
               [string, string]
@@ -137,9 +139,11 @@ export function useFileUrlCache(messages: ChatMessage[]) {
               prefetchedIdsRef.current.add(fileId);
             }
           }
+        } catch (error) {
+          console.error("Failed to prefetch image URLs:", error);
+        } finally {
+          for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
         }
-      } catch (error) {
-        console.error("Failed to prefetch image URLs:", error);
       }
     }
 

@@ -569,7 +569,7 @@ export const getChatByIdFromClient = query({
       return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id:", error);
-      return null;
+      throw error;
     }
   },
 });
@@ -1148,7 +1148,8 @@ export const getUserChats = query({
             ? { name: error.name, message: error.message }
             : String(error),
       });
-      return emptyChatsPage();
+      // A failed query is not an empty account. Let the client offer recovery.
+      throw error;
     }
   },
 });

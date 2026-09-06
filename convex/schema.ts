@@ -833,6 +833,11 @@ export default defineSchema({
   })
     .index("by_note_id", ["note_id"])
     .index("by_user_and_category", ["user_id", "category"])
+    .index("by_user_and_category_and_updated", [
+      "user_id",
+      "category",
+      "updated_at",
+    ])
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .searchIndex("search_notes", {
       searchField: "content",
