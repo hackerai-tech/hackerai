@@ -2,6 +2,7 @@ import {
   evaluateAbliteratedModel,
   ABLITERATED_EXPERIMENT_KEY,
 } from "../abliterated-model";
+import type { UIMessage } from "ai";
 import type { SelectedModel, SubscriptionTier } from "@/types";
 import {
   ABLITERATION_MODEL_ID,
@@ -101,6 +102,26 @@ describe("moderation-gated Abliteration assignment", () => {
           ],
         },
       ],
+    },
+    {
+      messages: [
+        {
+          id: "image-view",
+          role: "assistant" as const,
+          parts: [
+            {
+              type: "tool-file",
+              toolCallId: "call-file-1",
+              state: "output-available",
+              output: {
+                action: "view",
+                kind: "image",
+                mediaType: "image/png",
+              },
+            },
+          ],
+        },
+      ] as unknown as UIMessage[],
     },
   ])("does not evaluate ineligible requests: %j", async (overrides) => {
     const getFeatureFlag = jest.fn().mockResolvedValue("test");

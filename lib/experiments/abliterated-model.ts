@@ -8,6 +8,7 @@ import {
   ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
+import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 
 export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
@@ -49,6 +50,7 @@ export function isEligibleForAbliteratedModel({
     subscription !== "free" &&
     moderationEligible &&
     messages.length > 0 &&
+    !uiMessagesContainImageViewResult(messages) &&
     !messages.some((message) =>
       message.parts.some((part) => part.type === "file"),
     )

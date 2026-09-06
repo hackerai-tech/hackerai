@@ -849,7 +849,9 @@ export async function createAgentStream(
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
-    const guardedModel = guardLanguageModelProviderResponse(languageModel, {
+    const telemetryModel =
+      ctx.abliteratedTelemetry?.wrap(languageModel) ?? languageModel;
+    const guardedModel = guardLanguageModelProviderResponse(telemetryModel, {
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
           event: "provider_tool_call_guard_applied",
@@ -865,7 +867,7 @@ export async function createAgentStream(
       maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
     });
     return namespaceLanguageModelToolCalls(
-      ctx.abliteratedTelemetry?.wrap(guardedModel) ?? guardedModel,
+      guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
   };

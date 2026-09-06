@@ -1,5 +1,6 @@
 import type { LanguageModel } from "ai";
 import { AbliteratedModelTelemetry } from "../abliterated-model";
+import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
 import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliterated-model";
 
 const finishPart = {
@@ -30,13 +31,9 @@ function model(parts: unknown[], fails = false): LanguageModel {
     }),
   } as unknown as LanguageModel;
 }
-async function consume(
-  telemetry: AbliteratedModelTelemetry,
-  source: LanguageModel,
-) {
-  const wrapped = telemetry.wrap(source);
-  if (typeof wrapped === "string") throw new Error("unexpected model ID");
-  const result = await wrapped.doStream({ prompt: [], maxOutputTokens: 100 });
+async function consumeModel(source: LanguageModel) {
+  if (typeof source === "string") throw new Error("unexpected model ID");
+  const result = await source.doStream({ prompt: [], maxOutputTokens: 100 });
   const reader = result.stream.getReader();
   const output = [];
   while (true) {
@@ -45,6 +42,12 @@ async function consume(
     output.push(next.value);
   }
   return output;
+}
+async function consume(
+  telemetry: AbliteratedModelTelemetry,
+  source: LanguageModel,
+) {
+  return consumeModel(telemetry.wrap(source));
 }
 describe("Abliteration stream telemetry", () => {
   const capture = jest.fn();
@@ -141,6 +144,30 @@ describe("Abliteration stream telemetry", () => {
       ).not.toBe("completed");
     },
   );
+  it("records content-filter usage before the response guard emits its error", async () => {
+    const telemetry = create();
+    const telemetryModel = telemetry.wrap(
+      model([
+        {
+          ...finishPart,
+          finishReason: { unified: "content-filter", raw: "content-filter" },
+        },
+      ]),
+    );
+    const output = await consumeModel(
+      guardLanguageModelProviderResponse(telemetryModel),
+    );
+
+    expect(output.map((part) => part.type)).toEqual(["error", "finish"]);
+    expect(
+      events("abliterated_model_provider_outcome")[0].properties,
+    ).toMatchObject({
+      outcome: "content_filter",
+      finish_reason: "content-filter",
+      input_tokens: 10,
+      output_tokens: 5,
+    });
+  });
   it("tracks tool activity without recording tool inputs", async () => {
     await consume(
       create(),
