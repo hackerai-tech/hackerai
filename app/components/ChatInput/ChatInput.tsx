@@ -918,12 +918,17 @@ export const ChatInput = ({
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
           >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
             <div
-              className={`ml-auto min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              className="min-w-0 flex-1"
+              data-testid="chat-input-mobile-sandbox"
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+            <div
+              className={`ml-auto min-w-0 max-w-[56%] shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
