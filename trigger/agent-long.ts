@@ -4548,7 +4548,10 @@ export const agentLongTask = task({
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
               const shouldRecoverAbliterationApiError =
-                shouldRetryAbliterationApiError(abliteratedExperiment, error);
+                shouldRetryAbliterationApiError(
+                  activeAbliteratedExperiment,
+                  error,
+                );
               if (
                 isProviderApiError(error) &&
                 !isInvalidImageInputError(error) &&

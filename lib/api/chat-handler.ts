@@ -1586,7 +1586,10 @@ export const createChatHandler = () => {
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
               const shouldRecoverAbliterationApiError =
-                shouldRetryAbliterationApiError(abliteratedExperiment, error);
+                shouldRetryAbliterationApiError(
+                  activeAbliteratedExperiment,
+                  error,
+                );
               // If provider returns an API error before streaming, retry with fallback.
               if (
                 isProviderApiError(error) &&

@@ -2013,6 +2013,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("Abliteration API fallback requires the assignment to remain active", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /shouldRetryAbliterationApiError\(\s*activeAbliteratedExperiment,\s*error,?\s*\)/,
+      );
+      expect(source).not.toMatch(
+        /shouldRetryAbliterationApiError\(\s*abliteratedExperiment,\s*error,?\s*\)/,
+      );
+    }
+  });
+
   test("provider content blocks preserve their classification and complete after the error stream", () => {
     expect(taskSrc).toMatch(
       /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"content_blocked"/,
