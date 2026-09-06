@@ -14,7 +14,7 @@ export class AbliterationVisionError extends Error {
   }
 }
 
-type ImageInput = { image: string; mediaType: string };
+type ImageInput = { image: string; mediaType: string; filename?: string };
 
 /** Reads the SDK's attachment and multimodal tool-output image representations. */
 function imageInput(part: unknown): ImageInput | undefined {
@@ -46,6 +46,7 @@ function imageInput(part: unknown): ImageInput | undefined {
   return {
     image,
     mediaType: mediaType ?? /^data:([^;,]+)/.exec(image)?.[1] ?? "image/png",
+    ...(typeof value.filename === "string" && { filename: value.filename }),
   };
 }
 
@@ -120,9 +121,14 @@ export function createAbliterationVisionPreprocessor({
             .replaceAll("&", "&amp;")
             .replaceAll("<", "&lt;")
             .replaceAll(">", "&gt;");
+          const filename = task.input.filename
+            ?.replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;");
           replacements.set(task.position, {
             type: "text",
-            text: `<image_description index="${start + offset + 1}" trust="untrusted">\n${escaped}\n</image_description>`,
+            text: `<image_description index="${start + offset + 1}"${filename ? ` filename="${filename}"` : ""} trust="untrusted">\n${escaped}\n</image_description>`,
           });
         }),
       );

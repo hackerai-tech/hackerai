@@ -185,11 +185,13 @@ it("supports SDK binary image attachments", async () => {
         type: "file",
         data: new Uint8Array([1, 2, 3]),
         mediaType: "image/jpeg",
+        filename: 'screenshot"<one>.jpg',
       },
     ],
   });
-  await preprocess(input);
+  const output = await preprocess(input);
   expect(describe).toHaveBeenLastCalledWith(
     expect.objectContaining({ image: "AQID", mediaType: "image/jpeg" }),
   );
+  expect(JSON.stringify(output)).toContain("screenshot&quot;&lt;one&gt;.jpg");
 });
