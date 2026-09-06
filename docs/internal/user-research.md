@@ -36,8 +36,8 @@ Raw excerpts are not stored. Account deletion removes that user's
 `research_user_profiles` and `research_run_members` records.
 `research_runs` and sanitized `research_reports` remain retained, including
 single-user reports. Reports require at least one available user profile.
-A single-user report describes individual observations with a provisional
-low-confidence avatar; it does not establish cross-user patterns or
+A single-user report states that its sample size is one and describes
+individual observations with a provisional low-confidence avatar; it does not establish cross-user patterns or
 population-level conclusions.
 
 ## Convex functions

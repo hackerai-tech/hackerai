@@ -562,5 +562,28 @@ ${"QUJD".repeat(16)}
     expect(normalized.crossCohortPatterns[0].evidenceUserCount).toBe(4);
     expect(normalized.primaryAvatar).toBe("Independent Operator");
     expect(normalized.secondaryAvatars).toEqual(["Security Learner"]);
+
+    const singleUser = normalizeCohortSynthesis(normalized, 1);
+    expect(singleUser.avatars).toEqual([
+      { ...normalized.avatars[0], evidenceUserCount: 1, confidence: "low" },
+    ]);
+    expect(singleUser.primaryAvatar).toBe(singleUser.avatars[0].name);
+    expect(singleUser.secondaryAvatars).toEqual([]);
+    expect(singleUser.crossCohortPatterns).toEqual([]);
+    expect(singleUser.unknowns).toEqual([
+      expect.stringContaining("Sample size is one user"),
+    ]);
+    expect(singleUser.unknowns[0]).toContain("wider applicability");
+
+    const boundedUnknowns = normalizeCohortSynthesis(
+      {
+        ...normalized,
+        unknowns: Array.from({ length: 8 }, (_, i) => `Unknown ${i + 1}`),
+      },
+      1,
+    );
+    expect(boundedUnknowns.unknowns).toHaveLength(8);
+    expect(boundedUnknowns.unknowns[0]).toContain("Sample size is one user");
+    expect(normalizeCohortSynthesis(singleUser, 1)).toEqual(singleUser);
   });
 });

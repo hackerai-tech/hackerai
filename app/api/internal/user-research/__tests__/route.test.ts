@@ -399,6 +399,22 @@ describe("PM user research gateway", () => {
         usersAnalyzed: userCount,
         report: {
           ...validResult.report,
+          avatars: validResult.report.avatars.map((avatar) => ({
+            ...avatar,
+            evidenceUserCount: userCount,
+            confidence: userCount === 1 ? "low" : avatar.confidence,
+          })),
+          crossCohortPatterns:
+            userCount === 1
+              ? []
+              : validResult.report.crossCohortPatterns.map((pattern) => ({
+                  ...pattern,
+                  evidenceUserCount: userCount,
+                })),
+          unknowns:
+            userCount === 1
+              ? ["Sample size is one user; wider applicability is unknown."]
+              : validResult.report.unknowns,
           coverage: {
             ...validResult.report.coverage,
             usersRequested: userCount,
@@ -427,6 +443,50 @@ describe("PM user research gateway", () => {
       });
     },
   );
+
+  it.each([
+    "evidence count",
+    "confidence",
+    "cross-user patterns",
+    "multiple avatars",
+    "mismatched coverage",
+  ])("rejects single-user output with invalid %s", async (invalidField) => {
+    const avatar = {
+      ...validResult.report.avatars[0],
+      evidenceUserCount: 1,
+      confidence: "low",
+    };
+    const report = {
+      ...validResult.report,
+      avatars: [avatar],
+      crossCohortPatterns: [] as typeof validResult.report.crossCohortPatterns,
+      coverage: {
+        ...validResult.report.coverage,
+        usersRequested: 1,
+        usersAnalyzed: 1,
+      },
+    };
+    if (invalidField === "evidence count") avatar.evidenceUserCount = 3;
+    if (invalidField === "confidence") avatar.confidence = "high";
+    if (invalidField === "cross-user patterns")
+      report.crossCohortPatterns = validResult.report.crossCohortPatterns;
+    if (invalidField === "multiple avatars")
+      report.avatars.push({ ...avatar, name: "Another avatar" });
+    if (invalidField === "mismatched coverage")
+      report.coverage.usersAnalyzed = 3;
+    retrieveRun.mockResolvedValue({
+      taskIdentifier: "pm-user-research",
+      tags: ["pm-user-research-gateway"],
+      isSuccess: true,
+      output: { ...validResult, userIds: ["user-1"], usersAnalyzed: 1, report },
+    });
+    const { GET } = await import("../route");
+    const response = await GET(request({ runId: "run_gateway123" }));
+    expect(response.status).toBe(502);
+    expect(JSON.stringify(await response.json())).not.toContain(
+      "Independent security practitioner",
+    );
+  });
 
   it("does not expose unrelated Trigger runs", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});

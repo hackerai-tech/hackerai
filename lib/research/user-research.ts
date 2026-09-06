@@ -385,25 +385,45 @@ export const researchCohortReportSchema = cohortSynthesisSchema.extend({
   }),
 });
 
-export const pmUserResearchResultSchema = z.object({
-  analysisId: z.uuid(),
-  status: z.literal("completed"),
-  userIds: z
-    .array(z.string().trim().min(1).max(200))
-    .min(USER_RESEARCH_MIN_COHORT_SIZE)
-    .max(USER_RESEARCH_MAX_COHORT_SIZE)
-    .refine((userIds) => new Set(userIds).size === userIds.length, {
-      message: "userIds must be unique",
-    }),
-  comparisonGroups: z
-    .array(comparisonGroupSchema)
-    .min(USER_RESEARCH_MIN_COMPARISON_GROUPS)
-    .max(USER_RESEARCH_MAX_COMPARISON_GROUPS)
-    .optional(),
-  failedProfiles: z.number().int().min(0).max(20),
-  usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
-  report: researchCohortReportSchema,
-});
+export const pmUserResearchResultSchema = z
+  .object({
+    analysisId: z.uuid(),
+    status: z.literal("completed"),
+    userIds: z
+      .array(z.string().trim().min(1).max(200))
+      .min(USER_RESEARCH_MIN_COHORT_SIZE)
+      .max(USER_RESEARCH_MAX_COHORT_SIZE)
+      .refine((userIds) => new Set(userIds).size === userIds.length, {
+        message: "userIds must be unique",
+      }),
+    comparisonGroups: z
+      .array(comparisonGroupSchema)
+      .min(USER_RESEARCH_MIN_COMPARISON_GROUPS)
+      .max(USER_RESEARCH_MAX_COMPARISON_GROUPS)
+      .optional(),
+    failedProfiles: z.number().int().min(0).max(20),
+    usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
+    report: researchCohortReportSchema,
+  })
+  .refine(
+    (result) => {
+      const { report, usersAnalyzed } = result;
+      if (usersAnalyzed !== report.coverage.usersAnalyzed) return false;
+      if (usersAnalyzed !== 1) return true;
+      return (
+        report.avatars.length === 1 &&
+        report.avatars[0].evidenceUserCount === 1 &&
+        report.avatars[0].confidence === "low" &&
+        report.primaryAvatar === report.avatars[0].name &&
+        report.secondaryAvatars.length === 0 &&
+        report.crossCohortPatterns.length === 0
+      );
+    },
+    {
+      message:
+        "Research result must match its analyzed user count and single-user limitations",
+    },
+  );
 
 export type ResearchUserProfile = z.infer<typeof researchUserProfileSchema>;
 export type ResearchCoverage = z.infer<typeof researchCoverageSchema>;
@@ -614,6 +634,23 @@ export const normalizeCohortSynthesis = (
   const primaryAvatar = avatarNames.has(synthesis.primaryAvatar)
     ? synthesis.primaryAvatar
     : fallbackAvatar.name;
+  if (usersAnalyzed === 1) {
+    const avatar =
+      avatars.find((entry) => entry.name === primaryAvatar) ?? fallbackAvatar;
+    const limitation =
+      "Sample size is one user. This avatar is provisional; wider applicability to other users is unknown.";
+    return {
+      ...synthesis,
+      avatars: [{ ...avatar, confidence: "low" }],
+      primaryAvatar: avatar.name,
+      secondaryAvatars: [],
+      crossCohortPatterns: [],
+      unknowns: [
+        limitation,
+        ...synthesis.unknowns.filter((entry) => entry !== limitation),
+      ].slice(0, 8),
+    };
+  }
   return {
     ...synthesis,
     avatars,
