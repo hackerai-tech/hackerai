@@ -12,14 +12,15 @@ describe("chat-handler request validation", () => {
       path.resolve(__dirname, "../chat-handler.ts"),
       "utf8",
     );
-    const routing = source.slice(
-      source.indexOf("const flashRoutingAssignment"),
-    );
-    expect(
-      routing.slice(0, routing.indexOf("if (flashRoutingAssignment)")),
-    ).toContain(
+    const routingStart = source.indexOf("const flashRoutingAssignment");
+    const routingEnd = source.indexOf("if (flashRoutingAssignment)");
+    const attachmentCheck = source.indexOf(
       "countFileAttachments(fetched.truncatedMessages).imageCount > 0",
     );
+    expect(routingStart).toBeGreaterThan(-1);
+    expect(routingEnd).toBeGreaterThan(-1);
+    expect(attachmentCheck).toBeGreaterThan(routingStart);
+    expect(attachmentCheck).toBeLessThan(routingEnd);
   });
   it("enforces the Trigger.dev Agent boundary before Vercel auth or billing work", () => {
     const source = fs.readFileSync(
