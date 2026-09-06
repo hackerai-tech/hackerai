@@ -717,6 +717,7 @@ export async function createAgentStream(
   state: AgentStreamState,
 ) {
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
+  const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;
   const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
@@ -986,7 +987,7 @@ export async function createAgentStream(
   let pdfParserEngine: "mistral-ocr" | "cloudflare-ai" = "mistral-ocr";
   let providerPdfAttachmentsDisabled = false;
   let openRouterFileAnnotations: unknown[] | undefined;
-  const getEffectiveModelName = (stepIndex = 0) =>
+  const getEffectiveModelName = (stepIndex = generationStepOffset) =>
     resolveAgentModelForImageToolResults(
       ctx.abliteratedStepRouting
         ? resolveAbliterationModelForGenerationStep({
@@ -1001,7 +1002,7 @@ export async function createAgentStream(
       ctx.auxiliaryVisionEnabled,
       ctx.directGlmVisionEnabled,
     );
-  const getEffectiveModelInfo = (stepIndex = 0) => {
+  const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);
     activeStepModelName = effectiveModelName;
     ctx.onModelStepSelected?.(effectiveModelName);
@@ -1140,7 +1141,7 @@ export async function createAgentStream(
   recordProviderRequestDiagnostics({
     modelName: initialModelInfo.modelName,
     requestedSlug: initialModelInfo.requestedSlug,
-    stepIndex: 0,
+    stepIndex: generationStepOffset,
     source: "initial",
     messages: initialModelMessages,
     rawMessages: initialModelMessages,
@@ -1156,7 +1157,10 @@ export async function createAgentStream(
     });
 
   return streamText({
-    model: getNamespacedLanguageModel(initialModelInfo.languageModel, 0),
+    model: getNamespacedLanguageModel(
+      initialModelInfo.languageModel,
+      generationStepOffset,
+    ),
     maxOutputTokens,
     system: buildSystemPrompt(
       ctx.currentSystemPrompt,
@@ -1174,10 +1178,12 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
-      const generationStepIndex =
+      const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
           ? stepNumber
           : steps.length;
+      const generationStepIndex =
+        generationStepOffset + localGenerationStepIndex;
       const rawModelMessages = messages as ModelMessage[];
       let rollingModelMessages = buildRollingModelMessages(
         rawModelMessages,
@@ -1329,7 +1335,7 @@ export async function createAgentStream(
               recordProviderRequestDiagnostics({
                 modelName: continuationModelInfo.modelName,
                 requestedSlug: continuationModelInfo.requestedSlug,
-                stepIndex: steps.length + 1,
+                stepIndex: generationStepIndex + 1,
                 source: "summarized_prepare_step",
                 messages: preparedMessages,
                 rawMessages: rawModelMessages,
@@ -1505,7 +1511,7 @@ export async function createAgentStream(
                 recordProviderRequestDiagnostics({
                   modelName: continuationModelInfo.modelName,
                   requestedSlug: continuationModelInfo.requestedSlug,
-                  stepIndex: steps.length + 1,
+                  stepIndex: generationStepIndex + 1,
                   source: "summarized_prepare_step",
                   messages: preparedMessages,
                   rawMessages: rawModelMessages,
@@ -1576,7 +1582,7 @@ export async function createAgentStream(
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
           requestedSlug: effectiveModelInfo.requestedSlug,
-          stepIndex: steps.length + 1,
+          stepIndex: generationStepIndex + 1,
           source: "prepare_step",
           messages: preparedMessages as ModelMessage[],
           rawMessages: rawModelMessages,
@@ -1617,7 +1623,7 @@ export async function createAgentStream(
         recordProviderRequestDiagnostics({
           modelName: fallbackModelInfo.modelName,
           requestedSlug: lastRequestedSlug,
-          stepIndex: steps.length + 1,
+          stepIndex: generationStepIndex + 1,
           source: "prepare_step",
           messages: fallbackMessages as ModelMessage[],
           rawMessages: rawModelMessages,

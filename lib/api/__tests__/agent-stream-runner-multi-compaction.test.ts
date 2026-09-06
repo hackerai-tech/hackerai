@@ -571,6 +571,56 @@ describe("createAgentStream repeated compaction", () => {
     );
   });
 
+  it("preserves the generation-step position across replacement streams", async () => {
+    const onProviderRequestDiagnostics = jest.fn();
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the authorized lab")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    state.agentStepCount = 3;
+
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        platformAuthorized: true,
+        abliteratedStepRouting: {
+          baselineModel: "model-deepseek-v4-flash-0731",
+        },
+        summarizationTracker: {
+          hasSummarized: false,
+          summarizationCount: 0,
+        },
+        usageTracker: {},
+        onProviderRequestDiagnostics,
+      }) as any,
+      state,
+    )) as any;
+
+    expect(stream.model.modelId).toBe("model-deepseek-v4-flash-0731");
+    const replacementFirstStep = await stream.prepareStep({
+      stepNumber: 0,
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(replacementFirstStep.model.modelId).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(JSON.stringify(replacementFirstStep.messages)).toContain(
+      PLATFORM_AUTHORIZATION_ANNOTATION,
+    );
+    expect(onProviderRequestDiagnostics).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        model: "model-deepseek-v4-flash-0731",
+        source: "prepare_step",
+        step_index: 4,
+      }),
+      expect.anything(),
+    );
+  });
+
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
     const stream = (await createAgentStream(
