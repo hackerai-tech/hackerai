@@ -116,13 +116,47 @@ describe("saveMessage — is_hidden handling", () => {
       user_id: USER_ID,
       canceled_at: undefined,
     },
+    visibleTurns?: {
+      legacy?: Record<string, any>[];
+      explicit?: Record<string, any>[];
+    },
   ): void {
     mockCtx.db.query.mockImplementation((table: string) => {
       if (table === "messages") {
         return {
-          withIndex: jest.fn().mockReturnValue({
-            first: jest.fn<any>().mockResolvedValue(msg),
-          }),
+          withIndex: jest.fn(
+            (indexName: string, buildIndex: (q: any) => any) => {
+              if (indexName === "by_message_id") {
+                return { first: jest.fn<any>().mockResolvedValue(msg) };
+              }
+
+              if (indexName === "by_chat_id_and_role_and_hidden") {
+                let hidden: boolean | undefined;
+                const q = {
+                  eq: jest.fn((field: string, value: unknown) => {
+                    if (field === "is_hidden") {
+                      hidden = value as boolean | undefined;
+                    }
+                    return q;
+                  }),
+                };
+                buildIndex(q);
+                const defaultLegacyTurns =
+                  msg?.role === "user" && msg.is_hidden !== true ? [msg] : [];
+                const turns =
+                  hidden === false
+                    ? (visibleTurns?.explicit ?? [])
+                    : (visibleTurns?.legacy ?? defaultLegacyTurns);
+                return {
+                  order: jest.fn().mockReturnValue({
+                    take: jest.fn<any>().mockResolvedValue(turns),
+                  }),
+                };
+              }
+
+              throw new Error(`Unexpected messages index: ${indexName}`);
+            },
+          ),
         };
       }
 
@@ -172,19 +206,46 @@ describe("saveMessage — is_hidden handling", () => {
 
     const { saveMessage } = await import("../messages");
 
-    await saveMessage.handler(mockCtx, {
-      serviceKey: SERVICE_KEY,
-      id: "msg-visible-user",
-      chatId: CHAT_ID,
-      userId: USER_ID,
-      role: "user" as const,
-      parts: [{ type: "text", text: "move this chat to the top" }],
-    });
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-visible-user",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: "move this chat to the top" }],
+      }),
+    ).resolves.toBe(1);
 
     const insertedMessage = mockCtx.db.insert.mock.calls[0]?.[1];
+    expect(insertedMessage.conversation_turn).toBe(1);
     expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
       update_time: insertedMessage.update_time,
     });
+  });
+
+  it("assigns and stores the next visible conversation turn", async () => {
+    setupExistingMessage(null, undefined, {
+      legacy: [makeMessage({ id: "turn-1" })],
+      explicit: [makeMessage({ id: "turn-2", is_hidden: false })],
+    });
+
+    const { saveMessage } = await import("../messages");
+
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "turn-3",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: "third turn" }],
+      }),
+    ).resolves.toBe(3);
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({ conversation_turn: 3 }),
+    );
   });
 
   it("does not bump chat activity for assistant message inserts", async () => {
@@ -208,18 +269,20 @@ describe("saveMessage — is_hidden handling", () => {
   });
 
   it("does not bump chat activity when an existing user message is retried", async () => {
-    setupExistingMessage(makeMessage());
+    setupExistingMessage(makeMessage({ conversation_turn: 2 }));
 
     const { saveMessage } = await import("../messages");
 
-    await saveMessage.handler(mockCtx, {
-      serviceKey: SERVICE_KEY,
-      id: "msg-1",
-      chatId: CHAT_ID,
-      userId: USER_ID,
-      role: "user" as const,
-      parts: [{ type: "text", text: "hello" }],
-    });
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "msg-1",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "user" as const,
+        parts: [{ type: "text", text: "hello" }],
+      }),
+    ).resolves.toBe(2);
 
     expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
       "chat-doc-1",
@@ -487,7 +550,7 @@ describe("saveMessage — is_hidden handling", () => {
         role: "user" as const,
         parts: [{ type: "text", text: "late user message" }],
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe(1);
 
     expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
       canceled_at: undefined,
@@ -501,6 +564,7 @@ describe("saveMessage — is_hidden handling", () => {
         id: "msg-user-canceled",
         role: "user",
         content: "late user message",
+        conversation_turn: 1,
       }),
     );
     expect(console.error).not.toHaveBeenCalled();

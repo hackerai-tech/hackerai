@@ -246,6 +246,7 @@ export default defineSchema({
     trigger_run_id: v.optional(v.string()),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
+    conversation_turn: v.optional(v.number()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])

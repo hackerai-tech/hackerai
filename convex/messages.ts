@@ -100,6 +100,32 @@ const getOwnedFileInfo = async (
   };
 };
 
+/**
+ * Counts visible user turns inside the caller's Convex transaction.
+ * The cap keeps the read bounded because later turns share the same baseline.
+ */
+const getVisibleUserTurnCount = async (
+  ctx: { db: GenericDatabaseReader<DataModel> },
+  chatId: string,
+): Promise<number> => {
+  const visibleUserTurns = await Promise.all(
+    [undefined, false].map((hidden) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_chat_id_and_role_and_hidden", (q) =>
+          q.eq("chat_id", chatId).eq("role", "user").eq("is_hidden", hidden),
+        )
+        .order("desc")
+        .take(ABLITERATION_CONVERSATION_TURN_COUNT_CAP),
+    ),
+  );
+
+  return Math.min(
+    ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
+    visibleUserTurns.reduce((count, turns) => count + turns.length, 0),
+  );
+};
+
 const stripUnownedFileParts = (
   parts: any[],
   ownedFileIds: Set<string>,
@@ -541,7 +567,7 @@ export const saveMessage = mutation({
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.number()),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     let failureStage = "start";
@@ -612,6 +638,21 @@ export const saveMessage = mutation({
 
         // Build patch for fields that need updating
         const patch: Record<string, unknown> = {};
+        const effectiveHidden = args.isHidden ?? existingMessage.is_hidden;
+        let conversationTurn =
+          args.role === "user" &&
+          effectiveHidden !== true &&
+          typeof existingMessage.conversation_turn === "number"
+            ? existingMessage.conversation_turn
+            : undefined;
+        if (
+          args.role === "user" &&
+          effectiveHidden !== true &&
+          conversationTurn === undefined
+        ) {
+          conversationTurn = await getVisibleUserTurnCount(ctx, args.chatId);
+          patch.conversation_turn = conversationTurn;
+        }
 
         // Add new fileIds if provided
         if (fileIdsForSave && fileIdsForSave.length > 0) {
@@ -690,7 +731,7 @@ export const saveMessage = mutation({
           await ctx.db.patch(existingMessage._id, patch);
         }
 
-        return null;
+        return conversationTurn ?? null;
       } else {
         // updateOnly: only patch existing messages, don't create new ones.
         // Safety net for aborted streams when Redis skipSave signal was missed.
@@ -717,6 +758,13 @@ export const saveMessage = mutation({
       const content = extractTextFromParts(partsForSave);
 
       const now = Date.now();
+      const conversationTurn =
+        args.role === "user" && args.isHidden !== true
+          ? Math.min(
+              ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
+              (await getVisibleUserTurnCount(ctx, args.chatId)) + 1,
+            )
+          : undefined;
       const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
@@ -733,6 +781,7 @@ export const saveMessage = mutation({
         trigger_run_id: args.triggerRunId,
         usage: args.usage,
         is_hidden: args.isHidden,
+        conversation_turn: conversationTurn,
       };
       failureStage = "prepare_insert_message";
       const baseDocumentSizeBytes = getMessageDocumentSize(messageDocumentBase);
@@ -824,7 +873,7 @@ export const saveMessage = mutation({
         }
       }
 
-      return null;
+      return conversationTurn ?? null;
     } catch (error) {
       const causeData = getConvexErrorData(error);
       if (getConvexErrorCode(causeData) === "MESSAGE_TOO_LARGE") {
@@ -1551,25 +1600,7 @@ export const getConversationTurnCountForBackend = query({
       throw error;
     }
 
-    const visibleUserTurns = await Promise.all(
-      [undefined, false].map((hidden) =>
-        ctx.db
-          .query("messages")
-          .withIndex("by_chat_id_and_role_and_hidden", (q) =>
-            q
-              .eq("chat_id", args.chatId)
-              .eq("role", "user")
-              .eq("is_hidden", hidden),
-          )
-          .order("desc")
-          .take(ABLITERATION_CONVERSATION_TURN_COUNT_CAP),
-      ),
-    );
-
-    return Math.min(
-      ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
-      visibleUserTurns.reduce((count, turns) => count + turns.length, 0),
-    );
+    return getVisibleUserTurnCount(ctx, args.chatId);
   },
 });
 

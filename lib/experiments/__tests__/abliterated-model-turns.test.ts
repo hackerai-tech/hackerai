@@ -1,51 +1,25 @@
 import {
   ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
-  ABLITERATION_MAX_CONVERSATIONAL_TURNS,
   resolveAbliterationConversationTurn,
 } from "../abliterated-model-turns";
 
 describe("resolveAbliterationConversationTurn", () => {
-  it("adds the current unsaved user turn and caps later conversations", () => {
-    expect(
-      resolveAbliterationConversationTurn({
-        persistedTurnCount: 2,
-        pendingUserTurnCount: 1,
-        regenerate: false,
-        isAutoContinue: false,
-      }),
-    ).toBe(ABLITERATION_MAX_CONVERSATIONAL_TURNS);
-    expect(
-      resolveAbliterationConversationTurn({
-        persistedTurnCount: 3,
-        pendingUserTurnCount: 1,
-        regenerate: false,
-        isAutoContinue: false,
-      }),
-    ).toBe(ABLITERATION_CONVERSATION_TURN_COUNT_CAP);
+  it("preserves a persisted early-turn count", () => {
+    expect(resolveAbliterationConversationTurn({ persistedTurnCount: 2 })).toBe(
+      2,
+    );
   });
 
-  it.each([
-    { regenerate: true, isAutoContinue: false },
-    { regenerate: false, isAutoContinue: true },
-  ])("does not increment for $regenerate/$isAutoContinue", (request) => {
+  it("caps persisted counts one turn beyond the experiment limit", () => {
     expect(
-      resolveAbliterationConversationTurn({
-        persistedTurnCount: 3,
-        pendingUserTurnCount: 1,
-        ...request,
-      }),
-    ).toBe(3);
+      resolveAbliterationConversationTurn({ persistedTurnCount: 12 }),
+    ).toBe(ABLITERATION_CONVERSATION_TURN_COUNT_CAP);
   });
 
   it("fails closed for missing or invalid counts", () => {
     for (const persistedTurnCount of [undefined, -1, 1.5]) {
       expect(
-        resolveAbliterationConversationTurn({
-          persistedTurnCount,
-          pendingUserTurnCount: 1,
-          regenerate: false,
-          isAutoContinue: false,
-        }),
+        resolveAbliterationConversationTurn({ persistedTurnCount }),
       ).toBeUndefined();
     }
   });

@@ -2024,13 +2024,23 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
-  test("Abliteration routing receives the persisted conversational turn", () => {
+  test("Abliteration routing receives the atomically assigned conversational turn", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(
         /evaluateAbliteratedModel\(\{[\s\S]{0,500}conversationTurn,/,
       );
       expect(source).toMatch(/getConversationTurnCountByChatId/);
     }
+    expect(convexMessagesSrc).toContain("conversation_turn: conversationTurn");
+    expect(chatHandlerSrc).toMatch(
+      /const assignedConversationTurn = await handleInitialChatAndUserMessage\([\s\S]*?const conversationTurn =[\s\S]*?assignedConversationTurn/,
+    );
+    expect(routeSrc).toMatch(
+      /const conversationTurn = await handleInitialChatAndUserMessage\([\s\S]*?conversationTurn: conversationTurn \?\? undefined/,
+    );
+    expect(taskSrc).toMatch(
+      /conversationTurn: assignedConversationTurn[\s\S]*?assignedConversationTurn === undefined[\s\S]*?assignedConversationTurn \?\? persistedConversationTurnCount/,
+    );
   });
 
   test("provider content blocks preserve their classification and complete after the error stream", () => {

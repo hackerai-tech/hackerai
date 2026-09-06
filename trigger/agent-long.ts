@@ -2268,6 +2268,7 @@ export type AgentLongPayload = {
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
   genericDelegationEnabled?: boolean;
+  conversationTurn?: number;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -2357,6 +2358,7 @@ export const agentLongTask = task({
       endpoint: payloadEndpoint,
       analyticsRequestContext,
       genericDelegationEnabled = false,
+      conversationTurn: assignedConversationTurn,
     } = payload;
     const subagentsEnabled = genericDelegationEnabled;
     let selectedModelOverride = rawSelectedModelOverride;
@@ -2569,18 +2571,23 @@ export const agentLongTask = task({
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const [userCustomization, fetched, conversationTurn] = await Promise.all([
-        getUserCustomization({ userId }),
-        getMessagesByChatId({
-          chatId,
-          userId,
-          subscription,
-          newMessages: [],
-          regenerate,
-          mode,
-        }),
-        getConversationTurnCountByChatId({ chatId, userId }),
-      ]);
+      const [userCustomization, fetched, persistedConversationTurnCount] =
+        await Promise.all([
+          getUserCustomization({ userId }),
+          getMessagesByChatId({
+            chatId,
+            userId,
+            subscription,
+            newMessages: [],
+            regenerate,
+            mode,
+          }),
+          assignedConversationTurn === undefined
+            ? getConversationTurnCountByChatId({ chatId, userId })
+            : Promise.resolve(undefined),
+        ]);
+      const conversationTurn =
+        assignedConversationTurn ?? persistedConversationTurnCount;
       const { chat, fileTokens } = fetched;
       const projectContextPromise = resolveProjectExecutionContext({
         chat,

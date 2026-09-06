@@ -373,19 +373,11 @@ export const createChatHandler = () => {
             mode,
             useClientMessagesForRegenerate,
           }),
-          getConversationTurnCountByChatId({ chatId, userId }),
+          regenerate || isAutoContinue
+            ? getConversationTurnCountByChatId({ chatId, userId })
+            : Promise.resolve(undefined),
         ]);
       const { chat, isNewChat, fileTokens } = fetched;
-      const pendingConversationTurns =
-        !regenerate && !isAutoContinue
-          ? requestMessages.filter((message) => message.role === "user").length
-          : 0;
-      const conversationTurn = resolveAbliterationConversationTurn({
-        persistedTurnCount: persistedConversationTurnCount,
-        pendingUserTurnCount: pendingConversationTurns,
-        regenerate: Boolean(regenerate),
-        isAutoContinue,
-      });
 
       // Notes are injected right before streaming. Start the fetch now so it
       // overlaps the remaining preflight instead of adding a serial
@@ -436,7 +428,7 @@ export const createChatHandler = () => {
           subscription,
           selectedModelOverride,
         });
-      await handleInitialChatAndUserMessage({
+      const assignedConversationTurn = await handleInitialChatAndUserMessage({
         chatId,
         userId,
         messages: stripLocalDesktopSourcePaths(truncatedMessages),
@@ -445,6 +437,11 @@ export const createChatHandler = () => {
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
       });
+      const conversationTurn =
+        assignedConversationTurn ??
+        resolveAbliterationConversationTurn({
+          persistedTurnCount: persistedConversationTurnCount,
+        });
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =

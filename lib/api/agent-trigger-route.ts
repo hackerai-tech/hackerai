@@ -611,7 +611,7 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
-      await handleInitialChatAndUserMessage({
+      const conversationTurn = await handleInitialChatAndUserMessage({
         chatId,
         userId,
         messages: messagesForPersistence,
@@ -703,6 +703,7 @@ export const createAgentTriggerPost =
         endpoint,
         analyticsRequestContext,
         genericDelegationEnabled,
+        conversationTurn: conversationTurn ?? undefined,
         convexUrl: process.env.NEXT_PUBLIC_CONVEX_URL,
         requestTiming: {
           routeStartedAt,

@@ -1259,7 +1259,7 @@ export async function handleInitialChatAndUserMessage({
 
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
-    await saveMessage({
+    return saveMessage({
       chatId,
       userId,
       message: {
@@ -1270,6 +1270,8 @@ export async function handleInitialChatAndUserMessage({
       isHidden,
     });
   }
+
+  return undefined;
 }
 
 export async function updateChat({
