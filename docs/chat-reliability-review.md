@@ -11,7 +11,8 @@
   token budget or 100 notes, whichever comes first. Invalid token counts fall
   back to an estimate. Notes outside this prompt prefix are not deleted.
 - Image URL prefetch reserves IDs before awaiting network requests, including
-  queued batches. Batches run sequentially per prefetch pass, and a failed batch
+  queued batches. One promise queue serializes batches across prefetch passes,
+  including newly arriving IDs during an active request, and a failed batch
   no longer discards successful batches. Lazy non-image fetching is unchanged.
 - History-query failures propagate to an error boundary around the components
   that own the subscriptions. They no longer masquerade as an empty account or

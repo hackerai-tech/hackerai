@@ -29,6 +29,51 @@ function images(count: number): ChatMessage[] {
 describe("image URL prefetching", () => {
   beforeEach(() => mockFetch.mockReset());
 
+  it.each([false, true])(
+    "queues newly arriving IDs behind a pending request (first fails: %s)",
+    async (firstFails) => {
+      let finish!: () => void;
+      mockFetch
+        .mockReturnValueOnce(
+          new Promise((resolve, reject) => {
+            finish = () =>
+              firstFails
+                ? reject(new Error("temporary failure"))
+                : resolve({ "file-0": "https://example.com/0" });
+          }),
+        )
+        .mockImplementation(async ({ fileIds }: { fileIds: string[] }) =>
+          Object.fromEntries(
+            fileIds.map((id) => [id, `https://example.com/${id}`]),
+          ),
+        );
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { result, rerender } = renderHook(
+          ({ messages }) => useFileUrlCache(messages),
+          { initialProps: { messages: images(1) } },
+        );
+        await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+        for (const count of [2, 3, 3, 3]) {
+          await act(async () => rerender({ messages: images(count) }));
+        }
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        await act(async () => finish());
+        await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+        expect(mockFetch.mock.calls.map(([args]) => args.fileIds)).toEqual([
+          ["file-0"],
+          ["file-1"],
+          ["file-2"],
+        ]);
+        expect(result.current.getCachedUrl("file-2")).toBe(
+          "https://example.com/file-2",
+        );
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it("deduplicates pending images across streaming updates", async () => {
     let resolve!: (value: Record<string, string>) => void;
     mockFetch.mockReturnValue(

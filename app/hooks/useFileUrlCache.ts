@@ -29,6 +29,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   const urlCacheRef = useRef<Map<string, CachedUrl>>(new Map());
   const prefetchedIdsRef = useRef<Set<string>>(new Set());
   const pendingIdsRef = useRef<Set<string>>(new Set());
+  const prefetchQueueRef = useRef<Promise<void> | null>(null);
 
   // Get cached URL for a file (returns null if expired or not cached)
   const getCachedUrl = useCallback((fileId: string): string | null => {
@@ -126,25 +127,33 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         chunks.push(fileIds.slice(i, i + MAX_BATCH_SIZE));
       }
 
-      // Fetch batches sequentially instead of fanning out with history size.
-      for (const chunk of chunks) {
-        try {
-          const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
-          const now = Date.now();
-          if (urlMap && typeof urlMap === "object") {
-            for (const [fileId, url] of Object.entries(urlMap) as Array<
-              [string, string]
-            >) {
-              urlCacheRef.current.set(fileId, { url, timestamp: now });
-              prefetchedIdsRef.current.add(fileId);
+      const runBatches = async () => {
+        for (const chunk of chunks) {
+          try {
+            const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
+            const now = Date.now();
+            if (urlMap && typeof urlMap === "object") {
+              for (const [fileId, url] of Object.entries(urlMap) as Array<
+                [string, string]
+              >) {
+                urlCacheRef.current.set(fileId, { url, timestamp: now });
+                prefetchedIdsRef.current.add(fileId);
+              }
             }
+          } catch (error) {
+            console.error("Failed to prefetch image URLs:", error);
+          } finally {
+            for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
           }
-        } catch (error) {
-          console.error("Failed to prefetch image URLs:", error);
-        } finally {
-          for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
         }
-      }
+      };
+
+      // Serialize across effects too: newly arriving IDs wait behind active work.
+      const previousWork = prefetchQueueRef.current;
+      prefetchQueueRef.current = previousWork
+        ? previousWork.then(runBatches, runBatches)
+        : runBatches();
+      await prefetchQueueRef.current;
     }
 
     prefetchImageUrls();
