@@ -61,6 +61,7 @@ const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const CHAT_DELETION_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
+const CONVERSATION_TURN_COUNT_QUERY_TIMEOUT_MS = 2_000;
 const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
 const MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN = 100;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
@@ -724,11 +725,21 @@ export async function getConversationTurnCountByChatId({
   chatId: string;
   userId: string;
 }): Promise<number | undefined> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await getConvexClient().query(
-      api.messages.getConversationTurnCountForBackend,
-      { serviceKey, chatId, userId },
-    );
+    return await Promise.race([
+      getConvexClient().query(api.messages.getConversationTurnCountForBackend, {
+        serviceKey,
+        chatId,
+        userId,
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Conversation turn count query timed out")),
+          CONVERSATION_TURN_COUNT_QUERY_TIMEOUT_MS,
+        );
+      }),
+    ]);
   } catch (error) {
     console.warn(
       JSON.stringify({
@@ -743,6 +754,8 @@ export async function getConversationTurnCountByChatId({
       }),
     );
     return undefined;
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 }
 

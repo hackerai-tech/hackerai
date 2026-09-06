@@ -1539,11 +1539,17 @@ export const getConversationTurnCountForBackend = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const chatExists: boolean = await ctx.runQuery(
-      internal.messages.verifyChatOwnership,
-      { chatId: args.chatId, userId: args.userId },
-    );
-    if (!chatExists) return 0;
+    try {
+      await ctx.runQuery(internal.messages.verifyChatOwnership, {
+        chatId: args.chatId,
+        userId: args.userId,
+      });
+    } catch (error) {
+      if (getConvexErrorCode(getConvexErrorData(error)) === "CHAT_NOT_FOUND") {
+        return 0;
+      }
+      throw error;
+    }
 
     const visibleUserTurns = await Promise.all(
       [undefined, false].map((hidden) =>

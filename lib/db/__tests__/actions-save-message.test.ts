@@ -167,6 +167,30 @@ describe("getConversationTurnCountByChatId", () => {
       warnSpy.mockRestore();
     }
   });
+
+  it("fails closed when the turn count query exceeds its deadline", async () => {
+    jest.useFakeTimers();
+    const { getConversationTurnCountByChatId, mockQuery } =
+      await loadSaveMessageWithMocks();
+    mockQuery.mockImplementationOnce(() => new Promise(() => {}));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const result = getConversationTurnCountByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+      });
+      await jest.advanceTimersByTimeAsync(2_000);
+
+      await expect(result).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Conversation turn count query timed out"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe("saveChat", () => {

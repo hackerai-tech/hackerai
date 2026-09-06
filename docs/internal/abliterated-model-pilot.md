@@ -16,10 +16,14 @@ Auto uses the base model because its baseline is Standard. The existing moderati
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
-Abliteration is limited to conversational turns one through three, counted from
-persisted visible user messages. Hidden Agent auto-continue prompts do not increment
+Abliteration is limited to conversational turns one through three. Direct Ask reads
+the persisted visible-user count before saving the current request, then adds the
+visible user messages in that request, so the first request is turn one. Agent reads
+the count after its route saves the visible user message and uses that persisted
+count directly. Regeneration and hidden Agent auto-continue prompts do not increment
 the count. Turn four and later use the request's normal OpenRouter baseline. If the
-persisted count cannot be read, routing fails closed to that baseline.
+persisted count cannot be read before its bounded deadline, routing fails closed to
+that baseline.
 
 Because Large v2 is text-only, image attachments and image-view tool results use
 the multimodal base `abliterated-model` for every selector, including Pro and Max.
@@ -188,8 +192,10 @@ For release verification on the verified Preview custom URL:
    model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
    Unit tests cover deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
-   Confirm turns one through three can use the assigned Abliteration route and
-   turn four returns to the exact OpenRouter baseline without flag re-evaluation.
+   In Direct Ask, confirm the current submitted message makes the first request turn
+   one. In Agent, confirm the already-saved visible user message makes the first run
+   turn one. Confirm turns one through three can use the assigned Abliteration route
+   and turn four returns to the exact OpenRouter baseline without flag re-evaluation.
 3. Force the flag off/control and a provider outage. Verify fallback completes,
    assignment stays unchanged in outcomes/costs, replacement messages can be rated,
    and no duplicate tool action occurs.

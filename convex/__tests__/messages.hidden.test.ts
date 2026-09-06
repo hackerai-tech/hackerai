@@ -1,4 +1,5 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 
 jest.mock("../_generated/server", () => ({
@@ -945,8 +946,10 @@ describe("getConversationTurnCountForBackend", () => {
     expect(mockCtx.db.query).toHaveBeenCalledTimes(2);
   });
 
-  it("returns zero without reading messages when chat ownership fails", async () => {
-    mockCtx.runQuery.mockResolvedValueOnce(false);
+  it("returns zero without reading messages when a new chat does not exist yet", async () => {
+    mockCtx.runQuery.mockRejectedValueOnce(
+      new ConvexError({ code: "CHAT_NOT_FOUND", message: "missing" }),
+    );
     const { getConversationTurnCountForBackend } = await import("../messages");
 
     await expect(
@@ -956,6 +959,22 @@ describe("getConversationTurnCountForBackend", () => {
         userId: USER_ID,
       }),
     ).resolves.toBe(0);
+    expect(mockCtx.db.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthorized ownership checks without reading messages", async () => {
+    mockCtx.runQuery.mockRejectedValueOnce(
+      new ConvexError({ code: "CHAT_UNAUTHORIZED", message: "denied" }),
+    );
+    const { getConversationTurnCountForBackend } = await import("../messages");
+
+    await expect(
+      getConversationTurnCountForBackend.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+      }),
+    ).rejects.toMatchObject({ data: { code: "CHAT_UNAUTHORIZED" } });
     expect(mockCtx.db.query).not.toHaveBeenCalled();
   });
 });
