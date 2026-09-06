@@ -498,7 +498,7 @@ export const createChatHandler = () => {
         subscription,
         selectedModel,
         hasImages:
-          countFileAttachments(truncatedMessages).imageCount > 0 ||
+          countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
           uiMessagesContainImageViewResult(processedMessages),
       });
       if (flashRoutingAssignment)

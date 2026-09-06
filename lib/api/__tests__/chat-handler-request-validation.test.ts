@@ -7,6 +7,20 @@ import {
 } from "@/lib/api/chat-request-validation";
 
 describe("chat-handler request validation", () => {
+  it("checks original image attachments before Flash routing", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../chat-handler.ts"),
+      "utf8",
+    );
+    const routing = source.slice(
+      source.indexOf("const flashRoutingAssignment"),
+    );
+    expect(
+      routing.slice(0, routing.indexOf("if (flashRoutingAssignment)")),
+    ).toContain(
+      "countFileAttachments(fetched.truncatedMessages).imageCount > 0",
+    );
+  });
   it("enforces the Trigger.dev Agent boundary before Vercel auth or billing work", () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, "../chat-handler.ts"),

@@ -709,6 +709,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
+  /** Preserve the authenticated free Ask policy across model retries. */
+  isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
   hasPdfAttachments?: boolean;
   pdfParserEngine?: "mistral-ocr" | "cloudflare-ai";
@@ -971,7 +973,9 @@ export function buildProviderOptions(
   // different reasoning override.
   const isFreeAsk =
     mode === "ask" &&
-    (modelName === "ask-model-free" || modelName === "ask-model-free-glm");
+    (options.isFreeAskRequest === true ||
+      modelName === "ask-model-free" ||
+      modelName === "ask-model-free-glm");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this

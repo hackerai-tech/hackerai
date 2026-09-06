@@ -1005,6 +1005,7 @@ export async function createAgentStream(
       ctx.mode,
       {
         requestedModelSlug,
+        isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
           streamHasPdfAttachments && !providerPdfAttachmentsDisabled,

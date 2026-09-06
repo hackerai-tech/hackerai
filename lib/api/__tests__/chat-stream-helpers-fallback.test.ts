@@ -57,6 +57,24 @@ const HIGH_REASONING_ROUTES = [
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
+  it.each(["ask-model-free", "ask-model-free-glm"] as const)(
+    "preserves free Ask low reasoning on retries from %s",
+    (primaryModel) => {
+      for (const retryModel of [
+        getRetryFallbackModel(primaryModel, "ask"),
+        getContentFilterRetryModel(primaryModel, "ask", GLM_FLASH_SLUG),
+      ]) {
+        const opts = buildProviderOptions(true, "user-1", retryModel, "ask", {
+          isFreeAskRequest: true,
+          reasoningOverride: { enabled: true, effort: "high" },
+        });
+        expect(opts.openrouter.reasoning).toEqual({
+          enabled: true,
+          effort: "low",
+        });
+      }
+    },
+  );
   it("keeps the free GLM treatment at low reasoning with billed, retryable fallbacks", () => {
     const opts = buildProviderOptions(
       true,

@@ -17,7 +17,8 @@ control requests whose rescue model happens to equal the assigned model. Paid
 Ask, free Agent, premium/Max models, image routes, and subagents stay unchanged.
 Prompts, tools, limits, pricing, and billing rules are not changed.
 
-Free Ask pins low reasoning in both arms, including OpenRouter fallbacks. Paid
+Free Ask pins low reasoning in both arms, including OpenRouter fallbacks and
+app-side retries, using the authenticated request tier rather than a retry alias. Paid
 Agent retains the existing policies for each model: DeepSeek high and GLM's
 provider default. Thus the paid comparison measures these routing configurations,
 not model weights in isolation. App-side recovery can change models/settings;

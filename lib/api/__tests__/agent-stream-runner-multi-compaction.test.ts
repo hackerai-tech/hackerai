@@ -6,6 +6,7 @@ const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
+const mockBuildProviderOptions = jest.fn(() => ({}));
 
 jest.mock("server-only", () => ({}));
 jest.mock("ai", () => ({
@@ -25,7 +26,7 @@ jest.mock("ai", () => ({
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
   applyPrepareStepReminders: async (messages: ModelMessage[]) => messages,
-  buildProviderOptions: () => ({}),
+  buildProviderOptions: mockBuildProviderOptions,
   buildSystemPrompt: (prompt: string) => prompt,
   getFallbackSlugs: () => [],
   isXaiSafetyError: () => false,
@@ -486,6 +487,36 @@ describe("createAgentStream repeated compaction", () => {
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
   });
+
+  it.each([
+    ["ask", "free", true],
+    ["ask", "pro", false],
+    ["agent", "free", false],
+  ])(
+    "preserves the request reasoning policy for %s/%s retries",
+    async (mode, subscription, expected) => {
+      await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        createTestStreamContext({
+          mode,
+          subscription,
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Say hello")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        }),
+      );
+      expect(mockBuildProviderOptions).toHaveBeenCalledWith(
+        expect.anything(),
+        "user",
+        "model-deepseek-v4-flash-0731",
+        mode,
+        expect.objectContaining({ isFreeAskRequest: expected }),
+      );
+    },
+  );
 
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();

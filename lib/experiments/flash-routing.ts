@@ -68,6 +68,7 @@ export async function evaluateFlashRouting({
   }
 }
 
+/** Drop assignments superseded by rescue or another routing decision. */
 export function getActiveFlashRoutingAssignment(
   assignment: FlashRoutingAssignment | undefined,
   selectedModel: ModelName,
