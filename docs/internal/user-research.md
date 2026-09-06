@@ -5,7 +5,7 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 
 ## What it does
 
-1. Accepts an authorized PM's research question and 3-20 internal user IDs
+1. Accepts an authorized PM's research question and 1-20 internal user IDs
    selected entirely from PostHog. The scoped PM gateway key establishes access;
    no separate per-run approval record is required. A Linear issue is optional
    tracking metadata and does not authorize or block a run.
@@ -33,9 +33,12 @@ required. The task fails closed if no ZDR-capable endpoint is available.
 ## Retention and deletion
 
 Raw excerpts are not stored. Account deletion removes that user's
-`research_user_profiles` and `research_run_members` records. Cohort-only
-`research_runs` and `research_reports` remain retained; reports can be created
-only after at least three user profiles are available.
+`research_user_profiles` and `research_run_members` records.
+`research_runs` and sanitized `research_reports` remain retained, including
+single-user reports. Reports require at least one available user profile.
+A single-user report describes individual observations with a provisional
+low-confidence avatar; it does not establish cross-user patterns or
+population-level conclusions.
 
 ## Convex functions
 

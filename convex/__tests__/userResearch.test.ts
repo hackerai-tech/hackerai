@@ -251,60 +251,63 @@ describe("userResearch.createRun", () => {
     jest.clearAllMocks();
   });
 
-  it("creates an auditable run without optional Linear tracking", async () => {
-    const insert = jest.fn(async () => "document-id");
-    const ctx = {
-      db: {
-        query: jest.fn(() => ({
-          withIndex: jest.fn(() => ({
-            unique: jest.fn(async () => null),
+  it.each([1, 2, 3])(
+    "creates an auditable run with %i users",
+    async (userCount) => {
+      const insert = jest.fn(async () => "document-id");
+      const ctx = {
+        db: {
+          query: jest.fn(() => ({
+            withIndex: jest.fn(() => ({
+              unique: jest.fn(async () => null),
+            })),
           })),
+          insert,
+        },
+      };
+      const { createRun } = await import("../userResearch");
+
+      await createRun.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        question: "What recurring work creates the most customer value?",
+        cohortLabel: "Approved production research cohort",
+        requestedBy: "pm-gateway",
+        cohortSource: "posthog",
+        posthogProjectId: 144137,
+        cohortSelectedAt: Date.UTC(2026, 7, 25),
+        selectionQueryFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        selectionLimitations: ["Historical revenue is incomplete"],
+        samplingMode: "representative",
+        members: Array.from({ length: userCount }, (_, i) => ({
+          userId: `user-${i + 1}`,
+          pseudonym: `U${String(i + 1).padStart(2, "0")}`,
         })),
-        insert,
-      },
-    };
-    const { createRun } = await import("../userResearch");
+        maxChatsPerUser: 12,
+        model: "x-ai/grok-4.6",
+        reasoningEnabled: true,
+        reasoningEffort: "low",
+      });
 
-    await createRun.handler(ctx as never, {
-      serviceKey: "service-key",
-      analysisId: "analysis-1",
-      question: "What recurring work creates the most customer value?",
-      cohortLabel: "Approved production research cohort",
-      requestedBy: "pm-gateway",
-      cohortSource: "posthog",
-      posthogProjectId: 144137,
-      cohortSelectedAt: Date.UTC(2026, 7, 25),
-      selectionQueryFingerprint:
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      selectionLimitations: ["Historical revenue is incomplete"],
-      samplingMode: "representative",
-      members: [
-        { userId: "user-1", pseudonym: "U01" },
-        { userId: "user-2", pseudonym: "U02" },
-        { userId: "user-3", pseudonym: "U03" },
-      ],
-      maxChatsPerUser: 12,
-      model: "x-ai/grok-4.6",
-      reasoningEnabled: true,
-      reasoningEffort: "low",
-    });
-
-    expect(insert).toHaveBeenCalledWith(
-      "research_runs",
-      expect.objectContaining({
-        cohort_source: "posthog",
-        posthog_project_id: 144137,
-        reasoning_enabled: true,
-        reasoning_effort: "low",
-        sampling_mode: "representative",
-      }),
-    );
-    expect(insert).toHaveBeenCalledWith(
-      "research_runs",
-      expect.not.objectContaining({ linear_issue_id: expect.anything() }),
-    );
-    expect(insert).toHaveBeenCalledTimes(4);
-  });
+      expect(insert).toHaveBeenCalledWith(
+        "research_runs",
+        expect.objectContaining({
+          cohort_size: userCount,
+          cohort_source: "posthog",
+          posthog_project_id: 144137,
+          reasoning_enabled: true,
+          reasoning_effort: "low",
+          sampling_mode: "representative",
+        }),
+      );
+      expect(insert).toHaveBeenCalledWith(
+        "research_runs",
+        expect.not.objectContaining({ linear_issue_id: expect.anything() }),
+      );
+      expect(insert).toHaveBeenCalledTimes(userCount + 1);
+    },
+  );
 
   it("rejects pre-event runs without a per-user evidence anchor", async () => {
     const { createRun } = await import("../userResearch");
@@ -448,4 +451,61 @@ describe("userResearch.failRun", () => {
       }),
     );
   });
+});
+
+describe("userResearch.completeRun", () => {
+  it.each([0, 1, 2, 3])(
+    "requires at least one profile when completing a run (%i profiles)",
+    async (profileCount) => {
+      const insert = jest.fn(async () => "report-1");
+      const patch = jest.fn();
+      const profiles = Array.from({ length: profileCount }, (_, i) => ({
+        _id: `profile-${i + 1}`,
+        input_tokens: 10,
+        output_tokens: 5,
+      }));
+      const ctx = {
+        db: {
+          query: jest.fn((table: string) => ({
+            withIndex: jest.fn(() => ({
+              unique: jest.fn(async () =>
+                table === "research_runs"
+                  ? { _id: "run-1", status: "running" }
+                  : null,
+              ),
+              take: jest.fn(async () => profiles),
+            })),
+          })),
+          insert,
+          patch,
+        },
+      };
+      const { completeRun } = await import("../userResearch");
+      const result = completeRun.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        report: { coverage: { profilesFailed: 0 } } as never,
+        model: "x-ai/grok-4.6",
+        promptVersion: "user-research-v4",
+      });
+      if (profileCount === 0) {
+        await expect(result).rejects.toThrow("At least one user profile");
+        expect(insert).not.toHaveBeenCalled();
+        expect(patch).not.toHaveBeenCalled();
+      } else {
+        await expect(result).resolves.toBeNull();
+        expect(insert).toHaveBeenCalledWith(
+          "research_reports",
+          expect.objectContaining({ analysis_id: "analysis-1" }),
+        );
+        expect(patch).toHaveBeenCalledWith(
+          "run-1",
+          expect.objectContaining({
+            status: "completed",
+            profiles_completed: profileCount,
+          }),
+        );
+      }
+    },
+  );
 });

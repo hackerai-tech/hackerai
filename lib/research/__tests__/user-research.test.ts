@@ -44,43 +44,56 @@ const baseProfile = {
 };
 
 describe("user research privacy controls", () => {
-  it("accepts a bounded request without a Linear reference", () => {
-    const request = {
-      question: "What recurring work creates the most customer value?",
-      cohortLabel: "PostHog top-spender research cohort",
-      userIds: ["user-1", "user-2", "user-3"],
-      cohortSelectedAt: Date.UTC(2026, 7, 25),
-      selectionQueryFingerprint:
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      maxChatsPerUser: 12,
-    };
+  it.each([1, 2, 3, 20])(
+    "accepts %i users without a Linear reference",
+    (userCount) => {
+      const request = {
+        question: "What recurring work creates the most customer value?",
+        cohortLabel: "PostHog top-spender research cohort",
+        userIds: Array.from({ length: userCount }, (_, i) => `user-${i + 1}`),
+        cohortSelectedAt: Date.UTC(2026, 7, 25),
+        selectionQueryFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        maxChatsPerUser: 12,
+      };
 
-    expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual({
-      ...request,
-      cohortSource: "posthog",
-      posthogProjectId: 144137,
-      selectionLimitations: [],
-      samplingMode: "representative",
-    });
-    expect(
-      pmUserResearchGatewayRequestSchema.parse({
+      expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual({
         ...request,
-        linearIssueId: "HAC-65",
-      }).linearIssueId,
-    ).toBe("HAC-65");
-    expect(
-      pmUserResearchGatewayRequestSchema.safeParse({
-        ...request,
-        cohortSelectedAt: undefined,
-      }).success,
-    ).toBe(false);
-    expect(
-      pmUserResearchGatewayRequestSchema.safeParse({
-        ...request,
-        selectionQueryFingerprint: undefined,
-      }).success,
-    ).toBe(false);
-  });
+        cohortSource: "posthog",
+        posthogProjectId: 144137,
+        selectionLimitations: [],
+        samplingMode: "representative",
+      });
+      for (const userIds of [
+        [],
+        ["user-1", "user-1"],
+        Array.from({ length: 21 }, (_, i) => `user-${i + 1}`),
+      ]) {
+        expect(
+          pmUserResearchGatewayRequestSchema.safeParse({ ...request, userIds })
+            .success,
+        ).toBe(false);
+      }
+      expect(
+        pmUserResearchGatewayRequestSchema.parse({
+          ...request,
+          linearIssueId: "HAC-65",
+        }).linearIssueId,
+      ).toBe("HAC-65");
+      expect(
+        pmUserResearchGatewayRequestSchema.safeParse({
+          ...request,
+          cohortSelectedAt: undefined,
+        }).success,
+      ).toBe(false);
+      expect(
+        pmUserResearchGatewayRequestSchema.safeParse({
+          ...request,
+          selectionQueryFingerprint: undefined,
+        }).success,
+      ).toBe(false);
+    },
+  );
 
   it("requires a bounded anchor for every user in pre-event research", () => {
     const request = {
