@@ -118,6 +118,9 @@ jest.mock("@/convex/_generated/api", () => ({
     involuntaryChurn: {
       recordEvent: "involuntaryChurn.recordEvent",
     },
+    subscriptionPauses: {
+      markPauseEffective: "subscriptionPauses.markPauseEffective",
+    },
   },
 }));
 
@@ -201,9 +204,11 @@ function subscriptionInvoiceLine(
   subscriptionId: string,
   priceId: string,
   amount: number,
+  quantity?: number,
 ) {
   return {
     amount,
+    ...(quantity !== undefined && { quantity }),
     subscription: subscriptionId,
     parent: {
       type: "subscription_item_details",
@@ -1605,7 +1610,7 @@ describe("POST /api/subscription/webhook", () => {
         object: {
           id: "in_historical_price",
           customer: "cus_historical_price",
-          amount_paid: 2900,
+          amount_paid: 5800,
           currency: "usd",
           billing_reason: "subscription_create",
           parent: {
@@ -1618,7 +1623,8 @@ describe("POST /api/subscription/webhook", () => {
               subscriptionInvoiceLine(
                 "sub_historical_price",
                 "price_pro_29",
-                2900,
+                5800,
+                2,
               ),
             ],
           },
@@ -1682,6 +1688,8 @@ describe("POST /api/subscription/webhook", () => {
       expect.objectContaining({
         stripePriceId: "price_pro_29",
         plan: "pro-monthly-plan-29-experiment",
+        quantity: 2,
+        mrrDollars: 58,
       }),
     );
     expect(mockConvexMutation).toHaveBeenCalledWith(
@@ -1702,6 +1710,14 @@ describe("POST /api/subscription/webhook", () => {
         }),
       );
     }
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "invoice_paid",
+      expect.objectContaining({
+        subscription_mrr_dollars: 58,
+        attributed_mrr_dollars: 58,
+        retained_mrr_dollars: 58,
+      }),
+    );
   });
 
   it("emits recovery when invoice.paid arrives before the failure webhook", async () => {
@@ -2067,12 +2083,18 @@ describe("POST /api/subscription/webhook", () => {
         userId: "user_paid",
         tier: "pro-plus",
         org_id: "org_hackerai",
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
         $set: { subscription_tier: "free" },
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.objectContaining({
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
         $insert_id: cancellationCompletionInsertId("sub_hackerai_deleted"),
       }),
     );
@@ -2942,6 +2964,9 @@ describe("POST /api/subscription/webhook", () => {
         org_id: "org_deleted_payment_failed",
         tier: "ultra",
         cancellation_reason: "payment_failed",
+        churn_type: "involuntary",
+        voluntary_churn: false,
+        involuntary_churn: true,
         stripe_event_id: "evt_subscription_deleted_payment_failed",
         $set: { subscription_tier: "free" },
       }),
@@ -3124,6 +3149,95 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockConvexMutation).not.toHaveBeenCalledWith(
       "referrals.setReferralCodesPaidEligibility",
       expect.anything(),
+    );
+  });
+
+  it("marks a retention pause effective and tags churn analytics when the paused subscription ends", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_subscription_deleted_pause",
+      type: "customer.subscription.deleted",
+      created: 1_790_000_000,
+      data: {
+        object: {
+          id: "sub_paused",
+          customer: "cus_paused",
+          items: {
+            data: [
+              {
+                quantity: 1,
+                price: {
+                  id: "price_pro_plus",
+                  lookup_key: "pro-plus-monthly-plan",
+                  unit_amount: 6000,
+                  recurring: { interval: "month", interval_count: 1 },
+                },
+              },
+            ],
+          },
+          metadata: {
+            hackeraiPauseId: "pause_1",
+            hackeraiPauseMonths: "2",
+            hackeraiPauseResumeAt: "1795000000000",
+            hackeraiPauseRequestedAt: "1780000000000",
+          },
+          cancellation_details: {
+            reason: "cancellation_requested",
+          },
+        },
+      },
+    });
+    mockRetrieveCustomer.mockResolvedValue({
+      deleted: false,
+      id: "cus_paused",
+      metadata: {
+        workOSOrganizationId: "org_paused",
+      },
+    } as never);
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([{ userId: "user_paused" }]),
+    } as never);
+    mockConvexMutation.mockImplementation((mutation) =>
+      Promise.resolve(
+        mutation === "cancellationReasons.markCancellationCompleted"
+          ? { matchedCount: 1, updatedCount: 1 }
+          : mutation === "subscriptionPauses.markPauseEffective"
+            ? { updatedCount: 1 }
+            : { alreadyProcessed: false },
+      ),
+    );
+
+    const { POST } = await import("../route");
+
+    const response = await POST(makeWebhookRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "subscriptionPauses.markPauseEffective",
+      {
+        serviceKey: "service_key",
+        stripeSubscriptionId: "sub_paused",
+        pausedAt: 1_790_000_000_000,
+      },
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "subscription_cancelled",
+      expect.objectContaining({
+        userId: "user_paused",
+        churn_type: "voluntary",
+        retention_pause: true,
+        retention_offer_accepted: "pause",
+        pause_months: 2,
+        pause_id: "pause_1",
+        pause_resume_at: new Date(1_795_000_000_000).toISOString(),
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.cancellationCompleted,
+      expect.objectContaining({
+        retention_pause: true,
+        cancellation_completion_type: "deleted",
+        $insert_id: cancellationCompletionInsertId("sub_paused"),
+      }),
     );
   });
 });

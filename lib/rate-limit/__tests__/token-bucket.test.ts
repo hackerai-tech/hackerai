@@ -570,7 +570,6 @@ describe("token-bucket", () => {
     );
 
     it.each([
-      "ask-model-free",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-flash-20260423",
     ])(
@@ -582,6 +581,7 @@ describe("token-bucket", () => {
     );
 
     it.each([
+      "ask-model-free",
       "agent-model-free",
       "agent-auto-review-model",
       "deepseek/deepseek-v4-flash-0731",

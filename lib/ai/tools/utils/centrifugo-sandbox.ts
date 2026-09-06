@@ -1694,9 +1694,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         displayName: `Preparing: ${fileName}`,
       });
       if (result.exitCode !== 0) {
-        throw new Error(
-          `Failed to prepare local file: ${result.stderr || result.stdout}`,
-        );
+        const failureDetail =
+          result.stderr || result.stdout || `exit status ${result.exitCode}`;
+        throw new Error(`Failed to prepare local file: ${failureDetail}`);
       }
     },
 

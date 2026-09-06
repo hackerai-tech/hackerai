@@ -66,6 +66,8 @@ interface UseChatHandlersProps {
 
 export type RetryOptions = {
   limitRescue?: LimitRescueRequest;
+  /** Override the model for this retry, e.g. Auto for the daily allowance. */
+  selectedModel?: SelectedModel;
 };
 
 const getConvexErrorCode = (error: unknown): string | undefined => {
@@ -763,7 +765,7 @@ export const useChatHandlers = ({
           useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
           sandboxPreference,
           agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModel,
+          selectedModel: options.selectedModel ?? requestSelectedModel,
           ...(options.limitRescue && { limitRescue: options.limitRescue }),
         },
       }),

@@ -24,7 +24,7 @@ const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 const POINTS_PER_DOLLAR = 10_000;
 
 type SupportedTier = "pro" | "pro-plus" | "ultra";
-type Action = "prime" | "reset" | "status" | "block-request" | "block-cost";
+type Action = "prime" | "reset" | "status" | "block-cost";
 
 const MONTHLY_CREDITS: Record<SupportedTier, number> = {
   pro: 250_000,
@@ -45,7 +45,6 @@ Actions:
   prime          Exhaust the paid monthly bucket and clear today's allowance.
   reset          Restore the monthly bucket and clear today's allowance.
   status         Show monthly and allowance counters.
-  block-request  Mark today's allowance request counter as consumed.
   block-cost     Mark today's allowance cost counter as consumed.
 
 Users:
@@ -76,7 +75,6 @@ function parseAction(value: string | undefined): Action {
     action === "prime" ||
     action === "reset" ||
     action === "status" ||
-    action === "block-request" ||
     action === "block-cost"
   ) {
     return action;
@@ -202,10 +200,7 @@ async function main() {
     Number(process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD ?? "0.25") *
       POINTS_PER_DOLLAR,
   );
-  const allowanceRequestLimit = Math.floor(
-    Number(process.env.PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY ?? "1"),
-  );
-  const { requestsKey, costKey } = todayAllowanceKeys(userId);
+  const { costKey } = todayAllowanceKeys(userId);
 
   if (action === "prime") {
     await setMonthlyTokens(redis, userId, tier, 0);
@@ -219,11 +214,6 @@ async function main() {
     console.log(
       `Reset ${user.email} (${tier}): monthly bucket restored and today's allowance cleared.`,
     );
-  } else if (action === "block-request") {
-    await redis.set(requestsKey, allowanceRequestLimit, {
-      ex: THIRTY_DAYS_SECONDS,
-    });
-    console.log(`Blocked by request count for ${user.email} today.`);
   } else if (action === "block-cost") {
     await redis.set(costKey, allowanceCostLimitPoints, {
       ex: THIRTY_DAYS_SECONDS,

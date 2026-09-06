@@ -2485,6 +2485,22 @@ describe("CentrifugoSandbox", () => {
       // No certutil / cmd.exe artifacts.
       expect(runs[1]).not.toContain("certutil");
     });
+
+    it("keeps a bounded exit status when local file preparation has no output", async () => {
+      const { sandbox } = createWindowsBashSandbox();
+      (sandbox as any).commands.run = jest.fn(async () => ({
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      }));
+
+      await expect(
+        sandbox.files.copyLocal(
+          "C:\\Users\\alice\\private-report.pdf",
+          "/tmp/hackerai-upload/private-report.pdf",
+        ),
+      ).rejects.toThrow("Failed to prepare local file: exit status 1");
+    });
   });
 
   describe("getSandboxContext", () => {

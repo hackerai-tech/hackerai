@@ -24,6 +24,7 @@ import {
   billingPaymentRecoveryInsertId,
   cancellationCompletionInsertId,
   paidFunnelProperties,
+  subscriptionChurnHealthProperties,
 } from "@/lib/analytics/paid-funnel";
 import {
   logStripeWebhookMissingSignature,
@@ -39,6 +40,10 @@ import {
 } from "@/lib/billing/subscription-payment-failure";
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
+import {
+  PAUSE_RESUME_CHECKOUT_TYPE,
+  subscriptionPauseFromMetadata,
+} from "@/lib/billing/retention-offers";
 import {
   proMonthlyPricingAssignmentFromMetadata,
   proMonthlyPricingExperimentProperties,
@@ -145,11 +150,11 @@ function invoiceLineIsProration(line: Stripe.InvoiceLineItem): boolean {
   );
 }
 
-/** Return the immutable Price ID recorded on a subscription invoice line. */
-async function invoiceSubscriptionPriceId(
+/** Return immutable billing details recorded on a subscription invoice line. */
+async function invoiceSubscriptionBillingDetails(
   invoice: Stripe.Invoice,
   subscriptionId: string,
-): Promise<string | undefined> {
+): Promise<{ priceId: string; quantity?: number } | undefined> {
   const lines = await invoiceLineItems(invoice);
   const candidates = lines.filter(
     (line) => invoiceLineSubscriptionId(line) === subscriptionId,
@@ -163,7 +168,15 @@ async function invoiceSubscriptionPriceId(
   );
   const selectedLine =
     recurringLine ?? candidates.find((line) => invoiceLinePriceId(line));
-  return selectedLine ? invoiceLinePriceId(selectedLine) : undefined;
+  const priceId = selectedLine ? invoiceLinePriceId(selectedLine) : undefined;
+  return priceId
+    ? {
+        priceId,
+        ...(typeof selectedLine?.quantity === "number" && {
+          quantity: selectedLine.quantity,
+        }),
+      }
+    : undefined;
 }
 
 /**
@@ -645,6 +658,7 @@ async function recordSubscriptionRevenue({
   orgId,
   tier,
   subscription,
+  invoiceQuantity,
   reason,
 }: {
   invoice: Stripe.Invoice;
@@ -654,6 +668,7 @@ async function recordSubscriptionRevenue({
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  invoiceQuantity?: number;
   reason: string;
 }) {
   const grossRevenueDollars = centsToDollars(
@@ -670,7 +685,7 @@ async function recordSubscriptionRevenue({
     reason === "subscription_create" || reason === "subscription_cycle"
       ? subscriptionMrrDollars({
           price: invoicePrice,
-          quantity: item?.quantity ?? 1,
+          quantity: invoiceQuantity ?? item?.quantity ?? 1,
           fallbackTotalIntervalAmountDollars: grossRevenueDollars,
         })
       : undefined;
@@ -698,7 +713,7 @@ async function recordSubscriptionRevenue({
         stripeInvoiceId: invoice.id,
         stripePriceId: invoicePrice.id,
         plan: invoicePrice.lookup_key ?? tier,
-        quantity: item?.quantity,
+        quantity: invoiceQuantity ?? item?.quantity,
         userCount: userIds.length,
         description: reason,
       }),
@@ -723,7 +738,7 @@ async function recordSubscriptionRevenue({
             stripeInvoiceId: invoice.id,
             stripePriceId: invoicePrice.id,
             plan: invoicePrice.lookup_key ?? tier,
-            quantity: item?.quantity,
+            quantity: invoiceQuantity ?? item?.quantity,
             userCount: userIds.length,
             description: reason,
           }),
@@ -741,6 +756,7 @@ function emitInvoicePaidRevenueAnalytics({
   orgId,
   tier,
   subscription,
+  invoiceQuantity,
 }: {
   invoice: Stripe.Invoice;
   invoicePrice: Stripe.Price;
@@ -750,6 +766,7 @@ function emitInvoicePaidRevenueAnalytics({
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  invoiceQuantity?: number;
 }) {
   const amountPaidDollars = centsToDollars(invoice.amount_paid);
   if (amountPaidDollars <= 0 || userIds.length === 0) return;
@@ -759,6 +776,15 @@ function emitInvoicePaidRevenueAnalytics({
     invoicePrice.lookup_key,
   );
   const attributedRevenueDollars = amountPaidDollars / userIds.length;
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: invoicePrice,
+    quantity: invoiceQuantity ?? subscription.items?.data[0]?.quantity ?? 1,
+    fallbackTotalIntervalAmountDollars: amountPaidDollars,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / userIds.length;
 
   for (const uid of userIds) {
     phLogger.event(
@@ -777,6 +803,9 @@ function emitInvoicePaidRevenueAnalytics({
           invoice.attempt_count > 1 && { recovery_result: "recovered" }),
         amount_paid_dollars: amountPaidDollars,
         attributed_revenue_dollars: attributedRevenueDollars,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        retained_mrr_dollars: attributedMrrDollars,
         user_count: userIds.length,
         currency: invoice.currency,
         stripe_event_id: stripeEventId,
@@ -1044,17 +1073,19 @@ async function handleInvoicePaid(
   const { tier, subscription } = resolved;
   const entitlementItem = subscription.items?.data[0];
   const entitlementPrice = entitlementItem?.price;
-  const invoicePriceId = await invoiceSubscriptionPriceId(
+  const invoiceBillingDetails = await invoiceSubscriptionBillingDetails(
     invoice,
     subscriptionId,
   );
-  if (!invoicePriceId) {
+  if (!invoiceBillingDetails) {
     phLogger.warn("invoice_paid_historical_price_missing", {
       stripe_invoice_id: invoice.id,
       stripe_subscription_id: subscriptionId,
     });
     throw new Error("Historical subscription Price missing from paid invoice");
   }
+  const { priceId: invoicePriceId, quantity: invoiceQuantity } =
+    invoiceBillingDetails;
 
   let invoicePrice: Stripe.Price;
   if (entitlementPrice?.id === invoicePriceId) {
@@ -1136,6 +1167,7 @@ async function handleInvoicePaid(
       orgId: orgId ?? undefined,
       tier,
       subscription,
+      invoiceQuantity,
       reason: resetMode.reason,
     });
   } catch (error) {
@@ -1159,6 +1191,7 @@ async function handleInvoicePaid(
     orgId: orgId ?? undefined,
     tier,
     subscription,
+    invoiceQuantity,
   });
 
   if (resetMode.mode === "skip") {
@@ -1334,26 +1367,37 @@ async function handleInvoicePaid(
         ? undefined
         : subscriptionMrr / userIds.length;
     const paidSeatCount = item?.quantity ?? userIds.length;
+    // A retention pause ending re-creates the subscription server-side. That
+    // is a reactivation, not a new paid start, so keep it out of the paid
+    // start mix and zero the start counters on the analytics event.
+    const resumedFromPause =
+      metadataString(subscription.metadata, "checkoutType") ===
+      PAUSE_RESUME_CHECKOUT_TYPE;
 
-    try {
-      await recordPaidStartMix({
-        invoice,
-        invoicePrice,
-        customerId,
-        userIds,
-        orgId: orgId ?? undefined,
-        tier,
-        subscription,
-      });
-    } catch (error) {
-      console.error("[Subscription Webhook] Failed to record paid start mix:", {
-        error,
-        invoiceId: invoice.id,
-        customerId,
-        userCount: userIds.length,
-        orgId,
-        tier,
-      });
+    if (!resumedFromPause) {
+      try {
+        await recordPaidStartMix({
+          invoice,
+          invoicePrice,
+          customerId,
+          userIds,
+          orgId: orgId ?? undefined,
+          tier,
+          subscription,
+        });
+      } catch (error) {
+        console.error(
+          "[Subscription Webhook] Failed to record paid start mix:",
+          {
+            error,
+            invoiceId: invoice.id,
+            customerId,
+            userCount: userIds.length,
+            orgId,
+            tier,
+          },
+        );
+      }
     }
 
     for (const [index, uid] of userIds.entries()) {
@@ -1361,13 +1405,21 @@ async function handleInvoicePaid(
         userId: uid,
         from_tier: "free",
         to_tier: tier,
-        conversion_type: "free_to_paid",
+        conversion_type: resumedFromPause ? "pause_resume" : "free_to_paid",
+        resumed_from_pause: resumedFromPause,
+        ...(resumedFromPause && {
+          pause_id: metadataString(subscription.metadata, "hackeraiPauseId"),
+          paused_stripe_subscription_id: metadataString(
+            subscription.metadata,
+            "hackeraiResumedFromSubscriptionId",
+          ),
+        }),
         org_id: orgId,
         user_count: userIds.length,
         plan: invoicePrice.lookup_key,
         stripe_price_lookup_key: invoicePrice.lookup_key,
-        paid_account_start_count: index === 0 ? 1 : 0,
-        paid_user_start_count: 1,
+        paid_account_start_count: resumedFromPause ? 0 : index === 0 ? 1 : 0,
+        paid_user_start_count: resumedFromPause ? 0 : 1,
         paid_account_user_count: userIds.length,
         paid_seat_count: paidSeatCount,
         paid_start_plan: invoicePrice.lookup_key ?? tier,
@@ -2204,6 +2256,15 @@ async function recordCancellationCompleted(args: {
     args.subscription.metadata,
     args.price?.lookup_key,
   );
+  const subscriptionMrr = subscriptionMrrDollars({
+    price: args.price,
+    quantity: args.subscription.items?.data[0]?.quantity ?? 1,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / args.userIds.length;
+  const pauseProperties = retentionPauseProperties(args.subscription);
 
   let updatedCount = 0;
   try {
@@ -2247,8 +2308,15 @@ async function recordCancellationCompleted(args: {
         billing_interval: priceBillingInterval(args.price),
         billing_interval_count: args.price?.recurring?.interval_count,
         cancellation_reason: stripeCancellationReason,
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
+        subscription_mrr_dollars: subscriptionMrr,
+        attributed_mrr_dollars: attributedMrrDollars,
+        at_risk_mrr_dollars: attributedMrrDollars,
         cancellation_completion_type: args.completionType,
         cancel_at_period_end: args.subscription.cancel_at_period_end,
+        ...pauseProperties,
         stripe_customer_id: args.customerId,
         stripe_subscription_id: args.subscription.id,
         stripe_price_id: args.price?.id,
@@ -2256,6 +2324,54 @@ async function recordCancellationCompleted(args: {
         $insert_id: cancellationCompletionInsertId(args.subscription.id),
       }),
     );
+  }
+}
+
+/**
+ * Analytics properties that mark a cancellation as a retention pause so churn
+ * dashboards can separate "paused, resumes later" from a plain cancellation.
+ */
+function retentionPauseProperties(subscription: Stripe.Subscription) {
+  const pause = subscriptionPauseFromMetadata(subscription.metadata);
+  if (!pause) return { retention_pause: false };
+  return {
+    retention_pause: true,
+    retention_offer_accepted: "pause",
+    pause_months: pause.months,
+    pause_resume_at: new Date(pause.resumeAtMs).toISOString(),
+    pause_id: pause.pauseId,
+  };
+}
+
+/** Move the Convex pause record to "paused" once Stripe ends the subscription. */
+async function markRetentionPauseEffective(
+  subscription: Stripe.Subscription,
+  occurredAtMs: number,
+): Promise<void> {
+  const pause = subscriptionPauseFromMetadata(subscription.metadata);
+  if (!pause) return;
+
+  try {
+    const result = await getConvexClient().mutation(
+      api.subscriptionPauses.markPauseEffective,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        stripeSubscriptionId: subscription.id,
+        pausedAt: occurredAtMs,
+      },
+    );
+    if (result.updatedCount === 0) {
+      phLogger.warn("subscription_pause_effective_record_missing", {
+        stripe_subscription_id: subscription.id,
+        pause_id: pause.pauseId,
+      });
+    }
+  } catch (error) {
+    phLogger.error("subscription_pause_effective_update_failed", {
+      stripe_subscription_id: subscription.id,
+      pause_id: pause.pauseId,
+      error,
+    });
   }
 }
 
@@ -2316,6 +2432,14 @@ async function handleSubscriptionDeleted(
   }
 
   const cancellationReason = subscription.cancellation_details?.reason ?? null;
+  const subscriptionMrr = subscriptionMrrDollars({
+    price,
+    quantity: subscription.items?.data[0]?.quantity ?? 1,
+  });
+  const attributedMrrDollars =
+    subscriptionMrr === undefined
+      ? undefined
+      : subscriptionMrr / userIds.length;
   console.log(
     `[Subscription Webhook] subscription.deleted: tier ${tier ?? "unknown"} cancelled for ${userIds.length} user(s) (reason: ${cancellationReason ?? "none"})`,
   );
@@ -2329,6 +2453,8 @@ async function handleSubscriptionDeleted(
     price,
     completionType: "deleted",
   });
+  await markRetentionPauseEffective(subscription, eventOccurredAtMs);
+  const pauseProperties = retentionPauseProperties(subscription);
 
   for (const uid of userIds) {
     phLogger.event("subscription_cancelled", {
@@ -2336,6 +2462,11 @@ async function handleSubscriptionDeleted(
       tier,
       org_id: orgId,
       cancellation_reason: cancellationReason,
+      ...subscriptionChurnHealthProperties(cancellationReason),
+      ...pauseProperties,
+      subscription_mrr_dollars: subscriptionMrr,
+      attributed_mrr_dollars: attributedMrrDollars,
+      lost_mrr_dollars: attributedMrrDollars,
       stripe_event_id: stripeEventId,
       stripe_event_type: "customer.subscription.deleted",
       $insert_id: `subscription_cancelled:${stripeEventId}:${uid}`,

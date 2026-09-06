@@ -26,6 +26,10 @@ of the selection query, and short limitations that affect interpretation. Never
 send the raw query. For event-based research such as churn, select the event
 timestamp beside each user ID and provide it as that member's evidence anchor.
 Use a bounded pre-event window; do not use one cohort-wide timestamp.
+For comparative research, retain 2-4 PostHog-selected group labels and their
+internal user IDs. Each group must contain at least three users and every cohort
+user must belong to exactly one group. Labels may describe a model, rollout, or
+funnel treatment, but must not identify a person or organization.
 
 ## 2. Run through Codex
 
@@ -46,6 +50,8 @@ gateway key is required. The gateway can start and read only
 task runs one parallel worker per user and a final cohort synthesis. Both calls use
 `x-ai/grok-4.6` with OpenRouter reasoning set to low
 and zero-data-retention routing required.
+Comparison membership is converted to sanitized labels and pseudonyms before
+the final Grok 4.6 synthesis; internal user IDs are not sent to the model.
 
 Create the temporary request JSON outside the repository with mode 600, pass its
 path to the runner, then remove it. Never commit the request file. User IDs from
@@ -67,6 +73,8 @@ event-based research, include one event timestamp beside every user ID and the
 event label or reason when known. State that the timestamp is the per-user
 evidence anchor, specify the pre-event window, and require the same privacy
 boundary as the gateway workflow.
+For comparisons, include each labeled group's complete user list instead of
+flattening the users into one unlabeled cohort.
 
 Do not send a Slack request that merely says to analyze churn, refers to a cohort
 "above," or expects Slack Codex to discover the IDs. Do not ask Slack Codex to

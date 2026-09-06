@@ -39,6 +39,7 @@ import {
   shouldShowUpgradeCta,
 } from "@/lib/limit-pressure";
 import type { RetryOptions } from "../hooks/useChatHandlers";
+import { decideExtraUsageResumeRetry } from "@/lib/chat/extra-usage-resume-retry";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 
 interface MessageErrorStateProps {
@@ -76,7 +77,8 @@ export const MessageErrorState = ({
   onReconnect,
   mode,
 }: MessageErrorStateProps) => {
-  const { subscription, initializeNewChat } = useGlobalState();
+  const { subscription, initializeNewChat, setSelectedModel } =
+    useGlobalState();
   const structuredStreamError = useMemo(
     () => deserializeChatSDKErrorFromStream(error),
     [error],
@@ -162,13 +164,21 @@ export const MessageErrorState = ({
     isRateLimitError &&
     paidDailyFreeAllowance?.type === "paid_daily_free_allowance" &&
     paidDailyFreeAllowance.available === true;
+  // The allowance exists but the user picked a specific model; switching to
+  // Auto is all it takes, so say so instead of showing a dead end.
+  const allowanceNeedsAutoModel =
+    isRateLimitError &&
+    paidDailyFreeAllowance?.type === "paid_daily_free_allowance" &&
+    paidDailyFreeAllowance.available === false &&
+    paidDailyFreeAllowance.unavailableReason === "unsupported_model";
+  const switchToAutoCtaText = "Switch to Auto and continue";
   const paidDailyFreeAllowanceCtaText = getPaidDailyFreeAllowanceCtaText(mode);
   const allowanceCostRemaining =
     typeof paidDailyFreeAllowance?.costRemainingDollars === "number"
       ? paidDailyFreeAllowance.costRemainingDollars
       : undefined;
   const shouldFocusPaidAllowanceActions =
-    canUsePaidDailyFreeAllowance &&
+    (canUsePaidDailyFreeAllowance || allowanceNeedsAutoModel) &&
     extraUsageCta?.analyticsText === "Add Credits";
   const showRateLimitRetry = !shouldFocusPaidAllowanceActions;
   const showRateLimitUsage =
@@ -188,23 +198,31 @@ export const MessageErrorState = ({
       ),
     );
 
+  // Retry the stopped task once after returning from an extra-usage purchase
+  // or payment update. The decision is guarded per chat so a flag that comes
+  // back on the URL after a failed retry cannot fire the retry in a loop.
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const shouldResume =
-      url.searchParams.get("extra-usage-resume") === "true" ||
-      url.searchParams.get("extra-usage-payment-retry") === "true";
+    let storage: Storage | null = null;
+    try {
+      storage = window.sessionStorage;
+    } catch {
+      storage = null;
+    }
+    const decision = decideExtraUsageResumeRetry({
+      href: window.location.href,
+      storage,
+    });
+    if (!decision.flagged) return;
 
-    if (!shouldResume) return;
-
-    url.searchParams.delete("extra-usage-resume");
-    url.searchParams.delete("extra-usage-payment-retry");
-    window.history.replaceState(
-      window.history.state,
-      "",
-      url.pathname + url.search + url.hash,
-    );
-    onRetry();
-  }, [onRetry]);
+    window.history.replaceState(window.history.state, "", decision.nextUrl);
+    captureAuthenticatedEvent("extra_usage_resume_retry", {
+      source: decision.source,
+      retried: decision.retry,
+      ...(decision.retry ? {} : { skipped_reason: decision.reason }),
+      cap_reason: capReason,
+    });
+    if (decision.retry) onRetry();
+  }, [onRetry, capReason]);
 
   const handlePurchaseCredits = async (amountDollars: number) => {
     setIsPurchasing(true);
@@ -319,7 +337,7 @@ export const MessageErrorState = ({
 
   useEffect(() => {
     if (
-      !canUsePaidDailyFreeAllowance ||
+      (!canUsePaidDailyFreeAllowance && !allowanceNeedsAutoModel) ||
       paidDailyFreeAllowanceImpressionRef.current
     ) {
       return;
@@ -331,13 +349,17 @@ export const MessageErrorState = ({
       source: "rate_limit_error",
       from_tier: subscription,
       cap_reason: capReason,
-      cta_text: paidDailyFreeAllowanceCtaText,
-      allowance_requests_remaining: paidDailyFreeAllowance?.requestsRemaining,
+      cta_text: allowanceNeedsAutoModel
+        ? switchToAutoCtaText
+        : paidDailyFreeAllowanceCtaText,
+      allowance_unavailable_reason: paidDailyFreeAllowance?.unavailableReason,
+      allowance_requests_today: paidDailyFreeAllowance?.requestsUsed,
       allowance_cost_remaining_dollars:
         paidDailyFreeAllowance?.costRemainingDollars,
     });
   }, [
     canUsePaidDailyFreeAllowance,
+    allowanceNeedsAutoModel,
     capReason,
     paidDailyFreeAllowance,
     paidDailyFreeAllowanceCtaText,
@@ -390,6 +412,13 @@ export const MessageErrorState = ({
                 : "the current"}{" "}
             mode with our low-cost model. The daily allowance resets at midnight
             UTC.
+          </p>
+        )}
+        {allowanceNeedsAutoModel && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Your paid-plan limit is used up, but you still get some free usage
+            today on Auto. Switch to Auto to continue this request with our
+            low-cost model. The daily allowance resets at midnight UTC.
           </p>
         )}
       </div>
@@ -453,8 +482,8 @@ export const MessageErrorState = ({
                     from_tier: subscription,
                     cap_reason: capReason,
                     cta_text: paidDailyFreeAllowanceCtaText,
-                    allowance_requests_remaining:
-                      paidDailyFreeAllowance?.requestsRemaining,
+                    allowance_requests_today:
+                      paidDailyFreeAllowance?.requestsUsed,
                     allowance_cost_remaining_dollars:
                       paidDailyFreeAllowance?.costRemainingDollars,
                   });
@@ -464,6 +493,30 @@ export const MessageErrorState = ({
                 }}
               >
                 {paidDailyFreeAllowanceCtaText}
+              </Button>
+            )}
+            {allowanceNeedsAutoModel && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  capturePaidDailyFreeAllowanceClick({
+                    surface: "message_error_state",
+                    source: "rate_limit_error",
+                    from_tier: subscription,
+                    cap_reason: capReason,
+                    cta_text: switchToAutoCtaText,
+                    allowance_unavailable_reason:
+                      paidDailyFreeAllowance?.unavailableReason,
+                  });
+                  setSelectedModel("auto");
+                  onRetry({
+                    limitRescue: { type: "paid_daily_free_allowance" },
+                    selectedModel: "auto",
+                  });
+                }}
+              >
+                {switchToAutoCtaText}
               </Button>
             )}
             {showUpgrade && (

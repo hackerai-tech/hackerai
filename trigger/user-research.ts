@@ -15,6 +15,7 @@ import {
   pmUserResearchPayloadSchema,
   researchSamplingModeSchema,
   researchUserProfileSchema,
+  sanitizeResearchComparisonGroups,
   sanitizeResearchText,
   USER_RESEARCH_MODEL_KEY,
   USER_RESEARCH_MIN_COHORT_SIZE,
@@ -221,11 +222,22 @@ export const pmUserResearch = schemaTask({
     const selectionLimitations = payload.selectionLimitations
       .map(sanitizeResearchText)
       .filter(Boolean);
+    const comparisonGroups = sanitizeResearchComparisonGroups(
+      payload.comparisonGroups,
+    );
+    const comparisonGroupByUserId = new Map(
+      (comparisonGroups ?? []).flatMap((group) =>
+        group.userIds.map((userId) => [userId, group.label] as const),
+      ),
+    );
     const members = payload.userIds.map((userId, index) => ({
       userId,
       pseudonym: `U${String(index + 1).padStart(2, "0")}`,
       ...(evidenceAnchors.has(userId)
         ? { evidenceAnchorAt: evidenceAnchors.get(userId)! }
+        : {}),
+      ...(comparisonGroupByUserId.has(userId)
+        ? { comparisonGroupLabel: comparisonGroupByUserId.get(userId)! }
         : {}),
     }));
 
@@ -297,6 +309,27 @@ export const pmUserResearch = schemaTask({
           "Fewer than three users had enough evidence for privacy-safe synthesis",
         );
       }
+      const availablePseudonyms = new Set(
+        profiles.map((profile) => profile.pseudonym),
+      );
+      const comparisonGroupsForPrompt = comparisonGroups?.map((group) => ({
+        label: group.label,
+        pseudonyms: group.userIds
+          .map((userId) => {
+            const index = payload.userIds.indexOf(userId);
+            return `U${String(index + 1).padStart(2, "0")}`;
+          })
+          .filter((pseudonym) => availablePseudonyms.has(pseudonym)),
+      }));
+      if (
+        comparisonGroupsForPrompt?.some(
+          (group) => group.pseudonyms.length < USER_RESEARCH_MIN_COHORT_SIZE,
+        )
+      ) {
+        throw new Error(
+          "Fewer than three users remained in a comparison group for privacy-safe synthesis",
+        );
+      }
 
       const researchBasis: ResearchBasis = {
         cohortSource: payload.cohortSource,
@@ -307,6 +340,14 @@ export const pmUserResearch = schemaTask({
         samplingMode: payload.samplingMode,
         ...(payload.evidenceWindowDays !== undefined
           ? { evidenceWindowDays: payload.evidenceWindowDays }
+          : {}),
+        ...(comparisonGroups
+          ? {
+              comparisonGroups: comparisonGroups.map((group) => ({
+                label: group.label,
+                userCount: group.userIds.length,
+              })),
+            }
           : {}),
         // Conversation behavior can explain friction and jobs, but it does not
         // establish the user's causal reason for cancelling.
@@ -323,6 +364,9 @@ export const pmUserResearch = schemaTask({
         question: payload.question,
         cohortLabel: payload.cohortLabel,
         researchBasis,
+        ...(comparisonGroupsForPrompt
+          ? { comparisonGroups: comparisonGroupsForPrompt }
+          : {}),
         profiles: profilesWithBasis,
       });
       assertResearchPromptIsSafe(prompt);
@@ -370,6 +414,7 @@ export const pmUserResearch = schemaTask({
         analysisId,
         status: "completed" as const,
         userIds: payload.userIds,
+        ...(comparisonGroups ? { comparisonGroups } : {}),
         failedProfiles: failedPseudonyms.length,
         usersAnalyzed: profiles.length,
         report,

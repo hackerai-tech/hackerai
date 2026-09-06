@@ -492,8 +492,14 @@ describe("ChatInput - Integration Tests", () => {
         "rounded-b-[18px]",
         "md:hidden",
       );
+      expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
+        "min-w-0",
+        "flex-1",
+      );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
         "ml-auto",
+        "max-w-[56%]",
+        "shrink-0",
         "md:hidden",
       );
     });

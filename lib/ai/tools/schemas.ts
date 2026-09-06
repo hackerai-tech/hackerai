@@ -296,6 +296,7 @@ export const createFileToolSchema = ({
     "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
     "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
+    "Text content returned by this tool may prefix each line using the right-aligned, six-character LINE_NUMBER|LINE_CONTENT format. Treat LINE_NUMBER| as metadata, not as part of the file content.",
     "If the range parameter is not specified, the entire file will be read by default.",
     "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
     "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
@@ -489,6 +490,7 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   - Mark complete IMMEDIATELY after finishing
   - Only ONE task in_progress at a time
   - Complete current tasks before starting new ones
+  - Before finishing your turn, complete every todo or cancel it if it is no longer relevant
 
 3. **Task Breakdown:**
   - Create specific, actionable security tests

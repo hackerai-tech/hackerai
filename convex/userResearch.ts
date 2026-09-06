@@ -23,6 +23,9 @@ const MAX_MESSAGE_CHARS = 8_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const MAX_EVIDENCE_WINDOW_DAYS = 365;
 const MAX_SELECTION_LIMITATIONS = 8;
+const MIN_COMPARISON_GROUPS = 2;
+const MAX_COMPARISON_GROUPS = 4;
+const MIN_USERS_PER_COMPARISON_GROUP = 3;
 const SHA_256_PATTERN = /^[a-f0-9]{64}$/;
 
 const researchChatValidator = v.object({
@@ -129,11 +132,12 @@ export const createRun = mutation({
         userId: v.string(),
         pseudonym: v.string(),
         evidenceAnchorAt: v.optional(v.number()),
+        comparisonGroupLabel: v.optional(v.string()),
       }),
     ),
     maxChatsPerUser: v.number(),
-    model: v.string(),
-    reasoningEnabled: v.boolean(),
+    model: v.literal("x-ai/grok-4.6"),
+    reasoningEnabled: v.literal(true),
     reasoningEffort: v.literal("low"),
   },
   returns: v.null(),
@@ -213,6 +217,40 @@ export const createRun = mutation({
       );
     }
 
+    const comparisonGroupLabels = args.members.flatMap((member) =>
+      member.comparisonGroupLabel !== undefined
+        ? [member.comparisonGroupLabel]
+        : [],
+    );
+    if (comparisonGroupLabels.some((label) => label.trim().length === 0)) {
+      throw new ConvexError("Comparison group labels must not be blank");
+    }
+    if (
+      comparisonGroupLabels.length > 0 &&
+      comparisonGroupLabels.length !== args.members.length
+    ) {
+      throw new ConvexError(
+        "Comparison groups must assign every research member",
+      );
+    }
+    if (comparisonGroupLabels.length > 0) {
+      const groupCounts = new Map<string, number>();
+      for (const label of comparisonGroupLabels) {
+        groupCounts.set(label, (groupCounts.get(label) ?? 0) + 1);
+      }
+      if (
+        groupCounts.size < MIN_COMPARISON_GROUPS ||
+        groupCounts.size > MAX_COMPARISON_GROUPS ||
+        Array.from(groupCounts.values()).some(
+          (count) => count < MIN_USERS_PER_COMPARISON_GROUP,
+        )
+      ) {
+        throw new ConvexError(
+          "Comparison research requires 2-4 groups with at least three members each",
+        );
+      }
+    }
+
     const existing = await ctx.db
       .query("research_runs")
       .withIndex("by_analysis_id", (q) => q.eq("analysis_id", args.analysisId))
@@ -249,13 +287,13 @@ export const createRun = mutation({
       const expectedMembers = args.members
         .map(
           (member) =>
-            `${member.userId}:${member.pseudonym}:${member.evidenceAnchorAt ?? ""}`,
+            `${member.userId}:${member.pseudonym}:${member.evidenceAnchorAt ?? ""}:${member.comparisonGroupLabel ?? ""}`,
         )
         .sort();
       const actualMembers = existingMembers
         .map(
           (member) =>
-            `${member.user_id}:${member.pseudonym}:${member.evidence_anchor_at ?? ""}`,
+            `${member.user_id}:${member.pseudonym}:${member.evidence_anchor_at ?? ""}:${member.comparison_group_label ?? ""}`,
         )
         .sort();
       if (JSON.stringify(expectedMembers) !== JSON.stringify(actualMembers)) {
@@ -308,6 +346,9 @@ export const createRun = mutation({
           pseudonym: member.pseudonym,
           ...(member.evidenceAnchorAt !== undefined
             ? { evidence_anchor_at: member.evidenceAnchorAt }
+            : {}),
+          ...(member.comparisonGroupLabel !== undefined
+            ? { comparison_group_label: member.comparisonGroupLabel }
             : {}),
           created_at: now,
         }),
@@ -521,7 +562,7 @@ export const saveUserProfile = mutation({
     pseudonym: v.string(),
     profile: researchUserProfileValidator,
     coverage: researchCoverageValidator,
-    model: v.string(),
+    model: v.literal("x-ai/grok-4.6"),
     promptVersion: v.string(),
     ...usageFields,
   },
@@ -609,7 +650,7 @@ export const completeRun = mutation({
     serviceKey: v.string(),
     analysisId: v.string(),
     report: researchCohortReportValidator,
-    model: v.string(),
+    model: v.literal("x-ai/grok-4.6"),
     promptVersion: v.string(),
     ...usageFields,
   },

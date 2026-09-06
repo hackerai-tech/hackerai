@@ -101,6 +101,14 @@ const researchBasisValidator = v.object({
   selectionLimitations: v.array(v.string()),
   samplingMode: researchSamplingModeValidator,
   evidenceWindowDays: v.optional(v.number()),
+  comparisonGroups: v.optional(
+    v.array(
+      v.object({
+        label: v.string(),
+        userCount: v.number(),
+      }),
+    ),
+  ),
   causalAttributionConfidence: researchConfidenceValidator,
 });
 

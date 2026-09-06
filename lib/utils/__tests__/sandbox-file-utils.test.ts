@@ -1149,6 +1149,12 @@ describe("desktop-local sandbox file helpers", () => {
           upload_failure_transient_sandbox_command: false,
           upload_failure_sandbox_readiness_reason: "unknown",
         });
+        expect(
+          JSON.parse(String(consoleErrorSpy.mock.calls[0]?.[0])),
+        ).toMatchObject({
+          event: "sandbox_attachment_staging_failed",
+          failure_exit_code: exitCode,
+        });
       } finally {
         consoleErrorSpy.mockRestore();
       }
@@ -1186,6 +1192,64 @@ describe("desktop-local sandbox file helpers", () => {
       expect(getSandboxUploadUserMessage(result)).toContain(
         "selected Windows computer",
       );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it("logs bounded context for local attachment preparation failures", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const sourcePath = "C:\\Users\\alice\\private-report.pdf";
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "localPath",
+            path: sourcePath,
+            localPath: "/tmp/hackerai-upload/private-report.pdf",
+          },
+        ],
+        async () => ({
+          files: {
+            copyLocal: jest
+              .fn()
+              .mockRejectedValue(
+                new Error("Failed to prepare local file: exit status 1"),
+              ),
+          },
+        }),
+        {
+          logContext: {
+            service: "hackerai-web",
+            requestId: "request-1",
+            userId: "user-1",
+            chatId: "chat-1",
+          },
+        },
+      );
+
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_reason: "local_file_prepare_failed",
+      });
+      const structuredLog = JSON.parse(
+        String(consoleErrorSpy.mock.calls[0]?.[0]),
+      );
+      expect(structuredLog).toMatchObject({
+        event: "sandbox_attachment_staging_failed",
+        service: "hackerai-web",
+        request_id: "request-1",
+        user_id: "user-1",
+        chat_id: "chat-1",
+        failed_count: 1,
+        total_count: 1,
+        failure_reason: "local_file_prepare_failed",
+        failure_exit_code: 1,
+      });
+      expect(JSON.stringify(structuredLog)).not.toContain(sourcePath);
+      expect(JSON.stringify(structuredLog)).not.toContain("private-report.pdf");
     } finally {
       consoleErrorSpy.mockRestore();
     }

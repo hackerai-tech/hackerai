@@ -3,6 +3,7 @@ import { runs, tasks } from "@trigger.dev/sdk";
 import { NextResponse, type NextRequest } from "next/server";
 import type { pmUserResearch } from "@/trigger/user-research";
 import {
+  normalizePmUserResearchGatewayInput,
   pmUserResearchGatewayRequestSchema,
   pmUserResearchResultSchema,
 } from "@/lib/research/user-research";
@@ -153,7 +154,9 @@ export async function POST(request: NextRequest) {
     return json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const parsed = pmUserResearchGatewayRequestSchema.safeParse(rawPayload);
+  const parsed = pmUserResearchGatewayRequestSchema.safeParse(
+    normalizePmUserResearchGatewayInput(rawPayload),
+  );
   if (!parsed.success) {
     return json(
       {

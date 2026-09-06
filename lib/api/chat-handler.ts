@@ -560,6 +560,7 @@ export const createChatHandler = () => {
           mode,
           capReason,
           hasAttachments: fileCounts.totalFiles > 0,
+          selectedModel: selectedModelOverride ?? null,
         };
         const allowanceStatus =
           await getPaidDailyFreeAllowanceStatus(allowanceContext);

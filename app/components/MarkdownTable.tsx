@@ -2,6 +2,11 @@ import type { ReactNode } from "react";
 import { useRef, useState } from "react";
 import { Download, Copy, Check } from "lucide-react";
 import { downloadFile } from "@/lib/utils/file-download";
+import {
+  neutralizeSpreadsheetFormula,
+  serializeSpreadsheetCsv,
+  serializeSpreadsheetTsv,
+} from "@/lib/utils/spreadsheet-export";
 
 function extractTableData(tableEl: HTMLTableElement): string[][] {
   const rows: string[][] = [];
@@ -15,19 +20,17 @@ function extractTableData(tableEl: HTMLTableElement): string[][] {
   return rows;
 }
 
-function toCSV(data: string[][]): string {
-  return data
-    .map((row) =>
-      row
-        .map((cell) => {
-          if (cell.includes(",") || cell.includes('"') || cell.includes("\n")) {
-            return `"${cell.replace(/"/g, '""')}"`;
-          }
-          return cell;
-        })
-        .join(","),
-    )
-    .join("\n");
+function serializeSpreadsheetTableHtml(tableEl: HTMLTableElement): string {
+  const clone = tableEl.cloneNode(true) as HTMLTableElement;
+
+  for (const cell of Array.from(clone.querySelectorAll("th, td"))) {
+    const value = cell.textContent || "";
+    if (neutralizeSpreadsheetFormula(value) !== value) {
+      cell.insertBefore(document.createTextNode("'"), cell.firstChild);
+    }
+  }
+
+  return clone.outerHTML;
 }
 
 interface MarkdownTableProps {
@@ -54,17 +57,18 @@ export function MarkdownTable({
   const handleCopy = async () => {
     const data = getTableData();
     if (!data) return;
+    const tsv = serializeSpreadsheetTsv(data);
     try {
       const tableEl = wrapperRef.current?.querySelector("table");
-      const tsv = data.map((row) => row.join("\t")).join("\n");
       await navigator.clipboard.write([
         new ClipboardItem({
           "text/plain": new Blob([tsv], { type: "text/plain" }),
           ...(tableEl
             ? {
-                "text/html": new Blob([tableEl.outerHTML], {
-                  type: "text/html",
-                }),
+                "text/html": new Blob(
+                  [serializeSpreadsheetTableHtml(tableEl)],
+                  { type: "text/html" },
+                ),
               }
             : {}),
         }),
@@ -74,7 +78,6 @@ export function MarkdownTable({
     } catch {
       // Fallback to plain text copy
       try {
-        const tsv = data.map((row) => row.join("\t")).join("\n");
         await navigator.clipboard.writeText(tsv);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -89,7 +92,7 @@ export function MarkdownTable({
     if (!data) return;
     downloadFile({
       filename: "table.csv",
-      content: toCSV(data),
+      content: serializeSpreadsheetCsv(data),
       mimeType: "text/csv",
     });
   };

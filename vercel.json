@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/platform-costs/convex",
       "schedule": "59 * * * *"
+    },
+    {
+      "path": "/api/cron/subscription-pauses",
+      "schedule": "23 * * * *"
     }
   ]
 }

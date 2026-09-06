@@ -269,13 +269,14 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("runs free Ask on DeepSeek V4 Flash with GLM Flash first fallback", () => {
+  it("runs free Ask with low reasoning across its fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter).toMatchObject({
-      provider: { ignore: ["novita"] },
+      reasoning: { enabled: true, effort: "low" },
       models: [GLM_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
+    expect(opts.openrouter).not.toHaveProperty("provider");
     expect(opts.openrouter.models).toHaveLength(3);
   });
 
@@ -439,11 +440,11 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it("uses high reasoning for free Ask across its fallback chain", () => {
+  it("uses low reasoning for free Ask across its fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "high",
+      effort: "low",
     });
     expect(opts.openrouter.models).toEqual([
       GLM_FLASH_SLUG,
@@ -452,7 +453,7 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it("keeps free Ask reasoning high over a lower scoped override", () => {
+  it("keeps free Ask reasoning low over a scoped override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -465,7 +466,7 @@ describe("buildProviderOptions fallback chain", () => {
 
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "high",
+      effort: "low",
     });
     expect(opts.openrouter.models).toEqual([
       GLM_FLASH_SLUG,
@@ -474,7 +475,7 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it("keeps free Ask high reasoning for an explicit high override", () => {
+  it("keeps free Ask reasoning low over an explicit high override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -487,7 +488,7 @@ describe("buildProviderOptions fallback chain", () => {
 
     expect(opts.openrouter.reasoning).toEqual({
       enabled: true,
-      effort: "high",
+      effort: "low",
     });
   });
 

@@ -10,6 +10,32 @@ const POLL_INTERVAL_MS = 5_000;
 const MAX_WAIT_MS = 35 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_PAYLOAD_BYTES = 32 * 1024;
+const MAX_REPORTED_ISSUES = 8;
+const MAX_ISSUE_PATH_SEGMENTS = 8;
+const MAX_ISSUE_PATH_SEGMENT_CHARS = 64;
+const ALLOWED_GATEWAY_ERROR_CODES = new Set([
+  "invalid_payload",
+  "payload_too_large",
+  "invalid_json",
+  "invalid_idempotency_key",
+  "unauthorized",
+  "research_gateway_unavailable",
+  "research_run_start_failed",
+  "invalid_run_id",
+  "run_not_found",
+  "research_run_output_invalid",
+  "research_run_failed",
+  "research_run_status_failed",
+]);
+const ISSUE_MESSAGES = {
+  invalid_type: "has an invalid type",
+  too_small: "is below the allowed minimum",
+  too_big: "exceeds the allowed maximum",
+  invalid_format: "has an invalid format",
+  invalid_value: "has an unsupported value",
+  unrecognized_keys: "contains unsupported fields",
+  custom: "failed validation",
+};
 
 function usage() {
   console.log(`Usage: node run-research.mjs --payload /secure/path/request.json [--no-wait]
@@ -52,6 +78,40 @@ export function createProxyDispatcher(env = process.env) {
 
 const proxyDispatcher = createProxyDispatcher();
 
+/** Format a bounded gateway failure without reflecting rejected input. */
+export function formatGatewayError(status, body) {
+  const code = ALLOWED_GATEWAY_ERROR_CODES.has(body?.error)
+    ? body.error
+    : "request_failed";
+  const issues = Array.isArray(body?.issues)
+    ? body.issues.slice(0, MAX_REPORTED_ISSUES).flatMap((issue) => {
+        if (!issue || typeof issue !== "object") return [];
+        const path = Array.isArray(issue.path)
+          ? issue.path
+              .slice(0, MAX_ISSUE_PATH_SEGMENTS)
+              .flatMap((part) => {
+                if (Number.isInteger(part) && part >= 0 && part <= 999) {
+                  return [String(part)];
+                }
+                if (
+                  typeof part === "string" &&
+                  part.length <= MAX_ISSUE_PATH_SEGMENT_CHARS &&
+                  /^[A-Za-z][A-Za-z0-9_]*$/.test(part)
+                ) {
+                  return [part];
+                }
+                return ["field"];
+              })
+              .join(".")
+          : "";
+        const message = ISSUE_MESSAGES[issue.code] ?? "failed validation";
+        return [`${path || "payload"}: ${message}`];
+      })
+    : [];
+  const details = issues.length > 0 ? ` (${issues.join("; ")})` : "";
+  return `Research gateway returned ${status}: ${code}${details}`;
+}
+
 export async function gatewayRequest(
   url,
   key,
@@ -70,8 +130,7 @@ export async function gatewayRequest(
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const code = typeof body.error === "string" ? body.error : "request_failed";
-    throw new Error(`Research gateway returned ${response.status}: ${code}`);
+    throw new Error(formatGatewayError(response.status, body));
   }
   return body;
 }

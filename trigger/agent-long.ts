@@ -2878,6 +2878,7 @@ export const agentLongTask = task({
                 mode,
                 capReason,
                 hasAttachments: sandboxFiles.length > 0,
+                selectedModel: selectedModelOverride ?? null,
               };
               const allowanceStatus =
                 await getPaidDailyFreeAllowanceStatus(allowanceContext);

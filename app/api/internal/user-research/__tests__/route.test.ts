@@ -232,6 +232,67 @@ describe("PM user research gateway", () => {
     infoSpy.mockRestore();
   });
 
+  it("normalizes PostHog timestamps and SHA-256 field names for comparisons", async () => {
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const { POST } = await import("../route");
+    const userIds = [
+      "user-1",
+      "user-2",
+      "user-3",
+      "user-4",
+      "user-5",
+      "user-6",
+    ];
+    const comparisonGroups = [
+      { label: "Model A", userIds: userIds.slice(0, 3) },
+      { label: "Model B", userIds: userIds.slice(3) },
+    ];
+    const evidenceAnchors = userIds.map((userId, index) => ({
+      userId,
+      anchorAt: new Date(
+        validPayload.cohortSelectedAt - (index + 1) * 60_000,
+      ).toISOString(),
+    }));
+    const normalizedEvidenceAnchors = evidenceAnchors.map((anchor) => ({
+      ...anchor,
+      anchorAt: Date.parse(anchor.anchorAt),
+    }));
+    const { selectionQueryFingerprint, ...payloadWithoutFingerprint } =
+      validPayload;
+
+    const response = await POST(
+      request({
+        body: {
+          ...payloadWithoutFingerprint,
+          userIds,
+          cohortSelectedAt: new Date(
+            validPayload.cohortSelectedAt,
+          ).toISOString(),
+          selectionQuerySha256: selectionQueryFingerprint,
+          comparisonGroups,
+          evidenceWindowDays: 30,
+          evidenceAnchors,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(triggerTask).toHaveBeenCalledWith(
+      "pm-user-research",
+      {
+        ...validTriggeredPayload,
+        userIds,
+        comparisonGroups,
+        samplingMode: "pre_event",
+        evidenceWindowDays: 30,
+        evidenceAnchors: normalizedEvidenceAnchors,
+        requestedBy: "pm-gateway",
+      },
+      expect.any(Object),
+    );
+    infoSpy.mockRestore();
+  });
+
   it("rejects an invalid credential before parsing or triggering", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const invalid = request({ token: "wrong-secret" });
@@ -260,6 +321,14 @@ describe("PM user research gateway", () => {
       request({ body: { ...validPayload, userIds: ["user-1", "user-2"] } }),
     );
     expect(invalidCohort.status).toBe(400);
+    await expect(invalidCohort.json()).resolves.toEqual(
+      expect.objectContaining({
+        error: "invalid_payload",
+        issues: expect.arrayContaining([
+          expect.objectContaining({ path: ["userIds"] }),
+        ]),
+      }),
+    );
     expect(triggerTask).not.toHaveBeenCalled();
   });
 
