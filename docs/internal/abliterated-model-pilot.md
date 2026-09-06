@@ -8,7 +8,7 @@ so base and Large v2 traffic can be checked independently.
 
 ## Routing contract
 
-Paid text requests in Ask and Agent may use an Abliteration model at
+Paid requests in Ask and Agent may use an Abliteration model at
 `https://api.abliteration.ai/v1`. Auto/Standard routes use `abliterated-model`;
 explicit HackerAI Pro and Max routes use `abliterated-model-large-v2`. Ultra Ask
 Auto also uses Large v2 because its current baseline is Pro, while Ultra Agent
@@ -16,15 +16,18 @@ Auto uses the base model because its baseline is Standard. The existing moderati
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
+Because Large v2 is text-only, image attachments and image-view tool results use
+the multimodal base `abliterated-model` for every selector, including Pro and Max.
+PDFs, files without an image media type, and other unsupported file inputs retain
+their original HackerAI route.
+
 Explicit free-allowance rescue requests are excluded before assignment. Eligibility
 is recorded before model-priced budget checks so cost-induced blocking cannot
 silently remove treatment users from the denominator.
 
-Initial requests containing file parts are excluded, including images and PDFs.
-Existing Agent image-result promotion still applies if a tool later returns an
-image. Free subscriptions and paid daily free-allowance rescue requests are
-excluded. Every control retains its exact existing baseline. Analyze provider
-model, selector, subscription, and mode separately as well as overall.
+Free subscriptions and paid daily free-allowance rescue requests are excluded.
+Every control retains its exact existing baseline. Analyze provider model,
+selector, subscription, input modality, and mode separately as well as overall.
 
 `ABLITERATION_API_KEY` is a server credential. Missing credentials, missing flags,
 unknown variants, and flag lookup errors preserve the existing route. Only an
@@ -177,9 +180,11 @@ Before activation, on the verified Preview custom URL:
    request. Confirm moderation eligibility, streaming completion, model attribution,
    one exposure, and reload persistence. Repeat in Agent with one bounded tool call.
 2. Confirm benign/unflagged requests, prohibited-category moderation results,
-   moderation failure, free users, Pro/Max, attachments, and free-allowance rescue
-   keep their baseline routes. Unit tests cover deterministic gates; use approved
-   synthetic fixtures for integration testing rather than customer content.
+   moderation failure, free users, PDFs, other unsupported files, and free-allowance
+   rescue keep their baseline routes. Confirm image requests use the base Abliteration
+   model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
+   Unit tests cover deterministic gates; use approved synthetic fixtures for
+   integration testing rather than customer content.
 3. Force the flag off/control and a provider outage. Verify fallback completes,
    assignment stays unchanged in outcomes/costs, replacement messages can be rated,
    and no duplicate tool action occurs.

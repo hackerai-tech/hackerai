@@ -27,10 +27,32 @@ const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
 
 export const getAbliterationTreatmentModel = (
   baselineModel: ModelName,
+  requiresVision = false,
 ): ModelName =>
-  LARGE_V2_BASELINE_MODELS.has(baselineModel)
+  !requiresVision && LARGE_V2_BASELINE_MODELS.has(baselineModel)
     ? ABLITERATION_LARGE_V2_MODEL_KEY
     : ABLITERATION_MODEL_KEY;
+
+const messagesRequireVision = (messages: UIMessage[]): boolean =>
+  uiMessagesContainImageViewResult(messages) ||
+  messages.some((message) =>
+    message.parts.some(
+      (part) =>
+        part.type === "file" &&
+        typeof part.mediaType === "string" &&
+        part.mediaType.startsWith("image/"),
+    ),
+  );
+
+const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
+  messages.some((message) =>
+    message.parts.some(
+      (part) =>
+        part.type === "file" &&
+        (typeof part.mediaType !== "string" ||
+          !part.mediaType.startsWith("image/")),
+    ),
+  );
 
 export function isEligibleForAbliteratedModel({
   subscription,
@@ -50,10 +72,7 @@ export function isEligibleForAbliteratedModel({
     subscription !== "free" &&
     moderationEligible &&
     messages.length > 0 &&
-    !uiMessagesContainImageViewResult(messages) &&
-    !messages.some((message) =>
-      message.parts.some((part) => part.type === "file"),
-    )
+    !messagesContainUnsupportedFiles(messages)
   );
 }
 
@@ -106,7 +125,10 @@ export async function evaluateAbliteratedModel({
       variant,
       modelKey:
         variant === "test"
-          ? getAbliterationTreatmentModel(selectedModel)
+          ? getAbliterationTreatmentModel(
+              selectedModel,
+              messagesRequireVision(messages),
+            )
           : selectedModel,
       baselineModel: selectedModel,
     };

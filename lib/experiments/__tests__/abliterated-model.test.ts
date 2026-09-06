@@ -38,6 +38,37 @@ describe("moderation-gated Abliteration assignment", () => {
       parts: [{ type: "text" as const, text: "private test prompt" }],
     },
   ];
+  const imageAttachmentMessages = [
+    {
+      id: "image-attachment",
+      role: "user" as const,
+      parts: [
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: "https://example.test/private.png",
+        },
+      ],
+    },
+  ] as unknown as UIMessage[];
+  const imageViewMessages = [
+    {
+      id: "image-view",
+      role: "assistant" as const,
+      parts: [
+        {
+          type: "tool-file",
+          toolCallId: "call-file-1",
+          state: "output-available",
+          output: {
+            action: "view",
+            kind: "image",
+            mediaType: "image/png",
+          },
+        },
+      ],
+    },
+  ] as unknown as UIMessage[];
   const defaults = {
     userId: "u",
     subscription: "pro" as SubscriptionTier,
@@ -88,41 +119,6 @@ describe("moderation-gated Abliteration assignment", () => {
         },
       ],
     },
-    {
-      messages: [
-        {
-          id: "f",
-          role: "user" as const,
-          parts: [
-            {
-              type: "file" as const,
-              mediaType: "image/png",
-              url: "https://example.test/private.png",
-            },
-          ],
-        },
-      ],
-    },
-    {
-      messages: [
-        {
-          id: "image-view",
-          role: "assistant" as const,
-          parts: [
-            {
-              type: "tool-file",
-              toolCallId: "call-file-1",
-              state: "output-available",
-              output: {
-                action: "view",
-                kind: "image",
-                mediaType: "image/png",
-              },
-            },
-          ],
-        },
-      ] as unknown as UIMessage[],
-    },
   ])("does not evaluate ineligible requests: %j", async (overrides) => {
     const getFeatureFlag = jest.fn().mockResolvedValue("test");
     expect(
@@ -164,6 +160,50 @@ describe("moderation-gated Abliteration assignment", () => {
       baselineModel: overrides.selectedModel,
     });
   });
+
+  it.each([
+    {
+      name: "Pro image attachment",
+      selectedModelOverride: "hackerai-pro" as SelectedModel,
+      selectedModel: "model-deepseek-v4-pro-0813" as const,
+      messages: imageAttachmentMessages,
+    },
+    {
+      name: "Pro image-view tool result",
+      selectedModelOverride: "hackerai-pro" as SelectedModel,
+      selectedModel: "model-deepseek-v4-pro-0813" as const,
+      messages: imageViewMessages,
+    },
+    {
+      name: "Max image attachment",
+      selectedModelOverride: "hackerai-max" as SelectedModel,
+      selectedModel: "model-grok-4.6" as const,
+      messages: imageAttachmentMessages,
+    },
+    {
+      name: "Max image-view tool result",
+      selectedModelOverride: "hackerai-max" as SelectedModel,
+      selectedModel: "model-grok-4.6" as const,
+      messages: imageViewMessages,
+    },
+  ])(
+    "routes $name requests to the vision-capable base model",
+    async ({ messages, selectedModel, selectedModelOverride }) => {
+      expect(
+        await evaluateAbliteratedModel({
+          ...defaults,
+          selectedModelOverride,
+          selectedModel,
+          messages,
+          posthog: { getFeatureFlag: jest.fn().mockResolvedValue("test") },
+        }),
+      ).toMatchObject({
+        variant: "test",
+        modelKey: ABLITERATION_MODEL_KEY,
+        baselineModel: selectedModel,
+      });
+    },
+  );
 
   it("keeps Ultra Agent Auto on the base Abliteration route", async () => {
     expect(
