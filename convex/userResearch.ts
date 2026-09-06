@@ -13,7 +13,7 @@ import {
   researchUserProfileValidator,
 } from "./userResearchValidators";
 
-const MIN_RESEARCH_COHORT_SIZE = 3;
+const MIN_RESEARCH_COHORT_SIZE = 1;
 const MAX_RESEARCH_COHORT_SIZE = 20;
 const MIN_CHATS_PER_USER = 3;
 const MAX_CHATS_PER_USER = 20;
@@ -676,7 +676,7 @@ export const completeRun = mutation({
     }
     if (profiles.length < MIN_RESEARCH_COHORT_SIZE) {
       throw new ConvexError(
-        "At least three user profiles are required for a cohort report",
+        "At least one user profile is required for a research report",
       );
     }
     const existingReport = await ctx.db
