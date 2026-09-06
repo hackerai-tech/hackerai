@@ -4,9 +4,11 @@ import { recoverSubscriptionPayment } from "../payment-method-recovery";
 function fixture() {
   const update = jest.fn().mockResolvedValue({});
   const pay = jest.fn().mockResolvedValue({ status: "paid" });
+  const listEvents = jest.fn().mockResolvedValue({ data: [], has_more: false });
   const stripe = {
     subscriptions: { update },
     invoices: { pay },
+    events: { list: listEvents },
   } as unknown as Stripe;
   const subscription = {
     id: "sub_recovery",
@@ -30,19 +32,126 @@ function fixture() {
     subscription,
     invoice,
     paymentMethodId: "pm_new",
+    selectionEventId: "evt_selection",
+    customerEventCreated: Math.floor(Date.now() / 1000),
+    listEvents,
     update,
     pay,
   };
 }
 
 describe("payment method recovery", () => {
+  it.each([0, 1])(
+    "preserves subscription card B when customer card A arrives %s seconds earlier",
+    async (offset) => {
+      const f = fixture();
+      f.subscription.default_payment_method = "pm_B";
+      f.pay.mockResolvedValue({ status: "open" });
+      // B was selected directly on the subscription and its handler uses B.
+      await recoverSubscriptionPayment({
+        ...f,
+        paymentMethodId: "pm_B",
+        customerEventCreated: undefined,
+      });
+      f.listEvents.mockResolvedValue({
+        data: [
+          {
+            id: "evt_B",
+            created: f.customerEventCreated + offset,
+            data: {
+              object: { id: f.subscription.id, default_payment_method: "pm_B" },
+              previous_attributes: { default_payment_method: "pm_old" },
+            },
+          },
+        ],
+        has_more: false,
+      });
+      // The delayed customer event still matches customer A, but must not replace B.
+      expect(
+        await recoverSubscriptionPayment({ ...f, paymentMethodId: "pm_A" }),
+      ).toBe("skipped");
+      expect(f.subscription.default_payment_method).toBe("pm_B");
+      expect(f.update).not.toHaveBeenCalled();
+      expect(f.pay).toHaveBeenCalledTimes(1);
+      expect(f.pay.mock.calls[0][1]).toEqual({ payment_method: "pm_B" });
+    },
+  );
+
+  it("checks later pages for a newer subscription selection", async () => {
+    const f = fixture();
+    f.listEvents
+      .mockResolvedValueOnce({
+        data: [{ id: "evt_other", data: { object: { id: "sub_other" } } }],
+        has_more: true,
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "evt_newer",
+            data: {
+              object: { id: f.subscription.id, default_payment_method: "pm_B" },
+              previous_attributes: { default_payment_method: "pm_old" },
+            },
+          },
+        ],
+        has_more: false,
+      });
+    expect(await recoverSubscriptionPayment(f)).toBe("skipped");
+    expect(f.listEvents).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        starting_after: "evt_other",
+        created: { gte: f.customerEventCreated },
+      }),
+    );
+    expect(f.pay).not.toHaveBeenCalled();
+  });
+
+  it("does not overwrite an override when history is unavailable or too old", async () => {
+    const f = fixture();
+    f.listEvents.mockRejectedValue(new Error("Events unavailable"));
+    await expect(recoverSubscriptionPayment(f)).rejects.toThrow(
+      "Events unavailable",
+    );
+    expect(f.pay).not.toHaveBeenCalled();
+    expect(
+      await recoverSubscriptionPayment({
+        ...f,
+        customerEventCreated: f.customerEventCreated - 31 * 24 * 60 * 60,
+      }),
+    ).toBe("skipped");
+    expect(f.listEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the bounded history scan cannot finish", async () => {
+    const f = fixture();
+    f.listEvents.mockResolvedValue({
+      data: [{ id: "evt_unrelated", data: { object: { id: "sub_other" } } }],
+      has_more: true,
+    });
+    expect(await recoverSubscriptionPayment(f)).toBe("skipped");
+    expect(f.listEvents).toHaveBeenCalledTimes(10);
+    expect(f.update).not.toHaveBeenCalled();
+    expect(f.pay).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse a cached default update for a separate card-selection event", async () => {
+    const f = fixture();
+    await recoverSubscriptionPayment(f);
+    await recoverSubscriptionPayment({
+      ...f,
+      selectionEventId: "evt_selected_again",
+    });
+    expect(f.update.mock.calls[0][2]).not.toEqual(f.update.mock.calls[1][2]);
+    expect(f.pay.mock.calls[0][2]).toEqual(f.pay.mock.calls[1][2]);
+  });
+
   it("replaces the subscription override before paying the renewal with the selected card", async () => {
     const f = fixture();
     expect(await recoverSubscriptionPayment(f)).toBe("paid");
     expect(f.update).toHaveBeenCalledWith(
       "sub_recovery",
       { default_payment_method: "pm_new" },
-      { idempotencyKey: "recovery-card:sub_recovery:pm_new" },
+      { idempotencyKey: "recovery-card:sub_recovery:evt_selection" },
     );
     expect(f.pay).toHaveBeenCalledWith(
       "in_recovery",

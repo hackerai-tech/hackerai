@@ -1758,6 +1758,10 @@ async function handlePaymentMethodUpdated(args: {
       invoice: failureContext.invoice,
       paymentMethodId: args.paymentMethodId,
       paymentIntent: failureContext.paymentIntent,
+      selectionEventId: args.stripeEventId,
+      customerEventCreated: args.subscriptionId
+        ? undefined
+        : Math.floor(args.eventOccurredAtMs / 1000),
     });
   }
 }

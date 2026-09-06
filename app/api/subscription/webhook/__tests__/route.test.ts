@@ -18,6 +18,7 @@ const mockRetrieveCustomer = jest.fn();
 const mockRetrieveSubscription = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockListSubscriptions = jest.fn();
+const mockListStripeEvents = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockPayInvoice = jest.fn();
 const mockListInvoiceLineItems = jest.fn();
@@ -53,6 +54,7 @@ jest.mock("@/app/api/stripe", () => ({
     webhooks: {
       constructEvent: mockConstructEvent,
     },
+    events: { list: mockListStripeEvents },
     customers: {
       retrieve: mockRetrieveCustomer,
     },
@@ -378,6 +380,10 @@ describe("POST /api/subscription/webhook", () => {
     });
     mockPayInvoice.mockResolvedValue({ status: "paid" } as never);
     mockUpdateSubscription.mockResolvedValue({} as never);
+    mockListStripeEvents.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
   });
 
   afterEach(() => {
@@ -2227,7 +2233,7 @@ describe("POST /api/subscription/webhook", () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_card_selected",
       type: "customer.updated",
-      created: 1_782_000_200,
+      created: Math.floor(Date.now() / 1000),
       data: {
         object: {
           id: "cus_payment_failed",
@@ -2336,8 +2342,13 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockUpdateSubscription).toHaveBeenCalledWith(
       "sub_payment_failed",
       { default_payment_method: "pm_recovery" },
-      { idempotencyKey: "recovery-card:sub_payment_failed:pm_recovery" },
+      { idempotencyKey: "recovery-card:sub_payment_failed:evt_card_selected" },
     );
+    expect(mockListStripeEvents).toHaveBeenCalledWith({
+      type: "customer.subscription.updated",
+      created: { gte: expect.any(Number) },
+      limit: 100,
+    });
     expect(mockPayInvoice).toHaveBeenCalledWith(
       "in_payment_failed",
       { payment_method: "pm_recovery" },
@@ -2635,7 +2646,7 @@ describe("POST /api/subscription/webhook", () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_select_recovery",
       type: "customer.updated",
-      created: 1_782_000_300,
+      created: Math.floor(Date.now() / 1000),
       data: {
         object: customer,
         previous_attributes: {
