@@ -61,7 +61,6 @@ const GET_MESSAGES_PAGE_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
 const CHAT_DELETION_RETRY_DELAYS_MS =
   process.env.NODE_ENV === "test" ? [0, 0] : [250, 1000];
-const CONVERSATION_TURN_COUNT_QUERY_TIMEOUT_MS = 2_000;
 const MAX_CHAT_DELETION_FENCE_BATCHES = 50;
 const MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN = 100;
 const REDACTED_ERROR_DATA_VALUE = "[Redacted]";
@@ -714,51 +713,6 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
-/**
- * Reads the persisted visible user-turn count, capped by Convex for routing.
- * A failed read returns undefined so experimental providers fail closed.
- */
-export async function getConversationTurnCountByChatId({
-  chatId,
-  userId,
-}: {
-  chatId: string;
-  userId: string;
-}): Promise<number | undefined> {
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      getConvexClient().query(api.messages.getConversationTurnCountForBackend, {
-        serviceKey,
-        chatId,
-        userId,
-      }),
-      new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(
-          () => reject(new Error("Conversation turn count query timed out")),
-          CONVERSATION_TURN_COUNT_QUERY_TIMEOUT_MS,
-        );
-      }),
-    ]);
-  } catch (error) {
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        event: "conversation_turn_count_fetch_failed",
-        service: "chat-handler",
-        timestamp: new Date().toISOString(),
-        db_operation: "messages.getConversationTurnCountForBackend",
-        chat_id: chatId,
-        user_id: userId,
-        error: stringifyRedactedError(error),
-      }),
-    );
-    return undefined;
-  } finally {
-    if (timeoutId !== undefined) clearTimeout(timeoutId);
-  }
-}
-
 export async function getCurrentAgentEntitlementContext({
   userId,
   organizationId,
@@ -1259,7 +1213,7 @@ export async function handleInitialChatAndUserMessage({
 
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
-    return saveMessage({
+    await saveMessage({
       chatId,
       userId,
       message: {
@@ -1270,8 +1224,6 @@ export async function handleInitialChatAndUserMessage({
       isHidden,
     });
   }
-
-  return undefined;
 }
 
 export async function updateChat({

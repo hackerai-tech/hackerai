@@ -74,7 +74,6 @@ describe("moderation-gated Abliteration assignment", () => {
     subscription: "pro" as SubscriptionTier,
     selectedModel: "model-deepseek-v4-flash-0731",
     moderationEligible: true,
-    conversationTurn: 1,
     messages,
   };
   it.each([undefined, "auto", "hackerai-standard"] as const)(
@@ -88,7 +87,6 @@ describe("moderation-gated Abliteration assignment", () => {
       });
       expect(result).toMatchObject({
         modelKey: "model-abliterated",
-        conversationTurn: 1,
       });
       expect(getFeatureFlag).toHaveBeenCalledWith(
         ABLITERATED_EXPERIMENT_KEY,
@@ -103,25 +101,9 @@ describe("moderation-gated Abliteration assignment", () => {
       );
     },
   );
-  it.each([1, 2, 3])(
-    "allows conversational turn %i",
-    async (conversationTurn) => {
-      const getFeatureFlag = jest.fn().mockResolvedValue("test");
-      await expect(
-        evaluateAbliteratedModel({
-          ...defaults,
-          conversationTurn,
-          posthog: { getFeatureFlag },
-        }),
-      ).resolves.toMatchObject({ conversationTurn });
-      expect(getFeatureFlag).toHaveBeenCalledTimes(1);
-    },
-  );
   it.each([
     { subscription: "free" as SubscriptionTier },
     { moderationEligible: false },
-    { conversationTurn: 4 },
-    { conversationTurn: undefined },
     { limitRescue: true },
     { messages: [] },
     {

@@ -46,8 +46,9 @@ async function consumeModel(source: LanguageModel) {
 async function consume(
   telemetry: AbliteratedModelTelemetry,
   source: LanguageModel,
+  stepIndex = 0,
 ) {
-  return consumeModel(telemetry.wrap(source));
+  return consumeModel(telemetry.wrap(source, stepIndex));
 }
 describe("Abliteration stream telemetry", () => {
   const capture = jest.fn();
@@ -58,7 +59,6 @@ describe("Abliteration stream telemetry", () => {
         variant: "test",
         modelKey: "model-abliterated",
         baselineModel: "model-deepseek-v4-flash-0731",
-        conversationTurn: 2,
       },
       messageId: "message",
       chatId: "chat",
@@ -76,14 +76,23 @@ describe("Abliteration stream telemetry", () => {
       finishPart,
     ];
     expect(await consume(telemetry, model(parts))).toEqual(parts);
-    await consume(telemetry, model(parts));
+    await consume(telemetry, model(parts), 3);
     expect(events("abliterated_model_eligible")).toHaveLength(1);
     expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
       assigned_platform_authorization_context: "not_appended",
-      conversation_turn: 2,
-      conversation_turn_limit: 3,
+      generation_step_limit: 3,
     });
     expect(events("abliterated_model_provider_attempt")).toHaveLength(2);
+    expect(
+      events("abliterated_model_provider_attempt").map(
+        (event) => event.properties.generation_step,
+      ),
+    ).toEqual([1, 4]);
+    expect(
+      events("abliterated_model_provider_attempt").map(
+        (event) => event.properties.within_abliteration_step_limit,
+      ),
+    ).toEqual([true, false]);
     expect(events("abliterated_model_exposed")).toHaveLength(1);
     expect(
       events("abliterated_model_provider_outcome")[0].properties,

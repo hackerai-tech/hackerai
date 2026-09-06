@@ -61,7 +61,7 @@ async function main() {
   const startedAt = Date.now();
   const result = streamText({
     model: namespaceLanguageModelToolCalls(
-      telemetry.wrap(myProvider.languageModel(assignment.modelKey)),
+      telemetry.wrap(myProvider.languageModel(assignment.modelKey), 0),
       "smoke",
     ),
     prompt:

@@ -1,5 +1,4 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 
 jest.mock("../_generated/server", () => ({
@@ -116,47 +115,13 @@ describe("saveMessage — is_hidden handling", () => {
       user_id: USER_ID,
       canceled_at: undefined,
     },
-    visibleTurns?: {
-      legacy?: Record<string, any>[];
-      explicit?: Record<string, any>[];
-    },
   ): void {
     mockCtx.db.query.mockImplementation((table: string) => {
       if (table === "messages") {
         return {
-          withIndex: jest.fn(
-            (indexName: string, buildIndex: (q: any) => any) => {
-              if (indexName === "by_message_id") {
-                return { first: jest.fn<any>().mockResolvedValue(msg) };
-              }
-
-              if (indexName === "by_chat_id_and_role_and_hidden") {
-                let hidden: boolean | undefined;
-                const q = {
-                  eq: jest.fn((field: string, value: unknown) => {
-                    if (field === "is_hidden") {
-                      hidden = value as boolean | undefined;
-                    }
-                    return q;
-                  }),
-                };
-                buildIndex(q);
-                const defaultLegacyTurns =
-                  msg?.role === "user" && msg.is_hidden !== true ? [msg] : [];
-                const turns =
-                  hidden === false
-                    ? (visibleTurns?.explicit ?? [])
-                    : (visibleTurns?.legacy ?? defaultLegacyTurns);
-                return {
-                  order: jest.fn().mockReturnValue({
-                    take: jest.fn<any>().mockResolvedValue(turns),
-                  }),
-                };
-              }
-
-              throw new Error(`Unexpected messages index: ${indexName}`);
-            },
-          ),
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(msg),
+          }),
         };
       }
 
@@ -206,46 +171,19 @@ describe("saveMessage — is_hidden handling", () => {
 
     const { saveMessage } = await import("../messages");
 
-    await expect(
-      saveMessage.handler(mockCtx, {
-        serviceKey: SERVICE_KEY,
-        id: "msg-visible-user",
-        chatId: CHAT_ID,
-        userId: USER_ID,
-        role: "user" as const,
-        parts: [{ type: "text", text: "move this chat to the top" }],
-      }),
-    ).resolves.toBe(1);
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-visible-user",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: "move this chat to the top" }],
+    });
 
     const insertedMessage = mockCtx.db.insert.mock.calls[0]?.[1];
-    expect(insertedMessage.conversation_turn).toBe(1);
     expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
       update_time: insertedMessage.update_time,
     });
-  });
-
-  it("assigns and stores the next visible conversation turn", async () => {
-    setupExistingMessage(null, undefined, {
-      legacy: [makeMessage({ id: "turn-1" })],
-      explicit: [makeMessage({ id: "turn-2", is_hidden: false })],
-    });
-
-    const { saveMessage } = await import("../messages");
-
-    await expect(
-      saveMessage.handler(mockCtx, {
-        serviceKey: SERVICE_KEY,
-        id: "turn-3",
-        chatId: CHAT_ID,
-        userId: USER_ID,
-        role: "user" as const,
-        parts: [{ type: "text", text: "third turn" }],
-      }),
-    ).resolves.toBe(3);
-    expect(mockCtx.db.insert).toHaveBeenCalledWith(
-      "messages",
-      expect.objectContaining({ conversation_turn: 3 }),
-    );
   });
 
   it("does not bump chat activity for assistant message inserts", async () => {
@@ -269,20 +207,18 @@ describe("saveMessage — is_hidden handling", () => {
   });
 
   it("does not bump chat activity when an existing user message is retried", async () => {
-    setupExistingMessage(makeMessage({ conversation_turn: 2 }));
+    setupExistingMessage(makeMessage());
 
     const { saveMessage } = await import("../messages");
 
-    await expect(
-      saveMessage.handler(mockCtx, {
-        serviceKey: SERVICE_KEY,
-        id: "msg-1",
-        chatId: CHAT_ID,
-        userId: USER_ID,
-        role: "user" as const,
-        parts: [{ type: "text", text: "hello" }],
-      }),
-    ).resolves.toBe(2);
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "user" as const,
+      parts: [{ type: "text", text: "hello" }],
+    });
 
     expect(mockCtx.db.patch).not.toHaveBeenCalledWith(
       "chat-doc-1",
@@ -550,7 +486,7 @@ describe("saveMessage — is_hidden handling", () => {
         role: "user" as const,
         parts: [{ type: "text", text: "late user message" }],
       }),
-    ).resolves.toBe(1);
+    ).resolves.toBeNull();
 
     expect(mockCtx.db.patch).toHaveBeenCalledWith("chat-doc-1", {
       canceled_at: undefined,
@@ -564,7 +500,6 @@ describe("saveMessage — is_hidden handling", () => {
         id: "msg-user-canceled",
         role: "user",
         content: "late user message",
-        conversation_turn: 1,
       }),
     );
     expect(console.error).not.toHaveBeenCalled();
@@ -956,89 +891,5 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     expect(result.page[0].parts).toEqual([{ type: "file", fileId }]);
     expect(result.fileTokens).toEqual([{ fileId, tokenSize: 321 }]);
     expect(mockCtx.db.get).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("getConversationTurnCountForBackend", () => {
-  let mockCtx: any;
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockCtx = {
-      db: { query: jest.fn() },
-      runQuery: jest.fn<any>().mockResolvedValue(true),
-    };
-  });
-
-  const indexedTurns = (
-    hidden: boolean | undefined,
-    turns: Record<string, any>[],
-  ) => ({
-    withIndex: jest.fn((indexName: string, buildIndex: (q: any) => any) => {
-      const q = { eq: jest.fn() };
-      q.eq.mockReturnValue(q);
-      buildIndex(q);
-      expect(indexName).toBe("by_chat_id_and_role_and_hidden");
-      expect(q.eq.mock.calls).toEqual([
-        ["chat_id", CHAT_ID],
-        ["role", "user"],
-        ["is_hidden", hidden],
-      ]);
-      return {
-        order: jest.fn().mockReturnValue({
-          take: jest.fn<any>().mockResolvedValue(turns),
-        }),
-      };
-    }),
-  });
-
-  it("counts visible user turns across legacy undefined and false values", async () => {
-    mockCtx.db.query
-      .mockReturnValueOnce(
-        indexedTurns(undefined, [makeMessage(), makeMessage()]),
-      )
-      .mockReturnValueOnce(indexedTurns(false, [makeMessage(), makeMessage()]));
-
-    const { getConversationTurnCountForBackend } = await import("../messages");
-    await expect(
-      getConversationTurnCountForBackend.handler(mockCtx, {
-        serviceKey: SERVICE_KEY,
-        chatId: CHAT_ID,
-        userId: USER_ID,
-      }),
-    ).resolves.toBe(4);
-    expect(mockCtx.db.query).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns zero without reading messages when a new chat does not exist yet", async () => {
-    mockCtx.runQuery.mockRejectedValueOnce(
-      new ConvexError({ code: "CHAT_NOT_FOUND", message: "missing" }),
-    );
-    const { getConversationTurnCountForBackend } = await import("../messages");
-
-    await expect(
-      getConversationTurnCountForBackend.handler(mockCtx, {
-        serviceKey: SERVICE_KEY,
-        chatId: CHAT_ID,
-        userId: USER_ID,
-      }),
-    ).resolves.toBe(0);
-    expect(mockCtx.db.query).not.toHaveBeenCalled();
-  });
-
-  it("rejects unauthorized ownership checks without reading messages", async () => {
-    mockCtx.runQuery.mockRejectedValueOnce(
-      new ConvexError({ code: "CHAT_UNAUTHORIZED", message: "denied" }),
-    );
-    const { getConversationTurnCountForBackend } = await import("../messages");
-
-    await expect(
-      getConversationTurnCountForBackend.handler(mockCtx, {
-        serviceKey: SERVICE_KEY,
-        chatId: CHAT_ID,
-        userId: USER_ID,
-      }),
-    ).rejects.toMatchObject({ data: { code: "CHAT_UNAUTHORIZED" } });
-    expect(mockCtx.db.query).not.toHaveBeenCalled();
   });
 });

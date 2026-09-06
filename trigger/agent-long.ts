@@ -99,7 +99,6 @@ import {
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
   getMessagesByChatId,
-  getConversationTurnCountByChatId,
   getChatById,
   getCurrentAgentEntitlementContext,
   prepareForNewStream,
@@ -2268,7 +2267,6 @@ export type AgentLongPayload = {
   endpoint?: AgentApiEndpoint;
   analyticsRequestContext?: AnalyticsRequestContext;
   genericDelegationEnabled?: boolean;
-  conversationTurn?: number;
   convexUrl?: string;
   requestTiming?: {
     routeStartedAt: number;
@@ -2358,7 +2356,6 @@ export const agentLongTask = task({
       endpoint: payloadEndpoint,
       analyticsRequestContext,
       genericDelegationEnabled = false,
-      conversationTurn: assignedConversationTurn,
     } = payload;
     const subagentsEnabled = genericDelegationEnabled;
     let selectedModelOverride = rawSelectedModelOverride;
@@ -2571,23 +2568,17 @@ export const agentLongTask = task({
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const [userCustomization, fetched, persistedConversationTurnCount] =
-        await Promise.all([
-          getUserCustomization({ userId }),
-          getMessagesByChatId({
-            chatId,
-            userId,
-            subscription,
-            newMessages: [],
-            regenerate,
-            mode,
-          }),
-          assignedConversationTurn === undefined
-            ? getConversationTurnCountByChatId({ chatId, userId })
-            : Promise.resolve(undefined),
-        ]);
-      const conversationTurn =
-        assignedConversationTurn ?? persistedConversationTurnCount;
+      const [userCustomization, fetched] = await Promise.all([
+        getUserCustomization({ userId }),
+        getMessagesByChatId({
+          chatId,
+          userId,
+          subscription,
+          newMessages: [],
+          regenerate,
+          mode,
+        }),
+      ]);
       const { chat, fileTokens } = fetched;
       const projectContextPromise = resolveProjectExecutionContext({
         chat,
@@ -2678,7 +2669,6 @@ export const agentLongTask = task({
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         messages: processedMessages,
-        conversationTurn,
         limitRescue: Boolean(limitRescue),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
@@ -4168,6 +4158,11 @@ export const agentLongTask = task({
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
               abliteratedTelemetry,
+              ...(activeAbliteratedExperiment?.variant === "test" && {
+                abliteratedStepRouting: {
+                  baselineModel: activeAbliteratedExperiment.baselineModel,
+                },
+              }),
               onProviderRequestStart: createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
@@ -4216,6 +4211,10 @@ export const agentLongTask = task({
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onModelChunk: runTimingTracker.recordFirstModelChunk,
+              onModelStepSelected: (modelName) => {
+                activeModelName = modelName;
+                setCurrentModelName(modelName);
+              },
               onStartupPhaseDuration:
                 runTimingTracker.recordStartupPhaseDuration,
               registerBackgroundWork: registerBackgroundRunWork,
@@ -4266,6 +4265,9 @@ export const agentLongTask = task({
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
             ) => {
+              if (modelName !== selectedModel) {
+                streamCtx.abliteratedStepRouting = undefined;
+              }
               activeModelName = modelName;
               terminalRequestedModelSlug =
                 trackedProvider.languageModel(modelName).modelId;

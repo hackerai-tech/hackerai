@@ -1500,7 +1500,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(languageModel\) \?\? languageModel;[\s\S]{0,150}guardLanguageModelProviderResponse\(telemetryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(languageModel, stepIndex\) \?\? languageModel;[\s\S]{0,150}guardLanguageModelProviderResponse\(telemetryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -2024,23 +2024,22 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
-  test("Abliteration routing receives the atomically assigned conversational turn", () => {
+  test("Abliteration routing switches to OpenRouter after three generation steps", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(
-        /evaluateAbliteratedModel\(\{[\s\S]{0,500}conversationTurn,/,
+        /abliteratedStepRouting:[\s\S]{0,150}baselineModel/,
       );
-      expect(source).toMatch(/getConversationTurnCountByChatId/);
+      expect(source).toMatch(
+        /if \(modelName !== selectedModel\) \{\s*streamCtx\.abliteratedStepRouting = undefined;/,
+      );
+      expect(source).not.toMatch(
+        /conversationTurn|getConversationTurnCountByChatId/,
+      );
     }
-    expect(convexMessagesSrc).toContain("conversation_turn: conversationTurn");
-    expect(chatHandlerSrc).toMatch(
-      /const assignedConversationTurn = await handleInitialChatAndUserMessage\([\s\S]*?const conversationTurn =[\s\S]*?assignedConversationTurn/,
+    expect(agentStreamRunnerSrc).toMatch(
+      /resolveAbliterationModelForGenerationStep\(\{[\s\S]{0,250}stepIndex/,
     );
-    expect(routeSrc).toMatch(
-      /const conversationTurn = await handleInitialChatAndUserMessage\([\s\S]*?conversationTurn: conversationTurn \?\? undefined/,
-    );
-    expect(taskSrc).toMatch(
-      /conversationTurn: assignedConversationTurn[\s\S]*?assignedConversationTurn === undefined[\s\S]*?assignedConversationTurn \?\? persistedConversationTurnCount/,
-    );
+    expect(routeSrc).not.toMatch(/conversationTurn/);
   });
 
   test("provider content blocks preserve their classification and complete after the error stream", () => {

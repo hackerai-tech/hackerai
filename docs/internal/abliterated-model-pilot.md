@@ -16,15 +16,13 @@ Auto uses the base model because its baseline is Standard. The existing moderati
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
-Abliteration is limited to conversational turns one through three. Each new visible
-user message receives its capped turn ordinal atomically in the same Convex mutation
-that persists it. Direct Ask uses the returned ordinal; the Agent route passes that
-same ordinal to its worker. Idempotent message retries reuse the stored ordinal, so
-concurrent submissions cannot claim the same turn. Regeneration and hidden Agent
-auto-continue prompts do not increment the count; they use the bounded persisted
-count as a fallback. Turn four and later use the request's normal OpenRouter baseline.
-If that fallback count cannot be read before its deadline, routing fails closed to
-the baseline.
+Abliteration is limited to model-generation steps one through three within each
+Ask response or Agent run. The shared AI SDK loop uses the assigned Abliteration
+model for zero-based step indexes 0–2, then switches step 4 and every later step to
+the request's saved OpenRouter baseline. The counter resets for each new response
+or run; an Agent run can continue through its existing 500-step cap. Provider retry
+attempts do not advance the completed-step counter. An Abliteration provider error
+still disables the treatment route immediately for the replacement stream.
 
 Because Large v2 is text-only, image attachments and image-view tool results use
 the multimodal base `abliterated-model` for every selector, including Pro and Max.
@@ -92,7 +90,8 @@ run; it does not reroute an already-running stream.
 
 All new server events carry `experiment_key`, `experiment_variant`,
 `$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode, tier,
-`conversation_turn`, and `conversation_turn_limit`.
+and `generation_step_limit`. Provider-attempt and provider-outcome events also
+carry the one-based `generation_step` and `within_abliteration_step_limit`.
 Eligibility identifies `assigned_platform_authorization_context`; each provider
 attempt identifies its actual `platform_authorization_context` as `not_appended`
 for an Abliteration model or `standard` for a control/fallback provider.
@@ -193,11 +192,10 @@ For release verification on the verified Preview custom URL:
    model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
    Unit tests cover deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
-   In Direct Ask and Agent, confirm the persisted visible user message receives turn
-   one and that a retried message keeps its original ordinal. Confirm turns one
-   through three can use the assigned Abliteration route and turn four returns to the
-   exact OpenRouter baseline without flag re-evaluation. Submit overlapping requests
-   near the boundary and confirm only the request assigned turn three is eligible.
+   In Direct Ask and Agent, force one response/run through at least four sequential
+   model-generation steps. Confirm steps 1–3 use the assigned Abliteration route and
+   step 4 onward uses the exact OpenRouter baseline without flag re-evaluation. Start
+   a new response/run and confirm its generation-step counter starts again at one.
 3. Force the flag off/control and a provider outage. Verify fallback completes,
    assignment stays unchanged in outcomes/costs, replacement messages can be rated,
    and no duplicate tool action occurs.

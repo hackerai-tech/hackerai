@@ -45,7 +45,6 @@ const loadSaveMessageWithMocks = async () => {
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
-    getConversationTurnCountByChatId,
     getMessagesByChatId,
     saveChat,
     saveMessage,
@@ -58,7 +57,6 @@ const loadSaveMessageWithMocks = async () => {
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
-    getConversationTurnCountByChatId,
     getMessagesByChatId,
     mockCompactMessageForStorage,
     mockMutation,
@@ -130,66 +128,6 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
       userId: "user-1",
       limit: 100,
     });
-  });
-});
-
-describe("getConversationTurnCountByChatId", () => {
-  it("returns the capped persisted conversation turn count", async () => {
-    const { getConversationTurnCountByChatId, mockQuery } =
-      await loadSaveMessageWithMocks();
-    mockQuery.mockResolvedValueOnce(3);
-
-    await expect(
-      getConversationTurnCountByChatId({
-        chatId: "chat-1",
-        userId: "user-1",
-      }),
-    ).resolves.toBe(3);
-  });
-
-  it("fails closed when the turn count cannot be read", async () => {
-    const { getConversationTurnCountByChatId, mockQuery } =
-      await loadSaveMessageWithMocks();
-    mockQuery.mockRejectedValueOnce(new Error("database unavailable"));
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      await expect(
-        getConversationTurnCountByChatId({
-          chatId: "chat-1",
-          userId: "user-1",
-        }),
-      ).resolves.toBeUndefined();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("conversation_turn_count_fetch_failed"),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it("fails closed when the turn count query exceeds its deadline", async () => {
-    jest.useFakeTimers();
-    const { getConversationTurnCountByChatId, mockQuery } =
-      await loadSaveMessageWithMocks();
-    mockQuery.mockImplementationOnce(() => new Promise(() => {}));
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-
-    try {
-      const result = getConversationTurnCountByChatId({
-        chatId: "chat-1",
-        userId: "user-1",
-      });
-      await jest.advanceTimersByTimeAsync(2_000);
-
-      await expect(result).resolves.toBeUndefined();
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Conversation turn count query timed out"),
-      );
-    } finally {
-      warnSpy.mockRestore();
-      jest.useRealTimers();
-    }
   });
 });
 

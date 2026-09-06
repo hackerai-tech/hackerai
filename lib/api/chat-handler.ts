@@ -1,5 +1,4 @@
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
-import { resolveAbliterationConversationTurn } from "@/lib/experiments/abliterated-model-turns";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
@@ -105,7 +104,6 @@ import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
 import {
   getMessagesByChatId,
-  getConversationTurnCountByChatId,
   getNotes,
   getUserCustomization,
   handleInitialChatAndUserMessage,
@@ -361,22 +359,18 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
-      const [userCustomization, fetched, persistedConversationTurnCount] =
-        await Promise.all([
-          getUserCustomization({ userId }),
-          getMessagesByChatId({
-            chatId,
-            userId,
-            subscription,
-            newMessages: requestMessages,
-            regenerate,
-            mode,
-            useClientMessagesForRegenerate,
-          }),
-          regenerate || isAutoContinue
-            ? getConversationTurnCountByChatId({ chatId, userId })
-            : Promise.resolve(undefined),
-        ]);
+      const [userCustomization, fetched] = await Promise.all([
+        getUserCustomization({ userId }),
+        getMessagesByChatId({
+          chatId,
+          userId,
+          subscription,
+          newMessages: requestMessages,
+          regenerate,
+          mode,
+          useClientMessagesForRegenerate,
+        }),
+      ]);
       const { chat, isNewChat, fileTokens } = fetched;
 
       // Notes are injected right before streaming. Start the fetch now so it
@@ -428,7 +422,7 @@ export const createChatHandler = () => {
           subscription,
           selectedModelOverride,
         });
-      const assignedConversationTurn = await handleInitialChatAndUserMessage({
+      await handleInitialChatAndUserMessage({
         chatId,
         userId,
         messages: stripLocalDesktopSourcePaths(truncatedMessages),
@@ -437,11 +431,6 @@ export const createChatHandler = () => {
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
       });
-      const conversationTurn =
-        assignedConversationTurn ??
-        resolveAbliterationConversationTurn({
-          persistedTurnCount: persistedConversationTurnCount,
-        });
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =
@@ -504,7 +493,6 @@ export const createChatHandler = () => {
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         messages: processedMessages,
-        conversationTurn,
         limitRescue: Boolean(limitRescue),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
@@ -1494,6 +1482,11 @@ export const createChatHandler = () => {
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
               abliteratedTelemetry,
+              ...(activeAbliteratedExperiment?.variant === "test" && {
+                abliteratedStepRouting: {
+                  baselineModel: activeAbliteratedExperiment.baselineModel,
+                },
+              }),
               onProviderRequestStart: createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
@@ -1518,6 +1511,10 @@ export const createChatHandler = () => {
               ctxMaxTokens,
               streamStartTime,
               onModelChunk: () => chatLogger?.markFirstChunk(),
+              onModelStepSelected: (modelName) => {
+                activeModelName = modelName;
+                setCurrentModelName(modelName);
+              },
               contextUsageOn,
               isReasoningModel,
               platformAuthorized,
@@ -1571,6 +1568,9 @@ export const createChatHandler = () => {
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
             ) => {
+              if (modelName !== selectedModel) {
+                streamCtx.abliteratedStepRouting = undefined;
+              }
               activeModelName = modelName;
               streamCtx.tools = getToolsForModel(modelName);
               streamCtx.excludedProviderModelSlugs = excludedProviderModelSlugs;

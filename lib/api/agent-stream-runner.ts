@@ -1,4 +1,5 @@
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -616,6 +617,9 @@ const buildProviderRequestDiagnostics = (args: {
 
 export type AgentStreamContext = {
   abliteratedTelemetry?: AbliteratedModelTelemetry;
+  abliteratedStepRouting?: {
+    baselineModel: string;
+  };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
   tools: ToolSet;
@@ -672,6 +676,7 @@ export type AgentStreamContext = {
   onProviderRequestStart?: (configuredModel: string) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
+  onModelStepSelected?: (modelName: string) => void;
   onStartupPhaseDuration?: (
     phase: AgentStartupPhase,
     durationMs: number,
@@ -850,7 +855,7 @@ export async function createAgentStream(
     stepIndex: number,
   ): LanguageModel => {
     const telemetryModel =
-      ctx.abliteratedTelemetry?.wrap(languageModel) ?? languageModel;
+      ctx.abliteratedTelemetry?.wrap(languageModel, stepIndex) ?? languageModel;
     const guardedModel = guardLanguageModelProviderResponse(telemetryModel, {
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
@@ -980,17 +985,24 @@ export async function createAgentStream(
   let pdfParserEngine: "mistral-ocr" | "cloudflare-ai" = "mistral-ocr";
   let providerPdfAttachmentsDisabled = false;
   let openRouterFileAnnotations: unknown[] | undefined;
-  const getEffectiveModelName = () =>
+  const getEffectiveModelName = (stepIndex = 0) =>
     resolveAgentModelForImageToolResults(
-      routeModelName,
+      ctx.abliteratedStepRouting
+        ? resolveAbliterationModelForGenerationStep({
+            treatmentModel: routeModelName,
+            baselineModel: ctx.abliteratedStepRouting.baselineModel,
+            stepIndex,
+          })
+        : routeModelName,
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
       ctx.auxiliaryVisionEnabled,
       ctx.directGlmVisionEnabled,
     );
-  const getEffectiveModelInfo = () => {
-    const effectiveModelName = getEffectiveModelName();
+  const getEffectiveModelInfo = (stepIndex = 0) => {
+    const effectiveModelName = getEffectiveModelName(stepIndex);
+    ctx.onModelStepSelected?.(effectiveModelName);
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
     lastRequestedSlug = languageModel.modelId;
     return {
@@ -1194,7 +1206,7 @@ export async function createAgentStream(
         ) {
           streamHasImageViewResults = true;
         }
-        const effectiveModelInfo = getEffectiveModelInfo();
+        const effectiveModelInfo = getEffectiveModelInfo(steps.length);
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
         const providerPromptPressure =
@@ -1264,7 +1276,7 @@ export async function createAgentStream(
                 streamHasImageViewResults ||
                   uiMessagesContainImageAttachment(result.summarizedMessages),
               );
-              const continuationModelInfo = getEffectiveModelInfo();
+              const continuationModelInfo = getEffectiveModelInfo(steps.length);
               const activeTools = enforceParentGateTool(
                 await getActiveToolsForRecovery(loopRecovery),
               );
@@ -1326,6 +1338,10 @@ export async function createAgentStream(
                 activeTools,
                 providerOptions,
                 messages: preparedMessages,
+                system: buildSystemPrompt(
+                  ctx.currentSystemPrompt,
+                  continuationModelInfo.modelName,
+                ),
                 ...(parentGate.toolChoice
                   ? { toolChoice: parentGate.toolChoice }
                   : {}),
@@ -1463,7 +1479,9 @@ export async function createAgentStream(
                   ctx.mode,
                   streamHasImageViewResults,
                 );
-                const continuationModelInfo = getEffectiveModelInfo();
+                const continuationModelInfo = getEffectiveModelInfo(
+                  steps.length,
+                );
                 state.postSummarizationContinuationActive = true;
                 state.postSummarizationToolCallCount = 0;
                 state.postSummarizationText = "";
@@ -1497,6 +1515,10 @@ export async function createAgentStream(
                   activeTools,
                   providerOptions,
                   messages: preparedMessages,
+                  system: buildSystemPrompt(
+                    ctx.currentSystemPrompt,
+                    continuationModelInfo.modelName,
+                  ),
                   ...(parentGate.toolChoice
                     ? { toolChoice: parentGate.toolChoice }
                     : {}),
@@ -1564,6 +1586,10 @@ export async function createAgentStream(
           activeTools,
           providerOptions,
           messages: preparedMessages,
+          system: buildSystemPrompt(
+            ctx.currentSystemPrompt,
+            effectiveModelInfo.modelName,
+          ),
           ...(parentGate.toolChoice
             ? { toolChoice: parentGate.toolChoice }
             : {}),
@@ -1574,15 +1600,16 @@ export async function createAgentStream(
         } else {
           console.error("[agent-stream] prepareStep error:", error);
         }
-        const fallbackModelInfo = getEffectiveModelInfo();
+        const fallbackModelInfo = getEffectiveModelInfo(steps.length);
         const providerOptions = getStepProviderOptions(
           fallbackModelInfo.modelName,
         );
         const fallbackMessages = prepareProviderMessages(
           rollingModelMessages,
+          fallbackModelInfo.modelName,
         ) as typeof messages;
         recordProviderRequestDiagnostics({
-          modelName: getEffectiveModelName(),
+          modelName: fallbackModelInfo.modelName,
           requestedSlug: lastRequestedSlug,
           stepIndex: steps.length + 1,
           source: "prepare_step",
@@ -1602,9 +1629,10 @@ export async function createAgentStream(
           ...(parentGate.toolChoice
             ? { toolChoice: parentGate.toolChoice }
             : {}),
-          ...(ctx.currentSystemPrompt
-            ? { system: ctx.currentSystemPrompt }
-            : undefined),
+          system: buildSystemPrompt(
+            ctx.currentSystemPrompt,
+            fallbackModelInfo.modelName,
+          ),
         };
       }
     },
