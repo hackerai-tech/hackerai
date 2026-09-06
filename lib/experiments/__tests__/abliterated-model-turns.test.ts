@@ -12,7 +12,9 @@ describe("resolveAbliterationConversationTurn", () => {
 
   it("caps persisted counts one turn beyond the experiment limit", () => {
     expect(
-      resolveAbliterationConversationTurn({ persistedTurnCount: 12 }),
+      resolveAbliterationConversationTurn({
+        persistedTurnCount: ABLITERATION_CONVERSATION_TURN_COUNT_CAP + 1,
+      }),
     ).toBe(ABLITERATION_CONVERSATION_TURN_COUNT_CAP);
   });
 
