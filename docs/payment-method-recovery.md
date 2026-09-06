@@ -17,8 +17,9 @@ updates use selection-event-scoped keys so selecting a previous card again canno
 reuse an old update response. Declines/authentication
 requirements remain pending; operational errors fail webhook delivery for retry.
 Only the existing `invoice.paid` handler can restore access. No old, canceled,
-scheduled-for-cancellation, paused, manual, written-off, upgrade, or initial-payment
-invoice is collected by this helper. Healthy subscriptions' defaults are not rewritten.
+scheduled-for-cancellation, paused, manual, written-off, upgrade, initial-payment,
+paid, stale-invoice, or in-progress-payment case is collected by this helper.
+Healthy subscriptions' defaults are not rewritten.
 
 Before a customer event replaces a different subscription default, inspect Stripe's
 subscription-update event history since that customer event. A newer card selection
