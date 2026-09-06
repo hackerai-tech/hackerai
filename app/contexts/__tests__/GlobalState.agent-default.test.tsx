@@ -11,6 +11,14 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import { SHARED_TOKEN_KEY } from "@/lib/auth/shared-token";
 
+const mockUseAutoSelectNewRemoteConnection = jest.fn();
+let mockDesktopBridgeActive = false;
+
+jest.mock("@/app/hooks/useAutoSelectNewRemoteConnection", () => ({
+  useAutoSelectNewRemoteConnection: (args: unknown) =>
+    mockUseAutoSelectNewRemoteConnection(args),
+}));
+
 jest.mock("@/app/hooks/useSandboxPreference", () => {
   const setSandboxPreference = jest.fn();
   const retryDesktopBridge = jest.fn();
@@ -19,8 +27,8 @@ jest.mock("@/app/hooks/useSandboxPreference", () => {
     useSandboxPreference: () => ({
       sandboxPreference: "e2b",
       setSandboxPreference,
-      desktopBridgeActive: false,
-      desktopBridgeStatus: "idle",
+      desktopBridgeActive: mockDesktopBridgeActive,
+      desktopBridgeStatus: mockDesktopBridgeActive ? "connected" : "idle",
       retryDesktopBridge,
     }),
   };
@@ -134,6 +142,7 @@ describe("GlobalStateProvider agent defaults", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useRealTimers();
+    mockDesktopBridgeActive = false;
     delete window.__TAURI_INTERNALS__;
     window.history.pushState({}, "", "/");
     window.localStorage.clear();
@@ -218,6 +227,70 @@ describe("GlobalStateProvider agent defaults", () => {
       );
       expect(screen.getByTestId("chat-mode")).toHaveTextContent("agent");
     });
+  });
+
+  it("does not confirm free model selection during the Tauri entitlement refresh", async () => {
+    window.__TAURI_INTERNALS__ = {};
+    mockAuthUser([]);
+    global.fetch = jest.fn((input) =>
+      String(input) === "/api/entitlements"
+        ? new Promise(() => {})
+        : Promise.resolve({ ok: false }),
+    ) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent("true");
+    });
+    expect(mockUseAutoSelectNewRemoteConnection).toHaveBeenCalled();
+    expect(
+      mockUseAutoSelectNewRemoteConnection.mock.calls.some(
+        ([args]) =>
+          (args as { freeSubscriptionResolved: boolean })
+            .freeSubscriptionResolved,
+      ),
+    ).toBe(false);
+  });
+
+  it("preserves the paid model between a failed Tauri refresh and its retry", async () => {
+    jest.useFakeTimers();
+    window.__TAURI_INTERNALS__ = {};
+    window.localStorage.setItem("selected_model", "hackerai-pro");
+    mockAuthUser([]);
+    mockDesktopBridgeActive = true;
+    let entitlementAttempts = 0;
+    global.fetch = jest.fn((input) => {
+      if (String(input) === "/api/entitlements") {
+        entitlementAttempts += 1;
+        return Promise.resolve({ ok: false });
+      }
+      return Promise.resolve({ ok: false });
+    }) as unknown as typeof fetch;
+
+    render(
+      <GlobalStateProvider>
+        <GlobalStateProbe />
+      </GlobalStateProvider>,
+    );
+
+    await waitFor(() => {
+      expect(entitlementAttempts).toBe(1);
+      expect(screen.getByTestId("checking-pro-plan")).toHaveTextContent(
+        "false",
+      );
+    });
+    expect(screen.getByTestId("free-desktop-agent-only")).toHaveTextContent(
+      "false",
+    );
+    expect(screen.getByTestId("selected-model")).toHaveTextContent(
+      "hackerai-pro",
+    );
+    expect(screen.getByTestId("chat-mode")).toHaveTextContent("ask");
   });
 
   it("forces returning free Desktop users out of saved Ask mode", async () => {
