@@ -1,5 +1,5 @@
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
-import { ABLITERATION_CONVERSATION_TURN_COUNT_CAP } from "@/lib/experiments/abliterated-model-turns";
+import { resolveAbliterationConversationTurn } from "@/lib/experiments/abliterated-model-turns";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
@@ -380,13 +380,12 @@ export const createChatHandler = () => {
         !regenerate && !isAutoContinue
           ? requestMessages.filter((message) => message.role === "user").length
           : 0;
-      const conversationTurn =
-        persistedConversationTurnCount === undefined
-          ? undefined
-          : Math.min(
-              ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
-              persistedConversationTurnCount + pendingConversationTurns,
-            );
+      const conversationTurn = resolveAbliterationConversationTurn({
+        persistedTurnCount: persistedConversationTurnCount,
+        pendingUserTurnCount: pendingConversationTurns,
+        regenerate: Boolean(regenerate),
+        isAutoContinue,
+      });
 
       // Notes are injected right before streaming. Start the fetch now so it
       // overlaps the remaining preflight instead of adding a serial
