@@ -1828,7 +1828,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       sandboxCostIdx,
     );
     const budgetCostIdx = agentStreamRunnerSrc.indexOf(
-      "ctx.usageTracker.computeCostDollars(modelName) +",
+      "ctx.usageTracker.computeCostDollars(activeStepModelName) +",
       triggerRunCostIdx,
     );
 

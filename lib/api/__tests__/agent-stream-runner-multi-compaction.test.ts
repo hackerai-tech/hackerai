@@ -546,6 +546,7 @@ describe("createAgentStream repeated compaction", () => {
 
     const prepare = (completedSteps: number) =>
       stream.prepareStep({
+        stepNumber: completedSteps,
         steps: Array.from({ length: completedSteps }, () => ({
           toolResults: [],
         })),

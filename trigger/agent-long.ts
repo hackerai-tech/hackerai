@@ -4213,6 +4213,8 @@ export const agentLongTask = task({
               onModelChunk: runTimingTracker.recordFirstModelChunk,
               onModelStepSelected: (modelName) => {
                 activeModelName = modelName;
+                terminalRequestedModelSlug =
+                  trackedProvider.languageModel(modelName).modelId;
                 setCurrentModelName(modelName);
               },
               onStartupPhaseDuration:
