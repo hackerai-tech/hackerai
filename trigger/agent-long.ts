@@ -150,6 +150,11 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  evaluateFlashRouting,
+  getActiveFlashRoutingAssignment,
+  createFlashRoutingExposureRecorder,
+} from "@/lib/experiments/flash-routing";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2663,6 +2668,18 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      const flashRoutingAssignment = await evaluateFlashRouting({
+        posthog,
+        userId,
+        mode,
+        subscription,
+        selectedModel,
+        hasImages:
+          countFileAttachments(messagesForProcessing).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+      });
+      if (flashRoutingAssignment)
+        selectedModel = flashRoutingAssignment.modelKey;
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -2940,7 +2957,14 @@ export const agentLongTask = task({
                 deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
+            const activeFlashRoutingAssignment =
+              getActiveFlashRoutingAssignment(
+                flashRoutingAssignment,
+                selectedModel,
+                !!paidDailyFreeAllowanceReservation,
+              );
             const routingExperimentContext =
+              activeFlashRoutingAssignment ??
               getDeepSeekV4Pro0813ExperimentContext(
                 activeDeepSeekV4Pro0813Experiment,
               );
@@ -4090,6 +4114,14 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              onProviderRequestStart: createFlashRoutingExposureRecorder({
+                posthog,
+                assignment: activeFlashRoutingAssignment,
+                userId,
+                mode,
+                subscription,
+                requestId: assistantMessageId,
+              }),
               trackedProvider,
               currentSystemPrompt,
               tools,

@@ -164,6 +164,11 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  evaluateFlashRouting,
+  getActiveFlashRoutingAssignment,
+  createFlashRoutingExposureRecorder,
+} from "@/lib/experiments/flash-routing";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -486,6 +491,18 @@ export const createChatHandler = () => {
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      const flashRoutingAssignment = await evaluateFlashRouting({
+        posthog,
+        userId,
+        mode,
+        subscription,
+        selectedModel,
+        hasImages:
+          countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+      });
+      if (flashRoutingAssignment)
+        selectedModel = flashRoutingAssignment.modelKey;
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -627,9 +644,16 @@ export const createChatHandler = () => {
           deepSeekV4Pro0813Experiment,
           selectedModel,
         );
-      const routingExperimentContext = getDeepSeekV4Pro0813ExperimentContext(
-        activeDeepSeekV4Pro0813Experiment,
+      const activeFlashRoutingAssignment = getActiveFlashRoutingAssignment(
+        flashRoutingAssignment,
+        selectedModel,
+        !!paidDailyFreeAllowanceReservation,
       );
+      const routingExperimentContext =
+        activeFlashRoutingAssignment ??
+        getDeepSeekV4Pro0813ExperimentContext(
+          activeDeepSeekV4Pro0813Experiment,
+        );
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -1414,6 +1438,14 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              onProviderRequestStart: createFlashRoutingExposureRecorder({
+                posthog,
+                assignment: activeFlashRoutingAssignment,
+                userId,
+                mode,
+                subscription,
+                requestId: assistantMessageId,
+              }),
               trackedProvider,
               currentSystemPrompt,
               tools,

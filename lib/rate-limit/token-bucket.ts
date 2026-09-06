@@ -143,6 +143,7 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   // Free Ask and Free Agent use DeepSeek 0731 at different reasoning efforts.
   // Provider fallbacks reconcile against their served model.
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
+  "ask-model-free-glm": GLM_5_3_FLASH_PRICING,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
   "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,

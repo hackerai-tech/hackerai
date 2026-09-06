@@ -666,6 +666,8 @@ export type AgentStreamContext = {
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
+  /** Called after step preparation, immediately before the actual provider call. */
+  onProviderRequestStart?: (configuredModel: string) => void;
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
   onStartupPhaseDuration?: (
@@ -1003,6 +1005,7 @@ export async function createAgentStream(
       ctx.mode,
       {
         requestedModelSlug,
+        isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
           streamHasPdfAttachments && !providerPdfAttachmentsDisabled,
@@ -1141,7 +1144,10 @@ export async function createAgentStream(
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
-    experimental_onStepStart: () => ctx.onModelStreamStart?.(),
+    experimental_onStepStart: ({ model }) => {
+      ctx.onModelStreamStart?.();
+      if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
+    },
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages }) => {

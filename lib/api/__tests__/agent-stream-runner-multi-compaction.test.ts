@@ -6,6 +6,7 @@ const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
+const mockBuildProviderOptions = jest.fn(() => ({}));
 
 jest.mock("server-only", () => ({}));
 jest.mock("ai", () => ({
@@ -25,7 +26,7 @@ jest.mock("ai", () => ({
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
   addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
   applyPrepareStepReminders: async (messages: ModelMessage[]) => messages,
-  buildProviderOptions: () => ({}),
+  buildProviderOptions: mockBuildProviderOptions,
   buildSystemPrompt: (prompt: string) => prompt,
   getFallbackSlugs: () => [],
   isXaiSafetyError: () => false,
@@ -487,6 +488,36 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each([
+    ["ask", "free", true],
+    ["ask", "pro", false],
+    ["agent", "free", false],
+  ])(
+    "preserves the request reasoning policy for %s/%s retries",
+    async (mode, subscription, expected) => {
+      await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        createTestStreamContext({
+          mode,
+          subscription,
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Say hello")], {
+          usedTokens: 1_000,
+          maxTokens: 128_000,
+        }),
+      );
+      expect(mockBuildProviderOptions).toHaveBeenCalledWith(
+        expect.anything(),
+        "user",
+        "model-deepseek-v4-flash-0731",
+        mode,
+        expect.objectContaining({ isFreeAskRequest: expected }),
+      );
+    },
+  );
+
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
     const stream = (await createAgentStream(
@@ -510,6 +541,37 @@ describe("createAgentStream repeated compaction", () => {
     });
 
     expect(onModelChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes the prepared provider model only when an un-aborted step starts", async () => {
+    const onProviderRequestStart = jest.fn();
+    const onModelStreamStart = jest.fn();
+    const abortController = new AbortController();
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        onProviderRequestStart,
+        onModelStreamStart,
+        abortController,
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Say hello")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    expect(onProviderRequestStart).not.toHaveBeenCalled();
+    stream.experimental_onStepStart({
+      model: { modelId: "z-ai/glm-5.3-flash" },
+    });
+    expect(onProviderRequestStart).toHaveBeenCalledWith("z-ai/glm-5.3-flash");
+    expect(onModelStreamStart).toHaveBeenCalledTimes(1);
+    abortController.abort();
+    stream.experimental_onStepStart({
+      model: { modelId: "z-ai/glm-5.3-flash" },
+    });
+    expect(onProviderRequestStart).toHaveBeenCalledTimes(1);
   });
 
   it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
