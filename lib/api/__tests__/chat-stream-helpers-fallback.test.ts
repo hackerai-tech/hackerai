@@ -14,6 +14,7 @@ import {
   isExplicitDeepSeekProSelectionForRetry,
   isProviderApiError,
   resolveServedModelForCostAccounting,
+  shouldRetryAbliterationApiError,
 } from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
@@ -1016,6 +1017,43 @@ describe("getRetryFallbackModel", () => {
     expect(getRetryFallbackModel("model-grok-4.6", "ask")).toBe(
       "model-glm-5.3",
     );
+  });
+});
+
+describe("shouldRetryAbliterationApiError", () => {
+  it("falls back for a treatment provider media-policy failure", () => {
+    expect(
+      shouldRetryAbliterationApiError(
+        { variant: "test" },
+        new Error("Image dimensions exceed the project media policy."),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not retry an image URL that another provider cannot download", () => {
+    expect(
+      shouldRetryAbliterationApiError(
+        { variant: "test" },
+        new Error(
+          "Failed to download the provided image. Image host returned HTTP status 404",
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not change control or non-experiment provider recovery", () => {
+    expect(
+      shouldRetryAbliterationApiError(
+        { variant: "control" },
+        new Error("Provider unavailable"),
+      ),
+    ).toBe(false);
+    expect(
+      shouldRetryAbliterationApiError(
+        undefined,
+        new Error("Provider unavailable"),
+      ),
+    ).toBe(false);
   });
 });
 

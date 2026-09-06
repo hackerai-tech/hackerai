@@ -59,6 +59,7 @@ import {
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
+  shouldRetryAbliterationApiError,
 } from "@/lib/api/chat-stream-helpers";
 import {
   BudgetMonitor,
@@ -4546,11 +4547,18 @@ export const agentLongTask = task({
                 !visionSummaryRecovery.isEnabled() &&
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
+              const shouldRecoverAbliterationApiError =
+                shouldRetryAbliterationApiError(
+                  activeAbliteratedExperiment,
+                  error,
+                );
               if (
                 isProviderApiError(error) &&
                 !isInvalidImageInputError(error) &&
                 !isRetryWithFallback &&
-                (isAutoModel || shouldRecoverVisionApiError)
+                (isAutoModel ||
+                  shouldRecoverVisionApiError ||
+                  shouldRecoverAbliterationApiError)
               ) {
                 const apiRetryModel = shouldRecoverVisionApiError
                   ? selectModel(

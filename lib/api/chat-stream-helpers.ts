@@ -38,6 +38,7 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
+import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
 import {
@@ -68,6 +69,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractErrorDetails,
   getProviderStatusCode,
+  isInvalidImageInputError,
 } from "@/lib/utils/error-utils";
 
 /**
@@ -806,6 +808,19 @@ export function getRetryFallbackModel(
     return "model-deepseek-v4-pro-0813";
   }
   return "model-grok-4.6";
+}
+
+/**
+ * Abliteration is an experiment route, so a pre-stream provider failure should
+ * fall back to the user's original model even when they selected Pro or Max.
+ * Invalid image URLs remain user-correctable because retrying another provider
+ * cannot make the source image downloadable.
+ */
+export function shouldRetryAbliterationApiError(
+  assignment: Pick<AbliteratedAssignment, "variant"> | undefined,
+  error: unknown,
+): boolean {
+  return assignment?.variant === "test" && !isInvalidImageInputError(error);
 }
 
 const CONTENT_FILTER_RETRY_CANDIDATES = [

@@ -98,6 +98,7 @@ import {
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
+  shouldRetryAbliterationApiError,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -1584,11 +1585,18 @@ export const createChatHandler = () => {
                 !visionSummaryRecovery.isEnabled() &&
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
+              const shouldRecoverAbliterationApiError =
+                shouldRetryAbliterationApiError(
+                  activeAbliteratedExperiment,
+                  error,
+                );
               // If provider returns an API error before streaming, retry with fallback.
               if (
                 isProviderApiError(error) &&
                 !isRetryWithFallback &&
-                (isAutoModel || shouldRecoverVisionApiError)
+                (isAutoModel ||
+                  shouldRecoverVisionApiError ||
+                  shouldRecoverAbliterationApiError)
               ) {
                 const apiRetryModel = shouldRecoverVisionApiError
                   ? selectModel(
