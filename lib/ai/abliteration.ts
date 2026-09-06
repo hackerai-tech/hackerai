@@ -3,6 +3,9 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 export const ABLITERATION_MODEL_KEY = "model-abliterated";
 export const ABLITERATION_MODEL_ID = "abliterated-model";
 
+export const isAbliterationModel = (modelName: string) =>
+  modelName === ABLITERATION_MODEL_KEY || modelName === ABLITERATION_MODEL_ID;
+
 // Server-only credential. Missing credentials never make a request eligible.
 export const isAbliterationConfigured = () =>
   Boolean(process.env.ABLITERATION_API_KEY?.trim());

@@ -94,7 +94,7 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
-import { appendPlatformAuthorizationToLatestUserMessage } from "@/lib/chat/platform-authorization";
+import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -1045,11 +1045,14 @@ export async function createAgentStream(
       repairedMessages = repair.messages as ModelMessage[];
     }
 
+    const messagesWithAuthorization = preparePlatformAuthorizationForModel(
+      repairedMessages,
+      ctx.platformAuthorized,
+      effectiveModelName,
+    );
+
     return addOpenRouterFileAnnotationsToLastAssistantMessage(
-      appendPlatformAuthorizationToLatestUserMessage(
-        repairedMessages,
-        ctx.platformAuthorized,
-      ),
+      messagesWithAuthorization,
       openRouterFileAnnotations,
     );
   };

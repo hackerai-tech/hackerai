@@ -3,6 +3,19 @@ import {
   ABLITERATED_EXPERIMENT_KEY,
 } from "../abliterated-model";
 import type { SelectedModel, SubscriptionTier } from "@/types";
+import {
+  ABLITERATION_MODEL_ID,
+  ABLITERATION_MODEL_KEY,
+  isAbliterationModel,
+} from "@/lib/ai/abliteration";
+
+describe("Abliteration model identity", () => {
+  it("recognizes the internal route and provider model IDs", () => {
+    expect(isAbliterationModel(ABLITERATION_MODEL_KEY)).toBe(true);
+    expect(isAbliterationModel(ABLITERATION_MODEL_ID)).toBe(true);
+    expect(isAbliterationModel("model-deepseek-v4-flash-0731")).toBe(false);
+  });
+});
 
 describe("moderation-gated Abliteration assignment", () => {
   const originalKey = process.env.ABLITERATION_API_KEY;

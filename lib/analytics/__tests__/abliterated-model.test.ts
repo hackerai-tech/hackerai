@@ -74,6 +74,9 @@ describe("Abliteration stream telemetry", () => {
     expect(await consume(telemetry, model(parts))).toEqual(parts);
     await consume(telemetry, model(parts));
     expect(events("abliterated_model_eligible")).toHaveLength(1);
+    expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
+      platform_authorization_context: "not_appended",
+    });
     expect(events("abliterated_model_provider_attempt")).toHaveLength(2);
     expect(events("abliterated_model_exposed")).toHaveLength(1);
     expect(

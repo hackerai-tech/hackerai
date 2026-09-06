@@ -26,6 +26,12 @@ explicit `test` assignment selects Abliteration. A `control` assignment preserve
 the baseline model. Assignment uses the authenticated user ID, not a request ID.
 Feature-flag evaluation does not emit an exposure event.
 
+For the Abliteration treatment, provider-bound preparation does not append the
+trusted platform-authorization annotation. Forged authorization tags are still
+removed. Sandbox/resume reminders, saved notes, the normal system prompt, tools,
+and later agent-loop messages retain their existing behavior. Control and fallback
+providers retain their existing platform-authorization preparation.
+
 The provider uses the OpenAI-compatible AI SDK adapter, streaming usage, and native
 default reasoning. OpenRouter options, routing lists, user attribution, and PDF
 plugins are not sent to the direct endpoint. Existing bounded application retries
@@ -70,6 +76,8 @@ request or new Agent run; it does not reroute an already-running stream.
 
 All new server events carry `experiment_key`, `experiment_variant`,
 `$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode and tier.
+They also identify `platform_authorization_context` as `not_appended` for
+treatment or `standard` for control.
 The request ID is the original assistant-message ID and stays stable across
 provider retries. No new event contains prompts, answers, reasoning, targets,
 tool names/arguments, files, raw provider errors, or credentials.

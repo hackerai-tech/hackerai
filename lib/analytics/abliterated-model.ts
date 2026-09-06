@@ -5,6 +5,7 @@ import {
 } from "ai";
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
@@ -47,6 +48,11 @@ export class AbliteratedModelTelemetry {
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
       moderation_eligible: true,
+      platform_authorization_context: isAbliterationModel(
+        args.assignment.modelKey,
+      )
+        ? "not_appended"
+        : "standard",
       telemetry_version: 1,
       $process_person_profile: false,
     };
