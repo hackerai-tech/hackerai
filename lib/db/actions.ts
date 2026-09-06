@@ -713,6 +713,39 @@ export async function getChatById({ id }: { id: string }) {
   }
 }
 
+/**
+ * Reads the persisted visible user-turn count, capped by Convex for routing.
+ * A failed read returns undefined so experimental providers fail closed.
+ */
+export async function getConversationTurnCountByChatId({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}): Promise<number | undefined> {
+  try {
+    return await getConvexClient().query(
+      api.messages.getConversationTurnCountForBackend,
+      { serviceKey, chatId, userId },
+    );
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "conversation_turn_count_fetch_failed",
+        service: "chat-handler",
+        timestamp: new Date().toISOString(),
+        db_operation: "messages.getConversationTurnCountForBackend",
+        chat_id: chatId,
+        user_id: userId,
+        error: stringifyRedactedError(error),
+      }),
+    );
+    return undefined;
+  }
+}
+
 export async function getCurrentAgentEntitlementContext({
   userId,
   organizationId,

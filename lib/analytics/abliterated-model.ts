@@ -6,7 +6,8 @@ import {
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
-import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
+import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
+import { ABLITERATION_MAX_CONVERSATIONAL_TURNS } from "@/lib/experiments/abliterated-model-turns";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 
 type StreamOptions = Parameters<
@@ -47,6 +48,8 @@ export class AbliteratedModelTelemetry {
       selected_model_override: args.selectedModelOverride ?? "auto",
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
+      conversation_turn: args.assignment.conversationTurn,
+      conversation_turn_limit: ABLITERATION_MAX_CONVERSATIONAL_TURNS,
       moderation_eligible: true,
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,

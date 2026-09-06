@@ -16,6 +16,11 @@ Auto uses the base model because its baseline is Standard. The existing moderati
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
+Abliteration is limited to conversational turns one through three, counted from
+persisted visible user messages. Hidden Agent auto-continue prompts do not increment
+the count. Turn four and later use the request's normal OpenRouter baseline. If the
+persisted count cannot be read, routing fails closed to that baseline.
+
 Because Large v2 is text-only, image attachments and image-view tool results use
 the multimodal base `abliterated-model` for every selector, including Pro and Max.
 PDFs, files without an image media type, and other unsupported file inputs retain
@@ -49,21 +54,18 @@ summaries, titles, and approval reviewers retain their existing models.
 
 ## Environment and rollout record
 
-Definitions read back on 2026-09-06; both are deliberately **inactive** pending
-verified runtime configuration, full application testing, and internal-user testing.
+Definitions read back on 2026-09-06 after Production deployment and smoke testing.
 
-| Environment | PostHog project       | Flag ID | Key                           | Configured rollout                                            |
-| ----------- | --------------------- | ------- | ----------------------------- | ------------------------------------------------------------- |
-| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | 100% of eligible paid users, forced test                      |
-| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | 2% enrollment; 50/50 control/test, approximately 1% treatment |
+| Environment | PostHog project       | Flag ID | Key                           | Configured rollout                                                      |
+| ----------- | --------------------- | ------- | ----------------------------- | ----------------------------------------------------------------------- |
+| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | Active; 100% of eligible paid users, forced test                        |
+| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | Active; 50% enrollment, 50/50 control/test, approximately 25% treatment |
 
 Both definitions target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
 The server supplies the current trusted subscription and enforces the remaining
-eligibility checks. The production definition is a prepared public-pilot setting,
-not an activated internal allowlist. Before first activation, replace its group
-with an explicit internal allowlist; validate there before restoring the small
-public pilot. Keep internal validation out of the causal readout. Never apply
-Preview's 100% test split to Production.
+eligibility checks. Production evaluates the explicit test-user override first,
+then the broader paid-user experiment group. Keep override traffic out of the
+causal readout. Never apply Preview's 100% test split to Production.
 
 Before any deployment/configuration work, independently verify the intended
 Convex account, project, designated deployment, URL, and custom domain, and the
@@ -77,14 +79,15 @@ for `ABLITERATION_API_KEY`. Verify the worker's actual PostHog project key, not 
 the Vercel setting. Local credential presence in both developer folders was checked;
 remote credentials and runtime project selections remain unverified.
 
-The initial code/key release needs a new Vercel deployment and a new Trigger
-worker deployment. Afterwards, a flag-only change is evaluated on the next Ask
-request or new Agent run; it does not reroute an already-running stream.
+Routing-code changes need a new Vercel deployment and a new Trigger worker
+deployment. A flag-only change is evaluated on the next Ask request or new Agent
+run; it does not reroute an already-running stream.
 
 ## Event contract
 
 All new server events carry `experiment_key`, `experiment_variant`,
-`$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode and tier.
+`$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode, tier,
+`conversation_turn`, and `conversation_turn_limit`.
 Eligibility identifies `assigned_platform_authorization_context`; each provider
 attempt identifies its actual `platform_authorization_context` as `not_appended`
 for an Abliteration model or `standard` for a control/fallback provider.
@@ -174,7 +177,7 @@ It loads only the provider credential, uses synthetic arithmetic and an in-memor
 tool, exercises the registered provider plus tool IDs and telemetry, caps output
 and duration, and does not ingest PostHog events. It is not full app verification.
 
-Before activation, on the verified Preview custom URL:
+For release verification on the verified Preview custom URL:
 
 1. Use a disposable paid-user Ask chat and an eligible synthetic authorized lab
    request. Confirm moderation eligibility, streaming completion, model attribution,
@@ -185,6 +188,8 @@ Before activation, on the verified Preview custom URL:
    model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
    Unit tests cover deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
+   Confirm turns one through three can use the assigned Abliteration route and
+   turn four returns to the exact OpenRouter baseline without flag re-evaluation.
 3. Force the flag off/control and a provider outage. Verify fallback completes,
    assignment stays unchanged in outcomes/costs, replacement messages can be rated,
    and no duplicate tool action occurs.

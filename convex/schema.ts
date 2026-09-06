@@ -249,6 +249,7 @@ export default defineSchema({
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
+    .index("by_chat_id_and_role_and_hidden", ["chat_id", "role", "is_hidden"])
     .index("by_feedback_id", ["feedback_id"])
     .index("by_user_id", ["user_id"])
     .searchIndex("search_content", {

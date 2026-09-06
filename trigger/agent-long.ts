@@ -99,6 +99,7 @@ import {
   setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
   getMessagesByChatId,
+  getConversationTurnCountByChatId,
   getChatById,
   getCurrentAgentEntitlementContext,
   prepareForNewStream,
@@ -2568,7 +2569,7 @@ export const agentLongTask = task({
     try {
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
-      const [userCustomization, fetched] = await Promise.all([
+      const [userCustomization, fetched, conversationTurn] = await Promise.all([
         getUserCustomization({ userId }),
         getMessagesByChatId({
           chatId,
@@ -2578,6 +2579,7 @@ export const agentLongTask = task({
           regenerate,
           mode,
         }),
+        getConversationTurnCountByChatId({ chatId, userId }),
       ]);
       const { chat, fileTokens } = fetched;
       const projectContextPromise = resolveProjectExecutionContext({
@@ -2669,6 +2671,7 @@ export const agentLongTask = task({
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         messages: processedMessages,
+        conversationTurn,
         limitRescue: Boolean(limitRescue),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;

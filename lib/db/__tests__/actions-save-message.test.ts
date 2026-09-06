@@ -45,6 +45,7 @@ const loadSaveMessageWithMocks = async () => {
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
+    getConversationTurnCountByChatId,
     getMessagesByChatId,
     saveChat,
     saveMessage,
@@ -57,6 +58,7 @@ const loadSaveMessageWithMocks = async () => {
     deleteChatForBackend,
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
+    getConversationTurnCountByChatId,
     getMessagesByChatId,
     mockCompactMessageForStorage,
     mockMutation,
@@ -128,6 +130,42 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
       userId: "user-1",
       limit: 100,
     });
+  });
+});
+
+describe("getConversationTurnCountByChatId", () => {
+  it("returns the capped persisted conversation turn count", async () => {
+    const { getConversationTurnCountByChatId, mockQuery } =
+      await loadSaveMessageWithMocks();
+    mockQuery.mockResolvedValueOnce(3);
+
+    await expect(
+      getConversationTurnCountByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+      }),
+    ).resolves.toBe(3);
+  });
+
+  it("fails closed when the turn count cannot be read", async () => {
+    const { getConversationTurnCountByChatId, mockQuery } =
+      await loadSaveMessageWithMocks();
+    mockQuery.mockRejectedValueOnce(new Error("database unavailable"));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await expect(
+        getConversationTurnCountByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+        }),
+      ).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("conversation_turn_count_fetch_failed"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 

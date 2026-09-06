@@ -2024,6 +2024,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
+  test("Abliteration routing receives the persisted conversational turn", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /evaluateAbliteratedModel\(\{[\s\S]{0,500}conversationTurn,/,
+      );
+      expect(source).toMatch(/getConversationTurnCountByChatId/);
+    }
+  });
+
   test("provider content blocks preserve their classification and complete after the error stream", () => {
     expect(taskSrc).toMatch(
       /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"content_blocked"/,

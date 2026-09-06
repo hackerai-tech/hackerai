@@ -58,6 +58,7 @@ describe("Abliteration stream telemetry", () => {
         variant: "test",
         modelKey: "model-abliterated",
         baselineModel: "model-deepseek-v4-flash-0731",
+        conversationTurn: 2,
       },
       messageId: "message",
       chatId: "chat",
@@ -79,6 +80,8 @@ describe("Abliteration stream telemetry", () => {
     expect(events("abliterated_model_eligible")).toHaveLength(1);
     expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
       assigned_platform_authorization_context: "not_appended",
+      conversation_turn: 2,
+      conversation_turn_limit: 3,
     });
     expect(events("abliterated_model_provider_attempt")).toHaveLength(2);
     expect(events("abliterated_model_exposed")).toHaveLength(1);

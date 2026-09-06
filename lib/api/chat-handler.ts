@@ -1,4 +1,5 @@
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
+import { ABLITERATION_CONVERSATION_TURN_COUNT_CAP } from "@/lib/experiments/abliterated-model-turns";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
@@ -104,6 +105,7 @@ import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
 import {
   getMessagesByChatId,
+  getConversationTurnCountByChatId,
   getNotes,
   getUserCustomization,
   handleInitialChatAndUserMessage,
@@ -359,19 +361,32 @@ export const createChatHandler = () => {
       // These reads only depend on the authenticated user, so overlap them
       // instead of paying one Convex round-trip after another before the
       // model call. Mirrors the Trigger agent route's preflight.
-      const [userCustomization, fetched] = await Promise.all([
-        getUserCustomization({ userId }),
-        getMessagesByChatId({
-          chatId,
-          userId,
-          subscription,
-          newMessages: requestMessages,
-          regenerate,
-          mode,
-          useClientMessagesForRegenerate,
-        }),
-      ]);
+      const [userCustomization, fetched, persistedConversationTurnCount] =
+        await Promise.all([
+          getUserCustomization({ userId }),
+          getMessagesByChatId({
+            chatId,
+            userId,
+            subscription,
+            newMessages: requestMessages,
+            regenerate,
+            mode,
+            useClientMessagesForRegenerate,
+          }),
+          getConversationTurnCountByChatId({ chatId, userId }),
+        ]);
       const { chat, isNewChat, fileTokens } = fetched;
+      const pendingConversationTurns =
+        !regenerate && !isAutoContinue
+          ? requestMessages.filter((message) => message.role === "user").length
+          : 0;
+      const conversationTurn =
+        persistedConversationTurnCount === undefined
+          ? undefined
+          : Math.min(
+              ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
+              persistedConversationTurnCount + pendingConversationTurns,
+            );
 
       // Notes are injected right before streaming. Start the fetch now so it
       // overlaps the remaining preflight instead of adding a serial
@@ -493,6 +508,7 @@ export const createChatHandler = () => {
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         messages: processedMessages,
+        conversationTurn,
         limitRescue: Boolean(limitRescue),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;

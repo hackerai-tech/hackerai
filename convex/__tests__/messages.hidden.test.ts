@@ -893,3 +893,69 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     expect(mockCtx.db.get).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("getConversationTurnCountForBackend", () => {
+  let mockCtx: any;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockCtx = {
+      db: { query: jest.fn() },
+      runQuery: jest.fn<any>().mockResolvedValue(true),
+    };
+  });
+
+  const indexedTurns = (
+    hidden: boolean | undefined,
+    turns: Record<string, any>[],
+  ) => ({
+    withIndex: jest.fn((indexName: string, buildIndex: (q: any) => any) => {
+      const q = { eq: jest.fn() };
+      q.eq.mockReturnValue(q);
+      buildIndex(q);
+      expect(indexName).toBe("by_chat_id_and_role_and_hidden");
+      expect(q.eq.mock.calls).toEqual([
+        ["chat_id", CHAT_ID],
+        ["role", "user"],
+        ["is_hidden", hidden],
+      ]);
+      return {
+        order: jest.fn().mockReturnValue({
+          take: jest.fn<any>().mockResolvedValue(turns),
+        }),
+      };
+    }),
+  });
+
+  it("counts visible user turns across legacy undefined and false values", async () => {
+    mockCtx.db.query
+      .mockReturnValueOnce(
+        indexedTurns(undefined, [makeMessage(), makeMessage()]),
+      )
+      .mockReturnValueOnce(indexedTurns(false, [makeMessage(), makeMessage()]));
+
+    const { getConversationTurnCountForBackend } = await import("../messages");
+    await expect(
+      getConversationTurnCountForBackend.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+      }),
+    ).resolves.toBe(4);
+    expect(mockCtx.db.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns zero without reading messages when chat ownership fails", async () => {
+    mockCtx.runQuery.mockResolvedValueOnce(false);
+    const { getConversationTurnCountForBackend } = await import("../messages");
+
+    await expect(
+      getConversationTurnCountForBackend.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+      }),
+    ).resolves.toBe(0);
+    expect(mockCtx.db.query).not.toHaveBeenCalled();
+  });
+});

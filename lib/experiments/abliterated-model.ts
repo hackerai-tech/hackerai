@@ -9,6 +9,7 @@ import {
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
 import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
+import { ABLITERATION_MAX_CONVERSATIONAL_TURNS } from "@/lib/experiments/abliterated-model-turns";
 
 export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
@@ -16,6 +17,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
+  conversationTurn: number;
 };
 
 const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
@@ -59,18 +61,24 @@ export function isEligibleForAbliteratedModel({
   selectedModelOverride,
   moderationEligible,
   messages,
+  conversationTurn,
   limitRescue = false,
 }: {
   subscription: SubscriptionTier;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   messages: UIMessage[];
+  conversationTurn?: number;
   limitRescue?: boolean;
 }): boolean {
   return (
     !limitRescue &&
     subscription !== "free" &&
     moderationEligible &&
+    conversationTurn !== undefined &&
+    Number.isInteger(conversationTurn) &&
+    conversationTurn >= 1 &&
+    conversationTurn <= ABLITERATION_MAX_CONVERSATIONAL_TURNS &&
     messages.length > 0 &&
     !messagesContainUnsupportedFiles(messages)
   );
@@ -84,6 +92,7 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride,
   moderationEligible,
   messages,
+  conversationTurn,
   limitRescue = false,
 }: {
   posthog: Pick<PostHog, "getFeatureFlag"> | null;
@@ -93,6 +102,7 @@ export async function evaluateAbliteratedModel({
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   messages: UIMessage[];
+  conversationTurn?: number;
   limitRescue?: boolean;
 }): Promise<AbliteratedAssignment | undefined> {
   if (
@@ -103,10 +113,13 @@ export async function evaluateAbliteratedModel({
       selectedModelOverride,
       moderationEligible,
       messages,
+      conversationTurn,
       limitRescue,
     })
   )
     return undefined;
+
+  if (conversationTurn === undefined) return undefined;
 
   try {
     // This pinned SDK's evaluateFlags.getFlag emits exposure on access. Use the
@@ -131,6 +144,7 @@ export async function evaluateAbliteratedModel({
             )
           : selectedModel,
       baselineModel: selectedModel,
+      conversationTurn,
     };
   } catch {
     return undefined;

@@ -23,6 +23,7 @@ import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
   MIN_MESSAGE_SEARCH_QUERY_LENGTH,
 } from "../lib/utils/message-search";
+import { ABLITERATION_CONVERSATION_TURN_COUNT_CAP } from "../lib/experiments/abliterated-model-turns";
 
 /**
  * Extract text content from message parts for search and display
@@ -1521,6 +1522,48 @@ export const getMessagesPageForBackend = query({
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };
+  },
+});
+
+/**
+ * Returns the visible user-turn count, capped at four for early-turn routing.
+ * Hidden auto-continue prompts are excluded from conversational turns.
+ */
+export const getConversationTurnCountForBackend = query({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chatExists: boolean = await ctx.runQuery(
+      internal.messages.verifyChatOwnership,
+      { chatId: args.chatId, userId: args.userId },
+    );
+    if (!chatExists) return 0;
+
+    const visibleUserTurns = await Promise.all(
+      [undefined, false].map((hidden) =>
+        ctx.db
+          .query("messages")
+          .withIndex("by_chat_id_and_role_and_hidden", (q) =>
+            q
+              .eq("chat_id", args.chatId)
+              .eq("role", "user")
+              .eq("is_hidden", hidden),
+          )
+          .order("desc")
+          .take(ABLITERATION_CONVERSATION_TURN_COUNT_CAP),
+      ),
+    );
+
+    return Math.min(
+      ABLITERATION_CONVERSATION_TURN_COUNT_CAP,
+      visibleUserTurns.reduce((count, turns) => count + turns.length, 0),
+    );
   },
 });
 
