@@ -9,7 +9,6 @@ import {
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
 import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
-import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 
 export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
@@ -55,29 +54,6 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
     ),
   );
 
-/**
- * Rejects attachment histories above the request-wide cap before assignment.
- * Serialized tool images are checked by the stream runner before provider selection.
- */
-const messagesExceedImageLimit = (messages: UIMessage[]): boolean => {
-  let imageCount = 0;
-
-  for (const message of messages) {
-    for (const part of message.parts) {
-      if (
-        part.type === "file" &&
-        typeof part.mediaType === "string" &&
-        part.mediaType.startsWith("image/")
-      ) {
-        imageCount += 1;
-        if (imageCount > ABLITERATION_MAX_IMAGES_PER_REQUEST) return true;
-      }
-    }
-  }
-
-  return false;
-};
-
 export function isEligibleForAbliteratedModel({
   subscription,
   selectedModelOverride,
@@ -96,8 +72,7 @@ export function isEligibleForAbliteratedModel({
     subscription !== "free" &&
     moderationEligible &&
     messages.length > 0 &&
-    !messagesContainUnsupportedFiles(messages) &&
-    !messagesExceedImageLimit(messages)
+    !messagesContainUnsupportedFiles(messages)
   );
 }
 

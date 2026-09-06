@@ -1,6 +1,10 @@
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
-import { exceedsAbliterationImageLimit } from "@/lib/ai/abliteration-media";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
+import {
+  AbliterationVisionError,
+  createAbliterationVisionPreprocessor,
+} from "@/lib/chat/abliteration-vision";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -977,7 +981,6 @@ export async function createAgentStream(
   const initialActiveTools = await getActiveTools();
   const maxOutputTokens = MAX_OUTPUT_TOKENS;
   let routeModelName = modelName;
-  let abliterationImageLimitExceeded = false;
   let streamHasImageViewResults =
     !ctx.auxiliaryVisionEnabled &&
     uiMessagesContainImageViewResult(state.finalMessages);
@@ -991,15 +994,13 @@ export async function createAgentStream(
   let openRouterFileAnnotations: unknown[] | undefined;
   const getEffectiveModelName = (stepIndex = generationStepOffset) =>
     resolveAgentModelForImageToolResults(
-      ctx.abliteratedStepRouting && abliterationImageLimitExceeded
-        ? ctx.abliteratedStepRouting.baselineModel
-        : ctx.abliteratedStepRouting
-          ? resolveAbliterationModelForGenerationStep({
-              treatmentModel: routeModelName,
-              baselineModel: ctx.abliteratedStepRouting.baselineModel,
-              stepIndex,
-            })
-          : routeModelName,
+      ctx.abliteratedStepRouting
+        ? resolveAbliterationModelForGenerationStep({
+            treatmentModel: routeModelName,
+            baselineModel: ctx.abliteratedStepRouting.baselineModel,
+            stepIndex,
+          })
+        : routeModelName,
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
@@ -1042,13 +1043,25 @@ export async function createAgentStream(
       },
     );
   };
-  const prepareProviderMessages = (
+  const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    userId: ctx.userId,
+    chatId: ctx.chatId,
+    abortSignal,
+    onCost: (cost) => {
+      ctx.usageTracker.providerCost += cost;
+      ctx.usageTracker.nonModelCost += cost;
+    },
+  });
+  const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
-  ): ModelMessage[] => {
-    const providerMessages = providerPdfAttachmentsDisabled
-      ? omitPdfFilePartsFromModelMessages(messages)
+  ): Promise<ModelMessage[]> => {
+    const visionMessages = isAbliterationModel(effectiveModelName)
+      ? await preprocessAbliterationImages(messages)
       : messages;
+    const providerMessages = providerPdfAttachmentsDisabled
+      ? omitPdfFilePartsFromModelMessages(visionMessages)
+      : visionMessages;
     const nonEmptyMessages = filterEmptyAssistantMessages(providerMessages);
     let repairedMessages = nonEmptyMessages;
 
@@ -1134,14 +1147,11 @@ export async function createAgentStream(
       Date.now() - initialSerializationStartedAt,
     );
   }
-  abliterationImageLimitExceeded = exceedsAbliterationImageLimit(
-    initialSerializedMessages,
-  );
   const initialModelInfo = getEffectiveModelInfo();
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
   );
-  const initialModelMessages = prepareProviderMessages(
+  const initialModelMessages = await prepareProviderMessages(
     initialSerializedMessages,
     initialModelInfo.modelName,
   );
@@ -1199,10 +1209,6 @@ export async function createAgentStream(
       rollingModelMessages = limitModelImageToolResults(
         rollingModelMessages as Array<Record<string, unknown>>,
       ).messages as ModelMessage[];
-      // A tool can add images after assignment. Keep the baseline for this
-      // stream once combined attachments/tool results exceed the provider cap.
-      abliterationImageLimitExceeded ||=
-        exceedsAbliterationImageLimit(rollingModelMessages);
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
@@ -1339,7 +1345,7 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
-              const preparedMessages = prepareProviderMessages(
+              const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
               );
@@ -1515,7 +1521,7 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
-                const preparedMessages = prepareProviderMessages(
+                const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
                 );
@@ -1583,13 +1589,13 @@ export async function createAgentStream(
         const providerOptions = getStepProviderOptions(
           effectiveModelInfo.modelName,
         );
-        const preparedMessages = prepareProviderMessages(
+        const preparedMessages = (await prepareProviderMessages(
           addCacheBreakpointToLastUserMessage(
             updatedMessages,
             effectiveModelInfo.modelName,
           ) as ModelMessage[],
           effectiveModelInfo.modelName,
-        ) as typeof messages;
+        )) as typeof messages;
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
           requestedSlug: effectiveModelInfo.requestedSlug,
@@ -1618,6 +1624,8 @@ export async function createAgentStream(
             : {}),
         };
       } catch (error) {
+        if (error instanceof AbliterationVisionError || abortSignal.aborted)
+          throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
           // Expected on user stop
         } else {
@@ -1627,10 +1635,10 @@ export async function createAgentStream(
         const providerOptions = getStepProviderOptions(
           fallbackModelInfo.modelName,
         );
-        const fallbackMessages = prepareProviderMessages(
+        const fallbackMessages = (await prepareProviderMessages(
           rollingModelMessages,
           fallbackModelInfo.modelName,
-        ) as typeof messages;
+        )) as typeof messages;
         recordProviderRequestDiagnostics({
           modelName: fallbackModelInfo.modelName,
           requestedSlug: lastRequestedSlug,

@@ -7,6 +7,14 @@ const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
+const mockDescribeImage = jest.fn(async () => ({
+  description: "Visible image text",
+}));
+
+jest.mock("@/lib/chat/auxiliary-vision", () => ({
+  describeImageWithAuxiliaryVision: (...args: unknown[]) =>
+    mockDescribeImage(...args),
+}));
 
 jest.mock("server-only", () => ({}));
 jest.mock("ai", () => ({
@@ -479,6 +487,9 @@ describe("retry served-model telemetry", () => {
 describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockDescribeImage
+      .mockReset()
+      .mockResolvedValue({ description: "Visible image text" });
     mockStreamText.mockImplementation((options) => options);
   });
 
@@ -620,11 +631,75 @@ describe("createAgentStream repeated compaction", () => {
           maxTokens: 128_000,
         }),
       )) as any;
-      expect(stream.model.modelId).toBe("model-grok-4.6");
+      expect(stream.model.modelId).toBe("model-abliterated");
+      expect(JSON.stringify(stream.messages)).toContain("image_description");
+      expect(JSON.stringify(stream.messages)).not.toContain(
+        '"type":"image-data"',
+      );
+      expect(JSON.stringify(stream.messages)).not.toContain('"type":"image"');
     },
   );
 
-  it("switches to the baseline when tool images exceed the combined request cap", async () => {
+  it("does not start the main provider when initial OCR fails", async () => {
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: Array.from({ length: 5 }, (_, i) => ({
+          type: "image",
+          image: `https://example.test/${i}.png`,
+        })),
+      },
+    ]);
+    mockDescribeImage.mockRejectedValue(new Error("Auxiliary API failure"));
+    await expect(
+      createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        initAgentStreamState([uiMessage("initial", "Inspect images")], {
+          usedTokens: 1000,
+          maxTokens: 128000,
+        }),
+      ),
+    ).rejects.toHaveProperty("name", "AbliterationVisionError");
+    expect(mockStreamText).not.toHaveBeenCalled();
+  });
+
+  it("does not preprocess images for baseline providers", async () => {
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: Array.from({ length: 5 }, (_, i) => ({
+          type: "image",
+          image: `https://example.test/${i}.png`,
+        })),
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "model-grok-4.6",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect images")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    expect(stream.model.modelId).toBe("model-grok-4.6");
+    expect(mockDescribeImage).not.toHaveBeenCalled();
+  });
+
+  it("keeps Abliteration and describes images when tools exceed the request cap", async () => {
     const stream = (await createAgentStream(
       "model-abliterated",
       createTestStreamContext({
@@ -679,14 +754,15 @@ describe("createAgentStream repeated compaction", () => {
       ],
       1,
     );
-    expect(prepared.model.modelId).toBe("model-grok-4.6");
-    expect(JSON.stringify(prepared.messages)).toContain(
+    expect(prepared.model.modelId).toBe("model-abliterated");
+    expect(JSON.stringify(prepared.messages)).toContain("image_description");
+    expect(JSON.stringify(prepared.messages)).not.toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
     expect(
       (await prepare([{ role: "user", content: "Compacted context" }], 2)).model
         .modelId,
-    ).toBe("model-grok-4.6");
+    ).toBe("model-abliterated");
   });
 
   it("preserves the generation-step position across replacement streams", async () => {

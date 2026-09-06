@@ -167,7 +167,7 @@ describe("moderation-gated Abliteration assignment", () => {
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
     expect(getFeatureFlag).toHaveBeenCalledTimes(1);
   });
-  it("bypasses Abliteration when request history exceeds its image limit", async () => {
+  it("keeps over-limit image requests eligible for vision preprocessing", async () => {
     const getFeatureFlag = jest.fn().mockResolvedValue("test");
 
     await expect(
@@ -176,10 +176,10 @@ describe("moderation-gated Abliteration assignment", () => {
         messages: imageAttachmentTurn(ABLITERATION_MAX_IMAGES_PER_REQUEST + 1),
         posthog: { getFeatureFlag },
       }),
-    ).resolves.toBeUndefined();
-    expect(getFeatureFlag).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
   });
-  it("applies the image limit across messages, not per turn", async () => {
+  it("keeps over-limit image history eligible across messages", async () => {
     const getFeatureFlag = jest.fn().mockResolvedValue("test");
     const messages = imageAttachmentHistory(
       ABLITERATION_MAX_IMAGES_PER_REQUEST,
@@ -203,8 +203,8 @@ describe("moderation-gated Abliteration assignment", () => {
         messages,
         posthog: { getFeatureFlag },
       }),
-    ).resolves.toBeUndefined();
-    expect(getFeatureFlag).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
   });
   it.each([
     {
