@@ -202,7 +202,8 @@ For release verification on the verified Preview custom URL:
 4. Stop, regenerate, rate, reload, and reconnect the disposable response. Confirm
    message linkage, terminal outcomes, token/cost attribution, and no content in
    analytics. Clean up the test chats. Repeat the bounded journey on the production
-   custom domain for the internal allowlist before the public pilot.
+   custom domain for the explicit test-user override and sampled treatment cohort
+   before any further rollout expansion.
 
 References: [provider models](https://docs.abliteration.ai/models),
 [provider pricing](https://docs.abliteration.ai/pricing),
