@@ -57,6 +57,42 @@ const HIGH_REASONING_ROUTES = [
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
+  it("keeps the free GLM treatment at low reasoning with billed, retryable fallbacks", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "ask-model-free-glm",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "high" },
+      },
+    );
+    expect(opts.openrouter.reasoning).toEqual({ enabled: true, effort: "low" });
+    expect(opts.openrouter.models).toEqual([
+      DEEPSEEK_FLASH_SLUG,
+      DEEPSEEK_V4_PRO_0813_SLUG,
+      GLM_SLUG,
+    ]);
+    expect(opts.openrouter.provider).toEqual({
+      sort: "latency",
+      data_collection: "deny",
+    });
+    expect(getRetryFallbackModel("ask-model-free-glm", "ask")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "ask-model-free-glm",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "ask-model-free-glm",
+        responseModel: DEEPSEEK_FLASH_SLUG,
+      }),
+    ).toBe("model-deepseek-v4-flash-0731");
+  });
   it("keeps title generation on a non-reasoning route", () => {
     const opts = buildProviderOptions(
       false,

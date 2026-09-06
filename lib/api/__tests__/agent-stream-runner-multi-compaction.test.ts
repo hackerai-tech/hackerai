@@ -512,6 +512,37 @@ describe("createAgentStream repeated compaction", () => {
     expect(onModelChunk).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes the prepared provider model only when an un-aborted step starts", async () => {
+    const onProviderRequestStart = jest.fn();
+    const onModelStreamStart = jest.fn();
+    const abortController = new AbortController();
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        onProviderRequestStart,
+        onModelStreamStart,
+        abortController,
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Say hello")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    expect(onProviderRequestStart).not.toHaveBeenCalled();
+    stream.experimental_onStepStart({
+      model: { modelId: "z-ai/glm-5.3-flash" },
+    });
+    expect(onProviderRequestStart).toHaveBeenCalledWith("z-ai/glm-5.3-flash");
+    expect(onModelStreamStart).toHaveBeenCalledTimes(1);
+    abortController.abort();
+    stream.experimental_onStepStart({
+      model: { modelId: "z-ai/glm-5.3-flash" },
+    });
+    expect(onProviderRequestStart).toHaveBeenCalledTimes(1);
+  });
+
   it("includes sandbox and Trigger runtime in budget checks and per-step settlement", async () => {
     const checkAfterStep = jest.fn(() => undefined);
     const settleUsageAfterStep = jest.fn(async () => undefined);

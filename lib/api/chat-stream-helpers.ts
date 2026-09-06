@@ -623,6 +623,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
@@ -649,6 +650,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
 const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model",
   "ask-model-free",
+  "ask-model-free-glm",
   "agent-model",
   "agent-model-free",
 ]);
@@ -743,7 +745,10 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-glm-5.3-flash-agent") {
+  if (
+    modelName === "model-glm-5.3-flash-agent" ||
+    modelName === "ask-model-free-glm"
+  ) {
     return "model-deepseek-v4-flash-0731";
   }
   if (
@@ -964,7 +969,9 @@ export function buildProviderOptions(
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   // Free Ask keeps mandatory reasoning low even when a caller supplies a
   // different reasoning override.
-  const isFreeAsk = mode === "ask" && modelName === "ask-model-free";
+  const isFreeAsk =
+    mode === "ask" &&
+    (modelName === "ask-model-free" || modelName === "ask-model-free-glm");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this

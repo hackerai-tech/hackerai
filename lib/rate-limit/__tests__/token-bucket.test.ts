@@ -540,6 +540,7 @@ describe("token-bucket", () => {
       "model-glm-5.3-flash",
       "model-glm-5.3-flash-pro",
       "model-glm-5.3-flash-agent",
+      "ask-model-free-glm",
       "z-ai/glm-5.3-flash",
     ])(
       "should use the conservative GLM 5.3 Flash ceiling for %s ($0.15/$0.50)",
