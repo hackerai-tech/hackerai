@@ -539,6 +539,41 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it("captures Ask experiment outcomes while preserving assignment through fallback", () => {
+    const capture = jest.fn();
+    captureAgentCompletionAnalytics({
+      posthog: { capture } as any,
+      userId: "user",
+      chatId: "chat",
+      endpoint: "/api/chat",
+      mode: "ask",
+      subscription: "pro",
+      outcome: "success",
+      selectedModel: "model-abliterated",
+      configuredModelId: "abliterated-model",
+      responseModel: "deepseek/deepseek-v4-flash-0731",
+      fallbackServed: true,
+      sandboxInfo: { type: "e2b" },
+      chatLogger: {} as any,
+      experiment: {
+        key: "abliterated_paid_moderated_v1",
+        variant: "test",
+        requestId: "message",
+      },
+    });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "abliterated_model_response_outcome",
+        properties: expect.objectContaining({
+          mode: "ask",
+          experiment_variant: "test",
+          experiment_request_id: "message",
+          fallback_served: true,
+        }),
+      }),
+    );
+  });
   it("uses the existing agent completion event for successful free Agent activation", () => {
     const capture = jest.fn();
 

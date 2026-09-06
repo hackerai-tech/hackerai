@@ -111,6 +111,27 @@ describe("buildProviderOptions fallback chain", () => {
       }),
     ).toBe("model-deepseek-v4-flash-0731");
   });
+
+  it("isolates Abliteration from OpenRouter and retries through the standard route", () => {
+    expect(
+      buildProviderOptions(true, "private-user", "model-abliterated", "agent", {
+        hasPdfAttachments: true,
+      }),
+    ).toEqual({});
+    expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(getRetryFallbackModel("model-abliterated", "agent")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-abliterated",
+        responseModel: "abliterated-model",
+      }),
+    ).toBe("model-abliterated");
+  });
+
   it("keeps title generation on a non-reasoning route", () => {
     const opts = buildProviderOptions(
       false,

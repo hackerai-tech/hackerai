@@ -1637,6 +1637,32 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  if (args.experiment?.key === "abliterated_paid_moderated_v1") {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "abliterated_model_response_outcome",
+        properties: {
+          ...getExperimentAnalyticsProperties(args.experiment),
+          chat_id: args.chatId,
+          mode,
+          subscription_tier: subscription,
+          outcome,
+          abort_source: args.abortSource,
+          finish_reason: args.finishReason,
+          configured_model: args.configuredModelId,
+          response_model: args.responseModel,
+          fallback_served: args.fallbackServed,
+          provider_recovery_attempts: args.providerRecoveryAttempts,
+          provider_recovery_succeeded: args.providerRecoverySucceeded,
+          budget_abort_cap_reason: args.budgetAbortDetails?.capReason,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      /* Analytics must never interrupt response persistence. */
+    }
+  }
   captureAgentRun({
     posthog,
     userId,

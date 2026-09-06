@@ -1,3 +1,5 @@
+import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
+import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -481,6 +483,30 @@ export const createChatHandler = () => {
         );
       }
 
+      const assistantMessageId = uuidv4();
+      const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        selectedModel,
+        subscription,
+        selectedModelOverride,
+        moderationEligible: platformAuthorized,
+        messages: processedMessages,
+        limitRescue: Boolean(limitRescue),
+      });
+      if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
+
+      const abliteratedTelemetry = abliteratedExperiment
+        ? new AbliteratedModelTelemetry(posthog, userId, {
+            assignment: abliteratedExperiment,
+            messageId: assistantMessageId,
+            chatId,
+            mode,
+            subscription,
+            selectedModelOverride,
+          })
+        : undefined;
+
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
           posthog: (posthog ??= PostHogClient()),
@@ -649,11 +675,21 @@ export const createChatHandler = () => {
         selectedModel,
         !!paidDailyFreeAllowanceReservation,
       );
-      const routingExperimentContext =
-        activeFlashRoutingAssignment ??
-        getDeepSeekV4Pro0813ExperimentContext(
-          activeDeepSeekV4Pro0813Experiment,
-        );
+      const activeAbliteratedExperiment =
+        !paidDailyFreeAllowanceReservation &&
+        abliteratedExperiment?.modelKey === selectedModel
+          ? abliteratedExperiment
+          : undefined;
+      const routingExperimentContext = activeAbliteratedExperiment
+        ? {
+            key: activeAbliteratedExperiment.key,
+            variant: activeAbliteratedExperiment.variant,
+            requestId: assistantMessageId,
+          }
+        : (activeFlashRoutingAssignment ??
+          getDeepSeekV4Pro0813ExperimentContext(
+            activeDeepSeekV4Pro0813Experiment,
+          ));
 
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
@@ -673,7 +709,6 @@ export const createChatHandler = () => {
         extraUsageConfig,
       );
 
-      const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       // Start cancellation subscriber (Redis pub/sub with fallback to polling)
@@ -1438,6 +1473,7 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              abliteratedTelemetry,
               onProviderRequestStart: createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
@@ -1943,13 +1979,14 @@ export const createChatHandler = () => {
                           usageTracker.resetModelLeg();
                         }
 
+                        const retryMessageId = generateId();
+                        abliteratedTelemetry?.setMessageId(retryMessageId);
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
                             ? [blockedProviderModel]
                             : undefined,
                         );
-                        const retryMessageId = generateId();
 
                         writer.merge(
                           retryResult.toUIMessageStream({

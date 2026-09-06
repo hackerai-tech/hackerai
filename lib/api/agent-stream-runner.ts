@@ -1,3 +1,4 @@
+import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -614,6 +615,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  abliteratedTelemetry?: AbliteratedModelTelemetry;
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
   tools: ToolSet;
@@ -846,25 +848,27 @@ export async function createAgentStream(
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
-  ): LanguageModel =>
-    namespaceLanguageModelToolCalls(
-      guardLanguageModelProviderResponse(languageModel, {
-        onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
-          console.warn("[agent-stream] provider tool calls bounded", {
-            event: "provider_tool_call_guard_applied",
-            model:
-              typeof languageModel === "string"
-                ? languageModel
-                : languageModel.modelId,
-            step: stepIndex + 1,
-            droppedToolCallCount,
-            maxToolCalls,
-          });
-        },
-        maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
-      }),
+  ): LanguageModel => {
+    const guardedModel = guardLanguageModelProviderResponse(languageModel, {
+      onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
+        console.warn("[agent-stream] provider tool calls bounded", {
+          event: "provider_tool_call_guard_applied",
+          model:
+            typeof languageModel === "string"
+              ? languageModel
+              : languageModel.modelId,
+          step: stepIndex + 1,
+          droppedToolCallCount,
+          maxToolCalls,
+        });
+      },
+      maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+    });
+    return namespaceLanguageModelToolCalls(
+      ctx.abliteratedTelemetry?.wrap(guardedModel) ?? guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
+  };
   type AbortStepLike = {
     usage?: unknown;
     response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {

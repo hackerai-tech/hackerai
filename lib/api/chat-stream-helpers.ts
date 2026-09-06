@@ -1,3 +1,4 @@
+import { ABLITERATION_MODEL_KEY } from "@/lib/ai/abliteration";
 /**
  * Chat Stream Helpers
  *
@@ -748,6 +749,7 @@ export function getRetryFallbackModel(
   _mode: ChatMode,
 ): ModelName {
   if (
+    modelName === ABLITERATION_MODEL_KEY ||
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === "ask-model-free-glm"
   ) {
@@ -965,6 +967,8 @@ export function buildProviderOptions(
   mode?: ChatMode,
   options: FallbackOptions = {},
 ) {
+  // Direct provider: never send OpenRouter routing, plugins, or user IDs.
+  if (modelName === ABLITERATION_MODEL_KEY) return {} as Record<string, never>;
   const modelId =
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);

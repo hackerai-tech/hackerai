@@ -24,6 +24,20 @@ import {
  * that can properly initialize and control the Redis/Ratelimit dependencies.
  */
 describe("token-bucket", () => {
+  it.each(["model-abliterated", "abliterated-model"])(
+    "prices %s with the direct provider rates and cache discount",
+    (modelName) => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 500_000,
+          modelName,
+        }),
+      ).toBeCloseTo(4.65);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
+    },
+  );
   // ==========================================================================
   // calculateTokenCost - Core pricing logic
   // ==========================================================================
