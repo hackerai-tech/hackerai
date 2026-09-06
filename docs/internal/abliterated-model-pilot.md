@@ -57,12 +57,12 @@ summaries, titles, and approval reviewers retain their existing models.
 
 ## Environment and rollout record
 
-Definitions read back on 2026-09-06 after Production deployment and smoke testing.
+Definitions read back on 2026-09-06 after Production enrollment was expanded.
 
-| Environment | PostHog project       | Flag ID | Key                           | Configured rollout                                                      |
-| ----------- | --------------------- | ------- | ----------------------------- | ----------------------------------------------------------------------- |
-| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | Active; 100% of eligible paid users, forced test                        |
-| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | Active; 50% enrollment, 50/50 control/test, approximately 25% treatment |
+| Environment | PostHog project       | Flag ID | Key                           | Configured rollout                                                       |
+| ----------- | --------------------- | ------- | ----------------------------- | ------------------------------------------------------------------------ |
+| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | Active; 100% of eligible paid users, forced test                         |
+| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | Active; 100% enrollment, 50/50 control/test, approximately 50% treatment |
 
 Both definitions target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
 The server supplies the current trusted subscription and enforces the remaining
