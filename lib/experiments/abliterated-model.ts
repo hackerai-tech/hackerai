@@ -1,9 +1,11 @@
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { SelectedModel, SubscriptionTier } from "@/types";
+import type { ModelName } from "@/lib/ai/providers";
 import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
 import {
   ABLITERATION_MODEL_KEY,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
 
@@ -11,9 +13,23 @@ export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   key: typeof ABLITERATED_EXPERIMENT_KEY;
   variant: "control" | "test";
-  modelKey: string;
-  baselineModel: string;
+  modelKey: ModelName;
+  baselineModel: ModelName;
 };
+
+const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
+  "model-deepseek-v4-pro",
+  "model-deepseek-v4-pro-0813",
+  "model-grok-4.6",
+  "model-grok-4.6-pro",
+]);
+
+export const getAbliterationTreatmentModel = (
+  baselineModel: ModelName,
+): ModelName =>
+  LARGE_V2_BASELINE_MODELS.has(baselineModel)
+    ? ABLITERATION_LARGE_V2_MODEL_KEY
+    : ABLITERATION_MODEL_KEY;
 
 export function isEligibleForAbliteratedModel({
   subscription,
@@ -32,9 +48,6 @@ export function isEligibleForAbliteratedModel({
     !limitRescue &&
     subscription !== "free" &&
     moderationEligible &&
-    (!selectedModelOverride ||
-      selectedModelOverride === "auto" ||
-      selectedModelOverride === "hackerai-standard") &&
     messages.length > 0 &&
     !messages.some((message) =>
       message.parts.some((part) => part.type === "file"),
@@ -54,7 +67,7 @@ export async function evaluateAbliteratedModel({
 }: {
   posthog: Pick<PostHog, "getFeatureFlag"> | null;
   userId: string;
-  selectedModel: string;
+  selectedModel: ModelName;
   subscription: SubscriptionTier;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
@@ -89,7 +102,10 @@ export async function evaluateAbliteratedModel({
     return {
       key: ABLITERATED_EXPERIMENT_KEY,
       variant,
-      modelKey: variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+      modelKey:
+        variant === "test"
+          ? getAbliterationTreatmentModel(selectedModel)
+          : selectedModel,
       baselineModel: selectedModel,
     };
   } catch {

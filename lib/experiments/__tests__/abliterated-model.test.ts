@@ -6,6 +6,8 @@ import type { SelectedModel, SubscriptionTier } from "@/types";
 import {
   ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
+  ABLITERATION_LARGE_V2_MODEL_ID,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationModel,
 } from "@/lib/ai/abliteration";
 
@@ -13,6 +15,8 @@ describe("Abliteration model identity", () => {
   it("recognizes the internal route and provider model IDs", () => {
     expect(isAbliterationModel(ABLITERATION_MODEL_KEY)).toBe(true);
     expect(isAbliterationModel(ABLITERATION_MODEL_ID)).toBe(true);
+    expect(isAbliterationModel(ABLITERATION_LARGE_V2_MODEL_KEY)).toBe(true);
+    expect(isAbliterationModel(ABLITERATION_LARGE_V2_MODEL_ID)).toBe(true);
     expect(isAbliterationModel("model-deepseek-v4-flash-0731")).toBe(false);
   });
 });
@@ -67,8 +71,6 @@ describe("moderation-gated Abliteration assignment", () => {
     { subscription: "free" as SubscriptionTier },
     { moderationEligible: false },
     { limitRescue: true },
-    { selectedModelOverride: "hackerai-pro" as SelectedModel },
-    { selectedModelOverride: "hackerai-max" as SelectedModel },
     { messages: [] },
     {
       messages: [
@@ -110,6 +112,47 @@ describe("moderation-gated Abliteration assignment", () => {
       }),
     ).toBeUndefined();
     expect(getFeatureFlag).not.toHaveBeenCalled();
+  });
+  it.each([
+    {
+      name: "explicit Pro",
+      selectedModelOverride: "hackerai-pro" as SelectedModel,
+      selectedModel: "model-deepseek-v4-pro-0813" as const,
+    },
+    {
+      name: "explicit Max",
+      selectedModelOverride: "hackerai-max" as SelectedModel,
+      selectedModel: "model-grok-4.6" as const,
+    },
+    {
+      name: "Ultra Ask Auto",
+      selectedModelOverride: "auto" as SelectedModel,
+      selectedModel: "model-deepseek-v4-pro-0813" as const,
+      subscription: "ultra" as SubscriptionTier,
+    },
+  ])("routes $name to Large v2 in treatment", async (overrides) => {
+    expect(
+      await evaluateAbliteratedModel({
+        ...defaults,
+        ...overrides,
+        posthog: { getFeatureFlag: jest.fn().mockResolvedValue("test") },
+      }),
+    ).toMatchObject({
+      variant: "test",
+      modelKey: ABLITERATION_LARGE_V2_MODEL_KEY,
+      baselineModel: overrides.selectedModel,
+    });
+  });
+
+  it("keeps Ultra Agent Auto on the base Abliteration route", async () => {
+    expect(
+      await evaluateAbliteratedModel({
+        ...defaults,
+        subscription: "ultra",
+        selectedModelOverride: "auto",
+        posthog: { getFeatureFlag: jest.fn().mockResolvedValue("test") },
+      }),
+    ).toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
   });
   it.each([false, true, undefined, "unexpected"])(
     "fails closed on %s",

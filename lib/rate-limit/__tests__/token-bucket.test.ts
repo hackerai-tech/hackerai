@@ -38,6 +38,20 @@ describe("token-bucket", () => {
       expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
     },
   );
+  it.each(["model-abliterated-large-v2", "abliterated-model-large-v2"])(
+    "prices %s with the Large v2 rates",
+    (modelName) => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 500_000,
+          modelName,
+        }),
+      ).toBeCloseTo(7.75);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(50_000);
+    },
+  );
   // ==========================================================================
   // calculateTokenCost - Core pricing logic
   // ==========================================================================

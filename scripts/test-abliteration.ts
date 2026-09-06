@@ -20,12 +20,18 @@ async function main() {
     await import("../lib/ai/tool-call-id-namespace");
   const events: Array<{ event: string; properties?: Record<string, unknown> }> =
     [];
+  const useLargeV2 = process.argv.includes("--large-v2");
+  const expectedProviderModel = useLargeV2
+    ? "abliterated-model-large-v2"
+    : "abliterated-model";
   const assignment = await evaluateAbliteratedModel({
     posthog: { getFeatureFlag: async () => "test" },
     userId: "local-provider-smoke",
-    selectedModel: "model-deepseek-v4-flash-0731",
+    selectedModel: useLargeV2
+      ? "model-deepseek-v4-pro-0813"
+      : "model-deepseek-v4-flash-0731",
     subscription: "pro",
-    selectedModelOverride: "hackerai-standard",
+    selectedModelOverride: useLargeV2 ? "hackerai-pro" : "hackerai-standard",
     moderationEligible: true,
     messages: [
       {
@@ -80,11 +86,13 @@ async function main() {
   }
   const usage = await result.totalUsage;
   const response = await result.text;
+  const responseModel = (await result.response).modelId;
   const outcomes = events.filter(
     (event) => event.event === "abliterated_model_provider_outcome",
   );
   const passed =
     toolExecutions === 1 &&
+    responseModel === expectedProviderModel &&
     response.includes("5") &&
     events.filter((event) => event.event === "abliterated_model_exposed")
       .length === 1 &&
@@ -92,9 +100,11 @@ async function main() {
     outcomes.every((event) => event.properties?.outcome === "completed");
   console.log(
     JSON.stringify({
-      test: "abliteration_provider_and_telemetry",
+      test: useLargeV2
+        ? "abliteration_large_v2_provider_and_telemetry"
+        : "abliteration_provider_and_telemetry",
       passed,
-      model: (await result.response).modelId,
+      model: responseModel,
       toolExecutions,
       durationMs: Date.now() - startedAt,
       inputTokens: usage.inputTokens,

@@ -2,11 +2,17 @@
 
 Owner and rollout decisions: [HAC-99](https://linear.app/hackerai/issue/HAC-99).
 [Production readout dashboard](https://us.posthog.com/project/144137/dashboard/2070216).
+The dashboard includes an assigned-model volume diagnostic
+([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
+so base and Large v2 traffic can be checked independently.
 
 ## Routing contract
 
-Paid Auto/default and explicit Standard requests in Ask and Agent may use
-`abliterated-model` at `https://api.abliteration.ai/v1`. The existing moderation
+Paid text requests in Ask and Agent may use an Abliteration model at
+`https://api.abliteration.ai/v1`. Auto/Standard routes use `abliterated-model`;
+explicit HackerAI Pro and Max routes use `abliterated-model-large-v2`. Ultra Ask
+Auto also uses Large v2 because its current baseline is Pro, while Ultra Agent
+Auto uses the base model because its baseline is Standard. The existing moderation
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
@@ -16,9 +22,9 @@ silently remove treatment users from the denominator.
 
 Initial requests containing file parts are excluded, including images and PDFs.
 Existing Agent image-result promotion still applies if a tool later returns an
-image. Free subscriptions, explicit Pro/Max, and paid daily free-allowance rescue
-requests are excluded. Ultra Auto remains eligible; its control retains the
-existing Pro baseline. Analyze subscription and mode separately as well as overall.
+image. Free subscriptions and paid daily free-allowance rescue requests are
+excluded. Every control retains its exact existing baseline. Analyze provider
+model, selector, subscription, and mode separately as well as overall.
 
 `ABLITERATION_API_KEY` is a server credential. Missing credentials, missing flags,
 unknown variants, and flag lookup errors preserve the existing route. Only an
@@ -35,8 +41,8 @@ providers retain their existing platform-authorization preparation.
 The provider uses the OpenAI-compatible AI SDK adapter, streaming usage, and native
 default reasoning. OpenRouter options, routing lists, user attribution, and PDF
 plugins are not sent to the direct endpoint. Existing bounded application retries
-use the Standard Flash route after an Abliteration failure. Subagents, summaries,
-titles, and approval reviewers retain their existing models.
+use the request's original baseline after an Abliteration failure. Subagents,
+summaries, titles, and approval reviewers retain their existing models.
 
 ## Environment and rollout record
 
@@ -76,8 +82,9 @@ request or new Agent run; it does not reroute an already-running stream.
 
 All new server events carry `experiment_key`, `experiment_variant`,
 `$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode and tier.
-They also identify `platform_authorization_context` as `not_appended` for
-treatment or `standard` for control.
+Eligibility identifies `assigned_platform_authorization_context`; each provider
+attempt identifies its actual `platform_authorization_context` as `not_appended`
+for an Abliteration model or `standard` for a control/fallback provider.
 The request ID is the original assistant-message ID and stays stable across
 provider retries. No new event contains prompts, answers, reasoning, targets,
 tool names/arguments, files, raw provider errors, or credentials.
@@ -157,6 +164,7 @@ Run the bounded live provider test from this checkout:
 
 ```sh
 corepack pnpm exec tsx scripts/test-abliteration.ts
+corepack pnpm exec tsx scripts/test-abliteration.ts --large-v2
 ```
 
 It loads only the provider credential, uses synthetic arithmetic and an in-memory

@@ -75,7 +75,7 @@ describe("Abliteration stream telemetry", () => {
     await consume(telemetry, model(parts));
     expect(events("abliterated_model_eligible")).toHaveLength(1);
     expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
-      platform_authorization_context: "not_appended",
+      assigned_platform_authorization_context: "not_appended",
     });
     expect(events("abliterated_model_provider_attempt")).toHaveLength(2);
     expect(events("abliterated_model_exposed")).toHaveLength(1);
@@ -86,6 +86,7 @@ describe("Abliteration stream telemetry", () => {
       input_tokens: 10,
       output_tokens: 5,
       cache_read_tokens: 2,
+      platform_authorization_context: "not_appended",
     });
     expect(JSON.stringify(capture.mock.calls)).not.toContain("private answer");
   });

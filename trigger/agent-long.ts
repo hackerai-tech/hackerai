@@ -3624,11 +3624,18 @@ export const agentLongTask = task({
             let providerRecoveryAttempts = 0;
             const providerRecoveryModels: string[] = [];
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
+            const retrySelectionModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
-              selectedModel,
+              selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel = getRetryFallbackModel(selectedModel, mode);
+            const fallbackModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -4688,7 +4695,7 @@ export const agentLongTask = task({
                       const shouldRetryExplicitDeepSeekProReasoning =
                         shouldRetryReasoningOnlyProviderError &&
                         isExplicitDeepSeekProSelectionForRetry({
-                          selectedModel,
+                          selectedModel: retrySelectionModel,
                           selectedModelOverride,
                         });
                       const shouldRetryInterruptedToolInput =
@@ -4866,6 +4873,7 @@ export const agentLongTask = task({
                                   selectedModel,
                                   mode,
                                   blockedProviderModel,
+                                  fallbackModel,
                                 )
                               : fallbackModel;
                         const retryModelSlug =

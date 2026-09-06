@@ -48,7 +48,7 @@ export class AbliteratedModelTelemetry {
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
       moderation_eligible: true,
-      platform_authorization_context: isAbliterationModel(
+      assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,
       )
         ? "not_appended"
@@ -100,6 +100,9 @@ export class AbliteratedModelTelemetry {
             attempt,
             requested_model: model.modelId,
             response_model: responseModel,
+            platform_authorization_context: isAbliterationModel(model.modelId)
+              ? "not_appended"
+              : "standard",
           });
           const finish = (
             outcome: string,

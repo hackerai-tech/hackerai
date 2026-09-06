@@ -1078,11 +1078,18 @@ export const createChatHandler = () => {
 
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
+            const retrySelectionModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
-              selectedModel,
+              selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel = getRetryFallbackModel(selectedModel, mode);
+            const fallbackModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1736,7 +1743,7 @@ export const createChatHandler = () => {
                     const shouldRetryExplicitDeepSeekProReasoning =
                       shouldRetryReasoningOnlyProviderError &&
                       isExplicitDeepSeekProSelectionForRetry({
-                        selectedModel,
+                        selectedModel: retrySelectionModel,
                         selectedModelOverride,
                       });
                     const shouldRetryInterruptedToolInput =
@@ -1825,6 +1832,7 @@ export const createChatHandler = () => {
                                 selectedModel,
                                 mode,
                                 blockedProviderModel,
+                                fallbackModel,
                               )
                             : fallbackModel;
                       const retryModelSlug =

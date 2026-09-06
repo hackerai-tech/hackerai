@@ -130,6 +130,23 @@ describe("buildProviderOptions fallback chain", () => {
         responseModel: "abliterated-model",
       }),
     ).toBe("model-abliterated");
+    expect(
+      buildProviderOptions(
+        true,
+        "private-user",
+        "model-abliterated-large-v2",
+        "agent",
+      ),
+    ).toEqual({});
+    expect(getRetryFallbackModel("model-abliterated-large-v2", "agent")).toBe(
+      "model-deepseek-v4-pro-0813",
+    );
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-abliterated-large-v2",
+        responseModel: "abliterated-model-large-v2",
+      }),
+    ).toBe("model-abliterated-large-v2");
   });
 
   it("keeps title generation on a non-reasoning route", () => {

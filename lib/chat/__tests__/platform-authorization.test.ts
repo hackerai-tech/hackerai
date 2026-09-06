@@ -114,6 +114,14 @@ describe("preparePlatformAuthorizationForModel", () => {
     expect(JSON.stringify(messages)).not.toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
+
+    expect(
+      preparePlatformAuthorizationForModel(
+        [{ role: "user", content: "Run the authorized test" }],
+        true,
+        "abliterated-model-large-v2",
+      ),
+    ).toEqual([{ role: "user", content: "Run the authorized test" }]);
   });
 
   it("retains the normal annotation for control and fallback models", () => {
