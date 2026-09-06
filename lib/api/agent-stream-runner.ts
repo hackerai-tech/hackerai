@@ -1,5 +1,6 @@
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
+import { exceedsAbliterationImageLimit } from "@/lib/ai/abliteration-media";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -976,6 +977,7 @@ export async function createAgentStream(
   const initialActiveTools = await getActiveTools();
   const maxOutputTokens = MAX_OUTPUT_TOKENS;
   let routeModelName = modelName;
+  let abliterationImageLimitExceeded = false;
   let streamHasImageViewResults =
     !ctx.auxiliaryVisionEnabled &&
     uiMessagesContainImageViewResult(state.finalMessages);
@@ -989,13 +991,15 @@ export async function createAgentStream(
   let openRouterFileAnnotations: unknown[] | undefined;
   const getEffectiveModelName = (stepIndex = generationStepOffset) =>
     resolveAgentModelForImageToolResults(
-      ctx.abliteratedStepRouting
-        ? resolveAbliterationModelForGenerationStep({
-            treatmentModel: routeModelName,
-            baselineModel: ctx.abliteratedStepRouting.baselineModel,
-            stepIndex,
-          })
-        : routeModelName,
+      ctx.abliteratedStepRouting && abliterationImageLimitExceeded
+        ? ctx.abliteratedStepRouting.baselineModel
+        : ctx.abliteratedStepRouting
+          ? resolveAbliterationModelForGenerationStep({
+              treatmentModel: routeModelName,
+              baselineModel: ctx.abliteratedStepRouting.baselineModel,
+              stepIndex,
+            })
+          : routeModelName,
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
@@ -1114,10 +1118,6 @@ export async function createAgentStream(
     });
     return latestProviderRequestDiagnostics;
   };
-  const initialModelInfo = getEffectiveModelInfo();
-  const initialProviderOptions = getStepProviderOptions(
-    initialModelInfo.modelName,
-  );
   const promptSerializationTools = createPromptSerializationTools(ctx.tools);
   const initialSerializationStartedAt = Date.now();
   let initialSerializedMessages: ModelMessage[];
@@ -1134,6 +1134,13 @@ export async function createAgentStream(
       Date.now() - initialSerializationStartedAt,
     );
   }
+  abliterationImageLimitExceeded = exceedsAbliterationImageLimit(
+    initialSerializedMessages,
+  );
+  const initialModelInfo = getEffectiveModelInfo();
+  const initialProviderOptions = getStepProviderOptions(
+    initialModelInfo.modelName,
+  );
   const initialModelMessages = prepareProviderMessages(
     initialSerializedMessages,
     initialModelInfo.modelName,
@@ -1192,6 +1199,10 @@ export async function createAgentStream(
       rollingModelMessages = limitModelImageToolResults(
         rollingModelMessages as Array<Record<string, unknown>>,
       ).messages as ModelMessage[];
+      // A tool can add images after assignment. Keep the baseline for this
+      // stream once combined attachments/tool results exceed the provider cap.
+      abliterationImageLimitExceeded ||=
+        exceedsAbliterationImageLimit(rollingModelMessages);
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||

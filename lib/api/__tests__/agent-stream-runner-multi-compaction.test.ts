@@ -571,6 +571,99 @@ describe("createAgentStream repeated compaction", () => {
     );
   });
 
+  it("checks serialized initial images before choosing a provider", async () => {
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
+      {
+        role: "user",
+        content: Array.from({ length: 9 }, () => ({
+          type: "image",
+          image: "https://example.test/image.png",
+        })),
+      },
+    ]);
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect the images")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+    expect(stream.model.modelId).toBe("model-grok-4.6");
+  });
+
+  it("switches to the baseline when tool images exceed the combined request cap", async () => {
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        platformAuthorized: true,
+        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect the lab")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      }),
+    )) as any;
+    const attachments = {
+      role: "user",
+      content: Array.from({ length: 4 }, () => ({
+        type: "image",
+        image: "https://example.test/image.png",
+      })),
+    };
+    const prepare = (messages: unknown[], stepNumber: number) =>
+      stream.prepareStep({
+        stepNumber,
+        steps: [],
+        messages,
+      });
+    expect((await prepare([attachments], 0)).model.modelId).toBe(
+      "model-abliterated",
+    );
+    const prepared = await prepare(
+      [
+        attachments,
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "view-1",
+              toolName: "file",
+              output: {
+                type: "content",
+                value: [
+                  { type: "image-data", data: "test", mediaType: "image/png" },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      1,
+    );
+    expect(prepared.model.modelId).toBe("model-grok-4.6");
+    expect(JSON.stringify(prepared.messages)).toContain(
+      PLATFORM_AUTHORIZATION_ANNOTATION,
+    );
+    expect(
+      (await prepare([{ role: "user", content: "Compacted context" }], 2)).model
+        .modelId,
+    ).toBe("model-grok-4.6");
+  });
+
   it("preserves the generation-step position across replacement streams", async () => {
     const onProviderRequestDiagnostics = jest.fn();
     const state = initAgentStreamState(
