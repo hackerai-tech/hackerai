@@ -671,6 +671,41 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockStreamText).not.toHaveBeenCalled();
   });
 
+  it("propagates late OCR failure instead of retrying the prepare-step fallback", async () => {
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "Inspect images")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    mockDescribeImage.mockRejectedValue(new Error("Auxiliary API failure"));
+    await expect(
+      stream.prepareStep({
+        stepNumber: 1,
+        steps: [],
+        messages: [
+          {
+            role: "user",
+            content: Array.from({ length: 5 }, (_, i) => ({
+              type: "image",
+              image: `https://example.test/${i}.png`,
+            })),
+          },
+        ],
+      }),
+    ).rejects.toHaveProperty("name", "AbliterationVisionError");
+    expect(mockDescribeImage).toHaveBeenCalledTimes(4);
+  });
+
   it("does not preprocess images for baseline providers", async () => {
     jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce([
       {

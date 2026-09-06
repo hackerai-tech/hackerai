@@ -1050,6 +1050,7 @@ export async function createAgentStream(
     onCost: (cost) => {
       ctx.usageTracker.providerCost += cost;
       ctx.usageTracker.nonModelCost += cost;
+      ctx.chatLogger?.getBuilder().addToolCost(cost);
     },
   });
   const prepareProviderMessages = async (
