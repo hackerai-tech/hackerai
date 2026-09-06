@@ -1500,7 +1500,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /guardLanguageModelProviderResponse\(languageModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(languageModel\) \?\? languageModel;[\s\S]{0,150}guardLanguageModelProviderResponse\(telemetryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,

@@ -1,3 +1,5 @@
+import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
+import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   task,
   metadata,
@@ -2658,6 +2660,29 @@ export const agentLongTask = task({
         );
       }
 
+      const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog,
+        userId,
+        selectedModel,
+        subscription,
+        selectedModelOverride,
+        moderationEligible: platformAuthorized,
+        messages: processedMessages,
+        limitRescue: Boolean(limitRescue),
+      });
+      if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
+
+      const abliteratedTelemetry = abliteratedExperiment
+        ? new AbliteratedModelTelemetry(posthog, userId, {
+            assignment: abliteratedExperiment,
+            messageId: assistantMessageId,
+            chatId,
+            mode,
+            subscription,
+            selectedModelOverride,
+          })
+        : undefined;
+
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
           posthog,
@@ -2963,11 +2988,21 @@ export const agentLongTask = task({
                 selectedModel,
                 !!paidDailyFreeAllowanceReservation,
               );
-            const routingExperimentContext =
-              activeFlashRoutingAssignment ??
-              getDeepSeekV4Pro0813ExperimentContext(
-                activeDeepSeekV4Pro0813Experiment,
-              );
+            const activeAbliteratedExperiment =
+              !paidDailyFreeAllowanceReservation &&
+              abliteratedExperiment?.modelKey === selectedModel
+                ? abliteratedExperiment
+                : undefined;
+            const routingExperimentContext = activeAbliteratedExperiment
+              ? {
+                  key: activeAbliteratedExperiment.key,
+                  variant: activeAbliteratedExperiment.variant,
+                  requestId: assistantMessageId,
+                }
+              : (activeFlashRoutingAssignment ??
+                getDeepSeekV4Pro0813ExperimentContext(
+                  activeDeepSeekV4Pro0813Experiment,
+                ));
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -3589,11 +3624,18 @@ export const agentLongTask = task({
             let providerRecoveryAttempts = 0;
             const providerRecoveryModels: string[] = [];
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
+            const retrySelectionModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
-              selectedModel,
+              selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel = getRetryFallbackModel(selectedModel, mode);
+            const fallbackModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -4114,6 +4156,7 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              abliteratedTelemetry,
               onProviderRequestStart: createFlashRoutingExposureRecorder({
                 posthog,
                 assignment: activeFlashRoutingAssignment,
@@ -4652,7 +4695,7 @@ export const agentLongTask = task({
                       const shouldRetryExplicitDeepSeekProReasoning =
                         shouldRetryReasoningOnlyProviderError &&
                         isExplicitDeepSeekProSelectionForRetry({
-                          selectedModel,
+                          selectedModel: retrySelectionModel,
                           selectedModelOverride,
                         });
                       const shouldRetryInterruptedToolInput =
@@ -4830,6 +4873,7 @@ export const agentLongTask = task({
                                   selectedModel,
                                   mode,
                                   blockedProviderModel,
+                                  fallbackModel,
                                 )
                               : fallbackModel;
                         const retryModelSlug =
@@ -4940,13 +4984,14 @@ export const agentLongTask = task({
                             });
                           }
                         }
+                        const retryMessageId = generateId();
+                        abliteratedTelemetry?.setMessageId(retryMessageId);
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
                             ? [blockedProviderModel]
                             : undefined,
                         );
-                        const retryMessageId = generateId();
 
                         writer.merge(
                           withAgentLongStreamHeartbeat(
@@ -5059,9 +5104,12 @@ export const agentLongTask = task({
                                       usageTracker.cacheReadTokens;
                                     preFallbackCacheWrite =
                                       usageTracker.cacheWriteTokens;
+                                    const finalRetryMessageId = generateId();
+                                    abliteratedTelemetry?.setMessageId(
+                                      finalRetryMessageId,
+                                    );
                                     const finalRetryResult =
                                       await createStream(finalRetryModel);
-                                    const finalRetryMessageId = generateId();
                                     writer.merge(
                                       withAgentLongStreamHeartbeat(
                                         finalRetryResult.toUIMessageStream({

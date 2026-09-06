@@ -105,6 +105,17 @@ describe("enrichOpenRouterStreamError", () => {
 describe("provider registry", () => {
   it("keeps active routes pointed at their provider slugs", () => {
     expect(
+      (myProvider.languageModel("model-abliterated") as { modelId: string })
+        .modelId,
+    ).toBe("abliterated-model");
+    expect(
+      (
+        myProvider.languageModel("model-abliterated-large-v2") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("abliterated-model-large-v2");
+    expect(
       (myProvider.languageModel("ask-model") as { modelId: string }).modelId,
     ).toBe("x-ai/grok-4.6");
     expect(

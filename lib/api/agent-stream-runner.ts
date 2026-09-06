@@ -1,3 +1,4 @@
+import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -93,7 +94,7 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
-import { appendPlatformAuthorizationToLatestUserMessage } from "@/lib/chat/platform-authorization";
+import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -614,6 +615,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  abliteratedTelemetry?: AbliteratedModelTelemetry;
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
   tools: ToolSet;
@@ -846,25 +848,29 @@ export async function createAgentStream(
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
-  ): LanguageModel =>
-    namespaceLanguageModelToolCalls(
-      guardLanguageModelProviderResponse(languageModel, {
-        onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
-          console.warn("[agent-stream] provider tool calls bounded", {
-            event: "provider_tool_call_guard_applied",
-            model:
-              typeof languageModel === "string"
-                ? languageModel
-                : languageModel.modelId,
-            step: stepIndex + 1,
-            droppedToolCallCount,
-            maxToolCalls,
-          });
-        },
-        maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
-      }),
+  ): LanguageModel => {
+    const telemetryModel =
+      ctx.abliteratedTelemetry?.wrap(languageModel) ?? languageModel;
+    const guardedModel = guardLanguageModelProviderResponse(telemetryModel, {
+      onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
+        console.warn("[agent-stream] provider tool calls bounded", {
+          event: "provider_tool_call_guard_applied",
+          model:
+            typeof languageModel === "string"
+              ? languageModel
+              : languageModel.modelId,
+          step: stepIndex + 1,
+          droppedToolCallCount,
+          maxToolCalls,
+        });
+      },
+      maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+    });
+    return namespaceLanguageModelToolCalls(
+      guardedModel,
       `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
     );
+  };
   type AbortStepLike = {
     usage?: unknown;
     response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {
@@ -1041,11 +1047,14 @@ export async function createAgentStream(
       repairedMessages = repair.messages as ModelMessage[];
     }
 
+    const messagesWithAuthorization = preparePlatformAuthorizationForModel(
+      repairedMessages,
+      ctx.platformAuthorized,
+      effectiveModelName,
+    );
+
     return addOpenRouterFileAnnotationsToLastAssistantMessage(
-      appendPlatformAuthorizationToLatestUserMessage(
-        repairedMessages,
-        ctx.platformAuthorized,
-      ),
+      messagesWithAuthorization,
       openRouterFileAnnotations,
     );
   };

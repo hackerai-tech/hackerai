@@ -1,3 +1,8 @@
+import {
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+  ABLITERATION_MODEL_KEY,
+  isAbliterationModel,
+} from "@/lib/ai/abliteration";
 /**
  * Chat Stream Helpers
  *
@@ -747,7 +752,11 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
+  if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
+    return "model-deepseek-v4-pro-0813";
+  }
   if (
+    modelName === ABLITERATION_MODEL_KEY ||
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === "ask-model-free-glm"
   ) {
@@ -814,8 +823,10 @@ export function getContentFilterRetryModel(
   modelName: ModelName,
   mode: ChatMode,
   servedModel?: string,
+  preferredFallbackOverride?: ModelName,
 ): ModelName {
-  const preferredFallback = getRetryFallbackModel(modelName, mode);
+  const preferredFallback =
+    preferredFallbackOverride ?? getRetryFallbackModel(modelName, mode);
   if (!servedModel) return preferredFallback;
 
   const route = [modelName, ...(getFallbackKeys(modelName) ?? [])];
@@ -965,6 +976,8 @@ export function buildProviderOptions(
   mode?: ChatMode,
   options: FallbackOptions = {},
 ) {
+  // Direct provider: never send OpenRouter routing, plugins, or user IDs.
+  if (isAbliterationModel(modelName)) return {} as Record<string, never>;
   const modelId =
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);

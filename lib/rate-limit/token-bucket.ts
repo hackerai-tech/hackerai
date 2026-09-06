@@ -1,3 +1,11 @@
+import {
+  ABLITERATION_MODEL_ID,
+  ABLITERATION_MODEL_KEY,
+  ABLITERATION_BASE_PRICING,
+  ABLITERATION_LARGE_V2_MODEL_ID,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+  ABLITERATION_LARGE_V2_PRICING,
+} from "@/lib/ai/abliteration";
 import { randomUUID } from "node:crypto";
 import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
@@ -130,6 +138,10 @@ const KIMI_K3_PRICING: ModelPricing = {
 /** Model pricing: $/1M tokens per model, including provider cache rates. */
 const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   default: DEFAULT_PRICING,
+  [ABLITERATION_MODEL_KEY]: ABLITERATION_BASE_PRICING,
+  [ABLITERATION_MODEL_ID]: ABLITERATION_BASE_PRICING,
+  [ABLITERATION_LARGE_V2_MODEL_KEY]: ABLITERATION_LARGE_V2_PRICING,
+  [ABLITERATION_LARGE_V2_MODEL_ID]: ABLITERATION_LARGE_V2_PRICING,
   // Grok 4.6 shares the $2/$6 base rate, with a 2x tier from 200k prompt
   // tokens handled by getModelPricing when the input size is available.
   "model-grok-4.6": GROK_4_6_BASE_PRICING,

@@ -1,4 +1,11 @@
 import { customProvider } from "ai";
+import {
+  abliteration,
+  ABLITERATION_LARGE_V2_MODEL_ID,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+  ABLITERATION_MODEL_ID,
+  ABLITERATION_MODEL_KEY,
+} from "@/lib/ai/abliteration";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
@@ -1269,7 +1276,13 @@ const buildProviderMap = (
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
   }) as Record<string, any>;
 
-const baseProviders = buildProviderMap(openrouter);
+const baseProviders: ReturnType<typeof buildProviderMap> = {
+  ...buildProviderMap(openrouter),
+  [ABLITERATION_MODEL_KEY]: abliteration(ABLITERATION_MODEL_ID),
+  [ABLITERATION_LARGE_V2_MODEL_KEY]: abliteration(
+    ABLITERATION_LARGE_V2_MODEL_ID,
+  ),
+};
 
 export type ModelName = keyof typeof baseProviders;
 
@@ -1298,6 +1311,8 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
 
 export const modelDisplayNames: Record<ModelName, string> &
   Record<string, string> = {
+  [ABLITERATION_MODEL_KEY]: "Abliteration abliterated-model",
+  [ABLITERATION_LARGE_V2_MODEL_KEY]: "Abliteration abliterated-model-large-v2",
   "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
