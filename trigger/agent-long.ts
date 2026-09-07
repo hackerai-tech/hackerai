@@ -1,3 +1,4 @@
+import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
@@ -2685,6 +2686,17 @@ export const agentLongTask = task({
           })
         : undefined;
 
+      const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
+        release: ctx.deployment?.version,
+        posthog,
+        assignment: abliteratedExperiment,
+        userId,
+        chatId,
+        messageId: assistantMessageId,
+        mode,
+        subscription,
+      });
+
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
           posthog,
@@ -5013,6 +5025,7 @@ export const agentLongTask = task({
                         }
                         const retryMessageId = generateId();
                         abliteratedTelemetry?.setMessageId(retryMessageId);
+                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
@@ -5133,6 +5146,9 @@ export const agentLongTask = task({
                                       usageTracker.cacheWriteTokens;
                                     const finalRetryMessageId = generateId();
                                     abliteratedTelemetry?.setMessageId(
+                                      finalRetryMessageId,
+                                    );
+                                    await taskOutcomeSurvey?.linkMessage(
                                       finalRetryMessageId,
                                     );
                                     const finalRetryResult =

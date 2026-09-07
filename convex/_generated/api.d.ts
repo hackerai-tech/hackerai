@@ -48,6 +48,8 @@ import type * as sharedChats from "../sharedChats.js";
 import type * as subagents from "../subagents.js";
 import type * as subscriptionPauses from "../subscriptionPauses.js";
 import type * as supportFraudActions from "../supportFraudActions.js";
+import type * as taskOutcomeSurveys from "../taskOutcomeSurveys.js";
+import type * as taskOutcomeValidators from "../taskOutcomeValidators.js";
 import type * as teamExtraUsage from "../teamExtraUsage.js";
 import type * as teamExtraUsageActions from "../teamExtraUsageActions.js";
 import type * as unitEconomics from "../unitEconomics.js";
@@ -106,6 +108,8 @@ declare const fullApi: ApiFromModules<{
   subagents: typeof subagents;
   subscriptionPauses: typeof subscriptionPauses;
   supportFraudActions: typeof supportFraudActions;
+  taskOutcomeSurveys: typeof taskOutcomeSurveys;
+  taskOutcomeValidators: typeof taskOutcomeValidators;
   teamExtraUsage: typeof teamExtraUsage;
   teamExtraUsageActions: typeof teamExtraUsageActions;
   unitEconomics: typeof unitEconomics;
