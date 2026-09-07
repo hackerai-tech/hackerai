@@ -85,7 +85,7 @@ describe("task outcome feedback", () => {
     jest.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   });
   afterEach(() => jest.restoreAllMocks());
-  it("reserves before outcomes and enforces rolling cross-device cooldown", async () => {
+  it("reserves before outcomes and enforces a rolling 72-hour cross-device cooldown", async () => {
     const { ctx, rows } = setup();
     expect(await invoke(reserve, ctx, args)).toMatchObject({
       request_id: "run-1",
@@ -93,9 +93,12 @@ describe("task outcome feedback", () => {
     expect(
       await invoke(reserve, ctx, { ...args, request_id: "run-2" }),
     ).toBeNull();
-    jest
-      .mocked(Date.now)
-      .mockReturnValue(rows[0].selected_at + TASK_OUTCOME_COOLDOWN_MS);
+    const nextEligibleAt = rows[0].selected_at + 72 * 60 * 60 * 1000;
+    jest.mocked(Date.now).mockReturnValue(nextEligibleAt - 1);
+    expect(
+      await invoke(reserve, ctx, { ...args, request_id: "run-2" }),
+    ).toBeNull();
+    jest.mocked(Date.now).mockReturnValue(nextEligibleAt);
     expect(
       await invoke(reserve, ctx, { ...args, request_id: "run-2" }),
     ).not.toBeNull();
@@ -120,6 +123,15 @@ describe("task outcome feedback", () => {
       await invoke(record, ctx, { id: row._id, action: "shown" }),
     ).toBeNull();
     expect(rows[0].last_interaction_at).toBe(row.selected_at + 1000);
+    const nextEligibleAt = row.selected_at + 1000 + 72 * 60 * 60 * 1000;
+    jest.mocked(Date.now).mockReturnValue(nextEligibleAt - 1);
+    expect(
+      await invoke(reserve, ctx, { ...args, request_id: "run-2" }),
+    ).toBeNull();
+    jest.mocked(Date.now).mockReturnValue(nextEligibleAt);
+    expect(
+      await invoke(reserve, ctx, { ...args, request_id: "run-2" }),
+    ).not.toBeNull();
   });
   it("preserves assignment while linking a fallback response", async () => {
     const { ctx } = setup();
