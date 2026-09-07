@@ -226,12 +226,13 @@ References: [provider models](https://docs.abliteration.ai/models),
 
 ## Free Agent pilot
 
-Free Agent rollout is governed by HAC-99. Preview targets all eligible free Agent
-testers with test assignment. The initial Production free group is 10% enrollment
+Free Agent rollout is governed by HAC-99. Preview flag 869147 was updated on
+2026-09-07 to target all eligible free Agent testers with test assignment. The
+planned initial Production free group is 10% enrollment
 with the existing 50/50 control/test split (approximately 5% treatment); the other
 90% retain baseline without experiment assignment. Existing paid groups and their
-internal override are unchanged. These are the planned settings; record verified
-activation and runtime evidence in HAC-99 before calling the pilot live.
+internal override are unchanged. Record verified Production activation and runtime
+evidence in HAC-99 before calling the pilot live.
 
 Compare free control/test users separately from paid users and from earlier routing
 phases. Prioritize useful results, linked thumbs, and task-outcome ratings only
