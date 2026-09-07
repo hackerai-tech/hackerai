@@ -108,6 +108,7 @@ export async function evaluateAbliteratedModel({
   limitRescue?: boolean;
 }): Promise<AbliteratedAssignment | undefined> {
   const historyEligible =
+    subscription !== "free" &&
     allowsAbliterationContinuation &&
     Number.isInteger(independentAbliterationResponses) &&
     independentAbliterationResponses >= ABLITERATION_HISTORY_THRESHOLD;

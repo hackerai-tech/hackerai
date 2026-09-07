@@ -426,6 +426,7 @@ describe("moderation-gated Abliteration assignment", () => {
     { independentAbliterationResponses: 1 },
     { independentAbliterationResponses: NaN },
     { subscription: "free" as SubscriptionTier },
+    { subscription: "free" as SubscriptionTier, mode: "agent" as const },
     { limitRescue: true },
     {
       messages: [
