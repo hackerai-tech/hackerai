@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
-import { X } from "lucide-react";
+import { Check, Minus, X } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ type Survey = Doc<"task_outcome_surveys">;
 function captureSurvey(event: string, row: Survey) {
   captureQueuedAuthenticatedEvent({
     event: `task_outcome_survey_${event}`,
-    properties: { ...taskOutcomeProperties(row), survey_ui_version: 2 },
+    properties: { ...taskOutcomeProperties(row), survey_ui_version: 3 },
     dedupeKey: `${row._id}:${event}`,
   });
 }
@@ -174,7 +174,6 @@ export function TaskOutcomeFeedbackPrompt({
       }
       captureSurvey("answered", row);
       setAnswer(value);
-      if (value === "not_checked") setDone(true);
     } catch {
       setError(true);
     } finally {
@@ -215,25 +214,28 @@ export function TaskOutcomeFeedbackPrompt({
   return (
     <div
       ref={question}
-      className="mb-3 mt-1 w-full max-w-sm text-sm"
+      className={`relative mb-3 mt-2 flex w-[17rem] max-w-full flex-wrap items-center gap-x-4 gap-y-2 pr-11 text-sm sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}
       role="group"
       aria-label="Task feedback"
     >
-      <div className="flex min-h-10 items-center justify-between gap-3 sm:min-h-8">
-        <p className="text-muted-foreground">
+      <div className="flex min-h-[44px] items-center sm:min-h-8">
+        <p
+          className="text-sm text-muted-foreground"
+          role={done ? "status" : undefined}
+        >
           {done
             ? "Thanks for your feedback"
             : answer
               ? answer === "yes"
                 ? "What helped?"
                 : "What could be better?"
-              : "Did this help with your task?"}
+              : "Did this help?"}
         </p>
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="size-11 shrink-0 text-muted-foreground hover:text-foreground sm:size-8"
+          className="absolute right-0 top-0 size-[44px] rounded-full text-muted-foreground/70 hover:text-foreground sm:size-8"
           aria-label="Dismiss task feedback"
           onClick={dismiss}
           disabled={busy}
@@ -244,14 +246,14 @@ export function TaskOutcomeFeedbackPrompt({
       {!done && (
         <>
           {answer ? (
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex basis-full flex-wrap gap-2">
               {reasonsForAnswer(answer).map((reason) => (
                 <Button
                   type="button"
                   key={reason}
                   variant="outline"
                   size="sm"
-                  className="min-h-11 h-auto max-w-full whitespace-normal rounded-md px-3 py-2 text-xs sm:min-h-8 sm:py-1"
+                  className="min-h-[44px] h-auto max-w-full whitespace-normal rounded-full px-3 py-2 text-xs sm:min-h-8 sm:py-1"
                   disabled={busy}
                   onClick={() => void saveReason(reason)}
                 >
@@ -262,7 +264,7 @@ export function TaskOutcomeFeedbackPrompt({
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-11 px-3 text-xs text-muted-foreground sm:h-8"
+                className="h-[44px] px-3 text-xs text-muted-foreground sm:h-8"
                 onClick={() => setDone(true)}
                 disabled={busy}
               >
@@ -270,36 +272,35 @@ export function TaskOutcomeFeedbackPrompt({
               </Button>
             </div>
           ) : (
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <div className="inline-flex items-center rounded-lg bg-muted/60 p-0.5">
-                {(["yes", "partly", "no"] as const).map((value) => (
+            <div className="flex items-center gap-2">
+              {(["yes", "partly", "no"] as const).map((value) => {
+                const Icon =
+                  value === "yes" ? Check : value === "partly" ? Minus : X;
+                return (
                   <Button
                     type="button"
                     key={value}
-                    variant="ghost"
+                    variant="outline"
                     size="sm"
-                    className="h-11 min-w-12 rounded-md px-3 text-xs hover:bg-background sm:h-8"
+                    className="h-[44px] gap-1.5 rounded-full border-border/70 bg-transparent px-3 text-xs font-normal shadow-none hover:border-foreground/30 hover:bg-muted/60 sm:h-8"
                     disabled={busy}
                     onClick={() => void saveAnswer(value)}
                   >
+                    <Icon
+                      className="size-3.5 text-muted-foreground"
+                      aria-hidden="true"
+                    />
                     {TASK_OUTCOME_ANSWERS[value]}
                   </Button>
-                ))}
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-11 px-2 text-xs text-muted-foreground sm:h-8"
-                disabled={busy}
-                onClick={() => void saveAnswer("not_checked")}
-              >
-                {TASK_OUTCOME_ANSWERS.not_checked}
-              </Button>
+                );
+              })}
             </div>
           )}
           {error && (
-            <p className="mt-2 text-xs text-muted-foreground" role="status">
+            <p
+              className="basis-full text-xs text-muted-foreground"
+              role="status"
+            >
               Couldn’t save. Try again when you’re ready.
             </p>
           )}

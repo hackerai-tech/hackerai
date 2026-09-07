@@ -75,15 +75,16 @@ describe("unobtrusive task feedback", () => {
     expect(record).not.toHaveBeenCalled();
     await inView();
     expect(screen.getByRole("group")).toBeTruthy();
-    expect(screen.getByText("Did this help with your task?")).toBeTruthy();
+    expect(screen.getByText("Did this help?")).toBeTruthy();
     expect(screen.queryByText("Optional")).toBeNull();
+    expect(screen.queryByRole("button", { name: /checked/i })).toBeNull();
     expect(document.activeElement).toBe(screen.getByLabelText("Chat input"));
     expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
     await inView();
     expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "task_outcome_survey_shown",
-        properties: expect.objectContaining({ survey_ui_version: 2 }),
+        properties: expect.objectContaining({ survey_ui_version: 3 }),
       }),
     );
   });
