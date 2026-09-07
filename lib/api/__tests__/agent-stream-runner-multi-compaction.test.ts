@@ -490,6 +490,10 @@ describe("createAgentStream repeated compaction", () => {
     mockDescribeImage
       .mockReset()
       .mockResolvedValue({ description: "Visible image text" });
+    mockRunSummarizationStep.mockResolvedValue({
+      summarizationAttempted: false,
+      needsSummarization: false,
+    });
     mockStreamText.mockImplementation((options) => options);
   });
 
@@ -529,7 +533,7 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("routes only the first three generation steps through Abliteration", async () => {
+  it("routes only the first generation step through Abliteration", async () => {
     const onModelStepSelected = jest.fn();
     const state = initAgentStreamState(
       [uiMessage("initial", "Inspect the authorized lab")],
@@ -564,17 +568,15 @@ describe("createAgentStream repeated compaction", () => {
         messages: [{ role: "user", content: "Continue" }],
       });
 
-    for (const completedSteps of [0, 1, 2]) {
-      const prepared = await prepare(completedSteps);
-      expect(prepared.model.modelId).toBe("model-abliterated");
-      expect(JSON.stringify(prepared.messages)).not.toContain(
-        PLATFORM_AUTHORIZATION_ANNOTATION,
-      );
-    }
+    const firstStep = await prepare(0);
+    expect(firstStep.model.modelId).toBe("model-abliterated");
+    expect(JSON.stringify(firstStep.messages)).not.toContain(
+      PLATFORM_AUTHORIZATION_ANNOTATION,
+    );
 
-    const fourthStep = await prepare(3);
-    expect(fourthStep.model.modelId).toBe("model-deepseek-v4-flash-0731");
-    expect(JSON.stringify(fourthStep.messages)).toContain(
+    const secondStep = await prepare(1);
+    expect(secondStep.model.modelId).toBe("model-deepseek-v4-flash-0731");
+    expect(JSON.stringify(secondStep.messages)).toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
     expect(onModelStepSelected).toHaveBeenLastCalledWith(
@@ -671,7 +673,7 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockStreamText).not.toHaveBeenCalled();
   });
 
-  it("propagates late OCR failure instead of retrying the prepare-step fallback", async () => {
+  it("propagates first-step OCR failure instead of retrying the prepare-step fallback", async () => {
     const stream = (await createAgentStream(
       "model-abliterated",
       createTestStreamContext({
@@ -690,7 +692,7 @@ describe("createAgentStream repeated compaction", () => {
     mockDescribeImage.mockRejectedValue(new Error("Auxiliary API failure"));
     await expect(
       stream.prepareStep({
-        stepNumber: 1,
+        stepNumber: 0,
         steps: [],
         messages: [
           {
@@ -734,7 +736,7 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockDescribeImage).not.toHaveBeenCalled();
   });
 
-  it("keeps Abliteration and describes images when tools exceed the request cap", async () => {
+  it("describes persisted tool images on the first step and uses baseline on the next", async () => {
     const stream = (await createAgentStream(
       "model-abliterated",
       createTestStreamContext({
@@ -787,7 +789,7 @@ describe("createAgentStream repeated compaction", () => {
           ],
         },
       ],
-      1,
+      0,
     );
     expect(prepared.model.modelId).toBe("model-abliterated");
     expect(JSON.stringify(prepared.messages)).toContain("image_description");
@@ -795,9 +797,9 @@ describe("createAgentStream repeated compaction", () => {
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
     expect(
-      (await prepare([{ role: "user", content: "Compacted context" }], 2)).model
+      (await prepare([{ role: "user", content: "Compacted context" }], 1)).model
         .modelId,
-    ).toBe("model-abliterated");
+    ).toBe("model-grok-4.6");
   });
 
   it("preserves the generation-step position across replacement streams", async () => {
@@ -806,7 +808,7 @@ describe("createAgentStream repeated compaction", () => {
       [uiMessage("initial", "Inspect the authorized lab")],
       { usedTokens: 1_000, maxTokens: 128_000 },
     );
-    state.agentStepCount = 3;
+    state.agentStepCount = 1;
 
     const stream = (await createAgentStream(
       "model-abliterated",
@@ -844,7 +846,7 @@ describe("createAgentStream repeated compaction", () => {
       expect.objectContaining({
         model: "model-deepseek-v4-flash-0731",
         source: "prepare_step",
-        step_index: 4,
+        step_index: 2,
       }),
       expect.anything(),
     );

@@ -2033,7 +2033,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
-  test("Abliteration routing switches to OpenRouter after three generation steps", () => {
+  test("Abliteration routing switches to OpenRouter after the first generation step", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(
         /abliteratedStepRouting:[\s\S]{0,150}baselineModel/,

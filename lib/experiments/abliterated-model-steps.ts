@@ -1,4 +1,4 @@
-export const ABLITERATION_MAX_GENERATION_STEPS = 3;
+export const ABLITERATION_MAX_GENERATION_STEPS = 1;
 
 /**
  * Selects the request-scoped route for one zero-based AI SDK generation step.
