@@ -5,6 +5,7 @@ import {
   AbliterationVisionError,
   createAbliterationVisionPreprocessor,
 } from "@/lib/chat/abliteration-vision";
+import { createAbliterationMediaRecovery } from "@/lib/chat/abliteration-media-recovery";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -863,7 +864,8 @@ export async function createAgentStream(
   ): LanguageModel => {
     const telemetryModel =
       ctx.abliteratedTelemetry?.wrap(languageModel, stepIndex) ?? languageModel;
-    const guardedModel = guardLanguageModelProviderResponse(telemetryModel, {
+    const recoveryModel = recoverAbliterationMedia(telemetryModel);
+    const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
           event: "provider_tool_call_guard_applied",
@@ -1053,6 +1055,10 @@ export async function createAgentStream(
       ctx.chatLogger?.getBuilder().addToolCost(cost);
     },
   });
+  const recoverAbliterationMedia = createAbliterationMediaRecovery(
+    preprocessAbliterationImages,
+    abortSignal,
+  );
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),

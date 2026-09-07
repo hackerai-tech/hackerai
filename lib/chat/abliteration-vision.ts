@@ -1,8 +1,10 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
-import type { ModelMessage } from "ai";
-import { exceedsAbliterationImageLimit } from "@/lib/ai/abliteration-media";
+import {
+  exceedsAbliterationImageLimit,
+  type AbliterationImageMessages,
+} from "@/lib/ai/abliteration-media";
 import { describeImageWithAuxiliaryVision } from "./auxiliary-vision";
 
 export class AbliterationVisionError extends Error {
@@ -67,8 +69,12 @@ export function createAbliterationVisionPreprocessor({
   // Store only summaries/hashes, not duplicate image payloads. Retain rejected
   // promises too so error recovery cannot repeat an already failed OCR batch.
   const cache = new Map<string, Promise<string>>();
-  return async (messages: ModelMessage[]): Promise<ModelMessage[]> => {
-    if (!exceedsAbliterationImageLimit(messages)) return messages;
+  return async <T extends AbliterationImageMessages>(
+    messages: T,
+    options?: { force?: boolean },
+  ): Promise<T> => {
+    if (!options?.force && !exceedsAbliterationImageLimit(messages))
+      return messages;
     const tasks: Array<{
       position: string;
       input: ImageInput;
@@ -93,6 +99,7 @@ export function createAbliterationVisionPreprocessor({
         }
       }
     }
+    if (tasks.length === 0) return messages;
     const replacements = new Map<string, { type: "text"; text: string }>();
     for (let start = 0; start < tasks.length; start += 4) {
       abortSignal.throwIfAborted();
@@ -155,7 +162,7 @@ export function createAbliterationVisionPreprocessor({
           }
           return replacements.get(`${mi}:${pi}`) ?? part;
         }),
-      } as ModelMessage;
-    });
+      };
+    }) as T;
   };
 }
