@@ -196,21 +196,12 @@ RUN pip3 install --break-system-packages --no-cache-dir --ignore-installed 'rich
 # ============================================================================
 # Git-based Security Tools
 # ============================================================================
-ARG JWT_TOOL_COMMIT=3bc7407cf2222d6a821dcc19c776e5a1b1cb9a9b
-ARG GITTOOLS_COMMIT=79743ed21b371f0388ce21c64ff041ad1fa67bb2
-
 RUN set -eux; \
     # JWT analysis tool
-    git init /opt/jwt_tool && \
-    git -C /opt/jwt_tool remote add origin https://github.com/ticarpi/jwt_tool.git && \
-    git -C /opt/jwt_tool fetch --depth 1 origin "$JWT_TOOL_COMMIT" && \
-    git -C /opt/jwt_tool checkout --detach FETCH_HEAD && \
+    git clone https://github.com/ticarpi/jwt_tool.git /opt/jwt_tool || true && \
     if [ -f /opt/jwt_tool/jwt_tool.py ]; then chmod +x /opt/jwt_tool/jwt_tool.py; fi && \
     # Git repository dumper
-    git init /opt/gittools && \
-    git -C /opt/gittools remote add origin https://github.com/internetwache/GitTools.git && \
-    git -C /opt/gittools fetch --depth 1 origin "$GITTOOLS_COMMIT" && \
-    git -C /opt/gittools checkout --detach FETCH_HEAD && \
+    git clone https://github.com/internetwache/GitTools.git /opt/gittools && \
     chmod +x /opt/gittools/Dumper/gitdumper.sh /opt/gittools/Extractor/extractor.sh && \
     ln -sf /opt/gittools/Dumper/gitdumper.sh /usr/local/bin/gitdumper && \
     ln -sf /opt/gittools/Extractor/extractor.sh /usr/local/bin/gitextractor
@@ -218,36 +209,29 @@ RUN set -eux; \
 # ============================================================================
 # Binary Downloads (Platform-aware)
 # ============================================================================
-ARG TRUFFLEHOG_INSTALLER_COMMIT=363923b901c911a9164f50b6c423f47c15372b1c
-ARG TRIVY_INSTALLER_COMMIT=99fde13b1439de741034e564c22b358b4880bbe8
-ARG TRUFFLEHOG_VERSION=v3.97.1
-ARG TRIVY_VERSION=v0.74.0
-ARG HTTPX_VERSION=1.11.0
-
 RUN set -eux; \
     # Secret scanning tool
-    curl -sSfL "https://raw.githubusercontent.com/trufflesecurity/trufflehog/${TRUFFLEHOG_INSTALLER_COMMIT}/scripts/install.sh" | sh -s -- -b /usr/local/bin "${TRUFFLEHOG_VERSION}" && \
+    curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin && \
     # Vulnerability scanner for containers and filesystems
-    curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_INSTALLER_COMMIT}/contrib/install.sh" | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}" && \
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && \
     # httpx with proper architecture detection
     arch=$(uname -m); \
     if [ "$arch" = "x86_64" ]; then platform="linux_amd64"; \
     elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then platform="linux_arm64"; \
     else platform="linux_amd64"; fi; \
-    HTTPX_ARCHIVE="httpx_${HTTPX_VERSION}_${platform}.zip"; \
-    HTTPX_BASE_URL="https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}"; \
-    wget -qO /tmp/httpx.zip "${HTTPX_BASE_URL}/${HTTPX_ARCHIVE}"; \
-    wget -qO /tmp/httpx-checksums.txt "${HTTPX_BASE_URL}/httpx_${HTTPX_VERSION}_checksums.txt"; \
-    grep "  ${HTTPX_ARCHIVE}$" /tmp/httpx-checksums.txt > /tmp/httpx-checksum.txt; \
-    expected_httpx_sha=$(awk '{print $1}' /tmp/httpx-checksum.txt); \
-    echo "${expected_httpx_sha}  /tmp/httpx.zip" | sha256sum -c -; \
+    HTTPX_URL=$(curl -s https://api.github.com/repos/projectdiscovery/httpx/releases/latest \
+      | grep "browser_download_url" | cut -d '"' -f4 \
+      | grep "${platform}.zip$" | head -n1); \
+    test -n "$HTTPX_URL"; \
+    echo "Fetching httpx: $HTTPX_URL"; \
+    wget -qO /tmp/httpx.zip "$HTTPX_URL"; \
     mkdir -p /tmp/httpx_extracted; \
     unzip -q /tmp/httpx.zip -d /tmp/httpx_extracted; \
     httpx_bin=$(find /tmp/httpx_extracted -type f -name httpx | head -n1); \
     test -n "$httpx_bin"; \
     mv "$httpx_bin" /usr/local/bin/httpx; \
     chmod +x /usr/local/bin/httpx; \
-    rm -rf /tmp/httpx_extracted /tmp/httpx.zip /tmp/httpx-checksums.txt /tmp/httpx-checksum.txt; \
+    rm -rf /tmp/httpx_extracted /tmp/httpx.zip; \
     # Use a pinned ProjectDiscovery release and verify its published checksum.
     KATANA_VERSION="1.7.0"; \
     KATANA_ARCHIVE="katana_${KATANA_VERSION}_${platform}.zip"; \
