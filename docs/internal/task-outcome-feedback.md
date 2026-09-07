@@ -7,7 +7,7 @@ of an individual Abliteration call. Existing provider assignment is unchanged.
 ## Quiet interaction
 
 - Select before model-priced budget checks or generation, for both experiment
-  variants. At most one opportunity per authenticated user per rolling seven days,
+  variants. At most one opportunity per authenticated user per rolling three days (72 hours),
   atomically reserved in Convex across concurrent runs/devices.
 - Only the latest assistant response with no newer user message can show it.
   After the run ends (including Stop/error), show immediately when the result
@@ -20,6 +20,8 @@ of an individual Abliteration call. Existing provider assignment is unchanged.
 - Yes / Partly / No; save the answer immediately. Reasons
   are optional and structured, with Skip. Dismiss/answer/view extends cooldown.
   Unshown invitations expire after 48 hours. Existing manual thumbs remain usable.
+  The cooldown is measured from the most recent interaction, including existing
+  invitations; deploying a cadence change does not reset that timestamp.
 - Some failed runs never create a displayable assistant message; they remain in
   the selection denominator as unshown. Never claim the sample covers all failures.
 
@@ -103,7 +105,7 @@ retain their 48-hour expiry). Provider routing stays unchanged.
 
 ## Implementation validation
 
-Automated tests cover weekly cooldown, concurrent reservation/display claims,
+Automated tests cover the 72-hour cooldown boundary, concurrent reservation/display claims,
 owner authorization, expiry, structured reason validation, fallback message
 linkage, visible-tab gating, immediate display, dismissal and no focus stealing. A real
 local Convex backend in the HackerAI Development project verified concurrent

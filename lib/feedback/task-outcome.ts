@@ -1,5 +1,5 @@
 export const TASK_OUTCOME_FLAG = "task_outcome_feedback_v1";
-export const TASK_OUTCOME_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+export const TASK_OUTCOME_COOLDOWN_MS = 3 * 24 * 60 * 60 * 1000;
 export const TASK_OUTCOME_EXPIRY_MS = 48 * 60 * 60 * 1000;
 export const TASK_OUTCOME_ANSWERS = {
   yes: "Yes",
