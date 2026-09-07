@@ -1076,6 +1076,70 @@ describe("saveMessage", () => {
 });
 
 describe("getMessagesByChatId", () => {
+  it.each([false, true])(
+    "uses only backend provenance and disables inheritance on regenerate=%s",
+    async (regenerate) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const message = {
+        id: "u",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "continue" }],
+      };
+      const evidence = [
+        { id: "a", completed: true, independent: true },
+        { id: "b", completed: true, independent: true },
+      ];
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [message],
+          abliterationHistory: evidence,
+          isDone: true,
+          continueCursor: null,
+        });
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "pro",
+        newMessages: [],
+        regenerate,
+        mode: "agent",
+      });
+      expect(result.independentAbliterationResponses).toBe(regenerate ? 0 : 2);
+      expect(result.truncatedMessages).toEqual([message]);
+      expect(JSON.stringify(result.truncatedMessages)).not.toContain(
+        "independent",
+      );
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("ignores routing claims in client message metadata", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockResolvedValueOnce(null);
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [
+        {
+          id: "a",
+          role: "assistant",
+          parts: [{ type: "text", text: "answer" }],
+          metadata: {
+            abliterationRouting: {
+              version: 1,
+              source: "moderation",
+              completed: true,
+            },
+          },
+        },
+      ],
+      mode: "agent",
+    });
+    expect(result.independentAbliterationResponses).toBe(0);
+  });
+
   it("logs empty prompts as warnings instead of errors", async () => {
     const { getMessagesByChatId } = await loadSaveMessageWithMocks();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -1506,4 +1570,27 @@ describe("deleteAllChatsForBackend", () => {
       errorSpy.mockRestore();
     }
   });
+});
+
+it("persists server routing markers alongside usage only for assistant messages", async () => {
+  const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+  const marker = {
+    version: 1 as const,
+    source: "moderation" as const,
+    completed: true,
+  };
+  for (const role of ["assistant", "user"] as const) {
+    await saveMessage({
+      chatId: "chat",
+      userId: "user",
+      message: { id: role, role, parts: [{ type: "text", text: "ok" }] },
+      usage: { inputTokens: 12 },
+      abliterationRouting: marker,
+    });
+  }
+  expect(mockMutation.mock.calls[0][1].usage).toEqual({
+    inputTokens: 12,
+    abliterationRouting: marker,
+  });
+  expect(mockMutation.mock.calls[1][1].usage).toEqual({ inputTokens: 12 });
 });

@@ -13,8 +13,10 @@ Paid requests in Ask and Agent may use an Abliteration model at
 explicit HackerAI Pro and Max routes use `abliterated-model-large-v2`. Ultra Ask
 Auto also uses Large v2 because its current baseline is Pro, while Ultra Agent
 Auto uses the base model because its baseline is Standard. The existing moderation
-API must return `shouldUncensorResponse=true`. This signal selects the experiment;
-it does not change moderation thresholds, tool approvals, or authorization gates.
+API normally selects the experiment through `shouldUncensorResponse=true`.
+The separately flagged recent-chat preference below can retain the provider when
+the new moderation score falls below the minimum routing threshold; it never
+relaxes forbidden categories, upper score limits, tool approvals, or authorization.
 
 Abliteration is limited to the first model-generation step within each
 Ask response or Agent run. The shared AI SDK loop uses the assigned Abliteration
@@ -54,6 +56,71 @@ default reasoning. OpenRouter options, routing lists, user attribution, and PDF
 plugins are not sent to the direct endpoint. Existing bounded application retries
 use the request's original baseline after an Abliteration failure. Subagents,
 summaries, titles, and approval reviewers retain their existing models.
+
+## Recent-chat continuity
+
+`abliteration_chat_continuity_v1` retains Abliteration for paid parent-treatment
+requests when at least two of the last five completed visible assistant responses
+in the same chat independently used it. A completed response has `finish_reason=stop`;
+a seed additionally requires a successfully finished Abliteration generation and
+no response abort. Failed attempts, empty output, controls, fallback-only output,
+and inherited selections never seed the preference. Two independently selected
+responses are enough even when the chat has fewer than five completed responses.
+
+The new input still runs through moderation. Missing credentials, API failures,
+invalid scores, forbidden categories, and scores above the existing upper bound
+fail closed. This preference only bypasses the lower routing threshold; it does
+not set `platformAuthorized`. Existing plan, rescue, attachment, provider-fallback,
+and one-generation-step restrictions apply. Regenerations do not inherit history.
+
+Provenance is stored as `usage.abliterationRouting` (version, source, completed),
+inside the existing flexible usage object, without a schema migration. The server
+tracks successful Abliteration generation even when later steps use OpenRouter;
+the final saved model alone is insufficient evidence. Client stop-save strips
+this reserved field, and only the service-key save path can persist it. Legacy
+responses without this marker are deliberately not seeds.
+
+History metadata comes from the existing bounded backend page reads, separately
+from model messages and before token truncation or summary projection. No full-chat
+scan or extra database round trip is added. If bounded fetching reaches fewer than
+five completed responses, only available evidence is used; missing evidence does
+not count. As seeds leave the five-response window, inherited responses cannot
+renew them.
+
+Telemetry adds `selection_source` (`moderation` or `history`),
+`independent_history_count`, and `routing_version=2` to the existing eligibility,
+actual exposure, and provider outcome events. `moderation_eligible` reflects the
+independent moderation decision. Compare completion, latency, estimated cost,
+fallback/error/abort rates, and task feedback by routing source, mode and model.
+History traffic is selected from prior treatment: it is not a randomized causal
+comparison against parent controls. Churn and retention need a later user-level
+readout with enough follow-up time. No user content is added to analytics.
+
+Owner: Ross Manko, [HAC-99](https://linear.app/hackerai/issue/HAC-99).
+Review Preview results before Production activation; initial review 2026-09-14.
+Roll back via the continuity flag on completion/feedback regression, elevated
+cost or latency, or any moderation/persistence failure. Remove the continuity
+flag with the parent pilot after an explicit decision.
+
+Definitions verified 2026-09-07:
+
+| Environment | Project               | Flag   | Active | Rollout | Target                                                 |
+| ----------- | --------------------- | ------ | ------ | ------- | ------------------------------------------------------ |
+| Preview     | hackerai-dev / 401167 | 870188 | Yes    | 100%    | Paid tiers; application also requires parent treatment |
+| Production  | HackerAI / 144137     | 870186 | No     | 0%      | Paid tiers; no Production continuity activation        |
+
+Both use `abliteration_chat_continuity_v1` and target `pro`, `pro-plus`, `ultra`,
+and `team`. The parent flag remains unchanged. This implementation requires
+Convex functions, Vercel and Trigger Preview deployments before end-to-end testing;
+subsequent flag changes take effect on a new request/run.
+
+Manual verification in the designated Preview branch: use a disposable paid chat,
+complete two independently moderation-selected responses, then submit a benign
+follow-up below the minimum routing score. Confirm `selection_source=history`,
+completion and reload persistence, and OpenRouter on generation step two. Confirm
+regeneration and an expired history window retain normal routing; check moderation
+failure and forbidden-category exclusions with deterministic automated fixtures.
+Do not seed routing markers by editing live user messages.
 
 ## Environment and rollout record
 

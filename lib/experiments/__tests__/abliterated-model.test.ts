@@ -1,6 +1,7 @@
 import {
   evaluateAbliteratedModel,
   ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATION_CONTINUITY_FLAG,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
@@ -332,5 +333,97 @@ describe("moderation-gated Abliteration assignment", () => {
       }),
     ).toBeUndefined();
     expect(getFeatureFlag).not.toHaveBeenCalled();
+  });
+  const historyDefaults = {
+    ...defaults,
+    moderationEligible: false,
+    allowsAbliterationContinuation: true,
+    independentAbliterationResponses: 2,
+  };
+  it("uses history only within parent treatment and an explicitly enabled continuity flag", async () => {
+    const getFeatureFlag = jest
+      .fn()
+      .mockImplementation(async (key: string) =>
+        key === ABLITERATION_CONTINUITY_FLAG ? true : "test",
+      );
+    await expect(
+      evaluateAbliteratedModel({
+        ...historyDefaults,
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toMatchObject({
+      modelKey: ABLITERATION_MODEL_KEY,
+      selectionSource: "history",
+      independentHistoryCount: 2,
+    });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    { allowsAbliterationContinuation: false },
+    { independentAbliterationResponses: 1 },
+    { independentAbliterationResponses: NaN },
+    { subscription: "free" as SubscriptionTier },
+    { limitRescue: true },
+    {
+      messages: [
+        {
+          id: "file",
+          role: "user" as const,
+          parts: [
+            {
+              type: "file" as const,
+              mediaType: "application/pdf",
+              url: "https://example.test/a.pdf",
+            },
+          ],
+        },
+      ],
+    },
+  ])("preserves all eligibility gates for history: %j", async (overrides) => {
+    const getFeatureFlag = jest.fn().mockResolvedValue(true);
+    await expect(
+      evaluateAbliteratedModel({
+        ...historyDefaults,
+        ...overrides,
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toBeUndefined();
+    expect(getFeatureFlag).not.toHaveBeenCalled();
+  });
+  it.each([false, undefined, "test"])(
+    "fails closed on continuity flag %s",
+    async (value) => {
+      const getFeatureFlag = jest
+        .fn()
+        .mockResolvedValueOnce("test")
+        .mockResolvedValueOnce(value);
+      await expect(
+        evaluateAbliteratedModel({
+          ...historyDefaults,
+          posthog: { getFeatureFlag },
+        }),
+      ).resolves.toBeUndefined();
+    },
+  );
+  it("does not move parent controls into continuity treatment", async () => {
+    const getFeatureFlag = jest.fn().mockResolvedValue("control");
+    await expect(
+      evaluateAbliteratedModel({
+        ...historyDefaults,
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toBeUndefined();
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
+  });
+  it("keeps independent moderation selection independent even with enough history", async () => {
+    const getFeatureFlag = jest.fn().mockResolvedValue("test");
+    await expect(
+      evaluateAbliteratedModel({
+        ...historyDefaults,
+        moderationEligible: true,
+        posthog: { getFeatureFlag },
+      }),
+    ).resolves.toMatchObject({ selectionSource: "moderation" });
+    expect(getFeatureFlag).toHaveBeenCalledTimes(1);
   });
 });
