@@ -2636,6 +2636,7 @@ export const agentLongTask = task({
         selectedModel,
         sandboxFiles,
         platformAuthorized,
+        allowsAbliterationContinuation,
       } = await processChatMessages({
         messages: messagesForProcessing,
         mode,
@@ -2671,6 +2672,9 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
+        allowsAbliterationContinuation,
+        independentAbliterationResponses:
+          fetched.independentAbliterationResponses,
         messages: processedMessages,
         limitRescue: Boolean(limitRescue),
       });
@@ -5474,6 +5478,11 @@ export const agentLongTask = task({
                             generationTimeMs: finalGenerationTimeMs,
                             finishReason: state.streamFinishReason,
                             usage: resolvedUsage ?? state.streamUsage,
+                            abliterationRouting:
+                              abliteratedTelemetry?.getRoutingMarker(
+                                !isAborted &&
+                                  state.streamFinishReason === "stop",
+                              ),
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,

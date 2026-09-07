@@ -794,6 +794,76 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     return paginateMock;
   }
 
+  it("returns routing provenance only for visible assistant messages, outside prompt parts", async () => {
+    const seed = {
+      abliterationRouting: {
+        version: 1,
+        source: "moderation",
+        completed: true,
+      },
+    };
+    setupPaginatedMessages([
+      makeMessage({
+        id: "independent",
+        role: "assistant",
+        finish_reason: "stop",
+        usage: seed,
+      }),
+      makeMessage({
+        id: "hidden",
+        role: "assistant",
+        is_hidden: true,
+        finish_reason: "stop",
+        usage: seed,
+      }),
+      makeMessage({
+        id: "user",
+        role: "user",
+        finish_reason: "stop",
+        usage: seed,
+      }),
+      makeMessage({
+        id: "history",
+        role: "assistant",
+        finish_reason: "stop",
+        usage: {
+          abliterationRouting: {
+            version: 1,
+            source: "history",
+            completed: true,
+          },
+        },
+      }),
+    ]);
+    const { getMessagesPageForBackend } = await import("../messages");
+    const result = await getMessagesPageForBackend.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      paginationOpts: { numItems: 24, cursor: null },
+    });
+    expect(result.abliterationHistory).toEqual([
+      { id: "independent", completed: true, independent: true },
+      { id: "history", completed: true, independent: false },
+    ]);
+    expect(
+      result.page.every((message: any) => message.usage === undefined),
+    ).toBe(true);
+  });
+
+  it("returns no history when chat ownership fails", async () => {
+    mockCtx.runQuery.mockResolvedValue(false);
+    const { getMessagesPageForBackend } = await import("../messages");
+    const result = await getMessagesPageForBackend.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      paginationOpts: { numItems: 24, cursor: null },
+    });
+    expect(result.abliterationHistory).toEqual([]);
+    expect(mockCtx.db.query).not.toHaveBeenCalled();
+  });
+
   it("should filter out hidden messages", async () => {
     const visibleMsg = makeMessage({
       id: "msg-visible",
@@ -891,5 +961,45 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     expect(result.page[0].parts).toEqual([{ type: "file", fileId }]);
     expect(result.fileTokens).toEqual([{ fileId, tokenSize: 321 }]);
     expect(mockCtx.db.get).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("client stop-save routing provenance", () => {
+  it("cannot insert routing evidence through client usage", async () => {
+    const { saveAssistantMessage } = await import("../messages");
+    const insert = jest.fn<any>().mockResolvedValue("doc");
+    const ctx = {
+      auth: {
+        getUserIdentity: jest.fn<any>().mockResolvedValue({ subject: USER_ID }),
+      },
+      runQuery: jest.fn<any>().mockResolvedValue(true),
+      db: {
+        query: jest.fn().mockReturnValue({
+          withIndex: jest.fn().mockReturnValue({
+            first: jest.fn<any>().mockResolvedValue(null),
+          }),
+        }),
+        insert,
+      },
+    };
+    await saveAssistantMessage.handler(ctx as any, {
+      id: "client",
+      chatId: CHAT_ID,
+      role: "assistant",
+      parts: [{ type: "text", text: "ok" }],
+      finishReason: "stop",
+      usage: {
+        inputTokens: 5,
+        abliterationRouting: {
+          version: 1,
+          source: "moderation",
+          completed: true,
+        },
+      },
+    });
+    expect(insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({ usage: { inputTokens: 5 } }),
+    );
   });
 });

@@ -6,11 +6,13 @@ const MODERATION_TOKEN_LIMIT = 512;
 
 export type ModerationResult = {
   shouldUncensorResponse: boolean;
+  allowsAbliterationContinuation: boolean;
   moderationText: string;
 };
 
 const emptyModerationResult = (): ModerationResult => ({
   shouldUncensorResponse: false,
+  allowsAbliterationContinuation: false,
   moderationText: "",
 });
 
@@ -45,7 +47,7 @@ export async function getModerationResult(
     // Check if moderation results exist and are not empty
     if (!moderation?.results || moderation.results.length === 0) {
       console.error("Moderation API returned no results");
-      return { shouldUncensorResponse: false, moderationText: input };
+      return { ...emptyModerationResult(), moderationText: input };
     }
 
     const result = moderation.results[0];
@@ -60,7 +62,17 @@ export async function getModerationResult(
       isPaidUser,
     );
 
-    return { shouldUncensorResponse, moderationText: input };
+    const allowsAbliterationContinuation = determineShouldUncensorResponse(
+      moderationLevel,
+      hazardCategories,
+      isPaidUser,
+      0,
+    );
+    return {
+      shouldUncensorResponse,
+      allowsAbliterationContinuation,
+      moderationText: input,
+    };
   } catch (_error: any) {
     return emptyModerationResult();
   }
@@ -167,18 +179,26 @@ function truncateByTokens(content: string): string {
 function calculateModerationLevel(
   categoryScores: OpenAI.Moderations.Moderation.CategoryScores,
 ): number {
-  const maxScore = Math.max(
-    ...Object.values(categoryScores).filter(
-      (score): score is number => typeof score === "number",
-    ),
-  );
-  return Math.min(Math.max(maxScore, 0), 1);
+  const scores = Object.values(categoryScores);
+  if (
+    !scores.length ||
+    scores.some(
+      (score) =>
+        typeof score !== "number" ||
+        !Number.isFinite(score) ||
+        score < 0 ||
+        score > 1,
+    )
+  )
+    return NaN;
+  return Math.max(...scores);
 }
 
 function determineShouldUncensorResponse(
   moderationLevel: number,
   hazardCategories: string[],
   isPaidUser: boolean,
+  minModerationLevel = 0.1,
 ): boolean {
   const forbiddenCategories = [
     "sexual",
@@ -198,7 +218,6 @@ function determineShouldUncensorResponse(
   );
 
   // 0.1 is the minimum moderation level for the model to be used
-  const minModerationLevel = 0.1;
   const maxModerationLevel = isPaidUser ? 0.98 : 0.9;
   return (
     moderationLevel >= minModerationLevel &&

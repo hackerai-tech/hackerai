@@ -788,5 +788,7 @@ export async function processChatMessages({
     selectedModel,
     sandboxFiles,
     platformAuthorized: moderationResult.shouldUncensorResponse,
+    allowsAbliterationContinuation:
+      moderationResult.allowsAbliterationContinuation,
   };
 }

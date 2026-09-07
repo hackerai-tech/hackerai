@@ -207,4 +207,71 @@ describe("Abliteration stream telemetry", () => {
     expect(await consume(create(), model([finishPart]))).toEqual([finishPart]);
     capture.mockReset();
   });
+  it("persists actual successful Abliteration use after later baseline steps", async () => {
+    const telemetry = create();
+    const parts = [{ type: "text-delta", id: "t", delta: "ok" }, finishPart];
+    expect(telemetry.getRoutingMarker(true).completed).toBe(false);
+    await consume(telemetry, model(parts));
+    await consume(
+      telemetry,
+      model([{ type: "response-metadata", modelId: "baseline" }, ...parts]),
+      1,
+    );
+    expect(telemetry.getRoutingMarker(true)).toEqual({
+      version: 1,
+      source: "moderation",
+      completed: true,
+    });
+    expect(telemetry.getRoutingMarker(false).completed).toBe(false);
+    telemetry.setMessageId("retry");
+    expect(telemetry.getRoutingMarker(true).completed).toBe(false);
+  });
+  it("does not persist failed, empty, or fallback output as an independent seed", async () => {
+    for (const parts of [
+      [finishPart],
+      [
+        { type: "text-delta", id: "t", delta: "partial" },
+        { type: "error", error: "failure" },
+      ],
+      [
+        { type: "response-metadata", modelId: "baseline" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        finishPart,
+      ],
+    ]) {
+      const telemetry = create();
+      await consume(telemetry, model(parts));
+      expect(telemetry.getRoutingMarker(true).completed).toBe(false);
+    }
+  });
+  it("retains inherited provenance even when the provider succeeds", async () => {
+    const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+      assignment: {
+        key: ABLITERATED_EXPERIMENT_KEY,
+        variant: "test",
+        modelKey: "model-abliterated",
+        baselineModel: "model-deepseek-v4-flash-0731",
+        selectionSource: "history",
+        independentHistoryCount: 2,
+      },
+      messageId: "m",
+      chatId: "c",
+      mode: "agent",
+      subscription: "pro",
+    });
+    await consume(
+      telemetry,
+      model([{ type: "text-delta", id: "t", delta: "ok" }, finishPart]),
+    );
+    expect(telemetry.getRoutingMarker(true)).toEqual({
+      version: 1,
+      source: "history",
+      completed: true,
+    });
+    expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+      selection_source: "history",
+      moderation_eligible: false,
+      independent_history_count: 2,
+    });
+  });
 });
