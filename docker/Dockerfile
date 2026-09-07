@@ -201,12 +201,16 @@ ARG GITTOOLS_COMMIT=79743ed21b371f0388ce21c64ff041ad1fa67bb2
 
 RUN set -eux; \
     # JWT analysis tool
-    git clone --filter=blob:none https://github.com/ticarpi/jwt_tool.git /opt/jwt_tool && \
-    git -C /opt/jwt_tool checkout --detach "$JWT_TOOL_COMMIT" && \
+    git init /opt/jwt_tool && \
+    git -C /opt/jwt_tool remote add origin https://github.com/ticarpi/jwt_tool.git && \
+    git -C /opt/jwt_tool fetch --depth 1 origin "$JWT_TOOL_COMMIT" && \
+    git -C /opt/jwt_tool checkout --detach FETCH_HEAD && \
     if [ -f /opt/jwt_tool/jwt_tool.py ]; then chmod +x /opt/jwt_tool/jwt_tool.py; fi && \
     # Git repository dumper
-    git clone --filter=blob:none https://github.com/internetwache/GitTools.git /opt/gittools && \
-    git -C /opt/gittools checkout --detach "$GITTOOLS_COMMIT" && \
+    git init /opt/gittools && \
+    git -C /opt/gittools remote add origin https://github.com/internetwache/GitTools.git && \
+    git -C /opt/gittools fetch --depth 1 origin "$GITTOOLS_COMMIT" && \
+    git -C /opt/gittools checkout --detach FETCH_HEAD && \
     chmod +x /opt/gittools/Dumper/gitdumper.sh /opt/gittools/Extractor/extractor.sh && \
     ln -sf /opt/gittools/Dumper/gitdumper.sh /usr/local/bin/gitdumper && \
     ln -sf /opt/gittools/Extractor/extractor.sh /usr/local/bin/gitextractor
