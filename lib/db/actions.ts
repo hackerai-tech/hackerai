@@ -1,4 +1,9 @@
 import "server-only";
+import {
+  countIndependentAbliterationResponses,
+  type AbliterationHistoryEntry,
+  type AbliterationRoutingMarker,
+} from "@/lib/experiments/abliteration-history";
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
@@ -609,6 +614,7 @@ const databaseError = (
 
 type MessagesPageForBackendResult = {
   page: UIMessage[];
+  abliterationHistory?: AbliterationHistoryEntry[];
   fileTokens?: Array<{ fileId: Id<"files">; tokenSize: number }>;
   isDone: boolean;
   continueCursor: string | null;
@@ -977,6 +983,7 @@ export async function saveMessage({
   isHidden,
   wasAborted,
   wasPreemptiveTimeout,
+  abliterationRouting,
 }: {
   chatId: string;
   userId: string;
@@ -997,6 +1004,7 @@ export async function saveMessage({
   isHidden?: boolean;
   wasAborted?: boolean;
   wasPreemptiveTimeout?: boolean;
+  abliterationRouting?: AbliterationRoutingMarker;
 }) {
   let fixedParts = message.parts;
   let partsForSave = message.parts;
@@ -1076,8 +1084,11 @@ export async function saveMessage({
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
-    const usageForSave = sanitizeForConvexValue(usage) as
-      Record<string, unknown> | undefined;
+    const usageForSave = sanitizeForConvexValue(
+      message.role === "assistant" && abliterationRouting
+        ? { ...usage, abliterationRouting }
+        : usage,
+    ) as Record<string, unknown> | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -1366,6 +1377,7 @@ export async function getMessagesByChatId({
   let chat = undefined;
   let isNewChat = true;
   let existingMessages: UIMessage[] = [];
+  const abliterationHistory: AbliterationHistoryEntry[] = [];
 
   {
     // Check if chat exists first to avoid unnecessary Convex query
@@ -1409,6 +1421,7 @@ export async function getMessagesByChatId({
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
             page: UIMessage[];
+            abliterationHistory?: AbliterationHistoryEntry[];
             fileTokens?: Array<{
               fileId: Id<"files">;
               tokenSize: number;
@@ -1430,6 +1443,10 @@ export async function getMessagesByChatId({
             continueCursor: nextCursor,
           } = pageResult;
 
+          // Keep provenance outside model messages and token/summary projection.
+          // Regeneration may replace an answer, so it never inherits history.
+          if (!regenerate)
+            abliterationHistory.push(...(pageResult.abliterationHistory ?? []));
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
 
@@ -1589,6 +1606,8 @@ export async function getMessagesByChatId({
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,
+              independentAbliterationResponses:
+                countIndependentAbliterationResponses(abliterationHistory),
             };
           }
 
@@ -1598,6 +1617,8 @@ export async function getMessagesByChatId({
             chat,
             isNewChat,
             fileTokens: fileTokensFromLoop,
+            independentAbliterationResponses:
+              countIndependentAbliterationResponses(abliterationHistory),
           };
         }
       } catch (error) {
@@ -1716,7 +1737,13 @@ export async function getMessagesByChatId({
     );
   }
 
-  return { truncatedMessages, chat, isNewChat, fileTokens };
+  return {
+    truncatedMessages,
+    chat,
+    isNewChat,
+    fileTokens,
+    independentAbliterationResponses: 0,
+  };
 }
 
 export async function getUserCustomization({ userId }: { userId: string }) {

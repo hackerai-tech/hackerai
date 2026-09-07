@@ -1,3 +1,4 @@
+import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { SelectedModel, SubscriptionTier } from "@/types";
@@ -11,11 +12,14 @@ import {
 import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 
 export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
+export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   key: typeof ABLITERATED_EXPERIMENT_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
+  selectionSource?: "moderation" | "history";
+  independentHistoryCount?: number;
 };
 
 const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
@@ -83,6 +87,8 @@ export async function evaluateAbliteratedModel({
   subscription,
   selectedModelOverride,
   moderationEligible,
+  allowsAbliterationContinuation = false,
+  independentAbliterationResponses = 0,
   messages,
   limitRescue = false,
 }: {
@@ -92,16 +98,22 @@ export async function evaluateAbliteratedModel({
   subscription: SubscriptionTier;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
+  allowsAbliterationContinuation?: boolean;
+  independentAbliterationResponses?: number;
   messages: UIMessage[];
   limitRescue?: boolean;
 }): Promise<AbliteratedAssignment | undefined> {
+  const historyEligible =
+    allowsAbliterationContinuation &&
+    Number.isInteger(independentAbliterationResponses) &&
+    independentAbliterationResponses >= ABLITERATION_HISTORY_THRESHOLD;
   if (
     !posthog ||
     !isAbliterationConfigured() ||
     !isEligibleForAbliteratedModel({
       subscription,
       selectedModelOverride,
-      moderationEligible,
+      moderationEligible: moderationEligible || historyEligible,
       messages,
       limitRescue,
     })
@@ -120,7 +132,22 @@ export async function evaluateAbliteratedModel({
       },
     );
     if (variant !== "test" && variant !== "control") return undefined;
+    if (!moderationEligible) {
+      // History is a preference within parent treatment, never an authorization.
+      if (variant !== "test") return undefined;
+      const continuityEnabled = await posthog.getFeatureFlag(
+        ABLITERATION_CONTINUITY_FLAG,
+        userId,
+        {
+          sendFeatureFlagEvents: false,
+          personProperties: { subscription, subscription_tier: subscription },
+        },
+      );
+      if (continuityEnabled !== true) return undefined;
+    }
     return {
+      selectionSource: moderationEligible ? "moderation" : "history",
+      independentHistoryCount: independentAbliterationResponses,
       key: ABLITERATED_EXPERIMENT_KEY,
       variant,
       modelKey:

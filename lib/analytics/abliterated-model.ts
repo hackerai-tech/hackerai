@@ -1,3 +1,4 @@
+import type { AbliterationRoutingMarker } from "@/lib/experiments/abliteration-history";
 import {
   wrapLanguageModel,
   type LanguageModel,
@@ -21,6 +22,8 @@ type StreamPart =
 export class AbliteratedModelTelemetry {
   private sequence = 0;
   private exposed = false;
+  private successfulAbliterationGeneration = false;
+  private selectionSource: "moderation" | "history";
   private readonly startedAt = Date.now();
   private readonly properties: Record<string, string | number | boolean>;
 
@@ -36,6 +39,7 @@ export class AbliteratedModelTelemetry {
       selectedModelOverride?: SelectedModel;
     },
   ) {
+    this.selectionSource = args.assignment.selectionSource ?? "moderation";
     this.properties = {
       experiment_key: args.assignment.key,
       experiment_variant: args.assignment.variant,
@@ -49,7 +53,10 @@ export class AbliteratedModelTelemetry {
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
       generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
-      moderation_eligible: true,
+      moderation_eligible: this.selectionSource === "moderation",
+      selection_source: this.selectionSource,
+      independent_history_count: args.assignment.independentHistoryCount ?? 0,
+      routing_version: 2,
       assigned_platform_authorization_context: isAbliterationModel(
         args.assignment.modelKey,
       )
@@ -79,7 +86,16 @@ export class AbliteratedModelTelemetry {
   setMessageId(messageId: string) {
     if (this.properties.message_id === messageId) return;
     this.properties.message_id = messageId;
+    this.successfulAbliterationGeneration = false;
     this.capture("abliterated_model_message_linked", {});
+  }
+
+  getRoutingMarker(completedResponse: boolean): AbliterationRoutingMarker {
+    return {
+      version: 1,
+      source: this.selectionSource,
+      completed: completedResponse && this.successfulAbliterationGeneration,
+    };
   }
 
   wrap(model: LanguageModel, stepIndex: number): LanguageModel {
@@ -115,6 +131,12 @@ export class AbliteratedModelTelemetry {
           ) => {
             if (terminal) return;
             terminal = true;
+            if (
+              outcome === "completed" &&
+              isAbliterationModel(responseModel) &&
+              isAbliterationModel(model.modelId)
+            )
+              this.successfulAbliterationGeneration = true;
             this.capture("abliterated_model_provider_outcome", {
               ...common(),
               outcome,
