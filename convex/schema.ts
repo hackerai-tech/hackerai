@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
   researchCohortReportValidator,
@@ -276,6 +277,10 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_is_attached", ["is_attached"])
     .index("by_s3_key", ["s3_key"]),
+
+  task_outcome_surveys: defineTable(taskOutcomeFields)
+    .index("by_user_id", ["user_id"])
+    .index("by_request_id", ["request_id"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),

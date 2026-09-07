@@ -15,6 +15,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "messages",
     "files",
     "feedback",
+    "task_outcome_surveys",
     "notes",
     "user_customization",
     "extra_usage",
@@ -411,6 +412,11 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
+  const taskOutcomeSurveysBatch = await collectByIndexBatch<
+    Doc<"task_outcome_surveys">
+  >(ctx, budget, "task_outcome_surveys", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const notesBatch = await collectByIndexBatch<Doc<"notes">>(
     ctx,
     budget,
@@ -493,6 +499,7 @@ async function cleanupUserDataForUser(
     chatsBatch,
     filesBatch,
     notesBatch,
+    taskOutcomeSurveysBatch,
     customizationBatch,
     messagesBatch,
     localSandboxTokensBatch,
@@ -537,6 +544,13 @@ async function cleanupUserDataForUser(
     stats.hasMore = true;
   }
 
+  await deleteDocs(
+    ctx,
+    stats,
+    "task_outcome_surveys",
+    taskOutcomeSurveysBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
