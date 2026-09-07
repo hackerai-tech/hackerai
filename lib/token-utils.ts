@@ -1,7 +1,7 @@
 import { UIMessage, UIMessagePart } from "ai";
 import {
   countTokens as countGptTokens,
-  encode as encodeGptTokens,
+  encodeGenerator,
   decode,
 } from "gpt-tokenizer";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -15,6 +15,20 @@ export {
 } from "@/lib/token-limits";
 
 const DISALLOWED_SPECIAL_TOKEN_MESSAGE = "Disallowed special token";
+
+/** Collects exact BPE tokens without spreading a large batch into call arguments. */
+const encodeGptTokens = (
+  content: string,
+  options?: Parameters<typeof encodeGenerator>[1],
+): number[] => {
+  const tokens: number[] = [];
+  for (const batch of encodeGenerator(content, options)) {
+    // A single tokenizer split can exceed the JavaScript argument-count limit.
+    for (const token of batch) tokens.push(token);
+  }
+  return tokens;
+};
+
 const TOKENIZE_SPECIAL_TOKENS_AS_TEXT: NonNullable<
   Parameters<typeof encodeGptTokens>[1]
 > = {
