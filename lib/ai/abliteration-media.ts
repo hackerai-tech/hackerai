@@ -1,10 +1,15 @@
-import type { ModelMessage } from "ai";
+import type { LanguageModelMiddleware, ModelMessage } from "ai";
+
+type ProviderPrompt = Parameters<
+  NonNullable<LanguageModelMiddleware["wrapStream"]>
+>[0]["params"]["prompt"];
+export type AbliterationImageMessages = ModelMessage[] | ProviderPrompt;
 
 export const ABLITERATION_MAX_IMAGES_PER_REQUEST = 4;
 
 /** Counts attachments and tool images together at the provider request boundary. */
 export function exceedsAbliterationImageLimit(
-  messages: ModelMessage[],
+  messages: AbliterationImageMessages,
 ): boolean {
   let imageCount = 0;
   const isImage = (part: { type: string; mediaType?: string }) =>

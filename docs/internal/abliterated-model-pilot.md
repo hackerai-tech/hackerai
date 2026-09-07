@@ -31,6 +31,15 @@ the multimodal base `abliterated-model` for every selector, including Pro and Ma
 PDFs, files without an image media type, and other unsupported file inputs retain
 their original HackerAI route.
 
+Requests with more than four provider-visible images use batched auxiliary
+descriptions/OCR. Smaller requests keep native images unless Abliteration rejects
+them before streaming with `media_dimensions_too_large` (413) or
+`media_type_unsupported` (415). Those two rejections activate the same OCR path
+and one retry on the selected Abliteration model. Original stored images remain
+unchanged. Failed OCR is not restarted; moderation blocks, generic errors and
+errors after streaming starts do not activate this recovery. Provider-attempt
+telemetry retains the rejection and the subsequent outcome separately.
+
 Explicit free-allowance rescue requests are excluded before assignment. Eligibility
 is recorded before model-priced budget checks so cost-induced blocking cannot
 silently remove treatment users from the denominator.
