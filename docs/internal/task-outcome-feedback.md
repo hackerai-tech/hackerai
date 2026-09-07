@@ -61,7 +61,9 @@ Flag `task_outcome_feedback_v1` is independent from provider assignment:
 | Preview     | hackerai-dev / 401167 | 869527  | Active, 100% eligible test population         |
 | Production  | HackerAI / 144137     | 869525  | Active, only designated internal test account |
 
-Application additionally requires the existing paid/moderation experiment.
+Application additionally requires assignment to the existing moderation-gated
+provider experiment. Free users are eligible only in Agent mode; this does not
+expand the independent Production feedback allowlist.
 Selection checks the server flag; the browser displays only server-reserved
 invitations because browser feature-flag fetching is disabled application-wide.
 Missing or failed evaluation suppresses selection. Turning off the flag stops new

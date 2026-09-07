@@ -31,6 +31,7 @@ async function main() {
       ? "model-deepseek-v4-pro-0813"
       : "model-deepseek-v4-flash-0731",
     subscription: "pro",
+    mode: "agent",
     selectedModelOverride: useLargeV2 ? "hackerai-pro" : "hackerai-standard",
     moderationEligible: true,
     messages: [

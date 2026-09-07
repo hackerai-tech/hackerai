@@ -493,6 +493,7 @@ export const createChatHandler = () => {
         userId,
         selectedModel,
         subscription,
+        mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         allowsAbliterationContinuation,
@@ -2226,6 +2227,11 @@ export const createChatHandler = () => {
                                       generationTimeMs:
                                         Date.now() - fallbackStartTime,
                                       finishReason: state.streamFinishReason,
+                                      abliterationRouting:
+                                        abliteratedTelemetry?.getRoutingMarker(
+                                          !retryAborted &&
+                                            state.streamFinishReason === "stop",
+                                        ),
                                     });
                                   }
 

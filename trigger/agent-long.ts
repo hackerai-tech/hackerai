@@ -2669,6 +2669,7 @@ export const agentLongTask = task({
         userId,
         selectedModel,
         subscription,
+        mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         allowsAbliterationContinuation,
@@ -4521,6 +4522,9 @@ export const agentLongTask = task({
                   generationStartedAt: retryStartTime,
                   generationTimeMs: fallbackGenerationTimeMs,
                   finishReason: state.streamFinishReason,
+                  abliterationRouting: abliteratedTelemetry?.getRoutingMarker(
+                    !retryAborted && state.streamFinishReason === "stop",
+                  ),
                 });
               }
               writer.write({
