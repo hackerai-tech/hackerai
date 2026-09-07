@@ -3,6 +3,7 @@ import type { AbliteratedAssignment } from "../experiments/abliterated-model";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "../db/convex-client";
 import { taskOutcomeProperties } from "../analytics/task-outcome";
+import { ABLITERATION_MAX_GENERATION_STEPS } from "../experiments/abliterated-model-steps";
 import { TASK_OUTCOME_FLAG } from "./task-outcome";
 
 export async function selectTaskOutcomeSurvey(args: {
@@ -40,6 +41,8 @@ export async function selectTaskOutcomeSurvey(args: {
         assigned_model: assignment.modelKey,
         mode: args.mode,
         subscription_tier: args.subscription,
+        routing_version: `generation_steps_${ABLITERATION_MAX_GENERATION_STEPS}_v1`,
+        generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
         release:
           args.release ||
           process.env.VERCEL_GIT_COMMIT_SHA ||

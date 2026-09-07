@@ -70,6 +70,8 @@ describe("survey selection", () => {
       expect.anything(),
       expect.objectContaining({
         experiment_variant: "control",
+        generation_step_limit: 1,
+        routing_version: "generation_steps_1_v1",
         request_id: "request",
       }),
     );

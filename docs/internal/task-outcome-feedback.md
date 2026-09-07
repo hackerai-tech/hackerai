@@ -1,6 +1,6 @@
 # Task outcome feedback (HAC-99)
 
-Measures user-reported task success for the **whole three-step routing policy**,
+Measures user-reported task success for the **whole assigned routing policy**,
 including its baseline continuation and recovery. It cannot isolate the quality
 of an individual Abliteration call. Existing provider assignment is unchanged.
 
@@ -36,17 +36,24 @@ UUIDs for retry deduplication. Browser analytics can be blocked: reconcile answe
 counts with durable Convex records before an experiment conclusion.
 
 PostHog events: `task_outcome_survey_selected`, `_shown`, `_dismissed`, `_answered`,
-`_reason`. All have survey_key/version, experiment_key/variant/request_id,
+`_reason`. All have survey_key, survey_version, experiment_key, experiment_variant,
+experiment_request_id,
 message_id, chat_id, baseline_model, assigned_model, mode, subscription_tier and
 release; answered/reason add only their structured codes. Client events include `survey_ui_version: 3` to distinguish this presentation
 from earlier presentations. Version 3 uses individual outlined choices, a compact
 desktop row and a wrapped mobile layout; it removes the Not checked choice.
-Historical Not checked records remain readable. No prompts, target
+Historical Not checked records remain readable. New reservations persist their
+routing version and generation-step limit from the worker that selected them.
+The current policy is one Abliteration step (PR #1277); older reservations without
+these fields retain the original three-step attribution. Separate routing versions
+in the readout, including across delayed answers and frontend deployments. No prompts, target
 URLs, findings, code, credentials or free-text feedback.
 
 ## Rollout and measurement
 
-Owner Ross Manko; first review 2026-09-14, cleanup within 60 days or experiment end.
+Owner Ross Manko; first review 2026-09-14. Full removal is tracked in
+[HAC-101](https://linear.app/hackerai/issue/HAC-101), due at experiment closeout
+with a latest cleanup review of 2026-11-06. Do not close HAC-99 until removal is verified.
 Flag `task_outcome_feedback_v1` is independent from provider assignment:
 
 | Environment | PostHog project       | Flag ID | Initial state                                 |
@@ -103,3 +110,20 @@ Desktop and 390px browser checks verified the real prompt layout. A disposable
 local fixture exercised the UI against that backend with synthetic identity;
 its server selection and client events target development PostHog project 401167.
 This does not establish the deployed Preview or Production chat/worker journey.
+
+## Required removal at experiment closeout
+
+This survey is temporary even if Abliteration becomes the default provider.
+HAC-101 must remove the UI and Messages subscription, selection and fallback
+linkage in Ask/Agent, analytics captures, shared helpers, Convex endpoints and
+validators, generated API references and survey-specific tests. Disable the flag
+in Preview 401167 and Production 144137 first; this alone is not cleanup because
+existing reservations can still show for 48 hours.
+
+Preserve the final aggregate readout. Drain old clients/runs, delete survey rows
+in bounded batches from each independently verified authorized deployment, then
+remove the table/indexes and user-deletion integration. Remove/archive both flags
+and verify Vercel and Trigger in each environment. Normal chat completion/reload
+must no longer render feedback, query the survey endpoints, or emit its events.
+Existing manual thumbs feedback remains a separate feature. Link the removal PR
+and environment readbacks before closing HAC-101 and HAC-99.

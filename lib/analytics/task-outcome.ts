@@ -11,14 +11,18 @@ export function taskOutcomeProperties(row: {
   mode: string;
   subscription_tier: string;
   release: string;
+  routing_version?: string;
+  generation_step_limit?: number;
   answer?: string;
   reason?: string;
 }) {
   return {
     survey_key: TASK_OUTCOME_FLAG,
     survey_version: 1,
-    routing_version: "first_three_generation_steps_v1",
-    generation_step_limit: 3,
+    // Legacy reservations were created under the three-step policy. Never
+    // relabel them with the limit of a newer frontend deployment.
+    routing_version: row.routing_version ?? "first_three_generation_steps_v1",
+    generation_step_limit: row.generation_step_limit ?? 3,
     experiment_key: "abliterated_paid_moderated_v1",
     experiment_variant: row.experiment_variant,
     experiment_request_id: row.request_id,

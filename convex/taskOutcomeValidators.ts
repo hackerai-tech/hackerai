@@ -27,6 +27,9 @@ export const taskOutcomeContext = {
   mode: v.union(v.literal("ask"), v.literal("agent")),
   subscription_tier: v.string(),
   release: v.string(),
+  // Optional for surveys reserved by older deployed clients/workers.
+  routing_version: v.optional(v.string()),
+  generation_step_limit: v.optional(v.number()),
 };
 export const taskOutcomeFields = {
   ...taskOutcomeContext,
