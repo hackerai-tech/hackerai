@@ -4,7 +4,7 @@ import {
 } from "../abliterated-model-steps";
 
 describe("resolveAbliterationModelForGenerationStep", () => {
-  it.each([0, 1, 2])(
+  it.each([0])(
     "uses Abliteration for generation step index %i",
     (stepIndex) => {
       expect(
@@ -17,7 +17,7 @@ describe("resolveAbliterationModelForGenerationStep", () => {
     },
   );
 
-  it.each([ABLITERATION_MAX_GENERATION_STEPS, 499])(
+  it.each([ABLITERATION_MAX_GENERATION_STEPS, 2, 3, 499])(
     "uses OpenRouter for generation step index %i",
     (stepIndex) => {
       expect(

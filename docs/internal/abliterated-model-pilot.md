@@ -16,9 +16,9 @@ Auto uses the base model because its baseline is Standard. The existing moderati
 API must return `shouldUncensorResponse=true`. This signal selects the experiment;
 it does not change moderation thresholds, tool approvals, or authorization gates.
 
-Abliteration is limited to model-generation steps one through three within each
+Abliteration is limited to the first model-generation step within each
 Ask response or Agent run. The shared AI SDK loop uses the assigned Abliteration
-model for zero-based step indexes 0–2, then switches step 4 and every later step to
+model for zero-based step index 0, then switches step 2 and every later step to
 the request's saved OpenRouter baseline. The counter resets for each new response
 or run; an Agent run can continue through its existing 500-step cap. Provider retry
 attempts do not advance the completed-step counter. An Abliteration provider error
@@ -122,6 +122,13 @@ replacement message IDs. Billing and later activity join by authenticated
 
 ## Readout protocol
 
+The one-step phase emits `generation_step_limit=1` on eligibility and provider
+events; the earlier three-step phase emitted `3`. Scope each readout by that
+property on deduplicated eligible requests, then link all outcomes by
+`experiment_request_id`. Compare control/test within the same phase, and do not
+pool phases or treat before/after changes as randomized evidence. Production
+activation starts with the first verified one-step run, not the Git merge time.
+
 1. Freeze the rollout definition and record the first production exposure date.
    Compare randomized control/test users only. Do not compare treatment with all
    unassigned users. Exclude internal tests and report any assignment crossover.
@@ -192,9 +199,9 @@ For release verification on the verified Preview custom URL:
    model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
    Unit tests cover deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
-   In Direct Ask and Agent, force one response/run through at least four sequential
-   model-generation steps. Confirm steps 1–3 use the assigned Abliteration route and
-   step 4 onward uses the exact OpenRouter baseline without flag re-evaluation. Start
+   In Direct Ask and Agent, force one response/run through at least three sequential
+   model-generation steps. Confirm step 1 uses the assigned Abliteration route and
+   step 2 onward uses the exact OpenRouter baseline without flag re-evaluation. Start
    a new response/run and confirm its generation-step counter starts again at one.
 3. Force the flag off/control and a provider outage. Verify fallback completes,
    assignment stays unchanged in outcomes/costs, replacement messages can be rated,
