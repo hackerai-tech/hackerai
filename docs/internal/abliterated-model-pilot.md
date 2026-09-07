@@ -8,7 +8,7 @@ so base and Large v2 traffic can be checked independently.
 
 ## Routing contract
 
-Paid requests in Ask and Agent may use an Abliteration model at
+Paid requests in Ask and Agent, and free requests in Agent only, may use an Abliteration model at
 `https://api.abliteration.ai/v1`. Auto/Standard routes use `abliterated-model`;
 explicit HackerAI Pro and Max routes use `abliterated-model-large-v2`. Ultra Ask
 Auto also uses Large v2 because its current baseline is Pro, while Ultra Agent
@@ -33,7 +33,10 @@ Explicit free-allowance rescue requests are excluded before assignment. Eligibil
 is recorded before model-priced budget checks so cost-induced blocking cannot
 silently remove treatment users from the denominator.
 
-Free subscriptions and paid daily free-allowance rescue requests are excluded.
+Free Ask and paid daily free-allowance rescue requests are excluded. Free Agent
+treatment uses the base model and preserves its exact free OpenRouter baseline
+for control, later steps and provider recovery. Existing free quota/concurrency
+checks and local-sandbox entitlement still apply; this does not grant cloud access.
 Every control retains its exact existing baseline. Analyze provider model,
 selector, subscription, input modality, and mode separately as well as overall.
 
@@ -64,7 +67,10 @@ Definitions read back on 2026-09-06 after Production enrollment was expanded.
 | Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1 | Active; 100% of eligible paid users, forced test                         |
 | Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1 | Active; 100% enrollment, 50/50 control/test, approximately 50% treatment |
 
-Both definitions target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
+Paid groups target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
+The free Agent extension adds a separate `subscription_tier=free` group, with the
+mode enforced in code before any flag evaluation. The legacy flag key is retained
+to preserve stable assignment and analytics joins. Free Ask never evaluates it.
 The server supplies the current trusted subscription and enforces the remaining
 eligibility checks. Production evaluates the explicit test-user override first,
 then the broader paid-user experiment group. Keep override traffic out of the
@@ -194,7 +200,7 @@ For release verification on the verified Preview custom URL:
    request. Confirm moderation eligibility, streaming completion, model attribution,
    one exposure, and reload persistence. Repeat in Agent with one bounded tool call.
 2. Confirm benign/unflagged requests, prohibited-category moderation results,
-   moderation failure, free users, PDFs, other unsupported files, and free-allowance
+   moderation failure, free Ask users, PDFs, other unsupported files, and free-allowance
    rescue keep their baseline routes. Confirm image requests use the base Abliteration
    model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
    Unit tests cover deterministic gates; use approved synthetic fixtures for
@@ -217,3 +223,31 @@ References: [provider models](https://docs.abliteration.ai/models),
 [AI SDK integration](https://docs.abliteration.ai/integrations/vercel-ai-sdk),
 [PostHog exposure semantics](https://posthog.com/docs/experiments/exposures),
 [PostHog retention](https://posthog.com/docs/product-analytics/retention).
+
+## Free Agent pilot
+
+Free Agent rollout is governed by HAC-99. Preview targets all eligible free Agent
+testers with test assignment. The initial Production free group is 10% enrollment
+with the existing 50/50 control/test split (approximately 5% treatment); the other
+90% retain baseline without experiment assignment. Existing paid groups and their
+internal override are unchanged. These are the planned settings; record verified
+activation and runtime evidence in HAC-99 before calling the pilot live.
+
+Compare free control/test users separately from paid users and from earlier routing
+phases. Prioritize useful results, linked thumbs, and task-outcome ratings only
+where the separate survey flag already permits them. Missing ratings are unknown.
+Track completion, return usage, free-to-paid conversion, quota exhaustion, provider
+fallbacks, tool failures and cost per completed task. Paid churn does not apply to
+free users. Do not widen the survey flag as part of the provider rollout.
+
+Review the free cohort operationally on 2026-09-08 and review quality on 2026-09-14;
+keep uncertainty and mature retention windows explicit. Remove the free flag group
+to roll back just this cohort. No automatic ramp. Full temporary survey removal
+at experiment conclusion remains mandatory under HAC-101.
+
+Verify a free Agent test and control on the designated Preview: completed first
+step, exact free baseline on step two, provider failure recovery, original request
+attribution, unchanged quotas and sandbox permissions, and reload persistence.
+Also verify free Ask never evaluates this experiment and missing/off/unknown flags
+retain baseline. Use a free test account with a connected local sandbox, then
+verify a bounded production free-cohort run before expansion.

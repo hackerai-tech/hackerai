@@ -2668,6 +2668,7 @@ export const agentLongTask = task({
         userId,
         selectedModel,
         subscription,
+        mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         messages: processedMessages,

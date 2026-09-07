@@ -492,6 +492,7 @@ export const createChatHandler = () => {
         userId,
         selectedModel,
         subscription,
+        mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
         messages: processedMessages,

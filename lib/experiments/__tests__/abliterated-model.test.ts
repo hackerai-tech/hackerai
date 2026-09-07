@@ -94,6 +94,7 @@ describe("moderation-gated Abliteration assignment", () => {
     ] as unknown as UIMessage[];
   const defaults = {
     userId: "u",
+    mode: "ask" as const,
     subscription: "pro" as SubscriptionTier,
     selectedModel: "model-deepseek-v4-flash-0731",
     moderationEligible: true,
@@ -155,6 +156,68 @@ describe("moderation-gated Abliteration assignment", () => {
     ).toBeUndefined();
     expect(getFeatureFlag).not.toHaveBeenCalled();
   });
+
+  it.each(["test", "control"] as const)(
+    "routes free Agent %s assignments while retaining their original free baseline",
+    async (variant) => {
+      const getFeatureFlag = jest.fn().mockResolvedValue(variant);
+      const result = await evaluateAbliteratedModel({
+        ...defaults,
+        mode: "agent",
+        subscription: "free",
+        selectedModel: "agent-model-free",
+        posthog: { getFeatureFlag },
+      });
+      expect(result).toMatchObject({
+        variant,
+        modelKey:
+          variant === "test" ? ABLITERATION_MODEL_KEY : "agent-model-free",
+        baselineModel: "agent-model-free",
+      });
+      expect(getFeatureFlag).toHaveBeenCalledWith(
+        ABLITERATED_EXPERIMENT_KEY,
+        "u",
+        {
+          sendFeatureFlagEvents: false,
+          personProperties: { subscription: "free", subscription_tier: "free" },
+        },
+      );
+    },
+  );
+  it.each([
+    { moderationEligible: false },
+    { limitRescue: true },
+    { messages: [] },
+    {
+      messages: [
+        {
+          id: "pdf",
+          role: "user" as const,
+          parts: [
+            {
+              type: "file" as const,
+              mediaType: "application/pdf",
+              url: "https://example.test/lab.pdf",
+            },
+          ],
+        },
+      ],
+    },
+  ])("keeps free Agent safeguards: %j", async (overrides) => {
+    const getFeatureFlag = jest.fn().mockResolvedValue("test");
+    expect(
+      await evaluateAbliteratedModel({
+        ...defaults,
+        mode: "agent",
+        subscription: "free",
+        selectedModel: "agent-model-free",
+        ...overrides,
+        posthog: { getFeatureFlag },
+      }),
+    ).toBeUndefined();
+    expect(getFeatureFlag).not.toHaveBeenCalled();
+  });
+
   it("keeps a request at the Abliteration image limit eligible", async () => {
     const getFeatureFlag = jest.fn().mockResolvedValue("test");
 

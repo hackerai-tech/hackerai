@@ -1,6 +1,6 @@
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
-import type { SelectedModel, SubscriptionTier } from "@/types";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import type { ModelName } from "@/lib/ai/providers";
 import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
 import {
@@ -56,12 +56,14 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
 
 export function isEligibleForAbliteratedModel({
   subscription,
+  mode,
   selectedModelOverride,
   moderationEligible,
   messages,
   limitRescue = false,
 }: {
   subscription: SubscriptionTier;
+  mode: ChatMode;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   messages: UIMessage[];
@@ -69,7 +71,7 @@ export function isEligibleForAbliteratedModel({
 }): boolean {
   return (
     !limitRescue &&
-    subscription !== "free" &&
+    (subscription !== "free" || mode === "agent") &&
     moderationEligible &&
     messages.length > 0 &&
     !messagesContainUnsupportedFiles(messages)
@@ -81,6 +83,7 @@ export async function evaluateAbliteratedModel({
   userId,
   selectedModel,
   subscription,
+  mode,
   selectedModelOverride,
   moderationEligible,
   messages,
@@ -90,6 +93,7 @@ export async function evaluateAbliteratedModel({
   userId: string;
   selectedModel: ModelName;
   subscription: SubscriptionTier;
+  mode: ChatMode;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
   messages: UIMessage[];
@@ -100,6 +104,7 @@ export async function evaluateAbliteratedModel({
     !isAbliterationConfigured() ||
     !isEligibleForAbliteratedModel({
       subscription,
+      mode,
       selectedModelOverride,
       moderationEligible,
       messages,
