@@ -111,7 +111,9 @@ export function TaskOutcomeFeedbackPrompt({
     };
     const observer = new IntersectionObserver(
       (entries) => {
-        intersecting = entries.some((entry) => entry.isIntersecting);
+        intersecting = entries.some(
+          (entry) => entry.isIntersecting && entry.intersectionRatio >= 1,
+        );
         show();
       },
       { threshold: 1 },
@@ -136,7 +138,9 @@ export function TaskOutcomeFeedbackPrompt({
     };
     const observer = new IntersectionObserver(
       (entries) => {
-        visible = entries.some((entry) => entry.isIntersecting);
+        visible = entries.some(
+          (entry) => entry.isIntersecting && entry.intersectionRatio >= 0.5,
+        );
         capture();
       },
       { threshold: 0.5 },

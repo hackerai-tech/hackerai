@@ -31,10 +31,16 @@ const survey: Doc<"task_outcome_surveys"> = {
   last_interaction_at: 100,
   expires_at: Date.now() + 86400000,
 };
-let observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void>;
-const inView = () =>
+let observers: Array<
+  (
+    entries: Array<{ isIntersecting: boolean; intersectionRatio: number }>,
+  ) => void
+>;
+const inView = (intersectionRatio = 1) =>
   act(async () => {
-    observers.forEach((callback) => callback([{ isIntersecting: true }]));
+    observers.forEach((callback) =>
+      callback([{ isIntersecting: true, intersectionRatio }]),
+    );
   });
 describe("unobtrusive task feedback", () => {
   beforeEach(() => {
@@ -98,6 +104,21 @@ describe("unobtrusive task feedback", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     expect(screen.getByRole("group")).toBeTruthy();
+  });
+  it("requires a fully visible footer to claim and half the question to count a view", async () => {
+    const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
+    render(<TaskOutcomeFeedbackPrompt survey={survey} record={record} />);
+    await inView(0);
+    await inView(0.5);
+    expect(record).not.toHaveBeenCalled();
+    await inView(1);
+    expect(record).toHaveBeenCalledTimes(1);
+    await inView(0.2);
+    expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
+    await inView(0.5);
+    expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "task_outcome_survey_shown" }),
+    );
   });
   it("does not show a prompt already claimed on another device or reload", async () => {
     const record = jest.fn(async () => null);
