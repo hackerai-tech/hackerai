@@ -44,6 +44,7 @@ const createSdkSandbox = () => ({
     stat: jest.fn(),
   },
   extend: jest.fn(),
+  readiness: jest.fn(async () => ({ ready: true, state: "running" })),
   refresh: jest.fn(),
   getHost: jest.fn(),
   usage: jest.fn(async () => ({ estimated_cost_cents: 0 })),
@@ -87,7 +88,7 @@ describe("MIOSA sandbox adapter", () => {
         diskSizeMb: 20480,
         persistent: true,
         idleTimeoutSec: 420,
-        waitUntilReady: true,
+        waitUntilReady: false,
         externalUserId: expect.stringMatching(/^hackerai-[a-f0-9]{24}$/),
       }),
     );
@@ -115,6 +116,44 @@ describe("MIOSA sandbox adapter", () => {
       "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
     );
     expect(mockGetOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("polls and refreshes a resuming workspace before initializing its tools", async () => {
+    const sdk = createSdkSandbox();
+    sdk.state = "resuming";
+    sdk.refresh.mockImplementation(async () => {
+      expect(sdk.exec.stream).not.toHaveBeenCalled();
+      sdk.state = "running";
+    });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    await ensureMiosaSandboxConnection({
+      userID: "user-1",
+      setSandbox: jest.fn(),
+    });
+    expect(mockGetOrCreate.mock.calls[0][0]).toMatchObject({
+      waitUntilReady: false,
+    });
+    expect(mockGetOrCreate.mock.calls[0][0]).not.toHaveProperty(
+      "waitTimeoutSec",
+    );
+    expect(sdk.readiness).toHaveBeenCalledTimes(1);
+    expect(sdk.refresh).toHaveBeenCalledTimes(1);
+    expect(sdk.exec.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves acquisition errors without initializing or publishing the sandbox", async () => {
+    const sdk = createSdkSandbox();
+    const error = new Error("readiness request failed");
+    sdk.readiness.mockRejectedValue(error);
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const setSandbox = jest.fn();
+    const onBoot = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection({ userID: "user-1", setSandbox, onBoot }),
+    ).rejects.toBe(error);
+    expect(sdk.exec.stream).not.toHaveBeenCalled();
+    expect(setSandbox).not.toHaveBeenCalled();
+    expect(onBoot).not.toHaveBeenCalled();
   });
 
   it("checks new enrollment only after the canonical workspace is confirmed absent", async () => {
@@ -176,14 +215,14 @@ describe("MIOSA sandbox adapter", () => {
     expect(mockGetOrCreate).not.toHaveBeenCalled();
   });
 
-  it("does not initialize or expose a sandbox that is not running", async () => {
+  it("does not initialize or expose a terminally failed sandbox", async () => {
     const sdk = createSdkSandbox();
-    sdk.state = "provisioning";
+    sdk.state = "error";
     mockGetOrCreate.mockResolvedValue(sdk);
     const setSandbox = jest.fn();
     await expect(
       ensureMiosaSandboxConnection({ userID: "user-1", setSandbox }),
-    ).rejects.toThrow("non-running state: provisioning");
+    ).rejects.toThrow("terminal state: error");
     expect(setSandbox).not.toHaveBeenCalled();
     expect(sdk.exec.stream).not.toHaveBeenCalled();
   });

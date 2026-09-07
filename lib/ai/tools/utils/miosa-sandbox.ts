@@ -5,6 +5,7 @@ import type {
 } from "@miosa/sdk";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { createMiosaFiles } from "./miosa-files";
+import { waitForMiosaReadiness } from "./miosa-readiness";
 
 const MIOSA_SANDBOX_VERSION = "v2";
 const MIOSA_ACTIVITY_TIMEOUT_SECONDS = 24 * 60 * 60;
@@ -389,13 +390,13 @@ export async function ensureMiosaSandboxConnection(
     keepLastSnapshots: 1,
     externalWorkspaceId: externalUserId,
     externalUserId,
-    waitUntilReady: true,
-    waitTimeoutSec: 60,
+    waitUntilReady: false,
     metadata: {
       provider: "hackerai",
       sandboxVersion: MIOSA_SANDBOX_VERSION,
     },
   });
+  await waitForMiosaReadiness(sdkSandbox);
   if (sdkSandbox.state !== "running") {
     throw new Error(
       `MIOSA readiness returned non-running state: ${sdkSandbox.state}`,
