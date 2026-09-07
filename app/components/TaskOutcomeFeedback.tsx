@@ -11,7 +11,6 @@ import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
 import {
   TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_REASONS,
-  TASK_OUTCOME_READ_DELAY_MS,
   reasonsForAnswer,
   type TaskOutcomeAnswer,
   type TaskOutcomeReason,
@@ -21,7 +20,7 @@ type Survey = Doc<"task_outcome_surveys">;
 function captureSurvey(event: string, row: Survey) {
   captureQueuedAuthenticatedEvent({
     event: `task_outcome_survey_${event}`,
-    properties: taskOutcomeProperties(row),
+    properties: { ...taskOutcomeProperties(row), survey_ui_version: 2 },
     dedupeKey: `${row._id}:${event}`,
   });
 }
@@ -93,38 +92,35 @@ export function TaskOutcomeFeedbackPrompt({
     const element = anchor.current;
     if (!element || typeof IntersectionObserver === "undefined") return;
     let intersecting = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const schedule = () => {
-      clearTimeout(timer);
-      if (!intersecting || document.visibilityState !== "visible") return;
-      timer = setTimeout(() => {
-        if (survey.expires_at <= Date.now() || claimed.current) return;
-        claimed.current = true;
-        void record({ id: survey._id, action: "shown" })
-          .then((row) => {
-            if (mounted.current && row) setVisibleSurvey(row);
-          })
-          .catch(() => {
-            /* Fail closed; never interrupt the chat. */
-          });
-      }, TASK_OUTCOME_READ_DELAY_MS);
+    const show = () => {
+      if (
+        !intersecting ||
+        document.visibilityState !== "visible" ||
+        survey.expires_at <= Date.now() ||
+        claimed.current
+      )
+        return;
+      claimed.current = true;
+      void record({ id: survey._id, action: "shown" })
+        .then((row) => {
+          if (mounted.current && row) setVisibleSurvey(row);
+        })
+        .catch(() => {
+          /* Fail closed; never interrupt the chat. */
+        });
     };
     const observer = new IntersectionObserver(
       (entries) => {
         intersecting = entries.some((entry) => entry.isIntersecting);
-        schedule();
+        show();
       },
       { threshold: 1 },
     );
     observer.observe(element);
-    document.addEventListener("visibilitychange", schedule);
-    // Give composing users another quiet interval instead of asking mid-typing.
-    document.addEventListener("input", schedule);
+    document.addEventListener("visibilitychange", show);
     return () => {
-      clearTimeout(timer);
       observer.disconnect();
-      document.removeEventListener("visibilitychange", schedule);
-      document.removeEventListener("input", schedule);
+      document.removeEventListener("visibilitychange", show);
     };
   }, [survey, record, hidden]);
 
@@ -215,76 +211,91 @@ export function TaskOutcomeFeedbackPrompt({
   return (
     <div
       ref={question}
-      className="relative mt-2 mb-3 max-w-xl rounded-lg border border-border px-3 py-2 text-sm"
+      className="mb-3 mt-1 w-full max-w-sm text-sm"
       role="group"
-      aria-label="Optional task feedback"
+      aria-label="Task feedback"
     >
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="absolute right-1 top-1 size-7 text-muted-foreground"
-        aria-label="Dismiss task feedback"
-        onClick={dismiss}
-        disabled={busy}
-      >
-        <X className="size-3.5" />
-      </Button>
-      {done ? (
-        <p className="pr-7 text-muted-foreground">Thanks for the feedback.</p>
-      ) : (
-        <>
-          <p className="pr-7">
-            {answer
+      <div className="flex min-h-10 items-center justify-between gap-3 sm:min-h-8">
+        <p className="text-muted-foreground">
+          {done
+            ? "Thanks for your feedback"
+            : answer
               ? answer === "yes"
                 ? "What helped?"
                 : "What could be better?"
-              : "Did this run help you accomplish what you wanted?"}
-            <span className="ml-2 text-xs text-muted-foreground">Optional</span>
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {answer
-              ? reasonsForAnswer(answer).map((reason) => (
-                  <Button
-                    type="button"
-                    key={reason}
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full text-xs"
-                    disabled={busy}
-                    onClick={() => void saveReason(reason)}
-                  >
-                    {TASK_OUTCOME_REASONS[reason]}
-                  </Button>
-                ))
-              : Object.entries(TASK_OUTCOME_ANSWERS).map(([value, label]) => (
-                  <Button
-                    type="button"
-                    key={value}
-                    variant="outline"
-                    size="sm"
-                    className="h-8 rounded-full text-xs"
-                    disabled={busy}
-                    onClick={() => void saveAnswer(value as TaskOutcomeAnswer)}
-                  >
-                    {label}
-                  </Button>
-                ))}
-            {answer && (
+              : "Did this help with your task?"}
+        </p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-11 shrink-0 text-muted-foreground hover:text-foreground sm:size-8"
+          aria-label="Dismiss task feedback"
+          onClick={dismiss}
+          disabled={busy}
+        >
+          <X className="size-4" />
+        </Button>
+      </div>
+      {!done && (
+        <>
+          {answer ? (
+            <div className="flex flex-wrap gap-1.5">
+              {reasonsForAnswer(answer).map((reason) => (
+                <Button
+                  type="button"
+                  key={reason}
+                  variant="outline"
+                  size="sm"
+                  className="min-h-11 h-auto max-w-full whitespace-normal rounded-md px-3 py-2 text-xs sm:min-h-8 sm:py-1"
+                  disabled={busy}
+                  onClick={() => void saveReason(reason)}
+                >
+                  {TASK_OUTCOME_REASONS[reason]}
+                </Button>
+              ))}
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-8 text-xs text-muted-foreground"
+                className="h-11 px-3 text-xs text-muted-foreground sm:h-8"
                 onClick={() => setDone(true)}
                 disabled={busy}
               >
                 Skip
               </Button>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <div className="inline-flex items-center rounded-lg bg-muted/60 p-0.5">
+                {(["yes", "partly", "no"] as const).map((value) => (
+                  <Button
+                    type="button"
+                    key={value}
+                    variant="ghost"
+                    size="sm"
+                    className="h-11 min-w-12 rounded-md px-3 text-xs hover:bg-background sm:h-8"
+                    disabled={busy}
+                    onClick={() => void saveAnswer(value)}
+                  >
+                    {TASK_OUTCOME_ANSWERS[value]}
+                  </Button>
+                ))}
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-11 px-2 text-xs text-muted-foreground sm:h-8"
+                disabled={busy}
+                onClick={() => void saveAnswer("not_checked")}
+              >
+                {TASK_OUTCOME_ANSWERS.not_checked}
+              </Button>
+            </div>
+          )}
           {error && (
-            <p className="mt-2 text-xs text-muted-foreground">
+            <p className="mt-2 text-xs text-muted-foreground" role="status">
               Couldn’t save. Try again when you’re ready.
             </p>
           )}

@@ -10,13 +10,14 @@ of an individual Abliteration call. Existing provider assignment is unchanged.
   variants. At most one opportunity per authenticated user per rolling seven days,
   atomically reserved in Convex across concurrent runs/devices.
 - Only the latest assistant response with no newer user message can show it.
-  After the run ends (including Stop/error), wait 15 continuous seconds with the
-  result footer in view and the document visible. Typing resets this quiet interval. No modal, focus, scroll,
+  After the run ends (including Stop/error), show immediately when the result
+  footer is in view and the document is visible. No timer or late interruption.
+  Compact borderless controls use 44px touch targets on mobile. No modal, focus, scroll,
   notification, mandatory response, or free-text collection.
 - An atomic display claim prevents another tab/device/reload asking again.
   The PostHog shown event is separate and requires the rendered question in view.
   A claim interrupted by navigation may remain selected but unshown: report it.
-- Yes / Partly / No / Haven't checked yet; save the answer immediately. Reasons
+- Yes / Partly / No / Haven't checked; save the answer immediately. Reasons
   are optional and structured, with Skip. Dismiss/answer/view extends cooldown.
   Unshown invitations expire after 48 hours. Existing manual thumbs remain usable.
 - Some failed runs never create a displayable assistant message; they remain in
@@ -37,7 +38,8 @@ counts with durable Convex records before an experiment conclusion.
 PostHog events: `task_outcome_survey_selected`, `_shown`, `_dismissed`, `_answered`,
 `_reason`. All have survey_key/version, experiment_key/variant/request_id,
 message_id, chat_id, baseline_model, assigned_model, mode, subscription_tier and
-release; answered/reason add only their structured codes. No prompts, target
+release; answered/reason add only their structured codes. Client events include `survey_ui_version: 2` to distinguish this presentation
+from the previous delayed, boxed question. No prompts, target
 URLs, findings, code, credentials or free-text feedback.
 
 ## Rollout and measurement
@@ -80,7 +82,7 @@ interference. Cost and speed remain guardrails, not the primary success measure.
 
 Use a disposable paid Preview Agent chat with an authorized synthetic lab request
 that enters the existing moderation experiment. Confirm survey selection precedes
-provider attempts. Complete or stop the run, wait 15 seconds at its visible footer,
+provider attempts. Complete or stop the run, view its footer,
 and verify the neutral inline prompt without focus/scroll changes. Test a narrow
 viewport and keyboard-only interaction. Answer Partly then an optional reason;
 verify persistence and the original assignment/request linkage in PostHog. Reload
@@ -92,7 +94,7 @@ retain their 48-hour expiry). Provider routing stays unchanged.
 
 Automated tests cover weekly cooldown, concurrent reservation/display claims,
 owner authorization, expiry, structured reason validation, fallback message
-linkage, visible-tab delay, typing delay, dismissal and no focus stealing. A real
+linkage, visible-tab gating, immediate display, dismissal and no focus stealing. A real
 local Convex backend in the HackerAI Development project verified concurrent
 reservations, one-device display, persisted answer/reason and reload suppression.
 Desktop and 390px browser checks verified the real prompt layout. A disposable

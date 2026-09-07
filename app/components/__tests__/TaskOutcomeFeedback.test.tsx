@@ -33,16 +33,11 @@ const survey: Doc<"task_outcome_surveys"> = {
 };
 let observers: Array<(entries: Array<{ isIntersecting: boolean }>) => void>;
 const inView = () =>
-  act(() => {
-    observers.forEach((callback) => callback([{ isIntersecting: true }]));
-  });
-const advance = async (ms: number) =>
   act(async () => {
-    jest.advanceTimersByTime(ms);
+    observers.forEach((callback) => callback([{ isIntersecting: true }]));
   });
 describe("unobtrusive task feedback", () => {
   beforeEach(() => {
-    jest.useFakeTimers();
     jest.clearAllMocks();
     observers = [];
     Object.defineProperty(document, "visibilityState", {
@@ -54,17 +49,15 @@ describe("unobtrusive task feedback", () => {
       return { observe: jest.fn(), disconnect: jest.fn() };
     });
   });
-  afterEach(() => jest.useRealTimers());
   it("displays a server-selected invitation without browser feature flag fetching", async () => {
     const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
     (useQuery as jest.Mock).mockReturnValue(survey);
     (useMutation as jest.Mock).mockReturnValue(record);
     render(<TaskOutcomeFeedback chatId="c" messageId="m" />);
-    inView();
-    await advance(15000);
+    await inView();
     expect(screen.getByRole("button", { name: "Yes" })).toBeTruthy();
   });
-  it("waits for fifteen visible seconds and never steals focus", async () => {
+  it("shows immediately in view without stealing focus or adding a timer", async () => {
     const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
     render(
       <>
@@ -73,60 +66,37 @@ describe("unobtrusive task feedback", () => {
       </>,
     );
     screen.getByLabelText("Chat input").focus();
-    await advance(20000);
     expect(record).not.toHaveBeenCalled();
-    inView();
-    await advance(14999);
-    expect(screen.queryByRole("group")).toBeNull();
-    await advance(1);
+    await inView();
     expect(screen.getByRole("group")).toBeTruthy();
+    expect(screen.getByText("Did this help with your task?")).toBeTruthy();
+    expect(screen.queryByText("Optional")).toBeNull();
     expect(document.activeElement).toBe(screen.getByLabelText("Chat input"));
     expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
-    inView();
+    await inView();
     expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: "task_outcome_survey_shown" }),
+      expect.objectContaining({
+        event: "task_outcome_survey_shown",
+        properties: expect.objectContaining({ survey_ui_version: 2 }),
+      }),
     );
   });
-  it("waits for a quiet interval after typing", async () => {
-    const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
-    render(
-      <>
-        <input aria-label="Draft" />
-        <TaskOutcomeFeedbackPrompt survey={survey} record={record} />
-      </>,
-    );
-    inView();
-    await advance(10000);
-    fireEvent.input(screen.getByLabelText("Draft"), {
-      target: { value: "Still composing" },
+  it("does not claim in a hidden tab, then shows as soon as it becomes visible", async () => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
     });
-    await advance(10000);
-    expect(record).not.toHaveBeenCalled();
-    await advance(5000);
-    expect(record).toHaveBeenCalledTimes(1);
-  });
-  it("does not ask in a hidden tab and restarts the reading delay", async () => {
     const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
     render(<TaskOutcomeFeedbackPrompt survey={survey} record={record} />);
-    inView();
-    await advance(5000);
-    act(() => {
-      Object.defineProperty(document, "visibilityState", {
-        configurable: true,
-        value: "hidden",
-      });
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await advance(20000);
+    await inView();
     expect(record).not.toHaveBeenCalled();
-    act(() => {
+    await act(async () => {
       Object.defineProperty(document, "visibilityState", {
         configurable: true,
         value: "visible",
       });
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    await advance(15000);
     expect(screen.getByRole("group")).toBeTruthy();
   });
   it("does not show a prompt already claimed on another device or reload", async () => {
@@ -134,8 +104,7 @@ describe("unobtrusive task feedback", () => {
     const { rerender } = render(
       <TaskOutcomeFeedbackPrompt survey={survey} record={record} />,
     );
-    inView();
-    await advance(15000);
+    await inView();
     expect(screen.queryByRole("group")).toBeNull();
     rerender(
       <TaskOutcomeFeedbackPrompt
@@ -144,8 +113,7 @@ describe("unobtrusive task feedback", () => {
         record={record}
       />,
     );
-    inView();
-    await advance(15000);
+    await inView();
     expect(record).toHaveBeenCalledTimes(1);
   });
   it("saves the answer before optional reasons and records only structured context", async () => {
@@ -156,8 +124,7 @@ describe("unobtrusive task feedback", () => {
       ...(args.reason && { answer: "partly" as const, reason: args.reason }),
     }));
     render(<TaskOutcomeFeedbackPrompt survey={survey} record={record} />);
-    inView();
-    await advance(15000);
+    await inView();
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Partly" })),
     );
@@ -170,7 +137,7 @@ describe("unobtrusive task feedback", () => {
     await act(async () =>
       fireEvent.click(screen.getByRole("button", { name: "Didn’t work" })),
     );
-    expect(screen.getByText("Thanks for the feedback.")).toBeTruthy();
+    expect(screen.getByText("Thanks for your feedback")).toBeTruthy();
     expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "task_outcome_survey_reason",
@@ -189,8 +156,7 @@ describe("unobtrusive task feedback", () => {
       ...(args.action === "dismissed" && { dismissed_at: Date.now() }),
     }));
     render(<TaskOutcomeFeedbackPrompt survey={survey} record={record} />);
-    inView();
-    await advance(15000);
+    await inView();
     await act(async () =>
       fireEvent.click(
         screen.getByRole("button", { name: "Dismiss task feedback" }),
