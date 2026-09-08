@@ -503,6 +503,74 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it("repairs legacy oversized Abliteration batches in initial and later requests and records counts", async () => {
+    const calls = Array.from({ length: 148 }, (_, i) => ({
+      type: "tool-call" as const,
+      toolCallId: `call-${i}`,
+      toolName: "file",
+      input: {},
+    }));
+    const legacy: ModelMessage[] = [
+      { role: "assistant", content: calls },
+      {
+        role: "tool",
+        content: calls.map((call) => ({
+          type: "tool-result" as const,
+          toolCallId: call.toolCallId,
+          toolName: "file",
+          output: { type: "text" as const, value: "ok" },
+        })),
+      },
+      { role: "user", content: "continue" },
+    ];
+    jest.requireMock("ai").convertToModelMessages.mockResolvedValueOnce(legacy);
+    const recordProviderRequestDiagnostics = jest.fn();
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        chatLogger: { recordProviderRequestDiagnostics },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      initAgentStreamState([uiMessage("initial", "continue")], {
+        usedTokens: 1000,
+        maxTokens: 128000,
+      }),
+    )) as any;
+    expect(stream.messages.map((m: ModelMessage) => m.role)).toEqual([
+      "assistant",
+      "tool",
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    expect(recordProviderRequestDiagnostics).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        max_tool_calls_per_assistant: 128,
+        unmatched_tool_call_count: 0,
+        unmatched_tool_result_count: 0,
+        tool_call_batches_split: 1,
+      }),
+    );
+    const step = await stream.prepareStep({
+      stepNumber: 0,
+      steps: [],
+      messages: legacy,
+    });
+    expect(
+      step.messages.filter((m: ModelMessage) => m.role === "assistant"),
+    ).toHaveLength(2);
+    expect(recordProviderRequestDiagnostics).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        max_tool_calls_per_assistant: 128,
+        tool_call_batches_split: 1,
+      }),
+    );
+  });
+
   it.each([
     ["agent", 0, true],
     ["agent", 1, false],

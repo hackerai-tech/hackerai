@@ -1558,7 +1558,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /hasTerminalProviderStreamError\s*&&\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
     );
     expect(taskSrc).toMatch(
-      /shouldContinueAfterProviderDisconnect\)\s*&&\s*!isRetryWithFallback/,
+      /decideProviderRecovery\(\{[\s\S]{0,300}alreadyRetried: isRetryWithFallback/,
     );
     expect(taskSrc).toMatch(
       /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
@@ -2027,9 +2027,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("OCR preprocessing failures never trigger generic baseline recovery", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/!\(error instanceof AbliterationVisionError\)/);
-      expect(source).toMatch(
-        /const shouldAttemptProviderRetry\s*=\s*!\(\s*state\.providerError instanceof AbliterationVisionError\s*\)\s*&&/,
-      );
+      if (source === taskSrc) {
+        expect(source).toMatch(
+          /unrecoverableVision:\s*state\.providerError instanceof\s*AbliterationVisionError/,
+        );
+        expect(source).toMatch(
+          /const shouldAttemptProviderRetry\s*=\s*providerRecoveryDecision\.attempt/,
+        );
+      } else {
+        expect(source).toMatch(
+          /const shouldAttemptProviderRetry\s*=\s*!\(\s*state\.providerError instanceof AbliterationVisionError\s*\)\s*&&/,
+        );
+      }
     }
   });
 

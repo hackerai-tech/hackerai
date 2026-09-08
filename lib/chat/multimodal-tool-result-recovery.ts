@@ -104,6 +104,7 @@ export const omitTrailingStepStartAssistantMessage = (
 };
 
 const MULTIMODAL_REJECTION_PATTERNS = [
+  /图片输入格式\/解析错误/,
   /image[-_\s]?data/i,
   /input[_\s-]?image/i,
   /image(?:\s+content|\s+input|\s+part|\s+block|\s+tool|\s+output)/i,

@@ -1880,7 +1880,13 @@ export const createChatHandler = () => {
                           state.providerError instanceof AbliterationVisionError
                         ) &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        !userStopSignal.signal.aborted &&
                         (isAutoModel ||
+                          (hasTerminalProviderStreamError &&
+                            shouldRetryAbliterationApiError(
+                              activeAbliteratedExperiment,
+                              state.providerError,
+                            )) ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
