@@ -1279,6 +1279,8 @@ type AgentCompletionAnalyticsArgs = {
   taskToFirstModelStartMs?: number;
   requestToFirstModelStartMs?: number;
   requestToFirstModelChunkMs?: number;
+  startupCompactionVariant?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionVariant;
+  startupCompactionFallbackUsed?: boolean;
   startupSubphaseTimingVersion?: 1;
   startupSummaryGenerationDurationMs?: number;
   startupTranscriptSavingDurationMs?: number;
@@ -1332,6 +1334,8 @@ export function captureAgentRun({
   taskToFirstModelStartMs,
   requestToFirstModelStartMs,
   requestToFirstModelChunkMs,
+  startupCompactionVariant,
+  startupCompactionFallbackUsed,
   startupSubphaseTimingVersion,
   startupSummaryGenerationDurationMs,
   startupTranscriptSavingDurationMs,
@@ -1430,6 +1434,10 @@ export function captureAgentRun({
       ...(triggerTaskStartLatencyMs !== undefined && {
         trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
       }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
+      }),
       ...(startupSubphaseTimingVersion !== undefined && {
         startup_subphase_timing_version: startupSubphaseTimingVersion,
       }),
@@ -1527,6 +1535,10 @@ export function captureAgentRun({
       }),
       ...(requestToFirstModelChunkMs !== undefined && {
         request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
       }),
       ...(startupSubphaseTimingVersion !== undefined && {
         startup_subphase_timing_version: startupSubphaseTimingVersion,
@@ -1693,6 +1705,8 @@ export function captureAgentCompletionAnalytics(
     taskToFirstModelStartMs: args.taskToFirstModelStartMs,
     requestToFirstModelStartMs: args.requestToFirstModelStartMs,
     requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
+    startupCompactionVariant: args.startupCompactionVariant,
+    startupCompactionFallbackUsed: args.startupCompactionFallbackUsed,
     startupSubphaseTimingVersion: args.startupSubphaseTimingVersion,
     startupSummaryGenerationDurationMs: args.startupSummaryGenerationDurationMs,
     startupTranscriptSavingDurationMs: args.startupTranscriptSavingDurationMs,

@@ -3,6 +3,28 @@ import { describe, expect, it } from "@jest/globals";
 import { AgentRunTimingTracker } from "../agent-run-timing";
 
 describe("AgentRunTimingTracker", () => {
+  it("records actual startup compaction attempts and ignores later compactions", () => {
+    const tracker = new AgentRunTimingTracker();
+    expect(tracker.snapshot().startupCompactionVariant).toBeUndefined();
+    tracker.recordStartupCompactionAttempt({
+      variant: "bounded_glm_v1",
+      fallbackUsed: false,
+    });
+    tracker.recordStartupCompactionAttempt({
+      variant: "bounded_glm_v1",
+      fallbackUsed: true,
+    });
+    tracker.startModelStream();
+    tracker.recordStartupCompactionAttempt({
+      variant: "control",
+      fallbackUsed: false,
+    });
+    expect(tracker.snapshot()).toMatchObject({
+      startupCompactionVariant: "bounded_glm_v1",
+      startupCompactionFallbackUsed: true,
+    });
+  });
+
   it("aggregates approval waits and active categories", async () => {
     let now = 1_000;
     const tracker = new AgentRunTimingTracker(() => now);

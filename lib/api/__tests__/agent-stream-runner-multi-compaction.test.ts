@@ -504,6 +504,45 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
+    ["agent", 0, true],
+    ["agent", 1, false],
+    ["ask", 0, false],
+  ])(
+    "scopes startup compaction to %s at completed step %s",
+    async (mode, completedSteps, eligible) => {
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Continue existing work")],
+        { usedTokens: 120_000, maxTokens: 128_000 },
+      );
+      state.agentStepCount = completedSteps as number;
+      const onStartupCompactionAttempt = jest.fn();
+      const stream = (await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        createTestStreamContext({
+          mode,
+          onStartupCompactionAttempt,
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+      await stream.prepareStep({
+        stepNumber: 0,
+        steps: [],
+        messages: [{ role: "user", content: "Continue existing work" }],
+      });
+      expect(mockRunSummarizationStep).toHaveBeenCalled();
+      const options = mockRunSummarizationStep.mock.calls.at(-1)[0];
+      if (eligible)
+        expect(options.startupCompaction).toEqual({
+          userId: "user",
+          onAttempt: onStartupCompactionAttempt,
+        });
+      else expect(options.startupCompaction).toBeUndefined();
+    },
+  );
+
+  it.each([
     ["ask", "free", true],
     ["ask", "pro", false],
     ["agent", "free", false],

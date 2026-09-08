@@ -4237,6 +4237,8 @@ export const agentLongTask = task({
               },
               onStartupPhaseDuration:
                 runTimingTracker.recordStartupPhaseDuration,
+              onStartupCompactionAttempt:
+                runTimingTracker.recordStartupCompactionAttempt,
               registerBackgroundWork: registerBackgroundRunWork,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
                 if (

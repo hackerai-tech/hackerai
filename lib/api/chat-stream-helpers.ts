@@ -431,6 +431,7 @@ export async function runSummarizationStep(options: {
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
   onPhaseDuration?: import("@/lib/chat/summarization").ContextCompactionPhaseReporter;
+  startupCompaction?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionContext;
   registerBackgroundWork?: import("@/lib/chat/summarization").BackgroundWorkRegistrar;
 }): Promise<SummarizationStepResult> {
   const {
@@ -459,6 +460,7 @@ export async function runSummarizationStep(options: {
     maxTokensOverride: options.ctxMaxTokens,
     providerPromptPressure: options.providerPromptPressure,
     onPhaseDuration: options.onPhaseDuration,
+    startupCompaction: options.startupCompaction,
     registerBackgroundWork: options.registerBackgroundWork,
   });
 

@@ -18,6 +18,13 @@ import {
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
+import {
+  getStartupCompactionVariant,
+  isRecoverableStartupCompactionError,
+  STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS,
+  STARTUP_COMPACTION_FALLBACK_MODEL,
+  type StartupCompactionContext,
+} from "./startup-compaction";
 import type { ProviderPromptPressure } from "./provider-pressure";
 
 import {
@@ -121,10 +128,12 @@ const getBoundedErrorStack = (error: unknown): string | undefined => {
 const markSummarizationAttemptError = (
   error: unknown,
   attempt: SummarizationAttempt,
+  modelName?: string,
 ) => {
   const record = getErrorRecord(error);
   if (record) {
     record[SUMMARIZATION_ATTEMPT_ERROR_KEY] = attempt;
+    if (modelName) record.__hackeraiSummarizationModel = modelName;
   }
 };
 
@@ -329,6 +338,7 @@ export interface CheckAndSummarizeOptions {
   providerPromptPressure?: ProviderPromptPressure | null;
   onPhaseDuration?: ContextCompactionPhaseReporter;
   registerBackgroundWork?: BackgroundWorkRegistrar;
+  startupCompaction?: StartupCompactionContext;
 }
 
 /**
@@ -467,6 +477,7 @@ const generateSummaryTextWithRetry = async ({
   subscription,
   reason,
   onPhaseDuration,
+  startupCompaction,
 }: {
   messagesToSummarize: UIMessage[];
   modelMessages?: ModelMessage[];
@@ -481,6 +492,7 @@ const generateSummaryTextWithRetry = async ({
   subscription: SubscriptionTier;
   reason: CompactionLogReason;
   onPhaseDuration?: ContextCompactionPhaseReporter;
+  startupCompaction?: StartupCompactionContext;
 }): Promise<
   Awaited<ReturnType<typeof generateSummaryText>> & {
     languageModel: LanguageModel;
@@ -491,6 +503,16 @@ const generateSummaryTextWithRetry = async ({
     CONTEXT_COMPACTION_MODEL_NAME,
   );
   const startedAt = Date.now();
+  abortSignal?.throwIfAborted();
+  const variant =
+    startupCompaction && mode === "agent"
+      ? await getStartupCompactionVariant(startupCompaction.userId)
+      : "control";
+  const bounded = variant === "bounded_glm_v1";
+  abortSignal?.throwIfAborted();
+  if (startupCompaction && mode === "agent") {
+    startupCompaction.onAttempt?.({ variant, fallbackUsed: false });
+  }
   try {
     let result: Awaited<ReturnType<typeof generateSummaryText>>;
     try {
@@ -505,13 +527,30 @@ const generateSummaryTextWithRetry = async ({
         abortSignal,
         modelMessages,
         summaryInputMaxTokens,
+        bounded
+          ? {
+              timeout: STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS,
+              maxRetries: 0,
+              requireCompleteSummary: true,
+            }
+          : undefined,
       );
     } catch (error) {
-      if (abortSignal?.aborted || !isMalformedProviderJsonError(error)) {
+      if (
+        abortSignal?.aborted ||
+        !(
+          isMalformedProviderJsonError(error) ||
+          (bounded && isRecoverableStartupCompactionError(error))
+        )
+      ) {
         throw error;
       }
 
-      const retryModelName = SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
+      const retryModelName = bounded
+        ? STARTUP_COMPACTION_FALLBACK_MODEL
+        : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
+      if (bounded)
+        startupCompaction?.onAttempt?.({ variant, fallbackUsed: true });
       const retryLanguageModel = myProvider.languageModel(retryModelName);
       logContextCompactionRetrying({
         chatId,
@@ -532,13 +571,22 @@ const generateSummaryTextWithRetry = async ({
           chatSystemPrompt,
           hasExistingSummary,
           undefined,
-          buildSummarizationRetryProviderOptions(providerOptions),
+          bounded
+            ? {
+                openrouter: {
+                  ...buildContextCompactionProviderOptions(providerOptions)
+                    .openrouter,
+                  provider: { sort: "latency", data_collection: "deny" },
+                },
+              }
+            : buildSummarizationRetryProviderOptions(providerOptions),
           abortSignal,
           modelMessages,
           summaryInputMaxTokens,
+          bounded ? { requireCompleteSummary: true } : undefined,
         );
       } catch (retryError) {
-        markSummarizationAttemptError(retryError, "fallback");
+        markSummarizationAttemptError(retryError, "fallback", retryModelName);
         throw retryError;
       }
 
@@ -775,7 +823,12 @@ export const compactModelMessagesInRun = async ({
       attempt: failedAttempt,
       languageModel:
         failedAttempt === "fallback"
-          ? myProvider.languageModel(SUMMARIZATION_RETRY_MODEL_BY_MODE[mode])
+          ? myProvider.languageModel(
+              getErrorRecord(error)?.__hackeraiSummarizationModel ===
+                STARTUP_COMPACTION_FALLBACK_MODEL
+                ? STARTUP_COMPACTION_FALLBACK_MODEL
+                : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode],
+            )
           : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
       fallbackResult: "no_summarization",
       error,
@@ -875,6 +928,7 @@ export const checkAndSummarizeIfNeeded = async ({
   providerPromptPressure,
   onPhaseDuration,
   registerBackgroundWork,
+  startupCompaction,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -991,6 +1045,7 @@ export const checkAndSummarizeIfNeeded = async ({
       subscription,
       reason: compactionReason,
       onPhaseDuration,
+      startupCompaction,
     });
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
@@ -1064,7 +1119,12 @@ export const checkAndSummarizeIfNeeded = async ({
       attempt: failedAttempt,
       languageModel:
         failedAttempt === "fallback"
-          ? myProvider.languageModel(SUMMARIZATION_RETRY_MODEL_BY_MODE[mode])
+          ? myProvider.languageModel(
+              getErrorRecord(error)?.__hackeraiSummarizationModel ===
+                STARTUP_COMPACTION_FALLBACK_MODEL
+                ? STARTUP_COMPACTION_FALLBACK_MODEL
+                : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode],
+            )
           : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
       fallbackResult: "no_summarization",
       error,

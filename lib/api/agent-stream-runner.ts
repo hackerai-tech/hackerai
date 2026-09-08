@@ -683,6 +683,9 @@ export type AgentStreamContext = {
   onModelStreamFinish?: () => void;
   onModelChunk?: () => void;
   onModelStepSelected?: (modelName: string) => void;
+  onStartupCompactionAttempt?: (
+    attempt: import("@/lib/chat/summarization/startup-compaction").StartupCompactionAttempt,
+  ) => void;
   onStartupPhaseDuration?: (
     phase: AgentStartupPhase,
     durationMs: number,
@@ -1284,6 +1287,13 @@ export async function createAgentStream(
               transcriptMessages: state.transcriptSourceMessages,
               providerPromptPressure,
               onPhaseDuration: ctx.onStartupPhaseDuration,
+              ...(generationStepIndex === 0 &&
+                ctx.mode === "agent" && {
+                  startupCompaction: {
+                    userId: ctx.userId,
+                    onAttempt: ctx.onStartupCompactionAttempt,
+                  },
+                }),
               registerBackgroundWork: ctx.registerBackgroundWork,
             });
 
