@@ -257,7 +257,9 @@ import {
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
+  decideProviderRecovery,
   detectAssistantContentLoopFromParts,
+  getProviderOutputDiagnostics,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
@@ -4667,6 +4669,7 @@ export const agentLongTask = task({
                     throw error;
                   }
                 }
+                userStopSignal.signal.throwIfAborted();
                 result = await createStream(apiRetryModel);
               } else {
                 throw error;
@@ -4814,17 +4817,26 @@ export const agentLongTask = task({
                       const shouldContinueAfterProviderDisconnect = Boolean(
                         providerDisconnectContinuation,
                       );
-                      const shouldAttemptProviderRetry =
-                        !(
-                          state.providerError instanceof AbliterationVisionError
-                        ) &&
-                        (shouldRetryWithFallback ||
+                      const providerRecoveryDecision = decideProviderRecovery({
+                        userCancelled: userStopSignal.signal.aborted,
+                        unrecoverableVision:
+                          state.providerError instanceof
+                          AbliterationVisionError,
+                        alreadyRetried: isRetryWithFallback,
+                        streamAborted: isAborted,
+                        loopRecovery: stoppedDueToAssistantContentLoop,
+                        hasCandidate:
+                          shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults ||
                           shouldRetryWithVisionSummary ||
-                          shouldContinueAfterProviderDisconnect) &&
-                        !isRetryWithFallback &&
-                        (!isAborted || stoppedDueToAssistantContentLoop) &&
-                        (isAutoModel ||
+                          shouldContinueAfterProviderDisconnect,
+                        modelEligible:
+                          isAutoModel ||
+                          (hasTerminalProviderStreamError &&
+                            shouldRetryAbliterationApiError(
+                              activeAbliteratedExperiment,
+                              state.providerError,
+                            )) ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
@@ -4832,7 +4844,10 @@ export const agentLongTask = task({
                           state.stoppedDueToDoomLoop ||
                           shouldRetryInterruptedToolInput ||
                           shouldRetryExplicitDeepSeekProReasoning ||
-                          shouldContinueAfterProviderDisconnect);
+                          shouldContinueAfterProviderDisconnect,
+                      });
+                      const shouldAttemptProviderRetry =
+                        providerRecoveryDecision.attempt;
                       let recoveredVisionMessages:
                         typeof state.finalMessages | undefined;
                       let visionSummaryRecoveryFailure: unknown;
@@ -4881,9 +4896,67 @@ export const agentLongTask = task({
                         }
                       }
 
+                      if (hasTerminalProviderStreamError) {
+                        const failure = wrapProviderTerminalError(
+                          state.providerError,
+                          {
+                            model: selectedModel,
+                            openRouterMetadata: state.openRouterMetadata,
+                          },
+                        );
+                        triggerLogger.info("Provider recovery decision", {
+                          event: "provider_recovery_decision",
+                          service: "agent-long",
+                          environment: ctx.environment.type,
+                          run_id: ctx.run.id,
+                          chat_id: chatId,
+                          decision:
+                            shouldAttemptProviderRetry &&
+                            !visionSummaryRecoveryFailure &&
+                            !userStopSignal.signal.aborted
+                              ? "attempt"
+                              : "skip",
+                          reason: userStopSignal.signal.aborted
+                            ? "user_cancelled"
+                            : visionSummaryRecoveryFailure
+                              ? "vision_summary_failed"
+                              : providerRecoveryDecision.reason,
+                          category: failure.category,
+                          status_code: failure.statusCode,
+                          configured_model: selectedModel,
+                          served_model:
+                            state.openRouterMetadata
+                              ?.openrouter_selected_model ??
+                            state.responseModel,
+                          provider: failure.provider,
+                          provider_request_id: failure.openrouterRequestId,
+                          provider_generation_id:
+                            failure.openrouterGenerationId,
+                          retry_already_used: isRetryWithFallback,
+                          user_cancelled: userStopSignal.signal.aborted,
+                          stream_aborted: isAborted,
+                          has_safe_continuation:
+                            shouldContinueAfterProviderDisconnect,
+                          ...getProviderOutputDiagnostics(
+                            lastAssistantMessageParts,
+                          ),
+                        });
+                      }
+
+                      const retryMessageId = generateId();
                       if (
                         shouldAttemptProviderRetry &&
-                        !visionSummaryRecoveryFailure
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
+                      ) {
+                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                      }
+                      isAborted ||= userStopSignal.signal.aborted;
+
+                      primaryProviderRecovery: if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
                       ) {
                         const retryReason = shouldRetryWithVisionSummary
                           ? "vision_summary_recovery"
@@ -5034,9 +5107,11 @@ export const agentLongTask = task({
                             });
                           }
                         }
-                        const retryMessageId = generateId();
                         abliteratedTelemetry?.setMessageId(retryMessageId);
-                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                        if (userStopSignal.signal.aborted) {
+                          isAborted = true;
+                          break primaryProviderRecovery;
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
@@ -5162,6 +5237,15 @@ export const agentLongTask = task({
                                     await taskOutcomeSurvey?.linkMessage(
                                       finalRetryMessageId,
                                     );
+                                    if (userStopSignal.signal.aborted) {
+                                      await finalizeRetryStream({
+                                        retryMessages,
+                                        retryAborted: true,
+                                        retryMessageId,
+                                        retryStartTime: fallbackStartTime,
+                                      });
+                                      return;
+                                    }
                                     const finalRetryResult =
                                       await createStream(finalRetryModel);
                                     writer.merge(

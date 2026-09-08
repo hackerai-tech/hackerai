@@ -164,3 +164,18 @@ describe("multimodal tool result recovery", () => {
     ).toBe(false);
   });
 });
+
+it("recognizes the Fireworks image format rejection without broadening generic 400s", () => {
+  expect(
+    isProviderMultimodalToolResultRejectionError({
+      code: 400,
+      message: "图片输入格式/解析错误",
+    }),
+  ).toBe(true);
+  expect(
+    isProviderMultimodalToolResultRejectionError({
+      code: 400,
+      message: "Invalid API parameter, please check the documentation.",
+    }),
+  ).toBe(false);
+});

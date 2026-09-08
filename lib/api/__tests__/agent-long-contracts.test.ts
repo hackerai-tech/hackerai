@@ -1558,7 +1558,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /hasTerminalProviderStreamError\s*&&\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
     );
     expect(taskSrc).toMatch(
-      /shouldContinueAfterProviderDisconnect\)\s*&&\s*!isRetryWithFallback/,
+      /decideProviderRecovery\(\{[\s\S]{0,300}alreadyRetried: isRetryWithFallback/,
     );
     expect(taskSrc).toMatch(
       /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
@@ -2027,10 +2027,66 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("OCR preprocessing failures never trigger generic baseline recovery", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/!\(error instanceof AbliterationVisionError\)/);
-      expect(source).toMatch(
-        /const shouldAttemptProviderRetry\s*=\s*!\(\s*state\.providerError instanceof AbliterationVisionError\s*\)\s*&&/,
-      );
+      if (source === taskSrc) {
+        expect(source).toMatch(
+          /unrecoverableVision:\s*state\.providerError instanceof\s*AbliterationVisionError/,
+        );
+        expect(source).toMatch(
+          /const shouldAttemptProviderRetry\s*=\s*providerRecoveryDecision\.attempt/,
+        );
+      } else {
+        expect(source).toMatch(
+          /const shouldAttemptProviderRetry\s*=\s*!\(\s*state\.providerError instanceof AbliterationVisionError\s*\)\s*&&/,
+        );
+      }
     }
+  });
+
+  test("both recovery paths recheck cancellation after awaiting vision recovery", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      const recoveryCalls = Array.from(
+        source.matchAll(/await describeImageAttachmentsWithAuxiliaryVision\(/g),
+      );
+      expect(recoveryCalls).toHaveLength(2);
+      for (const call of recoveryCalls) {
+        const nextStreamIdx = source.indexOf("await createStream(", call.index);
+        expect(nextStreamIdx).toBeGreaterThan(call.index!);
+        const recoveryBlock = source.slice(call.index, nextStreamIdx);
+        if (
+          source.startsWith("await createStream(apiRetryModel)", nextStreamIdx)
+        ) {
+          expect(recoveryBlock).toMatch(
+            /userStopSignal\.signal\.throwIfAborted\(\);\s*result = $/,
+          );
+        } else {
+          const surveyIdx = recoveryBlock.lastIndexOf(
+            "await taskOutcomeSurvey?.linkMessage(",
+          );
+          expect(surveyIdx).toBeGreaterThan(-1);
+          const afterSurvey = recoveryBlock.slice(surveyIdx);
+          expect(afterSurvey).toMatch(
+            /if \(\s*shouldAttemptProviderRetry &&\s*!visionSummaryRecoveryFailure &&\s*!userStopSignal\.signal\.aborted\s*\) \{/,
+          );
+          if (source === taskSrc) {
+            // Trigger also persists completed work inside the recovery block.
+            expect(afterSurvey).toMatch(
+              /if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = $/,
+            );
+          } else {
+            // No later async work may open a cancellation race after this guard.
+            expect(afterSurvey.slice(afterSurvey.indexOf(") {"))).not.toMatch(
+              /\bawait\b/,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  test("the final Trigger recovery finalizes cancellation after linking its message", () => {
+    expect(taskSrc).toMatch(
+      /await taskOutcomeSurvey\?\.linkMessage\(\s*finalRetryMessageId,?\s*\);\s*if \(userStopSignal\.signal\.aborted\) \{\s*await finalizeRetryStream\(\{\s*retryMessages,\s*retryAborted: true,\s*retryMessageId,\s*retryStartTime: fallbackStartTime,?\s*\}\);\s*return;\s*\}\s*const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
+    );
   });
 
   test("Abliteration routing switches to OpenRouter after the first generation step", () => {

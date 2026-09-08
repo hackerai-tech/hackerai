@@ -436,10 +436,9 @@ const compactReasoningParts = (
 };
 
 const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
-  parts.filter(
-    (part) =>
-      part?.type !== "step-start" && part?.type !== "data-summarization",
-  );
+  // step-start is a provider serialization boundary, not just UI metadata.
+  // Removing it merges every tool call in a saved turn into one request batch.
+  parts.filter((part) => part?.type !== "data-summarization");
 
 const compactToolPartsToByteLimit = (
   parts: UIMessage["parts"],

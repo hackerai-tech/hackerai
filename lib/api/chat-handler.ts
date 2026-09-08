@@ -1713,6 +1713,7 @@ export const createChatHandler = () => {
                     throw error;
                   }
                 }
+                userStopSignal.signal.throwIfAborted();
                 result = await createStream(apiRetryModel);
               } else {
                 throw error;
@@ -1880,7 +1881,13 @@ export const createChatHandler = () => {
                           state.providerError instanceof AbliterationVisionError
                         ) &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
+                        !userStopSignal.signal.aborted &&
                         (isAutoModel ||
+                          (hasTerminalProviderStreamError &&
+                            shouldRetryAbliterationApiError(
+                              activeAbliteratedExperiment,
+                              state.providerError,
+                            )) ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
@@ -1983,9 +1990,20 @@ export const createChatHandler = () => {
                       // incomplete, or reasoning-only terminal provider streams.
                       // For image-tool rejection, retry the same selected model
                       // after replacing image outputs with text placeholders.
+                      const retryMessageId = generateId();
                       if (
                         shouldAttemptProviderRetry &&
-                        !visionSummaryRecoveryFailure
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
+                      ) {
+                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                      }
+                      isAborted ||= userStopSignal.signal.aborted;
+
+                      if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
@@ -2028,9 +2046,7 @@ export const createChatHandler = () => {
                           usageTracker.resetModelLeg();
                         }
 
-                        const retryMessageId = generateId();
                         abliteratedTelemetry?.setMessageId(retryMessageId);
-                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
@@ -2821,7 +2837,38 @@ export const createChatHandler = () => {
               }),
             );
           } catch (error) {
-            await releaseFreeRunLockOnce();
+            // execute errors are consumed by createUIMessageStream, so the
+            // outer request catch and stream onFinish cannot clean them up.
+            preemptiveTimeout?.clear();
+            const cleanupOperations = [
+              [
+                "stop_subscriber",
+                async () => {
+                  if (!subscriberStopped) {
+                    await cancellationSubscriber.stop();
+                    subscriberStopped = true;
+                  }
+                },
+              ],
+              ["refund_usage", () => usageRefundTracker.refund()],
+              ["close_pty_sessions", () => ptySessionManager.closeAll(chatId)],
+              ["release_run_lock", () => releaseFreeRunLockOnce()],
+            ] as const;
+            const cleanupResults = await Promise.allSettled(
+              cleanupOperations.map(async ([, cleanup]) => cleanup()),
+            );
+            const failedOperations = cleanupOperations
+              .filter((_, index) => cleanupResults[index].status === "rejected")
+              .map(([operation]) => operation);
+            if (failedOperations.length > 0) {
+              phLogger.warn("Chat stream setup cleanup failed", {
+                event: "chat_stream_setup_cleanup_failed",
+                chatId,
+                endpoint,
+                failed_operations: failedOperations,
+              });
+            }
+            shutdownPostHog(posthog);
             throw error;
           }
         },

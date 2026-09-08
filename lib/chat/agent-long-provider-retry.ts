@@ -96,6 +96,39 @@ const hasDurableAssistantPart = (parts: unknown[]): boolean =>
     return isCompletedToolPart(part);
   });
 
+export const getProviderOutputDiagnostics = (parts: unknown[]) => ({
+  part_count: parts.length,
+  completed_tool_count: parts.filter(isCompletedToolPart).length,
+  has_durable_output: hasDurableAssistantPart(parts),
+  has_step_boundary: parts.some((part) => getPartType(part) === "step-start"),
+});
+
+/** Shared eligibility and skip reason so telemetry cannot drift from behavior. */
+export function decideProviderRecovery(options: {
+  userCancelled: boolean;
+  unrecoverableVision: boolean;
+  alreadyRetried: boolean;
+  streamAborted: boolean;
+  loopRecovery: boolean;
+  hasCandidate: boolean;
+  modelEligible: boolean;
+}) {
+  const reason = options.userCancelled
+    ? "user_cancelled"
+    : options.unrecoverableVision
+      ? "vision_recovery_unavailable"
+      : options.alreadyRetried
+        ? "retry_budget_exhausted"
+        : options.streamAborted && !options.loopRecovery
+          ? "stream_aborted"
+          : !options.hasCandidate
+            ? "no_safe_recovery"
+            : !options.modelEligible
+              ? "model_not_eligible"
+              : "eligible";
+  return { attempt: reason === "eligible", reason };
+}
+
 export type ProviderDisconnectContinuation = {
   messages: UIMessage[];
   removedPartCount: number;
@@ -374,6 +407,14 @@ export const shouldRetryProviderStreamWithFallback = (
   // configured fallback model; the caller's bounded retry guard keeps a second
   // content-filter finish terminal.
   if (options.providerContentBlocked) return true;
+
+  // An HTTP rejection can arrive via streamText.onError without emitting a
+  // step-start. Metadata/empty text is also non-durable and safe to retry.
+  if (
+    options.hasTerminalProviderStreamError &&
+    parts.every(isFallbackSafeProviderPart)
+  )
+    return true;
 
   // A provider can consume the entire output allowance as hidden reasoning
   // and return no text or completed tool call. Treat that as a failed model

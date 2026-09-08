@@ -38,6 +38,11 @@ export interface ProviderRequestDiagnostics {
   fallback_model_slugs?: string[];
   has_user_attribution: boolean;
   has_multimodal_tool_results: boolean;
+  max_tool_calls_per_assistant?: number;
+  unmatched_tool_call_count?: number;
+  unmatched_tool_result_count?: number;
+  duplicate_tool_call_count?: number;
+  tool_call_batches_split?: number;
 }
 
 export interface ProviderRequestRetentionDiagnostics {

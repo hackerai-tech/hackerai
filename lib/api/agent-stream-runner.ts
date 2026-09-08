@@ -6,6 +6,10 @@ import {
   createAbliterationVisionPreprocessor,
 } from "@/lib/chat/abliteration-vision";
 import { createAbliterationMediaRecovery } from "@/lib/chat/abliteration-media-recovery";
+import {
+  getProviderToolCallDiagnostics,
+  splitProviderToolCallBatches,
+} from "@/lib/chat/provider-tool-call-batches";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -614,6 +618,7 @@ const buildProviderRequestDiagnostics = (args: {
     active_tools_mode: args.activeTools ? "subset" : "all",
     ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
+    ...getProviderToolCallDiagnostics(args.messages),
   };
 };
 
@@ -1062,13 +1067,18 @@ export async function createAgentStream(
     preprocessAbliterationImages,
     abortSignal,
   );
+  let latestToolCallBatchSplitCount = 0;
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
   ): Promise<ModelMessage[]> => {
+    const toolCallRepair = isAbliterationModel(effectiveModelName)
+      ? splitProviderToolCallBatches(messages)
+      : { messages, splitCount: 0 };
+    latestToolCallBatchSplitCount = toolCallRepair.splitCount;
     const visionMessages = isAbliterationModel(effectiveModelName)
-      ? await preprocessAbliterationImages(messages)
-      : messages;
+      ? await preprocessAbliterationImages(toolCallRepair.messages)
+      : toolCallRepair.messages;
     const providerMessages = providerPdfAttachmentsDisabled
       ? omitPdfFilePartsFromModelMessages(visionMessages)
       : visionMessages;
@@ -1126,6 +1136,8 @@ export async function createAgentStream(
       maxOutputTokens,
       hasMultimodalToolResults: streamHasImageViewResults,
     });
+    latestProviderRequestDiagnostics.tool_call_batches_split =
+      latestToolCallBatchSplitCount;
     ctx.chatLogger?.recordProviderRequestDiagnostics(
       latestProviderRequestDiagnostics,
     );
