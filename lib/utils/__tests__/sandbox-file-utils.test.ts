@@ -341,6 +341,65 @@ describe("desktop-local sandbox file helpers", () => {
     }
   });
 
+  it("logs the final copy exit status when the fallback upload path also fails", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const copyLocal = jest
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error("Failed to prepare local file: permission denied"),
+          { exitCode: 1 },
+        ),
+      )
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error("Failed to prepare local file: source missing"),
+          { exitCode: 2 },
+        ),
+      );
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "localPath",
+            path: "/private/report.pdf",
+            localPath: "/tmp/hackerai-upload/report.pdf",
+          },
+        ],
+        async () => ({
+          files: { copyLocal },
+          commands: {
+            run: jest.fn().mockResolvedValue({
+              exitCode: 0,
+              stdout: "/home/alice/hackerai-upload/fallback/report.pdf",
+              stderr: "",
+            }),
+          },
+        }),
+      );
+      expect(copyLocal).toHaveBeenCalledTimes(2);
+      expect(result.failedCount).toBe(1);
+      expect(result.pathRewrites).toEqual([]);
+      expect(
+        JSON.parse(String(consoleErrorSpy.mock.calls[0]?.[0])),
+      ).toMatchObject({
+        event: "sandbox_attachment_staging_failed",
+        failure_exit_code: 2,
+      });
+      expect(JSON.stringify(consoleErrorSpy.mock.calls)).not.toContain(
+        "report.pdf",
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
   it("normalizes thrown E2B curl write errors and retries in a writable directory", async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest
@@ -1217,7 +1276,12 @@ describe("desktop-local sandbox file helpers", () => {
             copyLocal: jest
               .fn()
               .mockRejectedValue(
-                new Error("Failed to prepare local file: exit status 1"),
+                Object.assign(
+                  new Error(
+                    `Failed to prepare local file: cannot read ${sourcePath}`,
+                  ),
+                  { exitCode: 1 },
+                ),
               ),
           },
         }),
