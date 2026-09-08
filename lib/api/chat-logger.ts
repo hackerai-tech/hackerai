@@ -1250,9 +1250,9 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
-  abliteratedProviderSummary?: ReturnType<
-    AbliteratedModelTelemetry["getSummary"]
-  >;
+  // Every completion path must explicitly forward its request telemetry.
+  abliteratedProviderSummary:
+    ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
   posthog: PostHog | null;
   userId: string;
   chatId: string;
@@ -1358,7 +1358,10 @@ export function captureAgentRun({
   providerRecoveryAttempts,
   providerRecoveryModels,
   providerRecoverySucceeded,
-}: Omit<AgentCompletionAnalyticsArgs, "endpoint" | "chatLogger">) {
+}: Omit<
+  AgentCompletionAnalyticsArgs,
+  "endpoint" | "chatLogger" | "abliteratedProviderSummary"
+>) {
   if (mode !== "agent") return;
   const performanceDiagnostics = buildAgentPerformanceDiagnostics({
     triggerUsageDurationMs,

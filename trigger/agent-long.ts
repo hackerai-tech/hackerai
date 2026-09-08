@@ -4419,6 +4419,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                abliteratedProviderSummary: abliteratedTelemetry?.getSummary(),
                 posthog,
                 userId,
                 chatId,
@@ -5264,6 +5265,8 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        abliteratedProviderSummary:
+                          abliteratedTelemetry?.getSummary(),
                         posthog,
                         userId,
                         chatId,
