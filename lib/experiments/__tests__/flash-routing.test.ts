@@ -2,7 +2,6 @@ import {
   evaluateFlashRouting,
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
-  FREE_ASK_FLASH_CONVERSION_KEY,
   PAID_AGENT_FLASH_RETURN_KEY,
   FLASH_ROUTING_EXPOSURE_EVENT,
 } from "@/lib/experiments/flash-routing";
@@ -11,7 +10,7 @@ const free = {
   userId: "test-user",
   subscription: "free" as const,
   mode: "ask" as const,
-  selectedModel: "ask-model-free",
+  selectedModel: "ask-model-free-glm",
   hasImages: false,
 };
 const paid = {
@@ -26,8 +25,6 @@ const flags = (variant: unknown) => ({
 
 describe("Flash routing experiments", () => {
   it.each([
-    [free, "control", FREE_ASK_FLASH_CONVERSION_KEY, "ask-model-free"],
-    [free, "test", FREE_ASK_FLASH_CONVERSION_KEY, "ask-model-free-glm"],
     [
       paid,
       "control",
@@ -59,6 +56,8 @@ describe("Flash routing experiments", () => {
   );
 
   it.each([
+    free,
+    { ...free, selectedModel: "ask-model-free" },
     { ...paid, mode: "ask" as const },
     { ...paid, subscription: "free" as const },
     { ...paid, selectedModel: "model-deepseek-v4-pro-0813" },
@@ -81,7 +80,7 @@ describe("Flash routing experiments", () => {
     async (variant) => {
       expect(
         await evaluateFlashRouting({
-          ...free,
+          ...paid,
           posthog: flags(variant) as never,
         }),
       ).toBeUndefined();
@@ -90,11 +89,11 @@ describe("Flash routing experiments", () => {
 
   it("fails closed on missing client or flag service failure", async () => {
     expect(
-      await evaluateFlashRouting({ ...free, posthog: null }),
+      await evaluateFlashRouting({ ...paid, posthog: null }),
     ).toBeUndefined();
     expect(
       await evaluateFlashRouting({
-        ...free,
+        ...paid,
         posthog: {
           evaluateFlags: jest.fn().mockRejectedValue(new Error("unavailable")),
         } as never,
@@ -131,12 +130,12 @@ describe("Flash routing experiments", () => {
 
   it("records only the first matching provider request, with an explicit property allowlist", async () => {
     const assignment = await evaluateFlashRouting({
-      ...free,
+      ...paid,
       posthog: flags("test") as never,
     });
     const capture = jest.fn();
     const record = createFlashRoutingExposureRecorder({
-      ...free,
+      ...paid,
       posthog: { capture } as never,
       assignment,
       requestId: "request-1",
@@ -152,13 +151,13 @@ describe("Flash routing experiments", () => {
       distinctId: "test-user",
       event: FLASH_ROUTING_EXPOSURE_EVENT,
       properties: {
-        experiment_key: FREE_ASK_FLASH_CONVERSION_KEY,
+        experiment_key: PAID_AGENT_FLASH_RETURN_KEY,
         experiment_variant: "test",
-        [`$feature/${FREE_ASK_FLASH_CONVERSION_KEY}`]: "test",
-        subscription: "free",
-        subscription_tier: "free",
-        mode: "ask",
-        selected_model: "ask-model-free-glm",
+        [`$feature/${PAID_AGENT_FLASH_RETURN_KEY}`]: "test",
+        subscription: "pro",
+        subscription_tier: "pro",
+        mode: "agent",
+        selected_model: "model-glm-5.3-flash-agent",
         configured_model: "z-ai/glm-5.3-flash",
         request_id: "request-1",
         exposure_surface: "provider_request",
@@ -169,11 +168,11 @@ describe("Flash routing experiments", () => {
 
   it("does not fail generation when capture throws", async () => {
     const assignment = await evaluateFlashRouting({
-      ...free,
+      ...paid,
       posthog: flags("test") as never,
     });
     const record = createFlashRoutingExposureRecorder({
-      ...free,
+      ...paid,
       assignment,
       requestId: "request-1",
       posthog: {

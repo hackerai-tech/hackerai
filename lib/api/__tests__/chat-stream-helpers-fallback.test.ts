@@ -76,7 +76,7 @@ describe("buildProviderOptions fallback chain", () => {
       }
     },
   );
-  it("keeps the free GLM treatment at low reasoning with billed, retryable fallbacks", () => {
+  it("keeps the free Ask default at low reasoning with billed, retryable fallbacks", () => {
     const opts = buildProviderOptions(
       true,
       "user-1",

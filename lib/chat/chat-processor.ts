@@ -98,7 +98,7 @@ export function selectModel(
         ? "model-grok-4.5"
         : paidAutoTextModel
     : isFreeAsk
-      ? "ask-model-free"
+      ? "ask-model-free-glm"
       : paidAskMediaModel;
 
   // Free users always route through the auto router; paid users may pick an

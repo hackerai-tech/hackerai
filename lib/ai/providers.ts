@@ -1233,8 +1233,8 @@ export const getOpenRouterProviderRoutingForModel = (
 
 const buildProviderMap = (
   or: OpenRouterInstance,
-  // DeepSeek V4 Flash requires reasoning. Free Ask uses the same current model
-  // as Free Agent, with a lower reasoning effort set per request.
+  // Preserve the DeepSeek alias used by paid daily free allowance rescue.
+  // Regular free Ask uses ask-model-free-glm with low reasoning per request.
   freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_SLUG,
 ) =>
