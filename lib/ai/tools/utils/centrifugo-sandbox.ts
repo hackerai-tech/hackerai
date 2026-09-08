@@ -1696,7 +1696,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       if (result.exitCode !== 0) {
         const failureDetail =
           result.stderr || result.stdout || `exit status ${result.exitCode}`;
-        throw new Error(`Failed to prepare local file: ${failureDetail}`);
+        throw Object.assign(
+          new Error(`Failed to prepare local file: ${failureDetail}`),
+          { exitCode: result.exitCode },
+        );
       }
     },
 

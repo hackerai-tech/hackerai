@@ -54,6 +54,7 @@ type SandboxCommandResult = {
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
   error: string;
+  exitCode: number | null;
   reason: SandboxUploadFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
@@ -929,8 +930,11 @@ const stageSandboxFile = async (
         fallbackError instanceof Error
           ? fallbackError.message
           : String(fallbackError);
-      throw new Error(
-        `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
+      throw Object.assign(
+        new Error(
+          `${originalMessage}\nFallback upload path also failed: ${fallbackMessage}`,
+        ),
+        { exitCode: extractCommandExitCode(fallbackError) },
       );
     }
 
@@ -987,6 +991,7 @@ const summarizeSandboxUploadFailure = (
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     error: redactSandboxUploadError(file, error),
+    exitCode: extractCommandExitCode(error),
     reason: classifySandboxUploadFailureReason(
       file,
       error,
@@ -1066,7 +1071,7 @@ const uploadSandboxFilesOnce = async (
         ...(primaryFailure.kind === "localPath"
           ? { source_path: "[redacted-local-path]" }
           : {}),
-        failure_exit_code: extractCommandExitCode(primaryFailure.error),
+        failure_exit_code: primaryFailure.exitCode,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
         protocol: primaryFailure.protocol ?? null,
