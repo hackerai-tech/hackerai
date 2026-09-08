@@ -1,4 +1,10 @@
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
+  type AbliterationExperimentKey,
+} from "./abliteration-keys";
+export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -11,10 +17,9 @@ import {
 } from "@/lib/ai/abliteration";
 import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 
-export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
 export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
-  key: typeof ABLITERATED_EXPERIMENT_KEY;
+  key: AbliterationExperimentKey;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -75,7 +80,6 @@ export function isEligibleForAbliteratedModel({
 }): boolean {
   return (
     !limitRescue &&
-    (subscription !== "free" || mode === "agent") &&
     moderationEligible &&
     messages.length > 0 &&
     !messagesContainUnsupportedFiles(messages)
@@ -126,17 +130,17 @@ export async function evaluateAbliteratedModel({
   )
     return undefined;
 
+  const experimentKey =
+    subscription === "free" && mode === "ask"
+      ? FREE_ASK_ABLITERATED_EXPERIMENT_KEY
+      : ABLITERATED_EXPERIMENT_KEY;
   try {
     // This pinned SDK's evaluateFlags.getFlag emits exposure on access. Use the
     // supported no-event API until it supports deferring exposure explicitly.
-    const variant = await posthog.getFeatureFlag(
-      ABLITERATED_EXPERIMENT_KEY,
-      userId,
-      {
-        sendFeatureFlagEvents: false,
-        personProperties: { subscription, subscription_tier: subscription },
-      },
-    );
+    const variant = await posthog.getFeatureFlag(experimentKey, userId, {
+      sendFeatureFlagEvents: false,
+      personProperties: { subscription, subscription_tier: subscription },
+    });
     if (variant !== "test" && variant !== "control") return undefined;
     if (!moderationEligible) {
       // History is a preference within parent treatment, never an authorization.
@@ -154,7 +158,7 @@ export async function evaluateAbliteratedModel({
     return {
       selectionSource: moderationEligible ? "moderation" : "history",
       independentHistoryCount: independentAbliterationResponses,
-      key: ABLITERATED_EXPERIMENT_KEY,
+      key: experimentKey,
       variant,
       modelKey:
         variant === "test"

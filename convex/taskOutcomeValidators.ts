@@ -1,4 +1,8 @@
 import { v } from "convex/values";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
+} from "../lib/experiments/abliteration-keys";
 export const taskOutcomeAnswer = v.union(
   v.literal("yes"),
   v.literal("partly"),
@@ -21,6 +25,13 @@ export const taskOutcomeContext = {
   request_id: v.string(),
   chat_id: v.string(),
   message_id: v.string(),
+  // Older reservations belong to the original paid/free Agent experiment.
+  experiment_key: v.optional(
+    v.union(
+      v.literal(ABLITERATED_EXPERIMENT_KEY),
+      v.literal(FREE_ASK_ABLITERATED_EXPERIMENT_KEY),
+    ),
+  ),
   experiment_variant: v.union(v.literal("control"), v.literal("test")),
   baseline_model: v.string(),
   assigned_model: v.string(),

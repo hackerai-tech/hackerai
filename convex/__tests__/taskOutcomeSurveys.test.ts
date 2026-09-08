@@ -85,6 +85,33 @@ describe("task outcome feedback", () => {
     jest.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
   });
   afterEach(() => jest.restoreAllMocks());
+  it("retains free Ask experiment attribution through replacement message linkage and feedback", async () => {
+    const { ctx } = setup();
+    const survey = await invoke(reserve, ctx, {
+      ...args,
+      experiment_key: "abliterated_free_ask_moderated_v1",
+      mode: "ask",
+      subscription_tier: "free",
+    });
+    await invoke(linkMessage, ctx, {
+      serviceKey: "test",
+      user_id: "user-1",
+      request_id: "run-1",
+      message_id: "replacement",
+    });
+    await invoke(record, ctx, { id: survey._id, action: "shown" });
+    const answered = await invoke(record, ctx, {
+      id: survey._id,
+      action: "answered",
+      answer: "yes",
+    });
+    expect(answered).toMatchObject({
+      experiment_key: "abliterated_free_ask_moderated_v1",
+      request_id: "run-1",
+      message_id: "replacement",
+      answer: "yes",
+    });
+  });
   it("reserves before outcomes and enforces a rolling 72-hour cross-device cooldown", async () => {
     const { ctx, rows } = setup();
     expect(await invoke(reserve, ctx, args)).toMatchObject({

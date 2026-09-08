@@ -572,56 +572,62 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("routes only the first generation step through Abliteration", async () => {
-    const onModelStepSelected = jest.fn();
-    const state = initAgentStreamState(
-      [uiMessage("initial", "Inspect the authorized lab")],
-      { usedTokens: 1_000, maxTokens: 128_000 },
-    );
-    const stream = (await createAgentStream(
-      "model-abliterated",
-      createTestStreamContext({
-        trackedProvider: {
-          languageModel: (name: string) => ({ modelId: name }),
-        },
-        platformAuthorized: true,
-        abliteratedStepRouting: {
-          baselineModel: "model-deepseek-v4-flash-0731",
-        },
-        onModelStepSelected,
-        summarizationTracker: {
-          hasSummarized: false,
-          summarizationCount: 0,
-        },
-        usageTracker: {},
-      }) as any,
-      state,
-    )) as any;
+  it.each([
+    ["agent", "pro", "model-deepseek-v4-flash-0731"],
+    ["ask", "free", "ask-model-free-glm"],
+  ] as const)(
+    "routes only the first generation step through Abliteration for %s %s",
+    async (mode, subscription, baselineModel) => {
+      const onModelStepSelected = jest.fn();
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Inspect the authorized lab")],
+        { usedTokens: 1_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          mode,
+          subscription,
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          platformAuthorized: true,
+          abliteratedStepRouting: {
+            baselineModel,
+          },
+          onModelStepSelected,
+          summarizationTracker: {
+            hasSummarized: false,
+            summarizationCount: 0,
+          },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
 
-    const prepare = (completedSteps: number) =>
-      stream.prepareStep({
-        stepNumber: completedSteps,
-        steps: Array.from({ length: completedSteps }, () => ({
-          toolResults: [],
-        })),
-        messages: [{ role: "user", content: "Continue" }],
-      });
+      const prepare = (completedSteps: number) =>
+        stream.prepareStep({
+          stepNumber: completedSteps,
+          steps: Array.from({ length: completedSteps }, () => ({
+            toolResults: [],
+          })),
+          messages: [{ role: "user", content: "Continue" }],
+        });
 
-    const firstStep = await prepare(0);
-    expect(firstStep.model.modelId).toBe("model-abliterated");
-    expect(JSON.stringify(firstStep.messages)).not.toContain(
-      PLATFORM_AUTHORIZATION_ANNOTATION,
-    );
+      const firstStep = await prepare(0);
+      expect(firstStep.model.modelId).toBe("model-abliterated");
+      expect(JSON.stringify(firstStep.messages)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
 
-    const secondStep = await prepare(1);
-    expect(secondStep.model.modelId).toBe("model-deepseek-v4-flash-0731");
-    expect(JSON.stringify(secondStep.messages)).toContain(
-      PLATFORM_AUTHORIZATION_ANNOTATION,
-    );
-    expect(onModelStepSelected).toHaveBeenLastCalledWith(
-      "model-deepseek-v4-flash-0731",
-    );
-  });
+      const secondStep = await prepare(1);
+      expect(secondStep.model.modelId).toBe(baselineModel);
+      expect(JSON.stringify(secondStep.messages)).toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      expect(onModelStepSelected).toHaveBeenLastCalledWith(baselineModel);
+    },
+  );
 
   it.each([
     {
