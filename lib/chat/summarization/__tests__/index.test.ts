@@ -1251,7 +1251,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(completedWrite).toBeDefined();
   });
 
-  it("retries malformed provider JSON with the fallback summarization model", async () => {
+  it("retries malformed provider JSON with low reasoning on the fallback summarization model", async () => {
     const malformedJsonError = Object.assign(
       new Error("Invalid JSON response"),
       {
@@ -1312,7 +1312,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(retryCall.providerOptions).toEqual({
       openrouter: {
         user: "user_123",
-        reasoning: { enabled: true, effort: "high" },
+        reasoning: { enabled: true, effort: "low" },
         models: ["moonshotai/kimi-k3"],
       },
     });

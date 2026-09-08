@@ -28,6 +28,10 @@ cancellation propagates without starting fallback.
 
 ## Evidence and limitations
 
+Outside the pilot, the existing malformed-provider-JSON retry also uses low
+reasoning on its Grok/Kimi fallback route. This applies to Ask and Agent
+compaction: a response-format failure does not increase reasoning effort.
+
 Run `pnpm exec tsx scripts/benchmark-startup-compaction.ts` with an existing
 `OPENROUTER_API_KEY`. This makes four billable API calls using synthetic
 fixtures only, with a four-minute maximum per call. Results are written to
