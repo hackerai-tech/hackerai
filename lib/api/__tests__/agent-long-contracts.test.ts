@@ -2042,6 +2042,18 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     }
   });
 
+  test("both recovery paths recheck cancellation after awaiting vision recovery", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      const visionRecoveryIdx = source.indexOf(
+        "await describeImageAttachmentsWithAuxiliaryVision(",
+      );
+      expect(visionRecoveryIdx).toBeGreaterThan(-1);
+      expect(source.slice(visionRecoveryIdx)).toMatch(
+        /if \(\s*shouldAttemptProviderRetry &&\s*!visionSummaryRecoveryFailure &&\s*!userStopSignal\.signal\.aborted\s*\) \{/,
+      );
+    }
+  });
+
   test("Abliteration routing switches to OpenRouter after the first generation step", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(

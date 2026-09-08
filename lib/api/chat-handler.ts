@@ -1991,7 +1991,8 @@ export const createChatHandler = () => {
                       // after replacing image outputs with text placeholders.
                       if (
                         shouldAttemptProviderRetry &&
-                        !visionSummaryRecoveryFailure
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
                       ) {
                         isRetryWithFallback = true;
                         state.lastStepInputTokens = 0;
