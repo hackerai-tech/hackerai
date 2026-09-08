@@ -543,54 +543,58 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
-  it("captures Ask experiment outcomes while preserving assignment through fallback", () => {
-    const capture = jest.fn();
-    const providerSummary = {
-      telemetry_version: 2,
-      provider_attempt_count: 500,
-      provider_completed_count: 499,
-      provider_error_count: 1,
-      provider_estimated_cost_dollars: 0.12,
-    };
-    captureAgentCompletionAnalytics({
-      abliteratedProviderSummary: providerSummary,
-      posthog: { capture } as any,
-      userId: "user",
-      chatId: "chat",
-      endpoint: "/api/chat",
-      mode: "ask",
-      subscription: "pro",
-      outcome: "success",
-      selectedModel: "model-abliterated",
-      configuredModelId: "abliterated-model",
-      responseModel: "deepseek/deepseek-v4-flash-0731",
-      fallbackServed: true,
-      sandboxInfo: { type: "e2b" },
-      chatLogger: {} as any,
-      experiment: {
-        key: "abliterated_paid_moderated_v1",
-        variant: "test",
-        requestId: "message",
-      },
-    });
-    expect(capture).toHaveBeenCalledTimes(1);
-    expect(capture).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "abliterated_model_response_outcome",
-        properties: expect.objectContaining({
-          ...providerSummary,
-          mode: "ask",
-          experiment_variant: "test",
-          experiment_request_id: "message",
-          fallback_served: true,
+  it.each(["ask", "agent"] as const)(
+    "captures %s experiment summaries while preserving assignment through fallback",
+    (mode) => {
+      const capture = jest.fn();
+      const providerSummary = {
+        telemetry_version: 2,
+        provider_attempt_count: 500,
+        provider_completed_count: 499,
+        provider_error_count: 1,
+        provider_estimated_cost_dollars: 0.12,
+      };
+      captureAgentCompletionAnalytics({
+        abliteratedProviderSummary: providerSummary,
+        posthog: { capture } as any,
+        userId: "user",
+        chatId: "chat",
+        endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
+        mode,
+        subscription: "pro",
+        outcome: "success",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model",
+        responseModel: "deepseek/deepseek-v4-flash-0731",
+        fallbackServed: true,
+        sandboxInfo: { type: "e2b" },
+        chatLogger: {} as any,
+        experiment: {
+          key: "abliterated_paid_moderated_v1",
+          variant: "test",
+          requestId: "message",
+        },
+      });
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            ...providerSummary,
+            mode,
+            experiment_variant: "test",
+            experiment_request_id: "message",
+            fallback_served: true,
+          }),
         }),
-      }),
-    );
-  });
+      );
+    },
+  );
   it("uses the existing agent completion event for successful free Agent activation", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
@@ -629,6 +633,7 @@ describe("captureAgentCompletionAnalytics", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
