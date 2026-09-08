@@ -31,6 +31,31 @@ const row = {
   release: "test",
 };
 describe("survey selection", () => {
+  it("stores the free Ask assignment key and emits matching selection metadata", async () => {
+    const key = "abliterated_free_ask_moderated_v1" as const;
+    mutation.mockResolvedValue({ ...row, experiment_key: key });
+    const posthog = {
+      getFeatureFlag: jest.fn(async () => true),
+      capture: jest.fn(),
+    };
+    await selectTaskOutcomeSurvey({
+      ...base,
+      mode: "ask",
+      subscription: "free",
+      assignment: { ...assignment, key },
+      posthog,
+    });
+    expect(mutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ experiment_key: key }),
+    );
+    expect(posthog.capture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "task_outcome_survey_selected",
+        properties: expect.objectContaining({ experiment_key: key }),
+      }),
+    );
+  });
   const oldKey = process.env.CONVEX_SERVICE_ROLE_KEY;
   beforeEach(() => {
     jest.clearAllMocks();

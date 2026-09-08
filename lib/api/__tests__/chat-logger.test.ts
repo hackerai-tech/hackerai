@@ -543,9 +543,13 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
-  it.each(["ask", "agent"] as const)(
-    "captures %s experiment summaries while preserving assignment through fallback",
-    (mode) => {
+  it.each([
+    ["ask", "abliterated_paid_moderated_v1"],
+    ["agent", "abliterated_paid_moderated_v1"],
+    ["ask", "abliterated_free_ask_moderated_v1"],
+  ] as const)(
+    "captures %s %s summaries while preserving assignment through fallback",
+    (mode, experimentKey) => {
       const capture = jest.fn();
       const providerSummary = {
         telemetry_version: 2,
@@ -561,7 +565,10 @@ describe("captureAgentCompletionAnalytics", () => {
         chatId: "chat",
         endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
         mode,
-        subscription: "pro",
+        subscription:
+          experimentKey === "abliterated_free_ask_moderated_v1"
+            ? "free"
+            : "pro",
         outcome: "success",
         selectedModel: "model-abliterated",
         configuredModelId: "abliterated-model",
@@ -570,7 +577,7 @@ describe("captureAgentCompletionAnalytics", () => {
         sandboxInfo: { type: "e2b" },
         chatLogger: {} as any,
         experiment: {
-          key: "abliterated_paid_moderated_v1",
+          key: experimentKey,
           variant: "test",
           requestId: "message",
         },
@@ -582,6 +589,7 @@ describe("captureAgentCompletionAnalytics", () => {
           properties: expect.objectContaining({
             ...providerSummary,
             mode,
+            experiment_key: experimentKey,
             experiment_variant: "test",
             experiment_request_id: "message",
             fallback_served: true,

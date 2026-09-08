@@ -36,6 +36,7 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -1656,7 +1657,7 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
-  if (args.experiment?.key === "abliterated_paid_moderated_v1") {
+  if (isAbliterationExperimentKey(args.experiment?.key)) {
     try {
       posthog?.capture({
         distinctId: userId,

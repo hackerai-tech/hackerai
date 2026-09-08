@@ -36,6 +36,7 @@ export async function selectTaskOutcomeSurvey(args: {
         chat_id: args.chatId,
         request_id: args.messageId,
         message_id: args.messageId,
+        experiment_key: assignment.key,
         experiment_variant: assignment.variant,
         baseline_model: assignment.baselineModel,
         assigned_model: assignment.modelKey,

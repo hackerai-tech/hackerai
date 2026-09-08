@@ -1,4 +1,8 @@
 import { TASK_OUTCOME_FLAG } from "../feedback/task-outcome";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  type AbliterationExperimentKey,
+} from "../experiments/abliteration-keys";
 
 /** Shared allowlist: never pass the full database row or user content to PostHog. */
 export function taskOutcomeProperties(row: {
@@ -6,6 +10,7 @@ export function taskOutcomeProperties(row: {
   message_id: string;
   chat_id: string;
   experiment_variant: string;
+  experiment_key?: AbliterationExperimentKey;
   baseline_model: string;
   assigned_model: string;
   mode: string;
@@ -23,7 +28,7 @@ export function taskOutcomeProperties(row: {
     // relabel them with the limit of a newer frontend deployment.
     routing_version: row.routing_version ?? "first_three_generation_steps_v1",
     generation_step_limit: row.generation_step_limit ?? 3,
-    experiment_key: "abliterated_paid_moderated_v1",
+    experiment_key: row.experiment_key ?? ABLITERATED_EXPERIMENT_KEY,
     experiment_variant: row.experiment_variant,
     experiment_request_id: row.request_id,
     message_id: row.message_id,
