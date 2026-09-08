@@ -382,3 +382,37 @@
 *::-webkit-scrollbar-corner {
   background: var(--scrollbar-track);
 }
+
+/* Preserve scrollbar space so task titles do not shift when it appears. */
+.sidebar-chat-scroll {
+  scrollbar-color: transparent transparent;
+}
+
+.sidebar-chat-scroll::-webkit-scrollbar,
+.sidebar-chat-scroll::-webkit-scrollbar-track,
+.sidebar-chat-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.sidebar-chat-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+.sidebar-chat-scroll[data-scrolling="true"] {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.sidebar-chat-scroll[data-scrolling="true"]::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+
+@media (hover: hover) {
+  .sidebar-chat-scroll:hover {
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  .sidebar-chat-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+  }
+}

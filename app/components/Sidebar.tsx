@@ -1,6 +1,6 @@
 "use client";
 
-import { FC, useRef } from "react";
+import { FC, useEffect, useRef } from "react";
 import { useGlobalStateActions } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
@@ -33,9 +33,31 @@ const ChatListContent: FC<{
 }> = ({ chatListData, projectListData, isVisible = true }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+    const handleScroll = () => {
+      // Keep transient scrollbar activity out of the chat list's render cycle.
+      container.dataset.scrolling = "true";
+      clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        delete container.dataset.scrolling;
+      }, 800);
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      clearTimeout(idleTimeout);
+      delete container.dataset.scrolling;
+    };
+  }, []);
+
   return (
     <div
-      className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
+      className="sidebar-chat-scroll h-full min-w-0 overflow-y-auto overflow-x-hidden"
       ref={scrollContainerRef}
       data-testid="sidebar-chat-list-scroll-container"
     >
