@@ -2114,6 +2114,8 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
+                                  abliteratedProviderSummary:
+                                    abliteratedTelemetry?.getSummary(),
                                   posthog,
                                   userId,
                                   chatId,
@@ -2439,6 +2441,8 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
+                      abliteratedProviderSummary:
+                        abliteratedTelemetry?.getSummary(),
                       posthog,
                       userId,
                       chatId,

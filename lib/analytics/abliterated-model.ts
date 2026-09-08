@@ -18,9 +18,39 @@ type StreamResult = Awaited<ReturnType<StreamOptions["doStream"]>>;
 type StreamPart =
   StreamResult["stream"] extends ReadableStream<infer P> ? P : never;
 
+type ProviderOutcome =
+  | "completed"
+  | "error"
+  | "aborted"
+  | "incomplete"
+  | "content_filter"
+  | "truncated"
+  | "empty";
+
 /** One instance per assistant response; shared across retries and model switches. */
 export class AbliteratedModelTelemetry {
   private sequence = 0;
+  private readonly totals = {
+    provider_outcome_count: 0,
+    provider_completed_count: 0,
+    provider_error_count: 0,
+    provider_aborted_count: 0,
+    provider_incomplete_count: 0,
+    provider_content_filter_count: 0,
+    provider_truncated_count: 0,
+    provider_empty_count: 0,
+    provider_abliteration_attempt_count: 0,
+    provider_baseline_attempt_count: 0,
+    provider_continuation_completed_count: 0,
+    provider_usage_reported_count: 0,
+    provider_input_tokens: 0,
+    provider_output_tokens: 0,
+    provider_cache_read_tokens: 0,
+    provider_reasoning_tokens: 0,
+    provider_estimated_cost_dollars: 0,
+    provider_duration_ms: 0,
+    provider_tool_call_count: 0,
+  };
   private exposed = false;
   private successfulAbliterationGeneration = false;
   private selectionSource: "moderation" | "history";
@@ -62,7 +92,7 @@ export class AbliteratedModelTelemetry {
       )
         ? "not_appended"
         : "standard",
-      telemetry_version: 1,
+      telemetry_version: 2,
       $process_person_profile: false,
     };
     this.capture("abliterated_model_eligible", {});
@@ -98,6 +128,17 @@ export class AbliteratedModelTelemetry {
     };
   }
 
+  /** Request totals include retries and replacement messages; no per-step array. */
+  getSummary() {
+    return {
+      telemetry_version: 2,
+      provider_attempt_count: this.sequence,
+      provider_pending_count:
+        this.sequence - this.totals.provider_outcome_count,
+      ...this.totals,
+    };
+  }
+
   wrap(model: LanguageModel, stepIndex: number): LanguageModel {
     if (typeof model === "string" || model.specificationVersion !== "v3")
       return model;
@@ -107,6 +148,9 @@ export class AbliteratedModelTelemetry {
         specificationVersion: "v3",
         wrapStream: async ({ doStream, params }) => {
           const attempt = ++this.sequence;
+          if (isAbliterationModel(model.modelId))
+            this.totals.provider_abliteration_attempt_count++;
+          else this.totals.provider_baseline_attempt_count++;
           const start = Date.now();
           let terminal = false;
           let textCharacters = 0;
@@ -126,21 +170,48 @@ export class AbliteratedModelTelemetry {
               : "standard",
           });
           const finish = (
-            outcome: string,
+            outcome: ProviderOutcome,
             properties: Record<string, unknown> = {},
           ) => {
             if (terminal) return;
             terminal = true;
+            const duration = Date.now() - start;
+            this.totals.provider_outcome_count++;
+            this.totals[`provider_${outcome}_count`]++;
+            this.totals.provider_duration_ms += duration;
+            this.totals.provider_tool_call_count += toolCalls;
+            if (outcome === "completed" && stepIndex > 0)
+              this.totals.provider_continuation_completed_count++;
+            if (
+              typeof properties.estimated_provider_cost_dollars === "number"
+            ) {
+              this.totals.provider_usage_reported_count++;
+              this.totals.provider_estimated_cost_dollars +=
+                properties.estimated_provider_cost_dollars;
+            }
+            for (const key of [
+              "input_tokens",
+              "output_tokens",
+              "cache_read_tokens",
+              "reasoning_tokens",
+            ] as const) {
+              const value = properties[key];
+              if (typeof value === "number")
+                this.totals[`provider_${key}`] += value;
+            }
             if (
               outcome === "completed" &&
               isAbliterationModel(responseModel) &&
               isAbliterationModel(model.modelId)
             )
               this.successfulAbliterationGeneration = true;
+            // Keep first-step comparisons and every exceptional outcome. Normal
+            // continuation successes are represented by the final run summary.
+            if (stepIndex > 0 && outcome === "completed") return;
             this.capture("abliterated_model_provider_outcome", {
               ...common(),
               outcome,
-              duration_ms: Date.now() - start,
+              duration_ms: duration,
               first_content_ms: firstContentMs,
               text_characters: textCharacters,
               reasoning_characters: reasoningCharacters,
@@ -159,7 +230,6 @@ export class AbliteratedModelTelemetry {
               exposure_surface: "stream_content",
             });
           };
-          this.capture("abliterated_model_provider_attempt", common());
           let result: StreamResult;
           try {
             result = await doStream();

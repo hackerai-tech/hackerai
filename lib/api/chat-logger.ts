@@ -35,6 +35,7 @@ import {
   type ExperimentAnalyticsContext,
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
+import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -1249,6 +1250,9 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  abliteratedProviderSummary?: ReturnType<
+    AbliteratedModelTelemetry["getSummary"]
+  >;
   posthog: PostHog | null;
   userId: string;
   chatId: string;
@@ -1643,6 +1647,7 @@ export function captureAgentCompletionAnalytics(
         distinctId: userId,
         event: "abliterated_model_response_outcome",
         properties: {
+          ...args.abliteratedProviderSummary,
           ...getExperimentAnalyticsProperties(args.experiment),
           chat_id: args.chatId,
           mode,

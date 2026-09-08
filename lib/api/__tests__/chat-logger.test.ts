@@ -541,7 +541,15 @@ describe("captureAgentBudgetAbort", () => {
 describe("captureAgentCompletionAnalytics", () => {
   it("captures Ask experiment outcomes while preserving assignment through fallback", () => {
     const capture = jest.fn();
+    const providerSummary = {
+      telemetry_version: 2,
+      provider_attempt_count: 500,
+      provider_completed_count: 499,
+      provider_error_count: 1,
+      provider_estimated_cost_dollars: 0.12,
+    };
     captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: providerSummary,
       posthog: { capture } as any,
       userId: "user",
       chatId: "chat",
@@ -566,6 +574,7 @@ describe("captureAgentCompletionAnalytics", () => {
       expect.objectContaining({
         event: "abliterated_model_response_outcome",
         properties: expect.objectContaining({
+          ...providerSummary,
           mode: "ask",
           experiment_variant: "test",
           experiment_request_id: "message",

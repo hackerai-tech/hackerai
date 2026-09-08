@@ -11,11 +11,15 @@ const finishPart = {
     outputTokens: { total: 5, reasoning: 1 },
   },
 };
-function model(parts: unknown[], fails = false): LanguageModel {
+function model(
+  parts: unknown[],
+  fails = false,
+  modelId = "abliterated-model",
+): LanguageModel {
   return {
     specificationVersion: "v3",
     provider: "test",
-    modelId: "abliterated-model",
+    modelId,
     supportedUrls: {},
     doGenerate: jest.fn(),
     doStream: jest.fn(async () => {
@@ -68,7 +72,7 @@ describe("Abliteration stream telemetry", () => {
   beforeEach(() => capture.mockClear());
   const events = (name: string) =>
     capture.mock.calls.map(([event]) => event).filter((e) => e.event === name);
-  it("distinguishes eligibility, attempts and actual output, without leaking content", async () => {
+  it("aggregates attempts while preserving eligibility and output without leaking content", async () => {
     const telemetry = create();
     expect(events("abliterated_model_exposed")).toHaveLength(0);
     const parts = [
@@ -82,17 +86,14 @@ describe("Abliteration stream telemetry", () => {
       assigned_platform_authorization_context: "not_appended",
       generation_step_limit: 1,
     });
-    expect(events("abliterated_model_provider_attempt")).toHaveLength(2);
-    expect(
-      events("abliterated_model_provider_attempt").map(
-        (event) => event.properties.generation_step,
-      ),
-    ).toEqual([1, 2]);
-    expect(
-      events("abliterated_model_provider_attempt").map(
-        (event) => event.properties.within_abliteration_step_limit,
-      ),
-    ).toEqual([true, false]);
+    expect(events("abliterated_model_provider_attempt")).toHaveLength(0);
+    expect(events("abliterated_model_provider_outcome")).toHaveLength(1);
+    expect(telemetry.getSummary()).toMatchObject({
+      telemetry_version: 2,
+      provider_attempt_count: 2,
+      provider_completed_count: 2,
+      provider_pending_count: 0,
+    });
     expect(events("abliterated_model_exposed")).toHaveLength(1);
     expect(
       events("abliterated_model_provider_outcome")[0].properties,
@@ -102,8 +103,125 @@ describe("Abliteration stream telemetry", () => {
       output_tokens: 5,
       cache_read_tokens: 2,
       platform_authorization_context: "not_appended",
+      generation_step: 1,
+      within_abliteration_step_limit: true,
     });
     expect(JSON.stringify(capture.mock.calls)).not.toContain("private answer");
+  });
+  it.each(["test", "control"] as const)(
+    "keeps event volume constant across 500 successful steps for %s",
+    async (variant) => {
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+        assignment: {
+          key: ABLITERATED_EXPERIMENT_KEY,
+          variant,
+          modelKey:
+            variant === "test"
+              ? "model-abliterated"
+              : "model-deepseek-v4-flash-0731",
+          baselineModel: "model-deepseek-v4-flash-0731",
+        },
+        messageId: "message",
+        chatId: "chat",
+        mode: "agent",
+        subscription: "free",
+      });
+      const parts = [
+        { type: "text-delta", id: "t", delta: "private answer" },
+        finishPart,
+      ];
+      for (let step = 0; step < 500; step++) {
+        const source = model(
+          parts,
+          false,
+          step === 0 && variant === "test"
+            ? "abliterated-model"
+            : "deepseek/deepseek-v4-flash-0731",
+        );
+        expect(await consume(telemetry, source, step)).toEqual(parts);
+      }
+      expect(capture).toHaveBeenCalledTimes(3); // eligibility, exposure, first outcome
+      expect(
+        events("abliterated_model_provider_outcome")[0].properties,
+      ).toMatchObject({
+        generation_step: 1,
+        experiment_variant: variant,
+        outcome: "completed",
+      });
+      expect(telemetry.getSummary()).toMatchObject({
+        provider_attempt_count: 500,
+        provider_outcome_count: 500,
+        provider_completed_count: 500,
+        provider_pending_count: 0,
+        provider_continuation_completed_count: 499,
+        provider_abliteration_attempt_count: variant === "test" ? 1 : 0,
+        provider_baseline_attempt_count: variant === "test" ? 499 : 500,
+        provider_usage_reported_count: 500,
+        provider_input_tokens: 5000,
+        provider_output_tokens: 2500,
+        provider_cache_read_tokens: 1000,
+        provider_reasoning_tokens: 500,
+      });
+      expect(
+        telemetry.getSummary().provider_estimated_cost_dollars,
+      ).toBeGreaterThan(0);
+      expect(JSON.stringify(capture.mock.calls)).not.toContain(
+        "private answer",
+      );
+    },
+  );
+  it.each([
+    ["length", "truncated"],
+    ["content-filter", "content_filter"],
+    ["error", "error"],
+    ["stop", "empty"],
+  ])("retains later-step %s diagnostics", async (reason, outcome) => {
+    const telemetry = create();
+    await consume(
+      telemetry,
+      model([
+        { ...finishPart, finishReason: { unified: reason, raw: reason } },
+      ]),
+      499,
+    );
+    expect(
+      events("abliterated_model_provider_outcome")[0].properties,
+    ).toMatchObject({ generation_step: 500, outcome });
+    expect(telemetry.getSummary()).toMatchObject({
+      provider_attempt_count: 1,
+      provider_outcome_count: 1,
+      [`provider_${outcome}_count`]: 1,
+    });
+  });
+  it("retains late failures and totals across fallback message replacement", async () => {
+    const telemetry = create();
+    await expect(consume(telemetry, model([], true), 4)).rejects.toThrow();
+    telemetry.setMessageId("fallback-message");
+    await consume(
+      telemetry,
+      model(
+        [{ type: "text-delta", id: "t", delta: "ok" }, finishPart],
+        false,
+        "deepseek/deepseek-v4-flash-0731",
+      ),
+      4,
+    );
+    expect(events("abliterated_model_provider_outcome")).toHaveLength(1);
+    expect(
+      events("abliterated_model_provider_outcome")[0].properties,
+    ).toMatchObject({ generation_step: 5, outcome: "error" });
+    expect(
+      events("abliterated_model_message_linked")[0].properties,
+    ).toMatchObject({
+      experiment_request_id: "message",
+      message_id: "fallback-message",
+    });
+    expect(telemetry.getSummary()).toMatchObject({
+      provider_attempt_count: 2,
+      provider_error_count: 1,
+      provider_completed_count: 1,
+      provider_usage_reported_count: 1,
+    });
   });
   it("retains failed attempts without inventing exposure, then records fallback exposure", async () => {
     const telemetry = create();
@@ -125,6 +243,54 @@ describe("Abliteration stream telemetry", () => {
     expect(JSON.stringify(capture.mock.calls)).not.toContain(
       "private provider error",
     );
+  });
+  it("counts an error followed by finish only once", async () => {
+    const telemetry = create();
+    await consume(
+      telemetry,
+      model([{ type: "error", error: "private error" }, finishPart]),
+      3,
+    );
+    expect(events("abliterated_model_provider_outcome")).toHaveLength(1);
+    expect(telemetry.getSummary()).toMatchObject({
+      provider_outcome_count: 1,
+      provider_error_count: 1,
+      provider_completed_count: 0,
+      provider_pending_count: 0,
+    });
+  });
+  it("retains incomplete continuation outcomes", async () => {
+    const telemetry = create();
+    await consume(telemetry, model([]), 2);
+    expect(
+      events("abliterated_model_provider_outcome")[0].properties.outcome,
+    ).toBe("incomplete");
+    expect(telemetry.getSummary().provider_incomplete_count).toBe(1);
+  });
+  it("propagates cancellation and retains the aborted continuation outcome", async () => {
+    const telemetry = create();
+    const source = model([]);
+    if (typeof source === "string") throw new Error("unexpected model");
+    const cancel = jest.fn();
+    source.doStream = jest.fn(async () => ({
+      stream: new ReadableStream({ cancel }),
+    }));
+    const wrapped = telemetry.wrap(source, 4);
+    if (typeof wrapped === "string") throw new Error("unexpected model");
+    const result = await wrapped.doStream({ prompt: [] });
+    const pending = telemetry.getSummary();
+    expect(pending.provider_pending_count).toBe(1);
+    await result.stream.cancel("stop");
+    expect(cancel).toHaveBeenCalledWith("stop");
+    expect(
+      events("abliterated_model_provider_outcome")[0].properties,
+    ).toMatchObject({ generation_step: 5, outcome: "aborted" });
+    expect(telemetry.getSummary()).toMatchObject({
+      provider_aborted_count: 1,
+      provider_pending_count: 0,
+      provider_outcome_count: 1,
+    });
+    expect(pending.provider_pending_count).toBe(1); // snapshots cannot change after capture
   });
   it("does not call reasoning-only output a successful answer", async () => {
     await consume(
@@ -165,6 +331,7 @@ describe("Abliteration stream telemetry", () => {
           finishReason: { unified: "content-filter", raw: "content-filter" },
         },
       ]),
+      0,
     );
     const output = await consumeModel(
       guardLanguageModelProviderResponse(telemetryModel),
