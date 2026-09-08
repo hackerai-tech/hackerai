@@ -2837,7 +2837,38 @@ export const createChatHandler = () => {
               }),
             );
           } catch (error) {
-            await releaseFreeRunLockOnce();
+            // execute errors are consumed by createUIMessageStream, so the
+            // outer request catch and stream onFinish cannot clean them up.
+            preemptiveTimeout?.clear();
+            const cleanupOperations = [
+              [
+                "stop_subscriber",
+                async () => {
+                  if (!subscriberStopped) {
+                    await cancellationSubscriber.stop();
+                    subscriberStopped = true;
+                  }
+                },
+              ],
+              ["refund_usage", () => usageRefundTracker.refund()],
+              ["close_pty_sessions", () => ptySessionManager.closeAll(chatId)],
+              ["release_run_lock", () => releaseFreeRunLockOnce()],
+            ] as const;
+            const cleanupResults = await Promise.allSettled(
+              cleanupOperations.map(async ([, cleanup]) => cleanup()),
+            );
+            const failedOperations = cleanupOperations
+              .filter((_, index) => cleanupResults[index].status === "rejected")
+              .map(([operation]) => operation);
+            if (failedOperations.length > 0) {
+              phLogger.warn("Chat stream setup cleanup failed", {
+                event: "chat_stream_setup_cleanup_failed",
+                chatId,
+                endpoint,
+                failed_operations: failedOperations,
+              });
+            }
+            shutdownPostHog(posthog);
             throw error;
           }
         },
