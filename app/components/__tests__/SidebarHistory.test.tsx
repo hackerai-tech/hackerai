@@ -52,6 +52,11 @@ describe("SidebarHistory", () => {
         expect.any(Function),
         expect.objectContaining({ root }),
       );
+      callback(
+        [{ isIntersecting: false }] as IntersectionObserverEntry[],
+        {} as IntersectionObserver,
+      );
+      expect(loadMore).not.toHaveBeenCalled();
       const entries = [{ isIntersecting: true }] as IntersectionObserverEntry[];
       callback(entries, {} as IntersectionObserver);
       callback(entries, {} as IntersectionObserver);

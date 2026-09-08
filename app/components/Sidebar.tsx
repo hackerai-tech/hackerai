@@ -29,7 +29,8 @@ export type ProjectListData = ReturnType<typeof useProjects>;
 const ChatListContent: FC<{
   chatListData: ChatListData;
   projectListData: ProjectListData;
-}> = ({ chatListData, projectListData }) => {
+  isVisible?: boolean;
+}> = ({ chatListData, projectListData, isVisible = true }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   return (
@@ -49,7 +50,7 @@ const ChatListContent: FC<{
           projectPaginationStatus={projectListData.status}
           loadMoreProjects={projectListData.loadMore}
           paginationStatus={chatListData.status}
-          loadMore={chatListData.loadMore}
+          loadMore={isVisible ? chatListData.loadMore : undefined}
           containerRef={scrollContainerRef}
         />
       </SidebarProjectListProvider>
@@ -80,9 +81,10 @@ const DesktopSidebarContent: FC<{
         />
       </SidebarHeader>
 
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent>
+      {/* Keep the observer root bounded and make it the only scrolling element. */}
+      <SidebarContent className="overflow-hidden">
+        <SidebarGroup className="min-h-0 flex-1">
+          <SidebarGroupContent className="min-h-0 flex-1">
             <div
               className={`h-full transition-opacity duration-100 ease-out motion-reduce:transition-none ${
                 isCollapsed
@@ -97,6 +99,7 @@ const DesktopSidebarContent: FC<{
               <ChatListContent
                 chatListData={chatListData}
                 projectListData={projectListData}
+                isVisible={!isCollapsed}
               />
             </div>
           </SidebarGroupContent>
