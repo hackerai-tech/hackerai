@@ -172,25 +172,51 @@ run; it does not reroute an already-running stream.
 
 All new server events carry `experiment_key`, `experiment_variant`,
 `$feature/abliterated_paid_moderated_v1`, `experiment_request_id`, mode, tier,
-and `generation_step_limit`. Provider-attempt and provider-outcome events also
+and `generation_step_limit`. Provider-outcome events also
 carry the one-based `generation_step` and `within_abliteration_step_limit`.
-Eligibility identifies `assigned_platform_authorization_context`; each provider
-attempt identifies its actual `platform_authorization_context` as `not_appended`
+Eligibility identifies `assigned_platform_authorization_context`; each retained provider
+outcome identifies its actual `platform_authorization_context` as `not_appended`
 for an Abliteration model or `standard` for a control/fallback provider.
 The request ID is the original assistant-message ID and stays stable across
 provider retries. No new event contains prompts, answers, reasoning, targets,
 tool names/arguments, files, raw provider errors, or credentials.
 
-| Event                                  | Meaning                                                                                                                                                                                                                         |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `abliterated_model_eligible`           | Assigned paid/moderation-eligible request before model-priced budget checks; intention-to-treat denominator, including requests blocked by budget or never producing output                                                     |
-| `abliterated_model_provider_attempt`   | Actual provider call; sequential attempt counter includes SDK retries and tool-loop steps                                                                                                                                       |
-| `abliterated_model_exposed`            | First streamed nonempty text or accepted tool call; once per response, including control/fallback with actual model attribution                                                                                                 |
-| `abliterated_model_provider_outcome`   | Per-call completed, empty, error, aborted, incomplete, content-filtered or truncated outcome; duration, first-content latency, text/reasoning lengths, tool-call count, reported token/cache counts and estimated provider cost |
-| `abliterated_model_response_outcome`   | Application-level Ask/Agent outcome, fallback/recovery and budget-abort context                                                                                                                                                 |
-| `abliterated_model_message_linked`     | Maps a replacement fallback message ID back to the original experiment request                                                                                                                                                  |
-| `chat_response_regeneration_requested` | Client regeneration action, with affected message ID and mode; contains no content                                                                                                                                              |
-| `chat_response_stop_requested`         | Client Stop action, with affected message ID and mode; distinct from confirmed cancellation                                                                                                                                     |
+| Event                                  | Meaning                                                                                                                                                                                                                                                  |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `abliterated_model_eligible`           | Assigned paid/moderation-eligible request before model-priced budget checks; intention-to-treat denominator, including requests blocked by budget or never producing output                                                                              |
+| `abliterated_model_provider_attempt`   | Legacy telemetry v1 only; v2 counts calls in the response summary                                                                                                                                                                                        |
+| `abliterated_model_exposed`            | First streamed nonempty text or accepted tool call; once per response, including control/fallback with actual model attribution                                                                                                                          |
+| `abliterated_model_provider_outcome`   | First-step outcomes and every empty, error, aborted, incomplete, content-filtered or truncated outcome at later steps; duration, first-content latency, text/reasoning lengths, tool-call count, reported token/cache counts and estimated provider cost |
+| `abliterated_model_response_outcome`   | Application-level Ask/Agent outcome, fallback/recovery and budget-abort context, plus provider totals in telemetry v2                                                                                                                                    |
+| `abliterated_model_message_linked`     | Maps a replacement fallback message ID back to the original experiment request                                                                                                                                                                           |
+| `chat_response_regeneration_requested` | Client regeneration action, with affected message ID and mode; contains no content                                                                                                                                                                       |
+| `chat_response_stop_requested`         | Client Stop action, with affected message ID and mode; distinct from confirmed cancellation                                                                                                                                                              |
+
+Telemetry v2 removes attempt events and successful continuation events. The
+existing response-outcome event includes request-wide `provider_attempt_count`,
+`provider_outcome_count`, `provider_pending_count`, per-outcome counts, requested
+Abliteration/baseline attempt counts, continuation completion count, duration,
+tool-call count, token/cache/reasoning totals, and `provider_estimated_cost_dollars`.
+Counters remain stable across fallback message replacement and include retries;
+they do not represent unique generation steps. `provider_usage_reported_count`
+counts attempts with both input and output totals available for the cost estimate.
+Missing usage is not an assertion of zero cost. These totals cover the wrapped
+main response providers, not unwrapped subagents or image-summary helper calls.
+
+Eligibility, actual exposure, first-step outcomes for both variants, exceptional
+outcomes at every step, feedback, and final response outcomes remain unsampled.
+A process terminated before final analytics may lose its in-memory summary; retain
+eligible requests without a terminal event in the readout. No new per-step array
+or user content is collected. Normal routing and billing are unchanged.
+
+For charts, do not use the remaining provider-outcome event count as the total
+call denominator. Use sums of v2 response totals, deduplicated by
+`experiment_request_id`. For first-step quality/latency, filter
+`generation_step=1` for both telemetry versions. Historical spend uses v1
+provider-outcome cost; v2 spend uses response-summary cost. Never add v2 detailed
+outcome cost to v2 summary cost, which would double-count first steps and errors.
+The provider-failure chart remains compatible because all exceptional outcomes
+are retained. A drop in diagnostic events at deployment is intentional.
 
 Exposure means content entered the application stream, not confirmed browser
 delivery or task usefulness. Reasoning-only output does not count. A completed
