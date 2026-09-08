@@ -4,18 +4,16 @@ import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-con
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
-export const FREE_ASK_FLASH_CONVERSION_KEY = "free_ask_flash_conversion_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key:
-    typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_ASK_FLASH_CONVERSION_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
 };
 
-/** Only already-authorized standard routes participate; media and rescue do not. */
+/** Only paid Agent standard routes participate; free Ask uses a fixed model. */
 export async function evaluateFlashRouting({
   posthog,
   userId,
@@ -33,15 +31,11 @@ export async function evaluateFlashRouting({
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || hasImages) return undefined;
   const key =
-    mode === "ask" &&
-    subscription === "free" &&
-    selectedModel === "ask-model-free"
-      ? FREE_ASK_FLASH_CONVERSION_KEY
-      : mode === "agent" &&
-          subscription !== "free" &&
-          selectedModel === "model-deepseek-v4-flash-0731"
-        ? PAID_AGENT_FLASH_RETURN_KEY
-        : undefined;
+    mode === "agent" &&
+    subscription !== "free" &&
+    selectedModel === "model-deepseek-v4-flash-0731"
+      ? PAID_AGENT_FLASH_RETURN_KEY
+      : undefined;
   if (!key) return undefined;
 
   try {
@@ -52,11 +46,7 @@ export async function evaluateFlashRouting({
       key,
       variant,
       modelKey:
-        variant === "control"
-          ? selectedModel
-          : key === FREE_ASK_FLASH_CONVERSION_KEY
-            ? "ask-model-free-glm"
-            : "model-glm-5.3-flash-agent",
+        variant === "control" ? selectedModel : "model-glm-5.3-flash-agent",
       configuredModel:
         variant === "test"
           ? "z-ai/glm-5.3-flash"

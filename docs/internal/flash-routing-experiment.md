@@ -1,8 +1,30 @@
-# Flash routing experiment (HAC-98)
+# Flash routing decisions (HAC-98)
 
 Owner and decision record: [HAC-98](https://linear.app/hackerai/issue/HAC-98).
-This is a reversible comparison, not evidence that the model caused a business
-decline. Opening or merging the PR does not authorize a production ramp.
+
+## Free Ask closeout — September 8, 2026
+
+Free Ask now selects `ask-model-free-glm` (`z-ai/glm-5.3-flash`) directly,
+with low reasoning through the existing provider/fallback policy. No PostHog
+assignment is consulted or free Flash experiment exposure emitted. Existing
+media routes, authenticated tier checks, limits and cost accounting remain in
+place. The `ask-model-free` DeepSeek alias remains for paid allowance rescue.
+
+This is an explicit product decision; the conversion result was inconclusive.
+The preliminary readout and limitations are recorded in HAC-98, with historical
+events retained. Retire `free_ask_flash_conversion_v1` in Preview 401167
+(flag 868788) and Production 144137 (flag 868786) after this code is deployed.
+Disabling that retired flag no longer changes routing; rollback requires a code
+change. Verify a new free Ask request on the deployment, completion/reload,
+configured GLM model, low reasoning and no experiment attribution.
+
+The paid Agent flag remains disabled by the separate Agent decision in HAC-98.
+Its routing and the Abliteration experiment are unchanged by this cleanup.
+
+## Historical experiment design
+
+The remaining sections describe the original experiment, not current rollout
+instructions. Consult HAC-98 for dated allocations and final decisions.
 
 ## Routes
 
