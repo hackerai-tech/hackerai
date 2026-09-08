@@ -1713,6 +1713,7 @@ export const createChatHandler = () => {
                     throw error;
                   }
                 }
+                userStopSignal.signal.throwIfAborted();
                 result = await createStream(apiRetryModel);
               } else {
                 throw error;
@@ -1989,6 +1990,16 @@ export const createChatHandler = () => {
                       // incomplete, or reasoning-only terminal provider streams.
                       // For image-tool rejection, retry the same selected model
                       // after replacing image outputs with text placeholders.
+                      const retryMessageId = generateId();
+                      if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
+                      ) {
+                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                      }
+                      isAborted ||= userStopSignal.signal.aborted;
+
                       if (
                         shouldAttemptProviderRetry &&
                         !visionSummaryRecoveryFailure &&
@@ -2035,9 +2046,7 @@ export const createChatHandler = () => {
                           usageTracker.resetModelLeg();
                         }
 
-                        const retryMessageId = generateId();
                         abliteratedTelemetry?.setMessageId(retryMessageId);
-                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel

@@ -4669,6 +4669,7 @@ export const agentLongTask = task({
                     throw error;
                   }
                 }
+                userStopSignal.signal.throwIfAborted();
                 result = await createStream(apiRetryModel);
               } else {
                 throw error;
@@ -4942,7 +4943,17 @@ export const agentLongTask = task({
                         });
                       }
 
+                      const retryMessageId = generateId();
                       if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
+                      ) {
+                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                      }
+                      isAborted ||= userStopSignal.signal.aborted;
+
+                      primaryProviderRecovery: if (
                         shouldAttemptProviderRetry &&
                         !visionSummaryRecoveryFailure &&
                         !userStopSignal.signal.aborted
@@ -5096,9 +5107,11 @@ export const agentLongTask = task({
                             });
                           }
                         }
-                        const retryMessageId = generateId();
                         abliteratedTelemetry?.setMessageId(retryMessageId);
-                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                        if (userStopSignal.signal.aborted) {
+                          isAborted = true;
+                          break primaryProviderRecovery;
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
@@ -5224,6 +5237,15 @@ export const agentLongTask = task({
                                     await taskOutcomeSurvey?.linkMessage(
                                       finalRetryMessageId,
                                     );
+                                    if (userStopSignal.signal.aborted) {
+                                      await finalizeRetryStream({
+                                        retryMessages,
+                                        retryAborted: true,
+                                        retryMessageId,
+                                        retryStartTime: fallbackStartTime,
+                                      });
+                                      return;
+                                    }
                                     const finalRetryResult =
                                       await createStream(finalRetryModel);
                                     writer.merge(
