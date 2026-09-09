@@ -4,6 +4,16 @@ These instructions apply to Codex and other coding agents working in this
 repository. Keep them durable, repo-scoped, and free of volatile business
 metrics.
 
+## Start Here
+
+Read [docs/codebase-map.md](docs/codebase-map.md) for task entry points, shared
+boundaries, and validation commands. Use [README.md](README.md) for initial
+service setup. Read only the feature docs and skills relevant to the task.
+
+Repository skills live in `.agents/skills/`; editor-specific skill directories
+link there. Update the canonical skill instead of adding another copy.
+`CLAUDE.md` imports this file so repository instructions have one source.
+
 ## Worktree Dependencies
 
 Each checkout or worktree must have its own `node_modules` links. Never copy,
