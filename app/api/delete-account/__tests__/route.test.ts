@@ -241,6 +241,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: ["org_team"],
       },
     );
     expect(mockDeleteOrganizationMembership).toHaveBeenCalledWith(
@@ -324,6 +325,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: [],
       },
     );
     expect(mockListSubscriptions).toHaveBeenCalledWith({
@@ -370,6 +372,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: [],
       },
     );
     expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
@@ -561,6 +564,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: [],
       },
     );
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
@@ -569,6 +573,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: [],
       },
     );
     expect(mockConvexMutation.mock.invocationCallOrder[3]).toBeLessThan(
@@ -700,6 +705,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: ["org_team"],
       },
     );
   });

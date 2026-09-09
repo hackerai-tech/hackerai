@@ -15,17 +15,22 @@ import type { LimitCapReason } from "@/lib/limit-pressure";
  * Ask and Agent share the same daily pool.
  */
 export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
+const PAID_DAILY_FREE_ALLOWANCE_RESERVATION_TTL_MS =
+  (4 * 60 * 60 + 5 * 60) * 1000;
 
 /**
- * Reserve one rescue request. Only the cost cap is enforced. The request
- * counter is still incremented so analytics can report how many rescue
- * requests a user made in a day.
+ * Reserve the shared per-user allowance for one active rescue request. The
+ * tokenized lease serializes Ask and Agent spending until settlement, while a
+ * bounded TTL recovers a lease if the worker exits without cleanup.
  */
 const RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT = `
 local requestKey = KEYS[1]
 local costKey = KEYS[2]
+local reservationKey = KEYS[3]
 local costLimit = tonumber(ARGV[1])
-local ttlMs = tonumber(ARGV[2])
+local counterTtlMs = tonumber(ARGV[2])
+local reservationTtlMs = tonumber(ARGV[3])
+local reservationToken = ARGV[4]
 
 local currentRequests = tonumber(redis.call("GET", requestKey) or "0")
 local currentCost = tonumber(redis.call("GET", costKey) or "0")
@@ -34,18 +39,45 @@ if currentCost >= costLimit then
   return {0, "cost_limit_reached", currentRequests, currentCost}
 end
 
-local nextRequests = redis.call("INCRBY", requestKey, 1)
-if nextRequests == 1 then
-  redis.call("PEXPIRE", requestKey, ttlMs)
+local acquired = redis.call(
+  "SET",
+  reservationKey,
+  reservationToken,
+  "PX",
+  reservationTtlMs,
+  "NX"
+)
+if not acquired then
+  return {0, "request_in_progress", currentRequests, currentCost}
 end
 
-if redis.call("EXISTS", costKey) == 0 then
-  redis.call("SET", costKey, currentCost, "PX", ttlMs)
-else
-  redis.call("PEXPIRE", costKey, ttlMs)
+local nextRequests = redis.call("INCRBY", requestKey, 1)
+if nextRequests == 1 then
+  redis.call("PEXPIRE", requestKey, counterTtlMs)
 end
 
 return {1, "ok", nextRequests, currentCost}
+`;
+
+const SETTLE_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT = `
+local costKey = KEYS[1]
+local reservationKey = KEYS[2]
+local costPoints = tonumber(ARGV[1])
+local ttlMs = tonumber(ARGV[2])
+local reservationToken = ARGV[3]
+
+if redis.call("GET", reservationKey) ~= reservationToken then
+  return {0, tonumber(redis.call("GET", costKey) or "0")}
+end
+
+local currentCost = tonumber(redis.call("GET", costKey) or "0")
+local nextCost = currentCost
+if costPoints > 0 then
+  nextCost = redis.call("INCRBY", costKey, costPoints)
+  redis.call("PEXPIRE", costKey, ttlMs)
+end
+redis.call("DEL", reservationKey)
+return {1, nextCost}
 `;
 
 const RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT = `
@@ -68,6 +100,7 @@ export type PaidDailyFreeAllowanceUnavailableReason =
   | "not_monthly_exhausted"
   | "attachments_not_supported"
   | "redis_unavailable"
+  | "request_in_progress"
   | "cost_limit_reached";
 
 export interface PaidDailyFreeAllowanceStatus {
@@ -91,6 +124,11 @@ export interface PaidDailyFreeAllowanceReservation {
   allowed: boolean;
   status: PaidDailyFreeAllowanceStatus;
   blockReason?: PaidDailyFreeAllowanceUnavailableReason;
+  /** Server-only Redis lease identity, present for production reservations. */
+  redisReservation?: {
+    bucket: string;
+    token: string;
+  };
 }
 
 export type PaidDailyFreeAllowanceCostRecordResult =
@@ -105,7 +143,7 @@ export type PaidDailyFreeAllowanceCostRecordResult =
       recorded: false;
       costPoints: number;
       costDollars: number;
-      unavailableReason: "redis_unavailable";
+      unavailableReason: "redis_unavailable" | "reservation_unavailable";
     };
 
 export type PaidDailyFreeAllowanceMetadata = {
@@ -203,6 +241,7 @@ export function getPaidDailyFreeAllowanceKeys(
   return {
     requestsKey: `${prefix}:requests`,
     costKey: `${prefix}:cost`,
+    reservationKey: `${prefix}:reservation`,
   };
 }
 
@@ -272,16 +311,16 @@ export async function getPaidDailyFreeAllowanceStatus(
     return baseStatus("redis_unavailable");
   }
 
-  const { requestsKey, costKey } = getPaidDailyFreeAllowanceKeys(
-    ctx.userId,
-    bucket,
-  );
+  const { requestsKey, costKey, reservationKey } =
+    getPaidDailyFreeAllowanceKeys(ctx.userId, bucket);
   let rawRequestsUsed: unknown;
   let rawCostUsed: unknown;
+  let rawReservation: unknown;
   try {
-    [rawRequestsUsed, rawCostUsed] = await Promise.all([
+    [rawRequestsUsed, rawCostUsed, rawReservation] = await Promise.all([
       redis.get(requestsKey),
       redis.get(costKey),
+      redis.get(reservationKey),
     ]);
   } catch {
     return baseStatus("redis_unavailable");
@@ -290,8 +329,11 @@ export async function getPaidDailyFreeAllowanceStatus(
   const requestsUsed = Math.max(0, Number(rawRequestsUsed ?? 0));
   const costUsedPoints = Math.max(0, Number(rawCostUsed ?? 0));
   const costRemainingPoints = Math.max(0, costLimitPoints - costUsedPoints);
-  const unavailableReason =
-    costRemainingPoints <= 0 ? "cost_limit_reached" : undefined;
+  const unavailableReason = rawReservation
+    ? "request_in_progress"
+    : costRemainingPoints <= 0
+      ? "cost_limit_reached"
+      : undefined;
 
   return {
     type: "paid_daily_free_allowance",
@@ -342,9 +384,12 @@ export async function reservePaidDailyFreeAllowanceRequest(
   }
 
   const { bucket, reset, ttlMs } = getCurrentUtcDayWindow();
-  const { requestsKey, costKey } = getPaidDailyFreeAllowanceKeys(
-    ctx.userId,
-    bucket,
+  const { requestsKey, costKey, reservationKey } =
+    getPaidDailyFreeAllowanceKeys(ctx.userId, bucket);
+  const reservationToken = crypto.randomUUID();
+  const reservationTtlMs = Math.min(
+    ttlMs,
+    PAID_DAILY_FREE_ALLOWANCE_RESERVATION_TTL_MS,
   );
   let result: [
     number,
@@ -355,8 +400,8 @@ export async function reservePaidDailyFreeAllowanceRequest(
   try {
     result = (await redis.eval(
       RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
-      [requestsKey, costKey],
-      [status.costLimitPoints, ttlMs],
+      [requestsKey, costKey, reservationKey],
+      [status.costLimitPoints, ttlMs, reservationTtlMs, reservationToken],
     )) as [
       number,
       PaidDailyFreeAllowanceUnavailableReason | "ok",
@@ -404,15 +449,22 @@ export async function reservePaidDailyFreeAllowanceRequest(
     allowed,
     status: nextStatus,
     ...(blockReason && blockReason !== "ok" && { blockReason }),
+    ...(allowed && {
+      redisReservation: {
+        bucket,
+        token: reservationToken,
+      },
+    }),
   };
 }
 
 export async function recordPaidDailyFreeAllowanceCost(
   userId: string,
   costDollars: number,
+  reservation?: PaidDailyFreeAllowanceReservation,
 ): Promise<PaidDailyFreeAllowanceCostRecordResult> {
   const costPoints = dollarsToPoints(costDollars);
-  if (costPoints <= 0) {
+  if (costPoints <= 0 && !reservation?.redisReservation) {
     return {
       recorded: true,
       costPoints: 0,
@@ -441,15 +493,36 @@ export async function recordPaidDailyFreeAllowanceCost(
     };
   }
 
-  const { bucket, ttlMs } = getCurrentUtcDayWindow();
-  const { costKey } = getPaidDailyFreeAllowanceKeys(userId, bucket);
+  const { bucket: currentBucket, ttlMs } = getCurrentUtcDayWindow();
+  const bucket = reservation?.redisReservation?.bucket ?? currentBucket;
+  const { costKey, reservationKey } = getPaidDailyFreeAllowanceKeys(
+    userId,
+    bucket,
+  );
   let nextCost: unknown;
   try {
-    nextCost = await redis.eval(
-      RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT,
-      [costKey],
-      [costPoints, ttlMs],
-    );
+    if (reservation?.redisReservation) {
+      const [settledRaw, settledCostRaw] = (await redis.eval(
+        SETTLE_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT,
+        [costKey, reservationKey],
+        [costPoints, ttlMs, reservation.redisReservation.token],
+      )) as [number, number];
+      if (settledRaw !== 1) {
+        return {
+          recorded: false,
+          costPoints,
+          costDollars: pointsToDollars(costPoints),
+          unavailableReason: "reservation_unavailable",
+        };
+      }
+      nextCost = settledCostRaw;
+    } else {
+      nextCost = await redis.eval(
+        RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT,
+        [costKey],
+        [costPoints, ttlMs],
+      );
+    }
   } catch {
     return {
       recorded: false,

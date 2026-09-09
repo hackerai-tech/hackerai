@@ -2,6 +2,7 @@ import { mutation, query, type QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
 
 const MAX_DUE_RESUMES = 50;
 const MAX_USER_PAUSE_ROWS = 20;
@@ -135,6 +136,9 @@ export const recordScheduledPause = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId)) {
+      throw new Error("Account deletion is in progress");
+    }
 
     const existing = await ctx.db
       .query("subscription_pauses")
@@ -353,6 +357,15 @@ export const claimResume = mutation({
       row.resume_claimed_at !== undefined &&
       args.now - row.resume_claimed_at >= STALE_RESUME_CLAIM_MS;
     if (!RESUMABLE_PAUSE_STATUSES.has(row.status) && !staleClaim) {
+      return null;
+    }
+    if (await isUserDeletionFenced(ctx.db, row.user_id)) {
+      await ctx.db.patch(row._id, {
+        status: "canceled",
+        canceled_at: args.now,
+        resume_claimed_at: undefined,
+        updated_at: args.now,
+      });
       return null;
     }
     if (

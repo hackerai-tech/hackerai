@@ -20,6 +20,9 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_customization",
     "extra_usage",
     "team_member_usage",
+    // Shared-organization rows are anonymized in place so the organization's
+    // automatic resume remains intact; all other pause rows are deleted.
+    "subscription_pauses",
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
@@ -351,6 +354,7 @@ async function cleanupUserDataForUser(
   ctx: MutationCtx,
   userId: string,
   mode: CleanupMode,
+  options: { preservedOrganizationIds?: string[] } = {},
 ) {
   const stats = createStats();
   const now = Date.now();
@@ -451,6 +455,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "team_member_usage", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const subscriptionPausesBatch = await collectByIndexBatch<
+    Doc<"subscription_pauses">
+  >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
+    q.eq("user_id", userId),
+  );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
     Doc<"cancellation_reason_details">
   >(
@@ -506,6 +515,7 @@ async function cleanupUserDataForUser(
     localSandboxConnectionsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
+    subscriptionPausesBatch,
     cancellationReasonDetailsBatch,
     researchRunMembersBatch,
     researchUserProfilesBatch,
@@ -524,6 +534,7 @@ async function cleanupUserDataForUser(
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
+  const subscriptionPauses = subscriptionPausesBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
   const researchRunMembers = researchRunMembersBatch.docs;
   const researchUserProfiles = researchUserProfilesBatch.docs;
@@ -541,6 +552,30 @@ async function cleanupUserDataForUser(
       ? []
       : chats.filter((chat) => !incompleteChatIds.has(chat.id));
   if (chatsReadyToDelete.length < chats.length) {
+    stats.hasMore = true;
+  }
+
+  const preservedOrganizationIds = new Set(
+    options.preservedOrganizationIds ?? [],
+  );
+  const subscriptionPausesToAnonymize = subscriptionPauses.filter(
+    (pause) =>
+      pause.organization_id !== undefined &&
+      preservedOrganizationIds.has(pause.organization_id),
+  );
+  const subscriptionPausesReadyToDelete = subscriptionPauses.filter(
+    (pause) =>
+      !subscriptionPausesToAnonymize.includes(pause) &&
+      pause.status !== "resuming",
+  );
+  const heldSubscriptionPauses =
+    subscriptionPauses.length -
+    subscriptionPausesToAnonymize.length -
+    subscriptionPausesReadyToDelete.length;
+  // A resume worker may already be creating a new Stripe subscription. Keep
+  // the deletion fence and this row until that worker settles, then a later
+  // cleanup pass can safely remove the terminal row.
+  if (heldSubscriptionPauses > 0) {
     stats.hasMore = true;
   }
 
@@ -579,6 +614,21 @@ async function cleanupUserDataForUser(
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);
   await deleteDocs(ctx, stats, "team_member_usage", teamMemberUsage, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "subscription_pauses",
+    subscriptionPausesReadyToDelete,
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "subscription_pauses",
+    subscriptionPausesToAnonymize,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
   await deleteDocs(
     ctx,
     stats,
@@ -992,11 +1042,14 @@ export const deleteAllUserDataByService = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
+    preservedOrganizationIds: v.optional(v.array(v.string())),
   },
   returns: cleanupStatsValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    return await cleanupUserDataForUser(ctx, args.userId, "execute");
+    return await cleanupUserDataForUser(ctx, args.userId, "execute", {
+      preservedOrganizationIds: args.preservedOrganizationIds,
+    });
   },
 });
 

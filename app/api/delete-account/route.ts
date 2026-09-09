@@ -172,6 +172,7 @@ async function deleteConvexUserData(
   userId: string,
   serviceKey: string,
   requestId: string,
+  preservedOrganizationIds: string[],
 ): Promise<boolean> {
   const convex = getConvexClient();
   let progressStatsBatches = 0;
@@ -187,6 +188,7 @@ async function deleteConvexUserData(
       {
         serviceKey,
         userId,
+        preservedOrganizationIds,
       },
     );
 
@@ -269,6 +271,9 @@ export const POST = async (req: NextRequest) => {
         { status: 400 },
       );
     }
+    const preservedOrganizationIds = membershipDeletionPlans
+      .filter((plan) => !plan.deleteOrganization)
+      .map((plan) => plan.membership.organizationId);
 
     const serviceKey = getConvexServiceKey();
     stage = "begin_user_data_deletion";
@@ -323,6 +328,7 @@ export const POST = async (req: NextRequest) => {
       userId,
       serviceKey,
       requestId,
+      preservedOrganizationIds,
     );
     if (!cleanupComplete) {
       return NextResponse.json(

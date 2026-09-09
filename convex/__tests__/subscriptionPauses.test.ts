@@ -24,6 +24,16 @@ jest.mock("../lib/utils", () => ({
   validateServiceKey: jest.fn(),
 }));
 
+jest.mock("../lib/userDeletionFence", () => ({
+  isUserDeletionFenced: jest.fn(async () => false),
+}));
+
+const mockIsUserDeletionFenced = jest.requireMock<{
+  isUserDeletionFenced: jest.MockedFunction<
+    (db: unknown, userId: string) => Promise<boolean>
+  >;
+}>("../lib/userDeletionFence").isUserDeletionFenced;
+
 type Row = Record<string, any>;
 
 /** Minimal in-memory stand-in for the subscription_pauses table. */
@@ -108,6 +118,7 @@ function pauseRow(overrides: Row = {}): Row {
 describe("subscription pause lifecycle", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsUserDeletionFenced.mockResolvedValue(false);
   });
 
   it("claims a due pause once and rejects a second automatic claim", async () => {
@@ -247,6 +258,52 @@ describe("subscription pause lifecycle", () => {
 
     expect(result).toEqual({ pauseId: "pause_1", created: false });
     expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a new scheduled pause after account deletion is fenced", async () => {
+    const { recordScheduledPause } = await import("../subscriptionPauses");
+    const rows: Row[] = [];
+    const db = buildDb(rows);
+    mockIsUserDeletionFenced.mockResolvedValueOnce(true);
+
+    await expect(
+      (recordScheduledPause as any).handler(
+        { db },
+        {
+          serviceKey: "k",
+          userId: "user_1",
+          stripeCustomerId: "cus_1",
+          stripeSubscriptionId: "sub_1",
+          stripePriceId: "price_1",
+          quantity: 1,
+          pauseMonths: 2,
+          requestedAt: 5_000,
+          pauseEffectiveAt: 6_000,
+          resumeAt: 7_000,
+        },
+      ),
+    ).rejects.toThrow("Account deletion is in progress");
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("cancels a resumable pause instead of claiming it after deletion is fenced", async () => {
+    const { claimResume } = await import("../subscriptionPauses");
+    const rows = [pauseRow({ status: "paused" })];
+    const db = buildDb(rows);
+    mockIsUserDeletionFenced.mockResolvedValueOnce(true);
+
+    await expect(
+      (claimResume as any).handler(
+        { db },
+        { serviceKey: "k", pauseId: "pause_1", now: 5_000, maxAttempts: 3 },
+      ),
+    ).resolves.toBeNull();
+    expect(rows[0]).toMatchObject({
+      status: "canceled",
+      canceled_at: 5_000,
+      updated_at: 5_000,
+    });
+    expect(rows[0].resume_claimed_at).toBeUndefined();
   });
 
   it("only exposes the caller's own active pause", async () => {
