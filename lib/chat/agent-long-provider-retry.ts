@@ -181,6 +181,7 @@ export const getNextDeepSeekProDisconnectRetryModel = ({
  */
 export const prepareProviderDisconnectContinuation = (
   messages: UIMessage[],
+  { allowCompletedTail = false }: { allowCompletedTail?: boolean } = {},
 ): ProviderDisconnectContinuation | undefined => {
   const assistantIndex = messages.findLastIndex(
     (message) => message.role === "assistant",
@@ -202,7 +203,7 @@ export const prepareProviderDisconnectContinuation = (
       : lastStepStartIndex,
   );
   const removedPartCount = parts.length - preserveUntil;
-  if (removedPartCount <= 0) return undefined;
+  if (removedPartCount <= 0 && !allowCompletedTail) return undefined;
 
   const preservedParts = parts.slice(0, preserveUntil);
   const normalizedMessages = messages.slice(0, assistantIndex);
@@ -462,3 +463,6 @@ export const shouldRetryProviderStreamAfterInterruptedToolInput = (
 ): boolean =>
   options.hasTerminalProviderStreamError &&
   isInterruptedToolInputOnlyProviderOutput(parts);
+
+export const PROVIDER_DISCONNECT_CONTINUATION_PROMPT =
+  "The previous model connection ended mid-response. Continue from the preserved completed text and tool results. Do not repeat completed tool calls or their side effects. Finish the task from the last durable result.";

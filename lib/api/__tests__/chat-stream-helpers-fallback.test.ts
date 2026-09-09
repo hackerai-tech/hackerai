@@ -14,7 +14,7 @@ import {
   isExplicitDeepSeekProSelectionForRetry,
   isProviderApiError,
   resolveServedModelForCostAccounting,
-  shouldRetryAbliterationApiError,
+  shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
@@ -1020,41 +1020,56 @@ describe("getRetryFallbackModel", () => {
   });
 });
 
-describe("shouldRetryAbliterationApiError", () => {
-  it("falls back for a treatment provider media-policy failure", () => {
+describe("shouldRetryAbliterationError", () => {
+  it.each([
+    "model-abliterated",
+    "model-abliterated-large-v2",
+    "abliterated-model",
+    "abliterated-model-large-v2",
+  ])("allows every failure of active treatment %s", (model) => {
     expect(
-      shouldRetryAbliterationApiError(
+      shouldRetryAbliterationError(
         { variant: "test" },
-        new Error("Image dimensions exceed the project media policy."),
+        model,
+        new AbortController().signal,
       ),
     ).toBe(true);
   });
 
-  it("does not retry an image URL that another provider cannot download", () => {
+  it("does not recover a later OpenRouter step under the treatment assignment", () => {
     expect(
-      shouldRetryAbliterationApiError(
+      shouldRetryAbliterationError(
         { variant: "test" },
-        new Error(
-          "Failed to download the provided image. Image host returned HTTP status 404",
-        ),
+        "model-grok-4.6",
+        new AbortController().signal,
       ),
     ).toBe(false);
   });
 
-  it("does not change control or non-experiment provider recovery", () => {
+  it("respects cancellation", () => {
+    const controller = new AbortController();
+    controller.abort();
     expect(
-      shouldRetryAbliterationApiError(
-        { variant: "control" },
-        new Error("Provider unavailable"),
-      ),
-    ).toBe(false);
-    expect(
-      shouldRetryAbliterationApiError(
-        undefined,
-        new Error("Provider unavailable"),
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        "model-abliterated",
+        controller.signal,
       ),
     ).toBe(false);
   });
+
+  it.each([undefined, { variant: "control" as const }])(
+    "preserves non-treatment behavior",
+    (assignment) => {
+      expect(
+        shouldRetryAbliterationError(
+          assignment,
+          "model-abliterated",
+          new AbortController().signal,
+        ),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("getContentFilterRetryModel", () => {

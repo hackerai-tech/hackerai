@@ -1,3 +1,8 @@
+import {
+  prepareProviderDisconnectContinuation,
+  PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+} from "@/lib/chat/agent-long-provider-retry";
+import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
@@ -99,7 +104,7 @@ import {
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
-  shouldRetryAbliterationApiError,
+  shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
@@ -1615,29 +1620,32 @@ export const createChatHandler = () => {
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
               const shouldRecoverAbliterationApiError =
-                shouldRetryAbliterationApiError(
+                shouldRetryAbliterationError(
                   activeAbliteratedExperiment,
-                  error,
+                  activeModelName,
+                  userStopSignal.signal,
                 );
               // If provider returns an API error before streaming, retry with fallback.
               if (
-                isProviderApiError(error) &&
-                !(error instanceof AbliterationVisionError) &&
                 !isRetryWithFallback &&
-                (isAutoModel ||
-                  shouldRecoverVisionApiError ||
-                  shouldRecoverAbliterationApiError)
+                !userStopSignal.signal.aborted &&
+                (shouldRecoverAbliterationApiError ||
+                  (isProviderApiError(error) &&
+                    !(error instanceof AbliterationVisionError) &&
+                    (isAutoModel || shouldRecoverVisionApiError)))
               ) {
-                const apiRetryModel = shouldRecoverVisionApiError
-                  ? selectModel(
-                      mode,
-                      subscription,
-                      selectedModelOverride,
-                      false,
-                      false,
-                      { extraUsageAvailable },
-                    )
-                  : fallbackModel;
+                const apiRetryModel = shouldRecoverAbliterationApiError
+                  ? fallbackModel
+                  : shouldRecoverVisionApiError
+                    ? selectModel(
+                        mode,
+                        subscription,
+                        selectedModelOverride,
+                        false,
+                        false,
+                        { extraUsageAvailable },
+                      )
+                    : fallbackModel;
                 phLogger.error("Provider API error, retrying with fallback", {
                   error,
                   chatId,
@@ -1681,7 +1689,10 @@ export const createChatHandler = () => {
                 // only billed for the fallback. Non-model spend (sandbox/tools)
                 // is preserved.
                 usageTracker.resetModelLeg();
-                if (shouldRecoverVisionApiError) {
+                if (
+                  shouldRecoverVisionApiError &&
+                  !shouldRecoverAbliterationApiError
+                ) {
                   visionSummaryRecovery.activate({
                     error,
                     source:
@@ -1720,7 +1731,25 @@ export const createChatHandler = () => {
               }
             }
 
-            writer.merge(
+            const mergePrimaryStream = (
+              stream: Parameters<typeof writer.merge>[0],
+            ) => {
+              writer.merge(
+                stream.pipeThrough(
+                  createRecoverableProviderErrorFilter(
+                    () =>
+                      !isRetryWithFallback &&
+                      shouldRetryAbliterationError(
+                        activeAbliteratedExperiment,
+                        activeModelName,
+                        userStopSignal.signal,
+                      ),
+                  ),
+                ),
+              );
+            };
+
+            mergePrimaryStream(
               result.toUIMessageStream({
                 generateMessageId: () => assistantMessageId,
                 messageMetadata: ({ part }) => {
@@ -1769,6 +1798,13 @@ export const createChatHandler = () => {
                       state.streamFinishReason === "error" ||
                       providerContentBlocked ||
                       state.providerError != null;
+                    const shouldRecoverAbliterationStreamError =
+                      hasTerminalProviderStreamError &&
+                      shouldRetryAbliterationError(
+                        activeAbliteratedExperiment,
+                        activeModelName,
+                        userStopSignal.signal,
+                      );
                     const shouldRetryReasoningOnlyProviderError =
                       shouldRetryProviderStreamAfterReasoningOnlyOutput(
                         lastAssistantMessageParts,
@@ -1808,13 +1844,16 @@ export const createChatHandler = () => {
                         ? omitImageViewToolResultsForProviderRetry(messages)
                         : { messages, omittedCount: 0 };
                     const shouldRetryWithoutImageToolResults =
-                      imageRecovery.omittedCount > 0 && !isAborted;
+                      imageRecovery.omittedCount > 0 &&
+                      !isAborted &&
+                      !shouldRecoverAbliterationStreamError;
                     const hasImageAttachmentForRecovery =
                       countFileAttachments(state.finalMessages).imageCount > 0;
                     const hasImageToolResultForRecovery =
                       uiMessagesContainImageViewResult(state.finalMessages);
                     const shouldRetryWithVisionSummary =
                       directGlmVisionEnabled &&
+                      !shouldRecoverAbliterationStreamError &&
                       !visionSummaryRecovery.isEnabled() &&
                       !providerContentBlocked &&
                       hasTerminalProviderStreamError &&
@@ -1827,7 +1866,8 @@ export const createChatHandler = () => {
                       new Error("Direct vision route failed");
 
                     if (
-                      (shouldRetryWithFallback ||
+                      (shouldRecoverAbliterationStreamError ||
+                        shouldRetryWithFallback ||
                         shouldRetryWithoutImageToolResults ||
                         shouldRetryWithVisionSummary) &&
                       !isRetryWithFallback
@@ -1855,39 +1895,39 @@ export const createChatHandler = () => {
                       const blockedProviderModel = providerContentBlocked
                         ? state.responseModel
                         : undefined;
-                      const retryModel = shouldRetryWithVisionSummary
-                        ? selectModel(
-                            mode,
-                            subscription,
-                            selectedModelOverride,
-                            false,
-                            false,
-                            { extraUsageAvailable },
-                          )
-                        : shouldRetryWithoutImageToolResults
-                          ? selectedModel
-                          : providerContentBlocked
-                            ? getContentFilterRetryModel(
-                                selectedModel,
-                                mode,
-                                blockedProviderModel,
-                                fallbackModel,
-                              )
-                            : fallbackModel;
+                      const retryModel = shouldRecoverAbliterationStreamError
+                        ? fallbackModel
+                        : shouldRetryWithVisionSummary
+                          ? selectModel(
+                              mode,
+                              subscription,
+                              selectedModelOverride,
+                              false,
+                              false,
+                              { extraUsageAvailable },
+                            )
+                          : shouldRetryWithoutImageToolResults
+                            ? selectedModel
+                            : providerContentBlocked
+                              ? getContentFilterRetryModel(
+                                  selectedModel,
+                                  mode,
+                                  blockedProviderModel,
+                                  fallbackModel,
+                                )
+                              : fallbackModel;
                       const retryModelSlug =
                         trackedProvider.languageModel(retryModel).modelId;
                       const shouldAttemptProviderRetry =
-                        !(
-                          state.providerError instanceof AbliterationVisionError
-                        ) &&
+                        (shouldRecoverAbliterationStreamError ||
+                          !(
+                            state.providerError instanceof
+                            AbliterationVisionError
+                          )) &&
                         (!isAborted || stoppedDueToAssistantContentLoop) &&
                         !userStopSignal.signal.aborted &&
                         (isAutoModel ||
-                          (hasTerminalProviderStreamError &&
-                            shouldRetryAbliterationApiError(
-                              activeAbliteratedExperiment,
-                              state.providerError,
-                            )) ||
+                          shouldRecoverAbliterationStreamError ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
@@ -2031,7 +2071,30 @@ export const createChatHandler = () => {
                           retryUsesDifferentModel(selectedModel, retryModel) ||
                           providerContentBlocked;
                         resetServedModelTelemetryForRetry(state);
-                        if (shouldRetryWithVisionSummary) {
+                        if (shouldRecoverAbliterationStreamError) {
+                          const continuation =
+                            prepareProviderDisconnectContinuation(messages, {
+                              allowCompletedTail: true,
+                            });
+                          if (continuation?.preservedCompletedToolCount) {
+                            state.finalMessages = [
+                              ...state.finalMessages,
+                              ...continuation.messages,
+                              {
+                                id: generateId(),
+                                role: "user",
+                                parts: [
+                                  {
+                                    type: "text",
+                                    text: PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
+                                  },
+                                ],
+                              },
+                            ];
+                          } else {
+                            usageTracker.resetModelLeg();
+                          }
+                        } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
                           usageTracker.resetModelLeg();
                         } else if (shouldRetryWithoutImageToolResults) {
