@@ -20,6 +20,7 @@ import WebSocket from "ws";
 import { randomUUID } from "node:crypto";
 import type { CreatePtyOptions, PtyHandle } from "./e2b-pty-adapter";
 import type { MiosaSandbox } from "./miosa-sandbox";
+import { miosaRuntimeCommand } from "./miosa-runtime";
 
 const LOG_PREFIX = "[miosa-pty-adapter]";
 
@@ -76,7 +77,7 @@ async function deleteTerminalSession(
 /**
  * Create a PtyHandle for a MIOSA sandbox.
  *
- * Resolves after the WebSocket opens and enters the HackerAI tools container.
+ * Resolves after the WebSocket opens and enters the workspace's tools shell.
  */
 export async function createMiosaPtyHandle(
   sandbox: MiosaSandbox,
@@ -198,28 +199,23 @@ export async function createMiosaPtyHandle(
     throw error;
   }
 
-  // The platform PTY runs on the VM host. Confirm entry into the same
-  // container used by commands/files before exposing this handle to callers.
+  // The platform PTY starts on the VM host. Select the same native guest or
+  // legacy container used by commands/files before exposing this handle.
   const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
   const marker = randomUUID();
-  const envFlags = Object.entries(opts.envs ?? {})
-    .map(([key, value]) => `--env ${quote(`${key}=${value}`)}`)
-    .join(" ");
   try {
     await new Promise<void>((resolve, reject) => {
       let output = "";
       const decoder = new TextDecoder();
       const timer = setTimeout(
         () =>
-          finish(
-            new Error(`${LOG_PREFIX} container shell did not become ready`),
-          ),
+          finish(new Error(`${LOG_PREFIX} tools shell did not become ready`)),
         CONNECT_TIMEOUT_MS,
       );
       const onClose = () =>
         finish(
           new Error(
-            `${LOG_PREFIX} terminal closed before container shell was ready`,
+            `${LOG_PREFIX} terminal closed before tools shell was ready`,
           ),
         );
       const onData = (bytes: Uint8Array) => {
@@ -241,7 +237,7 @@ export async function createMiosaPtyHandle(
       const shell = `printf '%s%s\\n' ${quote(marker.slice(0, 18))} ${quote(marker.slice(18))}; exec bash --noprofile --norc`;
       ws.send(
         new TextEncoder().encode(
-          `exec docker exec -it --workdir ${quote(opts.cwd ?? "/home/user")} ${envFlags} hackerai-agent bash -lc ${quote(shell)}\n`,
+          `exec ${miosaRuntimeCommand(sandbox.runtime ?? "docker", shell, opts, true)}\n`,
         ),
       );
     });

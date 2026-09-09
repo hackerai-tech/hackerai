@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@miosa/sdk";
+import { miosaRuntimeCommand, type MiosaRuntime } from "./miosa-runtime";
 
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
-// Commands and files must address the Kali container, including /tmp and
-// relative paths. The shared home directory is only a binary transfer channel.
+// Files must address the same native guest or legacy Kali container as commands,
+// including /tmp and relative paths. Staging preserves binary transfer semantics.
 const FILE_OPERATION = `
 import json, os, shutil, stat
 op = os.environ['HACKERAI_FILE_OP']
@@ -31,7 +32,10 @@ elif op == 'remove':
     elif os.path.isdir(path): shutil.rmtree(path)
 `;
 
-export function createMiosaFiles(sandbox: Sandbox) {
+export function createMiosaFiles(
+  sandbox: Sandbox,
+  runtime: MiosaRuntime = "docker",
+) {
   const operate = async (op: string, path: string, stage?: string) => {
     const env = {
       HACKERAI_FILE_OP: op,
@@ -42,7 +46,11 @@ export function createMiosaFiles(sandbox: Sandbox) {
       .map(([key, value]) => `--env ${quote(`${key}=${value}`)}`)
       .join(" ");
     const result = await sandbox.exec.run(
-      `docker exec --workdir /home/user ${flags} hackerai-agent python3 -c ${quote(FILE_OPERATION)}`,
+      runtime === "native"
+        ? miosaRuntimeCommand("native", `python3 -c ${quote(FILE_OPERATION)}`, {
+            envs: env,
+          })
+        : `docker exec --workdir /home/user ${flags} hackerai-agent python3 -c ${quote(FILE_OPERATION)}`,
       { timeoutSec: 60 },
     );
     if (result.exitCode !== 0)

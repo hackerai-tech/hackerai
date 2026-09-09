@@ -18,6 +18,39 @@ describe("MIOSA readiness polling", () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
 
+  it("checks a warm native sandbox promptly instead of imposing a three-second delay", async () => {
+    const s = createSandbox();
+    const start = performance.now();
+    s.readiness.mockImplementation(async () => ({
+      ready: performance.now() - start >= 500,
+      state: "provisioning",
+    }));
+    const result = waitForMiosaReadiness(s as unknown as Sandbox, {
+      fastStart: true,
+    });
+    await jest.advanceTimersByTimeAsync(500);
+    await result;
+    expect(s.readiness).toHaveBeenCalledTimes(3);
+    expect(s.state).toBe("running");
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("backs off fast-start polling after five seconds and retains the full deadline", async () => {
+    const s = createSandbox();
+    const result = expect(
+      waitForMiosaReadiness(s as unknown as Sandbox, { fastStart: true }),
+    ).rejects.toMatchObject({ code: "SANDBOX_READY_TIMEOUT" });
+    await jest.advanceTimersByTimeAsync(5_000);
+    const calls = s.readiness.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(2_999);
+    expect(s.readiness).toHaveBeenCalledTimes(calls);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(s.readiness).toHaveBeenCalledTimes(calls + 1);
+    await jest.advanceTimersByTimeAsync(172_000);
+    await result;
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it("waits beyond the 30-second SSE window and refreshes before returning", async () => {
     const s = createSandbox();
     const start = performance.now();

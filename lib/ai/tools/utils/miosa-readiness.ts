@@ -19,8 +19,12 @@ class MiosaReadinessError extends Error {
  * when the caller requested longer. Poll the supported readiness endpoint
  * instead; durable restores currently take longer than that watch window.
  */
-export async function waitForMiosaReadiness(sandbox: Sandbox): Promise<void> {
-  const deadline = performance.now() + READINESS_TIMEOUT_MS;
+export async function waitForMiosaReadiness(
+  sandbox: Sandbox,
+  options: { fastStart?: boolean } = {},
+): Promise<void> {
+  const startedAt = performance.now();
+  const deadline = startedAt + READINESS_TIMEOUT_MS;
   const timeoutError = () =>
     new MiosaReadinessError(
       `MIOSA sandbox ${sandbox.id} did not become ready within 180 seconds`,
@@ -61,7 +65,12 @@ export async function waitForMiosaReadiness(sandbox: Sandbox): Promise<void> {
       await new Promise((resolve) =>
         setTimeout(
           resolve,
-          Math.min(POLL_INTERVAL_MS, deadline - performance.now()),
+          Math.min(
+            options.fastStart && performance.now() - startedAt < 5_000
+              ? 250
+              : POLL_INTERVAL_MS,
+            deadline - performance.now(),
+          ),
         ),
       );
     }

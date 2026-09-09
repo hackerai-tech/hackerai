@@ -74,7 +74,7 @@
     "@e2b/code-interpreter": "2.7.2",
     "@langchain/community": "^1.1.29",
     "@legendapp/list": "3.3.9",
-    "@miosa/sdk": "3.2.3",
+    "@miosa/sdk": "3.2.4",
     "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^2.10.0",
     "@posthog/ai": "8.9.0",

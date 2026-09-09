@@ -128,7 +128,7 @@ describe("MIOSA PTY adapter", () => {
     await Promise.resolve();
     const handshake = new TextDecoder().decode(socket.send.mock.calls[0][0]);
     expect(handshake).toContain("exec docker exec -it --workdir '/tmp'");
-    expect(handshake).toContain("hackerai-agent bash -lc");
+    expect(handshake).toContain("'hackerai-agent' bash -lc");
     expect(handshake).not.toContain("12345678-1234-1234-1234-123456789abc");
     socket.emit(
       "message",
@@ -172,8 +172,43 @@ describe("MIOSA PTY adapter", () => {
     await Promise.resolve();
     socket.emit("close", 1000);
     await expect(pending).rejects.toThrow(
-      "terminal closed before container shell was ready",
+      "terminal closed before tools shell was ready",
     );
     expect(terminal.delete).toHaveBeenCalledWith("terminal-4");
+  });
+
+  it("enters a clean native shell without a Docker container", async () => {
+    const { sandbox, terminal } = createSandbox({
+      sessionId: "native-terminal",
+      wsUrl: "wss://miosa.invalid/native",
+      streamAuth: "session-token",
+    });
+    Object.assign(sandbox, { runtime: "native" });
+    const pending = createMiosaPtyHandle(sandbox, {
+      cols: 80,
+      rows: 24,
+      cwd: "/tmp",
+      envs: { TEST: "literal ' quote" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = mockWebSocketInstances[0];
+    socket.readyState = 1;
+    socket.emit("open");
+    await Promise.resolve();
+    await Promise.resolve();
+    const handshake = new TextDecoder().decode(socket.send.mock.calls[0][0]);
+    expect(handshake).toContain("exec env --");
+    expect(handshake).toContain("HOME=/home/user");
+    expect(handshake).toContain("bash --noprofile --norc -c");
+    expect(handshake).not.toContain("docker");
+    expect(handshake).not.toContain("12345678-1234-1234-1234-123456789abc");
+    socket.emit(
+      "message",
+      Buffer.from("12345678-1234-1234-1234-123456789abc\r\n"),
+    );
+    const handle = await pending;
+    await handle.kill();
+    expect(terminal.delete).toHaveBeenCalledWith("native-terminal");
   });
 });

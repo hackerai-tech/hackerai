@@ -6,6 +6,11 @@ import type {
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { createMiosaFiles } from "./miosa-files";
 import { waitForMiosaReadiness } from "./miosa-readiness";
+import {
+  miosaRuntimeCommand,
+  miosaRuntimeForTemplate,
+  type MiosaRuntime,
+} from "./miosa-runtime";
 
 const MIOSA_SANDBOX_VERSION = "v2";
 const MIOSA_ACTIVITY_TIMEOUT_SECONDS = 24 * 60 * 60;
@@ -63,26 +68,6 @@ const externalUserIdForUser = (userId: string): string =>
 const sandboxNameForUser = (userId: string): string =>
   `${externalUserIdForUser(userId)}-${MIOSA_SANDBOX_VERSION}`;
 
-const dockerExecCommand = (
-  command: string,
-  options: Pick<MiosaCommandOptions, "cwd" | "envVars" | "envs"> = {},
-): string => {
-  const env = { ...options.envVars, ...options.envs };
-  const envArgs = Object.entries(env).flatMap(([key, value]) => [
-    "--env",
-    shellQuote(`${key}=${value}`),
-  ]);
-  return [
-    "docker exec",
-    "--workdir",
-    shellQuote(options.cwd ?? "/home/user"),
-    ...envArgs,
-    shellQuote(MIOSA_RUNTIME_CONTAINER_NAME),
-    "bash -lc",
-    shellQuote(command),
-  ].join(" ");
-};
-
 const runtimeInitializationCommand = (runtimeImage: string): string => {
   const image = shellQuote(runtimeImage);
   const container = shellQuote(MIOSA_RUNTIME_CONTAINER_NAME);
@@ -101,10 +86,17 @@ const runtimeInitializationCommand = (runtimeImage: string): string => {
 const initializeMiosaRuntime = async (
   sdkSandbox: MiosaSdkSandbox,
   runtimeImage: string,
+  runtime: MiosaRuntime,
 ): Promise<void> => {
+  const nativeInitialization = miosaRuntimeCommand(
+    "native",
+    'set -eu; mkdir -p upload agent-transcripts terminal_full_output agent-browser-screenshots; for tool in nmap nuclei ffuf python3 bash setsid; do command -v "$tool" >/dev/null; done',
+  );
   const stream = sdkSandbox.exec.stream(
-    runtimeInitializationCommand(runtimeImage),
-    { timeoutSec: 15 * 60 },
+    runtime === "native"
+      ? nativeInitialization
+      : runtimeInitializationCommand(runtimeImage),
+    { timeoutSec: runtime === "native" ? 30 : 15 * 60 },
   );
   const stderr: string[] = [];
   let exitCode: number | null = null;
@@ -149,11 +141,13 @@ const bootPathFromMiosa = (
  */
 export class MiosaSandbox {
   readonly sandboxKind = "miosa" as const;
+  readonly runtime: MiosaRuntime;
 
   readonly files: ReturnType<typeof createMiosaFiles>;
 
   constructor(readonly sdkSandbox: MiosaSdkSandbox) {
-    this.files = createMiosaFiles(sdkSandbox);
+    this.runtime = miosaRuntimeForTemplate(sdkSandbox.data?.template_id);
+    this.files = createMiosaFiles(sdkSandbox, this.runtime);
   }
 
   get sandboxId(): string {
@@ -175,16 +169,18 @@ export class MiosaSandbox {
           timeoutSec: Math.max(1, Math.ceil(options.timeoutMs / 1000)),
         }),
       };
+      const commandShell =
+        this.runtime === "native" ? "bash --noprofile --norc -c" : "bash -lc";
 
       if (options.background) {
         const outputPath = `/tmp/hackerai-background-${randomUUID()}.log`;
         const detachedCommand = [
-          "nohup bash -lc",
+          `nohup ${commandShell}`,
           shellQuote(command),
           `>${shellQuote(outputPath)} 2>&1 < /dev/null & printf '%s' \"$!\"`,
         ].join(" ");
         const result = await this.sdkSandbox.exec.run(
-          dockerExecCommand(detachedCommand, options),
+          miosaRuntimeCommand(this.runtime, detachedCommand, options),
           sdkOptions,
         );
         const pid = Number.parseInt(result.stdout.trim(), 10);
@@ -204,12 +200,12 @@ export class MiosaSandbox {
       // that child so exec does not report success before its final output or
       // lose the command's actual exit status.
       const streamedCommand = options.signal
-        ? `setsid --wait bash -lc ${shellQuote(
-            `echo $$ > ${shellQuote(processIdPath)}; bash -lc ${shellQuote(command)}; status=$?; rm -f -- ${shellQuote(processIdPath)}; exit $status`,
+        ? `setsid --wait ${commandShell} ${shellQuote(
+            `echo $$ > ${shellQuote(processIdPath)}; ${commandShell} ${shellQuote(command)}; status=$?; rm -f -- ${shellQuote(processIdPath)}; exit $status`,
           )}`
         : command;
       const stream = this.sdkSandbox.exec.stream(
-        dockerExecCommand(streamedCommand, options),
+        miosaRuntimeCommand(this.runtime, streamedCommand, options),
         sdkOptions,
       );
 
@@ -249,7 +245,10 @@ export class MiosaSandbox {
               abortStarted = true;
               cancellation = this.sdkSandbox.exec
                 .run(
-                  dockerExecCommand(miosaCancellationCommand(processIdPath)),
+                  miosaRuntimeCommand(
+                    this.runtime,
+                    miosaCancellationCommand(processIdPath),
+                  ),
                   { timeoutSec: 5 },
                 )
                 .then(
@@ -321,7 +320,7 @@ export class MiosaSandbox {
     },
     kill: async (pid: number): Promise<boolean> => {
       const result = await this.sdkSandbox.exec.run(
-        dockerExecCommand(`kill -9 ${pid}`),
+        miosaRuntimeCommand(this.runtime, `kill -9 ${pid}`),
       );
       return result.exitCode === 0;
     },
@@ -396,7 +395,8 @@ export async function ensureMiosaSandboxConnection(
       sandboxVersion: MIOSA_SANDBOX_VERSION,
     },
   });
-  await waitForMiosaReadiness(sdkSandbox);
+  const runtime = miosaRuntimeForTemplate(sdkSandbox.data.template_id);
+  await waitForMiosaReadiness(sdkSandbox, { fastStart: runtime === "native" });
   if (sdkSandbox.state !== "running") {
     throw new Error(
       `MIOSA readiness returned non-running state: ${sdkSandbox.state}`,
@@ -404,7 +404,7 @@ export async function ensureMiosaSandboxConnection(
   }
   const runtimeImage =
     process.env.MIOSA_RUNTIME_IMAGE?.trim() || DEFAULT_MIOSA_RUNTIME_IMAGE;
-  await initializeMiosaRuntime(sdkSandbox, runtimeImage);
+  await initializeMiosaRuntime(sdkSandbox, runtimeImage, runtime);
   const sandbox = new MiosaSandbox(sdkSandbox);
   context.setSandbox(sandbox);
   context.onBoot?.({

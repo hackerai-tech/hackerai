@@ -116,8 +116,8 @@ importers:
         specifier: 3.3.9
         version: 3.3.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@miosa/sdk':
-        specifier: 3.2.3
-        version: 3.2.3
+        specifier: 3.2.4
+        version: 3.2.4
       '@monaco-editor/react':
         specifier: ^4.7.0
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -2549,8 +2549,8 @@ packages:
     engines: {node: '>=20'}
     hasBin: true
 
-  '@miosa/sdk@3.2.3':
-    resolution: {integrity: sha512-31lHUlHhi1Xl3TxebUBo7iOrcp0Z8N5VopF9PorYP9mK80aQpIfxr3Zyy4gZV1H8WUI0gLUaUHuH86nffJ8Ndw==}
+  '@miosa/sdk@3.2.4':
+    resolution: {integrity: sha512-BvLVZTd4KofSBgYb/GsBUrMj8/KQex33NkxJv+xNmHCuB/v7HNbAy5WIItMsPSvulYPu9HmaHc7ZY30zsbAh+A==}
     engines: {node: '>=18.0.0'}
 
   '@modelcontextprotocol/sdk@1.29.0':
@@ -10665,7 +10665,7 @@ snapshots:
       - react-devtools-core
       - utf-8-validate
 
-  '@miosa/sdk@3.2.3':
+  '@miosa/sdk@3.2.4':
     optionalDependencies:
       undici: 7.28.0
       ws: 8.21.3

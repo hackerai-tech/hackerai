@@ -14,6 +14,17 @@ function setup() {
 }
 
 describe("MIOSA files share the command container namespace", () => {
+  it("runs native file operations directly in the guest without Docker", async () => {
+    const { sdk } = setup();
+    const files = createMiosaFiles(sdk as never, "native");
+    await files.write("relative '雪.bin", Buffer.from([0, 255, 1]));
+    const command = sdk.exec.run.mock.calls[0][0];
+    expect(command).toContain("HACKERAI_FILE_OP=write");
+    expect(command).toContain("HOME=/home/user");
+    expect(command).toContain("python3 -c");
+    expect(command).not.toContain("docker");
+    await expect(files.read("relative '雪.bin")).resolves.toBe("content\n\n");
+  });
   it("stages binary uploads and writes to the container path", async () => {
     const { sdk, files } = setup();
     const content = Uint8Array.from([0, 255, 1]).buffer;

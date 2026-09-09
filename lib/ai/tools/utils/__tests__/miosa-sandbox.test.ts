@@ -118,6 +118,53 @@ describe("MIOSA sandbox adapter", () => {
     expect(mockGetOrCreate).not.toHaveBeenCalled();
   });
 
+  it("initializes a native workspace without pulling or starting a container", async () => {
+    const sdk = createSdkSandbox();
+    Object.assign(sdk.data, { template_id: "hackerai-tools" });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-tools";
+    const { sandbox } = await ensureMiosaSandboxConnection({
+      userID: "native-user",
+      setSandbox: jest.fn(),
+    });
+    expect(sandbox.runtime).toBe("native");
+    const [initialization, options] = sdk.exec.stream.mock.calls[0];
+    expect(initialization).toContain("HOME=/home/user");
+    expect(initialization).not.toContain("docker");
+    expect(options).toEqual({ timeoutSec: 30 });
+    await sandbox.commands.run("pwd", { cwd: "/tmp", envs: { TEST: "雪" } });
+    expect(sdk.exec.stream.mock.calls[1][0]).not.toContain("docker");
+    expect(sdk.exec.stream.mock.calls[1][0]).toContain("TEST=雪");
+  });
+
+  it("keeps existing Docker workspaces in their container when the create template changes", async () => {
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-tools";
+    const sdk = createSdkSandbox();
+    Object.assign(sdk.data, { template_id: "miosa-sandbox-docker" });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const { sandbox } = await ensureMiosaSandboxConnection({
+      userID: "existing-user",
+      setSandbox: jest.fn(),
+    });
+    expect(sandbox.runtime).toBe("docker");
+    expect(sandbox.sandboxId).toBe(sdk.id);
+    expect(sdk.exec.stream.mock.calls[0][0]).toContain("docker image inspect");
+    await sandbox.commands.run("pwd");
+    expect(sdk.exec.stream.mock.calls[1][0]).toContain("docker exec");
+  });
+
+  it("retains a native workspace if the create-template configuration is rolled back", async () => {
+    const sdk = createSdkSandbox();
+    Object.assign(sdk.data, { template_id: "hackerai-tools" });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const { sandbox } = await ensureMiosaSandboxConnection({
+      userID: "native-user",
+      setSandbox: jest.fn(),
+    });
+    expect(sandbox.runtime).toBe("native");
+    expect(sdk.exec.stream.mock.calls[0][0]).not.toContain("docker");
+  });
+
   it("polls and refreshes a resuming workspace before initializing its tools", async () => {
     const sdk = createSdkSandbox();
     sdk.state = "resuming";
