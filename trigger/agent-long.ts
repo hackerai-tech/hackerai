@@ -2933,6 +2933,14 @@ export const agentLongTask = task({
               releaseFreeRunLock = lock.release;
             }
 
+            const freeMonthlyBudgetSnapshot =
+              subscription === "free"
+                ? await checkFreeMonthlyCostLimit(
+                    freeUsageSubject,
+                    regionalFreeLimits,
+                  )
+                : null;
+
             try {
               rateLimitInfo = await checkRateLimit(
                 userId,
@@ -3056,14 +3064,6 @@ export const agentLongTask = task({
                 getDeepSeekV4Pro0813ExperimentContext(
                   activeDeepSeekV4Pro0813Experiment,
                 ));
-
-            const freeMonthlyBudgetSnapshot =
-              subscription === "free"
-                ? await checkFreeMonthlyCostLimit(
-                    freeUsageSubject,
-                    regionalFreeLimits,
-                  )
-                : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
             chatLogger?.setRateLimit(

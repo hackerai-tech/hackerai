@@ -95,6 +95,7 @@ export async function captureRegionalFreeLimitsExposure(
   mode: string,
 ) {
   if (!posthog || !assignment) return;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     posthog.capture({
       distinctId: userId,
@@ -109,9 +110,18 @@ export async function captureRegionalFreeLimitsExposure(
       },
     });
     // Rejected preflight never reaches normal completion telemetry. Flush before
-    // returning so zero-usage exposed accounts remain in the denominator.
-    await posthog.flush();
+    // returning so zero-usage exposed accounts remain in the denominator. Bound
+    // the wait so analytics outages cannot hold up quota enforcement. The race
+    // also handles a flush rejection after the timeout has already won.
+    await Promise.race([
+      posthog.flush(),
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, 750);
+      }),
+    ]);
   } catch {
     /* Analytics must not prevent quota enforcement. */
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }

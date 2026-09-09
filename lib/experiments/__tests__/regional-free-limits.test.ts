@@ -20,6 +20,7 @@ describe("regional free allowance", () => {
   });
   afterEach(() => {
     process.env = { ...savedEnv };
+    jest.useRealTimers();
   });
 
   it.each(["IN", "PK", "BD"])(
@@ -162,6 +163,7 @@ describe("regional free allowance", () => {
     ).toBeUndefined();
   });
   it("emits exposure only explicitly at enforcement and preserves other experiment dimensions", async () => {
+    jest.useFakeTimers();
     const capture = jest.fn();
     const flush = jest.fn().mockResolvedValue(undefined);
     const assignment = await evaluateRegionalFreeLimits({
@@ -191,6 +193,7 @@ describe("regional free allowance", () => {
       "experiment_key",
     );
     expect(flush).toHaveBeenCalledTimes(1);
+    expect(jest.getTimerCount()).toBe(0);
     capture.mockClear();
     await captureRegionalFreeLimitsExposure(
       { capture, flush },
@@ -199,5 +202,37 @@ describe("regional free allowance", () => {
       "ask",
     );
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("bounds a stalled exposure flush and handles its late rejection", async () => {
+    jest.useFakeTimers();
+    const assignment = await evaluateRegionalFreeLimits({
+      posthog,
+      userId: "test-user",
+      subscription: "free",
+      country: "IN",
+    });
+    let rejectFlush!: (error: Error) => void;
+    const flush = jest.fn().mockImplementation(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectFlush = reject;
+        }),
+    );
+    const enforced = jest.fn();
+    const pending = captureRegionalFreeLimitsExposure(
+      { capture: jest.fn(), flush },
+      assignment,
+      "test-user",
+      "ask",
+    ).then(enforced);
+    await jest.advanceTimersByTimeAsync(749);
+    expect(enforced).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(enforced).toHaveBeenCalledTimes(1);
+    rejectFlush(new Error("late network failure"));
+    await jest.advanceTimersByTimeAsync(0);
+    expect(jest.getTimerCount()).toBe(0);
   });
 });

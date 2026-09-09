@@ -2295,6 +2295,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
+    const lockIndex = taskSrc.indexOf(
+      "const lock = await acquireFreeRunConcurrencyLock(",
+    );
+    const monthlyIndex = taskSrc.indexOf(
+      "await checkFreeMonthlyCostLimit(",
+      lockIndex,
+    );
+    const consumeIndex = taskSrc.indexOf(
+      "rateLimitInfo = await checkRateLimit(",
+      lockIndex,
+    );
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(monthlyIndex).toBeGreaterThan(lockIndex);
+    expect(consumeIndex).toBeGreaterThan(monthlyIndex);
     expect(routeSrc).toMatch(/freeQuotaSubject/);
     expect(routeSrc).toMatch(
       /const agentPayload\s*=\s*{[\s\S]*freeQuotaSubject/,
