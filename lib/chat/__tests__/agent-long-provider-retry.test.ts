@@ -82,6 +82,35 @@ describe("prepareProviderDisconnectContinuation", () => {
     expect(recovery?.messages.at(-1)?.parts).toHaveLength(2);
   });
 
+  it("preserves tools completed before an Abliteration error even without a partial tail", () => {
+    const messages = [
+      {
+        id: "assistant",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: { command: "touch result" },
+            output: "done",
+          },
+        ],
+      },
+    ] as UIMessage[];
+    expect(prepareProviderDisconnectContinuation(messages)).toBeUndefined();
+    expect(
+      prepareProviderDisconnectContinuation(messages, {
+        allowCompletedTail: true,
+      }),
+    ).toMatchObject({
+      messages,
+      removedPartCount: 0,
+      preservedCompletedToolCount: 1,
+    });
+  });
+
   it("removes an entirely incomplete first assistant step", () => {
     const messages = [
       { id: "user-1", role: "user", parts: [{ type: "text", text: "answer" }] },

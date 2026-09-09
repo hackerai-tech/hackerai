@@ -1361,7 +1361,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       wrapperIdx,
     );
     const mergeIdx = taskSrc.indexOf(
-      "writer.merge(\n              withAgentLongStreamHeartbeat(",
+      "mergePrimaryStream(\n              withAgentLongStreamHeartbeat(",
       sanitizerIdx,
     );
     const finalPipeIdx = taskSrc.indexOf(
@@ -1555,17 +1555,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /prepareProviderDisconnectContinuation\(\s*normalizedFinishedMessages/,
     );
     expect(taskSrc).toMatch(
-      /hasTerminalProviderStreamError\s*&&\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
+      /hasTerminalProviderStreamError\s*&&\s*\(shouldRecoverAbliterationStreamError \|\|\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
     );
     expect(taskSrc).toMatch(
-      /decideProviderRecovery\(\{[\s\S]{0,300}alreadyRetried: isRetryWithFallback/,
+      /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,
     );
     expect(taskSrc).toMatch(
       /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
     );
-    expect(taskSrc).toContain(
-      "Do not repeat completed tool calls or their side effects.",
-    );
+    expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
     expect(taskSrc).toMatch(
       /getNextDeepSeekProDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
     );
@@ -1655,7 +1653,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = taskSrc.indexOf(
-      "const retryModel = shouldRetryWithVisionSummary",
+      "const retryModel = shouldRecoverAbliterationStreamError",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
@@ -1688,7 +1686,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = chatHandlerSrc.indexOf(
-      "const retryModel = shouldRetryWithVisionSummary",
+      "const retryModel = shouldRecoverAbliterationStreamError",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = chatHandlerSrc.indexOf(
@@ -1762,7 +1760,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(catchRetryStreamIdx).toBeGreaterThan(catchResetIdx);
 
       const retryModelIdx = source.indexOf(
-        "const retryModel = shouldRetryWithVisionSummary",
+        "const retryModel = shouldRecoverAbliterationStreamError",
       );
       const modelSwitchIdx = source.indexOf(
         "retryUsedFallbackModel =",
@@ -2016,27 +2014,27 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("Abliteration API fallback requires the assignment to remain active", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(
-        /shouldRetryAbliterationApiError\(\s*activeAbliteratedExperiment,\s*error,?\s*\)/,
+        /shouldRetryAbliterationError\(\s*activeAbliteratedExperiment,\s*activeModelName,\s*userStopSignal.signal,?\s*\)/,
       );
       expect(source).not.toMatch(
-        /shouldRetryAbliterationApiError\(\s*abliteratedExperiment,\s*error,?\s*\)/,
+        /shouldRetryAbliterationError\(\s*abliteratedExperiment,\s*activeModelName,\s*userStopSignal.signal,?\s*\)/,
       );
     }
   });
 
-  test("OCR preprocessing failures never trigger generic baseline recovery", () => {
+  test("OCR preprocessing failures recover only for active Abliteration treatment", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/!\(error instanceof AbliterationVisionError\)/);
       if (source === taskSrc) {
         expect(source).toMatch(
-          /unrecoverableVision:\s*state\.providerError instanceof\s*AbliterationVisionError/,
+          /unrecoverableVision:\s*!shouldRecoverAbliterationStreamError &&\s*state\.providerError instanceof\s*AbliterationVisionError/,
         );
         expect(source).toMatch(
           /const shouldAttemptProviderRetry\s*=\s*providerRecoveryDecision\.attempt/,
         );
       } else {
         expect(source).toMatch(
-          /const shouldAttemptProviderRetry\s*=\s*!\(\s*state\.providerError instanceof AbliterationVisionError\s*\)\s*&&/,
+          /const shouldAttemptProviderRetry\s*=\s*\(shouldRecoverAbliterationStreamError \|\|\s*!\(\s*state\.providerError instanceof\s*AbliterationVisionError\s*\)\)\s*&&/,
         );
       }
     }

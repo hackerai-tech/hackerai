@@ -289,6 +289,18 @@ it("does not start a request or OCR for an already-canceled SDK attempt", async 
   expect(describe).not.toHaveBeenCalled();
 });
 
+it("cancels a pending transport read without synthesizing a provider failure", async () => {
+  const { wrapped, doStream } = setup();
+  const cancel = jest.fn();
+  doStream.mockResolvedValueOnce({ stream: new ReadableStream({ cancel }) });
+  const result = await wrapped.doStream({ prompt: prompt() });
+  const reader = result.stream.getReader();
+  const pending = reader.read();
+  await reader.cancel("user stopped");
+  await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  expect(cancel).toHaveBeenCalledWith("user stopped");
+});
+
 it("does not replay an error after the provider returned a stream", async () => {
   const { wrapped, doStream, describe } = setup();
   const error = mediaError();
@@ -300,7 +312,15 @@ it("does not replay an error after the provider returned a stream", async () => 
     }),
   });
   const result = await wrapped.doStream({ prompt: prompt() });
-  await expect(result.stream.getReader().read()).rejects.toBe(error);
+  const reader = result.stream.getReader();
+  await expect(reader.read()).resolves.toEqual({
+    done: false,
+    value: { type: "error", error },
+  });
+  await expect(reader.read()).resolves.toEqual({
+    done: true,
+    value: undefined,
+  });
   expect(doStream).toHaveBeenCalledTimes(1);
   expect(describe).not.toHaveBeenCalled();
 });

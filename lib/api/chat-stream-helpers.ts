@@ -69,7 +69,6 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractErrorDetails,
   getProviderStatusCode,
-  isInvalidImageInputError,
 } from "@/lib/utils/error-utils";
 
 /**
@@ -812,17 +811,17 @@ export function getRetryFallbackModel(
   return "model-grok-4.6";
 }
 
-/**
- * Abliteration is an experiment route, so a pre-stream provider failure should
- * fall back to the user's original model even when they selected Pro or Max.
- * Invalid image URLs remain user-correctable because retrying another provider
- * cannot make the source image downloadable.
- */
-export function shouldRetryAbliterationApiError(
+/** Any failure of the active treatment route gets one baseline attempt. */
+export function shouldRetryAbliterationError(
   assignment: Pick<AbliteratedAssignment, "variant"> | undefined,
-  error: unknown,
+  failedModel: string,
+  abortSignal: AbortSignal,
 ): boolean {
-  return assignment?.variant === "test" && !isInvalidImageInputError(error);
+  return (
+    assignment?.variant === "test" &&
+    isAbliterationModel(failedModel) &&
+    !abortSignal.aborted
+  );
 }
 
 const CONTENT_FILTER_RETRY_CANDIDATES = [

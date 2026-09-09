@@ -2486,21 +2486,30 @@ describe("CentrifugoSandbox", () => {
       expect(runs[1]).not.toContain("certutil");
     });
 
-    it("keeps a bounded exit status when local file preparation has no output", async () => {
-      const { sandbox } = createWindowsBashSandbox();
-      (sandbox as any).commands.run = jest.fn(async () => ({
-        stdout: "",
-        stderr: "",
-        exitCode: 1,
-      }));
+    it.each([
+      { stdout: "", stderr: "" },
+      { stdout: "The system cannot find the file specified.", stderr: "" },
+      { stdout: "", stderr: "The syntax of the command is incorrect." },
+    ])(
+      "preserves local file preparation exit status with %j",
+      async (output) => {
+        const { sandbox } = createWindowsBashSandbox();
+        (sandbox as any).commands.run = jest.fn(async () => ({
+          ...output,
+          exitCode: 1,
+        }));
 
-      await expect(
-        sandbox.files.copyLocal(
-          "C:\\Users\\alice\\private-report.pdf",
-          "/tmp/hackerai-upload/private-report.pdf",
-        ),
-      ).rejects.toThrow("Failed to prepare local file: exit status 1");
-    });
+        await expect(
+          sandbox.files.copyLocal(
+            "C:\\Users\\alice\\private-report.pdf",
+            "/tmp/hackerai-upload/private-report.pdf",
+          ),
+        ).rejects.toMatchObject({
+          message: `Failed to prepare local file: ${output.stderr || output.stdout || "exit status 1"}`,
+          exitCode: 1,
+        });
+      },
+    );
   });
 
   describe("getSandboxContext", () => {

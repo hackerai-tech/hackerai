@@ -1,3 +1,4 @@
+import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
@@ -60,7 +61,7 @@ import {
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
-  shouldRetryAbliterationApiError,
+  shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
 import {
   BudgetMonitor,
@@ -262,6 +263,7 @@ import {
   getProviderOutputDiagnostics,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
@@ -1711,9 +1713,6 @@ const isTerminalProviderStreamError = (
   state?.providerError != null ||
   state?.streamFinishReason === "error" ||
   isProviderContentFilterFinishReason(state?.streamFinishReason);
-
-const PROVIDER_DISCONNECT_CONTINUATION_PROMPT =
-  "The previous model connection ended mid-response. Continue from the preserved completed text and tool results. Do not repeat completed tool calls or their side effects. Finish the task from the last durable result.";
 
 const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
   state.openRouterMetadata = {};
@@ -4588,29 +4587,32 @@ export const agentLongTask = task({
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
               const shouldRecoverAbliterationApiError =
-                shouldRetryAbliterationApiError(
+                shouldRetryAbliterationError(
                   activeAbliteratedExperiment,
-                  error,
+                  activeModelName,
+                  userStopSignal.signal,
                 );
               if (
-                isProviderApiError(error) &&
-                !isInvalidImageInputError(error) &&
-                !(error instanceof AbliterationVisionError) &&
                 !isRetryWithFallback &&
-                (isAutoModel ||
-                  shouldRecoverVisionApiError ||
-                  shouldRecoverAbliterationApiError)
+                !userStopSignal.signal.aborted &&
+                (shouldRecoverAbliterationApiError ||
+                  (isProviderApiError(error) &&
+                    !isInvalidImageInputError(error) &&
+                    !(error instanceof AbliterationVisionError) &&
+                    (isAutoModel || shouldRecoverVisionApiError)))
               ) {
-                const apiRetryModel = shouldRecoverVisionApiError
-                  ? selectModel(
-                      mode,
-                      subscription,
-                      selectedModelOverride,
-                      false,
-                      false,
-                      { extraUsageAvailable },
-                    )
-                  : fallbackModel;
+                const apiRetryModel = shouldRecoverAbliterationApiError
+                  ? fallbackModel
+                  : shouldRecoverVisionApiError
+                    ? selectModel(
+                        mode,
+                        subscription,
+                        selectedModelOverride,
+                        false,
+                        false,
+                        { extraUsageAvailable },
+                      )
+                    : fallbackModel;
                 phLogger.error(
                   "[agent-long] Provider API error, retrying with fallback",
                   {
@@ -4638,7 +4640,10 @@ export const agentLongTask = task({
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
-                if (shouldRecoverVisionApiError) {
+                if (
+                  shouldRecoverVisionApiError &&
+                  !shouldRecoverAbliterationApiError
+                ) {
                   visionSummaryRecovery.activate({
                     error,
                     source:
@@ -4676,7 +4681,25 @@ export const agentLongTask = task({
               }
             }
 
-            writer.merge(
+            const mergePrimaryStream = (
+              stream: Parameters<typeof writer.merge>[0],
+            ) => {
+              writer.merge(
+                stream.pipeThrough(
+                  createRecoverableProviderErrorFilter(
+                    () =>
+                      !isRetryWithFallback &&
+                      shouldRetryAbliterationError(
+                        activeAbliteratedExperiment,
+                        activeModelName,
+                        userStopSignal.signal,
+                      ),
+                  ),
+                ),
+              );
+            };
+
+            mergePrimaryStream(
               withAgentLongStreamHeartbeat(
                 result.toUIMessageStream({
                   generateMessageId: () => assistantMessageId,
@@ -4732,6 +4755,13 @@ export const agentLongTask = task({
                         );
                       const hasTerminalProviderStreamError =
                         isTerminalProviderStreamError(state);
+                      const shouldRecoverAbliterationStreamError =
+                        hasTerminalProviderStreamError &&
+                        shouldRetryAbliterationError(
+                          activeAbliteratedExperiment,
+                          activeModelName,
+                          userStopSignal.signal,
+                        );
                       const shouldRetryReasoningOnlyProviderError =
                         shouldRetryProviderStreamAfterReasoningOnlyOutput(
                           lastAssistantMessageParts,
@@ -4773,7 +4803,9 @@ export const agentLongTask = task({
                             )
                           : { messages: finishedMessages, omittedCount: 0 };
                       const shouldRetryWithoutImageToolResults =
-                        imageRecovery.omittedCount > 0 && !isAborted;
+                        imageRecovery.omittedCount > 0 &&
+                        !isAborted &&
+                        !shouldRecoverAbliterationStreamError;
                       const hasImageAttachmentForRecovery =
                         countFileAttachments(state.finalMessages).imageCount >
                         0;
@@ -4781,6 +4813,7 @@ export const agentLongTask = task({
                         uiMessagesContainImageViewResult(state.finalMessages);
                       const shouldRetryWithVisionSummary =
                         directGlmVisionEnabled &&
+                        !shouldRecoverAbliterationStreamError &&
                         !visionSummaryRecovery.isEnabled() &&
                         !providerContentBlocked &&
                         hasTerminalProviderStreamError &&
@@ -4805,13 +4838,19 @@ export const agentLongTask = task({
                         );
                       const providerDisconnectContinuation =
                         hasTerminalProviderStreamError &&
-                        isRetriableProviderStreamDisconnectError(
-                          state.providerError,
-                        ) &&
-                        !providerContentBlocked &&
+                        (shouldRecoverAbliterationStreamError ||
+                          isRetriableProviderStreamDisconnectError(
+                            state.providerError,
+                          )) &&
+                        (shouldRecoverAbliterationStreamError ||
+                          !providerContentBlocked) &&
                         !isAborted
                           ? prepareProviderDisconnectContinuation(
                               normalizedFinishedMessages,
+                              {
+                                allowCompletedTail:
+                                  shouldRecoverAbliterationStreamError,
+                              },
                             )
                           : undefined;
                       const shouldContinueAfterProviderDisconnect = Boolean(
@@ -4820,23 +4859,21 @@ export const agentLongTask = task({
                       const providerRecoveryDecision = decideProviderRecovery({
                         userCancelled: userStopSignal.signal.aborted,
                         unrecoverableVision:
+                          !shouldRecoverAbliterationStreamError &&
                           state.providerError instanceof
-                          AbliterationVisionError,
+                            AbliterationVisionError,
                         alreadyRetried: isRetryWithFallback,
                         streamAborted: isAborted,
                         loopRecovery: stoppedDueToAssistantContentLoop,
                         hasCandidate:
+                          shouldRecoverAbliterationStreamError ||
                           shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults ||
                           shouldRetryWithVisionSummary ||
                           shouldContinueAfterProviderDisconnect,
                         modelEligible:
                           isAutoModel ||
-                          (hasTerminalProviderStreamError &&
-                            shouldRetryAbliterationApiError(
-                              activeAbliteratedExperiment,
-                              state.providerError,
-                            )) ||
+                          shouldRecoverAbliterationStreamError ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
@@ -4980,25 +5017,27 @@ export const agentLongTask = task({
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
-                        const retryModel = shouldRetryWithVisionSummary
-                          ? selectModel(
-                              mode,
-                              subscription,
-                              selectedModelOverride,
-                              false,
-                              false,
-                              { extraUsageAvailable },
-                            )
-                          : shouldRetryWithoutImageToolResults
-                            ? selectedModel
-                            : providerContentBlocked
-                              ? getContentFilterRetryModel(
-                                  selectedModel,
-                                  mode,
-                                  blockedProviderModel,
-                                  fallbackModel,
-                                )
-                              : fallbackModel;
+                        const retryModel = shouldRecoverAbliterationStreamError
+                          ? fallbackModel
+                          : shouldRetryWithVisionSummary
+                            ? selectModel(
+                                mode,
+                                subscription,
+                                selectedModelOverride,
+                                false,
+                                false,
+                                { extraUsageAvailable },
+                              )
+                            : shouldRetryWithoutImageToolResults
+                              ? selectedModel
+                              : providerContentBlocked
+                                ? getContentFilterRetryModel(
+                                    selectedModel,
+                                    mode,
+                                    blockedProviderModel,
+                                    fallbackModel,
+                                  )
+                                : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
                         phLogger.warn(
