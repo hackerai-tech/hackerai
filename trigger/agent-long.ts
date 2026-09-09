@@ -2632,6 +2632,11 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
+      const openRouterRegionOptionsPromise = resolveOpenRouterRegionOptions({
+        posthog,
+        userId,
+        isEuropeanUser,
+      });
       const regionalFreeLimits = await evaluateRegionalFreeLimits({
         posthog,
         userId,
@@ -3614,11 +3619,7 @@ export const agentLongTask = task({
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
             };
             const trackedProvider = createTrackedProvider(
-              await resolveOpenRouterRegionOptions({
-                posthog,
-                userId,
-                isEuropeanUser,
-              }),
+              await openRouterRegionOptionsPromise,
             );
             const [currentSystemPrompt, messagesWithNotes] = await Promise.all([
               systemPrompt(

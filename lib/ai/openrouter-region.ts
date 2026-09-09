@@ -10,13 +10,14 @@ export type OpenRouterRegionOptions = {
   onRoute?: (outcome: OpenRouterRegionOutcome) => void;
 };
 
+/** Uses trusted ingress geography; absent location keeps the global default. */
 export function isEuropeanRequest(request: { headers: Headers }): boolean {
   return (
     request.headers.get("x-vercel-ip-continent")?.trim().toUpperCase() === "EU"
   );
 }
 
-// The public catalog contains model metadata only. Never send auth or prompts.
+/** Shares bounded public catalog lookups without sending auth or prompts. */
 export function createEuModelCatalog(
   fetchCatalog: typeof fetch = (...args) => globalThis.fetch(...args),
 ): () => Promise<Set<string> | null> {
@@ -66,6 +67,7 @@ export function createEuModelCatalog(
 
 const getEuModels = createEuModelCatalog();
 
+/** Prefers EU for eligible models, replaying only pre-stream availability errors. */
 export function createOpenRouterRegionFetch(
   fetchInference: typeof fetch,
   options: OpenRouterRegionOptions,

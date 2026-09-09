@@ -446,6 +446,13 @@ export const createChatHandler = () => {
         projectId: projectContext.projectId,
       });
 
+      posthog ??= PostHogClient();
+      const openRouterRegionOptionsPromise = resolveOpenRouterRegionOptions({
+        posthog,
+        userId,
+        isEuropeanUser: isEuropeanRequest(req),
+      });
+
       const regionalFreeLimits = await evaluateRegionalFreeLimits({
         posthog: (posthog ??= PostHogClient()),
         userId,
@@ -1018,11 +1025,7 @@ export const createChatHandler = () => {
               : Promise.resolve(undefined);
 
             const trackedProvider = createTrackedProvider(
-              await resolveOpenRouterRegionOptions({
-                posthog,
-                userId,
-                isEuropeanUser: isEuropeanRequest(req),
-              }),
+              await openRouterRegionOptionsPromise,
             );
 
             let currentSystemPrompt = await systemPrompt(

@@ -1453,6 +1453,7 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
+/** Builds request-scoped OpenRouter routing while retaining direct providers. */
 export const createTrackedProvider = (
   options: OpenRouterRegionOptions = {},
 ) => {

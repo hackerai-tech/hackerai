@@ -3,6 +3,7 @@ import type { OpenRouterRegionOptions } from "@/lib/ai/openrouter-region";
 
 export const OPENROUTER_EU_ROUTING_FLAG = "openrouter_eu_routing_v1";
 
+/** Resolves rollout assignment; exposure is deferred until actual EU inference. */
 export async function resolveOpenRouterRegionOptions({
   posthog,
   userId,
