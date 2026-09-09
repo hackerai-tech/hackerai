@@ -19,6 +19,7 @@ import {
   sanitizeResearchText,
   USER_RESEARCH_MODEL_KEY,
   USER_RESEARCH_MIN_COHORT_SIZE,
+  USER_RESEARCH_MIN_USERS_PER_COMPARISON_GROUP,
   USER_RESEARCH_PROMPT_VERSION,
   USER_RESEARCH_PROVIDER_OPTIONS,
   type ResearchBasis,
@@ -306,7 +307,7 @@ export const pmUserResearch = schemaTask({
       });
       if (profiles.length < USER_RESEARCH_MIN_COHORT_SIZE) {
         throw new Error(
-          "Fewer than three users had enough evidence for privacy-safe synthesis",
+          "No users had enough evidence for privacy-safe synthesis",
         );
       }
       const availablePseudonyms = new Set(
@@ -323,7 +324,9 @@ export const pmUserResearch = schemaTask({
       }));
       if (
         comparisonGroupsForPrompt?.some(
-          (group) => group.pseudonyms.length < USER_RESEARCH_MIN_COHORT_SIZE,
+          (group) =>
+            group.pseudonyms.length <
+            USER_RESEARCH_MIN_USERS_PER_COMPARISON_GROUP,
         )
       ) {
         throw new Error(

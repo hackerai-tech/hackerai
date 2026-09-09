@@ -1,3 +1,7 @@
+import {
+  regionalFreeLimitsProperties,
+  type RegionalFreeLimitsAssignment,
+} from "@/lib/experiments/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -35,6 +39,8 @@ import {
   type ExperimentAnalyticsContext,
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
+import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -1249,6 +1255,9 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  // Every completion path must explicitly forward its request telemetry.
+  abliteratedProviderSummary:
+    ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
   posthog: PostHog | null;
   userId: string;
   chatId: string;
@@ -1275,6 +1284,8 @@ type AgentCompletionAnalyticsArgs = {
   taskToFirstModelStartMs?: number;
   requestToFirstModelStartMs?: number;
   requestToFirstModelChunkMs?: number;
+  startupCompactionVariant?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionVariant;
+  startupCompactionFallbackUsed?: boolean;
   startupSubphaseTimingVersion?: 1;
   startupSummaryGenerationDurationMs?: number;
   startupTranscriptSavingDurationMs?: number;
@@ -1328,6 +1339,8 @@ export function captureAgentRun({
   taskToFirstModelStartMs,
   requestToFirstModelStartMs,
   requestToFirstModelChunkMs,
+  startupCompactionVariant,
+  startupCompactionFallbackUsed,
   startupSubphaseTimingVersion,
   startupSummaryGenerationDurationMs,
   startupTranscriptSavingDurationMs,
@@ -1354,7 +1367,10 @@ export function captureAgentRun({
   providerRecoveryAttempts,
   providerRecoveryModels,
   providerRecoverySucceeded,
-}: Omit<AgentCompletionAnalyticsArgs, "endpoint" | "chatLogger">) {
+}: Omit<
+  AgentCompletionAnalyticsArgs,
+  "endpoint" | "chatLogger" | "abliteratedProviderSummary"
+>) {
   if (mode !== "agent") return;
   const performanceDiagnostics = buildAgentPerformanceDiagnostics({
     triggerUsageDurationMs,
@@ -1425,6 +1441,10 @@ export function captureAgentRun({
       }),
       ...(triggerTaskStartLatencyMs !== undefined && {
         trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
       }),
       ...(startupSubphaseTimingVersion !== undefined && {
         startup_subphase_timing_version: startupSubphaseTimingVersion,
@@ -1523,6 +1543,10 @@ export function captureAgentRun({
       }),
       ...(requestToFirstModelChunkMs !== undefined && {
         request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
       }),
       ...(startupSubphaseTimingVersion !== undefined && {
         startup_subphase_timing_version: startupSubphaseTimingVersion,
@@ -1637,6 +1661,33 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  if (isAbliterationExperimentKey(args.experiment?.key)) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "abliterated_model_response_outcome",
+        properties: {
+          ...args.abliteratedProviderSummary,
+          ...getExperimentAnalyticsProperties(args.experiment),
+          chat_id: args.chatId,
+          mode,
+          subscription_tier: subscription,
+          outcome,
+          abort_source: args.abortSource,
+          finish_reason: args.finishReason,
+          configured_model: args.configuredModelId,
+          response_model: args.responseModel,
+          fallback_served: args.fallbackServed,
+          provider_recovery_attempts: args.providerRecoveryAttempts,
+          provider_recovery_succeeded: args.providerRecoverySucceeded,
+          budget_abort_cap_reason: args.budgetAbortDetails?.capReason,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      /* Analytics must never interrupt response persistence. */
+    }
+  }
   captureAgentRun({
     posthog,
     userId,
@@ -1662,6 +1713,8 @@ export function captureAgentCompletionAnalytics(
     taskToFirstModelStartMs: args.taskToFirstModelStartMs,
     requestToFirstModelStartMs: args.requestToFirstModelStartMs,
     requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
+    startupCompactionVariant: args.startupCompactionVariant,
+    startupCompactionFallbackUsed: args.startupCompactionFallbackUsed,
     startupSubphaseTimingVersion: args.startupSubphaseTimingVersion,
     startupSummaryGenerationDurationMs: args.startupSummaryGenerationDurationMs,
     startupTranscriptSavingDurationMs: args.startupTranscriptSavingDurationMs,
@@ -1718,6 +1771,7 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
+  regionalFreeLimits,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1745,6 +1799,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
+  regionalFreeLimits?: RegionalFreeLimitsAssignment;
 }) {
   if (!posthog) return;
   const includedUsageValueDollars =
@@ -1848,6 +1903,7 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...regionalFreeLimitsProperties(regionalFreeLimits),
     },
   });
 }

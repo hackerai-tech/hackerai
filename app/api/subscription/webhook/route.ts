@@ -39,6 +39,7 @@ import {
   type BillingFailureProperties,
 } from "@/lib/billing/subscription-payment-failure";
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
+import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
 import {
   PAUSE_RESUME_CHECKOUT_TYPE,
   subscriptionPauseFromMetadata,
@@ -453,6 +454,7 @@ type SubscriptionResolution =
 /** Resolve subscription tier and object from a Stripe subscription ID. */
 async function resolveSubscription(
   subscriptionId: string,
+  throwOnLookupFailure = false,
 ): Promise<SubscriptionResolution | null> {
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
@@ -497,6 +499,7 @@ async function resolveSubscription(
     );
     return null;
   } catch (error) {
+    if (throwOnLookupFailure) throw error;
     console.error(
       `[Subscription Webhook] Failed to retrieve subscription ${subscriptionId}:`,
       error,
@@ -929,7 +932,8 @@ type InvoluntaryChurnStripeEventType =
   | "invoice.paid"
   | "customer.subscription.deleted"
   | "payment_method.attached"
-  | "customer.updated";
+  | "customer.updated"
+  | "customer.subscription.updated";
 
 async function recordInvoluntaryChurnEvent(args: {
   stripeEventId: string;
@@ -1614,28 +1618,46 @@ async function handleInvoicePaymentFailed(
 
 function customerPaymentMethodChanged(
   previousAttributes: Partial<Stripe.Customer> | undefined,
+  paymentMethodId: string,
 ): boolean {
   if (!previousAttributes) return false;
   const previousInvoiceSettings = previousAttributes.invoice_settings;
   return (
-    (previousInvoiceSettings !== undefined &&
-      previousInvoiceSettings !== null &&
-      Object.prototype.hasOwnProperty.call(
-        previousInvoiceSettings,
-        "default_payment_method",
-      )) ||
-    Object.prototype.hasOwnProperty.call(previousAttributes, "default_source")
+    previousInvoiceSettings !== undefined &&
+    previousInvoiceSettings !== null &&
+    Object.prototype.hasOwnProperty.call(
+      previousInvoiceSettings,
+      "default_payment_method",
+    ) &&
+    stripeObjectId(previousInvoiceSettings.default_payment_method) !==
+      paymentMethodId
   );
 }
 
 async function handlePaymentMethodUpdated(args: {
   customerId: string;
   stripeEventId: string;
-  stripeEventType: "payment_method.attached" | "customer.updated";
+  stripeEventType: "customer.updated" | "customer.subscription.updated";
   eventOccurredAtMs: number;
+  paymentMethodId: string;
+  subscriptionId?: string;
 }): Promise<void> {
+  // Webhooks can arrive out of order. Only act on a default that is still
+  // selected, never on an attachment or an older customer-update payload.
+  if (!args.subscriptionId) {
+    const customer = await stripe.customers.retrieve(args.customerId);
+    if (
+      customer.deleted ||
+      stripeObjectId(customer.invoice_settings.default_payment_method) !==
+        args.paymentMethodId
+    )
+      return;
+  }
   const customerResult = await resolveUserIdsFromCustomer(args.customerId);
   const { userIds, orgId } = customerResult;
+  if (customerResult.reason === "lookup_failed") {
+    throw new Error("Payment recovery customer lookup failed");
+  }
   if (
     customerResult.reason === "legacy_user_metadata" ||
     userIds.length === 0
@@ -1643,64 +1665,104 @@ async function handlePaymentMethodUpdated(args: {
     return;
   }
 
-  const subscriptions = await stripe.subscriptions.list({
-    customer: args.customerId,
-    status: "all",
-    limit: 10,
-  });
-  const currentSubscription = subscriptions.data.find((subscription) =>
-    ["past_due", "unpaid"].includes(subscription.status),
-  );
-  if (!currentSubscription) return;
+  const subscriptionIds: string[] = [];
+  if (args.subscriptionId) {
+    subscriptionIds.push(args.subscriptionId);
+  } else {
+    let startingAfter: string | undefined;
+    do {
+      const page = await stripe.subscriptions.list({
+        customer: args.customerId,
+        status: "all",
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+      });
+      subscriptionIds.push(
+        ...page.data
+          .filter((s) =>
+            ["active", "trialing", "past_due", "unpaid"].includes(s.status),
+          )
+          .map((s) => s.id),
+      );
+      startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+    } while (startingAfter);
+  }
 
-  const resolved = await resolveSubscription(currentSubscription.id);
-  if (!resolved || resolved.kind === "legacy_pentestgpt") return;
+  for (const subscriptionId of subscriptionIds) {
+    const resolved = await resolveSubscription(subscriptionId, true);
+    if (!resolved || resolved.kind === "legacy_pentestgpt") continue;
+    const { subscription, tier } = resolved;
+    if (
+      stripeObjectId(subscription.customer) !== args.customerId ||
+      !["active", "trialing", "past_due", "unpaid"].includes(
+        subscription.status,
+      ) ||
+      (args.subscriptionId &&
+        stripeObjectId(subscription.default_payment_method) !==
+          args.paymentMethodId)
+    )
+      continue;
 
-  const { subscription, tier } = resolved;
-  const invoiceId = stripeObjectId(subscription.latest_invoice);
-  if (!invoiceId) return;
+    const invoiceId = stripeObjectId(subscription.latest_invoice);
+    const price = subscription.items?.data[0]?.price;
+    // This is a card-selection event, not proof of payment or restored access.
+    // Emit even if invoice.paid arrived first or there is no failure-ledger row.
+    for (const uid of userIds) {
+      phLogger.event(
+        PAID_FUNNEL_EVENTS.paymentMethodUpdated,
+        paidFunnelProperties({
+          userId: uid,
+          org_id: orgId,
+          subscription_tier: tier,
+          plan: price?.lookup_key,
+          stripe_event_id: args.stripeEventId,
+          stripe_event_type: args.stripeEventType,
+          stripe_customer_id: args.customerId,
+          stripe_subscription_id: subscription.id,
+          stripe_invoice_id: invoiceId,
+          payment_method_scope: args.subscriptionId
+            ? "subscription"
+            : "customer",
+          subscription_status: subscription.status,
+          recovery_result: "payment_method_updated",
+          $insert_id: `${PAID_FUNNEL_EVENTS.paymentMethodUpdated}:${args.stripeEventId}:${subscription.id}:${uid}`,
+        }),
+      );
+    }
 
-  const failureContext = await retrieveInvoiceForFailureAnalytics(invoiceId);
-  if (!failureContext) return;
-
-  const price = subscription.items?.data[0]?.price;
-  const failureProperties = subscriptionPaymentFailureProperties({
-    invoice: failureContext.invoice,
-    lifecycle: "invoice_payment_failed",
-    paymentIntent: failureContext.paymentIntent,
-  });
-  const recorded = await recordInvoluntaryChurnEvent({
-    stripeEventId: args.stripeEventId,
-    stripeEventType: args.stripeEventType,
-    occurredAt: args.eventOccurredAtMs,
-    invoice: failureContext.invoice,
-    customerId: args.customerId,
-    userIds,
-    orgId: orgId ?? undefined,
-    stripeSubscriptionId: subscription.id,
-    tier,
-    price,
-    failureProperties,
-  });
-  for (const uid of recorded.paymentMethodUpdatedUserIds) {
-    phLogger.event(
-      PAID_FUNNEL_EVENTS.paymentMethodUpdated,
-      paidFunnelProperties({
-        userId: uid,
-        org_id: orgId,
-        subscription_tier: tier,
-        plan: price?.lookup_key,
-        stripe_event_id: args.stripeEventId,
-        stripe_event_type: args.stripeEventType,
-        stripe_customer_id: args.customerId,
-        stripe_subscription_id: subscription.id,
-        stripe_invoice_id: failureContext.invoice.id,
-        attempt_count: failureContext.invoice.attempt_count ?? undefined,
-        billing_failure_group: failureProperties.billing_failure_group,
-        recovery_result: "payment_method_updated",
-        $insert_id: `${PAID_FUNNEL_EVENTS.paymentMethodUpdated}:${args.stripeEventId}:${uid}`,
-      }),
-    );
+    if (!invoiceId) continue;
+    const failureContext = await retrieveInvoiceForFailureAnalytics(invoiceId);
+    if (!failureContext)
+      throw new Error("Payment recovery invoice lookup failed");
+    const failureProperties = subscriptionPaymentFailureProperties({
+      invoice: failureContext.invoice,
+      lifecycle: "invoice_payment_failed",
+      paymentIntent: failureContext.paymentIntent,
+    });
+    await recordInvoluntaryChurnEvent({
+      stripeEventId: args.stripeEventId,
+      stripeEventType: args.stripeEventType,
+      occurredAt: args.eventOccurredAtMs,
+      invoice: failureContext.invoice,
+      customerId: args.customerId,
+      userIds,
+      orgId: orgId ?? undefined,
+      stripeSubscriptionId: subscription.id,
+      tier,
+      price,
+      failureProperties,
+    });
+    await recoverSubscriptionPayment({
+      stripe,
+      subscription,
+      invoice: failureContext.invoice,
+      paymentMethodId: args.paymentMethodId,
+      paymentIntent: failureContext.paymentIntent,
+      selectionEventId: args.stripeEventId,
+      customerEventCreated: args.subscriptionId
+        ? undefined
+        : Math.floor(args.eventOccurredAtMs / 1000),
+    });
   }
 }
 
@@ -2484,7 +2546,7 @@ async function handleSubscriptionDeleted(
  * - Endpoint URL: https://your-domain.com/api/subscription/webhook
  * - Events: checkout.session.completed, invoice.paid,
  *   invoice.payment_failed, customer.subscription.updated,
- *   customer.subscription.deleted, payment_method.attached, customer.updated,
+ *   customer.subscription.deleted, customer.updated,
  *   refund.created, refund.updated
  */
 export async function POST(req: NextRequest) {
@@ -2595,6 +2657,30 @@ export async function POST(req: NextRequest) {
       break;
     }
     case "customer.subscription.updated": {
+      const updated = event.data.object as Stripe.Subscription;
+      const previous = event.data.previous_attributes as
+        Partial<Stripe.Subscription> | undefined;
+      const paymentMethodId = stripeObjectId(updated.default_payment_method);
+      const customerId = stripeObjectId(updated.customer);
+      if (
+        customerId &&
+        paymentMethodId &&
+        previous &&
+        Object.prototype.hasOwnProperty.call(
+          previous,
+          "default_payment_method",
+        ) &&
+        stripeObjectId(previous.default_payment_method) !== paymentMethodId
+      ) {
+        await handlePaymentMethodUpdated({
+          customerId,
+          subscriptionId: updated.id,
+          paymentMethodId,
+          stripeEventId: event.id,
+          stripeEventType: "customer.subscription.updated",
+          eventOccurredAtMs: stripeEventOccurredAtMs(event),
+        });
+      }
       await handleSubscriptionUpdated(
         event.data.object as Stripe.Subscription,
         event.data.previous_attributes as
@@ -2610,28 +2696,22 @@ export async function POST(req: NextRequest) {
       );
       break;
     }
-    case "payment_method.attached": {
-      const paymentMethod = event.data.object as Stripe.PaymentMethod;
-      const customerId = stripeObjectId(paymentMethod.customer);
-      if (customerId) {
-        await handlePaymentMethodUpdated({
-          customerId,
-          stripeEventId: event.id,
-          stripeEventType: "payment_method.attached",
-          eventOccurredAtMs: stripeEventOccurredAtMs(event),
-        });
-      }
-      break;
-    }
     case "customer.updated": {
+      const updated = event.data.object as Stripe.Customer;
+      const paymentMethodId = stripeObjectId(
+        updated.invoice_settings?.default_payment_method,
+      );
       if (
+        paymentMethodId &&
         customerPaymentMethodChanged(
           event.data.previous_attributes as
             Partial<Stripe.Customer> | undefined,
+          paymentMethodId,
         )
       ) {
         await handlePaymentMethodUpdated({
-          customerId: (event.data.object as Stripe.Customer).id,
+          customerId: updated.id,
+          paymentMethodId,
           stripeEventId: event.id,
           stripeEventType: "customer.updated",
           eventOccurredAtMs: stripeEventOccurredAtMs(event),

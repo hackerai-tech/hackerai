@@ -15,6 +15,10 @@ import {
   planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
 import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
+import {
+  releaseSubscriptionSchedule,
+  subscriptionScheduleId,
+} from "@/lib/billing/subscription-schedule";
 
 const MAX_TEAM_SEATS = 999;
 
@@ -362,6 +366,17 @@ export const POST = async (req: NextRequest) => {
             }),
           );
           after(() => phLogger.flush());
+
+          // A pending retention downgrade would block the item change.
+          await releaseSubscriptionSchedule(
+            subscriptionScheduleId(subscription),
+            {
+              userId,
+              org_id: organization.id,
+              stripe_subscription_id: subscription.id,
+              reason: "plan_change",
+            },
+          );
 
           const updatedSubscription = await stripe.subscriptions.update(
             subscription.id,

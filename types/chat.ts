@@ -1,5 +1,4 @@
 import { UIMessage } from "ai";
-import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails, FilePart } from "./file";
 
@@ -483,16 +482,14 @@ export interface TodoWriteInput {
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
-export const messageMetadataSchema = z.object({
-  feedbackType: z.enum(["positive", "negative"]).optional(),
-  isAutoContinue: z.boolean().optional(),
-  mode: z.enum(["agent", "ask"]).optional(),
-  createdAt: z.number().optional(),
-  generationStartedAt: z.number().optional(),
-  generationTimeMs: z.number().optional(),
-});
-
-export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
+export type MessageMetadata = {
+  feedbackType?: "positive" | "negative";
+  isAutoContinue?: boolean;
+  mode?: "agent" | "ask";
+  createdAt?: number;
+  generationStartedAt?: number;
+  generationTimeMs?: number;
+};
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
   createdAt?: number;

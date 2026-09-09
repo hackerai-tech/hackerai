@@ -6,19 +6,38 @@ export const FREE_RATE_LIMIT_REQUESTS_DEFAULT = 10;
 export const FREE_ASK_REQUEST_COST = 1;
 export const FREE_AGENT_REQUEST_COST = 1;
 
-export const getFreeRequestLimit = (): number => {
+export type FreeLimitPolicy = {
+  dailyRequests: number;
+  monthlyCostDollars: number;
+};
+
+export const getFreeRequestLimit = (policy?: FreeLimitPolicy): number => {
   const configuredLimit = parseInt(
     process.env.FREE_RATE_LIMIT_REQUESTS || "",
     10,
   );
-  return Number.isFinite(configuredLimit) && configuredLimit > 0
-    ? configuredLimit
-    : FREE_RATE_LIMIT_REQUESTS_DEFAULT;
+  const normal =
+    Number.isFinite(configuredLimit) && configuredLimit > 0
+      ? configuredLimit
+      : FREE_RATE_LIMIT_REQUESTS_DEFAULT;
+  return policy &&
+    Number.isFinite(policy.dailyRequests) &&
+    policy.dailyRequests >= 1
+    ? Math.min(normal, Math.floor(policy.dailyRequests))
+    : normal;
 };
 
-export const getFreeMonthlyCostLimitDollars = (): number => {
+export const getFreeMonthlyCostLimitDollars = (
+  policy?: FreeLimitPolicy,
+): number => {
   const configuredLimit = Number(process.env.FREE_MONTHLY_COST_LIMIT_USD);
-  return Number.isFinite(configuredLimit) && configuredLimit > 0
-    ? configuredLimit
-    : FREE_MONTHLY_COST_LIMIT_USD_DEFAULT;
+  const normal =
+    Number.isFinite(configuredLimit) && configuredLimit > 0
+      ? configuredLimit
+      : FREE_MONTHLY_COST_LIMIT_USD_DEFAULT;
+  return policy &&
+    Number.isFinite(policy.monthlyCostDollars) &&
+    policy.monthlyCostDollars > 0
+    ? Math.min(normal, policy.monthlyCostDollars)
+    : normal;
 };

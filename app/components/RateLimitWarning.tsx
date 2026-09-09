@@ -1,5 +1,7 @@
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
@@ -176,6 +178,22 @@ export const RateLimitWarning = ({
   data,
   onDismiss,
 }: RateLimitWarningProps) => {
+  const isPersonalMonthlyWarning =
+    data.warningType === "token-bucket" &&
+    ["pro", "pro-plus", "ultra"].includes(data.subscription) &&
+    !data.cutOff &&
+    (data.capReason === "monthly_near_limit" ||
+      (!data.capReason && data.remainingPercent > 0));
+  // Reuse the live personal-wallet entitlement so an already visible warning
+  // reacts to purchases, the Extra Usage toggle, and spending-cap changes.
+  const extraUsage = useQuery(
+    api.extraUsage.getMaxModelExtraUsageEntitlement,
+    isPersonalMonthlyWarning ? {} : "skip",
+  );
+  const hideMonthlyWarning =
+    isPersonalMonthlyWarning &&
+    (extraUsage === undefined ||
+      (extraUsage?.extraUsageAvailable === true && extraUsage.hasBalance));
   const capturedUpgradeImpressionRef = useRef(false);
   const capturedAddCreditImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
@@ -187,7 +205,7 @@ export const RateLimitWarning = ({
       ? undefined
       : data.capReason;
   const extraUsageCta =
-    data.warningType === "token-bucket"
+    data.warningType === "token-bucket" && !hideMonthlyWarning
       ? getExtraUsageLimitCta({
           subscription: data.subscription,
           capReason,
@@ -197,6 +215,7 @@ export const RateLimitWarning = ({
     data.warningType === "extra-usage-active" ||
     data.warningType === "paid-daily-free-allowance";
   const showUpgrade =
+    !hideMonthlyWarning &&
     data.warningType !== "agent-run-spend-cap" &&
     data.warningType !== "extra-usage-active" &&
     data.warningType !== "paid-daily-free-allowance" &&
@@ -254,6 +273,8 @@ export const RateLimitWarning = ({
       cta_text: extraUsageCta.analyticsText,
     });
   }, [capReason, data.subscription, extraUsageCta, limitSeverity, limitType]);
+
+  if (hideMonthlyWarning) return null;
 
   return (
     <div

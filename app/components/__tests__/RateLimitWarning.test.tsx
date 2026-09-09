@@ -1,7 +1,18 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
-import { RateLimitWarning } from "../RateLimitWarning";
+import { setMockQueryResult } from "@/__mocks__/convex-react";
+
+const monthlyWarning = {
+  warningType: "token-bucket" as const,
+  bucketType: "monthly" as const,
+  remainingPercent: 3,
+  resetTime: new Date(Date.now() + 9 * 24 * 60 * 60_000),
+  subscription: "pro-plus" as const,
+  capReason: "monthly_near_limit",
+  usedDollars: 57.99,
+  limitDollars: 60,
+};
 
 jest.mock("@/lib/analytics/client", () => ({
   captureAddCreditCtaClick: jest.fn(),
@@ -13,10 +24,125 @@ jest.mock("@/lib/utils/settings-dialog", () => ({
   openSettingsDialog: jest.fn(),
 }));
 
+const { RateLimitWarning } = require("../RateLimitWarning");
+const {
+  captureAddCreditCtaImpression,
+  captureUpgradeCtaImpression,
+} = require("@/lib/analytics/client");
+
 describe("RateLimitWarning", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    setMockQueryResult(null);
   });
+
+  it("removes an existing monthly warning as soon as purchased credit becomes usable", () => {
+    const { rerender } = render(
+      <RateLimitWarning data={monthlyWarning} onDismiss={jest.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
+
+    setMockQueryResult({ extraUsageAvailable: true, hasBalance: true });
+    rerender(<RateLimitWarning data={monthlyWarning} onDismiss={jest.fn()} />);
+    expect(screen.queryByTestId("rate-limit-warning")).not.toBeInTheDocument();
+
+    setMockQueryResult({ extraUsageAvailable: false, hasBalance: false });
+    rerender(<RateLimitWarning data={monthlyWarning} onDismiss={jest.fn()} />);
+    expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
+  });
+
+  it.each(["pro", "pro-plus", "ultra"] as const)(
+    "hides the near-limit banner and purchase impressions for %s with usable credit",
+    (subscription) => {
+      setMockQueryResult({ extraUsageAvailable: true, hasBalance: true });
+      render(
+        <RateLimitWarning
+          data={{ ...monthlyWarning, subscription }}
+          onDismiss={jest.fn()}
+        />,
+      );
+      expect(
+        screen.queryByTestId("rate-limit-warning"),
+      ).not.toBeInTheDocument();
+      expect(captureAddCreditCtaImpression).not.toHaveBeenCalled();
+      expect(captureUpgradeCtaImpression).not.toHaveBeenCalled();
+    },
+  );
+
+  it("waits for the wallet query without flashing a purchase CTA", () => {
+    setMockQueryResult(undefined);
+    const { rerender } = render(
+      <RateLimitWarning data={monthlyWarning} onDismiss={jest.fn()} />,
+    );
+    expect(screen.queryByTestId("rate-limit-warning")).not.toBeInTheDocument();
+    expect(captureAddCreditCtaImpression).not.toHaveBeenCalled();
+    setMockQueryResult({ extraUsageAvailable: false, hasBalance: false });
+    rerender(<RateLimitWarning data={monthlyWarning} onDismiss={jest.fn()} />);
+    expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
+    expect(captureAddCreditCtaImpression).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { reason: "disabled", extraUsageAvailable: false, hasBalance: true },
+    {
+      reason: "monthly_cap_exhausted",
+      extraUsageAvailable: false,
+      hasBalance: true,
+    },
+    { reason: "empty", extraUsageAvailable: false, hasBalance: false },
+    { reason: "available", extraUsageAvailable: true, hasBalance: false },
+  ])(
+    "keeps the warning without usable prepaid credit: $reason / balance $hasBalance",
+    (wallet) => {
+      setMockQueryResult(wallet);
+      render(<RateLimitWarning data={monthlyWarning} onDismiss={jest.fn()} />);
+      expect(screen.getByTestId("rate-limit-warning")).toBeVisible();
+    },
+  );
+
+  it("hides mid-stream near-limit warnings without a cap reason", () => {
+    setMockQueryResult({ extraUsageAvailable: true, hasBalance: true });
+    render(
+      <RateLimitWarning
+        data={{ ...monthlyWarning, capReason: undefined, midStream: true }}
+        onDismiss={jest.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("rate-limit-warning")).not.toBeInTheDocument();
+  });
+
+  it.each(["monthly_exhausted", "extra_usage_cap", "team_member_cap"])(
+    "preserves actual cutoff warnings even with personal credit: %s",
+    (capReason) => {
+      setMockQueryResult({ extraUsageAvailable: true, hasBalance: true });
+      render(
+        <RateLimitWarning
+          data={{
+            ...monthlyWarning,
+            remainingPercent: 0,
+            capReason,
+            cutOff: true,
+          }}
+          onDismiss={jest.fn()}
+        />,
+      );
+      expect(screen.getByText(/this response was cut off/i)).toBeVisible();
+    },
+  );
+
+  it.each(["free", "team"] as const)(
+    "preserves %s warnings regardless of personal credit",
+    (subscription) => {
+      setMockQueryResult({ extraUsageAvailable: true, hasBalance: true });
+      render(
+        <RateLimitWarning
+          data={{ ...monthlyWarning, subscription }}
+          onDismiss={jest.fn()}
+        />,
+      );
+      expect(screen.getByTestId("rate-limit-warning")).toBeVisible();
+    },
+  );
 
   it("uses generic copy for free monthly exhaustion", () => {
     render(

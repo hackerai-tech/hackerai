@@ -1,3 +1,8 @@
+import {
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+  ABLITERATION_MODEL_KEY,
+  isAbliterationModel,
+} from "@/lib/ai/abliteration";
 /**
  * Chat Stream Helpers
  *
@@ -33,6 +38,7 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
+import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
 import {
@@ -424,6 +430,7 @@ export async function runSummarizationStep(options: {
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
   onPhaseDuration?: import("@/lib/chat/summarization").ContextCompactionPhaseReporter;
+  startupCompaction?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionContext;
   registerBackgroundWork?: import("@/lib/chat/summarization").BackgroundWorkRegistrar;
 }): Promise<SummarizationStepResult> {
   const {
@@ -452,6 +459,7 @@ export async function runSummarizationStep(options: {
     maxTokensOverride: options.ctxMaxTokens,
     providerPromptPressure: options.providerPromptPressure,
     onPhaseDuration: options.onPhaseDuration,
+    startupCompaction: options.startupCompaction,
     registerBackgroundWork: options.registerBackgroundWork,
   });
 
@@ -623,6 +631,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
@@ -649,6 +658,7 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
 const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model",
   "ask-model-free",
+  "ask-model-free-glm",
   "agent-model",
   "agent-model-free",
 ]);
@@ -707,6 +717,8 @@ const isHighReasoningModel = (modelName?: string): boolean =>
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
 type FallbackOptions = {
+  /** Preserve the authenticated free Ask policy across model retries. */
+  isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
   hasPdfAttachments?: boolean;
   pdfParserEngine?: "mistral-ocr" | "cloudflare-ai";
@@ -743,7 +755,14 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-glm-5.3-flash-agent") {
+  if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
+    return "model-deepseek-v4-pro-0813";
+  }
+  if (
+    modelName === ABLITERATION_MODEL_KEY ||
+    modelName === "model-glm-5.3-flash-agent" ||
+    modelName === "ask-model-free-glm"
+  ) {
     return "model-deepseek-v4-flash-0731";
   }
   if (
@@ -792,6 +811,19 @@ export function getRetryFallbackModel(
   return "model-grok-4.6";
 }
 
+/** Any failure of the active treatment route gets one baseline attempt. */
+export function shouldRetryAbliterationError(
+  assignment: Pick<AbliteratedAssignment, "variant"> | undefined,
+  failedModel: string,
+  abortSignal: AbortSignal,
+): boolean {
+  return (
+    assignment?.variant === "test" &&
+    isAbliterationModel(failedModel) &&
+    !abortSignal.aborted
+  );
+}
+
 const CONTENT_FILTER_RETRY_CANDIDATES = [
   "model-glm-5.3",
   "model-kimi-k3",
@@ -807,8 +839,10 @@ export function getContentFilterRetryModel(
   modelName: ModelName,
   mode: ChatMode,
   servedModel?: string,
+  preferredFallbackOverride?: ModelName,
 ): ModelName {
-  const preferredFallback = getRetryFallbackModel(modelName, mode);
+  const preferredFallback =
+    preferredFallbackOverride ?? getRetryFallbackModel(modelName, mode);
   if (!servedModel) return preferredFallback;
 
   const route = [modelName, ...(getFallbackKeys(modelName) ?? [])];
@@ -958,13 +992,19 @@ export function buildProviderOptions(
   mode?: ChatMode,
   options: FallbackOptions = {},
 ) {
+  // Direct provider: never send OpenRouter routing, plugins, or user IDs.
+  if (isAbliterationModel(modelName)) return {} as Record<string, never>;
   const modelId =
     options.requestedModelSlug ??
     (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   // Free Ask keeps mandatory reasoning low even when a caller supplies a
   // different reasoning override.
-  const isFreeAsk = mode === "ask" && modelName === "ask-model-free";
+  const isFreeAsk =
+    mode === "ask" &&
+    (options.isFreeAskRequest === true ||
+      modelName === "ask-model-free" ||
+      modelName === "ask-model-free-glm");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this

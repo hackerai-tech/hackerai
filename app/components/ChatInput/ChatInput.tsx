@@ -12,7 +12,10 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
-import { readGeneratedTextAttachment } from "@/app/hooks/useTauri";
+import {
+  isTauriEnvironment,
+  readGeneratedTextAttachment,
+} from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
   removeDraft,
@@ -633,7 +636,10 @@ export const ChatInput = ({
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
-    !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
+    !isCheckingProPlan &&
+    subscription === "free" &&
+    isAgentMode(chatMode) &&
+    (!isTauriEnvironment() || freeDesktopAgentOnlyActive);
   const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
     ? isFreeDesktopSandboxAvailable({
         sandboxPreference,
@@ -912,12 +918,17 @@ export const ChatInput = ({
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
           >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
             <div
-              className={`ml-auto min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              className="min-w-0 flex-1"
+              data-testid="chat-input-mobile-sandbox"
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+            <div
+              className={`ml-auto min-w-0 max-w-[56%] shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />

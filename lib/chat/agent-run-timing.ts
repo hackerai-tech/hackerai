@@ -1,3 +1,7 @@
+import type {
+  StartupCompactionAttempt,
+  StartupCompactionVariant,
+} from "./summarization/startup-compaction";
 import type { AgentActiveTimeCategory } from "@/types";
 
 export type AgentStartupPhase =
@@ -13,6 +17,8 @@ export type AgentRunTimingSnapshot = {
   taskToFirstModelStartMs?: number;
   requestToFirstModelStartMs?: number;
   requestToFirstModelChunkMs?: number;
+  startupCompactionVariant?: StartupCompactionVariant;
+  startupCompactionFallbackUsed?: boolean;
   startupSubphaseTimingVersion?: 1;
   startupSummaryGenerationDurationMs?: number;
   startupTranscriptSavingDurationMs?: number;
@@ -38,6 +44,7 @@ export class AgentRunTimingTracker {
         taskStartedAt: number;
       }
     | undefined;
+  private startupCompaction: StartupCompactionAttempt | undefined;
   private firstModelStartedAt: number | undefined;
   private firstModelChunkAt: number | undefined;
   private approvalWaitCount = 0;
@@ -65,6 +72,13 @@ export class AgentRunTimingTracker {
       return;
     }
     this.startup = timing;
+  };
+
+  recordStartupCompactionAttempt = (
+    attempt: StartupCompactionAttempt,
+  ): void => {
+    if (this.firstModelStartedAt !== undefined) return;
+    this.startupCompaction = attempt;
   };
 
   recordApprovalWait = (
@@ -153,6 +167,10 @@ export class AgentRunTimingTracker {
     );
     const hasStartupSubphaseTiming = this.startupPhaseDurations.size > 0;
     return {
+      ...(this.startupCompaction && {
+        startupCompactionVariant: this.startupCompaction.variant,
+        startupCompactionFallbackUsed: this.startupCompaction.fallbackUsed,
+      }),
       ...(startup && {
         startupTimingVersion: 1 as const,
         routePreTriggerDurationMs: normalizeDuration(

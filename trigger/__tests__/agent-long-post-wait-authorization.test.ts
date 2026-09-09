@@ -170,7 +170,7 @@ describe("agent-long post-wait authorization contract", () => {
     const resume = taskSource.indexOf("activeRuntimeBudget.resume()", wait);
     const capacity = taskSource.indexOf("await checkRateLimitCapacity(");
     const monthlyCost = taskSource.indexOf(
-      "await checkFreeMonthlyCostLimit(freeUsageSubject)",
+      "await checkFreeMonthlyCostLimit(",
       capacity,
     );
     const reacquire = taskSource.indexOf(

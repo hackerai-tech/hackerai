@@ -197,30 +197,55 @@ export const recordCancellationStarted = mutation({
 });
 
 /**
- * Record that the user accepted the pause offer for a started cancellation.
- * The row stays "started" until the Stripe webhook completes it when the
- * paused subscription ends at the paid-through date.
+ * Record that the user accepted a retention offer for a started cancellation.
+ * A downgrade keeps the subscription, so the row becomes "retained". A pause
+ * still ends the subscription later, so the row stays "started" until the
+ * Stripe webhook completes it.
  */
 export const recordRetentionOfferAccepted = mutation({
   args: {
     serviceKey: v.string(),
     cancellationReasonId: v.id("cancellation_reasons"),
-    retentionOffer: v.literal("pause"),
+    retentionOffer: v.union(v.literal("pause"), v.literal("downgrade")),
     acceptedAt: v.optional(v.number()),
   },
-  returns: v.null(),
+  returns: v.object({
+    recorded: v.boolean(),
+    reason: v.optional(
+      v.union(
+        v.literal("not_found"),
+        v.literal("already_decided"),
+        v.literal("different_offer_accepted"),
+      ),
+    ),
+  }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
     const row = await ctx.db.get(args.cancellationReasonId);
-    if (!row) return null;
+    if (!row) return { recorded: false, reason: "not_found" as const };
+    // Repeating the same offer is idempotent; a different offer on a row that
+    // already accepted one, or a row that already completed, is rejected so
+    // the stored state cannot disagree with Stripe.
+    if (row.retention_offer_accepted === args.retentionOffer) {
+      return { recorded: true };
+    }
+    if (row.retention_offer_accepted) {
+      return { recorded: false, reason: "different_offer_accepted" as const };
+    }
+    if (row.status !== "started") {
+      return { recorded: false, reason: "already_decided" as const };
+    }
 
     const acceptedAt = args.acceptedAt ?? Date.now();
     await ctx.db.patch(row._id, {
       retention_offer_accepted: args.retentionOffer,
+      ...(args.retentionOffer === "downgrade" && {
+        status: "retained" as const,
+      }),
       updated_at: acceptedAt,
     });
-    return null;
+    return { recorded: true };
   },
 });
 
@@ -295,6 +320,7 @@ export const getCancellationReasonReport = query({
       reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       startedCount: v.number(),
       completedCount: v.number(),
+      retainedCount: v.number(),
       pausedCount: v.number(),
     }),
   ),
@@ -330,6 +356,7 @@ export const getCancellationReasonReport = query({
         reasonSubcategory: CancellationReasonSubcategory | null;
         startedCount: number;
         completedCount: number;
+        retainedCount: number;
         pausedCount: number;
       }
     >();
@@ -365,12 +392,16 @@ export const getCancellationReasonReport = query({
         reasonSubcategory: row.reason_subcategory ?? null,
         startedCount: 0,
         completedCount: 0,
+        retainedCount: 0,
         pausedCount: 0,
       };
 
       group.startedCount += 1;
       if (row.status === "completed") {
         group.completedCount += 1;
+      }
+      if (row.status === "retained") {
+        group.retainedCount += 1;
       }
       if (row.retention_offer_accepted === "pause") {
         group.pausedCount += 1;
@@ -403,8 +434,17 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
       reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       subscriptionTier: v.union(subscriptionTierValidator, v.null()),
       plan: v.union(v.string(), v.null()),
-      status: v.union(v.literal("started"), v.literal("completed"), v.null()),
-      retentionOfferAccepted: v.union(v.literal("pause"), v.null()),
+      status: v.union(
+        v.literal("started"),
+        v.literal("completed"),
+        v.literal("retained"),
+        v.null(),
+      ),
+      retentionOfferAccepted: v.union(
+        v.literal("pause"),
+        v.literal("downgrade"),
+        v.null(),
+      ),
       source: v.union(sourceValidator, v.null()),
       recentUsageSegment: v.union(usageSegmentValidator, v.null()),
       recentUsageRequestCount: v.union(v.number(), v.null()),

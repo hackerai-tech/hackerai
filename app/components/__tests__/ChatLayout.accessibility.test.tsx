@@ -8,6 +8,7 @@ let mockCompactTaskSidebar = false;
 let mockChatSidebarOpen = true;
 let mockComputerSidebarOpen = false;
 let mockPathname = "/c/task-1";
+let mockHistoryError = false;
 const mockSetChatSidebarOpen = jest.fn();
 
 jest.mock("next/dynamic", () => ({
@@ -31,11 +32,14 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   }),
 }));
 jest.mock("@/app/hooks/useChats", () => ({
-  useChats: () => ({
-    results: [],
-    status: "Exhausted",
-    loadMore: jest.fn(),
-  }),
+  useChats: () => {
+    if (mockHistoryError) throw new Error("History unavailable");
+    return {
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    };
+  },
 }));
 jest.mock("@/app/hooks/useProjects", () => ({
   useProjects: () => ({
@@ -102,12 +106,32 @@ const { ChatLayout } =
 
 describe("ChatLayout responsive accessibility", () => {
   beforeEach(() => {
+    mockHistoryError = false;
     mockIsMobile = true;
     mockCompactTaskSidebar = false;
     mockChatSidebarOpen = true;
     mockComputerSidebarOpen = false;
     mockPathname = "/c/task-1";
     mockSetChatSidebarOpen.mockReset();
+  });
+
+  it("catches history subscription failures and can retry after recovery", () => {
+    mockHistoryError = true;
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <ChatLayout>
+          <div>Task content</div>
+        </ChatLayout>,
+      );
+      expect(screen.getByText("Something went wrong")).toBeInTheDocument();
+      expect(screen.queryByText("Task content")).not.toBeInTheDocument();
+      mockHistoryError = false;
+      fireEvent.click(screen.getByRole("button", { name: "Try Again" }));
+      expect(screen.getByText("Task content")).toBeInTheDocument();
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("gives the mobile task sidebar dialog an accessible name", () => {

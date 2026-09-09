@@ -95,8 +95,8 @@ export function AgentPermissionSelector({
 
   const buttonClassName =
     size === "md"
-      ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-      : "h-8 px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : "h-8 max-w-full px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-5 w-5 shrink-0";
 
@@ -109,7 +109,9 @@ export function AgentPermissionSelector({
           className={buttonClassName}
         >
           <Icon className={iconClassName} aria-hidden="true" />
-          <span className="truncate">{selectedOption.shortLabel}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {selectedOption.shortLabel}
+          </span>
           <ChevronDown
             aria-hidden="true"
             className={

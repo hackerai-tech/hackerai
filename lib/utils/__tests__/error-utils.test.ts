@@ -688,3 +688,45 @@ describe("provider error classification", () => {
     expect(getUserFriendlyProviderError(err)).toContain("context limit");
   });
 });
+
+describe("SSE upstream abort recovery", () => {
+  it.each([502, 503, 504, "504"])(
+    "recovers code=%s even with aborted wording",
+    (code) => {
+      const error = { code, message: "The operation was aborted" };
+      expect(getProviderStatusCode(extractErrorDetails(error))).toBe(
+        Number(code),
+      );
+      expect(isRetriableProviderStreamDisconnectError(error)).toBe(true);
+    },
+  );
+  it("keeps bare cancellation and HTTP 400 terminal", () => {
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        new DOMException("The operation was aborted", "AbortError"),
+      ),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError({
+        code: 400,
+        message: "The operation was aborted",
+      }),
+    ).toBe(false);
+  });
+  it("normalizes allowlisted error parameter paths without logging arbitrary values", () => {
+    const error = (param: string) => ({
+      responseBody: JSON.stringify({
+        error: { code: "invalid_request", message: "Invalid request", param },
+      }),
+    });
+    expect(
+      extractErrorDetails(error("messages[123].tool_calls")),
+    ).toHaveProperty("providerErrorParam", "messages[].tool_calls");
+    expect(extractErrorDetails(error("private prompt"))).not.toHaveProperty(
+      "providerErrorParam",
+    );
+    expect(
+      extractErrorDetails(error("messages[1].private_payload")),
+    ).not.toHaveProperty("providerErrorParam");
+  });
+});

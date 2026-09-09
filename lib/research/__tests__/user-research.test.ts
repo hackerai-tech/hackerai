@@ -44,43 +44,56 @@ const baseProfile = {
 };
 
 describe("user research privacy controls", () => {
-  it("accepts a bounded request without a Linear reference", () => {
-    const request = {
-      question: "What recurring work creates the most customer value?",
-      cohortLabel: "PostHog top-spender research cohort",
-      userIds: ["user-1", "user-2", "user-3"],
-      cohortSelectedAt: Date.UTC(2026, 7, 25),
-      selectionQueryFingerprint:
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      maxChatsPerUser: 12,
-    };
+  it.each([1, 2, 3, 20])(
+    "accepts %i users without a Linear reference",
+    (userCount) => {
+      const request = {
+        question: "What recurring work creates the most customer value?",
+        cohortLabel: "PostHog top-spender research cohort",
+        userIds: Array.from({ length: userCount }, (_, i) => `user-${i + 1}`),
+        cohortSelectedAt: Date.UTC(2026, 7, 25),
+        selectionQueryFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        maxChatsPerUser: 12,
+      };
 
-    expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual({
-      ...request,
-      cohortSource: "posthog",
-      posthogProjectId: 144137,
-      selectionLimitations: [],
-      samplingMode: "representative",
-    });
-    expect(
-      pmUserResearchGatewayRequestSchema.parse({
+      expect(pmUserResearchGatewayRequestSchema.parse(request)).toEqual({
         ...request,
-        linearIssueId: "HAC-65",
-      }).linearIssueId,
-    ).toBe("HAC-65");
-    expect(
-      pmUserResearchGatewayRequestSchema.safeParse({
-        ...request,
-        cohortSelectedAt: undefined,
-      }).success,
-    ).toBe(false);
-    expect(
-      pmUserResearchGatewayRequestSchema.safeParse({
-        ...request,
-        selectionQueryFingerprint: undefined,
-      }).success,
-    ).toBe(false);
-  });
+        cohortSource: "posthog",
+        posthogProjectId: 144137,
+        selectionLimitations: [],
+        samplingMode: "representative",
+      });
+      for (const userIds of [
+        [],
+        ["user-1", "user-1"],
+        Array.from({ length: 21 }, (_, i) => `user-${i + 1}`),
+      ]) {
+        expect(
+          pmUserResearchGatewayRequestSchema.safeParse({ ...request, userIds })
+            .success,
+        ).toBe(false);
+      }
+      expect(
+        pmUserResearchGatewayRequestSchema.parse({
+          ...request,
+          linearIssueId: "HAC-65",
+        }).linearIssueId,
+      ).toBe("HAC-65");
+      expect(
+        pmUserResearchGatewayRequestSchema.safeParse({
+          ...request,
+          cohortSelectedAt: undefined,
+        }).success,
+      ).toBe(false);
+      expect(
+        pmUserResearchGatewayRequestSchema.safeParse({
+          ...request,
+          selectionQueryFingerprint: undefined,
+        }).success,
+      ).toBe(false);
+    },
+  );
 
   it("requires a bounded anchor for every user in pre-event research", () => {
     const request = {
@@ -549,5 +562,28 @@ ${"QUJD".repeat(16)}
     expect(normalized.crossCohortPatterns[0].evidenceUserCount).toBe(4);
     expect(normalized.primaryAvatar).toBe("Independent Operator");
     expect(normalized.secondaryAvatars).toEqual(["Security Learner"]);
+
+    const singleUser = normalizeCohortSynthesis(normalized, 1);
+    expect(singleUser.avatars).toEqual([
+      { ...normalized.avatars[0], evidenceUserCount: 1, confidence: "low" },
+    ]);
+    expect(singleUser.primaryAvatar).toBe(singleUser.avatars[0].name);
+    expect(singleUser.secondaryAvatars).toEqual([]);
+    expect(singleUser.crossCohortPatterns).toEqual([]);
+    expect(singleUser.unknowns).toEqual([
+      expect.stringContaining("Sample size is one user"),
+    ]);
+    expect(singleUser.unknowns[0]).toContain("wider applicability");
+
+    const boundedUnknowns = normalizeCohortSynthesis(
+      {
+        ...normalized,
+        unknowns: Array.from({ length: 8 }, (_, i) => `Unknown ${i + 1}`),
+      },
+      1,
+    );
+    expect(boundedUnknowns.unknowns).toHaveLength(8);
+    expect(boundedUnknowns.unknowns[0]).toContain("Sample size is one user");
+    expect(normalizeCohortSynthesis(singleUser, 1)).toEqual(singleUser);
   });
 });

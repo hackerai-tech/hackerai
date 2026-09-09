@@ -1,4 +1,12 @@
 import {
+  evaluateRegionalFreeLimits,
+  captureRegionalFreeLimitsExposure,
+} from "@/lib/experiments/regional-free-limits";
+import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
+import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
+import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
+import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import {
   task,
   metadata,
   logger as triggerLogger,
@@ -64,11 +72,13 @@ import {
   isAutoModelSelectionForRetry,
   isExplicitDeepSeekProSelectionForRetry,
   resolveServedModelForCostAccounting,
+  shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
 import {
   BudgetMonitor,
   captureBudgetSnapshot,
 } from "@/lib/chat/budget-monitor";
+import { AbliterationVisionError } from "@/lib/chat/abliteration-vision";
 import { UsageTracker } from "@/lib/usage-tracker";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
@@ -157,6 +167,11 @@ import {
   getActiveDeepSeekV4Pro0813ExperimentAssignment,
   getDeepSeekV4Pro0813ExperimentContext,
 } from "@/lib/experiments/deepseek-v4-pro-0813";
+import {
+  evaluateFlashRouting,
+  getActiveFlashRoutingAssignment,
+  createFlashRoutingExposureRecorder,
+} from "@/lib/experiments/flash-routing";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -254,9 +269,12 @@ import {
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import {
+  decideProviderRecovery,
   detectAssistantContentLoopFromParts,
+  getProviderOutputDiagnostics,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
+  PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
   shouldRetryProviderStreamAfterNonDurableOutputLimit,
   shouldRetryProviderStreamAfterReasoningOnlyOutput,
   shouldRetryProviderStreamAfterInterruptedToolInput,
@@ -1706,9 +1724,6 @@ const isTerminalProviderStreamError = (
   state?.streamFinishReason === "error" ||
   isProviderContentFilterFinishReason(state?.streamFinishReason);
 
-const PROVIDER_DISCONNECT_CONTINUATION_PROMPT =
-  "The previous model connection ended mid-response. Continue from the preserved completed text and tool results. Do not repeat completed tool calls or their side effects. Finish the task from the last durable result.";
-
 const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
   state.openRouterMetadata = {};
   state.lastStepInputTokens = 0;
@@ -2246,6 +2261,7 @@ export type AgentLongPayload = {
   subscription: SubscriptionTier;
   organizationId?: string;
   freeQuotaSubject?: string;
+  regionalFreeCountry?: string;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -2645,6 +2661,33 @@ export const agentLongTask = task({
               reason: "miosa_rollout_control",
             } as const);
       const cloudSandboxProvider = cloudSandboxSelection.provider;
+      const regionalFreeLimits = await evaluateRegionalFreeLimits({
+        posthog,
+        userId,
+        subscription,
+        country: payload.regionalFreeCountry,
+      });
+      // Check capacity before moderation/model work, then consume the daily
+      // request atomically under the free-run lock when execution starts.
+      await captureRegionalFreeLimitsExposure(
+        posthog,
+        regionalFreeLimits,
+        userId,
+        mode,
+      );
+      if (subscription === "free") {
+        await checkRateLimitCapacity(
+          userId,
+          mode,
+          subscription,
+          undefined,
+          undefined,
+          organizationId,
+          freeQuotaSubject,
+          regionalFreeLimits,
+        );
+        await checkFreeMonthlyCostLimit(freeUsageSubject, regionalFreeLimits);
+      }
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -2658,6 +2701,7 @@ export const agentLongTask = task({
         selectedModel,
         sandboxFiles,
         platformAuthorized,
+        allowsAbliterationContinuation,
       } = await processChatMessages({
         messages: messagesForProcessing,
         mode,
@@ -2685,6 +2729,44 @@ export const agentLongTask = task({
         );
       }
 
+      const abliteratedExperiment = await evaluateAbliteratedModel({
+        posthog,
+        userId,
+        selectedModel,
+        subscription,
+        mode,
+        selectedModelOverride,
+        moderationEligible: platformAuthorized,
+        allowsAbliterationContinuation,
+        independentAbliterationResponses:
+          fetched.independentAbliterationResponses,
+        messages: processedMessages,
+        limitRescue: Boolean(limitRescue),
+      });
+      if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
+
+      const abliteratedTelemetry = abliteratedExperiment
+        ? new AbliteratedModelTelemetry(posthog, userId, {
+            assignment: abliteratedExperiment,
+            messageId: assistantMessageId,
+            chatId,
+            mode,
+            subscription,
+            selectedModelOverride,
+          })
+        : undefined;
+
+      const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
+        release: ctx.deployment?.version,
+        posthog,
+        assignment: abliteratedExperiment,
+        userId,
+        chatId,
+        messageId: assistantMessageId,
+        mode,
+        subscription,
+      });
+
       const deepSeekV4Pro0813Experiment =
         await evaluateDeepSeekV4Pro0813Experiment({
           posthog,
@@ -2695,6 +2777,18 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      const flashRoutingAssignment = await evaluateFlashRouting({
+        posthog,
+        userId,
+        mode,
+        subscription,
+        selectedModel,
+        hasImages:
+          countFileAttachments(messagesForProcessing).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+      });
+      if (flashRoutingAssignment)
+        selectedModel = flashRoutingAssignment.modelKey;
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -2871,6 +2965,14 @@ export const agentLongTask = task({
               releaseFreeRunLock = lock.release;
             }
 
+            const freeMonthlyBudgetSnapshot =
+              subscription === "free"
+                ? await checkFreeMonthlyCostLimit(
+                    freeUsageSubject,
+                    regionalFreeLimits,
+                  )
+                : null;
+
             try {
               rateLimitInfo = await checkRateLimit(
                 userId,
@@ -2881,6 +2983,7 @@ export const agentLongTask = task({
                 selectedModel,
                 organizationId,
                 freeQuotaSubject,
+                regionalFreeLimits,
               );
             } catch (error) {
               if (!(error instanceof ChatSDKError)) throw error;
@@ -2972,15 +3075,27 @@ export const agentLongTask = task({
                 deepSeekV4Pro0813Experiment,
                 selectedModel,
               );
-            const routingExperimentContext =
-              getDeepSeekV4Pro0813ExperimentContext(
-                activeDeepSeekV4Pro0813Experiment,
+            const activeFlashRoutingAssignment =
+              getActiveFlashRoutingAssignment(
+                flashRoutingAssignment,
+                selectedModel,
+                !!paidDailyFreeAllowanceReservation,
               );
-
-            const freeMonthlyBudgetSnapshot =
-              subscription === "free"
-                ? await checkFreeMonthlyCostLimit(freeUsageSubject)
-                : null;
+            const activeAbliteratedExperiment =
+              !paidDailyFreeAllowanceReservation &&
+              abliteratedExperiment?.modelKey === selectedModel
+                ? abliteratedExperiment
+                : undefined;
+            const routingExperimentContext = activeAbliteratedExperiment
+              ? {
+                  key: activeAbliteratedExperiment.key,
+                  variant: activeAbliteratedExperiment.variant,
+                  requestId: assistantMessageId,
+                }
+              : (activeFlashRoutingAssignment ??
+                getDeepSeekV4Pro0813ExperimentContext(
+                  activeDeepSeekV4Pro0813Experiment,
+                ));
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
             chatLogger?.setRateLimit(
@@ -3114,9 +3229,13 @@ export const agentLongTask = task({
                 selectedModel,
                 authorization.organizationId,
                 freeQuotaSubject,
+                regionalFreeLimits,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                await checkFreeMonthlyCostLimit(
+                  freeUsageSubject,
+                  regionalFreeLimits,
+                );
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
@@ -3201,9 +3320,13 @@ export const agentLongTask = task({
                 selectedModel,
                 currentEntitlement.organizationId,
                 freeQuotaSubject,
+                regionalFreeLimits,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                await checkFreeMonthlyCostLimit(
+                  freeUsageSubject,
+                  regionalFreeLimits,
+                );
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -3316,6 +3439,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          regionalFreeLimits,
                           triggerRegion,
                         }),
                         continue_agent: createContinueAgentTool(toolContext, {
@@ -3324,6 +3448,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          regionalFreeLimits,
                           triggerRegion,
                         }),
                         list_agents: createListAgentsTool(toolContext),
@@ -3591,11 +3716,18 @@ export const agentLongTask = task({
             let providerRecoveryAttempts = 0;
             const providerRecoveryModels: string[] = [];
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
+            const retrySelectionModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
-              selectedModel,
+              selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel = getRetryFallbackModel(selectedModel, mode);
+            const fallbackModel =
+              abliteratedExperiment?.variant === "test"
+                ? abliteratedExperiment.baselineModel
+                : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -3799,6 +3931,7 @@ export const agentLongTask = task({
                   });
                 }
                 captureUsageCost({
+                  regionalFreeLimits,
                   posthog,
                   userId,
                   subscription,
@@ -4116,6 +4249,20 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              abliteratedTelemetry,
+              ...(activeAbliteratedExperiment?.variant === "test" && {
+                abliteratedStepRouting: {
+                  baselineModel: activeAbliteratedExperiment.baselineModel,
+                },
+              }),
+              onProviderRequestStart: createFlashRoutingExposureRecorder({
+                posthog,
+                assignment: activeFlashRoutingAssignment,
+                userId,
+                mode,
+                subscription,
+                requestId: assistantMessageId,
+              }),
               trackedProvider,
               currentSystemPrompt,
               tools,
@@ -4156,8 +4303,16 @@ export const agentLongTask = task({
               onModelStreamStart: runTimingTracker.startModelStream,
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onModelChunk: runTimingTracker.recordFirstModelChunk,
+              onModelStepSelected: (modelName) => {
+                activeModelName = modelName;
+                terminalRequestedModelSlug =
+                  trackedProvider.languageModel(modelName).modelId;
+                setCurrentModelName(modelName);
+              },
               onStartupPhaseDuration:
                 runTimingTracker.recordStartupPhaseDuration,
+              onStartupCompactionAttempt:
+                runTimingTracker.recordStartupCompactionAttempt,
               registerBackgroundWork: registerBackgroundRunWork,
               onProviderRequestDiagnostics: (providerRequest, retention) => {
                 if (
@@ -4206,6 +4361,9 @@ export const agentLongTask = task({
               modelName: string,
               excludedProviderModelSlugs?: readonly string[],
             ) => {
+              if (modelName !== selectedModel) {
+                streamCtx.abliteratedStepRouting = undefined;
+              }
               activeModelName = modelName;
               terminalRequestedModelSlug =
                 trackedProvider.languageModel(modelName).modelId;
@@ -4337,6 +4495,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                abliteratedProviderSummary: abliteratedTelemetry?.getSummary(),
                 posthog,
                 userId,
                 chatId,
@@ -4440,6 +4599,9 @@ export const agentLongTask = task({
                   generationStartedAt: retryStartTime,
                   generationTimeMs: fallbackGenerationTimeMs,
                   finishReason: state.streamFinishReason,
+                  abliterationRouting: abliteratedTelemetry?.getRoutingMarker(
+                    !retryAborted && state.streamFinishReason === "stop",
+                  ),
                 });
               }
               writer.write({
@@ -4497,22 +4659,33 @@ export const agentLongTask = task({
                 !visionSummaryRecovery.isEnabled() &&
                 (countFileAttachments(state.finalMessages).imageCount > 0 ||
                   uiMessagesContainImageViewResult(state.finalMessages));
+              const shouldRecoverAbliterationApiError =
+                shouldRetryAbliterationError(
+                  activeAbliteratedExperiment,
+                  activeModelName,
+                  userStopSignal.signal,
+                );
               if (
-                isProviderApiError(error) &&
-                !isInvalidImageInputError(error) &&
                 !isRetryWithFallback &&
-                (isAutoModel || shouldRecoverVisionApiError)
+                !userStopSignal.signal.aborted &&
+                (shouldRecoverAbliterationApiError ||
+                  (isProviderApiError(error) &&
+                    !isInvalidImageInputError(error) &&
+                    !(error instanceof AbliterationVisionError) &&
+                    (isAutoModel || shouldRecoverVisionApiError)))
               ) {
-                const apiRetryModel = shouldRecoverVisionApiError
-                  ? selectModel(
-                      mode,
-                      subscription,
-                      selectedModelOverride,
-                      false,
-                      false,
-                      { extraUsageAvailable },
-                    )
-                  : fallbackModel;
+                const apiRetryModel = shouldRecoverAbliterationApiError
+                  ? fallbackModel
+                  : shouldRecoverVisionApiError
+                    ? selectModel(
+                        mode,
+                        subscription,
+                        selectedModelOverride,
+                        false,
+                        false,
+                        { extraUsageAvailable },
+                      )
+                    : fallbackModel;
                 phLogger.error(
                   "[agent-long] Provider API error, retrying with fallback",
                   {
@@ -4540,7 +4713,10 @@ export const agentLongTask = task({
                 preFallbackCacheRead = usageTracker.cacheReadTokens;
                 preFallbackCacheWrite = usageTracker.cacheWriteTokens;
                 usageTracker.resetModelLeg();
-                if (shouldRecoverVisionApiError) {
+                if (
+                  shouldRecoverVisionApiError &&
+                  !shouldRecoverAbliterationApiError
+                ) {
                   visionSummaryRecovery.activate({
                     error,
                     source:
@@ -4571,13 +4747,32 @@ export const agentLongTask = task({
                     throw error;
                   }
                 }
+                userStopSignal.signal.throwIfAborted();
                 result = await createStream(apiRetryModel);
               } else {
                 throw error;
               }
             }
 
-            writer.merge(
+            const mergePrimaryStream = (
+              stream: Parameters<typeof writer.merge>[0],
+            ) => {
+              writer.merge(
+                stream.pipeThrough(
+                  createRecoverableProviderErrorFilter(
+                    () =>
+                      !isRetryWithFallback &&
+                      shouldRetryAbliterationError(
+                        activeAbliteratedExperiment,
+                        activeModelName,
+                        userStopSignal.signal,
+                      ),
+                  ),
+                ),
+              );
+            };
+
+            mergePrimaryStream(
               withAgentLongStreamHeartbeat(
                 result.toUIMessageStream({
                   generateMessageId: () => assistantMessageId,
@@ -4633,6 +4828,13 @@ export const agentLongTask = task({
                         );
                       const hasTerminalProviderStreamError =
                         isTerminalProviderStreamError(state);
+                      const shouldRecoverAbliterationStreamError =
+                        hasTerminalProviderStreamError &&
+                        shouldRetryAbliterationError(
+                          activeAbliteratedExperiment,
+                          activeModelName,
+                          userStopSignal.signal,
+                        );
                       const shouldRetryReasoningOnlyProviderError =
                         shouldRetryProviderStreamAfterReasoningOnlyOutput(
                           lastAssistantMessageParts,
@@ -4646,7 +4848,7 @@ export const agentLongTask = task({
                       const shouldRetryExplicitDeepSeekProReasoning =
                         shouldRetryReasoningOnlyProviderError &&
                         isExplicitDeepSeekProSelectionForRetry({
-                          selectedModel,
+                          selectedModel: retrySelectionModel,
                           selectedModelOverride,
                         });
                       const shouldRetryInterruptedToolInput =
@@ -4674,7 +4876,9 @@ export const agentLongTask = task({
                             )
                           : { messages: finishedMessages, omittedCount: 0 };
                       const shouldRetryWithoutImageToolResults =
-                        imageRecovery.omittedCount > 0 && !isAborted;
+                        imageRecovery.omittedCount > 0 &&
+                        !isAborted &&
+                        !shouldRecoverAbliterationStreamError;
                       const hasImageAttachmentForRecovery =
                         countFileAttachments(state.finalMessages).imageCount >
                         0;
@@ -4682,6 +4886,7 @@ export const agentLongTask = task({
                         uiMessagesContainImageViewResult(state.finalMessages);
                       const shouldRetryWithVisionSummary =
                         directGlmVisionEnabled &&
+                        !shouldRecoverAbliterationStreamError &&
                         !visionSummaryRecovery.isEnabled() &&
                         !providerContentBlocked &&
                         hasTerminalProviderStreamError &&
@@ -4706,26 +4911,42 @@ export const agentLongTask = task({
                         );
                       const providerDisconnectContinuation =
                         hasTerminalProviderStreamError &&
-                        isRetriableProviderStreamDisconnectError(
-                          state.providerError,
-                        ) &&
-                        !providerContentBlocked &&
+                        (shouldRecoverAbliterationStreamError ||
+                          isRetriableProviderStreamDisconnectError(
+                            state.providerError,
+                          )) &&
+                        (shouldRecoverAbliterationStreamError ||
+                          !providerContentBlocked) &&
                         !isAborted
                           ? prepareProviderDisconnectContinuation(
                               normalizedFinishedMessages,
+                              {
+                                allowCompletedTail:
+                                  shouldRecoverAbliterationStreamError,
+                              },
                             )
                           : undefined;
                       const shouldContinueAfterProviderDisconnect = Boolean(
                         providerDisconnectContinuation,
                       );
-                      const shouldAttemptProviderRetry =
-                        (shouldRetryWithFallback ||
+                      const providerRecoveryDecision = decideProviderRecovery({
+                        userCancelled: userStopSignal.signal.aborted,
+                        unrecoverableVision:
+                          !shouldRecoverAbliterationStreamError &&
+                          state.providerError instanceof
+                            AbliterationVisionError,
+                        alreadyRetried: isRetryWithFallback,
+                        streamAborted: isAborted,
+                        loopRecovery: stoppedDueToAssistantContentLoop,
+                        hasCandidate:
+                          shouldRecoverAbliterationStreamError ||
+                          shouldRetryWithFallback ||
                           shouldRetryWithoutImageToolResults ||
                           shouldRetryWithVisionSummary ||
-                          shouldContinueAfterProviderDisconnect) &&
-                        !isRetryWithFallback &&
-                        (!isAborted || stoppedDueToAssistantContentLoop) &&
-                        (isAutoModel ||
+                          shouldContinueAfterProviderDisconnect,
+                        modelEligible:
+                          isAutoModel ||
+                          shouldRecoverAbliterationStreamError ||
                           shouldRetryWithVisionSummary ||
                           providerContentBlocked ||
                           shouldRetryWithoutImageToolResults ||
@@ -4733,7 +4954,10 @@ export const agentLongTask = task({
                           state.stoppedDueToDoomLoop ||
                           shouldRetryInterruptedToolInput ||
                           shouldRetryExplicitDeepSeekProReasoning ||
-                          shouldContinueAfterProviderDisconnect);
+                          shouldContinueAfterProviderDisconnect,
+                      });
+                      const shouldAttemptProviderRetry =
+                        providerRecoveryDecision.attempt;
                       let recoveredVisionMessages:
                         typeof state.finalMessages | undefined;
                       let visionSummaryRecoveryFailure: unknown;
@@ -4782,9 +5006,67 @@ export const agentLongTask = task({
                         }
                       }
 
+                      if (hasTerminalProviderStreamError) {
+                        const failure = wrapProviderTerminalError(
+                          state.providerError,
+                          {
+                            model: selectedModel,
+                            openRouterMetadata: state.openRouterMetadata,
+                          },
+                        );
+                        triggerLogger.info("Provider recovery decision", {
+                          event: "provider_recovery_decision",
+                          service: "agent-long",
+                          environment: ctx.environment.type,
+                          run_id: ctx.run.id,
+                          chat_id: chatId,
+                          decision:
+                            shouldAttemptProviderRetry &&
+                            !visionSummaryRecoveryFailure &&
+                            !userStopSignal.signal.aborted
+                              ? "attempt"
+                              : "skip",
+                          reason: userStopSignal.signal.aborted
+                            ? "user_cancelled"
+                            : visionSummaryRecoveryFailure
+                              ? "vision_summary_failed"
+                              : providerRecoveryDecision.reason,
+                          category: failure.category,
+                          status_code: failure.statusCode,
+                          configured_model: selectedModel,
+                          served_model:
+                            state.openRouterMetadata
+                              ?.openrouter_selected_model ??
+                            state.responseModel,
+                          provider: failure.provider,
+                          provider_request_id: failure.openrouterRequestId,
+                          provider_generation_id:
+                            failure.openrouterGenerationId,
+                          retry_already_used: isRetryWithFallback,
+                          user_cancelled: userStopSignal.signal.aborted,
+                          stream_aborted: isAborted,
+                          has_safe_continuation:
+                            shouldContinueAfterProviderDisconnect,
+                          ...getProviderOutputDiagnostics(
+                            lastAssistantMessageParts,
+                          ),
+                        });
+                      }
+
+                      const retryMessageId = generateId();
                       if (
                         shouldAttemptProviderRetry &&
-                        !visionSummaryRecoveryFailure
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
+                      ) {
+                        await taskOutcomeSurvey?.linkMessage(retryMessageId);
+                      }
+                      isAborted ||= userStopSignal.signal.aborted;
+
+                      primaryProviderRecovery: if (
+                        shouldAttemptProviderRetry &&
+                        !visionSummaryRecoveryFailure &&
+                        !userStopSignal.signal.aborted
                       ) {
                         const retryReason = shouldRetryWithVisionSummary
                           ? "vision_summary_recovery"
@@ -4808,24 +5090,27 @@ export const agentLongTask = task({
                         const blockedProviderModel = providerContentBlocked
                           ? state.responseModel
                           : undefined;
-                        const retryModel = shouldRetryWithVisionSummary
-                          ? selectModel(
-                              mode,
-                              subscription,
-                              selectedModelOverride,
-                              false,
-                              false,
-                              { extraUsageAvailable },
-                            )
-                          : shouldRetryWithoutImageToolResults
-                            ? selectedModel
-                            : providerContentBlocked
-                              ? getContentFilterRetryModel(
-                                  selectedModel,
-                                  mode,
-                                  blockedProviderModel,
-                                )
-                              : fallbackModel;
+                        const retryModel = shouldRecoverAbliterationStreamError
+                          ? fallbackModel
+                          : shouldRetryWithVisionSummary
+                            ? selectModel(
+                                mode,
+                                subscription,
+                                selectedModelOverride,
+                                false,
+                                false,
+                                { extraUsageAvailable },
+                              )
+                            : shouldRetryWithoutImageToolResults
+                              ? selectedModel
+                              : providerContentBlocked
+                                ? getContentFilterRetryModel(
+                                    selectedModel,
+                                    mode,
+                                    blockedProviderModel,
+                                    fallbackModel,
+                                  )
+                                : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
                         phLogger.warn(
@@ -4934,13 +5219,17 @@ export const agentLongTask = task({
                             });
                           }
                         }
+                        abliteratedTelemetry?.setMessageId(retryMessageId);
+                        if (userStopSignal.signal.aborted) {
+                          isAborted = true;
+                          break primaryProviderRecovery;
+                        }
                         const retryResult = await createStream(
                           retryModel,
                           blockedProviderModel
                             ? [blockedProviderModel]
                             : undefined,
                         );
-                        const retryMessageId = generateId();
 
                         writer.merge(
                           withAgentLongStreamHeartbeat(
@@ -5053,9 +5342,24 @@ export const agentLongTask = task({
                                       usageTracker.cacheReadTokens;
                                     preFallbackCacheWrite =
                                       usageTracker.cacheWriteTokens;
+                                    const finalRetryMessageId = generateId();
+                                    abliteratedTelemetry?.setMessageId(
+                                      finalRetryMessageId,
+                                    );
+                                    await taskOutcomeSurvey?.linkMessage(
+                                      finalRetryMessageId,
+                                    );
+                                    if (userStopSignal.signal.aborted) {
+                                      await finalizeRetryStream({
+                                        retryMessages,
+                                        retryAborted: true,
+                                        retryMessageId,
+                                        retryStartTime: fallbackStartTime,
+                                      });
+                                      return;
+                                    }
                                     const finalRetryResult =
                                       await createStream(finalRetryModel);
-                                    const finalRetryMessageId = generateId();
                                     writer.merge(
                                       withAgentLongStreamHeartbeat(
                                         finalRetryResult.toUIMessageStream({
@@ -5159,6 +5463,8 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        abliteratedProviderSummary:
+                          abliteratedTelemetry?.getSummary(),
                         posthog,
                         userId,
                         chatId,
@@ -5376,6 +5682,11 @@ export const agentLongTask = task({
                             generationTimeMs: finalGenerationTimeMs,
                             finishReason: state.streamFinishReason,
                             usage: resolvedUsage ?? state.streamUsage,
+                            abliterationRouting:
+                              abliteratedTelemetry?.getRoutingMarker(
+                                !isAborted &&
+                                  state.streamFinishReason === "stop",
+                              ),
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,

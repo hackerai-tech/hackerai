@@ -609,6 +609,13 @@ export const useChatHandlers = ({
   };
 
   const handleStop = async () => {
+    captureAuthenticatedEvent("chat_response_stop_requested", {
+      chat_id: chatId,
+      message_id: messages.findLast((message) => message.role === "assistant")
+        ?.id,
+      mode: chatModeRef.current,
+      selected_model: requestSelectedModelRef.current ?? "auto",
+    });
     setIsAutoResuming(false);
 
     // Set manual stop flag to prevent auto-processing of queue
@@ -656,6 +663,13 @@ export const useChatHandlers = ({
 
     // Remove todos from all assistant messages in the auto-continue chain.
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
+    captureAuthenticatedEvent("chat_response_regeneration_requested", {
+      chat_id: chatId,
+      message_id: messages.findLast((message) => message.role === "assistant")
+        ?.id,
+      mode: chatModeRef.current,
+      selected_model: requestSelectedModelRef.current ?? "auto",
+    });
     const cleanedTodos =
       chainAssistantIds.length > 0
         ? removeTodosBySourceMessages(todos, chainAssistantIds)

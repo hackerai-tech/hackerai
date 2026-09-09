@@ -1003,7 +1003,7 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
   /**
    * Sets up the chained mock for ctx.db.query so that different tables/indexes
    * return different results. Call order within deleteLastAssistantMessage:
-   *   1. messages.by_chat_id (with filter+order+first) -> last assistant msg
+   *   1. messages.by_chat_id (descending iterator) -> trailing response chain
    *   2. chats.by_chat_id (first) -> chat doc              [inside checkAndInvalidateSummary]
    *   3. messages.by_message_id (first) -> cutoff message   [inside checkAndInvalidateSummary]
    *   4. possibly more messages.by_message_id calls         [inside tryFallbackSummary]
@@ -1014,6 +1014,7 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     chatDoc: Record<string, any> | null;
     cutoffMessage: Record<string, any> | null;
     fallbackCutoffMessages?: (Record<string, any> | null)[];
+    trailingMessages?: AsyncIterable<Record<string, any>>;
   }): void {
     let callIndex = 0;
     const {
@@ -1027,12 +1028,14 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
       const currentCall = callIndex++;
 
       if (currentCall === 0 && table === "messages") {
-        // deleteLastAssistantMessage now fetches all messages desc to walk back the chain
+        // Regeneration reads only the trailing response chain via an iterator.
         const allMessages = assistantMessage ? [assistantMessage] : [];
         return {
           withIndex: jest.fn().mockReturnValue({
             order: jest.fn().mockReturnValue({
-              collect: jest.fn<any>().mockResolvedValue(allMessages),
+              async *[Symbol.asyncIterator]() {
+                yield* config.trailingMessages ?? allMessages;
+              },
             }),
           }),
         };
@@ -1076,6 +1079,36 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
       };
     });
   }
+
+  it("stops reading a 10,000-message history at the visible request while deleting hidden continuations", async () => {
+    let reads = 0;
+    setupDbQueryChain({
+      assistantMessage: null,
+      chatDoc: makeChatDoc({ latest_summary_id: undefined }),
+      cutoffMessage: null,
+      trailingMessages: {
+        async *[Symbol.asyncIterator]() {
+          for (let i = 0; i < 10_000; i++) {
+            reads++;
+            yield makeAssistantMessage({
+              _id: `doc-${i}`,
+              id: `msg-${i}`,
+              role: i === 1 || i >= 3 ? "user" : "assistant",
+              is_hidden: i === 1,
+            });
+          }
+        },
+      },
+    });
+    const { deleteLastAssistantMessage } = await import("../messages");
+    await deleteLastAssistantMessage.handler(mockCtx, { chatId: CHAT_ID });
+    expect(reads).toBe(4);
+    expect(mockCtx.db.delete.mock.calls).toEqual([
+      ["doc-0"],
+      ["doc-1"],
+      ["doc-2"],
+    ]);
+  });
 
   it("should NOT invalidate when deleted message is newer than cutoff", async () => {
     const assistantMsg = makeAssistantMessage({ _creationTime: 5000 });
@@ -1150,7 +1183,9 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
         return {
           withIndex: jest.fn().mockReturnValue({
             order: jest.fn().mockReturnValue({
-              collect: jest.fn<any>().mockResolvedValue([assistantMsg]),
+              async *[Symbol.asyncIterator]() {
+                yield assistantMsg;
+              },
             }),
           }),
         };

@@ -92,6 +92,8 @@ describe("captureAgentRun", () => {
       taskToFirstModelStartMs: 875,
       requestToFirstModelStartMs: 1_310,
       requestToFirstModelChunkMs: 1_725,
+      startupCompactionVariant: "bounded_glm_v1",
+      startupCompactionFallbackUsed: true,
       startupSubphaseTimingVersion: 1,
       startupSummaryGenerationDurationMs: 600,
       startupTranscriptSavingDurationMs: 400,
@@ -139,6 +141,8 @@ describe("captureAgentRun", () => {
         request_to_first_model_start_ms: 1_310,
         request_to_first_model_chunk_ms: 1_725,
         startup_subphase_timing_version: 1,
+        startup_compaction_variant: "bounded_glm_v1",
+        startup_compaction_fallback_used: true,
         startup_summary_generation_duration_ms: 600,
         startup_transcript_saving_duration_ms: 400,
         startup_sandbox_context_duration_ms: 75,
@@ -539,10 +543,66 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each([
+    ["ask", "abliterated_paid_moderated_v1"],
+    ["agent", "abliterated_paid_moderated_v1"],
+    ["ask", "abliterated_free_ask_moderated_v1"],
+  ] as const)(
+    "captures %s %s summaries while preserving assignment through fallback",
+    (mode, experimentKey) => {
+      const capture = jest.fn();
+      const providerSummary = {
+        telemetry_version: 2,
+        provider_attempt_count: 500,
+        provider_completed_count: 499,
+        provider_error_count: 1,
+        provider_estimated_cost_dollars: 0.12,
+      };
+      captureAgentCompletionAnalytics({
+        abliteratedProviderSummary: providerSummary,
+        posthog: { capture } as any,
+        userId: "user",
+        chatId: "chat",
+        endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
+        mode,
+        subscription:
+          experimentKey === "abliterated_free_ask_moderated_v1"
+            ? "free"
+            : "pro",
+        outcome: "success",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model",
+        responseModel: "deepseek/deepseek-v4-flash-0731",
+        fallbackServed: true,
+        sandboxInfo: { type: "e2b" },
+        chatLogger: {} as any,
+        experiment: {
+          key: experimentKey,
+          variant: "test",
+          requestId: "message",
+        },
+      });
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            ...providerSummary,
+            mode,
+            experiment_key: experimentKey,
+            experiment_variant: "test",
+            experiment_request_id: "message",
+            fallback_served: true,
+          }),
+        }),
+      );
+    },
+  );
   it("uses the existing agent completion event for successful free Agent activation", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",
@@ -581,6 +641,7 @@ describe("captureAgentCompletionAnalytics", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",
       chatId: "chat_123",

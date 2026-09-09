@@ -362,8 +362,10 @@ describe("selectModel", () => {
       );
     });
 
-    it("should return ask-model-free for ask mode (free)", () => {
-      expect(selectModel("ask", "free")).toBe("ask-model-free");
+    it.each([false, true])("keeps free Ask on GLM with PDF=%s", (hasPdf) => {
+      expect(selectModel("ask", "free", "auto", false, hasPdf)).toBe(
+        "ask-model-free-glm",
+      );
     });
 
     it("should return DeepSeek V4 Pro 0813 for ultra subscription with no image/PDF", () => {
@@ -533,12 +535,14 @@ describe("selectModel", () => {
     });
 
     it("should ignore tier override for free users in ask mode", () => {
-      expect(selectModel("ask", "free", "hackerai-pro")).toBe("ask-model-free");
+      expect(selectModel("ask", "free", "hackerai-pro")).toBe(
+        "ask-model-free-glm",
+      );
     });
 
     it("should keep free ask Standard on the free GLM Flash route", () => {
       expect(selectModel("ask", "free", "hackerai-standard")).toBe(
-        "ask-model-free",
+        "ask-model-free-glm",
       );
     });
   });

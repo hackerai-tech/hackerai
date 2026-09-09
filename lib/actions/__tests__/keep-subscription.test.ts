@@ -14,11 +14,16 @@ function mockStripeSubscriptionsList(data: unknown[]) {
   } as never);
 }
 
+const mockReleaseSchedule = jest.fn();
+
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: {
       list: mockListSubscriptions,
       update: mockUpdateSubscription,
+    },
+    subscriptionSchedules: {
+      release: mockReleaseSchedule,
     },
   },
 }));
@@ -30,6 +35,7 @@ jest.mock("@/lib/actions/billing-context", () => ({
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: {
     event: mockPostHogEvent,
+    info: jest.fn(),
     warn: jest.fn(),
     error: jest.fn(),
   },
@@ -278,5 +284,48 @@ describe("keepSubscriptionAction", () => {
       "CONVEX_SERVICE_ROLE_KEY is not set",
     );
     expect(mockUpdateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("releases a scheduled downgrade when the user keeps the current plan", async () => {
+    mockReleaseSchedule.mockResolvedValue({ id: "sub_sched_1" } as never);
+    mockStripeSubscriptionsList([
+      {
+        id: "sub_pp",
+        status: "active",
+        cancel_at_period_end: false,
+        current_period_end: 1_782_444_800,
+        schedule: "sub_sched_1",
+        metadata: {},
+        items: {
+          data: [
+            {
+              price: {
+                id: "price_pro_plus",
+                lookup_key: "pro-plus-monthly-plan",
+              },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const { default: keepSubscriptionAction } =
+      await import("../keep-subscription");
+
+    await expect(keepSubscriptionAction()).resolves.toEqual({
+      kept: true,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: 1_782_444_800_000,
+      alreadyKept: false,
+      planChangeCanceled: true,
+    });
+    expect(mockReleaseSchedule).toHaveBeenCalledWith("sub_sched_1");
+    expect(mockUpdateSubscription).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionDowngradeCanceled,
+      expect.objectContaining({
+        stripe_subscription_schedule_id: "sub_sched_1",
+      }),
+    );
   });
 });

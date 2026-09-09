@@ -3,6 +3,7 @@ import type {
   CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
 import type {
+  DowngradeOfferIneligibilityReason,
   PauseDurationMonths,
   PauseOfferIneligibilityReason,
 } from "@/lib/billing/retention-offers";
@@ -30,6 +31,8 @@ export type SubscriptionCancellationStatus = {
   renewalIntervalCount?: number;
   /** Present when the scheduled cancellation is a retention pause. */
   pause?: SubscriptionPauseStatusSummary;
+  /** Present when a cheaper plan is scheduled for the next renewal. */
+  pendingPlanChange?: SubscriptionPendingPlanChange;
 };
 
 export type BillingPortalFlow = "payment_method";
@@ -41,6 +44,8 @@ export type KeepSubscriptionResult = {
   alreadyKept: boolean;
   /** True when keeping the plan also cancelled a scheduled pause. */
   pauseCanceled?: boolean;
+  /** True when keeping the plan cancelled a scheduled downgrade. */
+  planChangeCanceled?: boolean;
 };
 
 export type CancellationReasonInput = {
@@ -76,11 +81,49 @@ export type RetentionPauseOffer = {
   options: RetentionPauseOption[];
 };
 
+export type RetentionDowngradeOffer =
+  | {
+      eligible: true;
+      targetTier: SubscriptionTier;
+      targetPlan: string;
+      targetAmountDollars?: number;
+      currentAmountDollars?: number;
+      currency?: string;
+      /** When the cheaper plan takes effect: the current paid-through date (ms). */
+      effectiveAt?: number;
+    }
+  | { eligible: false; reason: DowngradeOfferIneligibilityReason };
+
 export type RetentionOffers = {
   offersEnabled: boolean;
   subscriptionTier?: SubscriptionTier;
   plan?: string;
   pause: RetentionPauseOffer;
+  downgrade: RetentionDowngradeOffer;
+};
+
+export type DowngradeSubscriptionInput = {
+  cancellationReason: CancellationReasonInput;
+};
+
+export type DowngradeSubscriptionResult = {
+  scheduled: true;
+  /** When the cheaper plan takes effect (ms). */
+  effectiveAt: number;
+  fromTier?: SubscriptionTier;
+  toTier: SubscriptionTier;
+  toPlan: string;
+  targetAmountDollars?: number;
+  currency?: string;
+};
+
+/** A plan change already scheduled on the subscription. */
+export type SubscriptionPendingPlanChange = {
+  targetTier?: SubscriptionTier;
+  targetPlan?: string;
+  targetAmountDollars?: number;
+  currency?: string;
+  effectiveAt: number;
 };
 
 export type PauseSubscriptionInput = {

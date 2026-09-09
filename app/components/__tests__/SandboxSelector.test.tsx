@@ -37,6 +37,16 @@ const { SandboxSelector } =
   require("../SandboxSelector") as typeof import("../SandboxSelector");
 
 describe("SandboxSelector", () => {
+  it("keeps its trigger within constrained mobile toolbars", () => {
+    render(<SandboxSelector value="desktop" />);
+
+    expect(screen.getByRole("button", { name: /local/i })).toHaveClass(
+      "max-w-full",
+      "min-w-0",
+      "shrink",
+    );
+  });
+
   beforeEach(() => {
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
@@ -100,7 +110,8 @@ describe("SandboxSelector", () => {
     render(<SandboxSelector value="remote-office-pc" size="toolbar" />);
 
     expect(screen.getByRole("button", { name: hostname })).toHaveClass(
-      "max-w-44",
+      "max-w-full",
+      "sm:max-w-44",
       "min-w-0",
     );
     expect(screen.getByTitle(hostname)).toBeInTheDocument();

@@ -24,6 +24,34 @@ import {
  * that can properly initialize and control the Redis/Ratelimit dependencies.
  */
 describe("token-bucket", () => {
+  it.each(["model-abliterated", "abliterated-model"])(
+    "prices %s with the direct provider rates and cache discount",
+    (modelName) => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 500_000,
+          modelName,
+        }),
+      ).toBeCloseTo(4.65);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
+    },
+  );
+  it.each(["model-abliterated-large-v2", "abliterated-model-large-v2"])(
+    "prices %s with the Large v2 rates",
+    (modelName) => {
+      expect(
+        calculateRawModelUsageCostDollars({
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 500_000,
+          modelName,
+        }),
+      ).toBeCloseTo(7.75);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(50_000);
+    },
+  );
   // ==========================================================================
   // calculateTokenCost - Core pricing logic
   // ==========================================================================
@@ -540,6 +568,7 @@ describe("token-bucket", () => {
       "model-glm-5.3-flash",
       "model-glm-5.3-flash-pro",
       "model-glm-5.3-flash-agent",
+      "ask-model-free-glm",
       "z-ai/glm-5.3-flash",
     ])(
       "should use the conservative GLM 5.3 Flash ceiling for %s ($0.15/$0.50)",

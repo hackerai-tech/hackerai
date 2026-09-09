@@ -19,7 +19,10 @@ is the internal Convex/WorkOS user ID because the application identifies users
 with their WorkOS ID. Select `distinct_id AS user_id` directly; do not require a
 duplicate person property or infer the mapping from email. Produce those
 internal user IDs for the restricted gateway payload, not emails or billing
-customer IDs.
+customer IDs. A run accepts 1-20 unique users; one user is enough for a
+sanitized summary. State the sample size and treat a single-user result as an
+individual observation with a provisional low-confidence avatar, without
+generalizing to other users.
 
 Record `posthogProjectId`, the cohort selection timestamp, a SHA-256 fingerprint
 of the selection query, and short limitations that affect interpretation. Never

@@ -5,7 +5,7 @@ description: Run privacy-safe HackerAI customer research from an authorized PM q
 
 # HackerAI User Research
 
-Turn a research question and 3-20 internal user IDs into restricted per-user
+Turn a research question and 1-20 internal user IDs into restricted per-user
 profiles and an aggregated cohort report. The deployed task samples messages,
 redacts sensitive data, and uses Grok 4.6 with low reasoning.
 
@@ -34,7 +34,7 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    relationships before triggering analysis. For authenticated HackerAI users,
    select PostHog `distinct_id` as the internal Convex/WorkOS user ID; do not
    require a duplicate person property or infer identity from email. Stop unless
-   3-20 unique internal user IDs remain after filtering.
+   1-20 unique internal user IDs remain after filtering.
    For comparisons, preserve membership in `comparisonGroups`; use 2-4 groups
    with at least three users each, and assign every `userIds` entry exactly
    once. Group labels may describe the selected model, rollout, or funnel
@@ -118,11 +118,19 @@ For a comparison, also add group membership selected in PostHog:
   "comparisonGroups": [
     {
       "label": "Model rollout A",
-      "userIds": ["internal-user-id-1", "internal-user-id-2", "internal-user-id-3"]
+      "userIds": [
+        "internal-user-id-1",
+        "internal-user-id-2",
+        "internal-user-id-3"
+      ]
     },
     {
       "label": "Model rollout B",
-      "userIds": ["internal-user-id-4", "internal-user-id-5", "internal-user-id-6"]
+      "userIds": [
+        "internal-user-id-4",
+        "internal-user-id-5",
+        "internal-user-id-6"
+      ]
     }
   ]
 }
@@ -154,8 +162,11 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
   confidence is low.
 - Verify `usersAnalyzed`, `chatsReviewed`, and `messagesReviewed` before using a
   conclusion.
-- Do not turn one-off requests into an avatar. Prefer patterns supported across
-  multiple chats and users.
+- A single-user run is valid. Present a sanitized summary of that user's
+  observed product behavior, state that the sample is one user, and treat its
+  avatar as provisional and low confidence. Do not claim cross-user patterns or
+  population-level conclusions. For larger cohorts, prefer patterns supported
+  across multiple chats and users.
 - Keep observed product behavior separate from acquisition or messaging
   hypotheses.
 - Treat behavioral explanations of churn or conversion as low-confidence

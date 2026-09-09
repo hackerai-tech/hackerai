@@ -1,3 +1,4 @@
+import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   checkFreeMonthlyCostLimit,
   checkRateLimitCapacity,
@@ -13,6 +14,7 @@ type SubagentBillingCapacityInput = {
   organizationId?: string;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;
+  freeLimits?: FreeLimitPolicy;
   extraUsageConfig?: ExtraUsageConfig;
   modelName: string;
 };
@@ -39,6 +41,7 @@ export const checkSubagentBillingCapacity = async (
   if (input.subscription === "free") {
     await dependencies.checkFreeMonthlyCostLimit(
       input.freeQuotaSubject ?? input.userId,
+      ...(input.freeLimits ? [input.freeLimits] : []),
     );
     return undefined;
   }

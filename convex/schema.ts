@@ -1,5 +1,6 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
   researchCohortReportValidator,
@@ -239,6 +240,9 @@ export default defineSchema({
     file_ids: v.optional(v.array(v.id("files"))),
     feedback_id: v.optional(v.id("feedback")),
     source_message_id: v.optional(v.string()),
+    // Legacy Preview data from the superseded conversation-turn rollout.
+    // New writes and routing do not read or populate this field.
+    conversation_turn: v.optional(v.number()),
     update_time: v.number(),
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
@@ -275,6 +279,10 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_is_attached", ["is_attached"])
     .index("by_s3_key", ["s3_key"]),
+
+  task_outcome_surveys: defineTable(taskOutcomeFields)
+    .index("by_user_id", ["user_id"])
+    .index("by_request_id", ["request_id"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),
@@ -322,10 +330,16 @@ export default defineSchema({
       ),
     ),
     reason_details_id: v.optional(v.id("cancellation_reason_details")),
-    status: v.union(v.literal("started"), v.literal("completed")),
-    // Set when the user accepted the pause offer. The row stays "started"
-    // until Stripe ends the paused subscription at the paid-through date.
-    retention_offer_accepted: v.optional(v.literal("pause")),
+    // "retained" means the user accepted an offer that keeps them paying
+    // (downgrade). A pause keeps "started" until Stripe ends the subscription.
+    status: v.union(
+      v.literal("started"),
+      v.literal("completed"),
+      v.literal("retained"),
+    ),
+    retention_offer_accepted: v.optional(
+      v.union(v.literal("pause"), v.literal("downgrade")),
+    ),
     source: v.union(v.literal("in_app"), v.literal("billing_portal")),
     started_at: v.number(),
     completed_at: v.optional(v.number()),
@@ -430,6 +444,7 @@ export default defineSchema({
       v.literal("customer.subscription.deleted"),
       v.literal("payment_method.attached"),
       v.literal("customer.updated"),
+      v.literal("customer.subscription.updated"),
     ),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
@@ -829,6 +844,11 @@ export default defineSchema({
   })
     .index("by_note_id", ["note_id"])
     .index("by_user_and_category", ["user_id", "category"])
+    .index("by_user_and_category_and_updated", [
+      "user_id",
+      "category",
+      "updated_at",
+    ])
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .searchIndex("search_notes", {
       searchField: "content",

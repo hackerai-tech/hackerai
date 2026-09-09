@@ -14,6 +14,7 @@ import {
   isExplicitDeepSeekProSelectionForRetry,
   isProviderApiError,
   resolveServedModelForCostAccounting,
+  shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
@@ -57,6 +58,98 @@ const HIGH_REASONING_ROUTES = [
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
+  it.each(["ask-model-free", "ask-model-free-glm"] as const)(
+    "preserves free Ask low reasoning on retries from %s",
+    (primaryModel) => {
+      for (const retryModel of [
+        getRetryFallbackModel(primaryModel, "ask"),
+        getContentFilterRetryModel(primaryModel, "ask", GLM_FLASH_SLUG),
+      ]) {
+        const opts = buildProviderOptions(true, "user-1", retryModel, "ask", {
+          isFreeAskRequest: true,
+          reasoningOverride: { enabled: true, effort: "high" },
+        });
+        expect(opts.openrouter.reasoning).toEqual({
+          enabled: true,
+          effort: "low",
+        });
+      }
+    },
+  );
+  it("keeps the free Ask default at low reasoning with billed, retryable fallbacks", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "ask-model-free-glm",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "high" },
+      },
+    );
+    expect(opts.openrouter.reasoning).toEqual({ enabled: true, effort: "low" });
+    expect(opts.openrouter.models).toEqual([
+      DEEPSEEK_FLASH_SLUG,
+      DEEPSEEK_V4_PRO_0813_SLUG,
+      GLM_SLUG,
+    ]);
+    expect(opts.openrouter.provider).toEqual({
+      sort: "latency",
+      data_collection: "deny",
+    });
+    expect(getRetryFallbackModel("ask-model-free-glm", "ask")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "ask-model-free-glm",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "ask-model-free-glm",
+        responseModel: DEEPSEEK_FLASH_SLUG,
+      }),
+    ).toBe("model-deepseek-v4-flash-0731");
+  });
+
+  it("isolates Abliteration from OpenRouter and retries through the standard route", () => {
+    expect(
+      buildProviderOptions(true, "private-user", "model-abliterated", "agent", {
+        hasPdfAttachments: true,
+      }),
+    ).toEqual({});
+    expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(getRetryFallbackModel("model-abliterated", "agent")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-abliterated",
+        responseModel: "abliterated-model",
+      }),
+    ).toBe("model-abliterated");
+    expect(
+      buildProviderOptions(
+        true,
+        "private-user",
+        "model-abliterated-large-v2",
+        "agent",
+      ),
+    ).toEqual({});
+    expect(getRetryFallbackModel("model-abliterated-large-v2", "agent")).toBe(
+      "model-deepseek-v4-pro-0813",
+    );
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-abliterated-large-v2",
+        responseModel: "abliterated-model-large-v2",
+      }),
+    ).toBe("model-abliterated-large-v2");
+  });
+
   it("keeps title generation on a non-reasoning route", () => {
     const opts = buildProviderOptions(
       false,
@@ -925,6 +1018,58 @@ describe("getRetryFallbackModel", () => {
       "model-glm-5.3",
     );
   });
+});
+
+describe("shouldRetryAbliterationError", () => {
+  it.each([
+    "model-abliterated",
+    "model-abliterated-large-v2",
+    "abliterated-model",
+    "abliterated-model-large-v2",
+  ])("allows every failure of active treatment %s", (model) => {
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        model,
+        new AbortController().signal,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not recover a later OpenRouter step under the treatment assignment", () => {
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        "model-grok-4.6",
+        new AbortController().signal,
+      ),
+    ).toBe(false);
+  });
+
+  it("respects cancellation", () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        "model-abliterated",
+        controller.signal,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([undefined, { variant: "control" as const }])(
+    "preserves non-treatment behavior",
+    (assignment) => {
+      expect(
+        shouldRetryAbliterationError(
+          assignment,
+          "model-abliterated",
+          new AbortController().signal,
+        ),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("getContentFilterRetryModel", () => {

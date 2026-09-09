@@ -36,6 +36,7 @@ import {
   ASK_SUMMARIZATION_PROMPT,
 } from "./prompts";
 import type { RetainedTailMetadata } from "./retained-tail";
+import { InvalidCompactionSummaryError } from "./startup-compaction";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -729,6 +730,11 @@ export const generateSummaryText = async (
   abortSignal?: AbortSignal,
   modelMessages?: ModelMessage[],
   summaryInputMaxTokens: number = SUMMARY_INPUT_MAX_TOKENS,
+  generationOptions?: {
+    timeout?: number;
+    maxRetries?: number;
+    requireCompleteSummary?: boolean;
+  },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
 
@@ -769,6 +775,12 @@ export const generateSummaryText = async (
 
   const result = await generateText({
     model: languageModel,
+    ...(generationOptions?.timeout !== undefined && {
+      timeout: generationOptions.timeout,
+    }),
+    ...(generationOptions?.maxRetries !== undefined && {
+      maxRetries: generationOptions.maxRetries,
+    }),
     system: chatSystemPrompt,
     tools: nopTools,
     abortSignal,
@@ -782,6 +794,13 @@ export const generateSummaryText = async (
       },
     ],
   });
+
+  if (
+    generationOptions?.requireCompleteSummary &&
+    (!result.text.trim() || result.finishReason !== "stop")
+  ) {
+    throw new InvalidCompactionSummaryError();
+  }
 
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (

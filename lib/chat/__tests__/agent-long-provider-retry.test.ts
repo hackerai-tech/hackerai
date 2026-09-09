@@ -1,5 +1,7 @@
 import {
   createAssistantContentLoopMonitor,
+  decideProviderRecovery,
+  getProviderOutputDiagnostics,
   detectAssistantContentLoopFromText,
   getNextDeepSeekProDisconnectRetryModel,
   prepareProviderDisconnectContinuation,
@@ -78,6 +80,35 @@ describe("prepareProviderDisconnectContinuation", () => {
     expect(recovery?.removedPartCount).toBe(1);
     expect(recovery?.preservedCompletedToolCount).toBe(1);
     expect(recovery?.messages.at(-1)?.parts).toHaveLength(2);
+  });
+
+  it("preserves tools completed before an Abliteration error even without a partial tail", () => {
+    const messages = [
+      {
+        id: "assistant",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: { command: "touch result" },
+            output: "done",
+          },
+        ],
+      },
+    ] as UIMessage[];
+    expect(prepareProviderDisconnectContinuation(messages)).toBeUndefined();
+    expect(
+      prepareProviderDisconnectContinuation(messages, {
+        allowCompletedTail: true,
+      }),
+    ).toMatchObject({
+      messages,
+      removedPartCount: 0,
+      preservedCompletedToolCount: 1,
+    });
   });
 
   it("removes an entirely incomplete first assistant step", () => {
@@ -429,12 +460,12 @@ describe("shouldRetryAgentLongWithFallback", () => {
     ).toBe(false);
   });
 
-  it("does not retry empty assistant output", () => {
+  it("retries a terminal provider error before any assistant output", () => {
     expect(
       shouldRetryAgentLongWithFallback([], {
         hasTerminalProviderStreamError: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it.each([
@@ -625,5 +656,62 @@ describe("assistant content loop detection", () => {
     }
 
     expect(detected).toBe(false);
+  });
+});
+
+describe("provider recovery decisions", () => {
+  const eligible = {
+    userCancelled: false,
+    unrecoverableVision: false,
+    alreadyRetried: false,
+    streamAborted: false,
+    loopRecovery: false,
+    hasCandidate: true,
+    modelEligible: true,
+  };
+  it.each([
+    [{ userCancelled: true, loopRecovery: true }, "user_cancelled"],
+    [{ unrecoverableVision: true }, "vision_recovery_unavailable"],
+    [{ alreadyRetried: true }, "retry_budget_exhausted"],
+    [{ streamAborted: true }, "stream_aborted"],
+    [{ hasCandidate: false }, "no_safe_recovery"],
+    [{ modelEligible: false }, "model_not_eligible"],
+  ])("explains why recovery is blocked: %s", (overrides, reason) => {
+    expect(decideProviderRecovery({ ...eligible, ...overrides })).toEqual({
+      attempt: false,
+      reason,
+    });
+  });
+  it("allows eligible recovery and internal loop recovery", () => {
+    expect(decideProviderRecovery(eligible)).toEqual({
+      attempt: true,
+      reason: "eligible",
+    });
+    expect(
+      decideProviderRecovery({
+        ...eligible,
+        streamAborted: true,
+        loopRecovery: true,
+      }).attempt,
+    ).toBe(true);
+  });
+  it("records output shape without content", () => {
+    const diagnostics = getProviderOutputDiagnostics([
+      { type: "step-start" },
+      { type: "text", text: "private answer" },
+      {
+        type: "tool-file",
+        state: "output-available",
+        input: "private input",
+        output: "private output",
+      },
+    ]);
+    expect(diagnostics).toEqual({
+      part_count: 3,
+      completed_tool_count: 1,
+      has_durable_output: true,
+      has_step_boundary: true,
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain("private");
   });
 });

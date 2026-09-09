@@ -24,6 +24,11 @@ import {
 } from "../constants";
 import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
+const mockStartupVariant = jest.fn<() => Promise<string | undefined>>();
+jest.doMock("@/lib/posthog/server", () => ({
+  getPostHogFeatureFlagVariantForUser: mockStartupVariant,
+}));
+
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
 const mockAttachChatSummaryTranscript = jest.fn<() => Promise<boolean>>();
@@ -942,6 +947,166 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(persistedMetadata?.estimatedCompactedInputTokens).toBeUndefined();
   });
 
+  describe("bounded startup compaction", () => {
+    const start = (extra: Record<string, unknown> = {}) =>
+      checkAndSummarizeIfNeeded({
+        uiMessages: fourMessagesAboveThreshold,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
+        chatId: "chat-startup-compaction",
+        providerOptions: { openrouter: { user: "user-test" } },
+        startupCompaction: { userId: "user-test" },
+        ...extra,
+      });
+
+    beforeEach(() => {
+      mockStartupVariant.mockResolvedValue("bounded_glm_v1");
+    });
+
+    it("recovers a timed-out primary with the same source and records real exposure", async () => {
+      mockGenerateText
+        .mockRejectedValueOnce(
+          Object.assign(new Error("deadline"), { name: "TimeoutError" }),
+        )
+        .mockResolvedValueOnce({
+          text: "Complete recovered summary",
+          finishReason: "stop",
+        });
+      const onAttempt = jest.fn();
+      const result = await start({
+        startupCompaction: { userId: "user-test", onAttempt },
+      });
+      expect(result.needsSummarization).toBe(true);
+      expect(mockGenerateText).toHaveBeenCalledTimes(2);
+      const [primary, fallback] = mockGenerateText.mock.calls.map(
+        (call) => call[0] as any,
+      );
+      expect(primary).toMatchObject({
+        timeout: 30_000,
+        maxRetries: 0,
+        model: { modelId: "model-glm-5.3-flash" },
+      });
+      expect(fallback).toMatchObject({
+        model: { modelId: "model-deepseek-v4-flash-0731" },
+        providerOptions: {
+          openrouter: {
+            user: "user-test",
+            reasoning: { enabled: true, effort: "low" },
+            provider: { sort: "latency", data_collection: "deny" },
+          },
+        },
+      });
+      expect(fallback.messages).toEqual(primary.messages);
+      expect(fallback.timeout).toBeUndefined();
+      expect(onAttempt.mock.calls).toEqual([
+        [{ variant: "bounded_glm_v1", fallbackUsed: false }],
+        [{ variant: "bounded_glm_v1", fallbackUsed: true }],
+      ]);
+      expect(mockSaveChatSummary).toHaveBeenCalledWith(
+        expect.objectContaining({
+          summaryText: "Complete recovered summary",
+          metadata: expect.objectContaining({
+            model: "model-deepseek-v4-flash-0731",
+          }),
+        }),
+      );
+    });
+
+    it.each([429, 503])(
+      "recovers upstream status %s without retrying GLM",
+      async (statusCode) => {
+        mockGenerateText
+          .mockRejectedValueOnce(
+            Object.assign(new Error("upstream"), { statusCode }),
+          )
+          .mockResolvedValueOnce({ text: "Recovered", finishReason: "stop" });
+        expect((await start()).needsSummarization).toBe(true);
+        expect(mockGenerateText).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([
+      { text: "", finishReason: "stop" },
+      { text: "Partial summary", finishReason: "length" },
+      { text: "Filtered", finishReason: "content-filter" },
+    ])("does not persist an unusable primary: %j", async (primary) => {
+      mockGenerateText.mockResolvedValueOnce(primary).mockResolvedValueOnce({
+        text: "Complete summary",
+        finishReason: "stop",
+      });
+      await start();
+      expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
+      expect(mockSaveChatSummary).toHaveBeenCalledWith(
+        expect.objectContaining({ summaryText: "Complete summary" }),
+      );
+    });
+
+    it("leaves original messages intact if both summaries are unusable", async () => {
+      mockGenerateText.mockResolvedValue({
+        text: "Partial",
+        finishReason: "length",
+      });
+      const result = await start();
+      expect(result.needsSummarization).toBe(false);
+      expect(result.summarizedMessages).toEqual(fourMessagesAboveThreshold);
+      expect(mockGenerateText).toHaveBeenCalledTimes(2);
+      expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    });
+
+    it("does not fall back after a user cancellation", async () => {
+      const controller = new AbortController();
+      mockGenerateText.mockImplementationOnce(async () => {
+        controller.abort();
+        throw Object.assign(new Error("canceled"), { name: "AbortError" });
+      });
+      await expect(start({ abortSignal: controller.signal })).rejects.toThrow(
+        "canceled",
+      );
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    });
+
+    it("does not retry permanent authorization errors", async () => {
+      mockGenerateText.mockRejectedValueOnce(
+        Object.assign(new Error("unauthorized"), { statusCode: 401 }),
+      );
+      expect((await start()).needsSummarization).toBe(false);
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps control requests unchanged", async () => {
+      mockStartupVariant.mockResolvedValue(undefined);
+      mockGenerateText.mockResolvedValue({ text: "Control summary" });
+      await start();
+      const primary = mockGenerateText.mock.calls[0][0] as any;
+      expect(primary.timeout).toBeUndefined();
+      expect(primary.maxRetries).toBeUndefined();
+      expect(primary.model.modelId).toBe("model-glm-5.3-flash");
+    });
+
+    it("does not assign or expose requests that do not need compaction", async () => {
+      const onAttempt = jest.fn();
+      await start({
+        uiMessages: fourMessages,
+        startupCompaction: { userId: "user-test", onAttempt },
+      });
+      expect(mockStartupVariant).not.toHaveBeenCalled();
+      expect(onAttempt).not.toHaveBeenCalled();
+      expect(mockGenerateText).not.toHaveBeenCalled();
+    });
+
+    it("keeps Ask outside the startup pilot", async () => {
+      mockGenerateText.mockResolvedValue({ text: "Ask summary" });
+      await start({ mode: "ask" });
+      expect(mockStartupVariant).not.toHaveBeenCalled();
+      expect(
+        (mockGenerateText.mock.calls[0][0] as any).timeout,
+      ).toBeUndefined();
+    });
+  });
+
   it("uses GLM 5.3 Flash instead of the selected model for compaction", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
@@ -1086,7 +1251,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(completedWrite).toBeDefined();
   });
 
-  it("retries malformed provider JSON with the fallback summarization model", async () => {
+  it("retries malformed provider JSON with low reasoning on the fallback summarization model", async () => {
     const malformedJsonError = Object.assign(
       new Error("Invalid JSON response"),
       {
@@ -1147,7 +1312,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(retryCall.providerOptions).toEqual({
       openrouter: {
         user: "user_123",
-        reasoning: { enabled: true, effort: "high" },
+        reasoning: { enabled: true, effort: "low" },
         models: ["moonshotai/kimi-k3"],
       },
     });

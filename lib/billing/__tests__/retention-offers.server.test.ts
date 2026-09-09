@@ -11,7 +11,7 @@ const mockGetFlagValue = jest.fn();
 const mockWarn = jest.fn();
 
 jest.mock("@/lib/posthog/server", () => ({
-  getPostHogFeatureFlagValueForUser: mockGetFlagValue,
+  getPostHogFeatureFlagRawValueForUser: mockGetFlagValue,
   phLogger: { warn: mockWarn },
 }));
 
@@ -50,8 +50,11 @@ describe("getPauseOfferFlagState", () => {
     mockGetFlagValue.mockResolvedValue(null as never);
     await expect(isPauseOfferEnabledForUser("user_1")).resolves.toBe(false);
     expect(mockWarn).toHaveBeenCalledWith(
-      "pause_offer_flag_unavailable",
-      expect.objectContaining({ userId: "user_1" }),
+      "retention_offer_flag_unavailable",
+      expect.objectContaining({
+        userId: "user_1",
+        flag_key: "hac-96-pause-subscription-offer",
+      }),
     );
   });
 
@@ -60,6 +63,83 @@ describe("getPauseOfferFlagState", () => {
     const { getPauseOfferFlagState } =
       await import("../retention-offers.server");
     await expect(getPauseOfferFlagState("user_1")).resolves.toBe("disabled");
+    expect(mockGetFlagValue).not.toHaveBeenCalled();
+  });
+});
+
+describe("getDowngradeOfferFlag", () => {
+  const originalOverride = process.env.DOWNGRADE_OFFER_ENABLED;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    delete process.env.DOWNGRADE_OFFER_ENABLED;
+  });
+
+  afterEach(() => {
+    if (originalOverride === undefined) {
+      delete process.env.DOWNGRADE_OFFER_ENABLED;
+    } else process.env.DOWNGRADE_OFFER_ENABLED = originalOverride;
+  });
+
+  it("maps the flag variants to reason policies", async () => {
+    const { getDowngradeOfferFlag } =
+      await import("../retention-offers.server");
+    mockGetFlagValue.mockResolvedValueOnce("all_reasons" as never);
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "enabled",
+      reasonPolicy: "all_reasons",
+    });
+    mockGetFlagValue.mockResolvedValueOnce("price_reasons" as never);
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "enabled",
+      reasonPolicy: "price_reasons",
+    });
+    mockGetFlagValue.mockResolvedValueOnce(false as never);
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "disabled",
+      reasonPolicy: "price_reasons",
+    });
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it("treats a boolean true and an unknown variant as the default policy", async () => {
+    const { getDowngradeOfferFlag } =
+      await import("../retention-offers.server");
+    mockGetFlagValue.mockResolvedValueOnce(true as never);
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "enabled",
+      reasonPolicy: "price_reasons",
+    });
+    mockGetFlagValue.mockResolvedValueOnce("everyone" as never);
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "enabled",
+      reasonPolicy: "price_reasons",
+    });
+    expect(mockWarn).toHaveBeenCalledWith(
+      "retention_offer_flag_unknown_variant",
+      expect.objectContaining({ variant: "everyone" }),
+    );
+  });
+
+  it("fails closed when the flag service is unavailable", async () => {
+    const { getDowngradeOfferFlag } =
+      await import("../retention-offers.server");
+    mockGetFlagValue.mockResolvedValue(null as never);
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "unavailable",
+      reasonPolicy: "price_reasons",
+    });
+    expect(mockGetFlagValue).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts a policy name as the environment override", async () => {
+    process.env.DOWNGRADE_OFFER_ENABLED = "all_reasons";
+    const { getDowngradeOfferFlag } =
+      await import("../retention-offers.server");
+    await expect(getDowngradeOfferFlag("user_1")).resolves.toEqual({
+      state: "enabled",
+      reasonPolicy: "all_reasons",
+    });
     expect(mockGetFlagValue).not.toHaveBeenCalled();
   });
 });
