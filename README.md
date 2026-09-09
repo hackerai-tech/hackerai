@@ -17,6 +17,8 @@
 
 ## Getting started
 
+Coding agents should start with [AGENTS.md](AGENTS.md).
+
 ### Prerequisites
 
 You'll need the following accounts:
