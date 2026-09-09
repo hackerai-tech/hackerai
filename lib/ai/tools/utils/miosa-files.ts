@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@miosa/sdk";
+import { logger } from "@/lib/logger";
 import { miosaRuntimeCommand, type MiosaRuntime } from "./miosa-runtime";
 
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
@@ -73,7 +74,18 @@ export function createMiosaFiles(
       await cleanup().catch(() => undefined);
       throw error;
     }
-    await cleanup();
+    // The transfer has completed. A leftover staging file must not discard a
+    // read result or prompt the caller to repeat a successful write.
+    await cleanup().catch(() => {
+      logger.warn("MIOSA file transfer staging cleanup failed", {
+        event: "miosa_file_cleanup_failed",
+        service: "miosa-files",
+        environment:
+          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        sandbox_provider: "miosa",
+        sandbox_id: sandbox.id,
+      });
+    });
     return result;
   };
   const read = (path: string) =>

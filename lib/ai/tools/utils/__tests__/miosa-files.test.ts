@@ -1,4 +1,7 @@
 import { createMiosaFiles } from "../miosa-files";
+import { logger } from "@/lib/logger";
+
+jest.mock("@/lib/logger", () => ({ logger: { warn: jest.fn() } }));
 
 function setup() {
   const sdk = {
@@ -62,6 +65,48 @@ describe("MIOSA files share the command container namespace", () => {
     expect(sdk.exec.run).toHaveBeenCalledWith(
       expect.stringContaining("rm -f --"),
       { timeoutSec: 10 },
+    );
+  });
+  it.each(["docker", "native"] as const)(
+    "preserves a completed %s read when staging cleanup returns a failure",
+    async (runtime) => {
+      const { sdk } = setup();
+      sdk.exec.run
+        .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+        .mockResolvedValueOnce({
+          stdout: "",
+          stderr: "private-path",
+          exitCode: 1,
+        });
+      await expect(
+        createMiosaFiles(sdk as never, runtime).read("private-path"),
+      ).resolves.toBe("content\n\n");
+      expect(logger.warn).toHaveBeenCalledWith(
+        "MIOSA file transfer staging cleanup failed",
+        expect.objectContaining({
+          event: "miosa_file_cleanup_failed",
+          sandbox_provider: "miosa",
+        }),
+      );
+      expect(JSON.stringify(jest.mocked(logger.warn).mock.calls)).not.toContain(
+        "private-path",
+      );
+    },
+  );
+  it("does not report a completed write as failed when cleanup cannot connect", async () => {
+    const { sdk, files } = setup();
+    sdk.exec.run
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 })
+      .mockRejectedValueOnce(new Error("private-cleanup-details"));
+    await expect(
+      files.write("/tmp/x", "private-content"),
+    ).resolves.toBeUndefined();
+    expect(sdk.files.write).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(jest.mocked(logger.warn).mock.calls)).not.toContain(
+      "private-cleanup-details",
+    );
+    expect(JSON.stringify(jest.mocked(logger.warn).mock.calls)).not.toContain(
+      "private-content",
     );
   });
   it("does not confuse an unreachable sandbox with a missing file", async () => {
