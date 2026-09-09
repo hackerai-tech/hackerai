@@ -1,3 +1,7 @@
+import {
+  evaluateRegionalFreeLimits,
+  captureRegionalFreeLimitsExposure,
+} from "@/lib/experiments/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -2251,6 +2255,7 @@ export type AgentLongPayload = {
   subscription: SubscriptionTier;
   organizationId?: string;
   freeQuotaSubject?: string;
+  regionalFreeCountry?: string;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -2623,6 +2628,33 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
+      const regionalFreeLimits = await evaluateRegionalFreeLimits({
+        posthog,
+        userId,
+        subscription,
+        country: payload.regionalFreeCountry,
+      });
+      // Check capacity before moderation/model work, then consume the daily
+      // request atomically under the free-run lock when execution starts.
+      await captureRegionalFreeLimitsExposure(
+        posthog,
+        regionalFreeLimits,
+        userId,
+        mode,
+      );
+      if (subscription === "free") {
+        await checkRateLimitCapacity(
+          userId,
+          mode,
+          subscription,
+          undefined,
+          undefined,
+          organizationId,
+          freeQuotaSubject,
+          regionalFreeLimits,
+        );
+        await checkFreeMonthlyCostLimit(freeUsageSubject, regionalFreeLimits);
+      }
       const cloudSandboxProvider = "e2b" as const;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -2901,6 +2933,14 @@ export const agentLongTask = task({
               releaseFreeRunLock = lock.release;
             }
 
+            const freeMonthlyBudgetSnapshot =
+              subscription === "free"
+                ? await checkFreeMonthlyCostLimit(
+                    freeUsageSubject,
+                    regionalFreeLimits,
+                  )
+                : null;
+
             try {
               rateLimitInfo = await checkRateLimit(
                 userId,
@@ -2911,6 +2951,7 @@ export const agentLongTask = task({
                 selectedModel,
                 organizationId,
                 freeQuotaSubject,
+                regionalFreeLimits,
               );
             } catch (error) {
               if (!(error instanceof ChatSDKError)) throw error;
@@ -3023,11 +3064,6 @@ export const agentLongTask = task({
                 getDeepSeekV4Pro0813ExperimentContext(
                   activeDeepSeekV4Pro0813Experiment,
                 ));
-
-            const freeMonthlyBudgetSnapshot =
-              subscription === "free"
-                ? await checkFreeMonthlyCostLimit(freeUsageSubject)
-                : null;
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
             chatLogger?.setRateLimit(
@@ -3161,9 +3197,13 @@ export const agentLongTask = task({
                 selectedModel,
                 authorization.organizationId,
                 freeQuotaSubject,
+                regionalFreeLimits,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                await checkFreeMonthlyCostLimit(
+                  freeUsageSubject,
+                  regionalFreeLimits,
+                );
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
@@ -3248,9 +3288,13 @@ export const agentLongTask = task({
                 selectedModel,
                 currentEntitlement.organizationId,
                 freeQuotaSubject,
+                regionalFreeLimits,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject);
+                await checkFreeMonthlyCostLimit(
+                  freeUsageSubject,
+                  regionalFreeLimits,
+                );
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -3369,6 +3413,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          regionalFreeLimits,
                           triggerRegion,
                         }),
                         continue_agent: createContinueAgentTool(toolContext, {
@@ -3377,6 +3422,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
+                          regionalFreeLimits,
                           triggerRegion,
                         }),
                         list_agents: createListAgentsTool(toolContext),
@@ -3859,6 +3905,7 @@ export const agentLongTask = task({
                   });
                 }
                 captureUsageCost({
+                  regionalFreeLimits,
                   posthog,
                   userId,
                   subscription,

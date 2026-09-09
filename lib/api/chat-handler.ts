@@ -1,4 +1,9 @@
 import {
+  evaluateRegionalFreeLimits,
+  captureRegionalFreeLimitsExposure,
+} from "@/lib/experiments/regional-free-limits";
+import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
+import {
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
 } from "@/lib/chat/agent-long-provider-retry";
@@ -439,6 +444,26 @@ export const createChatHandler = () => {
         projectId: projectContext.projectId,
       });
 
+      const regionalFreeLimits = await evaluateRegionalFreeLimits({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        subscription,
+        country: regionalFreeCountryFromRequest(req),
+      });
+      await captureRegionalFreeLimitsExposure(
+        posthog,
+        regionalFreeLimits,
+        userId,
+        mode,
+      );
+      const freeMonthlyBudgetSnapshot =
+        subscription === "free"
+          ? await checkFreeMonthlyCostLimit(
+              freeUsageSubject,
+              regionalFreeLimits,
+            )
+          : null;
+
       // Free ask: pre-flight rate-limit before any token counting/model work.
       const freeAskRateLimitInfo =
         mode === "ask" && subscription === "free"
@@ -451,6 +476,7 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               freeQuotaSubject,
+              regionalFreeLimits,
             )
           : null;
 
@@ -595,6 +621,7 @@ export const createChatHandler = () => {
             selectedModel,
             organizationId,
             freeQuotaSubject,
+            regionalFreeLimits,
           ));
       } catch (error) {
         if (!(error instanceof ChatSDKError)) {
@@ -713,11 +740,6 @@ export const createChatHandler = () => {
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
           ));
-
-      const freeMonthlyBudgetSnapshot =
-        subscription === "free"
-          ? await checkFreeMonthlyCostLimit(freeUsageSubject)
-          : null;
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
 
@@ -1319,6 +1341,7 @@ export const createChatHandler = () => {
                   });
                 }
                 captureUsageCost({
+                  regionalFreeLimits,
                   posthog,
                   userId,
                   subscription,

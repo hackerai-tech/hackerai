@@ -1,3 +1,4 @@
+import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   logger as triggerLogger,
   metadata,
@@ -137,6 +138,7 @@ const loadPersistedTerminalOutput = async (
 };
 
 type SubagentTaskPayload = {
+  regionalFreeLimits?: FreeLimitPolicy;
   subagentId: string;
   convexUrl?: string;
   triggerRegion?: TriggerRunRegion;
@@ -608,6 +610,7 @@ export const subagentTask = task({
         organizationId: row.organization_id,
         subscription: row.subscription,
         freeQuotaSubject: row.free_quota_subject,
+        freeLimits: payload.regionalFreeLimits,
         extraUsageConfig,
         modelName: selectedModel,
       });
