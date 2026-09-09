@@ -87,6 +87,7 @@ for (let attempt = 1; attempt <= attempts; attempt++) {
       attempt,
       ms: Date.now() - start,
       sandboxId: sandbox.sandboxId,
+      runtime: sandbox.runtime,
       state: sandbox.sdkSandbox.state,
       operationId: sandbox.sdkSandbox.data.operation_id,
       requestId: sandbox.sdkSandbox.data.request_id,
@@ -150,7 +151,24 @@ for (let attempt = 1; attempt <= attempts; attempt++) {
       assert.ok(Date.now() - started >= 2000, "returned before child exited");
       return { stdoutChunks: stdout.length, stderrChunks: stderr.length };
     });
-    await check("files_container_namespace", async () => {
+    await check("stream_honors_timeout_beyond_30_seconds", async () => {
+      const stdout: string[] = [];
+      const started = Date.now();
+      const r = await sandbox.commands.run(
+        "printf 'begin\\n'; sleep 35; printf 'completed\\n'; exit 7",
+        {
+          signal: new AbortController().signal,
+          timeoutMs: 60000,
+          onStdout: (chunk) => stdout.push(chunk),
+        },
+      );
+      assert.equal(r.exitCode, 7);
+      assert.equal(r.stdout, "begin\ncompleted\n");
+      assert.equal(stdout.join(""), r.stdout);
+      assert.ok(Date.now() - started >= 35000, "stream ended prematurely");
+      return { stdoutChunks: stdout.length };
+    });
+    await check("files_workspace_namespace", async () => {
       const content = "snow 雪, quote ', trailing\n\n";
       for (const path of [
         "/home/user/a '雪.txt",
@@ -217,7 +235,7 @@ for (let attempt = 1; attempt <= attempts; attempt++) {
         "child process survived cancellation",
       );
     });
-    await check("interactive_container_resize_ctrl_c", async () => {
+    await check("interactive_workspace_resize_ctrl_c", async () => {
       const pty = await createMiosaPtyHandle(sandbox, {
         cols: 100,
         rows: 30,
