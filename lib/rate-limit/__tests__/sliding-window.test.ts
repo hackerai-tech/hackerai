@@ -32,6 +32,44 @@ describe("sliding-window", () => {
   };
 
   describe("checkFreeUserRateLimit", () => {
+    it("shares a reduced daily allowance between Ask and Agent without resetting usage", async () => {
+      const {
+        checkFreeUserRateLimit,
+        checkFreeAgentRateLimit,
+        checkFreeAgentRateLimitCapacity,
+      } = getIsolatedModule();
+      mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
+      const policy = { dailyRequests: 3, monthlyCostDollars: 0.1 };
+      mockEvalFn
+        .mockResolvedValueOnce([1, 2])
+        .mockResolvedValueOnce([1, 1])
+        .mockResolvedValueOnce([1, 0])
+        .mockResolvedValueOnce([0, 0])
+        .mockResolvedValueOnce(0);
+      await checkFreeUserRateLimit("quota", 1, policy);
+      await checkFreeAgentRateLimit("quota", policy);
+      await checkFreeUserRateLimit("quota", 1, policy);
+      await expect(
+        checkFreeAgentRateLimit("quota", policy),
+      ).rejects.toMatchObject({ type: "rate_limit" });
+      await expect(
+        checkFreeAgentRateLimitCapacity("quota", policy),
+      ).rejects.toMatchObject({ type: "rate_limit" });
+      const keys = mockEvalFn.mock.calls.map((call) => call[1]);
+      expect(
+        keys.every((key) => JSON.stringify(key) === JSON.stringify(keys[0])),
+      ).toBe(true);
+      expect(
+        mockEvalFn.mock.calls
+          .slice(0, 4)
+          .every((call) => (call[2] as number[])[0] === 3),
+      ).toBe(true);
+      expect(mockEvalFn.mock.calls[4][2]).toEqual([3]);
+      mockEvalFn.mockResolvedValueOnce([1, 6]);
+      expect((await checkFreeUserRateLimit("quota")).limit).toBe(10);
+      expect(mockEvalFn.mock.calls[5][1]).toEqual(keys[0]);
+    });
+
     it("should skip rate limiting when Redis unavailable", async () => {
       const { checkFreeUserRateLimit } = getIsolatedModule();
 

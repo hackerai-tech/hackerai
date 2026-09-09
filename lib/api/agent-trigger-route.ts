@@ -1,3 +1,4 @@
+import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
@@ -684,6 +685,10 @@ export const createAgentTriggerPost =
         subscription,
         organizationId,
         freeQuotaSubject,
+        regionalFreeCountry:
+          subscription === "free"
+            ? regionalFreeCountryFromRequest(req)
+            : undefined,
         messages: messagesForPayload,
         localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],

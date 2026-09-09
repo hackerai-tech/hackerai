@@ -1,3 +1,7 @@
+import {
+  regionalFreeLimitsProperties,
+  type RegionalFreeLimitsAssignment,
+} from "@/lib/experiments/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -1767,6 +1771,7 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
+  regionalFreeLimits,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1794,6 +1799,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
+  regionalFreeLimits?: RegionalFreeLimitsAssignment;
 }) {
   if (!posthog) return;
   const includedUsageValueDollars =
@@ -1895,6 +1901,7 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...regionalFreeLimitsProperties(regionalFreeLimits),
     },
   });
 }
