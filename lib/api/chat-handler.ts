@@ -148,6 +148,8 @@ import {
   drainBackgroundWork,
 } from "@/lib/chat/background-work-drain";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { isEuropeanRequest } from "@/lib/ai/openrouter-region";
+import { resolveOpenRouterRegionOptions } from "@/lib/experiments/openrouter-eu-routing";
 import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
@@ -1015,7 +1017,13 @@ export const createChatHandler = () => {
                 )
               : Promise.resolve(undefined);
 
-            const trackedProvider = createTrackedProvider();
+            const trackedProvider = createTrackedProvider(
+              await resolveOpenRouterRegionOptions({
+                posthog,
+                userId,
+                isEuropeanUser: isEuropeanRequest(req),
+              }),
+            );
 
             let currentSystemPrompt = await systemPrompt(
               userId,

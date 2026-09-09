@@ -9,6 +9,10 @@ import {
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { ChatMode, SelectedModel } from "@/types/chat";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
+import {
+  createOpenRouterRegionFetch,
+  type OpenRouterRegionOptions,
+} from "@/lib/ai/openrouter-region";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -1449,4 +1453,26 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = () => myProvider;
+export const createTrackedProvider = (
+  options: OpenRouterRegionOptions = {},
+) => {
+  if (!options.preferEurope) return myProvider;
+  return customProvider({
+    languageModels: {
+      ...baseProviders,
+      ...buildProviderMap(
+        createOpenRouter({
+          // Choose the region after request repairs have resolved the actual
+          // outgoing model, including forced-tool-choice model fallback.
+          fetch: createOpenRouterPatchFetch(
+            createOpenRouterRegionFetch(
+              (...args) => globalThis.fetch(...args),
+              options,
+            ),
+          ),
+          headers: openrouterAttributionHeaders,
+        }),
+      ),
+    },
+  });
+};

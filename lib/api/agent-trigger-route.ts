@@ -4,6 +4,7 @@ import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
 import { geolocation } from "@vercel/functions";
+import { isEuropeanRequest } from "@/lib/ai/openrouter-region";
 import type { UIMessage } from "ai";
 
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -700,6 +701,7 @@ export const createAgentTriggerPost =
         autoReviewAssignment,
         userLocation,
         triggerRegion,
+        isEuropeanUser: isEuropeanRequest(req),
         isAutoContinue,
         isAutomaticContinuation,
         regenerate,

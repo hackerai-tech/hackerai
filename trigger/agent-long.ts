@@ -36,6 +36,7 @@ import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { resolveOpenRouterRegionOptions } from "@/lib/experiments/openrouter-eu-routing";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
@@ -2267,6 +2268,8 @@ export type AgentLongPayload = {
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
   triggerRegion?: TriggerRunRegion;
+  /** Trusted ingress geography; older jobs default to global routing. */
+  isEuropeanUser?: boolean;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
   regenerate?: boolean;
@@ -2356,6 +2359,7 @@ export const agentLongTask = task({
       autoReviewAssignment,
       userLocation,
       triggerRegion = "us-east-1",
+      isEuropeanUser = false,
       isAutoContinue,
       isAutomaticContinuation,
       regenerate,
@@ -3609,7 +3613,13 @@ export const agentLongTask = task({
               subscription,
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
             };
-            const trackedProvider = createTrackedProvider();
+            const trackedProvider = createTrackedProvider(
+              await resolveOpenRouterRegionOptions({
+                posthog,
+                userId,
+                isEuropeanUser,
+              }),
+            );
             const [currentSystemPrompt, messagesWithNotes] = await Promise.all([
               systemPrompt(
                 userId,
