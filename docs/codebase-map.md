@@ -43,11 +43,9 @@ paths for your task; tests usually live in the adjacent `__tests__/` directory.
   `lib/ai/subagents/skills/strix-skill-*.generated.json` files are generated.
   Use their generators rather than editing output. Strix source and provenance
   live in `third_party/strix-skills/`; synchronize with `pnpm skills:sync:strix`.
-- Repository coding skills live in `.agents/skills/`. The `.claude/skills/`,
-  `.cursor/skills/`, and `.github/skills/` entries link to that source. These are
+- Repository coding skills live in `.agents/skills/`. The `.claude/skills/` and
+  `.github/skills/` entries link to that source. These are
   separate from the product's runtime subagent skills in `lib/ai/subagents/`.
-  Cursor's basic task, advanced task, and configuration rules also point to the
-  shared Trigger.dev references while retaining their file-matching metadata.
 
 ## Validate the affected area
 
