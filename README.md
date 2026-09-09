@@ -17,9 +17,7 @@
 
 ## Getting started
 
-For code navigation and task-specific checks, see the
-[codebase map](docs/codebase-map.md). Coding agents should start with
-[AGENTS.md](AGENTS.md).
+Coding agents should start with [AGENTS.md](AGENTS.md).
 
 ### Prerequisites
 

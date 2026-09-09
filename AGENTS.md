@@ -6,13 +6,54 @@ metrics.
 
 ## Start Here
 
-Read [docs/codebase-map.md](docs/codebase-map.md) for task entry points, shared
-boundaries, and validation commands. Use [README.md](README.md) for initial
-service setup. Read only the feature docs and skills relevant to the task.
-
-Repository skills live in `.agents/skills/`; editor-specific skill directories
-link there. Update the canonical skill instead of adding another copy.
+Use [README.md](README.md) for setup and `package.json` for available commands.
 `CLAUDE.md` imports this file so repository instructions have one source.
+
+The Next.js app handles UI and HTTP requests; Convex owns persisted data;
+Trigger.dev owns durable Agent runs. Ask and Agent share model-streaming logic
+in `lib/api/agent-stream-runner.ts`. Trace both callers when changing that
+boundary. Local and desktop clients connect through separate sandbox transports;
+success on one transport does not prove the others work.
+
+## Code Design and Maintenance
+
+Prefer the smallest design that handles the actual requirement. Keep provider
+and transport differences at their adapters and share domain logic across
+callers. Extract a module when it gives a responsibility a clear owner, not just
+to reduce a file's line count. Avoid speculative abstractions and pass-through
+wrappers that add navigation without behavior.
+
+Before deleting code or dependencies, check imports, scripts, framework entry
+points, generated references, and dynamic loading. Treat unused-code reports as
+candidates to verify. Keep refactors focused on one concern and preserve public
+contracts and authorization boundaries.
+
+## Documentation and Skills
+
+Keep documentation for decisions, cross-service constraints, operational
+procedures, and pitfalls that are hard to infer from the code. Put local
+implementation explanations beside the code they explain. Avoid file catalogs,
+restating types or control flow, and recording PR summaries in durable docs.
+Rewrite or remove stale guidance when behavior changes.
+
+Keep `.agents/skills/` for HackerAI-owned workflows, such as user research.
+Do not vendor generic third-party coding skills or copy SDK manuals into the
+repository; consult the installed dependency's docs or its official reference
+when needed. Product runtime skills under `lib/ai/subagents/` and their vendored
+sources under `third_party/` are a separate application dependency.
+
+## Focused Validation
+
+Use the smallest check that proves the changed behavior: targeted tests, lint,
+and type checking for the affected scope. Test outcomes and meaningful logic,
+not assertions that repeat the implementation. Preserve required commit hooks
+and CI checks; avoid repeating the full suite after it passes unless new changes
+or failures justify another run.
+
+For cross-cutting changes, identify the affected paths: Ask and Agent, web and
+desktop, cloud and local sandboxes, and relevant model providers. Check recovery
+as well as the happy path, including cancellation, retry, and reconnect when
+applicable. Apply the visual and manual verification rules below.
 
 ## Worktree Dependencies
 
