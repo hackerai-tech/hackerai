@@ -76,7 +76,7 @@ it.each([false, true])(
         (q: { messageId: string }) => q.messageId,
       ),
     ).toEqual(["scope", "correction"]);
-    expect(changed).toContain("newer user corrections override older quotes");
+    expect(changed).toContain("Newer user corrections override older quotes");
   },
 );
 
