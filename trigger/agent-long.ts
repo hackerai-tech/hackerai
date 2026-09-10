@@ -2001,6 +2001,27 @@ const recordAgentLongHandledRateLimitForDashboard = async (
   await metadata.flush();
 };
 
+const recordAgentLongCaughtErrorForDashboard = async (
+  error: unknown,
+  context: {
+    chatId: string;
+    userId: string;
+    runId: string;
+    phase: "setup" | "streaming";
+  },
+): Promise<RecordedAgentLongFailure> => {
+  if (isHandledUserRateLimitError(error)) {
+    await recordAgentLongHandledRateLimitForDashboard(error, {
+      chatId: context.chatId,
+      userId: context.userId,
+      runId: context.runId,
+    });
+    return { userCorrectable: true };
+  }
+
+  return recordAgentLongFailureForDashboard(error, context);
+};
+
 const recordAgentLongHandledToolFailureForDashboard = async (
   failure: ToolFailureLogEvent,
   context: {
@@ -5879,18 +5900,25 @@ export const agentLongTask = task({
         error instanceof ChatSDKError &&
         isChatNotFoundError(error);
       const caughtErrorSummary = classifyAgentLongError(error);
+      const caughtHandledUserRateLimit = isHandledUserRateLimitError(error);
       const caughtErrorUserCorrectable =
+        caughtHandledUserRateLimit ||
         isUserCorrectableAgentLongErrorCategory(caughtErrorSummary.category);
-      const recordedFailure = await recordAgentLongFailureForDashboard(error, {
-        chatId,
-        userId,
-        runId: ctx.run.id,
-        phase: streamPiped ? "streaming" : "setup",
-      }).catch((metadataError): RecordedAgentLongFailure => {
+      const recordedFailure = await recordAgentLongCaughtErrorForDashboard(
+        error,
+        {
+          chatId,
+          userId,
+          runId: ctx.run.id,
+          phase: streamPiped ? "streaming" : "setup",
+        },
+      ).catch((metadataError): RecordedAgentLongFailure => {
         metadata
           .set(
             "status",
-            getAgentLongErrorRunStatus(caughtErrorSummary.category),
+            caughtHandledUserRateLimit
+              ? "rate_limited"
+              : getAgentLongErrorRunStatus(caughtErrorSummary.category),
           )
           .set("errorCategory", caughtErrorSummary.category);
         if (caughtErrorUserCorrectable) {

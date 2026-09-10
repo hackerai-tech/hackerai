@@ -1476,6 +1476,33 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
   });
 
+  test("handled setup rate limits do not fail the Trigger run", () => {
+    expect(taskSrc).toMatch(
+      /const recordAgentLongCaughtErrorForDashboard[\s\S]*isHandledUserRateLimitError\(error\)[\s\S]*recordAgentLongHandledRateLimitForDashboard/,
+    );
+
+    const handledRateLimitIdx = taskSrc.indexOf(
+      "const caughtHandledUserRateLimit = isHandledUserRateLimitError(error)",
+    );
+    const recordedFailureIdx = taskSrc.indexOf(
+      "recordAgentLongCaughtErrorForDashboard",
+      handledRateLimitIdx,
+    );
+    const syntheticFlushIdx = taskSrc.indexOf(
+      "await waitForErrorStream()",
+      recordedFailureIdx,
+    );
+    const handledReturnGuardIdx = taskSrc.indexOf(
+      "recordedFailure.userCorrectable === true",
+      syntheticFlushIdx,
+    );
+
+    expect(handledRateLimitIdx).toBeGreaterThan(-1);
+    expect(recordedFailureIdx).toBeGreaterThan(handledRateLimitIdx);
+    expect(syntheticFlushIdx).toBeGreaterThan(recordedFailureIdx);
+    expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
+  });
+
   test("ChatSDK stream errors preserve their user-correctable classification before provider wrapping", () => {
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
@@ -1996,7 +2023,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/caughtErrorUserCorrectable/);
 
     const recordedFailureIdx = taskSrc.indexOf(
-      "const recordedFailure = await recordAgentLongFailureForDashboard",
+      "const recordedFailure = await recordAgentLongCaughtErrorForDashboard",
     );
     const syntheticFlushIdx = taskSrc.indexOf(
       "await waitForErrorStream()",
