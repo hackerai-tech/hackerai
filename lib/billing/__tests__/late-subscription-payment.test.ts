@@ -262,6 +262,21 @@ describe("late subscription payments", () => {
     expect(f.createRefund).not.toHaveBeenCalled();
   });
 
+  it("finds the managed refund on a later page after a newer support refund", async () => {
+    const f = fixture();
+    f.listRefunds.mockReturnValue({
+      async *[Symbol.asyncIterator]() {
+        yield { id: "re_support", metadata: {}, status: "failed" };
+        yield f.refund;
+      },
+    });
+    expect(await f.run()).toEqual({
+      status: "refunded",
+      refundId: f.refund.id,
+    });
+    expect(f.createRefund).not.toHaveBeenCalled();
+  });
+
   it("leaves a support refund unchanged", async () => {
     const f = fixture();
     f.listRefunds.mockReturnValue([

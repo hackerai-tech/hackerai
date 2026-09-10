@@ -1869,7 +1869,15 @@ async function handleSubscriptionRefund(
       !stripeObjectId(invoice.customer) ||
       stripeObjectId(invoice.customer) !== stripeObjectId(charge.customer))
   ) {
-    throw new Error("Late-payment refund invoice attribution mismatch");
+    phLogger.error("billing_late_payment_requires_manual_reconciliation", {
+      stripe_event_id: stripeEventId,
+      stripe_refund_id: refund.id,
+      stripe_invoice_id: invoice.id,
+      stripe_subscription_id: subscriptionId,
+      reconciliation_status: "manual_review",
+      reconciliation_reason: "refund_attribution_mismatch",
+    });
+    return;
   }
 
   const resolved = await resolveSubscription(subscriptionId, true);

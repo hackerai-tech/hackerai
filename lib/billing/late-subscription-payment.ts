@@ -102,6 +102,8 @@ export async function reconcileLateSubscriptionPayment(
 
   // Stripe's idempotency cache expires. The durable refund itself protects
   // replays after that window and records pending/failed refunds explicitly.
+  let managedRefund: Stripe.Refund | undefined;
+  let otherRefundExists = false;
   for await (const refund of stripe.refunds.list({
     charge: chargeId,
     limit: 100,
@@ -111,18 +113,25 @@ export async function reconcileLateSubscriptionPayment(
         LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON &&
       refund.metadata?.stripeInvoiceId === invoice.id
     ) {
-      if (refund.status === "succeeded")
-        return { status: "refunded", refundId: refund.id };
-      if (refund.status === "pending" || refund.status === "requires_action") {
-        return { status: "refund_pending", refundId: refund.id };
-      }
-      return { status: "manual_review", reason: "refund_failed_or_canceled" };
+      managedRefund ??= refund;
+    } else {
+      otherRefundExists = true;
     }
-    // A support refund may be a partial settlement. Do not expand it to a full
-    // refund or race another pending refund.
-    return { status: "manual_review", reason: "existing_refund" };
   }
-  if (charge.amount_refunded !== 0) {
+  if (managedRefund) {
+    if (managedRefund.status === "succeeded")
+      return { status: "refunded", refundId: managedRefund.id };
+    if (
+      managedRefund.status === "pending" ||
+      managedRefund.status === "requires_action"
+    ) {
+      return { status: "refund_pending", refundId: managedRefund.id };
+    }
+    return { status: "manual_review", reason: "refund_failed_or_canceled" };
+  }
+  // A support refund may be a partial settlement. Do not expand it to a full
+  // refund or race another pending refund.
+  if (otherRefundExists || charge.amount_refunded !== 0) {
     return { status: "manual_review", reason: "existing_refund" };
   }
 

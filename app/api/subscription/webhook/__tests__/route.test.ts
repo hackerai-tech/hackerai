@@ -677,7 +677,7 @@ describe("POST /api/subscription/webhook", () => {
         }),
       );
       expect(mockPostHogEvent).not.toHaveBeenCalledWith(
-        PAID_FUNNEL_EVENTS.paymentRecovered,
+        PAID_FUNNEL_EVENTS.billingPaymentRecovered,
         expect.anything(),
       );
       expect(mockPostHogEvent).toHaveBeenCalledWith(
@@ -804,7 +804,7 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it("rejects mismatched managed refund attribution", async () => {
+  it("records mismatched managed refund attribution for manual review", async () => {
     const { refund } = mockLateRenewal();
     mockConstructEvent.mockReturnValue({
       id: "evt_late_refund",
@@ -817,8 +817,18 @@ describe("POST /api/subscription/webhook", () => {
       },
     });
     const { POST } = await import("../route");
-    await expect(POST(makeWebhookRequest())).rejects.toThrow(
-      "attribution mismatch",
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_late_payment_requires_manual_reconciliation",
+      expect.objectContaining({
+        stripe_refund_id: refund.id,
+        reconciliation_reason: "refund_attribution_mismatch",
+      }),
+    );
+    expect(mockPostHogFlush).toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "extraUsage.checkAndMarkWebhook",
+      { serviceKey: "service_key", eventId: "evt_late_refund" },
     );
     expect(mockConvexMutation).not.toHaveBeenCalledWith(
       "unitEconomics.recordRevenueEvent",
