@@ -599,6 +599,49 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each(["ask", "agent"] as const)(
+    "uses versioned routing evidence instead of final-model mismatch for %s",
+    (mode) => {
+      const capture = jest.fn();
+      const summary = {
+        telemetry_version: 2,
+        model_routing_telemetry_version: 1,
+        planned_baseline_attempt_count: 1,
+        vision_route_attempt_count: 0,
+        provider_error_recovery_served: false,
+        fallback_served: false,
+      };
+      captureAgentCompletionAnalytics({
+        abliteratedProviderSummary: summary,
+        posthog: { capture },
+        userId: "user",
+        chatId: "chat",
+        endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
+        mode,
+        subscription: "pro",
+        outcome: "success",
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model",
+        responseModel: "deepseek/deepseek-v4-flash-0731",
+        fallbackServed: true,
+        sandboxInfo: null,
+        chatLogger: undefined,
+        experiment: {
+          key: "abliterated_paid_moderated_v1",
+          variant: "test",
+          requestId: "message",
+        },
+      });
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
+      for (const [event] of capture.mock.calls as any[]) {
+        expect(event.properties).toMatchObject({
+          ...summary,
+          legacy_fallback_served: true,
+          experiment_request_id: "message",
+        });
+      }
+    },
+  );
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],

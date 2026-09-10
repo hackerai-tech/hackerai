@@ -27,6 +27,12 @@ type ProviderOutcome =
   | "truncated"
   | "empty";
 
+export type ModelStepRouting = {
+  plannedBaselineContinuation?: boolean;
+  visionRoute?: boolean;
+  fallbackModels?: readonly string[];
+};
+
 /** One instance per assistant response; shared across retries and model switches. */
 export class AbliteratedModelTelemetry {
   private sequence = 0;
@@ -52,6 +58,20 @@ export class AbliteratedModelTelemetry {
     provider_tool_call_count: 0,
   };
   private exposed = false;
+  private pendingRecovery?: { model: string; kind: "error" | "output" };
+  private readonly routing = {
+    model_routing_telemetry_version: 1 as const,
+    planned_baseline_attempt_count: 0,
+    vision_route_attempt_count: 0,
+    abliterated_provider_error_count: 0,
+    baseline_provider_error_count: 0,
+    provider_error_recovery_attempt_count: 0,
+    provider_error_recovery_served: false,
+    provider_error_fallback_served: false,
+    output_recovery_attempt_count: 0,
+    output_recovery_fallback_served: false,
+    upstream_model_fallback_served: false,
+  };
   private successfulAbliterationGeneration = false;
   private selectionSource: "moderation" | "history";
   private readonly startedAt = Date.now();
@@ -132,6 +152,13 @@ export class AbliteratedModelTelemetry {
   getSummary() {
     return {
       telemetry_version: 2,
+      ...this.routing,
+      // Planned step/vision selection never establishes a fallback. Evidence
+      // must come from a recovering call or an actual upstream fallback model.
+      fallback_served:
+        this.routing.provider_error_fallback_served ||
+        this.routing.output_recovery_fallback_served ||
+        this.routing.upstream_model_fallback_served,
       provider_attempt_count: this.sequence,
       provider_pending_count:
         this.sequence - this.totals.provider_outcome_count,
@@ -139,7 +166,11 @@ export class AbliteratedModelTelemetry {
     };
   }
 
-  wrap(model: LanguageModel, stepIndex: number): LanguageModel {
+  wrap(
+    model: LanguageModel,
+    stepIndex: number,
+    routing: ModelStepRouting = {},
+  ): LanguageModel {
     if (typeof model === "string" || model.specificationVersion !== "v3")
       return model;
     return wrapLanguageModel({
@@ -148,6 +179,22 @@ export class AbliteratedModelTelemetry {
         specificationVersion: "v3",
         wrapStream: async ({ doStream, params }) => {
           const attempt = ++this.sequence;
+          const recovery = this.pendingRecovery;
+          // A subsequent call is evidence of recovery; an error without another
+          // call, or a user-aborted call, is not a fallback attempt.
+          const errorRecovery = recovery?.kind === "error";
+          const outputRecovery = recovery?.kind === "output";
+          const changedRecoveryModel = recovery?.model !== model.modelId;
+          if (errorRecovery)
+            this.routing.provider_error_recovery_attempt_count++;
+          if (outputRecovery) this.routing.output_recovery_attempt_count++;
+          if (
+            routing.plannedBaselineContinuation &&
+            !errorRecovery &&
+            !outputRecovery
+          )
+            this.routing.planned_baseline_attempt_count++;
+          if (routing.visionRoute) this.routing.vision_route_attempt_count++;
           if (isAbliterationModel(model.modelId))
             this.totals.provider_abliteration_attempt_count++;
           else this.totals.provider_baseline_attempt_count++;
@@ -158,6 +205,20 @@ export class AbliteratedModelTelemetry {
           let reasoningCharacters = 0;
           let firstContentMs: number | undefined;
           let responseModel = model.modelId;
+          const recordServedRouting = () => {
+            if (errorRecovery) {
+              this.routing.provider_error_recovery_served = true;
+              if (changedRecoveryModel)
+                this.routing.provider_error_fallback_served = true;
+            }
+            if (outputRecovery && changedRecoveryModel)
+              this.routing.output_recovery_fallback_served = true;
+            if (
+              responseModel !== model.modelId &&
+              routing.fallbackModels?.includes(responseModel)
+            )
+              this.routing.upstream_model_fallback_served = true;
+          };
           const common = () => ({
             attempt,
             generation_step: stepIndex + 1,
@@ -178,6 +239,21 @@ export class AbliteratedModelTelemetry {
             const duration = Date.now() - start;
             this.totals.provider_outcome_count++;
             this.totals[`provider_${outcome}_count`]++;
+            if (outcome === "completed" || outcome === "aborted") {
+              this.pendingRecovery = undefined;
+            } else {
+              // Preserve the initiating failure across empty/failed retry legs.
+              this.pendingRecovery ??= {
+                model: model.modelId,
+                kind: outcome === "error" ? "error" : "output",
+              };
+            }
+            if (textCharacters > 0 || toolCalls > 0) recordServedRouting();
+            if (outcome === "error") {
+              if (isAbliterationModel(model.modelId))
+                this.routing.abliterated_provider_error_count++;
+              else this.routing.baseline_provider_error_count++;
+            }
             this.totals.provider_duration_ms += duration;
             this.totals.provider_tool_call_count += toolCalls;
             if (outcome === "completed" && stepIndex > 0)
@@ -222,6 +298,7 @@ export class AbliteratedModelTelemetry {
           };
           const expose = () => {
             firstContentMs ??= Date.now() - start;
+            recordServedRouting();
             if (this.exposed) return;
             this.exposed = true;
             this.capture("abliterated_model_exposed", {

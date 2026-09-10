@@ -1320,6 +1320,7 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  abliteratedProviderSummary,
   posthog,
   userId,
   chatId,
@@ -1375,7 +1376,8 @@ export function captureAgentRun({
 }: Omit<
   AgentCompletionAnalyticsArgs,
   "endpoint" | "chatLogger" | "abliteratedProviderSummary"
->) {
+> &
+  Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
   if (mode !== "agent") return;
   const performanceDiagnostics = buildAgentPerformanceDiagnostics({
     triggerUsageDurationMs,
@@ -1613,6 +1615,11 @@ export function captureAgentRun({
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
+      // Versioned call-level evidence supersedes the old final-model flag.
+      ...abliteratedProviderSummary,
+      ...(abliteratedProviderSummary?.model_routing_telemetry_version === 1 && {
+        legacy_fallback_served: fallbackServed,
+      }),
       ...(sandboxInfo?.type && {
         sandbox_type: sandboxInfo.type,
       }),
@@ -1688,7 +1695,15 @@ export function captureAgentCompletionAnalytics(
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,
           response_model: args.responseModel,
-          fallback_served: args.fallbackServed,
+          fallback_served:
+            args.abliteratedProviderSummary?.model_routing_telemetry_version ===
+            1
+              ? args.abliteratedProviderSummary.fallback_served
+              : args.fallbackServed,
+          ...(args.abliteratedProviderSummary
+            ?.model_routing_telemetry_version === 1 && {
+            legacy_fallback_served: args.fallbackServed,
+          }),
           provider_recovery_attempts: args.providerRecoveryAttempts,
           provider_recovery_succeeded: args.providerRecoverySucceeded,
           budget_abort_cap_reason: args.budgetAbortDetails?.capReason,
@@ -1700,6 +1715,7 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
     chatId: args.chatId,

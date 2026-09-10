@@ -73,6 +73,166 @@ describe("Abliteration stream telemetry", () => {
   beforeEach(() => capture.mockClear());
   const events = (name: string) =>
     capture.mock.calls.map(([event]) => event).filter((e) => e.event === name);
+  const answer = [{ type: "text-delta", id: "t", delta: "answer" }, finishPart];
+
+  it("separates a successful Abliteration step and planned baseline continuation from fallback", async () => {
+    const telemetry = create();
+    await consume(telemetry, model(answer));
+    await consumeModel(
+      telemetry.wrap(model(answer, false, "deepseek/baseline"), 1, {
+        plannedBaselineContinuation: true,
+      }),
+    );
+    expect(telemetry.getSummary()).toMatchObject({
+      model_routing_telemetry_version: 1,
+      planned_baseline_attempt_count: 1,
+      provider_error_recovery_attempt_count: 0,
+      fallback_served: false,
+    });
+  });
+
+  it("records initial vision selection without inventing a provider failure", async () => {
+    const telemetry = create();
+    await consumeModel(
+      telemetry.wrap(model(answer, false, "deepseek/vision"), 0, {
+        visionRoute: true,
+      }),
+    );
+    expect(telemetry.getSummary()).toMatchObject({
+      vision_route_attempt_count: 1,
+      provider_abliteration_attempt_count: 0,
+      abliterated_provider_error_count: 0,
+      fallback_served: false,
+    });
+  });
+
+  it("requires a recovering call to serve content before counting error fallback", async () => {
+    const telemetry = create();
+    await expect(consume(telemetry, model([], true))).rejects.toThrow();
+    expect(telemetry.getSummary()).toMatchObject({
+      abliterated_provider_error_count: 1,
+      provider_error_recovery_attempt_count: 0,
+      fallback_served: false,
+    });
+    telemetry.setMessageId("replacement");
+    await consume(telemetry, model([finishPart], false, "deepseek/baseline"));
+    expect(telemetry.getSummary()).toMatchObject({
+      provider_error_recovery_attempt_count: 1,
+      provider_error_recovery_served: false,
+      fallback_served: false,
+    });
+    await consume(telemetry, model(answer, false, "deepseek/baseline"));
+    expect(telemetry.getSummary()).toMatchObject({
+      provider_error_recovery_attempt_count: 2,
+      provider_error_fallback_served: true,
+      fallback_served: true,
+    });
+  });
+
+  it("retains confirmed error fallback through later successful baseline steps", async () => {
+    const telemetry = create();
+    await expect(consume(telemetry, model([], true))).rejects.toThrow();
+    telemetry.setMessageId("replacement");
+    await consume(telemetry, model(answer, false, "deepseek/baseline"));
+    await consume(telemetry, model(answer, false, "deepseek/baseline"), 1);
+    expect(telemetry.getSummary()).toMatchObject({
+      abliterated_provider_error_count: 1,
+      baseline_provider_error_count: 0,
+      provider_error_recovery_attempt_count: 1,
+      provider_error_recovery_served: true,
+      provider_error_fallback_served: true,
+      fallback_served: true,
+    });
+  });
+
+  it("attributes a later same-model disconnect recovery to baseline, not Abliteration fallback", async () => {
+    const telemetry = create();
+    await consume(telemetry, model(answer));
+    await expect(
+      consume(telemetry, model([], true, "deepseek/baseline"), 32),
+    ).rejects.toThrow();
+    await consume(telemetry, model(answer, false, "deepseek/baseline"), 33);
+    expect(telemetry.getSummary()).toMatchObject({
+      abliterated_provider_error_count: 0,
+      baseline_provider_error_count: 1,
+      provider_error_recovery_served: true,
+      provider_error_fallback_served: false,
+      fallback_served: false,
+    });
+  });
+
+  it("separates output recovery from provider errors", async () => {
+    const telemetry = create();
+    await consume(telemetry, model([finishPart]));
+    await consume(telemetry, model(answer, false, "deepseek/baseline"));
+    expect(telemetry.getSummary()).toMatchObject({
+      output_recovery_attempt_count: 1,
+      output_recovery_fallback_served: true,
+      abliterated_provider_error_count: 0,
+      provider_error_fallback_served: false,
+      fallback_served: true,
+    });
+  });
+
+  it("counts a configured upstream fallback even without an application error", async () => {
+    const telemetry = create();
+    await consumeModel(
+      telemetry.wrap(
+        model(
+          [
+            { type: "response-metadata", modelId: "deepseek/fallback" },
+            ...answer,
+          ],
+          false,
+          "deepseek/primary",
+        ),
+        1,
+        { fallbackModels: ["deepseek/fallback"] },
+      ),
+    );
+    expect(telemetry.getSummary()).toMatchObject({
+      upstream_model_fallback_served: true,
+      provider_error_fallback_served: false,
+      fallback_served: true,
+    });
+  });
+
+  it("recognizes late response metadata but does not count reasoning-only output as served", async () => {
+    const telemetry = create();
+    await consumeModel(
+      telemetry.wrap(
+        model(
+          [
+            { type: "reasoning-delta", id: "r", delta: "reasoning" },
+            { type: "response-metadata", modelId: "deepseek/fallback" },
+            finishPart,
+          ],
+          false,
+          "deepseek/primary",
+        ),
+        0,
+        { fallbackModels: ["deepseek/fallback"] },
+      ),
+    );
+    expect(telemetry.getSummary().fallback_served).toBe(false);
+    const other = create();
+    await consumeModel(
+      other.wrap(
+        model(
+          [
+            answer[0],
+            { type: "response-metadata", modelId: "deepseek/fallback" },
+            finishPart,
+          ],
+          false,
+          "deepseek/primary",
+        ),
+        0,
+        { fallbackModels: ["deepseek/fallback"] },
+      ),
+    );
+    expect(other.getSummary().upstream_model_fallback_served).toBe(true);
+  });
   it("attributes free Ask exposure to its own experiment when recovery serves GLM", async () => {
     const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
       assignment: {

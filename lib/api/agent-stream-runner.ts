@@ -1,4 +1,7 @@
-import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import type {
+  AbliteratedModelTelemetry,
+  ModelStepRouting,
+} from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
@@ -852,6 +855,7 @@ export async function createAgentStream(
   const requestedSlug = requestedLanguageModel.modelId;
   let lastRequestedSlug = requestedSlug;
   let activeStepModelName = modelName;
+  let activeStepRouting: ModelStepRouting = {};
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
   const abortSignal = combineAbortSignals([
@@ -871,7 +875,11 @@ export async function createAgentStream(
     stepIndex: number,
   ): LanguageModel => {
     const telemetryModel =
-      ctx.abliteratedTelemetry?.wrap(languageModel, stepIndex) ?? languageModel;
+      ctx.abliteratedTelemetry?.wrap(
+        languageModel,
+        stepIndex,
+        activeStepRouting,
+      ) ?? languageModel;
     const recoveryModel = recoverAbliterationMedia(telemetryModel);
     const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
@@ -1002,15 +1010,17 @@ export async function createAgentStream(
   let pdfParserEngine: "mistral-ocr" | "cloudflare-ai" = "mistral-ocr";
   let providerPdfAttachmentsDisabled = false;
   let openRouterFileAnnotations: unknown[] | undefined;
+  const getPreVisionModelName = (stepIndex = generationStepOffset) =>
+    ctx.abliteratedStepRouting
+      ? resolveAbliterationModelForGenerationStep({
+          treatmentModel: routeModelName,
+          baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          stepIndex,
+        })
+      : routeModelName;
   const getEffectiveModelName = (stepIndex = generationStepOffset) =>
     resolveAgentModelForImageToolResults(
-      ctx.abliteratedStepRouting
-        ? resolveAbliterationModelForGenerationStep({
-            treatmentModel: routeModelName,
-            baselineModel: ctx.abliteratedStepRouting.baselineModel,
-            stepIndex,
-          })
-        : routeModelName,
+      getPreVisionModelName(stepIndex),
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
@@ -1020,6 +1030,16 @@ export async function createAgentStream(
   const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);
     activeStepModelName = effectiveModelName;
+    const preVisionModelName = getPreVisionModelName(stepIndex);
+    activeStepRouting = {
+      plannedBaselineContinuation:
+        isAbliterationModel(routeModelName) &&
+        preVisionModelName !== routeModelName,
+      visionRoute: preVisionModelName !== effectiveModelName,
+      fallbackModels: getFallbackSlugs(effectiveModelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      }),
+    };
     ctx.onModelStepSelected?.(effectiveModelName);
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
     lastRequestedSlug = languageModel.modelId;

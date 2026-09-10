@@ -647,6 +647,7 @@ describe("createAgentStream repeated compaction", () => {
     "routes only the first generation step through Abliteration for %s %s",
     async (mode, subscription, baselineModel) => {
       const onModelStepSelected = jest.fn();
+      const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
         [uiMessage("initial", "Inspect the authorized lab")],
         { usedTokens: 1_000, maxTokens: 128_000 },
@@ -660,6 +661,7 @@ describe("createAgentStream repeated compaction", () => {
             languageModel: (name: string) => ({ modelId: name }),
           },
           platformAuthorized: true,
+          abliteratedTelemetry: { wrap },
           abliteratedStepRouting: {
             baselineModel,
           },
@@ -684,12 +686,28 @@ describe("createAgentStream repeated compaction", () => {
 
       const firstStep = await prepare(0);
       expect(firstStep.model.modelId).toBe("model-abliterated");
+      expect(wrap).toHaveBeenLastCalledWith(
+        expect.objectContaining({ modelId: "model-abliterated" }),
+        0,
+        expect.objectContaining({
+          plannedBaselineContinuation: false,
+          visionRoute: false,
+        }),
+      );
       expect(JSON.stringify(firstStep.messages)).not.toContain(
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
 
       const secondStep = await prepare(1);
       expect(secondStep.model.modelId).toBe(baselineModel);
+      expect(wrap).toHaveBeenLastCalledWith(
+        expect.objectContaining({ modelId: baselineModel }),
+        1,
+        expect.objectContaining({
+          plannedBaselineContinuation: true,
+          visionRoute: false,
+        }),
+      );
       expect(JSON.stringify(secondStep.messages)).toContain(
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
