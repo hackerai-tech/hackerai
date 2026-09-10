@@ -28,6 +28,36 @@ scan is bounded to 1,000 events and skips collection if history is incomplete or
 the customer event is older than Stripe's 30-day retention. API lookup failures
 retry webhook delivery. Restricted Stripe keys need Events read permission.
 
+## Payments received after cancellation
+
+Paying an old invoice cannot reactivate a canceled Stripe subscription. A renewal
+paid after cancellation for `payment_failed` is refunded automatically only when
+it is the subscription's latest automatic renewal invoice, with one fully paid
+PaymentIntent allocation and a matching, undisputed, fully captured charge.
+The handler checks current Stripe state before refunding. A replacement
+subscription, credit note, support resolution, partial payment, or unrelated
+refund requires manual reconciliation. Payments made before cancellation and
+voluntary cancellations are outside this policy.
+
+Refund creation uses an invoice/charge idempotency key and durable refund metadata
+for retries after Stripe's idempotency cache expires. API failures retry webhook
+delivery. Pending refunds stay pending; failed, canceled, or action-required refund
+updates raise `billing_late_payment_requires_manual_reconciliation`. Monitor this
+event alongside `billing_late_payment_reconciled`. A refund records offsetting cash
+revenue without restored access, recovered MRR, referral eligibility, or fresh
+usage credits. This change handles new webhook deliveries; it does not backfill
+previously processed payments.
+
+For a manual replacement month, first coordinate with any in-flight webhook and
+confirm no refund has been issued. Mark the original invoice's metadata
+`hackeraiLatePaymentResolution` with the chosen resolution before granting service,
+and retain the invoice reference on the replacement subscription. Recheck refunds
+afterward. A zero-dollar trial invoice does **not** refresh a previously frozen
+usage bucket: verify Stripe/WorkOS entitlements and restore the customer's monthly
+allowance separately against the verified production Redis database, preserving
+extra-usage balances and using the new subscription's period end. Verify a bounded
+chat after the customer refreshes their entitlement session.
+
 ## Release requirements
 
 1. Verify the intended account, deployment, custom domain, and environment before
@@ -46,6 +76,9 @@ retry webhook delivery. Restricted Stripe keys need Events read permission.
 4. Deploy the app and complete the sandbox journey below before claiming the
    production recovery behavior is verified. Existing tests mock Stripe, Convex,
    WorkOS, and access state; they are not a substitute for this journey.
+5. The late-payment refund path needs Invoice Payments read and Refunds read/write
+   access. Verify successful `refund.created` and `refund.updated` deliveries,
+   including when the Charge object has no legacy `invoice` field.
 
 ## Manual sandbox journey (required)
 
@@ -79,6 +112,12 @@ detaches existing methods and has no sandbox guard).
 8. Check an attachment-only event, a stale default-card event, and a canceled
    subscription: none initiates collection. Remove disposable test artifacts only
    after recording sanitized outcomes and confirming their exact IDs.
+9. In a separate sandbox case, let renewal failures cancel the subscription, then
+   pay its latest renewal invoice. Confirm exactly one full refund, no paid access
+   or usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
+   deliveries: no additional refund or accounting entry. Repeat with a credited
+   replacement subscription and with an existing partial refund: both require
+   manual review and must not create another refund.
 
 Measure recovered users/invoices within a fixed window after the first renewal
 failure, joining by subscription and invoice. Separate card selection, actual
