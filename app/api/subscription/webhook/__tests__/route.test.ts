@@ -25,6 +25,9 @@ const mockListInvoiceLineItems = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockRetrieveCharge = jest.fn();
 const mockRetrievePrice = jest.fn();
+const mockListInvoicePayments = jest.fn();
+const mockListRefunds = jest.fn();
+const mockCreateRefund = jest.fn();
 const mockListMemberships = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockFreezeRateLimitBucketForDelinquency = jest.fn();
@@ -77,6 +80,8 @@ jest.mock("@/app/api/stripe", () => ({
     prices: {
       retrieve: mockRetrievePrice,
     },
+    invoicePayments: { list: mockListInvoicePayments },
+    refunds: { list: mockListRefunds, create: mockCreateRefund },
   },
 }));
 
@@ -223,6 +228,110 @@ function subscriptionInvoiceLine(
       price_details: { price: priceId },
     },
   };
+}
+
+function mockLateRenewal() {
+  const endedAt = 1_788_889_078;
+  const paidAt = endedAt + 2050;
+  const price = {
+    id: "price_pro",
+    lookup_key: "pro-monthly-plan",
+    unit_amount: 2500,
+    recurring: { interval: "month", interval_count: 1 },
+    product: { id: "prod_pro", name: "HackerAI Pro", metadata: {} },
+  };
+  const invoice = {
+    id: "in_late",
+    customer: "cus_late",
+    status: "paid",
+    amount_paid: 2500,
+    currency: "usd",
+    livemode: false,
+    billing_reason: "subscription_cycle",
+    collection_method: "charge_automatically",
+    metadata: {},
+    status_transitions: { paid_at: paidAt },
+    parent: { subscription_details: { subscription: "sub_late" } },
+    lines: {
+      data: [subscriptionInvoiceLine("sub_late", "price_pro", 2500)],
+      has_more: false,
+    },
+  };
+  const subscription = {
+    id: "sub_late",
+    customer: "cus_late",
+    status: "canceled",
+    currency: "usd",
+    livemode: false,
+    latest_invoice: invoice.id,
+    ended_at: endedAt,
+    cancellation_details: { reason: "payment_failed" },
+    metadata: {},
+    items: { data: [{ quantity: 1, price }] },
+  };
+  const refund = {
+    id: "re_late",
+    status: "succeeded",
+    amount: 2500,
+    currency: "usd",
+    charge: "ch_late",
+    payment_intent: "pi_late",
+    created: paidAt + 1,
+    metadata: {
+      hackeraiReason: "subscription_payment_after_cancellation",
+      stripeInvoiceId: invoice.id,
+      stripeSubscriptionId: subscription.id,
+    },
+  };
+  mockConstructEvent.mockReturnValue({
+    id: "evt_late",
+    type: "invoice.paid",
+    created: paidAt,
+    data: { object: invoice },
+  });
+  mockRetrieveCustomer.mockResolvedValue({
+    id: "cus_late",
+    metadata: { workOSOrganizationId: "org_late" },
+  } as never);
+  mockListMemberships.mockResolvedValue({
+    autoPagination: jest.fn().mockResolvedValue([{ userId: "user_late" }]),
+  } as never);
+  mockRetrieveSubscription.mockResolvedValue(subscription as never);
+  mockRetrieveInvoice.mockResolvedValue(invoice as never);
+  mockRetrievePrice.mockResolvedValue(price as never);
+  mockListSubscriptions.mockReturnValue([subscription]);
+  mockListInvoicePayments.mockResolvedValue({
+    data: [
+      {
+        invoice: invoice.id,
+        amount_paid: 2500,
+        currency: "usd",
+        status_transitions: { paid_at: paidAt },
+        payment: { type: "payment_intent", payment_intent: "pi_late" },
+      },
+    ],
+    has_more: false,
+  } as never);
+  mockRetrievePaymentIntent.mockResolvedValue({
+    id: "pi_late",
+    status: "succeeded",
+    latest_charge: "ch_late",
+  } as never);
+  mockRetrieveCharge.mockResolvedValue({
+    id: "ch_late",
+    customer: "cus_late",
+    paid: true,
+    captured: true,
+    disputed: false,
+    amount: 2500,
+    amount_captured: 2500,
+    amount_refunded: 0,
+    currency: "usd",
+    livemode: false,
+  } as never);
+  mockListRefunds.mockReturnValue([]);
+  mockCreateRefund.mockResolvedValue(refund as never);
+  return { invoice, subscription, refund };
 }
 
 function mockInvoicePaymentFailedAnalytics({
@@ -542,6 +651,178 @@ describe("POST /api/subscription/webhook", () => {
         charged_amount_dollars: 29,
         stripe_price_id: "price_pro_29",
       }),
+    );
+  });
+
+  it.each(["succeeded", "pending"])(
+    "reconciles a late renewal with a %s refund without granting benefits or recovered MRR",
+    async (status) => {
+      const { refund } = mockLateRenewal();
+      mockCreateRefund.mockResolvedValue({ ...refund, status } as never);
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      expect(mockCreateRefund).toHaveBeenCalledTimes(1);
+      expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "referrals.setReferralCodesPaidEligibility",
+        expect.anything(),
+      );
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "unitEconomics.recordRevenueEvent",
+        expect.objectContaining({
+          entityId: "user_late",
+          grossRevenueDollars: 25,
+          mrrDollars: undefined,
+          description: "late_payment_after_cancellation",
+        }),
+      );
+      expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+        PAID_FUNNEL_EVENTS.paymentRecovered,
+        expect.anything(),
+      );
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        "billing_late_payment_reconciled",
+        expect.objectContaining({
+          reconciliation_status:
+            status === "succeeded" ? "refunded" : "refund_pending",
+          stripe_refund_id: refund.id,
+        }),
+      );
+    },
+  );
+
+  it.each(["customer", "subscription"])(
+    "retries a late renewal after a failed %s lookup",
+    async (lookup) => {
+      mockLateRenewal();
+      if (lookup === "customer")
+        mockRetrieveCustomer.mockRejectedValueOnce(
+          new Error("unavailable") as never,
+        );
+      else
+        mockRetrieveSubscription.mockRejectedValueOnce(
+          new Error("unavailable") as never,
+        );
+      const { POST } = await import("../route");
+      await expect(POST(makeWebhookRequest())).rejects.toThrow();
+      expect(mockCreateRefund).not.toHaveBeenCalled();
+      const marks = mockConvexMutation.mock.calls.filter(
+        ([mutation, args]) =>
+          mutation === "extraUsage.checkAndMarkWebhook" &&
+          !(args as { checkOnly?: boolean }).checkOnly,
+      );
+      expect(marks).toHaveLength(0);
+    },
+  );
+
+  it.each(["failed", "canceled", "requires_action"])(
+    "flags a %s late-payment refund for support",
+    async (status) => {
+      const { refund } = mockLateRenewal();
+      mockConstructEvent.mockReturnValue({
+        id: "evt_refund_update",
+        type: "refund.updated",
+        data: { object: { ...refund, status } },
+      });
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      expect(mockPostHogError).toHaveBeenCalledWith(
+        "billing_late_payment_requires_manual_reconciliation",
+        expect.objectContaining({
+          stripe_refund_id: refund.id,
+          reconciliation_reason: `refund_${status}`,
+        }),
+      );
+      expect(mockConvexMutation).not.toHaveBeenCalledWith(
+        "unitEconomics.recordRevenueEvent",
+        expect.anything(),
+      );
+    },
+  );
+
+  it("leaves compensated late payments for manual review", async () => {
+    const { subscription } = mockLateRenewal();
+    mockListSubscriptions.mockReturnValue([
+      subscription,
+      {
+        id: "sub_replacement",
+        status: "trialing",
+        created: subscription.ended_at + 1,
+      },
+    ]);
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+    expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_late_payment_requires_manual_reconciliation",
+      expect.objectContaining({
+        reconciliation_reason: "replacement_subscription_exists",
+      }),
+    );
+  });
+
+  it("retries an uncertain refund without marking the webhook complete", async () => {
+    const { refund } = mockLateRenewal();
+    mockCreateRefund.mockRejectedValueOnce(
+      new Error("connection reset") as never,
+    );
+    const { POST } = await import("../route");
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "connection reset",
+    );
+    const marks = mockConvexMutation.mock.calls.filter(
+      ([mutation, args]) =>
+        mutation === "extraUsage.checkAndMarkWebhook" &&
+        !(args as { checkOnly?: boolean }).checkOnly,
+    );
+    expect(marks).toHaveLength(0);
+    // The first request may already have created the refund. A durable lookup
+    // prevents repeating it even after Stripe's idempotency cache expires.
+    mockListRefunds.mockReturnValue([refund]);
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockCreateRefund).toHaveBeenCalledTimes(1);
+  });
+
+  it("records late-payment refund accounting without legacy Charge.invoice", async () => {
+    const { refund } = mockLateRenewal();
+    mockConstructEvent.mockReturnValue({
+      id: "evt_late_refund",
+      type: "refund.created",
+      data: { object: refund },
+    });
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.objectContaining({
+        entityId: "user_late",
+        grossRevenueDollars: -25,
+        stripeInvoiceId: "in_late",
+        stripeSubscriptionId: "sub_late",
+      }),
+    );
+  });
+
+  it("rejects mismatched managed refund attribution", async () => {
+    const { refund } = mockLateRenewal();
+    mockConstructEvent.mockReturnValue({
+      id: "evt_late_refund",
+      type: "refund.created",
+      data: {
+        object: {
+          ...refund,
+          metadata: { ...refund.metadata, stripeSubscriptionId: "sub_other" },
+        },
+      },
+    });
+    const { POST } = await import("../route");
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "attribution mismatch",
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "unitEconomics.recordRevenueEvent",
+      expect.anything(),
     );
   });
 
