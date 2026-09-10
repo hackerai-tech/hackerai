@@ -57,6 +57,18 @@ completion event. No exposure is emitted for mere flag assignment. Existing
 startup summary and worker timers include the recovery; failed or abandoned
 runs without a completion event are not represented in this event cohort.
 
+Retain the startup timings for the [rolling regression readout](https://us.posthog.com/project/144137/insights/Pt8cDlVX)
+and the tracked pilot review. These are in-memory counters attached to the
+existing completion event, with no per-phase analytics events or user content.
+Reassess retention when the review ends; remove unused fields if the readout
+is retired.
+
+Duplicate `agent_performance_diagnostic` warning logs retain all slow errors
+and a deterministic 1% sample of slow successful or aborted runs, keyed by
+Trigger run ID (chat ID when unavailable). `log_sample_rate` records the
+selection rate. Use the unsampled completion events for percentiles and outcome
+rates; sampled warnings are for individual trace investigation.
+
 Compare timing p50/p95/p99, successful continuation, abort/error rates,
 fallback frequency, and compaction usage cost against control. Include
 summary completeness and retained-context checks. Provider usage from an
