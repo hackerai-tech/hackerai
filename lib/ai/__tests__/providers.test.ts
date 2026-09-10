@@ -142,9 +142,7 @@ describe("provider registry", () => {
     ).toBe("minimax/minimax-m3");
     expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
     expect(GLM_5_3_FLASH_SLUG).toBe("z-ai/glm-5.3-flash");
-    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe(
-      "deepseek/deepseek-v4-flash-vision-exp",
-    );
+    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe("deepseek/deepseek-v4.1-flash");
     expect(
       (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
         .modelId,
@@ -1342,6 +1340,9 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults(DEEPSEEK_V4_FLASH_VISION_SLUG)).toBe(
       true,
     );
+    expect(
+      supportsMultimodalToolResults("deepseek/deepseek-v4.1-flash-20260910"),
+    ).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.6-pro")).toBe(true);

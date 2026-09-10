@@ -1203,8 +1203,8 @@ export const GLM_5_3_SLUG = "z-ai/glm-5.3";
 export const GLM_5_3_FLASH_SLUG = "z-ai/glm-5.3-flash";
 export const GROK_4_5_SLUG = "x-ai/grok-4.5";
 export const GROK_4_6_SLUG = "x-ai/grok-4.6";
-export const DEEPSEEK_V4_FLASH_VISION_SLUG =
-  "deepseek/deepseek-v4-flash-vision-exp";
+// Preserve the internal vision route keys while upgrading the provider model.
+export const DEEPSEEK_V4_FLASH_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
 export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 // MiniMax is deliberately isolated to the final text-summary recovery. Normal
 // image turns route the original pixels through GLM Flash and then DeepSeek
@@ -1331,8 +1331,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-glm-5.3-flash": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-pro": "Z.ai GLM 5.3 Flash",
   "model-glm-5.3-flash-agent": "Z.ai GLM 5.3 Flash",
-  "model-deepseek-v4-flash-vision": "DeepSeek V4 Flash Vision",
-  "model-deepseek-v4-flash-vision-pro": "DeepSeek V4 Flash Vision",
+  "model-deepseek-v4-flash-vision": "DeepSeek V4.1 Flash",
+  "model-deepseek-v4-flash-vision-pro": "DeepSeek V4.1 Flash",
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
@@ -1410,6 +1410,8 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
     normalized === "model-deepseek-v4-flash-vision-pro" ||
     normalized.includes("z-ai/glm-5.3-flash") ||
     normalized.includes("deepseek-v4-flash-vision") ||
+    normalized === DEEPSEEK_V4_FLASH_VISION_SLUG ||
+    normalized === "deepseek/deepseek-v4.1-flash-20260910" ||
     isKimiModel(normalized) ||
     isGrokModel(normalized) ||
     isAnthropicModel(normalized) ||
