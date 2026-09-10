@@ -64,7 +64,7 @@ const {
   estimateSummaryInputTokens,
   getRecentCompleteModelTail,
 } = require("../helpers") as typeof import("../helpers");
-const { AGENT_SUMMARIZATION_PROMPT } =
+const { AGENT_SUMMARIZATION_PROMPT, AGENT_RESUME_PREAMBLE } =
   require("../prompts") as typeof import("../prompts");
 
 const {
@@ -73,8 +73,12 @@ const {
   USER_MESSAGE_CONTEXT_MAX_TOKENS,
 } =
   require("../user-message-context") as typeof import("../user-message-context");
-const { getRetainedTailBudgetTokens } =
-  require("../retained-tail") as typeof import("../retained-tail");
+const {
+  getRetainedTailBudgetTokens,
+  projectMessagesToTokenBudget,
+  projectRetainedTailFromMessages,
+  selectRetainedTailForSummarization,
+} = require("../retained-tail") as typeof import("../retained-tail");
 
 const THRESHOLD = Math.floor(getSummarizationThresholdTokens(MAX_TOKENS_PAID));
 
@@ -408,6 +412,22 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(durable.summaryText).toContain("Message real-user");
     expect(durable.summaryText).not.toContain('"messageId":"msg-3"');
+    // Desktop restaging may supply prepared model inputs without the persisted summary.
+    const restoredSource = [
+      buildSummaryMessage(durable.summaryText!, []),
+      createMessage("work", "assistant"),
+    ];
+    const restaged = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      sourceUiMessages: restoredSource,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "desktop-restaged-quote",
+    });
+    expect(restaged.summaryText).toContain("Message real-user");
+    expect(restaged.summaryText).not.toContain('"messageId":"msg-3"');
   });
 
   it.each(["length", "content-filter", "stop"])(
@@ -2420,9 +2440,41 @@ describe("bounded source user quote", () => {
     }
   });
 
+  it("keeps the original quote when a retained user message drops whole earlier text parts", () => {
+    const original: UIMessage = {
+      id: "multipart-request",
+      role: "user",
+      parts: [
+        { type: "text", text: "Only inspect staging; leave production alone." },
+        { type: "text", text: "Check the login flow." },
+      ],
+    };
+    const context = buildUserMessageContext([original]);
+    const summary = buildSummaryMessage(
+      appendUserMessageContext("Checkpoint", context),
+      [],
+    );
+    const selection = selectRetainedTailForSummarization([original], {
+      budgetTokens: safeCountTokens("Check the login flow."),
+    });
+    expect(selection.tailMessages[0].parts).toEqual(original.parts.slice(1));
+    expect(buildUserMessageContext([summary, ...selection.tailMessages])).toBe(
+      context,
+    );
+    const reloaded = projectRetainedTailFromMessages(
+      [original],
+      selection.retainedTail!,
+      { budgetTokens: 8_000 },
+    );
+    expect(buildUserMessageContext([summary, ...reloaded])).toBe(context);
+  });
+
   it("keeps the source quote when the same user message is a shortened tail projection", () => {
     const context = buildUserMessageContext([
-      user("request", "Keep this exact original request"),
+      user(
+        "request",
+        "Keep this exact original request. " + "Work details ".repeat(100),
+      ),
     ]);
     const summary = buildSummaryMessage(
       appendUserMessageContext("Checkpoint", context),
@@ -2431,7 +2483,16 @@ describe("bounded source user quote", () => {
     expect(
       buildUserMessageContext([
         summary,
-        user("request", "Keep [Earlier text shortened] request"),
+        ...projectMessagesToTokenBudget(
+          [
+            user(
+              "request",
+              "Keep this exact original request. " +
+                "Work details ".repeat(100),
+            ),
+          ],
+          { budgetTokens: 40 },
+        ),
       ]),
     ).toBe(context);
   });
@@ -2454,6 +2515,36 @@ describe("bounded source user quote", () => {
       expect(quote).not.toContain("<context_summary>");
     },
   );
+
+  it("ignores hidden auto-continue prompts while preserving explicit user continuations", () => {
+    const original = user("request", "Keep the original scope");
+    const automatic = {
+      ...user("auto", "Continue"),
+      metadata: { isAutoContinue: true },
+    };
+    expect(
+      readQuote(buildUserMessageContext([original, automatic])).messageId,
+    ).toBe("request");
+    expect(
+      readQuote(buildUserMessageContext([original, user("manual", "Continue")]))
+        .messageId,
+    ).toBe("manual");
+  });
+
+  it("recognizes reloaded Agent summaries with the resume preamble", () => {
+    const context = buildUserMessageContext([
+      user("request", "Preserve staging-only scope."),
+    ]);
+    const summary = buildSummaryMessage(
+      appendUserMessageContext("Checkpoint", context),
+      [],
+    );
+    const part = summary.parts[0] as { type: "text"; text: string };
+    part.text = AGENT_RESUME_PREAMBLE + part.text;
+    expect(
+      buildUserMessageContext([summary, createMessage("work", "assistant")]),
+    ).toBe(context);
+  });
 
   it("does not use malformed blocks or invent text for a file-only latest user message", () => {
     const malformed = buildSummaryMessage(

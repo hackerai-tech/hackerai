@@ -920,6 +920,7 @@ const saveTranscriptToSandbox = async (
   return null;
 };
 
+/** Builds a durable checkpoint when needed, preserving source intent and a bounded tail. */
 export const checkAndSummarizeIfNeeded = async ({
   uiMessages,
   sourceUiMessages,

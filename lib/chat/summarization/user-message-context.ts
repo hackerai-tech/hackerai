@@ -1,5 +1,7 @@
 import type { UIMessage } from "ai";
 import { safeCountTokens, truncateContent } from "@/lib/token-utils";
+import { AGENT_RESUME_PREAMBLE } from "./prompts";
+import { isRetainedTailProjection } from "./retained-tail";
 
 const START = "<preserved_user_message>";
 const END = "</preserved_user_message>";
@@ -29,9 +31,11 @@ const renderContext = (message: PreservedUserMessage): string => {
 
 const getSummaryMessage = (messages: UIMessage[]): UIMessage | undefined => {
   const first = messages[0];
-  return first &&
-    messageText(first).startsWith("<context_summary>\n") &&
-    messageText(first).includes("</context_summary>")
+  if (!first) return undefined;
+  const text = messageText(first);
+  return (text.startsWith("<context_summary>\n") ||
+    text.startsWith(`${AGENT_RESUME_PREAMBLE}<context_summary>\n`)) &&
+    text.includes("</context_summary>")
     ? first
     : undefined;
 };
@@ -75,14 +79,17 @@ export const buildUserMessageContext = (messages: UIMessage[]): string => {
   const previous = readPreservedMessage(messages);
   const summary = getSummaryMessage(messages);
   const latest = messages.findLast(
-    (message) => message.role === "user" && message !== summary,
+    (message) =>
+      message.role === "user" &&
+      message !== summary &&
+      !(message.metadata as { isAutoContinue?: boolean } | undefined)
+        ?.isAutoContinue,
   );
   // A retained tail may contain a shortened projection of the same message.
   if (
     previous &&
     (!latest ||
-      (latest.id === previous.messageId &&
-        messageText(latest).includes("[Earlier text shortened]")))
+      (latest.id === previous.messageId && isRetainedTailProjection(latest)))
   )
     return renderContext(previous);
   if (!latest) return "";

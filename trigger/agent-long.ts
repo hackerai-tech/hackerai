@@ -3691,7 +3691,12 @@ export const agentLongTask = task({
             // Mutable stream state — updated in-place by the shared runner and
             // read back here in toUIMessageStream.onFinish.
             const state = initAgentStreamState(finalMessages, initialCtxUsage);
-            state.sourceUiMessages = processedMessages;
+            // Prepared attachment payloads can omit the persisted summary.
+            // Use fetched history for the source quote, retaining prepared model inputs.
+            state.sourceUiMessages =
+              localDesktopAttachmentsPrepared && truncatedMessages.length > 0
+                ? truncatedMessages
+                : processedMessages;
             terminalAgentState = state;
 
             const budgetSnapshot = captureBudgetSnapshot({

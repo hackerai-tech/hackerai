@@ -719,6 +719,7 @@ const getLanguageModelIdentifier = (
   return undefined;
 };
 
+/** Generates a checkpoint and rejects empty or incomplete provider output. */
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
