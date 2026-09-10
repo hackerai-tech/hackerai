@@ -5928,6 +5928,18 @@ export const agentLongTask = task({
         await releasePaidDailyFreeAllowanceReservation();
       }
       await releaseFreeRunLockBestEffort("outer_catch");
+      if (
+        !streamPiped &&
+        triggerSignal.aborted &&
+        error === triggerSignal.reason
+      ) {
+        metadata.set("status", "canceled");
+        if (!hasObservedUsage()) {
+          await usageRefundTracker.refund().catch(() => {});
+        }
+        await phLogger.flush().catch(() => {});
+        return { chatId, assistantMessageId };
+      }
       memoryTelemetry.checkpoint({ phase: "run_failed", force: true });
       const chatMissingAfterStream =
         streamPiped &&
