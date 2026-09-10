@@ -13,6 +13,7 @@ const {
   captureUsageCost,
   captureUsageSettlement,
   isUsageSettlementSuccessSampled,
+  isAgentPerformanceLogSampled,
   resolveAgentAbortSource,
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
@@ -251,7 +252,7 @@ describe("captureAgentRun", () => {
         selectedModel: "agent-model",
         configuredModelId: "deepseek/deepseek-v4-pro",
         responseModel: "deepseek/deepseek-v4-pro",
-        triggerRunId: "run_slow",
+        triggerRunId: "run_72",
         triggerUsageDurationMs: 130_000,
         requestToFirstModelStartMs: 2_000,
         requestToFirstModelChunkMs: 20_000,
@@ -274,7 +275,8 @@ describe("captureAgentRun", () => {
           event: "agent_performance_diagnostic",
           service: "agent-long",
           chat_id: "chat_slow",
-          trigger_run_id: "run_slow",
+          trigger_run_id: "run_72",
+          log_sample_rate: 0.01,
           configured_model: "deepseek/deepseek-v4-pro",
           upstream_provider: "DeepInfra",
           trigger_usage_duration_ms: 130_000,
@@ -292,6 +294,60 @@ describe("captureAgentRun", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it.each(["success", "aborted", "error"])(
+    "retains completion analytics while sampling slow %s logs",
+    (outcome) => {
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const capture = jest.fn();
+      try {
+        captureAgentRun({
+          posthog: { capture } as any,
+          userId: "user_123",
+          chatId: "chat_slow",
+          mode: "agent",
+          subscription: "pro",
+          sandboxInfo: null,
+          outcome,
+          selectedModel: "agent-model",
+          configuredModelId: "deepseek/deepseek-v4-pro",
+          triggerRunId: "run_0",
+          requestToFirstModelStartMs: 2_000,
+          requestToFirstModelChunkMs: 20_000,
+        });
+
+        expect(warnSpy).toHaveBeenCalledTimes(outcome === "error" ? 1 : 0);
+        if (outcome === "error") {
+          expect(JSON.parse(warnSpy.mock.calls[0][0] as string)).toEqual(
+            expect.objectContaining({ log_sample_rate: 1, outcome: "error" }),
+          );
+        }
+        expect(capture).toHaveBeenCalledTimes(1);
+        expect(capture).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: "hackerai-agent_run",
+            properties: expect.objectContaining({
+              outcome,
+              first_output_slow: true,
+              request_to_first_model_chunk_ms: 20_000,
+            }),
+          }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it("selects a stable, small sample across representative run IDs", () => {
+    const ids = Array.from({ length: 10_000 }, (_, index) => `run_${index}`);
+    const sampled = ids.filter(isAgentPerformanceLogSampled);
+    expect(sampled.length).toBeGreaterThan(70);
+    expect(sampled.length).toBeLessThan(130);
+    expect(ids.filter(isAgentPerformanceLogSampled)).toEqual(sampled);
+    expect(isAgentPerformanceLogSampled("run_72")).toBe(true);
+    expect(isAgentPerformanceLogSampled("run_0")).toBe(false);
   });
 
   it("captures explicit step-limit and current-run todo measurements", () => {
