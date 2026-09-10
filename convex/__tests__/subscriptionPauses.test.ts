@@ -24,6 +24,16 @@ jest.mock("../lib/utils", () => ({
   validateServiceKey: jest.fn(),
 }));
 
+jest.mock("../lib/userDeletionFence", () => ({
+  isUserDeletionFenced: jest.fn(async () => false),
+}));
+
+const mockIsUserDeletionFenced = jest.requireMock<{
+  isUserDeletionFenced: jest.MockedFunction<
+    (db: unknown, userId: string) => Promise<boolean>
+  >;
+}>("../lib/userDeletionFence").isUserDeletionFenced;
+
 type Row = Record<string, any>;
 
 /** Minimal in-memory stand-in for the subscription_pauses table. */
@@ -76,6 +86,11 @@ function buildDb(rows: Row[]) {
       const row = byId.get(id);
       if (row) Object.assign(row, patch);
     }),
+    delete: jest.fn(async (id: string) => {
+      const index = rows.findIndex((row) => row._id === id);
+      if (index !== -1) rows.splice(index, 1);
+      byId.delete(id);
+    }),
     insert: jest.fn(async (_table: string, row: Row) => {
       const id = `pause_${rows.length + 1}`;
       const inserted = { _id: id, ...row };
@@ -108,6 +123,7 @@ function pauseRow(overrides: Row = {}): Row {
 describe("subscription pause lifecycle", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsUserDeletionFenced.mockResolvedValue(false);
   });
 
   it("claims a due pause once and rejects a second automatic claim", async () => {
@@ -123,6 +139,8 @@ describe("subscription pause lifecycle", () => {
       id: "pause_1",
       status: "resuming",
       resumeAttemptCount: 1,
+      resumeClaimedAt: 5_000,
+      resumeClaimVersion: 2,
     });
 
     const second = await (claimResume as any).handler(
@@ -249,6 +267,116 @@ describe("subscription pause lifecycle", () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
+  it("rejects a new scheduled pause after account deletion is fenced", async () => {
+    const { recordScheduledPause } = await import("../subscriptionPauses");
+    const rows: Row[] = [];
+    const db = buildDb(rows);
+    mockIsUserDeletionFenced.mockResolvedValueOnce(true);
+
+    await expect(
+      (recordScheduledPause as any).handler(
+        { db },
+        {
+          serviceKey: "k",
+          userId: "user_1",
+          stripeCustomerId: "cus_1",
+          stripeSubscriptionId: "sub_1",
+          stripePriceId: "price_1",
+          quantity: 1,
+          pauseMonths: 2,
+          requestedAt: 5_000,
+          pauseEffectiveAt: 6_000,
+          resumeAt: 7_000,
+        },
+      ),
+    ).rejects.toThrow("Account deletion is in progress");
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
+  it("cancels a resumable pause instead of claiming it after deletion is fenced", async () => {
+    const { claimResume } = await import("../subscriptionPauses");
+    const rows = [pauseRow({ status: "paused" })];
+    const db = buildDb(rows);
+    mockIsUserDeletionFenced.mockResolvedValueOnce(true);
+
+    await expect(
+      (claimResume as any).handler(
+        { db },
+        { serviceKey: "k", pauseId: "pause_1", now: 5_000, maxAttempts: 3 },
+      ),
+    ).resolves.toBeNull();
+    expect(rows[0]).toMatchObject({
+      status: "canceled",
+      canceled_at: 5_000,
+      updated_at: 5_000,
+    });
+    expect(rows[0].resume_claimed_at).toBeUndefined();
+  });
+
+  it("authorizes a claimed resume before external Stripe work", async () => {
+    const { authorizeResumeSideEffect } = await import("../subscriptionPauses");
+    const rows = [
+      pauseRow({
+        status: "resuming",
+        resume_claimed_at: 5_000,
+        resume_claim_version: 2,
+        resume_attempt_count: 1,
+      }),
+    ];
+    const db = buildDb(rows);
+
+    await expect(
+      (authorizeResumeSideEffect as any).handler(
+        { db },
+        {
+          serviceKey: "k",
+          pauseId: "pause_1",
+          resumeClaimedAt: 5_000,
+          resumeAttemptCount: 1,
+          authorizedAt: 5_001,
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(rows[0]).toMatchObject({
+      status: "resuming",
+      resume_side_effect_authorized_at: 5_001,
+    });
+  });
+
+  it("cancels a claimed resume when deletion wins before authorization", async () => {
+    const { authorizeResumeSideEffect } = await import("../subscriptionPauses");
+    const rows = [
+      pauseRow({
+        status: "resuming",
+        resume_claimed_at: 5_000,
+        resume_claim_version: 2,
+        resume_attempt_count: 1,
+      }),
+    ];
+    const db = buildDb(rows);
+    mockIsUserDeletionFenced.mockResolvedValueOnce(true);
+
+    await expect(
+      (authorizeResumeSideEffect as any).handler(
+        { db },
+        {
+          serviceKey: "k",
+          pauseId: "pause_1",
+          resumeClaimedAt: 5_000,
+          resumeAttemptCount: 1,
+          authorizedAt: 5_001,
+        },
+      ),
+    ).resolves.toBe(false);
+    expect(rows[0]).toMatchObject({
+      status: "canceled",
+      canceled_at: 5_001,
+    });
+    expect(rows[0].resume_claimed_at).toBeUndefined();
+    expect(rows[0].resume_claim_version).toBeUndefined();
+    expect(rows[0].resume_side_effect_authorized_at).toBeUndefined();
+  });
+
   it("only exposes the caller's own active pause", async () => {
     const { getMyActivePause } = await import("../subscriptionPauses");
     const rows = [
@@ -273,5 +401,23 @@ describe("subscription pause lifecycle", () => {
       auth: { getUserIdentity: async () => ({ subject: "user_1" }) },
     });
     expect(mine).toMatchObject({ id: "pause_mine", status: "paused" });
+  });
+
+  it("deletes pause rows only for an organization being torn down", async () => {
+    const { deleteForDeletedOrganization } =
+      await import("../subscriptionPauses");
+    const rows = [
+      pauseRow({ _id: "pause_deleted_org", organization_id: "org_deleted" }),
+      pauseRow({ _id: "pause_shared_org", organization_id: "org_shared" }),
+    ];
+    const db = buildDb(rows);
+
+    await expect(
+      (deleteForDeletedOrganization as any).handler(
+        { db },
+        { serviceKey: "k", organizationId: "org_deleted" },
+      ),
+    ).resolves.toEqual({ deletedCount: 1, hasMore: false });
+    expect(rows.map((row) => row._id)).toEqual(["pause_shared_org"]);
   });
 });

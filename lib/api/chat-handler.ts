@@ -260,6 +260,34 @@ export const createChatHandler = () => {
     let outerChatId: string | undefined;
     let posthog: ReturnType<typeof PostHogClient> = null;
     let releaseFreeRunLock: (() => Promise<void>) | undefined;
+    let paidDailyFreeAllowanceUserId: string | undefined;
+    let paidDailyFreeAllowanceReservation:
+      PaidDailyFreeAllowanceReservation | undefined;
+    let paidDailyFreeAllowanceFinalized = false;
+    let paidDailyFreeAllowanceUsageTracker: UsageTracker | undefined;
+    const releasePaidDailyFreeAllowanceReservation = async () => {
+      if (
+        !paidDailyFreeAllowanceUserId ||
+        !paidDailyFreeAllowanceReservation ||
+        paidDailyFreeAllowanceFinalized
+      ) {
+        return;
+      }
+      const result = await recordPaidDailyFreeAllowanceCost(
+        paidDailyFreeAllowanceUserId,
+        0,
+        paidDailyFreeAllowanceReservation,
+      );
+      paidDailyFreeAllowanceFinalized = result.recorded;
+      if (!result.recorded) {
+        phLogger.warn("Paid daily free allowance lease release failed", {
+          userId: paidDailyFreeAllowanceUserId,
+          chatId: outerChatId,
+          endpoint,
+          cost_record_failure_reason: result.unavailableReason,
+        });
+      }
+    };
     const releaseFreeRunLockOnce = async () => {
       const release = releaseFreeRunLock;
       if (!release) return;
@@ -324,6 +352,7 @@ export const createChatHandler = () => {
 
       const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
+      paidDailyFreeAllowanceUserId = userId;
       const freeUsageSubject = freeQuotaSubject ?? userId;
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
@@ -605,8 +634,6 @@ export const createChatHandler = () => {
       };
       chatLogger.setChat(chatLogContext, selectedModel);
 
-      let paidDailyFreeAllowanceReservation:
-        PaidDailyFreeAllowanceReservation | undefined;
       let rateLimitInfo: RateLimitInfo;
 
       try {
@@ -791,6 +818,7 @@ export const createChatHandler = () => {
         execute: async ({ writer }) => {
           try {
             const usageTracker = new UsageTracker();
+            paidDailyFreeAllowanceUsageTracker = usageTracker;
             const auxiliaryVision = directGlmVisionEnabled
               ? {
                   isEnabled: visionSummaryRecovery.isEnabled,
@@ -1165,7 +1193,12 @@ export const createChatHandler = () => {
                 }
 
                 if (!usageTracker.hasUsage) {
-                  // No usage data reported — skip deduction
+                  // Release an unused rescue lease so a failed provider start
+                  // does not block the user's next sequential rescue.
+                  if (paidDailyFreeAllowanceReservation) {
+                    await releasePaidDailyFreeAllowanceReservation();
+                    hasRecordedUsage = paidDailyFreeAllowanceFinalized;
+                  }
                   return;
                 }
                 hasRecordedUsage = true;
@@ -1194,7 +1227,10 @@ export const createChatHandler = () => {
                     await recordPaidDailyFreeAllowanceCost(
                       userId,
                       usageCostRecord.costDollars,
+                      paidDailyFreeAllowanceReservation,
                     );
+                  paidDailyFreeAllowanceFinalized =
+                    allowanceCostRecord.recorded;
                   if (!allowanceCostRecord.recorded) {
                     phLogger.warn(
                       "Paid daily free allowance cost recording failed",
@@ -2926,6 +2962,9 @@ export const createChatHandler = () => {
             // execute errors are consumed by createUIMessageStream, so the
             // outer request catch and stream onFinish cannot clean them up.
             preemptiveTimeout?.clear();
+            if (!paidDailyFreeAllowanceUsageTracker?.hasUsage) {
+              await releasePaidDailyFreeAllowanceReservation();
+            }
             const cleanupOperations = [
               [
                 "stop_subscriber",
@@ -2988,6 +3027,9 @@ export const createChatHandler = () => {
     } catch (error) {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
+      if (!paidDailyFreeAllowanceUsageTracker?.hasUsage) {
+        await releasePaidDailyFreeAllowanceReservation();
+      }
       await releaseFreeRunLockOnce();
       shutdownPostHog(posthog);
 

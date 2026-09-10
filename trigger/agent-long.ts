@@ -2139,6 +2139,7 @@ type RunCleanupState = {
   usageRefundTracker: UsageRefundTracker;
   hasObservedUsage: () => boolean;
   releaseFreeRunLock: () => Promise<void>;
+  releasePaidDailyFreeAllowanceReservation: () => Promise<void>;
   chatLogger: ChatLogger | undefined;
   chatId: string;
   userId: string;
@@ -2307,6 +2308,7 @@ export const agentLongTask = task({
     ]);
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
+      await cleanup.releasePaidDailyFreeAllowanceReservation().catch(() => {});
     }
     await cleanup.releaseFreeRunLock().catch((error) => {
       triggerLogger.warn("[agent-long] canceled run lock release failed", {
@@ -2549,6 +2551,31 @@ export const agentLongTask = task({
     let streamPiped = false;
     let observedUsageTracker: UsageTracker | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
+    let paidDailyFreeAllowanceReservation:
+      PaidDailyFreeAllowanceReservation | undefined;
+    let paidDailyFreeAllowanceFinalized = false;
+    const releasePaidDailyFreeAllowanceReservation = async () => {
+      if (
+        !paidDailyFreeAllowanceReservation ||
+        paidDailyFreeAllowanceFinalized
+      ) {
+        return;
+      }
+      const result = await recordPaidDailyFreeAllowanceCost(
+        userId,
+        0,
+        paidDailyFreeAllowanceReservation,
+      );
+      paidDailyFreeAllowanceFinalized = result.recorded;
+      if (!result.recorded) {
+        phLogger.warn("Paid daily free allowance lease release failed", {
+          userId,
+          chatId,
+          endpoint,
+          cost_record_failure_reason: result.unavailableReason,
+        });
+      }
+    };
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
     let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
     const finishCloudSandboxLifecycle = () => {
@@ -2563,6 +2590,7 @@ export const agentLongTask = task({
       usageRefundTracker,
       hasObservedUsage,
       releaseFreeRunLock: releaseFreeRunLockOnce,
+      releasePaidDailyFreeAllowanceReservation,
       chatLogger,
       chatId,
       userId,
@@ -2872,8 +2900,6 @@ export const agentLongTask = task({
       // before agentUiStream.pipe() registered the stream, and the frontend
       // transport would only see a FAILED status with no error message.
       let rateLimitInfo: RateLimitInfo;
-      let paidDailyFreeAllowanceReservation:
-        PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
       const visionSummaryRecovery = createVisionSummaryRecoveryController({
@@ -3733,7 +3759,15 @@ export const agentLongTask = task({
                   usageTracker.nonModelCost += triggerRunCost;
                   chatLogger?.getBuilder().addToolCost(triggerRunCost);
                 }
-                if (!usageTracker.hasUsage) return;
+                if (!usageTracker.hasUsage) {
+                  // Release an unused rescue lease so a failed provider start
+                  // does not block the user's next sequential rescue.
+                  if (paidDailyFreeAllowanceReservation) {
+                    await releasePaidDailyFreeAllowanceReservation();
+                    hasRecordedUsage = paidDailyFreeAllowanceFinalized;
+                  }
+                  return;
+                }
                 hasRecordedUsage = true;
                 const usageRecordArgs = {
                   selectedModel,
@@ -3758,7 +3792,10 @@ export const agentLongTask = task({
                     await recordPaidDailyFreeAllowanceCost(
                       userId,
                       usageCostRecord.costDollars,
+                      paidDailyFreeAllowanceReservation,
                     );
+                  paidDailyFreeAllowanceFinalized =
+                    allowanceCostRecord.recorded;
                   if (!allowanceCostRecord.recorded) {
                     phLogger.warn(
                       "Paid daily free allowance cost recording failed",
@@ -5739,6 +5776,9 @@ export const agentLongTask = task({
               ),
             );
           } catch (error) {
+            if (!hasObservedUsage()) {
+              await releasePaidDailyFreeAllowanceReservation();
+            }
             await releaseFreeRunLockOnce();
             throw error;
           }
@@ -5829,6 +5869,9 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      if (!hasObservedUsage()) {
+        await releasePaidDailyFreeAllowanceReservation();
+      }
       await releaseFreeRunLockBestEffort("outer_catch");
       memoryTelemetry.checkpoint({ phase: "run_failed", force: true });
       const chatMissingAfterStream =

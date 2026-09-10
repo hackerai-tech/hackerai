@@ -9,7 +9,7 @@ import {
 
 describe("paid daily free allowance", () => {
   const mockCreateRedisClient = jest.fn();
-  const redisStore = new Map<string, number>();
+  const redisStore = new Map<string, number | string>();
   const originalEnv = {
     cost: process.env.PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD,
     nodeEnv: process.env.NODE_ENV,
@@ -17,29 +17,48 @@ describe("paid daily free allowance", () => {
 
   const mockRedis = {
     get: jest.fn(async (key: string) => redisStore.get(key) ?? null),
-    eval: jest.fn(async (_script: string, keys: string[], args: number[]) => {
-      if (keys.length === 2) {
-        // Mirrors the Lua reservation script: only the cost cap blocks, the
-        // request counter is incremented for analytics.
-        const [requestsKey, costKey] = keys;
-        const [costLimit] = args;
-        const requestsUsed = redisStore.get(requestsKey) ?? 0;
-        const costUsed = redisStore.get(costKey) ?? 0;
-        if (costUsed >= costLimit) {
-          return [0, "cost_limit_reached", requestsUsed, costUsed];
+    eval: jest.fn(
+      async (_script: string, keys: string[], args: Array<number | string>) => {
+        if (keys.length === 3) {
+          // Mirrors the atomic tokenized lease shared by Ask and Agent.
+          const [requestsKey, costKey, reservationKey] = keys;
+          const [costLimitRaw, _counterTtlMs, _reservationTtlMs, token] = args;
+          const costLimit = Number(costLimitRaw);
+          const requestsUsed = Number(redisStore.get(requestsKey) ?? 0);
+          const costUsed = Number(redisStore.get(costKey) ?? 0);
+          if (costUsed >= costLimit) {
+            return [0, "cost_limit_reached", requestsUsed, costUsed];
+          }
+          if (redisStore.has(reservationKey)) {
+            return [0, "request_in_progress", requestsUsed, costUsed];
+          }
+          const nextRequests = requestsUsed + 1;
+          redisStore.set(requestsKey, nextRequests);
+          redisStore.set(reservationKey, String(token));
+          return [1, "ok", nextRequests, costUsed];
         }
-        const nextRequests = requestsUsed + 1;
-        redisStore.set(requestsKey, nextRequests);
-        redisStore.set(costKey, costUsed);
-        return [1, "ok", nextRequests, costUsed];
-      }
 
-      const [costKey] = keys;
-      const [costPoints] = args;
-      const nextCost = (redisStore.get(costKey) ?? 0) + costPoints;
-      redisStore.set(costKey, nextCost);
-      return nextCost;
-    }),
+        if (keys.length === 2) {
+          const [costKey, reservationKey] = keys;
+          const [costPointsRaw, _ttlMs, token] = args;
+          const costUsed = Number(redisStore.get(costKey) ?? 0);
+          if (redisStore.get(reservationKey) !== String(token)) {
+            return [0, costUsed];
+          }
+          const nextCost = costUsed + Number(costPointsRaw);
+          redisStore.set(costKey, nextCost);
+          redisStore.delete(reservationKey);
+          return [1, nextCost];
+        }
+
+        const [costKey] = keys;
+        const [costPointsRaw] = args;
+        const costPoints = Number(costPointsRaw);
+        const nextCost = Number(redisStore.get(costKey) ?? 0) + costPoints;
+        redisStore.set(costKey, nextCost);
+        return nextCost;
+      },
+    ),
   };
 
   const getIsolatedModule = () => {
@@ -192,16 +211,94 @@ describe("paid daily free allowance", () => {
   });
 
   it("allows repeated rescues in a day and counts them", async () => {
-    const { reservePaidDailyFreeAllowanceRequest } = getIsolatedModule();
+    const {
+      recordPaidDailyFreeAllowanceCost,
+      reservePaidDailyFreeAllowanceRequest,
+    } = getIsolatedModule();
 
     for (let i = 1; i <= 3; i += 1) {
-      await expect(
-        reservePaidDailyFreeAllowanceRequest(i % 2 ? agentContext : askContext),
-      ).resolves.toMatchObject({
+      const reservation = await reservePaidDailyFreeAllowanceRequest(
+        i % 2 ? agentContext : askContext,
+      );
+      expect(reservation).toMatchObject({
         allowed: true,
         status: { available: true, requestsUsed: i },
       });
+      await expect(
+        recordPaidDailyFreeAllowanceCost("user_123", 0.01, reservation),
+      ).resolves.toMatchObject({ recorded: true });
     }
+  });
+
+  it("admits only one overlapping rescue across Ask and Agent", async () => {
+    const {
+      getPaidDailyFreeAllowanceStatus,
+      recordPaidDailyFreeAllowanceCost,
+      reservePaidDailyFreeAllowanceRequest,
+    } = getIsolatedModule();
+
+    const reservations = await Promise.all([
+      reservePaidDailyFreeAllowanceRequest(askContext),
+      reservePaidDailyFreeAllowanceRequest(agentContext),
+    ]);
+    const admitted = reservations.filter((reservation) => reservation.allowed);
+    const blocked = reservations.filter((reservation) => !reservation.allowed);
+
+    expect(admitted).toHaveLength(1);
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toMatchObject({
+      blockReason: "request_in_progress",
+    });
+    const reservationCall = mockRedis.eval.mock.calls.find(
+      ([, keys]) => keys.length === 3,
+    );
+    expect(reservationCall?.[2][2]).toBe(14_700_000);
+    await expect(
+      getPaidDailyFreeAllowanceStatus(askContext),
+    ).resolves.toMatchObject({
+      available: false,
+      unavailableReason: "request_in_progress",
+    });
+
+    await expect(
+      recordPaidDailyFreeAllowanceCost("user_123", 0.1, admitted[0]),
+    ).resolves.toMatchObject({ recorded: true, nextCostDollars: 0.1 });
+    await expect(
+      reservePaidDailyFreeAllowanceRequest(agentContext),
+    ).resolves.toMatchObject({ allowed: true });
+  });
+
+  it("releases an unused lease and rejects settlement with the wrong token", async () => {
+    const {
+      recordPaidDailyFreeAllowanceCost,
+      reservePaidDailyFreeAllowanceRequest,
+    } = getIsolatedModule();
+    const reservation = await reservePaidDailyFreeAllowanceRequest(askContext);
+    expect(reservation.allowed).toBe(true);
+
+    const wrongReservation = {
+      ...reservation,
+      redisReservation: {
+        ...reservation.redisReservation!,
+        token: "wrong-token",
+      },
+    };
+    await expect(
+      recordPaidDailyFreeAllowanceCost("user_123", 0, wrongReservation),
+    ).resolves.toMatchObject({
+      recorded: false,
+      unavailableReason: "reservation_unavailable",
+    });
+    await expect(
+      reservePaidDailyFreeAllowanceRequest(agentContext),
+    ).resolves.toMatchObject({ allowed: false });
+
+    await expect(
+      recordPaidDailyFreeAllowanceCost("user_123", 0, reservation),
+    ).resolves.toMatchObject({ recorded: true, nextCostDollars: 0 });
+    await expect(
+      reservePaidDailyFreeAllowanceRequest(agentContext),
+    ).resolves.toMatchObject({ allowed: true });
   });
 
   it("shares one daily cost pool between Ask and Agent and blocks at the cap", async () => {
@@ -289,8 +386,9 @@ describe("paid daily free allowance", () => {
     } = getIsolatedModule();
 
     jest.setSystemTime(new Date("2026-06-11T23:59:00.000Z"));
-    await reservePaidDailyFreeAllowanceRequest(agentContext);
-    await recordPaidDailyFreeAllowanceCost("user_123", 0.25);
+    const reservation =
+      await reservePaidDailyFreeAllowanceRequest(agentContext);
+    await recordPaidDailyFreeAllowanceCost("user_123", 0.25, reservation);
     const june11Keys = getPaidDailyFreeAllowanceKeys("user_123", "2026-06-11");
     expect(redisStore.get(june11Keys.requestsKey)).toBe(1);
     await expect(

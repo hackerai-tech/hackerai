@@ -943,6 +943,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(
       /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
     );
+
+    const askSetupCleanup = chatHandlerSrc.indexOf(
+      "execute errors are consumed by createUIMessageStream",
+    );
+    expect(askSetupCleanup).toBeGreaterThan(-1);
+    expect(
+      chatHandlerSrc.slice(askSetupCleanup, askSetupCleanup + 1_000),
+    ).toContain("releasePaidDailyFreeAllowanceReservation");
+
+    const triggerCancelCleanup = taskSrc.slice(
+      taskSrc.indexOf("onCancel: async"),
+      taskSrc.indexOf("run: async"),
+    );
+    expect(triggerCancelCleanup).toContain(
+      "releasePaidDailyFreeAllowanceReservation",
+    );
+    expect(
+      taskSrc.match(/await releasePaidDailyFreeAllowanceReservation\(\)/g),
+    ).toHaveLength(3);
   });
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {

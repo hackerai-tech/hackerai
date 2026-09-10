@@ -298,6 +298,40 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         updated_at: 1,
       },
     ],
+    subscription_pauses: [
+      {
+        _id: "pause-user",
+        user_id: userId,
+        organization_id: "org_personal",
+        stripe_customer_id: "cus_user",
+        stripe_subscription_id: "sub_user",
+        stripe_price_id: "price_user",
+        quantity: 1,
+        pause_months: 1,
+        requested_at: 1,
+        pause_effective_at: 2,
+        resume_at: 3,
+        status: "paused",
+        resume_attempt_count: 0,
+        updated_at: 1,
+      },
+      {
+        _id: "pause-other",
+        user_id: otherUserId,
+        organization_id: "org_other",
+        stripe_customer_id: "cus_other",
+        stripe_subscription_id: "sub_other",
+        stripe_price_id: "price_other",
+        quantity: 1,
+        pause_months: 1,
+        requested_at: 1,
+        pause_effective_at: 2,
+        resume_at: 3,
+        status: "paused",
+        resume_attempt_count: 0,
+        updated_at: 1,
+      },
+    ],
     local_sandbox_tokens: [
       { _id: "token-user", user_id: userId, token: "secret" },
       { _id: "token-other", user_id: otherUserId, token: "keep" },
@@ -677,6 +711,8 @@ describe("userDeletion", () => {
     expect(row(tables, "chats", "chat-other")).toBeTruthy();
     expect(row(tables, "feedback", "feedback-other")).toBeTruthy();
     expect(row(tables, "files", "file-other")).toBeTruthy();
+    expect(row(tables, "subscription_pauses", "pause-user")).toBeUndefined();
+    expect(row(tables, "subscription_pauses", "pause-other")).toBeTruthy();
     expect(
       row(tables, "research_user_profiles", "research-profile-user"),
     ).toBeUndefined();
@@ -827,27 +863,194 @@ describe("userDeletion", () => {
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
   });
 
+  it("keeps cleanup fenced while a subscription resume is in flight", async () => {
+    const { deleteAllUserDataByService } = await import("../userDeletion");
+    const tables: Tables = {
+      subscription_pauses: [
+        {
+          _id: "pause-resuming",
+          user_id: "user_123",
+          status: "resuming",
+          requested_at: 1,
+        },
+      ],
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const activeCleanup = await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+    expect(activeCleanup.hasMore).toBe(true);
+    expect(row(tables, "subscription_pauses", "pause-resuming")).toBeTruthy();
+
+    tables.subscription_pauses[0].status = "resumed";
+    const settledCleanup = await deleteAllUserDataByService.handler(
+      ctx as any,
+      { serviceKey: "service_key", userId: "user_123" },
+    );
+    expect(settledCleanup.hasMore).toBe(false);
+    expect(
+      row(tables, "subscription_pauses", "pause-resuming"),
+    ).toBeUndefined();
+  });
+
+  it("deletes every non-running subscription pause lifecycle state", async () => {
+    const { deleteAllUserDataByService } = await import("../userDeletion");
+    const statuses = [
+      "scheduled",
+      "paused",
+      "resume_failed",
+      "resumed",
+      "canceled",
+      "superseded",
+    ];
+    const tables: Tables = {
+      subscription_pauses: statuses.map((status) => ({
+        _id: `pause-${status}`,
+        user_id: "user_123",
+        status,
+        requested_at: 1,
+      })),
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const cleanup = await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(cleanup.hasMore).toBe(false);
+    expect(tables.subscription_pauses).toHaveLength(0);
+  });
+
+  it("anonymizes a shared-organization pause without removing its resume schedule", async () => {
+    const { deleteAllUserDataByService, DELETED_USER_ID } =
+      await import("../userDeletion");
+    const tables: Tables = {
+      subscription_pauses: [
+        {
+          _id: "pause-shared",
+          user_id: "user_123",
+          organization_id: "org_shared",
+          status: "scheduled",
+          requested_at: 1,
+          updated_at: 1,
+        },
+      ],
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const cleanup = await deleteAllUserDataByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+      preservedOrganizationIds: ["org_shared"],
+    });
+
+    expect(cleanup.hasMore).toBe(false);
+    expect(row(tables, "subscription_pauses", "pause-shared")).toMatchObject({
+      user_id: DELETED_USER_ID,
+      organization_id: "org_shared",
+      status: "scheduled",
+    });
+  });
+
   it("creates an idempotent deletion fence before lifecycle cleanup", async () => {
     const { beginUserDataDeletionByService } = await import("../userDeletion");
     const tables = seedTables();
     tables.user_deletion_fences = [];
     const { ctx, db } = createMockCtx(tables);
 
-    await beginUserDataDeletionByService.handler(ctx as any, {
+    const first = await beginUserDataDeletionByService.handler(ctx as any, {
       serviceKey: "service_key",
       userId: "user_123",
     });
-    await beginUserDataDeletionByService.handler(ctx as any, {
+    const second = await beginUserDataDeletionByService.handler(ctx as any, {
       serviceKey: "service_key",
       userId: "user_123",
     });
 
+    expect(first).toBe(true);
+    expect(second).toBe(true);
     expect(tables.user_deletion_fences).toHaveLength(1);
     expect(tables.user_deletion_fences[0]).toMatchObject({
       user_id: "user_123",
       started_at: expect.any(Number),
     });
     expect(db.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an unapproved resume claim in the deletion-fence transaction", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    tables.subscription_pauses[0] = {
+      ...tables.subscription_pauses[0],
+      status: "resuming",
+      resume_claimed_at: 5_000,
+      resume_claim_version: 2,
+      resume_attempt_count: 1,
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const started = await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(started).toBe(true);
+    expect(tables.subscription_pauses[0]).toMatchObject({
+      status: "canceled",
+      canceled_at: expect.any(Number),
+    });
+    expect(tables.subscription_pauses[0].resume_claimed_at).toBeUndefined();
+    expect(tables.subscription_pauses[0].resume_claim_version).toBeUndefined();
+    expect(tables.user_deletion_fences).toHaveLength(1);
+  });
+
+  it("waits for an authorized Stripe resume before inserting the deletion fence", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    tables.subscription_pauses[0] = {
+      ...tables.subscription_pauses[0],
+      status: "resuming",
+      resume_claimed_at: 5_000,
+      resume_claim_version: 2,
+      resume_side_effect_authorized_at: 5_001,
+      resume_attempt_count: 1,
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const started = await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(started).toBe(false);
+    expect(tables.subscription_pauses[0].status).toBe("resuming");
+    expect(tables.user_deletion_fences).toHaveLength(0);
+  });
+
+  it("fails closed for a rolling-deployment resume claim", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    tables.subscription_pauses[0] = {
+      ...tables.subscription_pauses[0],
+      status: "resuming",
+      resume_claimed_at: 5_000,
+      resume_attempt_count: 1,
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const started = await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(started).toBe(false);
+    expect(tables.user_deletion_fences).toHaveLength(0);
   });
 
   it("rejects service-key cleanup with an invalid key", async () => {

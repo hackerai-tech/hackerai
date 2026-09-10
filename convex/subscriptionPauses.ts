@@ -2,6 +2,8 @@ import { mutation, query, type QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
+import { isUserDeletionFenced } from "./lib/userDeletionFence";
+import { DELETION_COORDINATED_RESUME_CLAIM_VERSION } from "./lib/subscriptionPauseResume";
 
 const MAX_DUE_RESUMES = 50;
 const MAX_USER_PAUSE_ROWS = 20;
@@ -46,6 +48,8 @@ export const subscriptionPauseValidator = v.object({
   resumeAt: v.number(),
   status: pauseStatusValidator,
   resumeAttemptCount: v.number(),
+  resumeClaimedAt: v.optional(v.number()),
+  resumeClaimVersion: v.optional(v.number()),
   lastResumeError: v.optional(v.string()),
   resumedAt: v.optional(v.number()),
   resumedStripeSubscriptionId: v.optional(v.string()),
@@ -86,6 +90,8 @@ export function toSubscriptionPause(row: Doc<"subscription_pauses">) {
     resumeAt: row.resume_at,
     status: row.status,
     resumeAttemptCount: row.resume_attempt_count,
+    resumeClaimedAt: row.resume_claimed_at,
+    resumeClaimVersion: row.resume_claim_version,
     lastResumeError: row.last_resume_error,
     resumedAt: row.resumed_at,
     resumedStripeSubscriptionId: row.resumed_stripe_subscription_id,
@@ -135,6 +141,9 @@ export const recordScheduledPause = mutation({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+    if (await isUserDeletionFenced(ctx.db, args.userId)) {
+      throw new Error("Account deletion is in progress");
+    }
 
     const existing = await ctx.db
       .query("subscription_pauses")
@@ -355,6 +364,15 @@ export const claimResume = mutation({
     if (!RESUMABLE_PAUSE_STATUSES.has(row.status) && !staleClaim) {
       return null;
     }
+    if (await isUserDeletionFenced(ctx.db, row.user_id)) {
+      await ctx.db.patch(row._id, {
+        status: "canceled",
+        canceled_at: args.now,
+        resume_claimed_at: undefined,
+        updated_at: args.now,
+      });
+      return null;
+    }
     if (
       !args.manual &&
       (row.status === "resume_failed" ||
@@ -366,6 +384,8 @@ export const claimResume = mutation({
     await ctx.db.patch(row._id, {
       status: "resuming",
       resume_claimed_at: args.now,
+      resume_claim_version: DELETION_COORDINATED_RESUME_CLAIM_VERSION,
+      resume_side_effect_authorized_at: undefined,
       last_resume_attempt_at: args.now,
       resume_attempt_count: row.resume_attempt_count + 1,
       updated_at: args.now,
@@ -373,6 +393,54 @@ export const claimResume = mutation({
 
     const claimed = await ctx.db.get(row._id);
     return claimed ? toSubscriptionPause(claimed) : null;
+  },
+});
+
+/**
+ * Establish the deletion barrier before any Stripe reads or writes occur.
+ * Convex serializes this mutation with deletion-fence creation: either the
+ * claim is authorized and deletion waits, or deletion fences the user and the
+ * claim is canceled.
+ */
+export const authorizeResumeSideEffect = mutation({
+  args: {
+    serviceKey: v.string(),
+    pauseId: v.id("subscription_pauses"),
+    resumeClaimedAt: v.number(),
+    resumeAttemptCount: v.number(),
+    authorizedAt: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const row = await ctx.db.get(args.pauseId);
+    if (
+      !row ||
+      row.status !== "resuming" ||
+      row.resume_claim_version !== DELETION_COORDINATED_RESUME_CLAIM_VERSION ||
+      row.resume_claimed_at !== args.resumeClaimedAt ||
+      row.resume_attempt_count !== args.resumeAttemptCount
+    ) {
+      return false;
+    }
+
+    if (await isUserDeletionFenced(ctx.db, row.user_id)) {
+      await ctx.db.patch(row._id, {
+        status: "canceled",
+        canceled_at: args.authorizedAt,
+        resume_claimed_at: undefined,
+        resume_claim_version: undefined,
+        resume_side_effect_authorized_at: undefined,
+        updated_at: args.authorizedAt,
+      });
+      return false;
+    }
+
+    await ctx.db.patch(row._id, {
+      resume_side_effect_authorized_at: args.authorizedAt,
+      updated_at: args.authorizedAt,
+    });
+    return true;
   },
 });
 
@@ -393,6 +461,8 @@ export const markResumeSucceeded = mutation({
       resumed_stripe_subscription_id: args.resumedStripeSubscriptionId,
       last_resume_error: undefined,
       resume_claimed_at: undefined,
+      resume_claim_version: undefined,
+      resume_side_effect_authorized_at: undefined,
       updated_at: resumedAt,
     });
     return null;
@@ -417,6 +487,8 @@ export const markResumeFailed = mutation({
       ...(args.retryAt !== undefined && { resume_at: args.retryAt }),
       last_resume_error: normalizeResumeError(args.error),
       resume_claimed_at: undefined,
+      resume_claim_version: undefined,
+      resume_side_effect_authorized_at: undefined,
       updated_at: failedAt,
     });
     return null;
@@ -439,8 +511,39 @@ export const markPauseSuperseded = mutation({
       status: "superseded",
       resumed_stripe_subscription_id: args.stripeSubscriptionId,
       resume_claimed_at: undefined,
+      resume_claim_version: undefined,
+      resume_side_effect_authorized_at: undefined,
       updated_at: supersededAt,
     });
     return null;
+  },
+});
+
+/** Remove retained pause state during coordinated organization teardown. */
+export const deleteForDeletedOrganization = mutation({
+  args: {
+    serviceKey: v.string(),
+    organizationId: v.string(),
+  },
+  returns: v.object({
+    deletedCount: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const rows = await ctx.db
+      .query("subscription_pauses")
+      .withIndex("by_organization_requested", (q) =>
+        q.eq("organization_id", args.organizationId),
+      )
+      .take(MAX_SUBSCRIPTION_PAUSE_ROWS + 1);
+    const batch = rows.slice(0, MAX_SUBSCRIPTION_PAUSE_ROWS);
+    for (const row of batch) {
+      await ctx.db.delete(row._id);
+    }
+    return {
+      deletedCount: batch.length,
+      hasMore: rows.length > MAX_SUBSCRIPTION_PAUSE_ROWS,
+    };
   },
 });

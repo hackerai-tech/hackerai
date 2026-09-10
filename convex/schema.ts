@@ -419,6 +419,8 @@ export default defineSchema({
     paused_at: v.optional(v.number()),
     resume_attempt_count: v.number(),
     resume_claimed_at: v.optional(v.number()),
+    resume_claim_version: v.optional(v.number()),
+    resume_side_effect_authorized_at: v.optional(v.number()),
     last_resume_attempt_at: v.optional(v.number()),
     last_resume_error: v.optional(v.string()),
     resumed_at: v.optional(v.number()),
@@ -427,6 +429,8 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_user_requested", ["user_id", "requested_at"])
+    .index("by_user_status", ["user_id", "status"])
+    .index("by_organization_requested", ["organization_id", "requested_at"])
     .index("by_stripe_subscription_id", ["stripe_subscription_id"])
     .index("by_status_resume_at", ["status", "resume_at"]),
 
