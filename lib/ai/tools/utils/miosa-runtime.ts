@@ -1,5 +1,7 @@
 export type MiosaRuntime = "docker" | "native";
 
+export const MIOSA_NATIVE_TEMPLATE_ID = "hackerai-tools";
+
 export type MiosaRuntimeCommandOptions = {
   cwd?: string;
   envVars?: Record<string, string>;
@@ -11,7 +13,7 @@ export const quoteMiosaShell = (value: string): string =>
 
 /** Use the acquired workspace's template, never the requested create template. */
 export function miosaRuntimeForTemplate(templateId?: string): MiosaRuntime {
-  return templateId === "hackerai-tools" ? "native" : "docker";
+  return templateId === MIOSA_NATIVE_TEMPLATE_ID ? "native" : "docker";
 }
 
 export function miosaRuntimeCommand(

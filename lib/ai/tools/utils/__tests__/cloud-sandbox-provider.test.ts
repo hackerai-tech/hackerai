@@ -146,7 +146,7 @@ describe("cloud sandbox provider selection", () => {
 
   it.each([
     ["API key", undefined, "hackerai-kali-promoted"],
-    ["template ID", "msk_test", undefined],
+    ["blank API key", "   ", undefined],
   ])(
     "keeps E2B when the MIOSA %s is unavailable",
     async (_missingField, apiKey, templateId) => {
@@ -172,6 +172,33 @@ describe("cloud sandbox provider selection", () => {
         reason: "miosa_configuration_unavailable",
       });
       expect(evaluateFlags).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, "", "   "])(
+    "evaluates the rollout with the default template when the override is %p",
+    async (override) => {
+      delete process.env.CLOUD_SANDBOX_PROVIDER;
+      process.env.MIOSA_API_KEY = "msk_test";
+      if (override === undefined) delete process.env.MIOSA_TEMPLATE_ID;
+      else process.env.MIOSA_TEMPLATE_ID = override;
+      for (const enabled of [false, true]) {
+        const evaluateFlags = jest.fn(async () => ({ getFlag: () => enabled }));
+        await expect(
+          selectCloudSandboxProvider({
+            userId: "user-1",
+            environment: "PREVIEW",
+            subscription: "pro",
+            triggerRegion: "us-east-1",
+            requestRegionClass: "outside_europe",
+            featureFlagClient: { evaluateFlags },
+          }),
+        ).resolves.toEqual({
+          provider: enabled ? "miosa" : "e2b",
+          reason: enabled ? "miosa_rollout" : "miosa_rollout_control",
+        });
+        expect(evaluateFlags).toHaveBeenCalledTimes(1);
+      }
     },
   );
 

@@ -104,18 +104,39 @@ describe("MIOSA sandbox adapter", () => {
     );
   });
 
-  it("rejects acquisition when no promoted template is configured", async () => {
-    delete process.env.MIOSA_TEMPLATE_ID;
-
-    await expect(
-      ensureMiosaSandboxConnection({
+  it.each([undefined, "", "   "])(
+    "defaults to the native template when the override is %p",
+    async (override) => {
+      if (override === undefined) delete process.env.MIOSA_TEMPLATE_ID;
+      else process.env.MIOSA_TEMPLATE_ID = override;
+      const sdk = createSdkSandbox();
+      Object.assign(sdk.data, { template_id: "hackerai-tools" });
+      mockGetOrCreate.mockResolvedValue(sdk);
+      const { sandbox } = await ensureMiosaSandboxConnection({
         userID: "user-1",
         setSandbox: jest.fn(),
-      }),
-    ).rejects.toThrow(
-      "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
+      });
+      expect(mockGetOrCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ templateId: "hackerai-tools" }),
+      );
+      expect(sandbox.runtime).toBe("native");
+      expect(sdk.exec.stream.mock.calls[0][0]).not.toContain("docker");
+    },
+  );
+
+  it("trims and honors an explicit Docker template override", async () => {
+    process.env.MIOSA_TEMPLATE_ID = " miosa-sandbox-docker ";
+    const sdk = createSdkSandbox();
+    Object.assign(sdk.data, { template_id: "miosa-sandbox-docker" });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const { sandbox } = await ensureMiosaSandboxConnection({
+      userID: "override-user",
+      setSandbox: jest.fn(),
+    });
+    expect(mockGetOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ templateId: "miosa-sandbox-docker" }),
     );
-    expect(mockGetOrCreate).not.toHaveBeenCalled();
+    expect(sandbox.runtime).toBe("docker");
   });
 
   it("initializes a native workspace without pulling or starting a container", async () => {

@@ -7,6 +7,7 @@ import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { createMiosaFiles } from "./miosa-files";
 import { waitForMiosaReadiness } from "./miosa-readiness";
 import {
+  MIOSA_NATIVE_TEMPLATE_ID,
   miosaRuntimeCommand,
   miosaRuntimeForTemplate,
   type MiosaRuntime,
@@ -355,12 +356,8 @@ export async function ensureMiosaSandboxConnection(
     return { sandbox: options.initialSandbox };
   }
 
-  const templateId = process.env.MIOSA_TEMPLATE_ID?.trim();
-  if (!templateId) {
-    throw new Error(
-      "MIOSA_TEMPLATE_ID must identify the promoted HackerAI sandbox template",
-    );
-  }
+  const templateId =
+    process.env.MIOSA_TEMPLATE_ID?.trim() || MIOSA_NATIVE_TEMPLATE_ID;
 
   const startedAt = performance.now();
   const client = await createMiosaClient();

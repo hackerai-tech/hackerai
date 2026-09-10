@@ -86,10 +86,7 @@ export async function selectCloudSandboxProvider(options: {
     return { provider: getCloudSandboxProvider(), reason: "configured" };
   }
 
-  if (
-    !process.env.MIOSA_API_KEY?.trim() ||
-    !process.env.MIOSA_TEMPLATE_ID?.trim()
-  ) {
+  if (!process.env.MIOSA_API_KEY?.trim()) {
     return {
       provider: "e2b",
       reason: "miosa_configuration_unavailable",
