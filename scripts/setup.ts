@@ -206,8 +206,8 @@ async function configureConvexDashboard(
   console.log(chalk.bold(`   WORKOS_CLIENT_ID=${workOSClientId}`));
   console.log(chalk.bold(`   WORKOS_AUTH_DOMAIN=${workOSAuthDomain}`));
   console.log(chalk.bold(`   CONVEX_SERVICE_ROLE_KEY=${convexServiceRoleKey}`));
+  console.log("   - AWS_S3_* variables from .env.local");
   console.log("\nOptional variables (add later if using these features):");
-  console.log("   - AWS_S3_* variables (if using S3 storage)");
   console.log("   - REDIS_URL (if using Redis for stream resumption)");
   console.log("   - STRIPE_* variables (if using Stripe payments)");
   return await question(
@@ -251,11 +251,12 @@ NEXT_PUBLIC_CONVEX_URL=${envVars.NEXT_PUBLIC_CONVEX_URL || ""}
 CONVEX_SERVICE_ROLE_KEY=${envVars.CONVEX_SERVICE_ROLE_KEY}
 
 # =============================================================================
-# S3 FILE STORAGE (Optional - Feature Flag Controlled)
+# S3 FILE STORAGE (Required)
 # =============================================================================
-# AWS S3 credentials for file storage (only needed if S3 is enabled)
+# AWS S3 credentials for file storage
 # Sign up at: https://aws.amazon.com/s3/
-# ⚠️ IMPORTANT: If using S3, also add these to Convex Dashboard → Environment Variables
+# ⚠️ IMPORTANT: Also add these to Convex Dashboard → Environment Variables
+# and Trigger.dev → Environment Variables.
 AWS_S3_ACCESS_KEY_ID=
 AWS_S3_SECRET_ACCESS_KEY=
 AWS_S3_REGION=us-east-1

@@ -29,12 +29,12 @@ You'll need the following accounts:
 - [OpenAI](https://platform.openai.com/) - Content moderation
 - [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
+- [Amazon S3](https://aws.amazon.com/s3/) - File storage
 - [WorkOS](https://workos.com/) - Authentication and user management
 - [Trigger.dev](https://trigger.dev/) - Required durable runtime for agent tasks
 
 **Optional:**
 
-- [Amazon S3](https://aws.amazon.com/s3/) - File storage (alternative to Convex storage)
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
@@ -91,8 +91,10 @@ To use the agent locally:
 2. In the Trigger.dev dashboard → your project → **Environment Variables**,
    add the env vars the task needs to run (these live on the worker, not on
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
-   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, one cloud sandbox provider, plus any keys you use
-   (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, S3, etc.).
+   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `AWS_S3_ACCESS_KEY_ID`,
+   `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and one
+   cloud sandbox provider, plus any optional keys you use
+   (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
 3. Start the worker in a third terminal:
 
    ```bash

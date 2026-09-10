@@ -918,7 +918,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const handleRemoveFile = async (indexToRemove: number) => {
     const uploadedFile = uploadedFiles[indexToRemove];
 
-    // If the file was uploaded to Convex, delete it from storage
+    // Persisted uploads are stored in S3; local desktop files stay on-device.
     if (uploadedFile?.fileId && uploadedFile.storage !== "local-desktop") {
       try {
         await deleteFile({
