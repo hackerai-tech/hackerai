@@ -92,10 +92,22 @@ describe("source-derived runtime state", () => {
           action === "kill" ? { exitCode: null } : { exited: { exitCode: 0 } },
         ),
       ]);
-      const result = buildRuntimeContext([checkpoint(context), start()]);
-      expect(parse(result).sessions[0].status).toBe(
-        action === "kill" ? "killed" : "exited",
-      );
+      expect(context).toBe("");
+      expect(buildRuntimeContext([checkpoint(context)])).toBe("");
+      // A replayed original result cannot undo completion within the same history.
+      expect(
+        buildRuntimeContext([
+          start(),
+          tool(
+            "interact_terminal_session",
+            { session: "term_parallel_97", action },
+            action === "kill"
+              ? { exitCode: null }
+              : { exited: { exitCode: 0 } },
+          ),
+          start(),
+        ]),
+      ).toBe("");
     },
   );
   it("keeps multiple records stable across repeated reloads", () => {
@@ -179,12 +191,15 @@ describe("source-derived runtime state", () => {
         ],
       },
     ];
-    expect(parse(buildRuntimeContext([], messages)).sessions[0]).toEqual({
+    expect(
+      parse(buildRuntimeContext([], messages.slice(0, 2))).sessions[0],
+    ).toEqual({
       session: "term_parallel_97",
       pid: 4421,
       command: "audit",
-      status: "exited",
+      status: "open",
     });
+    expect(buildRuntimeContext([], messages)).toBe("");
   });
   it("uses a newer rolling checkpoint ahead of stale UI source", () => {
     const context = buildRuntimeContext([
@@ -197,13 +212,44 @@ describe("source-derived runtime state", () => {
     ]);
     const summary = checkpoint(context);
     expect(
-      parse(
-        buildRuntimeContext(
-          [start()],
-          [{ role: "user", content: (summary.parts[0] as any).text }],
-        ),
-      ).sessions[0].status,
-    ).toBe("killed");
+      buildRuntimeContext(
+        [start()],
+        [{ role: "user", content: (summary.parts[0] as any).text }],
+      ),
+    ).toBe("");
+  });
+  it("omits completed records while keeping an unrelated open session", () => {
+    const context = buildRuntimeContext([
+      start("done"),
+      start("active"),
+      tool(
+        "interact_terminal_session",
+        { session: "done", action: "wait" },
+        { exited: { exitCode: 0 } },
+      ),
+    ]);
+    expect(
+      parse(context).sessions.map((item: { session: string }) => item.session),
+    ).toEqual(["active"]);
+  });
+  it("adds nothing without open sessions and removes an echoed prior block", () => {
+    expect(buildRuntimeContext([])).toBe("");
+    expect(
+      buildRuntimeContext([
+        tool("run_terminal_cmd", {}, { exitCode: 0, output: "done" }),
+      ]),
+    ).toBe("");
+    const old = buildRuntimeContext([start()]);
+    const cleared = buildRuntimeContext([
+      checkpoint(old),
+      tool(
+        "interact_terminal_session",
+        { session: "term_parallel_97", action: "kill" },
+        { exitCode: 0 },
+      ),
+    ]);
+    expect(cleared).toBe("");
+    expect(appendRuntimeContext(`Summary${old}`, cleared)).toBe("Summary");
   });
   it("bounds total tokens and record count without shortening identifiers", () => {
     const source = Array.from({ length: 40 }, (_, i) =>
