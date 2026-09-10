@@ -2477,7 +2477,7 @@ describe("bounded source user quote", () => {
     }
   });
 
-  it("replaces the previous quote when the user changes or edits the request", () => {
+  it("retains earlier context for a new request and replaces same-ID edits", () => {
     const summary = buildSummaryMessage(
       appendUserMessageContext(
         "Old checkpoint",
@@ -2494,8 +2494,15 @@ describe("bounded source user quote", () => {
         messageId: id,
         text: "New request",
         truncated: false,
+        ...(id === "new-request"
+          ? {
+              earlierMessages: [
+                { messageId: "request", text: "Old request", truncated: false },
+              ],
+            }
+          : {}),
       });
-      expect(context).not.toContain("Old request");
+      if (id === "request") expect(context).not.toContain("Old request");
     }
   });
 
@@ -2633,6 +2640,6 @@ describe("bounded source user quote", () => {
           ],
         },
       ]),
-    ).toBe("");
+    ).toContain("Old request");
   });
 });
