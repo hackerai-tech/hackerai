@@ -293,6 +293,65 @@ describe("checkAndSummarizeIfNeeded", () => {
     jest.restoreAllMocks();
   });
 
+  it("persists source runtime records and shares the retained-tail budget", async () => {
+    const source: UIMessage[] = [
+      createMessage("user", "user"),
+      {
+        id: "terminal",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "runtime-call",
+            state: "output-available",
+            input: { command: "audit > /tmp/audit.jsonl" },
+            output: { result: { session: "term_exact_97", pid: 4421 } },
+          } as any,
+        ],
+      },
+    ];
+    mockGenerateText.mockResolvedValue({
+      text: "## Runtime & Execution State\nWrong session invented_123",
+      finishReason: "stop",
+    });
+    const durable = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      sourceUiMessages: source,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "runtime-preservation",
+    });
+    expect(durable.summaryText).toContain('"session":"term_exact_97"');
+    expect(durable.summaryText).not.toContain("invented_123");
+    const persisted = mockSaveChatSummary.mock.calls[0][0] as any;
+    expect(persisted.summaryText).toBe(durable.summaryText);
+    const { buildRuntimeContext } = require("../runtime-context");
+    expect(
+      persisted.metadata.retainedTail.retained_tokens +
+        safeCountTokens(buildUserMessageContext(source)) +
+        safeCountTokens(buildRuntimeContext(source)),
+    ).toBeLessThanOrEqual(getRetainedTailBudgetTokens(THRESHOLD));
+    const inRun = await compactModelMessagesInRun({
+      modelMessages: [{ role: "user", content: "History" }],
+      sourceUiMessages: source,
+      transcriptModelMessages: [],
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: null,
+      maxTokens: 128_000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+    });
+    expect(inRun?.summaryText).toContain('"session":"term_exact_97"');
+    expect(inRun?.runtimeContextTokens).toBe(
+      safeCountTokens(buildRuntimeContext(source)),
+    );
+  });
+
   it("should cap reserved summarization headroom at 20k tokens", () => {
     expect(getSummarizationThresholdTokens(128_000)).toBe(115_200);
     expect(getSummarizationThresholdTokens(400_000)).toBe(

@@ -7,7 +7,7 @@ export const SUMMARIZATION_RESERVED_MAX_TOKENS = 20_000;
 export const SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE = 0.1;
 export const DEV_SUMMARIZATION_THRESHOLD_TOKENS_ENV =
   "NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS";
-export const SUMMARY_PROMPT_VERSION = "2026-09-10.checkpoint-continuity-v4";
+export const SUMMARY_PROMPT_VERSION = "2026-09-10.runtime-records-v5";
 
 const getDevSummarizationThresholdTokens = (
   maxTokens: number,

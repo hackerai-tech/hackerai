@@ -54,6 +54,8 @@ import {
   buildUserMessageContext,
 } from "./user-message-context";
 
+import { buildRuntimeContext, appendRuntimeContext } from "./runtime-context";
+
 export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
 export type EnsureSandbox = () => Promise<AnySandbox>;
@@ -700,6 +702,7 @@ export interface InRunModelCompactionResult {
   summaryText: string;
   summarizationUsage: SummarizationResult["summarizationUsage"];
   userMessageContextTokens: number;
+  runtimeContextTokens?: number;
 }
 
 /**
@@ -794,10 +797,12 @@ export const compactModelMessagesInRun = async ({
     const summaryResult = await summaryPromise;
     const savedPath = transcriptSave.getSettledPath();
     const userMessageContext = buildUserMessageContext(sourceUiMessages);
+    const runtimeContext = buildRuntimeContext(sourceUiMessages, modelMessages);
     let finalSummaryText = appendUserMessageContext(
       summaryResult.text,
       userMessageContext,
     );
+    finalSummaryText = appendRuntimeContext(finalSummaryText, runtimeContext);
     if (savedPath) finalSummaryText += buildTranscriptNotice(savedPath);
 
     console.info(
@@ -824,6 +829,7 @@ export const compactModelMessagesInRun = async ({
       summaryText: finalSummaryText,
       summarizationUsage: summaryResult.usage,
       userMessageContextTokens: safeCountTokens(userMessageContext),
+      runtimeContextTokens: safeCountTokens(runtimeContext),
     };
   } catch (error) {
     if (abortSignal?.aborted) throw error;
@@ -993,10 +999,13 @@ export const checkAndSummarizeIfNeeded = async ({
   const userMessageContext = buildUserMessageContext(
     sourceUiMessages ?? uiMessages,
   );
+  const runtimeContext = buildRuntimeContext(sourceUiMessages ?? uiMessages);
   let tailSelection = selectRetainedTailForSummarization(realMessages, {
     budgetTokens: Math.max(
       0,
-      retainedTailBudget - safeCountTokens(userMessageContext),
+      retainedTailBudget -
+        safeCountTokens(userMessageContext) -
+        safeCountTokens(runtimeContext),
     ),
     fileTokens,
   });
@@ -1089,9 +1098,9 @@ export const checkAndSummarizeIfNeeded = async ({
       usage: summarizationUsage,
       languageModel: summaryLanguageModel,
     } = summaryResult;
-    const checkpointText = appendUserMessageContext(
-      summaryText,
-      userMessageContext,
+    const checkpointText = appendRuntimeContext(
+      appendUserMessageContext(summaryText, userMessageContext),
+      runtimeContext,
     );
     let finalSummaryText = checkpointText;
     if (savedPath) {

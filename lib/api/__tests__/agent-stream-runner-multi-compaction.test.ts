@@ -1640,6 +1640,7 @@ describe("createAgentStream repeated compaction", () => {
         summaryMessage: summary2,
         summaryText: "summary 2",
         userMessageContextTokens: 1_024,
+        runtimeContextTokens: 768,
         summarizationUsage: { inputTokens: 10, outputTokens: 2 },
       });
     mockGetProviderPromptPressure
@@ -1749,7 +1750,7 @@ describe("createAgentStream repeated compaction", () => {
     } = require("@/lib/chat/summarization/constants");
     expect(
       estimateSummaryInputTokens(third.messages.slice(1, -1)),
-    ).toBeLessThanOrEqual(SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS - 1_024);
+    ).toBeLessThanOrEqual(SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS - 1_024 - 768);
     expect(tracker.summarizationCount).toBe(2);
 
     state.lastStepInputTokens = 0;

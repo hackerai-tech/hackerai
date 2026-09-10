@@ -1468,7 +1468,8 @@ export async function createAgentStream(
                 Math.max(
                   0,
                   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS -
-                    (inRunResult.userMessageContextTokens ?? 0),
+                    (inRunResult.userMessageContextTokens ?? 0) -
+                    (inRunResult.runtimeContextTokens ?? 0),
                 ),
               );
               const nextBaseMessages: ModelMessage[] = [
