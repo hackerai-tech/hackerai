@@ -3691,6 +3691,7 @@ export const agentLongTask = task({
             // Mutable stream state — updated in-place by the shared runner and
             // read back here in toUIMessageStream.onFinish.
             const state = initAgentStreamState(finalMessages, initialCtxUsage);
+            state.sourceUiMessages = processedMessages;
             terminalAgentState = state;
 
             const budgetSnapshot = captureBudgetSnapshot({

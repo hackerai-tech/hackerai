@@ -35,7 +35,7 @@ const generate = (model: MockLanguageModelV3, signal?: AbortSignal) =>
     signal,
     undefined,
     1000,
-    { timeout: 30, maxRetries: 0, requireCompleteSummary: true },
+    { timeout: 30, maxRetries: 0 },
   );
 
 describe("startup compaction SDK boundary", () => {

@@ -9,7 +9,7 @@ import {
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
-import { countMessagesTokens } from "@/lib/token-utils";
+import { countMessagesTokens, safeCountTokens } from "@/lib/token-utils";
 import {
   writeSummarizationCleared,
   writeSummarizationStarted,
@@ -49,6 +49,10 @@ import {
   getRetainedTailBudgetTokens,
   selectRetainedTailForSummarization,
 } from "./retained-tail";
+import {
+  appendUserMessageContext,
+  buildUserMessageContext,
+} from "./user-message-context";
 
 export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
@@ -318,6 +322,8 @@ const logContextCompactionFailed = ({
 
 export interface CheckAndSummarizeOptions {
   uiMessages: UIMessage[];
+  /** History before injected notes/reminders; falls back to uiMessages for direct callers. */
+  sourceUiMessages?: UIMessage[];
   subscription: SubscriptionTier;
   languageModel: LanguageModel;
   mode: ChatMode;
@@ -531,7 +537,6 @@ const generateSummaryTextWithRetry = async ({
           ? {
               timeout: STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS,
               maxRetries: 0,
-              requireCompleteSummary: true,
             }
           : undefined,
       );
@@ -583,7 +588,6 @@ const generateSummaryTextWithRetry = async ({
           abortSignal,
           modelMessages,
           summaryInputMaxTokens,
-          bounded ? { requireCompleteSummary: true } : undefined,
         );
       } catch (retryError) {
         markSummarizationAttemptError(retryError, "fallback", retryModelName);
@@ -666,6 +670,8 @@ const startTranscriptSave = ({
 
 export interface CompactModelMessagesInRunOptions {
   modelMessages: ModelMessage[];
+  /** UI history excludes synthetic SDK continuation/approval messages. */
+  sourceUiMessages?: UIMessage[];
   /** Raw cumulative SDK history used only for the transcript sidecar. */
   transcriptModelMessages: ModelMessage[];
   subscription: SubscriptionTier;
@@ -693,6 +699,7 @@ export interface InRunModelCompactionResult {
   summaryMessage: UIMessage;
   summaryText: string;
   summarizationUsage: SummarizationResult["summarizationUsage"];
+  userMessageContextTokens: number;
 }
 
 /**
@@ -704,6 +711,7 @@ export interface InRunModelCompactionResult {
  */
 export const compactModelMessagesInRun = async ({
   modelMessages,
+  sourceUiMessages = [],
   transcriptModelMessages,
   subscription,
   mode,
@@ -785,7 +793,11 @@ export const compactModelMessagesInRun = async ({
 
     const summaryResult = await summaryPromise;
     const savedPath = transcriptSave.getSettledPath();
-    let finalSummaryText = summaryResult.text;
+    const userMessageContext = buildUserMessageContext(sourceUiMessages);
+    let finalSummaryText = appendUserMessageContext(
+      summaryResult.text,
+      userMessageContext,
+    );
     if (savedPath) finalSummaryText += buildTranscriptNotice(savedPath);
 
     console.info(
@@ -811,6 +823,7 @@ export const compactModelMessagesInRun = async ({
       summaryMessage: buildSummaryMessage(finalSummaryText, todos),
       summaryText: finalSummaryText,
       summarizationUsage: summaryResult.usage,
+      userMessageContextTokens: safeCountTokens(userMessageContext),
     };
   } catch (error) {
     if (abortSignal?.aborted) throw error;
@@ -909,6 +922,7 @@ const saveTranscriptToSandbox = async (
 
 export const checkAndSummarizeIfNeeded = async ({
   uiMessages,
+  sourceUiMessages,
   subscription,
   mode,
   writer,
@@ -975,8 +989,14 @@ export const checkAndSummarizeIfNeeded = async ({
   const retainedTailBudget = getRetainedTailBudgetTokens(
     summarizationThreshold,
   );
+  const userMessageContext = buildUserMessageContext(
+    sourceUiMessages ?? uiMessages,
+  );
   let tailSelection = selectRetainedTailForSummarization(realMessages, {
-    budgetTokens: retainedTailBudget,
+    budgetTokens: Math.max(
+      0,
+      retainedTailBudget - safeCountTokens(userMessageContext),
+    ),
     fileTokens,
   });
 
@@ -1068,7 +1088,11 @@ export const checkAndSummarizeIfNeeded = async ({
       usage: summarizationUsage,
       languageModel: summaryLanguageModel,
     } = summaryResult;
-    let finalSummaryText = summaryText;
+    const checkpointText = appendUserMessageContext(
+      summaryText,
+      userMessageContext,
+    );
+    let finalSummaryText = checkpointText;
     if (savedPath) {
       finalSummaryText += buildTranscriptNotice(savedPath);
     }
@@ -1090,7 +1114,7 @@ export const checkAndSummarizeIfNeeded = async ({
         if (!path) return;
         await persistSummaryTranscript(
           chatId,
-          `${summaryText}${buildTranscriptNotice(path)}`,
+          `${checkpointText}${buildTranscriptNotice(path)}`,
           cutoffMessageId,
           path,
         );

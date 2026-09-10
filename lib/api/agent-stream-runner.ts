@@ -89,6 +89,7 @@ import {
   getSummarizationThresholdTokens,
   MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
+  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
@@ -323,6 +324,8 @@ export const isRollingCompactionEffective = (
 export type AgentStreamState = {
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
+  /** UI history before injected reminders/notes, kept for source-derived checkpoints. */
+  sourceUiMessages?: UIMessage[];
   /** Raw UI messages captured before in-memory pruning, for transcript sidecars. */
   transcriptSourceMessages?: UIMessage[];
   /** Context-window usage data; updated after summarization and each step. */
@@ -1277,6 +1280,7 @@ export async function createAgentStream(
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
               messages: state.finalMessages,
+              sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
               subscription: ctx.subscription,
               languageModel: effectiveModelInfo.languageModel,
@@ -1416,6 +1420,7 @@ export async function createAgentStream(
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
               modelMessages: rollingModelMessages,
+              sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
               subscription: ctx.subscription,
               languageModel: effectiveModelInfo.languageModel,
@@ -1458,8 +1463,14 @@ export async function createAgentStream(
               const continuationPrompt = loopRecovery.nudge
                 ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
                 : POST_SUMMARIZATION_CONTINUATION_PROMPT;
-              const retainedModelTail =
-                getRecentCompleteModelTail(rollingModelMessages);
+              const retainedModelTail = getRecentCompleteModelTail(
+                rollingModelMessages,
+                Math.max(
+                  0,
+                  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS -
+                    (inRunResult.userMessageContextTokens ?? 0),
+                ),
+              );
               const nextBaseMessages: ModelMessage[] = [
                 ...compactedModelMessages,
                 ...retainedModelTail,

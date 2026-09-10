@@ -1639,6 +1639,7 @@ describe("createAgentStream repeated compaction", () => {
       .mockResolvedValue({
         summaryMessage: summary2,
         summaryText: "summary 2",
+        userMessageContextTokens: 1_024,
         summarizationUsage: { inputTokens: 10, outputTokens: 2 },
       });
     mockGetProviderPromptPressure
@@ -1674,6 +1675,7 @@ describe("createAgentStream repeated compaction", () => {
       usedTokens: 120_000,
       maxTokens: 128_000,
     });
+    state.sourceUiMessages = [original];
     const stream = (await createAgentStream(
       "test-model",
       createTestStreamContext({
@@ -1710,6 +1712,7 @@ describe("createAgentStream repeated compaction", () => {
           expect.objectContaining({ content: "summary 1" }),
           step1,
         ]),
+        sourceUiMessages: [original],
         transcriptModelMessages: [...initialRaw, step1],
         compactionIndex: 2,
       }),
@@ -1738,6 +1741,15 @@ describe("createAgentStream repeated compaction", () => {
       messages: [...initialRaw, step1, step2],
     });
     expect(third.messages[0].content).toBe("summary 2");
+    const {
+      estimateSummaryInputTokens,
+    } = require("@/lib/chat/summarization/helpers");
+    const {
+      SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+    } = require("@/lib/chat/summarization/constants");
+    expect(
+      estimateSummaryInputTokens(third.messages.slice(1, -1)),
+    ).toBeLessThanOrEqual(SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS - 1_024);
     expect(tracker.summarizationCount).toBe(2);
 
     state.lastStepInputTokens = 0;

@@ -1108,6 +1108,8 @@ export const createChatHandler = () => {
                 : { usedTokens: 0, maxTokens: 0 },
             );
 
+            state.sourceUiMessages = processedMessages;
+
             // Mid-stream budget enforcement. Paid users use their subscription
             // bucket; free users use an internal monthly cost cap.
             const budgetSnapshot = captureBudgetSnapshot({

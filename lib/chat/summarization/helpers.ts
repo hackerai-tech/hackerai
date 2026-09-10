@@ -733,7 +733,6 @@ export const generateSummaryText = async (
   generationOptions?: {
     timeout?: number;
     maxRetries?: number;
-    requireCompleteSummary?: boolean;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
@@ -795,10 +794,7 @@ export const generateSummaryText = async (
     ],
   });
 
-  if (
-    generationOptions?.requireCompleteSummary &&
-    (!result.text.trim() || result.finishReason !== "stop")
-  ) {
+  if (!result.text.trim() || result.finishReason !== "stop") {
     throw new InvalidCompactionSummaryError();
   }
 
