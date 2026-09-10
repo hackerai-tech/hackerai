@@ -125,12 +125,21 @@ describe("ChatInputToolbar", () => {
     mockAuthUser(null);
   });
 
-  it("hides the mode and model selectors for logged-out users", () => {
-    render(<ChatInputToolbar {...defaultProps} />);
+  it.each(["ask", "agent"] as const)(
+    "hides all selectors for logged-out users in %s mode",
+    (chatMode) => {
+      render(<ChatInputToolbar {...defaultProps} chatMode={chatMode} />);
 
-    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("model-selector")).not.toBeInTheDocument();
-  });
+      expect(
+        screen.queryByTestId("chat-mode-selector"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("model-selector")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-permission-selector"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
+    },
+  );
 
   it("shows the model selector for logged-in users", () => {
     mockAuthUser({ id: "user_123" });
