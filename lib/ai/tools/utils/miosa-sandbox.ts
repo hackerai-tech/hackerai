@@ -7,6 +7,10 @@ import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { createMiosaFiles } from "./miosa-files";
 import { waitForMiosaReadiness } from "./miosa-readiness";
 import {
+  createMiosaAcquisitionDiagnostics,
+  type MiosaAcquisitionDiagnostic,
+} from "./miosa-acquisition-diagnostics";
+import {
   MIOSA_NATIVE_TEMPLATE_ID,
   miosaRuntimeCommand,
   miosaRuntimeForTemplate,
@@ -350,6 +354,7 @@ export async function ensureMiosaSandboxConnection(
   options: {
     initialSandbox?: MiosaSandbox | null;
     beforeCreate?: () => Promise<void>;
+    onDiagnostic?: (diagnostic: MiosaAcquisitionDiagnostic) => void;
   } = {},
 ): Promise<{ sandbox: MiosaSandbox }> {
   if (options.initialSandbox) {
@@ -360,48 +365,70 @@ export async function ensureMiosaSandboxConnection(
     process.env.MIOSA_TEMPLATE_ID?.trim() || MIOSA_NATIVE_TEMPLATE_ID;
 
   const startedAt = performance.now();
-  const client = await createMiosaClient();
+  const workspaceName = sandboxNameForUser(context.userID);
+  const step = createMiosaAcquisitionDiagnostics({
+    templateId,
+    workspaceName,
+    onDiagnostic: options.onDiagnostic,
+  });
+  const client = await step("client_init", createMiosaClient);
   const externalUserId = externalUserIdForUser(context.userID);
   if (options.beforeCreate) {
     const { NotFoundError } = await import("@miosa/sdk");
     try {
       // Existing assignments retain their files, even after a plan upgrade or
       // an earlier E2B fallback. The pilot gate restricts new enrollment only.
-      await client.sandboxes.getByName(sandboxNameForUser(context.userID));
+      await step("lookup_existing", () =>
+        client.sandboxes.getByName(workspaceName),
+      );
     } catch (error) {
       if (!(error instanceof NotFoundError)) throw error;
-      await options.beforeCreate();
+      await step("enrollment", options.beforeCreate);
     }
   }
-  const sdkSandbox = await client.sandboxes.getOrCreate({
-    name: sandboxNameForUser(context.userID),
-    templateId,
-    cpuCount: MIOSA_CPU_COUNT,
-    memoryMb: MIOSA_MEMORY_MB,
-    diskSizeMb: MIOSA_DISK_SIZE_MB,
-    persistent: true,
-    timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
-    idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
-    snapshotExpirationDays: MIOSA_SNAPSHOT_EXPIRATION_DAYS,
-    keepLastSnapshots: 1,
-    externalWorkspaceId: externalUserId,
-    externalUserId,
-    waitUntilReady: false,
-    metadata: {
-      provider: "hackerai",
-      sandboxVersion: MIOSA_SANDBOX_VERSION,
-    },
-  });
+  const sdkSandbox = await step("get_or_create", () =>
+    client.sandboxes.getOrCreate({
+      name: workspaceName,
+      templateId,
+      cpuCount: MIOSA_CPU_COUNT,
+      memoryMb: MIOSA_MEMORY_MB,
+      diskSizeMb: MIOSA_DISK_SIZE_MB,
+      persistent: true,
+      timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
+      idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
+      snapshotExpirationDays: MIOSA_SNAPSHOT_EXPIRATION_DAYS,
+      keepLastSnapshots: 1,
+      externalWorkspaceId: externalUserId,
+      externalUserId,
+      waitUntilReady: false,
+      metadata: {
+        provider: "hackerai",
+        sandboxVersion: MIOSA_SANDBOX_VERSION,
+      },
+    }),
+  );
   const runtime = miosaRuntimeForTemplate(sdkSandbox.data.template_id);
-  await waitForMiosaReadiness(sdkSandbox, { fastStart: runtime === "native" });
-  if (sdkSandbox.state !== "running") {
-    throw new Error(
-      `MIOSA readiness returned non-running state: ${sdkSandbox.state}`,
-    );
-  }
+  await step(
+    "readiness",
+    async () => {
+      await waitForMiosaReadiness(sdkSandbox, {
+        fastStart: runtime === "native",
+      });
+      if (sdkSandbox.state !== "running") {
+        throw new Error(
+          `MIOSA readiness returned non-running state: ${sdkSandbox.state}`,
+        );
+      }
+    },
+    runtime,
+  );
   const runtimeImage =
     process.env.MIOSA_RUNTIME_IMAGE?.trim() || DEFAULT_MIOSA_RUNTIME_IMAGE;
-  await initializeMiosaRuntime(sdkSandbox, runtimeImage, runtime);
+  await step(
+    "initialize_runtime",
+    () => initializeMiosaRuntime(sdkSandbox, runtimeImage, runtime),
+    runtime,
+  );
   const sandbox = new MiosaSandbox(sdkSandbox);
   context.setSandbox(sandbox);
   context.onBoot?.({

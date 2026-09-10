@@ -24,6 +24,7 @@ jest.mock("@/lib/posthog/server", () => ({
 
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
 import { MiosaEnrollmentError } from "../miosa-enrollment";
+import { createMiosaAcquisitionDiagnostics } from "../miosa-acquisition-diagnostics";
 
 describe("cloud sandbox provider routing", () => {
   const setSandbox = jest.fn();
@@ -85,7 +86,7 @@ describe("cloud sandbox provider routing", () => {
         provider: "miosa",
         sandbox_type: "cloud",
         sandbox_provider: "miosa",
-        cloud_sandbox_acquisition_failed_event_version: 4,
+        cloud_sandbox_acquisition_failed_event_version: 5,
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
@@ -122,6 +123,77 @@ describe("cloud sandbox provider routing", () => {
       expect.objectContaining({ variant: "e2b" }),
     );
   });
+
+  it.each(["parent", "subagent"] as const)(
+    "correlates safe %s step failures in Trigger and PostHog while retaining E2B fallback",
+    async (runKind) => {
+      const consoleInfo = jest
+        .spyOn(console, "info")
+        .mockImplementation(() => {});
+      const error = Object.assign(new Error("msk_private raw response body"), {
+        name: "ValidationError",
+        status: 422,
+        code: "INVALID_ARGUMENT",
+        requestId: "request-123",
+        retryable: false,
+      });
+      mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+        const step = createMiosaAcquisitionDiagnostics({
+          templateId: "hackerai-tools",
+          workspaceName: "private-user",
+          onDiagnostic: options.onDiagnostic,
+        });
+        await step("get_or_create", async () => {
+          throw error;
+        });
+      });
+      mockEnsureE2B.mockResolvedValueOnce({ sandbox: { sandboxId: "e2b-1" } });
+      try {
+        await expect(
+          ensureCloudSandboxConnection({
+            userId: "user-1",
+            setSandbox,
+            context: {
+              provider: "miosa",
+              chatId: "chat-1",
+              triggerRunId: "run-1",
+              runKind,
+            },
+          }),
+        ).resolves.toMatchObject({ provider: "e2b" });
+        const expected = expect.objectContaining({
+          stage: "get_or_create",
+          outcome: "failure",
+          chat_id: "chat-1",
+          trigger_run_id: "run-1",
+          agent_run_kind: runKind,
+          error_http_status: 422,
+          error_code: "INVALID_ARGUMENT",
+          error_request_id: "request-123",
+        });
+        expect(consoleInfo).toHaveBeenCalledWith(
+          "MIOSA sandbox acquisition step",
+          expected,
+        );
+        expect(mockPostHogEvent).toHaveBeenCalledWith(
+          "miosa_sandbox_acquisition_step",
+          expected,
+        );
+        expect(mockPostHogEvent).toHaveBeenCalledWith(
+          "cloud_sandbox_acquisition_failed",
+          expect.objectContaining({
+            error_code: "INVALID_ARGUMENT",
+            error_request_id: "request-123",
+          }),
+        );
+        expect(
+          JSON.stringify([consoleInfo.mock.calls, mockPostHogEvent.mock.calls]),
+        ).not.toMatch(/msk_private|raw response body|private-user/);
+      } finally {
+        consoleInfo.mockRestore();
+      }
+    },
+  );
 
   it.each([
     "not_pro",

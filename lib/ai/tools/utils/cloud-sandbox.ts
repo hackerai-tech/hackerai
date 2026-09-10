@@ -16,6 +16,7 @@ import {
   assertFreshMiosaEnrollment,
   MiosaEnrollmentError,
 } from "./miosa-enrollment";
+import { miosaErrorDiagnostics } from "./miosa-acquisition-diagnostics";
 
 export type CloudSandboxAcquisitionContext = {
   provider?: CloudSandboxProvider;
@@ -72,6 +73,28 @@ const ensureMiosaCloudSandboxConnection = (options: {
           userId: options.userId,
           subscription: options.context?.subscription,
         }),
+      onDiagnostic: (diagnostic) => {
+        const fields = {
+          ...diagnostic,
+          chat_id: options.context?.chatId,
+          trigger_run_id: options.context?.triggerRunId,
+          agent_run_kind: options.context?.runKind ?? "parent",
+          trigger_region: options.context?.triggerRegion,
+          sandbox_provider: "miosa",
+          sandbox_type: "cloud",
+          miosa_sandbox_acquisition_step_event_version: 1,
+        };
+        // Explicit console output keeps the evidence in Trigger's run trace
+        // even when PostHog's log drain is enabled or ingestion is delayed.
+        console.info("MIOSA sandbox acquisition step", {
+          ...fields,
+          timestamp: new Date().toISOString(),
+        });
+        phLogger.event("miosa_sandbox_acquisition_step", {
+          ...fields,
+          userId: options.userId,
+        });
+      },
     },
   );
 
@@ -99,7 +122,10 @@ const recordAcquisitionFailure = (options: {
     duration_ms: Date.now() - options.startedAt,
     error_name:
       options.error instanceof Error ? options.error.name : "UnknownError",
-    cloud_sandbox_acquisition_failed_event_version: 4,
+    ...(options.provider === "miosa"
+      ? miosaErrorDiagnostics(options.error)
+      : {}),
+    cloud_sandbox_acquisition_failed_event_version: 5,
   });
 };
 

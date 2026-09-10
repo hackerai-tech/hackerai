@@ -104,6 +104,77 @@ describe("MIOSA sandbox adapter", () => {
     );
   });
 
+  it("records acquisition stages without changing the SDK getOrCreate contract", async () => {
+    const onDiagnostic = jest.fn();
+    mockGetByName.mockRejectedValueOnce(
+      Object.assign(new NotFoundError("missing"), { name: "NotFoundError" }),
+    );
+    mockGetOrCreate.mockResolvedValueOnce(createSdkSandbox());
+    await ensureMiosaSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { beforeCreate: jest.fn(async () => {}), onDiagnostic },
+    );
+    expect(onDiagnostic.mock.calls.map(([d]) => [d.stage, d.outcome])).toEqual([
+      ["client_init", "success"],
+      ["lookup_existing", "not_found"],
+      ["enrollment", "success"],
+      ["get_or_create", "success"],
+      ["readiness", "success"],
+      ["initialize_runtime", "success"],
+    ]);
+    expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "lookup_existing",
+    "get_or_create",
+    "readiness",
+    "initialize_runtime",
+  ])(
+    "identifies a %s failure without publishing a sandbox or leaking its error body",
+    async (stage) => {
+      const sdk = createSdkSandbox();
+      const error = Object.assign(
+        new Error("private command output msk_private"),
+        {
+          name: "ValidationError",
+          code: "INVALID_ARGUMENT",
+          status: 422,
+          requestId: "req-123",
+        },
+      );
+      mockGetByName.mockResolvedValueOnce(sdk);
+      mockGetOrCreate.mockResolvedValueOnce(sdk);
+      if (stage === "lookup_existing") {
+        mockGetByName.mockReset().mockRejectedValueOnce(error);
+      } else if (stage === "get_or_create") {
+        mockGetOrCreate.mockReset().mockRejectedValueOnce(error);
+      } else if (stage === "readiness")
+        sdk.readiness.mockRejectedValueOnce(error);
+      else
+        sdk.exec.stream.mockImplementationOnce(async function* () {
+          throw error;
+        });
+      const onDiagnostic = jest.fn();
+      const setSandbox = jest.fn();
+      await expect(
+        ensureMiosaSandboxConnection(
+          { userID: "user-1", setSandbox },
+          { beforeCreate: jest.fn(), onDiagnostic },
+        ),
+      ).rejects.toBe(error);
+      expect(onDiagnostic.mock.calls.at(-1)?.[0]).toMatchObject({
+        stage,
+        outcome: "failure",
+        error_code: "INVALID_ARGUMENT",
+        error_http_status: 422,
+        error_request_id: "req-123",
+      });
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private");
+    },
+  );
+
   it.each([undefined, "", "   "])(
     "defaults to the native template when the override is %p",
     async (override) => {
