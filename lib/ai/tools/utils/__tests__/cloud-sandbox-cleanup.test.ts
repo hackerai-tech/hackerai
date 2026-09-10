@@ -61,6 +61,14 @@ describe("cloud sandbox cleanup", () => {
       alreadyGone: 0,
     });
     expect(mockKillE2BSandbox).toHaveBeenCalledTimes(2);
+    expect(mockListE2BSandboxes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: {
+          metadata: { userID: "user_123" },
+          state: ["running", "paused"],
+        },
+      }),
+    );
     expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(1, "sandbox-page-1");
     expect(mockKillE2BSandbox).toHaveBeenNthCalledWith(2, "sandbox-page-2");
   });

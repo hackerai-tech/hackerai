@@ -18,6 +18,7 @@ describe("fresh MIOSA enrollment", () => {
   afterAll(() => {
     process.env = originalEnv;
   });
+  afterEach(() => jest.restoreAllMocks());
 
   it.each(["free", "pro-plus", "ultra", "team", undefined] as const)(
     "does not enroll %s into a new workspace",
@@ -119,6 +120,69 @@ describe("fresh MIOSA enrollment", () => {
     });
     await expect(
       assertFreshMiosaEnrollment({ userId: "user-1", subscription: "pro" }),
-    ).rejects.toMatchObject({ reason: "workspace_discovery_unavailable" });
+    ).rejects.toMatchObject({
+      reason: "workspace_discovery_unavailable",
+      discoveryFailure: { kind: "pagination_limit", cluster: "us" },
+    });
+  });
+
+  it.each([
+    ["AuthenticationError", "credentials secret-value", "authentication", 401],
+    ["SandboxError", "403: secret-value", "authentication", 403],
+    ["TimeoutError", "secret-value", "timeout", undefined],
+    ["RateLimitError", "secret-value", "rate_limit", 429],
+    ["SandboxError", "503: secret-value", "http_error", 503],
+    ["TypeError", "secret-value", "request_error", undefined],
+  ])(
+    "safely classifies %s without retaining the response body",
+    async (name, message, kind, httpStatus) => {
+      process.env.E2B_EU_API_KEY = "test-eu";
+      const failure = Object.assign(new Error(message), { name });
+      mockList
+        .mockReturnValueOnce({ nextItems: async () => [], hasNext: false })
+        .mockReturnValueOnce({
+          nextItems: async () => {
+            throw failure;
+          },
+          hasNext: false,
+        });
+      const error = await assertFreshMiosaEnrollment({
+        userId: "user-1",
+        subscription: "pro",
+      }).catch((error) => error);
+      expect(error).toMatchObject({
+        reason: "workspace_discovery_unavailable",
+        discoveryFailure: {
+          cluster: "eu",
+          kind,
+          elapsedMs: expect.any(Number),
+        },
+      });
+      expect(error.discoveryFailure.httpStatus).toBe(httpStatus);
+      expect(JSON.stringify(error)).not.toContain("secret-value");
+      expect(error.cause).toBeUndefined();
+    },
+  );
+
+  it("recomputes the remaining deadline for each page", async () => {
+    let now = 0;
+    jest.spyOn(Date, "now").mockImplementation(() => now);
+    const nextItems = jest.fn(async () => {
+      now += 2000;
+      return [];
+    });
+    mockList.mockReturnValue({
+      nextItems,
+      get hasNext() {
+        return now < 4000;
+      },
+    });
+    process.env.E2B_EU_API_KEY = "test-eu";
+    await expect(
+      assertFreshMiosaEnrollment({ userId: "user-1", subscription: "pro" }),
+    ).rejects.toMatchObject({
+      discoveryFailure: { kind: "deadline", cluster: "eu" },
+    });
+    expect(nextItems).toHaveBeenLastCalledWith({ requestTimeoutMs: 1000 });
   });
 });

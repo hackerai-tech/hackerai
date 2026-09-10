@@ -1,4 +1,5 @@
 import type { AnySandbox, SandboxBootInfo } from "@/types";
+import { Sandbox } from "@e2b/code-interpreter";
 import type { SubscriptionTier } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import type { CloudSandboxSelectionReason } from "./cloud-sandbox-provider";
@@ -151,9 +152,13 @@ export async function ensureCloudSandboxConnection(options: {
           trigger_run_id: options.context?.triggerRunId,
           subscription_tier: options.context?.subscription,
           reason: error.reason,
+          discovery_cluster: error.discoveryFailure?.cluster,
+          discovery_failure_kind: error.discoveryFailure?.kind,
+          discovery_http_status: error.discoveryFailure?.httpStatus,
+          discovery_elapsed_ms: error.discoveryFailure?.elapsedMs,
           sandbox_provider: "e2b",
           sandbox_type: "cloud",
-          miosa_cloud_sandbox_enrollment_denied_event_version: 1,
+          miosa_cloud_sandbox_enrollment_denied_event_version: 2,
         });
       } else {
         recordRolloutExposure(options);
@@ -219,10 +224,10 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
 
   for (const cluster of getConfiguredE2BClustersForCleanup()) {
     try {
-      const { Sandbox } = await import("@e2b/code-interpreter");
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
-        query: { metadata: { userID: userId } },
+        // Never rely on a cluster's default list filter during data deletion.
+        query: { metadata: { userID: userId }, state: ["running", "paused"] },
       });
       const sandboxes = [];
       do {

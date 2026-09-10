@@ -3,6 +3,10 @@ const mockEnsureMiosa = jest.fn();
 const mockTerminateMiosa = jest.fn();
 const mockPostHogEvent = jest.fn();
 
+jest.mock("@e2b/code-interpreter", () => ({
+  Sandbox: { list: jest.fn(), kill: jest.fn() },
+}));
+
 jest.mock("../sandbox", () => ({
   ensureSandboxConnection: (...args: unknown[]) => mockEnsureE2B(...args),
 }));
@@ -149,6 +153,34 @@ describe("cloud sandbox provider routing", () => {
       );
     },
   );
+
+  it("records safe discovery diagnostics separately from Miosa acquisition failures", async () => {
+    mockEnsureMiosa.mockRejectedValueOnce(
+      new MiosaEnrollmentError("workspace_discovery_unavailable", {
+        cluster: "eu",
+        kind: "authentication",
+        httpStatus: 403,
+        elapsedMs: 123,
+      }),
+    );
+    mockEnsureE2B.mockResolvedValue({ sandbox: { sandboxId: "e2b-1" } });
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { provider: "miosa" },
+    });
+    expect(mockPostHogEvent).toHaveBeenCalledTimes(1);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "miosa_cloud_sandbox_enrollment_denied",
+      expect.objectContaining({
+        discovery_cluster: "eu",
+        discovery_failure_kind: "authentication",
+        discovery_http_status: 403,
+        discovery_elapsed_ms: 123,
+        miosa_cloud_sandbox_enrollment_denied_event_version: 2,
+      }),
+    );
+  });
 
   it("preserves an already connected E2B workspace even when treatment is selected", async () => {
     const sandbox = { sandboxId: "e2b-1" };
