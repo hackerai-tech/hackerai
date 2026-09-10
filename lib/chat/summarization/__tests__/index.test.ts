@@ -64,8 +64,21 @@ const {
   estimateSummaryInputTokens,
   getRecentCompleteModelTail,
 } = require("../helpers") as typeof import("../helpers");
-const { AGENT_SUMMARIZATION_PROMPT } =
+const { AGENT_SUMMARIZATION_PROMPT, AGENT_RESUME_PREAMBLE } =
   require("../prompts") as typeof import("../prompts");
+
+const {
+  buildUserMessageContext,
+  appendUserMessageContext,
+  USER_MESSAGE_CONTEXT_MAX_TOKENS,
+} =
+  require("../user-message-context") as typeof import("../user-message-context");
+const {
+  getRetainedTailBudgetTokens,
+  projectMessagesToTokenBudget,
+  projectRetainedTailFromMessages,
+  selectRetainedTailForSummarization,
+} = require("../retained-tail") as typeof import("../retained-tail");
 
 const THRESHOLD = Math.floor(getSummarizationThresholdTokens(MAX_TOKENS_PAID));
 
@@ -280,6 +293,65 @@ describe("checkAndSummarizeIfNeeded", () => {
     jest.restoreAllMocks();
   });
 
+  it("persists source runtime records and shares the retained-tail budget", async () => {
+    const source: UIMessage[] = [
+      createMessage("user", "user"),
+      {
+        id: "terminal",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "runtime-call",
+            state: "output-available",
+            input: { command: "audit > /tmp/audit.jsonl" },
+            output: { result: { session: "term_exact_97", pid: 4421 } },
+          } as any,
+        ],
+      },
+    ];
+    mockGenerateText.mockResolvedValue({
+      text: "## Runtime & Execution State\nWrong session invented_123",
+      finishReason: "stop",
+    });
+    const durable = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      sourceUiMessages: source,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "runtime-preservation",
+    });
+    expect(durable.summaryText).toContain('"session":"term_exact_97"');
+    expect(durable.summaryText).not.toContain("invented_123");
+    const persisted = mockSaveChatSummary.mock.calls[0][0] as any;
+    expect(persisted.summaryText).toBe(durable.summaryText);
+    const { buildRuntimeContext } = require("../runtime-context");
+    expect(
+      persisted.metadata.retainedTail.retained_tokens +
+        safeCountTokens(buildUserMessageContext(source)) +
+        safeCountTokens(buildRuntimeContext(source)),
+    ).toBeLessThanOrEqual(getRetainedTailBudgetTokens(THRESHOLD));
+    const inRun = await compactModelMessagesInRun({
+      modelMessages: [{ role: "user", content: "History" }],
+      sourceUiMessages: source,
+      transcriptModelMessages: [],
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: null,
+      maxTokens: 128_000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+    });
+    expect(inRun?.summaryText).toContain('"session":"term_exact_97"');
+    expect(inRun?.runtimeContextTokens).toBe(
+      safeCountTokens(buildRuntimeContext(source)),
+    );
+  });
+
   it("should cap reserved summarization headroom at 20k tokens", () => {
     expect(getSummarizationThresholdTokens(128_000)).toBe(115_200);
     expect(getSummarizationThresholdTokens(400_000)).toBe(
@@ -287,8 +359,163 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
   });
 
+  describe.each(["ask", "agent"] as const)("%s summary integrity", (mode) => {
+    it.each([
+      { text: "", finishReason: "stop" },
+      { text: "   \n", finishReason: "stop" },
+      ...[
+        "length",
+        "content-filter",
+        "tool-calls",
+        "error",
+        "other",
+        undefined,
+      ].map((finishReason) => ({
+        text: "Incomplete checkpoint",
+        finishReason,
+      })),
+    ])("retains original history for invalid output: %j", async (output) => {
+      mockGenerateText.mockResolvedValue(output);
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: fourMessagesAboveThreshold,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode,
+        writer: mockWriter,
+        chatId: "invalid-summary",
+      });
+      expect(result.summarizationAttempted).toBe(true);
+      expect(result.needsSummarization).toBe(false);
+      expect(result.summarizedMessages).toBe(fourMessagesAboveThreshold);
+      expect(result.summaryText).toBeNull();
+      expect(mockSaveChatSummary).not.toHaveBeenCalled();
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("keeps an exact user directive when the retained tail consists only of assistant work", async () => {
+    const directive =
+      "Only inspect staging.example.test; leave production alone. Report exact ID ABC-123.";
+    const source: UIMessage[] = [
+      {
+        id: "request",
+        role: "user",
+        parts: [{ type: "text", text: directive }],
+      },
+      createMessageWithTokens("assistant-work", "assistant", THRESHOLD + 1000),
+    ];
+    mockGenerateText.mockResolvedValue({
+      text: "The investigation continues.",
+      finishReason: "stop",
+    });
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: source,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "quoted-request",
+    });
+    expect(result.needsSummarization).toBe(true);
+    expect(
+      result.summarizedMessages
+        .slice(1)
+        .every((message) => message.role === "assistant"),
+    ).toBe(true);
+    expect(result.summaryText).toContain(directive);
+    const persisted = mockSaveChatSummary.mock.calls[0][0] as any;
+    expect(persisted.summaryText).toBe(result.summaryText);
+    expect(
+      persisted.metadata.retainedTail.retained_tokens +
+        safeCountTokens(buildUserMessageContext(source)),
+    ).toBeLessThanOrEqual(getRetainedTailBudgetTokens(THRESHOLD));
+    expect(
+      JSON.stringify((console.info as jest.Mock).mock.calls),
+    ).not.toContain(directive);
+  });
+
+  it("uses source UI history instead of injected reminders or synthetic continuation messages", async () => {
+    const source = [createMessage("real-user", "user")];
+    mockGenerateText.mockResolvedValue({
+      text: "Runtime checkpoint",
+      finishReason: "stop",
+    });
+    const result = await compactModelMessagesInRun({
+      modelMessages: [{ role: "user", content: "SYNTHETIC CONTINUATION" }],
+      sourceUiMessages: source,
+      transcriptModelMessages: [],
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "runtime-quote",
+      maxTokens: 128_000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+    });
+    expect(result?.summaryText).toContain("Message real-user");
+    expect(result?.summaryText).not.toContain("SYNTHETIC CONTINUATION");
+    expect(result?.userMessageContextTokens).toBe(
+      safeCountTokens(buildUserMessageContext(source)),
+    );
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+
+    const durable = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      sourceUiMessages: source,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "durable-source-quote",
+    });
+    expect(durable.summaryText).toContain("Message real-user");
+    expect(durable.summaryText).not.toContain('"messageId":"msg-3"');
+    // Desktop restaging may supply prepared model inputs without the persisted summary.
+    const restoredSource = [
+      buildSummaryMessage(durable.summaryText!, []),
+      createMessage("work", "assistant"),
+    ];
+    const restaged = await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      sourceUiMessages: restoredSource,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: "desktop-restaged-quote",
+    });
+    expect(restaged.summaryText).toContain("Message real-user");
+    expect(restaged.summaryText).not.toContain('"messageId":"msg-3"');
+  });
+
+  it.each(["length", "content-filter", "stop"])(
+    "rejects invalid in-run output (%s) without replacing live context",
+    async (finishReason) => {
+      mockGenerateText.mockResolvedValue({
+        text: finishReason === "stop" ? "" : "Partial",
+        finishReason,
+      });
+      const result = await compactModelMessagesInRun({
+        modelMessages: [{ role: "user", content: "Keep current state" }],
+        transcriptModelMessages: [],
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
+        chatId: "runtime-invalid",
+        maxTokens: 128_000,
+        compactionIndex: 2,
+        hasExistingSummary: true,
+      });
+      expect(result).toBeNull();
+      expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    },
+  );
+
   it("compacts live model history without persisting an in-flight cutoff", async () => {
     mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
       text: "Runtime summary",
       usage: { inputTokens: 120, outputTokens: 20 },
     });
@@ -457,7 +684,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should summarize below-token prompts when provider pressure is high", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Pressure summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Pressure summary",
+    });
 
     const result = await checkAndSummarizeIfNeeded({
       uiMessages: fourMessages,
@@ -478,7 +708,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.summarizationAttempted).toBe(true);
     expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toBe("Pressure summary");
+    expect(result.summaryText).toContain("Pressure summary");
     expect(mockSaveChatSummary).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: "chat-pressure",
@@ -491,7 +721,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("logs compact compaction diagnostics without file contents", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Pressure summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Pressure summary",
+    });
 
     await checkAndSummarizeIfNeeded({
       uiMessages: [
@@ -583,7 +816,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should summarize and return correct structure when threshold exceeded", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Test summary content" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Test summary content",
+    });
 
     const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -602,14 +838,14 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toBe("Test summary content");
+    expect(result.summaryText).toContain("Test summary content");
     expect(result.cutoffMessageId).toBe("msg-3");
 
     // summary message + projected retained tail
     expect(result.summarizedMessages).toHaveLength(2);
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
-      text: "<context_summary>\nTest summary content\n</context_summary>",
+      text: `<context_summary>\n${result.summaryText}\n</context_summary>`,
     });
     expect(result.summarizedMessages[1].id).toBe("msg-4");
 
@@ -621,7 +857,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should not retain a placeholder for a tail-only oversized tool part", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Oversized tool summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Oversized tool summary",
+    });
 
     const hugeOutput = Array.from(
       { length: 20_000 },
@@ -696,7 +935,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should use agent prompt when mode is agent", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Agent summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Agent summary",
+    });
 
     const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -731,7 +973,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should compact huge tool outputs before sending modelMessages to the summarizer", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
 
     const rawToolOutput = Array.from(
       { length: 12_000 },
@@ -787,7 +1032,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should strip media-ish payloads from summarization modelMessages", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
 
     const dataUri = `data:image/png;base64,${"a".repeat(10_000)}`;
     const rawSnapshot = `dom-node-${"b".repeat(10_000)}`;
@@ -899,7 +1147,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should persist summary when chatId is provided", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
 
     await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -920,7 +1171,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: "chat-123",
-        summaryText: "Summary",
+        summaryText: expect.stringContaining("Summary"),
         summaryUpToMessageId: "msg-3",
         metadata: expect.objectContaining({
           reason: "token_threshold",
@@ -1006,7 +1257,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       ]);
       expect(mockSaveChatSummary).toHaveBeenCalledWith(
         expect.objectContaining({
-          summaryText: "Complete recovered summary",
+          summaryText: expect.stringContaining("Complete recovered summary"),
           metadata: expect.objectContaining({
             model: "model-deepseek-v4-flash-0731",
           }),
@@ -1039,7 +1290,9 @@ describe("checkAndSummarizeIfNeeded", () => {
       await start();
       expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
       expect(mockSaveChatSummary).toHaveBeenCalledWith(
-        expect.objectContaining({ summaryText: "Complete summary" }),
+        expect.objectContaining({
+          summaryText: expect.stringContaining("Complete summary"),
+        }),
       );
     });
 
@@ -1078,7 +1331,10 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     it("keeps control requests unchanged", async () => {
       mockStartupVariant.mockResolvedValue(undefined);
-      mockGenerateText.mockResolvedValue({ text: "Control summary" });
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: "Control summary",
+      });
       await start();
       const primary = mockGenerateText.mock.calls[0][0] as any;
       expect(primary.timeout).toBeUndefined();
@@ -1098,7 +1354,10 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
 
     it("keeps Ask outside the startup pilot", async () => {
-      mockGenerateText.mockResolvedValue({ text: "Ask summary" });
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: "Ask summary",
+      });
       await start({ mode: "ask" });
       expect(mockStartupVariant).not.toHaveBeenCalled();
       expect(
@@ -1108,7 +1367,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("uses GLM 5.3 Flash instead of the selected model for compaction", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
 
     await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -1136,6 +1398,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
   it("does not wait for transcript saving before returning the summary", async () => {
     mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
       text: "Fast summary",
       usage: { inputTokens: 10, outputTokens: 2 },
     });
@@ -1171,7 +1434,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       registerBackgroundWork: (work) => backgroundWork.push(work),
     });
 
-    expect(result.summaryText).toBe("Fast summary");
+    expect(result.summaryText).toContain("Fast summary");
     expect(sandbox.files.write).toHaveBeenCalledTimes(1);
     expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
     expect(backgroundWork).toHaveLength(1);
@@ -1192,13 +1455,19 @@ describe("checkAndSummarizeIfNeeded", () => {
         summaryText: expect.stringContaining("Transcript location:"),
       }),
     );
+    expect(
+      (mockAttachChatSummaryTranscript.mock.calls[0][0] as any).summaryText,
+    ).toContain("<preserved_user_message>");
     expect(phaseDurations.map(([phase]) => phase)).toContain(
       "transcript_saving",
     );
   });
 
   it("should skip database persistence when chatId is absent", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
 
     await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -1265,6 +1534,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockGenerateText
       .mockRejectedValueOnce(malformedJsonError)
       .mockResolvedValueOnce({
+        finishReason: "stop",
         text: "Fallback summary",
         usage: { inputTokens: 10, outputTokens: 3 },
       });
@@ -1300,7 +1570,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toBe("Fallback summary");
+    expect(result.summaryText).toContain("Fallback summary");
     expect(mockGenerateText).toHaveBeenCalledTimes(2);
     expect(mockProviderLanguageModel).toHaveBeenCalledWith(
       "fallback-ask-model",
@@ -1365,6 +1635,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     mockGenerateText
       .mockRejectedValueOnce(retryWrapperError)
       .mockResolvedValueOnce({
+        finishReason: "stop",
         text: "Nested fallback summary",
         usage: { inputTokens: 10, outputTokens: 3 },
       });
@@ -1386,7 +1657,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toBe("Nested fallback summary");
+    expect(result.summaryText).toContain("Nested fallback summary");
     expect(mockGenerateText).toHaveBeenCalledTimes(2);
     expect(mockProviderLanguageModel).toHaveBeenCalledWith(
       "fallback-ask-model",
@@ -1446,7 +1717,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should write summarization completed even when database save fails", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
     mockSaveChatSummary.mockRejectedValue(new Error("DB error"));
 
     const result = await checkAndSummarizeForTest(
@@ -1466,7 +1740,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toBe("Summary");
+    expect(result.summaryText).toContain("Summary");
 
     const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
     const completedWrite = writeCalls.find(
@@ -1478,7 +1752,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should include todo list in summary message when todos exist", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Test summary content" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Test summary content",
+    });
 
     const todos: Todo[] = [
       { id: "1", content: "Run nmap scan on target", status: "in_progress" },
@@ -1605,7 +1882,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should pass abortSignal to generateText", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Summary",
+    });
 
     const abortController = new AbortController();
 
@@ -1633,7 +1913,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should not include todo block in summary when todos are empty", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Test summary content" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Test summary content",
+    });
 
     const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -1661,7 +1944,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should use real message ID as cutoff when input starts with summary message", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Updated summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Updated summary",
+    });
 
     const summaryMsg: UIMessage = {
       id: "synthetic-uuid-not-in-db",
@@ -1743,7 +2029,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should pass existing summary text for incremental summarization", async () => {
-    mockGenerateText.mockResolvedValue({ text: "Merged summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "Merged summary",
+    });
 
     const summaryMsg: UIMessage = {
       id: "synthetic-uuid",
@@ -1809,8 +2098,14 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should produce 2 summaries when threshold is triggered twice", async () => {
-    mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
-    mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
+    mockGenerateText.mockResolvedValueOnce({
+      finishReason: "stop",
+      text: "First summary",
+    });
+    mockGenerateText.mockResolvedValueOnce({
+      finishReason: "stop",
+      text: "Second summary",
+    });
 
     const result1 = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -1905,16 +2200,25 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result2.summarizedMessages).toHaveLength(2);
     expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
-    expect(extractSummaryText(result2.summarizedMessages[0])).toBe(
+    expect(extractSummaryText(result2.summarizedMessages[0])).toContain(
       "Second summary",
     );
     expect(result2.summarizedMessages[1].id).toBe("msg-8");
   });
 
   it("should pass every message up to the last cutoff through generateText at least once", async () => {
-    mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
-    mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
-    mockGenerateText.mockResolvedValueOnce({ text: "Third summary" });
+    mockGenerateText.mockResolvedValueOnce({
+      finishReason: "stop",
+      text: "First summary",
+    });
+    mockGenerateText.mockResolvedValueOnce({
+      finishReason: "stop",
+      text: "Second summary",
+    });
+    mockGenerateText.mockResolvedValueOnce({
+      finishReason: "stop",
+      text: "Third summary",
+    });
 
     // Round 1: msg-1..msg-4
     const round1Messages = [
@@ -2005,7 +2309,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should handle normal first-time summarization unchanged", async () => {
-    mockGenerateText.mockResolvedValue({ text: "First summary" });
+    mockGenerateText.mockResolvedValue({
+      finishReason: "stop",
+      text: "First summary",
+    });
 
     const result = await checkAndSummarizeForTest(
       fourMessagesAboveThreshold,
@@ -2136,5 +2443,203 @@ describe("splitMessages with MESSAGES_TO_KEEP_UNSUMMARIZED = 0", () => {
     const result = splitMessages(messages);
     expect(result.messagesToSummarize).toEqual(messages);
     expect(result.lastMessages).toEqual([]);
+  });
+});
+
+describe("bounded source user quote", () => {
+  const user = (id: string, text: string): UIMessage => ({
+    id,
+    role: "user",
+    parts: [{ type: "text", text }],
+  });
+  const readQuote = (context: string) =>
+    JSON.parse(context.split("\n").at(-2)!);
+
+  it("carries the original quote through repeated compactions without accumulating blocks", () => {
+    const original = user(
+      "original",
+      "Keep ID exact: abcDEF-123. Do not repeat completed work.",
+    );
+    const quote = buildUserMessageContext([original]);
+    let summary = appendUserMessageContext("Checkpoint", quote);
+    for (let i = 0; i < 10; i++) {
+      const history = [
+        buildSummaryMessage(summary, []),
+        createMessage("work", "assistant"),
+      ];
+      const nextQuote = buildUserMessageContext(history);
+      expect(nextQuote).toBe(quote);
+      summary = appendUserMessageContext(
+        `Rewritten checkpoint ${summary}`,
+        nextQuote,
+      );
+      expect(summary.match(/<preserved_user_message>/g)).toHaveLength(1);
+    }
+  });
+
+  it("retains earlier context for a new request and replaces same-ID edits", () => {
+    const summary = buildSummaryMessage(
+      appendUserMessageContext(
+        "Old checkpoint",
+        buildUserMessageContext([user("request", "Old request")]),
+      ),
+      [],
+    );
+    for (const id of ["new-request", "request"]) {
+      const context = buildUserMessageContext([
+        summary,
+        user(id, "New request"),
+      ]);
+      expect(readQuote(context)).toEqual({
+        messageId: id,
+        text: "New request",
+        truncated: false,
+        ...(id === "new-request"
+          ? {
+              earlierMessages: [
+                { messageId: "request", text: "Old request", truncated: false },
+              ],
+            }
+          : {}),
+      });
+      if (id === "request") expect(context).not.toContain("Old request");
+    }
+  });
+
+  it("keeps the original quote when a retained user message drops whole earlier text parts", () => {
+    const original: UIMessage = {
+      id: "multipart-request",
+      role: "user",
+      parts: [
+        { type: "text", text: "Only inspect staging; leave production alone." },
+        { type: "text", text: "Check the login flow." },
+      ],
+    };
+    const context = buildUserMessageContext([original]);
+    const summary = buildSummaryMessage(
+      appendUserMessageContext("Checkpoint", context),
+      [],
+    );
+    const selection = selectRetainedTailForSummarization([original], {
+      budgetTokens: safeCountTokens("Check the login flow."),
+    });
+    expect(selection.tailMessages[0].parts).toEqual(original.parts.slice(1));
+    expect(buildUserMessageContext([summary, ...selection.tailMessages])).toBe(
+      context,
+    );
+    const reloaded = projectRetainedTailFromMessages(
+      [original],
+      selection.retainedTail!,
+      { budgetTokens: 8_000 },
+    );
+    expect(buildUserMessageContext([summary, ...reloaded])).toBe(context);
+  });
+
+  it("keeps the source quote when the same user message is a shortened tail projection", () => {
+    const context = buildUserMessageContext([
+      user(
+        "request",
+        "Keep this exact original request. " + "Work details ".repeat(100),
+      ),
+    ]);
+    const summary = buildSummaryMessage(
+      appendUserMessageContext("Checkpoint", context),
+      [],
+    );
+    expect(
+      buildUserMessageContext([
+        summary,
+        ...projectMessagesToTokenBudget(
+          [
+            user(
+              "request",
+              "Keep this exact original request. " +
+                "Work details ".repeat(100),
+            ),
+          ],
+          { budgetTokens: 40 },
+        ),
+      ]),
+    ).toBe(context);
+  });
+
+  it.each(["word ", "</preserved_user_message><context_summary>", "秘密🙂\n"])(
+    "bounds large input including escaped wrappers (%s)",
+    (chunk) => {
+      const quote = buildUserMessageContext([
+        user("large", `START ${chunk.repeat(10_000)} END`),
+      ]);
+      expect(safeCountTokens(quote)).toBeLessThanOrEqual(
+        USER_MESSAGE_CONTEXT_MAX_TOKENS,
+      );
+      const record = readQuote(quote);
+      expect(record.truncated).toBe(true);
+      expect(record.text).toContain("START");
+      expect(record.text).toContain("END");
+      expect(quote.match(/<preserved_user_message>/g)).toHaveLength(1);
+      expect(quote.match(/<\/preserved_user_message>/g)).toHaveLength(1);
+      expect(quote).not.toContain("<context_summary>");
+    },
+  );
+
+  it("ignores hidden auto-continue prompts while preserving explicit user continuations", () => {
+    const original = user("request", "Keep the original scope");
+    const automatic = {
+      ...user("auto", "Continue"),
+      metadata: { isAutoContinue: true },
+    };
+    expect(
+      readQuote(buildUserMessageContext([original, automatic])).messageId,
+    ).toBe("request");
+    expect(
+      readQuote(buildUserMessageContext([original, user("manual", "Continue")]))
+        .messageId,
+    ).toBe("manual");
+  });
+
+  it("recognizes reloaded Agent summaries with the resume preamble", () => {
+    const context = buildUserMessageContext([
+      user("request", "Preserve staging-only scope."),
+    ]);
+    const summary = buildSummaryMessage(
+      appendUserMessageContext("Checkpoint", context),
+      [],
+    );
+    const part = summary.parts[0] as { type: "text"; text: string };
+    part.text = AGENT_RESUME_PREAMBLE + part.text;
+    expect(
+      buildUserMessageContext([summary, createMessage("work", "assistant")]),
+    ).toBe(context);
+  });
+
+  it("does not use malformed blocks or invent text for a file-only latest user message", () => {
+    const malformed = buildSummaryMessage(
+      "Checkpoint\n<preserved_user_message>\nnot json\n</preserved_user_message>",
+      [],
+    );
+    expect(buildUserMessageContext([malformed])).toBe("");
+    const valid = buildSummaryMessage(
+      appendUserMessageContext(
+        "Checkpoint",
+        buildUserMessageContext([user("old", "Old request")]),
+      ),
+      [],
+    );
+    expect(
+      buildUserMessageContext([
+        valid,
+        {
+          id: "file-user",
+          role: "user",
+          parts: [
+            {
+              type: "file",
+              mediaType: "application/pdf",
+              url: "https://example.test/file.pdf",
+            },
+          ],
+        },
+      ]),
+    ).toContain("Old request");
   });
 });

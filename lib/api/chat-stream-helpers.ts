@@ -427,6 +427,7 @@ export async function runSummarizationStep(options: {
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
+  sourceUiMessages?: UIMessage[];
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
   onPhaseDuration?: import("@/lib/chat/summarization").ContextCompactionPhaseReporter;
@@ -440,6 +441,7 @@ export async function runSummarizationStep(options: {
     summarizationUsage,
   } = await checkAndSummarizeIfNeeded({
     uiMessages: options.messages,
+    sourceUiMessages: options.sourceUiMessages,
     subscription: options.subscription,
     languageModel: options.languageModel,
     mode: options.mode,
