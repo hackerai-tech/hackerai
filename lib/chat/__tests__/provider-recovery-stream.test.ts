@@ -10,6 +10,7 @@ import {
 import { WritableStream } from "node:stream/web";
 import { z } from "zod";
 import { isRetriableProviderStreamDisconnectError } from "@/lib/utils/error-utils";
+import { withProviderStreamTimeout } from "@/lib/ai/provider-stream-timeout";
 import {
   decideProviderRecovery,
   prepareProviderDisconnectContinuation,
@@ -63,95 +64,119 @@ const response = (parts: unknown[]) => ({
   }),
 });
 
-it("recovers a 504 after tool execution through real SDK/UI streams without executing the tool twice", async () => {
-  const execute = jest.fn(async () => ({ saved: true }));
-  const tools = { save: tool({ inputSchema: z.object({}), execute }) };
-  const upstreamError = { code: 504, message: "The operation was aborted" };
-  const primary = jest
-    .fn()
-    .mockResolvedValueOnce(
-      response([
-        {
-          type: "tool-call",
-          toolCallId: "saved-once",
-          toolName: "save",
-          input: "{}",
-        },
-        finish("tool-calls"),
-      ]),
-    )
-    .mockResolvedValueOnce(
-      response([
-        { type: "text-start", id: "partial" },
-        { type: "text-delta", id: "partial", delta: "incomplete" },
-        { type: "error", error: upstreamError },
-      ]),
-    );
-  let failure: unknown;
-  const initial = streamText({
-    model: model(primary),
-    messages: [{ role: "user", content: "save and report" }],
-    tools,
-    stopWhen: stepCountIs(3),
-    maxRetries: 0,
-    onError: ({ error }) => {
-      failure = error;
-    },
-  });
-  let partial: UIMessage | undefined;
-  for await (const message of readUIMessageStream({
-    stream: initial.toUIMessageStream(),
-    onError: () => {},
-  }))
-    partial = message;
-  expect(execute).toHaveBeenCalledTimes(1);
-  expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
-  const continuation = prepareProviderDisconnectContinuation([partial!]);
-  expect(continuation?.preservedCompletedToolCount).toBe(1);
-  const messages = await convertToModelMessages(continuation!.messages, {
-    tools,
-  });
-  expect(getProviderToolCallDiagnostics(messages)).toMatchObject({
-    unmatched_tool_call_count: 0,
-    unmatched_tool_result_count: 0,
-  });
-  expect(JSON.stringify(messages)).not.toContain("incomplete");
-  const fallback = jest
-    .fn()
-    .mockResolvedValue(
-      response([
-        { type: "text-start", id: "done" },
-        { type: "text-delta", id: "done", delta: "Saved successfully." },
-        { type: "text-end", id: "done" },
-        finish("stop"),
-      ]),
-    );
-  const recovered = streamText({
-    model: model(fallback),
-    messages,
-    tools,
-    maxRetries: 0,
-  });
-  let final: UIMessage | undefined;
-  const parseErrors: unknown[] = [];
-  for await (const message of readUIMessageStream({
-    stream: recovered.toUIMessageStream(),
-    onError: (e) => parseErrors.push(e),
-  }))
-    final = message;
-  expect(parseErrors).toEqual([]);
-  expect(final?.parts).toContainEqual({
-    type: "text",
-    text: "Saved successfully.",
-    state: "done",
-  });
-  expect(execute).toHaveBeenCalledTimes(1);
-  expect(
-    fallback.mock.calls[0][0].prompt.some(
-      (message: { role: string }) => message.role === "tool",
-    ),
-  ).toBe(true);
-});
+afterEach(() => jest.useRealTimers());
+
+it.each(["504", "idle_timeout"])(
+  "recovers %s after tool execution through real SDK/UI streams without executing the tool twice",
+  async (failureMode) => {
+    if (failureMode === "idle_timeout") jest.useFakeTimers();
+    const execute = jest.fn(async () => ({ saved: true }));
+    const tools = { save: tool({ inputSchema: z.object({}), execute }) };
+    const upstreamError = { code: 504, message: "The operation was aborted" };
+    const primary = jest
+      .fn()
+      .mockResolvedValueOnce(
+        response([
+          {
+            type: "tool-call",
+            toolCallId: "saved-once",
+            toolName: "save",
+            input: "{}",
+          },
+          finish("tool-calls"),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        failureMode === "idle_timeout"
+          ? {
+              stream: new ReadableStream({
+                start(output) {
+                  output.enqueue({ type: "text-start", id: "partial" });
+                  output.enqueue({
+                    type: "text-delta",
+                    id: "partial",
+                    delta: "incomplete",
+                  });
+                },
+              }),
+            }
+          : response([
+              { type: "text-start", id: "partial" },
+              { type: "text-delta", id: "partial", delta: "incomplete" },
+              { type: "error", error: upstreamError },
+            ]),
+      );
+    let failure: unknown;
+    const initial = streamText({
+      model: withProviderStreamTimeout(model(primary), { timeoutMs: 1000 }),
+      messages: [{ role: "user", content: "save and report" }],
+      tools,
+      stopWhen: stepCountIs(3),
+      maxRetries: 0,
+      onError: ({ error }) => {
+        failure = error;
+      },
+    });
+    let partial: UIMessage | undefined;
+    const readInitial = (async () => {
+      for await (const message of readUIMessageStream({
+        stream: initial.toUIMessageStream(),
+        onError: () => {},
+      }))
+        partial = message;
+    })();
+    if (failureMode === "idle_timeout")
+      await jest.advanceTimersByTimeAsync(1100);
+    await readInitial;
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(isRetriableProviderStreamDisconnectError(failure)).toBe(true);
+    const continuation = prepareProviderDisconnectContinuation([partial!]);
+    expect(continuation?.preservedCompletedToolCount).toBe(1);
+    const messages = await convertToModelMessages(continuation!.messages, {
+      tools,
+    });
+    expect(getProviderToolCallDiagnostics(messages)).toMatchObject({
+      unmatched_tool_call_count: 0,
+      unmatched_tool_result_count: 0,
+    });
+    expect(JSON.stringify(messages)).not.toContain("incomplete");
+    const fallback = jest
+      .fn()
+      .mockResolvedValue(
+        response([
+          { type: "text-start", id: "done" },
+          { type: "text-delta", id: "done", delta: "Saved successfully." },
+          { type: "text-end", id: "done" },
+          finish("stop"),
+        ]),
+      );
+    const recovered = streamText({
+      model: model(fallback),
+      messages,
+      tools,
+      maxRetries: 0,
+    });
+    let final: UIMessage | undefined;
+    const parseErrors: unknown[] = [];
+    for await (const message of readUIMessageStream({
+      stream: recovered.toUIMessageStream(),
+      onError: (e) => parseErrors.push(e),
+    }))
+      final = message;
+    expect(parseErrors).toEqual([]);
+    expect(final?.parts).toContainEqual({
+      type: "text",
+      text: "Saved successfully.",
+      state: "done",
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(
+      fallback.mock.calls[0][0].prompt.some(
+        (message: { role: string }) => message.role === "tool",
+      ),
+    ).toBe(true);
+  },
+);
 
 it("recognizes HTTP rejection delivered asynchronously before any content, with cancellation and retry limits intact", async () => {
   let failure: unknown;
