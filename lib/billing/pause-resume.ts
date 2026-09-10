@@ -149,6 +149,24 @@ export async function resumePausedSubscription(
     return { outcome: "not_claimable" };
   }
 
+  if (claimed.resumeClaimedAt === undefined) {
+    return { outcome: "not_claimable" };
+  }
+
+  const sideEffectAuthorized = await convex.mutation(
+    api.subscriptionPauses.authorizeResumeSideEffect,
+    {
+      serviceKey: key,
+      pauseId: claimed.id,
+      resumeClaimedAt: claimed.resumeClaimedAt,
+      resumeAttemptCount: claimed.resumeAttemptCount,
+      authorizedAt: now,
+    },
+  );
+  if (!sideEffectAuthorized) {
+    return { outcome: "not_claimable" };
+  }
+
   const analytics = pauseAnalyticsProperties(claimed, options.trigger);
 
   try {

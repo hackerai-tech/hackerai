@@ -44,6 +44,7 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     subscriptionPauses: {
       claimResume: "subscriptionPauses.claimResume",
+      authorizeResumeSideEffect: "subscriptionPauses.authorizeResumeSideEffect",
       markPauseSuperseded: "subscriptionPauses.markPauseSuperseded",
       markResumeFailed: "subscriptionPauses.markResumeFailed",
       markResumeSucceeded: "subscriptionPauses.markResumeSucceeded",
@@ -99,8 +100,13 @@ describe("resumePausedSubscription", () => {
         return pauseRecord({
           status: "resuming",
           resumeAttemptCount: 1,
+          resumeClaimedAt: NOW,
+          resumeClaimVersion: 2,
           id: args.pauseId,
         });
+      }
+      if (name === "subscriptionPauses.authorizeResumeSideEffect") {
+        return true;
       }
       return null;
     }) as never);
@@ -138,6 +144,14 @@ describe("resumePausedSubscription", () => {
     expect(mockConvexMutation).toHaveBeenCalledWith(
       "subscriptionPauses.claimResume",
       expect.objectContaining({ pauseId: "pause_1", manual: false, now: NOW }),
+    );
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "subscriptionPauses.authorizeResumeSideEffect",
+      expect.objectContaining({
+        pauseId: "pause_1",
+        resumeClaimedAt: NOW,
+        resumeAttemptCount: 1,
+      }),
     );
     expect(mockCreateSubscription).toHaveBeenCalledWith(
       {
@@ -181,6 +195,34 @@ describe("resumePausedSubscription", () => {
         now: NOW,
       }),
     ).resolves.toEqual({ outcome: "not_claimable" });
+    expect(mockCreateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("does no Stripe work when deletion wins before side-effect authorization", async () => {
+    mockConvexMutation.mockImplementation((async (name: string) => {
+      if (name === "subscriptionPauses.claimResume") {
+        return pauseRecord({
+          status: "resuming",
+          resumeAttemptCount: 1,
+          resumeClaimedAt: NOW,
+          resumeClaimVersion: 2,
+        });
+      }
+      if (name === "subscriptionPauses.authorizeResumeSideEffect") {
+        return false;
+      }
+      return null;
+    }) as never);
+    const { resumePausedSubscription } = await import("../pause-resume");
+
+    await expect(
+      resumePausedSubscription(pauseRecord() as never, {
+        trigger: "cron",
+        now: NOW,
+      }),
+    ).resolves.toEqual({ outcome: "not_claimable" });
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
+    expect(mockRetrievePaymentMethod).not.toHaveBeenCalled();
     expect(mockCreateSubscription).not.toHaveBeenCalled();
   });
 
@@ -326,7 +368,15 @@ describe("resumePausedSubscription", () => {
   it("still reports resumed when the Convex bookkeeping write fails after creation", async () => {
     mockConvexMutation.mockImplementation((async (name: string) => {
       if (name === "subscriptionPauses.claimResume") {
-        return pauseRecord({ status: "resuming", resumeAttemptCount: 1 });
+        return pauseRecord({
+          status: "resuming",
+          resumeAttemptCount: 1,
+          resumeClaimedAt: NOW,
+          resumeClaimVersion: 2,
+        });
+      }
+      if (name === "subscriptionPauses.authorizeResumeSideEffect") {
+        return true;
       }
       if (name === "subscriptionPauses.markResumeSucceeded") {
         throw new Error("convex write failed");

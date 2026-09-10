@@ -34,6 +34,7 @@ describe("user deletion fence", () => {
     const chats = read("convex/chats.ts");
     const subagents = read("convex/subagents.ts");
     const subscriptionPauses = read("convex/subscriptionPauses.ts");
+    const pauseResume = read("lib/billing/pause-resume.ts");
 
     expect(
       accountRoute.indexOf('stage = "begin_user_data_deletion"'),
@@ -58,5 +59,11 @@ describe("user deletion fence", () => {
     expect(subscriptionPauses).toMatch(
       /claimResume = mutation[\s\S]*?isUserDeletionFenced\(ctx\.db, row\.user_id\)/,
     );
+    expect(subscriptionPauses).toMatch(
+      /authorizeResumeSideEffect = mutation[\s\S]*?isUserDeletionFenced\(ctx\.db, row\.user_id\)/,
+    );
+    expect(
+      pauseResume.indexOf("api.subscriptionPauses.authorizeResumeSideEffect"),
+    ).toBeLessThan(pauseResume.lastIndexOf("findLiveSubscription("));
   });
 });

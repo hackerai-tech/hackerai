@@ -961,21 +961,96 @@ describe("userDeletion", () => {
     tables.user_deletion_fences = [];
     const { ctx, db } = createMockCtx(tables);
 
-    await beginUserDataDeletionByService.handler(ctx as any, {
+    const first = await beginUserDataDeletionByService.handler(ctx as any, {
       serviceKey: "service_key",
       userId: "user_123",
     });
-    await beginUserDataDeletionByService.handler(ctx as any, {
+    const second = await beginUserDataDeletionByService.handler(ctx as any, {
       serviceKey: "service_key",
       userId: "user_123",
     });
 
+    expect(first).toBe(true);
+    expect(second).toBe(true);
     expect(tables.user_deletion_fences).toHaveLength(1);
     expect(tables.user_deletion_fences[0]).toMatchObject({
       user_id: "user_123",
       started_at: expect.any(Number),
     });
     expect(db.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an unapproved resume claim in the deletion-fence transaction", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    tables.subscription_pauses[0] = {
+      ...tables.subscription_pauses[0],
+      status: "resuming",
+      resume_claimed_at: 5_000,
+      resume_claim_version: 2,
+      resume_attempt_count: 1,
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const started = await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(started).toBe(true);
+    expect(tables.subscription_pauses[0]).toMatchObject({
+      status: "canceled",
+      canceled_at: expect.any(Number),
+    });
+    expect(tables.subscription_pauses[0].resume_claimed_at).toBeUndefined();
+    expect(tables.subscription_pauses[0].resume_claim_version).toBeUndefined();
+    expect(tables.user_deletion_fences).toHaveLength(1);
+  });
+
+  it("waits for an authorized Stripe resume before inserting the deletion fence", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    tables.subscription_pauses[0] = {
+      ...tables.subscription_pauses[0],
+      status: "resuming",
+      resume_claimed_at: 5_000,
+      resume_claim_version: 2,
+      resume_side_effect_authorized_at: 5_001,
+      resume_attempt_count: 1,
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const started = await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(started).toBe(false);
+    expect(tables.subscription_pauses[0].status).toBe("resuming");
+    expect(tables.user_deletion_fences).toHaveLength(0);
+  });
+
+  it("fails closed for a rolling-deployment resume claim", async () => {
+    const { beginUserDataDeletionByService } = await import("../userDeletion");
+    const tables = seedTables();
+    tables.user_deletion_fences = [];
+    tables.subscription_pauses[0] = {
+      ...tables.subscription_pauses[0],
+      status: "resuming",
+      resume_claimed_at: 5_000,
+      resume_attempt_count: 1,
+    };
+    const { ctx } = createMockCtx(tables);
+
+    const started = await beginUserDataDeletionByService.handler(ctx as any, {
+      serviceKey: "service_key",
+      userId: "user_123",
+    });
+
+    expect(started).toBe(false);
+    expect(tables.user_deletion_fences).toHaveLength(0);
   });
 
   it("rejects service-key cleanup with an invalid key", async () => {

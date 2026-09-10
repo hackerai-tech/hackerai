@@ -86,6 +86,11 @@ function buildDb(rows: Row[]) {
       const row = byId.get(id);
       if (row) Object.assign(row, patch);
     }),
+    delete: jest.fn(async (id: string) => {
+      const index = rows.findIndex((row) => row._id === id);
+      if (index !== -1) rows.splice(index, 1);
+      byId.delete(id);
+    }),
     insert: jest.fn(async (_table: string, row: Row) => {
       const id = `pause_${rows.length + 1}`;
       const inserted = { _id: id, ...row };
@@ -134,6 +139,8 @@ describe("subscription pause lifecycle", () => {
       id: "pause_1",
       status: "resuming",
       resumeAttemptCount: 1,
+      resumeClaimedAt: 5_000,
+      resumeClaimVersion: 2,
     });
 
     const second = await (claimResume as any).handler(
@@ -306,6 +313,70 @@ describe("subscription pause lifecycle", () => {
     expect(rows[0].resume_claimed_at).toBeUndefined();
   });
 
+  it("authorizes a claimed resume before external Stripe work", async () => {
+    const { authorizeResumeSideEffect } = await import("../subscriptionPauses");
+    const rows = [
+      pauseRow({
+        status: "resuming",
+        resume_claimed_at: 5_000,
+        resume_claim_version: 2,
+        resume_attempt_count: 1,
+      }),
+    ];
+    const db = buildDb(rows);
+
+    await expect(
+      (authorizeResumeSideEffect as any).handler(
+        { db },
+        {
+          serviceKey: "k",
+          pauseId: "pause_1",
+          resumeClaimedAt: 5_000,
+          resumeAttemptCount: 1,
+          authorizedAt: 5_001,
+        },
+      ),
+    ).resolves.toBe(true);
+    expect(rows[0]).toMatchObject({
+      status: "resuming",
+      resume_side_effect_authorized_at: 5_001,
+    });
+  });
+
+  it("cancels a claimed resume when deletion wins before authorization", async () => {
+    const { authorizeResumeSideEffect } = await import("../subscriptionPauses");
+    const rows = [
+      pauseRow({
+        status: "resuming",
+        resume_claimed_at: 5_000,
+        resume_claim_version: 2,
+        resume_attempt_count: 1,
+      }),
+    ];
+    const db = buildDb(rows);
+    mockIsUserDeletionFenced.mockResolvedValueOnce(true);
+
+    await expect(
+      (authorizeResumeSideEffect as any).handler(
+        { db },
+        {
+          serviceKey: "k",
+          pauseId: "pause_1",
+          resumeClaimedAt: 5_000,
+          resumeAttemptCount: 1,
+          authorizedAt: 5_001,
+        },
+      ),
+    ).resolves.toBe(false);
+    expect(rows[0]).toMatchObject({
+      status: "canceled",
+      canceled_at: 5_001,
+    });
+    expect(rows[0].resume_claimed_at).toBeUndefined();
+    expect(rows[0].resume_claim_version).toBeUndefined();
+    expect(rows[0].resume_side_effect_authorized_at).toBeUndefined();
+  });
+
   it("only exposes the caller's own active pause", async () => {
     const { getMyActivePause } = await import("../subscriptionPauses");
     const rows = [
@@ -330,5 +401,23 @@ describe("subscription pause lifecycle", () => {
       auth: { getUserIdentity: async () => ({ subject: "user_1" }) },
     });
     expect(mine).toMatchObject({ id: "pause_mine", status: "paused" });
+  });
+
+  it("deletes pause rows only for an organization being torn down", async () => {
+    const { deleteForDeletedOrganization } =
+      await import("../subscriptionPauses");
+    const rows = [
+      pauseRow({ _id: "pause_deleted_org", organization_id: "org_deleted" }),
+      pauseRow({ _id: "pause_shared_org", organization_id: "org_shared" }),
+    ];
+    const db = buildDb(rows);
+
+    await expect(
+      (deleteForDeletedOrganization as any).handler(
+        { db },
+        { serviceKey: "k", organizationId: "org_deleted" },
+      ),
+    ).resolves.toEqual({ deletedCount: 1, hasMore: false });
+    expect(rows.map((row) => row._id)).toEqual(["pause_shared_org"]);
   });
 });
