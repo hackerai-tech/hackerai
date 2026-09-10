@@ -179,6 +179,96 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it.each(["pro", "pro-plus"] as const)(
+    "uses GLM Flash for %s Standard and Auto image tool results",
+    (subscription) => {
+      for (const selection of [
+        undefined,
+        "auto",
+        "hackerai-standard",
+      ] as const) {
+        for (const model of [
+          "model-deepseek-v4-flash-0731",
+          "model-deepseek-v4-pro-0813",
+          "model-glm-5.3-flash",
+        ]) {
+          expect(
+            resolveAgentModelForImageToolResults(
+              model,
+              "agent",
+              true,
+              selection,
+              false,
+              true,
+              subscription,
+            ),
+          ).toBe("model-glm-5.3-flash");
+          expect(
+            resolveAgentModelForImageToolResults(
+              model,
+              "agent",
+              false,
+              selection,
+              false,
+              true,
+              subscription,
+            ),
+          ).toBe(model);
+          expect(
+            resolveAgentModelForImageToolResults(
+              model,
+              "agent",
+              true,
+              selection,
+              true,
+              true,
+              subscription,
+            ),
+          ).toBe(model);
+        }
+      }
+      expect(
+        resolveAgentModelForImageToolResults(
+          "model-deepseek-v4-pro-0813",
+          "agent",
+          true,
+          "hackerai-pro",
+          false,
+          true,
+          subscription,
+        ),
+      ).toBe("model-deepseek-v4-flash-vision-pro");
+      expect(
+        resolveAgentModelForImageToolResults(
+          "model-grok-4.6",
+          "agent",
+          true,
+          "hackerai-max",
+          false,
+          false,
+          subscription,
+        ),
+      ).toBe("model-grok-4.6");
+    },
+  );
+
+  it.each(["ultra", "team", "free"] as const)(
+    "preserves %s image tool routing",
+    (subscription) => {
+      expect(
+        resolveAgentModelForImageToolResults(
+          "model-deepseek-v4-flash-0731",
+          "agent",
+          true,
+          "auto",
+          false,
+          subscription !== "free",
+          subscription,
+        ),
+      ).toBe("model-deepseek-v4-flash-vision");
+    },
+  );
+
   it("keeps DeepSeek for text-only Agent steps", () => {
     expect(
       resolveAgentModelForImageToolResults(
@@ -1338,6 +1428,7 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
+    ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
     ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
     ["model-deepseek-v4-flash-vision-pro", "model-deepseek-v4-pro-0813"],
   ])(

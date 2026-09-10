@@ -4,6 +4,7 @@ import type {
 } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
   createAbliterationVisionPreprocessor,
@@ -239,11 +240,15 @@ export const resolveAgentModelForImageToolResults = (
   selectedModelOverride?: SelectedModel,
   auxiliaryVisionEnabled = false,
   directGlmVisionEnabled = false,
+  subscription?: SubscriptionTier,
 ): string => {
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
   if (directGlmVisionEnabled) {
+    if (usesGlmFlashForStandardVision(subscription, selectedModelOverride)) {
+      return STANDARD_AGENT_GLM_VISION_MODEL;
+    }
     if (
       selectedModelOverride === "hackerai-pro" ||
       (!selectedModelOverride &&
@@ -1026,6 +1031,7 @@ export async function createAgentStream(
       ctx.selectedModelOverride,
       ctx.auxiliaryVisionEnabled,
       ctx.directGlmVisionEnabled,
+      ctx.subscription,
     );
   const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);

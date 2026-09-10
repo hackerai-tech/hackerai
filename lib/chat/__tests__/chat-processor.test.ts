@@ -258,13 +258,13 @@ describe("selectModel", () => {
   });
 
   it.each(["ask", "agent"] as const)(
-    "routes Standard %s image prompts directly to DeepSeek V4 Flash Vision",
+    "routes Standard %s image prompts directly to GLM 5.3 Flash",
     (mode) => {
       expect(
         selectModel(mode, "pro", "hackerai-standard", true, false, {
           directGlmVisionEnabled: true,
         }),
-      ).toBe("model-deepseek-v4-flash-vision");
+      ).toBe("model-glm-5.3-flash");
     },
   );
 
@@ -279,13 +279,89 @@ describe("selectModel", () => {
     },
   );
 
-  it("uses the Standard DeepSeek vision route for Pro Plus Auto images", () => {
-    expect(
-      selectModel("agent", "pro-plus", "auto", true, false, {
-        directGlmVisionEnabled: true,
-      }),
-    ).toBe("model-deepseek-v4-flash-vision");
-  });
+  describe.each(["ask", "agent"] as const)(
+    "%s direct vision boundaries",
+    (mode) => {
+      it.each(["pro", "pro-plus"] as const)(
+        "uses GLM Flash for %s Standard and Auto/default image turns only",
+        (subscription) => {
+          for (const selection of [
+            undefined,
+            "auto",
+            "hackerai-standard",
+          ] as const) {
+            const directVision = { directGlmVisionEnabled: true };
+            expect(
+              selectModel(
+                mode,
+                subscription,
+                selection,
+                true,
+                false,
+                directVision,
+              ),
+            ).toBe("model-glm-5.3-flash");
+            expect(
+              selectModel(
+                mode,
+                subscription,
+                selection,
+                false,
+                false,
+                directVision,
+              ),
+            ).toBe("model-deepseek-v4-flash-0731");
+            expect(
+              selectModel(
+                mode,
+                subscription,
+                selection,
+                false,
+                true,
+                directVision,
+              ),
+            ).toBe("model-deepseek-v4-flash-0731");
+            expect(
+              selectModel(mode, subscription, selection, true, false, {
+                auxiliaryVisionEnabled: true,
+              }),
+            ).toBe("model-deepseek-v4-flash-0731");
+          }
+          expect(
+            selectModel(mode, subscription, "hackerai-pro", true, false, {
+              directGlmVisionEnabled: true,
+            }),
+          ).toBe("model-deepseek-v4-flash-vision-pro");
+          expect(
+            selectModel(mode, subscription, "hackerai-max", true, false, {
+              directGlmVisionEnabled: true,
+              extraUsageAvailable: true,
+            }),
+          ).toBe("model-grok-4.6");
+        },
+      );
+
+      it.each(["ultra", "team"] as const)(
+        "preserves existing %s Standard and Auto vision routes",
+        (subscription) => {
+          expect(
+            selectModel(mode, subscription, "hackerai-standard", true, false, {
+              directGlmVisionEnabled: true,
+            }),
+          ).toBe("model-deepseek-v4-flash-vision");
+          expect(
+            selectModel(mode, subscription, "auto", true, false, {
+              directGlmVisionEnabled: true,
+            }),
+          ).toBe(
+            mode === "ask" && subscription === "ultra"
+              ? "model-deepseek-v4-flash-vision-pro"
+              : "model-deepseek-v4-flash-vision",
+          );
+        },
+      );
+    },
+  );
 
   it.each(["pro", "pro-plus", "ultra", "team"] as const)(
     "routes paid %s explicit Standard text to the mode-specific Flash model",
