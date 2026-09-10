@@ -97,8 +97,32 @@ describe("cloud sandbox provider routing", () => {
         sandbox_type: "cloud",
         sandbox_provider: "e2b",
         error_name: "Error",
-        cloud_sandbox_provider_fallback_event_version: 2,
+        cloud_sandbox_provider_fallback_event_version: 3,
       }),
+    );
+  });
+
+  it("excludes secret-like Miosa error names from all fallback telemetry", async () => {
+    const error = Object.assign(new Error("private response body"), {
+      name: "msk_private_canary",
+    });
+    mockEnsureMiosa.mockRejectedValueOnce(error);
+    mockEnsureE2B.mockResolvedValueOnce({ sandbox: { sandboxId: "e2b-1" } });
+
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).resolves.toMatchObject({ provider: "e2b" });
+
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_provider_fallback",
+      expect.objectContaining({ error_name: "UnknownError" }),
+    );
+    expect(JSON.stringify(mockPostHogEvent.mock.calls)).not.toMatch(
+      /msk_private_canary|private response body/,
     );
   });
 

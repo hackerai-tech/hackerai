@@ -204,8 +204,8 @@ export async function ensureCloudSandboxConnection(options: {
           sandbox_type: "cloud",
           sandbox_provider: "e2b",
           fallback_stage: "acquisition",
-          error_name: error instanceof Error ? error.name : "UnknownError",
-          cloud_sandbox_provider_fallback_event_version: 2,
+          error_name: miosaErrorDiagnostics(error).error_name,
+          cloud_sandbox_provider_fallback_event_version: 3,
         });
       }
     }
