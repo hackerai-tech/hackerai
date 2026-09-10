@@ -128,6 +128,13 @@ const DEEPSEEK_V4_FLASH_VISION_PRICING: ModelPricing = {
   cacheRead: 0.014,
   cacheWrite: 0.44,
 };
+// Use the weekday peak ceiling from OpenRouter, including cached input.
+const DEEPSEEK_V4_1_FLASH_PRICING: ModelPricing = {
+  input: 0.3,
+  output: 1.2,
+  cacheRead: 0.006,
+  cacheWrite: 0.3,
+};
 const KIMI_K3_PRICING: ModelPricing = {
   input: 3.0,
   output: 15.0,
@@ -162,8 +169,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
-  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_VISION_PRICING,
-  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_FLASH_VISION_PRICING,
+  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_1_FLASH_PRICING,
+  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_1_FLASH_PRICING,
   // Persisted Max compatibility key; the active provider route is Kimi K3.
   "model-opus-4.6": KIMI_K3_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
@@ -186,6 +193,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "deepseek/deepseek-v4-flash-20260731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "deepseek/deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
+  "deepseek/deepseek-v4.1-flash": DEEPSEEK_V4_1_FLASH_PRICING,
+  "deepseek/deepseek-v4.1-flash-20260910": DEEPSEEK_V4_1_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-vision-exp": DEEPSEEK_V4_FLASH_VISION_PRICING,
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
