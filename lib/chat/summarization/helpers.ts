@@ -34,6 +34,7 @@ import {
 import {
   AGENT_SUMMARIZATION_PROMPT,
   ASK_SUMMARIZATION_PROMPT,
+  INCREMENTAL_SUMMARIZATION_INSTRUCTIONS,
 } from "./prompts";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
@@ -739,7 +740,7 @@ export const generateSummaryText = async (
   const summarizationPrompt = getSummarizationPrompt(mode);
 
   const incrementalNote = hasExistingSummary
-    ? `\n\nIMPORTANT: You are performing an INCREMENTAL summarization. The conversation above contains a <context_summary> message with a previous summary of earlier conversation. Produce a single, unified summary that merges the previous summary with the NEW messages that follow it. Do NOT summarize the summary — integrate new information into a comprehensive updated summary.`
+    ? `\n\n${INCREMENTAL_SUMMARIZATION_INSTRUCTIONS}`
     : "";
 
   // Tools are included solely to match the main streamText prefix for provider
