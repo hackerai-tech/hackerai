@@ -36,6 +36,7 @@ import { createTools } from "@/lib/ai/tools";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { AGENT_PROVIDER_IDLE_TIMEOUT_MS } from "@/lib/ai/provider-stream-timeout";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
@@ -2621,8 +2622,18 @@ export const agentLongTask = task({
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
+    // Register before async setup and handle a signal already canceled while
+    // the task was starting. Abort events are not replayed to late listeners.
+    const userStopSignal = new AbortController();
+    const forwardTriggerAbort = () =>
+      userStopSignal.abort(triggerSignal.reason);
+    triggerSignal.addEventListener("abort", forwardTriggerAbort, {
+      once: true,
+    });
+    if (triggerSignal.aborted) forwardTriggerAbort();
 
     try {
+      userStopSignal.signal.throwIfAborted();
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const [userCustomization, fetched] = await Promise.all([
@@ -2829,12 +2840,7 @@ export const agentLongTask = task({
 
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
-      // Wire trigger.dev's abort signal into a local controller.
-      // Fires on runs.cancel() (UI Stop) and Trigger's maxDuration.
-      const userStopSignal = new AbortController();
-      triggerSignal.addEventListener("abort", () => userStopSignal.abort(), {
-        once: true,
-      });
+      userStopSignal.signal.throwIfAborted();
 
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
@@ -2856,6 +2862,15 @@ export const agentLongTask = task({
           markAgentLongDurationExceeded();
           runtimeSettlementWatchdog?.arm();
           userStopSignal.abort();
+          triggerLogger.warn("[agent-long] active runtime budget exhausted", {
+            event: "agent_long_runtime_budget_exhausted",
+            run_id: ctx.run.id,
+            chat_id: chatId,
+            active_elapsed_ms: runtimeBudget.getElapsedTimeMs(),
+            runtime_budget_ms: agentLongMaxDurationMs,
+            cleanup_grace_ms: AGENT_LONG_CLEANUP_GRACE_MS,
+            agent_step_count: terminalAgentState?.agentStepCount ?? 0,
+          });
         },
       });
       activeRuntimeBudget = runtimeBudget;
@@ -4281,6 +4296,25 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              providerStreamTimeout: {
+                timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                onTimeout: ({ phase, timeoutMs, modelId }) => {
+                  triggerLogger.warn("[agent-long] provider stalled", {
+                    event: "agent_long_provider_idle_timeout",
+                    run_id: ctx.run.id,
+                    chat_id: chatId,
+                    phase,
+                    timeout_ms: timeoutMs,
+                    model: modelId,
+                    agent_step_count: state.agentStepCount,
+                    active_elapsed_ms: runtimeBudget.getElapsedTimeMs(),
+                    remaining_runtime_ms: Math.max(
+                      0,
+                      agentLongMaxDurationMs - runtimeBudget.getElapsedTimeMs(),
+                    ),
+                  });
+                },
+              },
               abliteratedTelemetry,
               ...(activeAbliteratedExperiment?.variant === "test" && {
                 abliteratedStepRouting: {
@@ -5989,6 +6023,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      triggerSignal.removeEventListener("abort", forwardTriggerAbort);
       await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();

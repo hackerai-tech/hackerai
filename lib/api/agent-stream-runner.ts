@@ -148,6 +148,10 @@ import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import type { AgentStartupPhase } from "@/lib/chat/agent-run-timing";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import {
+  withProviderStreamTimeout,
+  type ProviderStreamTimeoutOptions,
+} from "@/lib/ai/provider-stream-timeout";
+import {
   guardLanguageModelProviderResponse,
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
@@ -630,6 +634,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
     baselineModel: string;
@@ -880,7 +885,11 @@ export async function createAgentStream(
         stepIndex,
         activeStepRouting,
       ) ?? languageModel;
-    const recoveryModel = recoverAbliterationMedia(telemetryModel);
+    const recoveryModel = recoverAbliterationMedia(
+      ctx.providerStreamTimeout
+        ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
+        : telemetryModel,
+    );
     const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
