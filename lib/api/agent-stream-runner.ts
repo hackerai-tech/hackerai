@@ -165,7 +165,7 @@ const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
 const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
 const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
-const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
+const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
   messages.some((message) =>
@@ -250,6 +250,8 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
+  // Native Pro vision needs no promotion, and must retain Pro reasoning.
+  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) return modelName;
   if (directGlmVisionEnabled) {
     if (usesGlmFlashForStandardVision(subscription, selectedModelOverride)) {
       return STANDARD_AGENT_GLM_VISION_MODEL;

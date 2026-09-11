@@ -885,17 +885,18 @@ describe("isProviderApiError", () => {
 });
 
 describe("isExplicitDeepSeekProSelectionForRetry", () => {
-  it.each(["model-deepseek-v4-pro", "model-deepseek-v4-pro-0813"])(
-    "recognizes explicit HackerAI Pro on %s",
-    (selectedModel) => {
-      expect(
-        isExplicitDeepSeekProSelectionForRetry({
-          selectedModel,
-          selectedModelOverride: "hackerai-pro",
-        }),
-      ).toBe(true);
-    },
-  );
+  it.each([
+    "model-deepseek-v4-pro",
+    "model-deepseek-v4-pro-0813",
+    "model-deepseek-v4-flash-vision-pro",
+  ])("recognizes explicit HackerAI Pro on %s", (selectedModel) => {
+    expect(
+      isExplicitDeepSeekProSelectionForRetry({
+        selectedModel,
+        selectedModelOverride: "hackerai-pro",
+      }),
+    ).toBe(true);
+  });
 
   it.each([
     {

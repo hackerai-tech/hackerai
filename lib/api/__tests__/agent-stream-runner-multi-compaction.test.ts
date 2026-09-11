@@ -179,6 +179,25 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it.each([false, true])(
+    "preserves native Pro tool vision with direct vision experiment=%s",
+    (directGlmVisionEnabled) => {
+      for (const selection of [undefined, "auto", "hackerai-pro"] as const) {
+        expect(
+          resolveAgentModelForImageToolResults(
+            "model-deepseek-v4-flash-vision-pro",
+            "agent",
+            true,
+            selection,
+            false,
+            directGlmVisionEnabled,
+            "ultra",
+          ),
+        ).toBe("model-deepseek-v4-flash-vision-pro");
+      }
+    },
+  );
+
   it.each(["pro", "pro-plus"] as const)(
     "uses GLM Flash for %s Standard and Auto image tool results",
     (subscription) => {
@@ -416,7 +435,7 @@ describe("resolveAgentModelAfterSummarization", () => {
     ).toBe("model-deepseek-v4-flash-0731");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
-    ).toBe("model-deepseek-v4-pro-0813");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
     expect(
       resolveAgentModelAfterSummarization(
         "model-deepseek-v4-flash-vision",
@@ -430,7 +449,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-pro-0813");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it("keeps vision routes when compacted context still contains images", () => {
@@ -1430,7 +1449,10 @@ describe("createAgentStream repeated compaction", () => {
   it.each([
     ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
     ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
-    ["model-deepseek-v4-flash-vision-pro", "model-deepseek-v4-pro-0813"],
+    [
+      "model-deepseek-v4-flash-vision-pro",
+      "model-deepseek-v4-flash-vision-pro",
+    ],
   ])(
     "switches %s back to %s after a text-only persisted summary",
     async (visionModel, textModel) => {
@@ -1565,7 +1587,7 @@ describe("createAgentStream repeated compaction", () => {
       ],
     });
 
-    expect(continued.model.modelId).toBe("model-deepseek-v4-pro-0813");
+    expect(continued.model.modelId).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it.each(["ask", "agent"] as const)(

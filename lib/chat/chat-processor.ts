@@ -39,7 +39,8 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Paid Agent Auto and Standard use DeepSeek V4 Flash 0731. Ask Ultra Auto
- *   and explicit Pro use DeepSeek V4 Pro 0813, while Max uses Grok 4.6.
+ *   and Ask Pro use DeepSeek V4 Pro 0813. Agent Pro uses DeepSeek V4.1
+ *   Flash with native vision, while Max uses Grok 4.6.
  *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4 Flash Vision before fallbacks.
  * @returns Model name to use
@@ -76,6 +77,15 @@ export function selectModel(
     !isAgent && subscription === "ultra"
       ? "model-deepseek-v4-pro-0813"
       : paidStandardTextModel;
+  // Paid Agent Pro accepts original images without a separate vision route.
+  // Ask and paid Agent Auto/Standard retain their existing model selection.
+  if (
+    isAgent &&
+    subscription !== "free" &&
+    allowedSelectedModel === "hackerai-pro"
+  ) {
+    return "model-deepseek-v4-flash-vision-pro";
+  }
   const directVisionModel: ModelName =
     allowedSelectedModel === "hackerai-pro" ||
     ((!allowedSelectedModel || allowedSelectedModel === "auto") &&

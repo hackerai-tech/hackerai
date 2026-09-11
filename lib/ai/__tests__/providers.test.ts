@@ -19,6 +19,7 @@ import {
   PDF_PARSER_RECOVERY_HEADER,
   sanitizeOpenRouterEncryptedReasoning,
   supportsMultimodalToolResults,
+  resolveTierToProviderKey,
 } from "@/lib/ai/providers";
 
 const edgeFetchPrimitives =
@@ -274,6 +275,16 @@ describe("provider registry", () => {
     expect(isKimiModel("model-opus-4.6")).toBe(true);
     expect(isAnthropicModel("model-opus-4.6")).toBe(false);
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
+  });
+
+  it("resolves Agent Pro to V4.1 Flash with native image support", () => {
+    const mode = "agent";
+    const key = resolveTierToProviderKey("hackerai-pro", mode)!;
+    expect(myProvider.languageModel(key).modelId).toBe(
+      "deepseek/deepseek-v4.1-flash",
+    );
+    expect(supportsMultimodalToolResults(key)).toBe(true);
+    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash");
   });
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {

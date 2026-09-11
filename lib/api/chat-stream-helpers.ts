@@ -574,8 +574,8 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Standard uses DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro 0813, and
- * Max uses Grok 4.6. Image turns use DeepSeek V4 Flash Vision. Both DeepSeek
+ * Standard uses DeepSeek V4 Flash 0731. Pro uses V4 Pro 0813 in Ask and
+ * V4.1 Flash in Agent. Max uses Grok 4.6. Image turns use DeepSeek vision. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -669,6 +669,7 @@ const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
   "model-grok-4.6-pro",
 ]);
 const EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS = new Set<string>([
+  "model-deepseek-v4-flash-vision-pro",
   "model-deepseek-v4-pro",
   "model-deepseek-v4-pro-0813",
 ]);
