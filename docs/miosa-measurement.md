@@ -50,6 +50,24 @@ commands, output, filenames, prompts, targets, credentials or provider bodies.
 
 ## Decisions
 
+Sandbox accounting version 2 uses request-scoped elapsed runtime at each
+provider's configured compute rate, for both Ask and parent Agent requests.
+Miosa's cumulative `estimated_cost_cents` is not a billing input.
+The Miosa shape and verified rate live together in `miosa-cost.ts`; review the
+rate against tenant `computePricing()` when the provider changes pricing.
+The normal usage multiplier and incremental deduction logic still apply.
+
+This is allocated request compute, not invoice reconciliation. Timing starts
+when a usable sandbox is acquired; pre-acquisition failures, idle time between
+requests, and provider maintenance are platform overhead. Independent concurrent
+parent requests each accrue runtime, matching E2B; child agents do not charge
+shared runtime again. Do not describe summed request costs as the exact vendor
+invoice or mix version 1 and version 2 measurements without labeling them.
+
+Production suppresses successful acquisition-step console logs unless
+`MIOSA_DEBUG_LOGS=true`. Failures remain warnings and PostHog retains the step
+events and the single acquisition-completion summary.
+
 Review completion first, then acquisition/fallback, latency, persistence and
 economics. Include sample counts with percentiles; a handful of internal tests
 cannot establish customer reliability, retention or cost superiority. Measure
