@@ -4922,6 +4922,7 @@ export const agentLongTask = task({
                         isExplicitDeepSeekProSelectionForRetry({
                           selectedModel: retrySelectionModel,
                           selectedModelOverride,
+                          mode,
                         });
                       const shouldRetryInterruptedToolInput =
                         shouldRetryProviderStreamAfterInterruptedToolInput(

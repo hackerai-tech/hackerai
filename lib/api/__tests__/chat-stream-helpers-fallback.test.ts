@@ -886,17 +886,33 @@ describe("isProviderApiError", () => {
 
 describe("isExplicitDeepSeekProSelectionForRetry", () => {
   it.each([
-    "model-deepseek-v4-pro",
-    "model-deepseek-v4-pro-0813",
-    "model-deepseek-v4-flash-vision-pro",
-  ])("recognizes explicit HackerAI Pro on %s", (selectedModel) => {
-    expect(
-      isExplicitDeepSeekProSelectionForRetry({
-        selectedModel,
-        selectedModelOverride: "hackerai-pro",
-      }),
-    ).toBe(true);
-  });
+    ["ask", false],
+    ["agent", true],
+    [undefined, false],
+  ] as const)(
+    "limits native Pro retry to Agent (mode=%s)",
+    (mode, expected) => {
+      expect(
+        isExplicitDeepSeekProSelectionForRetry({
+          selectedModel: "model-deepseek-v4-flash-vision-pro",
+          selectedModelOverride: "hackerai-pro",
+          mode,
+        }),
+      ).toBe(expected);
+    },
+  );
+
+  it.each(["model-deepseek-v4-pro", "model-deepseek-v4-pro-0813"])(
+    "recognizes explicit HackerAI Pro on %s",
+    (selectedModel) => {
+      expect(
+        isExplicitDeepSeekProSelectionForRetry({
+          selectedModel,
+          selectedModelOverride: "hackerai-pro",
+        }),
+      ).toBe(true);
+    },
+  );
 
   it.each([
     {

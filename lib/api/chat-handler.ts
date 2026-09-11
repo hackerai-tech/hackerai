@@ -1881,6 +1881,7 @@ export const createChatHandler = () => {
                       isExplicitDeepSeekProSelectionForRetry({
                         selectedModel: retrySelectionModel,
                         selectedModelOverride,
+                        mode,
                       });
                     const shouldRetryInterruptedToolInput =
                       shouldRetryProviderStreamAfterInterruptedToolInput(
