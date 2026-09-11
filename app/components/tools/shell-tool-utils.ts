@@ -84,7 +84,7 @@ export function isInteractiveShellAction(action?: string): boolean {
 const LABELS: Record<ShellAction, [active: string, done: string]> = {
   exec: ["Executing", "Executed"],
   view: ["Viewing", "Viewed"],
-  wait: ["Waiting", "Waited"],
+  wait: ["Waiting for command output…", "Checked command output"],
   send: ["Sending input", "Sent input"],
   kill: ["Killing", "Killed"],
 };
@@ -144,7 +144,11 @@ export function isToolInputValidationError(errorText?: string): boolean {
   );
 }
 
-export function getTerminalFailureAction(errorText?: string): string {
+export function getTerminalFailureAction(
+  errorText?: string,
+  action?: string,
+): string {
+  if (action === "wait") return "Couldn’t check command output";
   return isToolInputValidationError(errorText)
     ? "Invalid command"
     : "Command failed";
@@ -424,7 +428,11 @@ export function computeShellTerminalBlock(
 
   const displayCommand = isShellTool
     ? getShellDisplayCommand(shellInput) ||
-      (isInteractiveAction ? shellAction || "" : errorDisplayCommand)
+      (isInteractiveAction
+        ? shellAction === "wait"
+          ? ""
+          : shellAction || ""
+        : errorDisplayCommand)
     : legacyCommand || errorDisplayCommand;
   const displayTarget = isShellTool
     ? getShellDisplayTarget(shellInput) || displayCommand
@@ -442,7 +450,7 @@ export function computeShellTerminalBlock(
       (!isInteractiveAction && hasResult));
   const blockAction = (isActive: boolean) =>
     !isActive && errorText
-      ? getTerminalFailureAction(errorText)
+      ? getTerminalFailureAction(errorText, shellAction)
       : useBriefOnly
         ? briefText
         : getShellActionLabel({

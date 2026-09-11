@@ -22,6 +22,7 @@ import {
 } from "@/types/chat";
 import {
   getShellActionLabel,
+  getTerminalFailureAction,
   formatSendInput,
   isInteractiveShellAction,
 } from "./tools/shell-tool-utils";
@@ -135,7 +136,9 @@ export function getActionText(content: SidebarContent): string {
     if (content.executionPhase === "awaiting_approval") {
       return "Awaiting approval";
     }
-    if (content.executionPhase === "failed") return "Command failed";
+    if (content.executionPhase === "failed") {
+      return getTerminalFailureAction(undefined, content.shellAction);
+    }
     return getShellActionLabel({
       isShellTool: !!content.shellAction,
       action: content.shellAction,

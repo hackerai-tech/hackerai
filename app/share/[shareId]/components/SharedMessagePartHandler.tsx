@@ -344,7 +344,7 @@ function renderTerminalTool(
         part.state === "output-error"
           ? isStoppedToolPart(part)
             ? "Stopped command"
-            : getTerminalFailureAction(part.errorText)
+            : getTerminalFailureAction(part.errorText, part.input?.action)
           : blockAction(false)
       }
       target={blockTarget}
