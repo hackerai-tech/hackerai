@@ -17,9 +17,9 @@ provider. A Miosa attempt rescued by E2B still belongs to the Miosa arm.
 outage or exposure. Show these separately by reason. Neither flag evaluation
 nor a successful model response proves that a sandbox was used.
 
-For customer comparisons, restrict to Pro parent Cloud Agent runs with actual
-rollout exposure. Split acquisition results by boot path, region and model;
-never compare all legacy E2B workspaces against only fresh Miosa workspaces.
+For customer comparisons, restrict to Pro and Pro+ parent Cloud Agent runs with
+actual rollout exposure. Split acquisition results by boot path, region and
+model; never compare all legacy E2B workspaces against only fresh Miosa workspaces.
 `reuse_existing` currently combines warm reuse and paused restore, so it is
 not a pure resume benchmark. Confirm pause duration and restore mode through
 disposable acceptance tests before making resume-performance claims.

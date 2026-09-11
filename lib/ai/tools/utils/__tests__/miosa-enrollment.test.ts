@@ -20,7 +20,7 @@ describe("fresh MIOSA enrollment", () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it.each(["free", "pro-plus", "ultra", "team", undefined] as const)(
+  it.each(["free", "ultra", "team", undefined] as const)(
     "does not enroll %s into a new workspace",
     async (subscription) => {
       await expect(
@@ -30,17 +30,23 @@ describe("fresh MIOSA enrollment", () => {
     },
   );
 
-  it("admits Pro only when no running or paused workspace exists, regardless of template", async () => {
-    await expect(
-      assertFreshMiosaEnrollment({ userId: "user-1", subscription: "pro" }),
-    ).resolves.toBeUndefined();
-    expect(mockList).toHaveBeenCalledWith(
-      expect.objectContaining({
-        query: { metadata: { userID: "user-1" }, state: ["running", "paused"] },
-        limit: 1,
-      }),
-    );
-  });
+  it.each(["pro", "pro-plus"] as const)(
+    "admits %s only when no running or paused workspace exists, regardless of template",
+    async (subscription) => {
+      await expect(
+        assertFreshMiosaEnrollment({ userId: "user-1", subscription }),
+      ).resolves.toBeUndefined();
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({
+          query: {
+            metadata: { userID: "user-1" },
+            state: ["running", "paused"],
+          },
+          limit: 1,
+        }),
+      );
+    },
+  );
 
   it.each(["running", "paused"])(
     "protects %s E2B workspaces on old templates",
