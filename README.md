@@ -26,7 +26,7 @@ You'll need the following accounts:
 **Required:**
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
-- [OpenAI](https://platform.openai.com/) - Request classification for detecting when to use [abliteration.ai](https://abliteration.ai/) models
+- [OpenAI](https://platform.openai.com/) - Identifies security requests that should use [abliteration.ai](https://abliteration.ai/) models
 - [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [Amazon S3](https://aws.amazon.com/s3/) - File storage
@@ -35,7 +35,7 @@ You'll need the following accounts:
 
 **Optional:**
 
-- [abliteration.ai](https://abliteration.ai/) - Moderation-gated model provider
+- [abliteration.ai](https://abliteration.ai/) - AI models for security requests that standard models may refuse
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
@@ -67,10 +67,10 @@ pnpm install
 pnpm run setup
 ```
 
-To enable moderation-gated routing to abliteration.ai models, create an API key
-in the [abliteration.ai console](https://abliteration.ai/console) and set
+To use abliteration.ai for eligible security requests, create an API key in the
+[abliteration.ai console](https://abliteration.ai/console) and set
 `ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. Without this
-optional key, HackerAI continues using its baseline models.
+optional key, HackerAI continues using its standard models.
 
 ### Start the development server
 

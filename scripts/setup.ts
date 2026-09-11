@@ -305,7 +305,8 @@ OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 # OpenAI - Get key at: https://platform.openai.com/
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 
-# Optional abliteration.ai provider for moderation-gated model routing.
+# Optional abliteration.ai provider for eligible security requests that
+# standard models may refuse.
 # Create a key at: https://abliteration.ai/console
 # Configure independently in Vercel and Trigger.dev; the PostHog flag is also required.
 ABLITERATION_API_KEY=
