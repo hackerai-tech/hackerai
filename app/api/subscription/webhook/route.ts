@@ -41,6 +41,10 @@ import {
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
 import {
+  LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON,
+  reconcileLateSubscriptionPayment,
+} from "@/lib/billing/late-subscription-payment";
+import {
   PAUSE_RESUME_CHECKOUT_TYPE,
   subscriptionPauseFromMetadata,
 } from "@/lib/billing/retention-offers";
@@ -1041,6 +1045,9 @@ async function handleInvoicePaid(
   const resetMode = getInvoicePaidBucketResetMode(invoice);
   const customerResult = await resolveUserIdsFromCustomer(customerId);
   const { userIds, orgId } = customerResult;
+  if (customerResult.reason === "lookup_failed") {
+    throw new Error("Paid invoice customer lookup failed");
+  }
 
   if (customerResult.reason === "legacy_user_metadata") {
     console.info(
@@ -1056,7 +1063,7 @@ async function handleInvoicePaid(
     return;
   }
 
-  const resolved = await resolveSubscription(subscriptionId);
+  const resolved = await resolveSubscription(subscriptionId, true);
   if (!resolved) {
     console.error(
       `[Subscription Webhook] Could not resolve subscription ${subscriptionId} for invoice ${invoice.id}`,
@@ -1125,6 +1132,53 @@ async function handleInvoicePaid(
       price: invoicePrice,
       invoicePaidEligible: false,
     });
+    const reconciliation = await reconcileLateSubscriptionPayment(
+      stripe,
+      invoice,
+      subscription,
+    );
+    if (reconciliation.status !== "not_applicable") {
+      const properties = {
+        stripe_event_id: stripeEventId,
+        stripe_invoice_id: invoice.id,
+        stripe_subscription_id: subscription.id,
+        stripe_customer_id: customerId,
+        reconciliation_status: reconciliation.status,
+        ...(reconciliation.status === "manual_review"
+          ? { reconciliation_reason: reconciliation.reason }
+          : { stripe_refund_id: reconciliation.refundId }),
+        amount_paid_dollars: centsToDollars(invoice.amount_paid),
+      };
+      for (const userId of userIds) {
+        phLogger.event("billing_late_payment_reconciled", {
+          userId,
+          ...properties,
+          $insert_id: `billing_late_payment_reconciled:${invoice.id}:${reconciliation.status}:${userId}`,
+        });
+      }
+      if (reconciliation.status === "manual_review") {
+        phLogger.error(
+          "billing_late_payment_requires_manual_reconciliation",
+          properties,
+        );
+      } else {
+        // Record the cash receipt without recovered MRR or paid access, so
+        // the refund webhook's negative revenue has a matching positive entry.
+        await recordSubscriptionRevenue({
+          invoice,
+          invoicePrice,
+          customerId,
+          userIds,
+          orgId: orgId ?? undefined,
+          tier,
+          subscription,
+          invoiceQuantity,
+          reason: "late_payment_after_cancellation",
+        });
+        phLogger.info("billing_late_payment_refund", properties);
+        return;
+      }
+    }
     phLogger.warn("billing_invoice_paid_ineligible_subscription_skipped", {
       event: "billing_invoice_paid_ineligible_subscription_skipped",
       userId: userIds[0],
@@ -1771,30 +1825,73 @@ async function handleSubscriptionRefund(
   stripeEventId: string,
   stripeEventType: "refund.created" | "refund.updated",
 ): Promise<void> {
-  if (refund.status !== "succeeded") return;
+  if (refund.status !== "succeeded") {
+    if (
+      refund.metadata?.hackeraiReason ===
+        LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON &&
+      ["failed", "canceled", "requires_action"].includes(refund.status ?? "")
+    ) {
+      phLogger.error("billing_late_payment_requires_manual_reconciliation", {
+        stripe_event_id: stripeEventId,
+        stripe_refund_id: refund.id,
+        stripe_invoice_id: refund.metadata?.stripeInvoiceId,
+        stripe_subscription_id: refund.metadata?.stripeSubscriptionId,
+        reconciliation_status: "manual_review",
+        reconciliation_reason: `refund_${refund.status}`,
+      });
+    }
+    return;
+  }
 
   const chargeId = stripeObjectId(refund.charge);
   if (!chargeId || refund.amount <= 0) return;
 
   const charge = await stripe.charges.retrieve(chargeId);
-  const invoiceId = stripeObjectId(
+  const chargeInvoiceId = stripeObjectId(
     (charge as Stripe.Charge & { invoice?: string | Stripe.Invoice | null })
       .invoice,
   );
+  // Newer Stripe versions link invoices through Invoice Payments instead of
+  // Charge.invoice. Our late-payment refunds retain that verified allocation.
+  const managedLateRefund =
+    refund.metadata?.hackeraiReason === LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON;
+  const invoiceId =
+    chargeInvoiceId ||
+    (managedLateRefund ? refund.metadata?.stripeInvoiceId : undefined);
   if (!invoiceId) return;
 
   const invoice = await stripe.invoices.retrieve(invoiceId);
   const subscriptionId = invoiceSubscriptionId(invoice);
   if (!subscriptionId) return;
+  if (
+    !chargeInvoiceId &&
+    (subscriptionId !== refund.metadata?.stripeSubscriptionId ||
+      !stripeObjectId(invoice.customer) ||
+      stripeObjectId(invoice.customer) !== stripeObjectId(charge.customer))
+  ) {
+    phLogger.error("billing_late_payment_requires_manual_reconciliation", {
+      stripe_event_id: stripeEventId,
+      stripe_refund_id: refund.id,
+      stripe_invoice_id: invoice.id,
+      stripe_subscription_id: subscriptionId,
+      reconciliation_status: "manual_review",
+      reconciliation_reason: "refund_attribution_mismatch",
+    });
+    return;
+  }
 
-  const resolved = await resolveSubscription(subscriptionId);
+  const resolved = await resolveSubscription(subscriptionId, true);
   if (!resolved || resolved.kind === "legacy_pentestgpt") return;
 
   const customerId =
     stripeObjectId(invoice.customer) ?? stripeObjectId(charge.customer);
   if (!customerId) return;
 
-  const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
+  const customerResult = await resolveUserIdsFromCustomer(customerId);
+  if (customerResult.reason === "lookup_failed") {
+    throw new Error("Refund customer lookup failed");
+  }
+  const { userIds, orgId } = customerResult;
   if (userIds.length === 0) return;
 
   const refundAttribution = await subscriptionRefundPriceId(

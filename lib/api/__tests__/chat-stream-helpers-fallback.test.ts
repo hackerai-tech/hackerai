@@ -33,7 +33,7 @@ const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_5_2_SLUG = "z-ai/glm-5.2";
 const GLM_SLUG = "z-ai/glm-5.3";
 const GLM_FLASH_SLUG = "z-ai/glm-5.3-flash";
-const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4-flash-vision-exp";
+const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
@@ -885,6 +885,23 @@ describe("isProviderApiError", () => {
 });
 
 describe("isExplicitDeepSeekProSelectionForRetry", () => {
+  it.each([
+    ["ask", false],
+    ["agent", true],
+    [undefined, false],
+  ] as const)(
+    "limits native Pro retry to Agent (mode=%s)",
+    (mode, expected) => {
+      expect(
+        isExplicitDeepSeekProSelectionForRetry({
+          selectedModel: "model-deepseek-v4-flash-vision-pro",
+          selectedModelOverride: "hackerai-pro",
+          mode,
+        }),
+      ).toBe(expected);
+    },
+  );
+
   it.each(["model-deepseek-v4-pro", "model-deepseek-v4-pro-0813"])(
     "recognizes explicit HackerAI Pro on %s",
     (selectedModel) => {
@@ -1117,6 +1134,22 @@ describe("getContentFilterRetryModel", () => {
 });
 
 describe("resolveServedModelForCostAccounting", () => {
+  it.each([
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-20260910",
+  ])(
+    "maps DeepSeek V4.1 vision response %s to its cost key",
+    (responseModel) => {
+      expect(
+        resolveServedModelForCostAccounting({
+          modelName: "model-glm-5.3-flash",
+          responseModel,
+          mode: "agent",
+        }),
+      ).toBe("model-deepseek-v4-flash-vision");
+    },
+  );
+
   it("preserves the previous DeepSeek Flash slug for legacy route pricing", () => {
     expect(
       resolveServedModelForCostAccounting({

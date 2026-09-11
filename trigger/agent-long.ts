@@ -43,6 +43,7 @@ import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-p
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { AGENT_PROVIDER_IDLE_TIMEOUT_MS } from "@/lib/ai/provider-stream-timeout";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
@@ -2007,6 +2008,27 @@ const recordAgentLongHandledRateLimitForDashboard = async (
   await metadata.flush();
 };
 
+const recordAgentLongCaughtErrorForDashboard = async (
+  error: unknown,
+  context: {
+    chatId: string;
+    userId: string;
+    runId: string;
+    phase: "setup" | "streaming";
+  },
+): Promise<RecordedAgentLongFailure> => {
+  if (isHandledUserRateLimitError(error)) {
+    await recordAgentLongHandledRateLimitForDashboard(error, {
+      chatId: context.chatId,
+      userId: context.userId,
+      runId: context.runId,
+    });
+    return { userCorrectable: true };
+  }
+
+  return recordAgentLongFailureForDashboard(error, context);
+};
+
 const recordAgentLongHandledToolFailureForDashboard = async (
   failure: ToolFailureLogEvent,
   context: {
@@ -2145,6 +2167,7 @@ type RunCleanupState = {
   usageRefundTracker: UsageRefundTracker;
   hasObservedUsage: () => boolean;
   releaseFreeRunLock: () => Promise<void>;
+  releasePaidDailyFreeAllowanceReservation: () => Promise<void>;
   chatLogger: ChatLogger | undefined;
   chatId: string;
   userId: string;
@@ -2316,6 +2339,7 @@ export const agentLongTask = task({
     ]);
     if (!cleanup.hasObservedUsage()) {
       await cleanup.usageRefundTracker.refund().catch(() => {});
+      await cleanup.releasePaidDailyFreeAllowanceReservation().catch(() => {});
     }
     await cleanup.releaseFreeRunLock().catch((error) => {
       triggerLogger.warn("[agent-long] canceled run lock release failed", {
@@ -2567,6 +2591,31 @@ export const agentLongTask = task({
     let streamPiped = false;
     let observedUsageTracker: UsageTracker | undefined;
     const hasObservedUsage = () => !!observedUsageTracker?.hasUsage;
+    let paidDailyFreeAllowanceReservation:
+      PaidDailyFreeAllowanceReservation | undefined;
+    let paidDailyFreeAllowanceFinalized = false;
+    const releasePaidDailyFreeAllowanceReservation = async () => {
+      if (
+        !paidDailyFreeAllowanceReservation ||
+        paidDailyFreeAllowanceFinalized
+      ) {
+        return;
+      }
+      const result = await recordPaidDailyFreeAllowanceCost(
+        userId,
+        0,
+        paidDailyFreeAllowanceReservation,
+      );
+      paidDailyFreeAllowanceFinalized = result.recorded;
+      if (!result.recorded) {
+        phLogger.warn("Paid daily free allowance lease release failed", {
+          userId,
+          chatId,
+          endpoint,
+          cost_record_failure_reason: result.unavailableReason,
+        });
+      }
+    };
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
     let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
     const finishCloudSandboxLifecycle = () => {
@@ -2581,6 +2630,7 @@ export const agentLongTask = task({
       usageRefundTracker,
       hasObservedUsage,
       releaseFreeRunLock: releaseFreeRunLockOnce,
+      releasePaidDailyFreeAllowanceReservation,
       chatLogger,
       chatId,
       userId,
@@ -2590,8 +2640,18 @@ export const agentLongTask = task({
 
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
+    // Register before async setup and handle a signal already canceled while
+    // the task was starting. Abort events are not replayed to late listeners.
+    const userStopSignal = new AbortController();
+    const forwardTriggerAbort = () =>
+      userStopSignal.abort(triggerSignal.reason);
+    triggerSignal.addEventListener("abort", forwardTriggerAbort, {
+      once: true,
+    });
+    if (triggerSignal.aborted) forwardTriggerAbort();
 
     try {
+      userStopSignal.signal.throwIfAborted();
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const [userCustomization, fetched] = await Promise.all([
@@ -2812,12 +2872,7 @@ export const agentLongTask = task({
 
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
-      // Wire trigger.dev's abort signal into a local controller.
-      // Fires on runs.cancel() (UI Stop) and Trigger's maxDuration.
-      const userStopSignal = new AbortController();
-      triggerSignal.addEventListener("abort", () => userStopSignal.abort(), {
-        once: true,
-      });
+      userStopSignal.signal.throwIfAborted();
 
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
@@ -2839,6 +2894,15 @@ export const agentLongTask = task({
           markAgentLongDurationExceeded();
           runtimeSettlementWatchdog?.arm();
           userStopSignal.abort();
+          triggerLogger.warn("[agent-long] active runtime budget exhausted", {
+            event: "agent_long_runtime_budget_exhausted",
+            run_id: ctx.run.id,
+            chat_id: chatId,
+            active_elapsed_ms: runtimeBudget.getElapsedTimeMs(),
+            runtime_budget_ms: agentLongMaxDurationMs,
+            cleanup_grace_ms: AGENT_LONG_CLEANUP_GRACE_MS,
+            agent_step_count: terminalAgentState?.agentStepCount ?? 0,
+          });
         },
       });
       activeRuntimeBudget = runtimeBudget;
@@ -2904,8 +2968,6 @@ export const agentLongTask = task({
       // before agentUiStream.pipe() registered the stream, and the frontend
       // transport would only see a FAILED status with no error message.
       let rateLimitInfo: RateLimitInfo;
-      let paidDailyFreeAllowanceReservation:
-        PaidDailyFreeAllowanceReservation | undefined;
 
       let streamError: unknown;
       const visionSummaryRecovery = createVisionSummaryRecoveryController({
@@ -3670,6 +3732,12 @@ export const agentLongTask = task({
             // Mutable stream state — updated in-place by the shared runner and
             // read back here in toUIMessageStream.onFinish.
             const state = initAgentStreamState(finalMessages, initialCtxUsage);
+            // Prepared attachment payloads can omit the persisted summary.
+            // Use fetched history for the source quote, retaining prepared model inputs.
+            state.sourceUiMessages =
+              localDesktopAttachmentsPrepared && truncatedMessages.length > 0
+                ? truncatedMessages
+                : processedMessages;
             terminalAgentState = state;
 
             const budgetSnapshot = captureBudgetSnapshot({
@@ -3759,7 +3827,15 @@ export const agentLongTask = task({
                   usageTracker.nonModelCost += triggerRunCost;
                   chatLogger?.getBuilder().addToolCost(triggerRunCost);
                 }
-                if (!usageTracker.hasUsage) return;
+                if (!usageTracker.hasUsage) {
+                  // Release an unused rescue lease so a failed provider start
+                  // does not block the user's next sequential rescue.
+                  if (paidDailyFreeAllowanceReservation) {
+                    await releasePaidDailyFreeAllowanceReservation();
+                    hasRecordedUsage = paidDailyFreeAllowanceFinalized;
+                  }
+                  return;
+                }
                 hasRecordedUsage = true;
                 const usageRecordArgs = {
                   selectedModel,
@@ -3784,7 +3860,10 @@ export const agentLongTask = task({
                     await recordPaidDailyFreeAllowanceCost(
                       userId,
                       usageCostRecord.costDollars,
+                      paidDailyFreeAllowanceReservation,
                     );
+                  paidDailyFreeAllowanceFinalized =
+                    allowanceCostRecord.recorded;
                   if (!allowanceCostRecord.recorded) {
                     phLogger.warn(
                       "Paid daily free allowance cost recording failed",
@@ -4249,6 +4328,25 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              providerStreamTimeout: {
+                timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                onTimeout: ({ phase, timeoutMs, modelId }) => {
+                  triggerLogger.warn("[agent-long] provider stalled", {
+                    event: "agent_long_provider_idle_timeout",
+                    run_id: ctx.run.id,
+                    chat_id: chatId,
+                    phase,
+                    timeout_ms: timeoutMs,
+                    model: modelId,
+                    agent_step_count: state.agentStepCount,
+                    active_elapsed_ms: runtimeBudget.getElapsedTimeMs(),
+                    remaining_runtime_ms: Math.max(
+                      0,
+                      agentLongMaxDurationMs - runtimeBudget.getElapsedTimeMs(),
+                    ),
+                  });
+                },
+              },
               abliteratedTelemetry,
               ...(activeAbliteratedExperiment?.variant === "test" && {
                 abliteratedStepRouting: {
@@ -4850,6 +4948,7 @@ export const agentLongTask = task({
                         isExplicitDeepSeekProSelectionForRetry({
                           selectedModel: retrySelectionModel,
                           selectedModelOverride,
+                          mode,
                         });
                       const shouldRetryInterruptedToolInput =
                         shouldRetryProviderStreamAfterInterruptedToolInput(
@@ -5765,6 +5864,9 @@ export const agentLongTask = task({
               ),
             );
           } catch (error) {
+            if (!hasObservedUsage()) {
+              await releasePaidDailyFreeAllowanceReservation();
+            }
             await releaseFreeRunLockOnce();
             throw error;
           }
@@ -5855,25 +5957,47 @@ export const agentLongTask = task({
       metadata.set("status", "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      if (!hasObservedUsage()) {
+        await releasePaidDailyFreeAllowanceReservation();
+      }
       await releaseFreeRunLockBestEffort("outer_catch");
+      if (
+        !streamPiped &&
+        triggerSignal.aborted &&
+        error === triggerSignal.reason
+      ) {
+        metadata.set("status", "canceled");
+        if (!hasObservedUsage()) {
+          await usageRefundTracker.refund().catch(() => {});
+        }
+        await phLogger.flush().catch(() => {});
+        return { chatId, assistantMessageId };
+      }
       memoryTelemetry.checkpoint({ phase: "run_failed", force: true });
       const chatMissingAfterStream =
         streamPiped &&
         error instanceof ChatSDKError &&
         isChatNotFoundError(error);
       const caughtErrorSummary = classifyAgentLongError(error);
+      const caughtHandledUserRateLimit = isHandledUserRateLimitError(error);
       const caughtErrorUserCorrectable =
+        caughtHandledUserRateLimit ||
         isUserCorrectableAgentLongErrorCategory(caughtErrorSummary.category);
-      const recordedFailure = await recordAgentLongFailureForDashboard(error, {
-        chatId,
-        userId,
-        runId: ctx.run.id,
-        phase: streamPiped ? "streaming" : "setup",
-      }).catch((metadataError): RecordedAgentLongFailure => {
+      const recordedFailure = await recordAgentLongCaughtErrorForDashboard(
+        error,
+        {
+          chatId,
+          userId,
+          runId: ctx.run.id,
+          phase: streamPiped ? "streaming" : "setup",
+        },
+      ).catch((metadataError): RecordedAgentLongFailure => {
         metadata
           .set(
             "status",
-            getAgentLongErrorRunStatus(caughtErrorSummary.category),
+            caughtHandledUserRateLimit
+              ? "rate_limited"
+              : getAgentLongErrorRunStatus(caughtErrorSummary.category),
           )
           .set("errorCategory", caughtErrorSummary.category);
         if (caughtErrorUserCorrectable) {
@@ -5944,6 +6068,7 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      triggerSignal.removeEventListener("abort", forwardTriggerAbort);
       await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();

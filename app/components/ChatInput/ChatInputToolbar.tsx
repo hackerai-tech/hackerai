@@ -65,7 +65,7 @@ export function ChatInputToolbar({
           <ChatModeSelector />
         ) : null}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
-        {isAgentMode(chatMode) ? (
+        {user && isAgentMode(chatMode) ? (
           <>
             <div
               className={

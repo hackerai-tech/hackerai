@@ -1,5 +1,5 @@
 import readline from "node:readline";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
@@ -7,6 +7,7 @@ import path from "node:path";
 import chalk from "chalk";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function question(query: string): Promise<string> {
   const rl = readline.createInterface({
@@ -20,6 +21,17 @@ function question(query: string): Promise<string> {
       resolve(ans);
     }),
   );
+}
+
+async function getRequiredAnswer(
+  prompt: string,
+  defaultValue?: string,
+): Promise<string> {
+  const answer = (await question(prompt)).trim() || defaultValue;
+  if (answer) return answer;
+
+  console.log(chalk.red("This value is required"));
+  return await getRequiredAnswer(prompt, defaultValue);
 }
 
 async function getOpenRouterApiKey(): Promise<string> {
@@ -56,19 +68,30 @@ async function getOpenAiApiKey(): Promise<string> {
   return await getOpenAiApiKey();
 }
 
-async function getXaiApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting XAI API Key for Agent mode")}`);
-  console.log("You can find your XAI API Key at: https://xai.com/api-keys");
-  const key = await question("Enter your XAI API Key: ");
+async function getS3Config(): Promise<{
+  AWS_S3_ACCESS_KEY_ID: string;
+  AWS_S3_SECRET_ACCESS_KEY: string;
+  AWS_S3_REGION: string;
+  AWS_S3_BUCKET_NAME: string;
+}> {
+  console.log(`\n${chalk.bold("Getting required Amazon S3 configuration")}`);
+  console.log("Create a bucket and credentials at: https://aws.amazon.com/s3/");
 
-  if (key.startsWith("xai-")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid XAI API Key format"));
-  console.log('XAI keys should start with "xai-"');
-
-  return await getXaiApiKey();
+  return {
+    AWS_S3_ACCESS_KEY_ID: await getRequiredAnswer(
+      "Enter your AWS S3 access key ID: ",
+    ),
+    AWS_S3_SECRET_ACCESS_KEY: await getRequiredAnswer(
+      "Enter your AWS S3 secret access key: ",
+    ),
+    AWS_S3_REGION: await getRequiredAnswer(
+      "Enter your AWS S3 region [us-east-1]: ",
+      "us-east-1",
+    ),
+    AWS_S3_BUCKET_NAME: await getRequiredAnswer(
+      "Enter your AWS S3 bucket name: ",
+    ),
+  };
 }
 
 async function getE2bApiKey(): Promise<string> {
@@ -228,8 +251,8 @@ async function configureConvexDashboard(
   console.log(chalk.bold(`   WORKOS_CLIENT_ID=${workOSClientId}`));
   console.log(chalk.bold(`   WORKOS_AUTH_DOMAIN=${workOSAuthDomain}`));
   console.log(chalk.bold(`   CONVEX_SERVICE_ROLE_KEY=${convexServiceRoleKey}`));
+  console.log("   - AWS_S3_* variables from .env.local");
   console.log("\nOptional variables (add later if using these features):");
-  console.log("   - AWS_S3_* variables (if using S3 storage)");
   console.log("   - REDIS_URL (if using Redis for stream resumption)");
   console.log("   - STRIPE_* variables (if using Stripe payments)");
   return await question(
@@ -273,15 +296,16 @@ NEXT_PUBLIC_CONVEX_URL=${envVars.NEXT_PUBLIC_CONVEX_URL || ""}
 CONVEX_SERVICE_ROLE_KEY=${envVars.CONVEX_SERVICE_ROLE_KEY}
 
 # =============================================================================
-# S3 FILE STORAGE (Optional - Feature Flag Controlled)
+# S3 FILE STORAGE (Required)
 # =============================================================================
-# AWS S3 credentials for file storage (only needed if S3 is enabled)
+# AWS S3 credentials for file storage
 # Sign up at: https://aws.amazon.com/s3/
-# ⚠️ IMPORTANT: If using S3, also add these to Convex Dashboard → Environment Variables
-AWS_S3_ACCESS_KEY_ID=
-AWS_S3_SECRET_ACCESS_KEY=
-AWS_S3_REGION=us-east-1
-AWS_S3_BUCKET_NAME=
+# ⚠️ IMPORTANT: Also add these to Convex Dashboard → Environment Variables
+# and Trigger.dev → Environment Variables.
+AWS_S3_ACCESS_KEY_ID=${envVars.AWS_S3_ACCESS_KEY_ID}
+AWS_S3_SECRET_ACCESS_KEY=${envVars.AWS_S3_SECRET_ACCESS_KEY}
+AWS_S3_REGION=${envVars.AWS_S3_REGION}
+AWS_S3_BUCKET_NAME=${envVars.AWS_S3_BUCKET_NAME}
 
 # Regional storage rollout. Keep false until the matching bucket names and IAM
 # access are configured in both Convex and Trigger.dev for this environment.
@@ -295,7 +319,7 @@ AWS_S3_BUCKET_NAME_US_WEST_2=
 # S3_URL_EXPIRATION_BUFFER_SECONDS=300
 
 # =============================================================================
-# AI PROVIDERS (Required)
+# AI PROVIDERS
 # =============================================================================
 # OpenRouter - Get key at: https://openrouter.ai/
 OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
@@ -303,8 +327,11 @@ OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 # OpenAI - Get key at: https://platform.openai.com/
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 
-# XAI (Grok) - Get key at: https://x.ai/
-XAI_API_KEY=${envVars.XAI_API_KEY}
+# Optional abliteration.ai provider for eligible security requests that
+# standard models may refuse.
+# Create a key at: https://abliteration.ai/console
+# Configure independently in Vercel and Trigger.dev; the PostHog flag is also required.
+ABLITERATION_API_KEY=
 
 # =============================================================================
 # CODE EXECUTION - CLOUD SANDBOX (Required for Agent Mode)
@@ -504,8 +531,13 @@ async function main() {
   // Get required API keys
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
-  const XAI_API_KEY = await getXaiApiKey();
   const MIOSA_API_KEY = await getMiosaApiKey();
+  const {
+    AWS_S3_ACCESS_KEY_ID,
+    AWS_S3_SECRET_ACCESS_KEY,
+    AWS_S3_REGION,
+    AWS_S3_BUCKET_NAME,
+  } = await getS3Config();
   const E2B_API_KEY = await getE2bApiKey();
 
   // Get WorkOS configuration
@@ -529,8 +561,11 @@ async function main() {
   await writeEnvFile({
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
-    XAI_API_KEY,
     MIOSA_API_KEY,
+    AWS_S3_ACCESS_KEY_ID,
+    AWS_S3_SECRET_ACCESS_KEY,
+    AWS_S3_REGION,
+    AWS_S3_BUCKET_NAME,
     E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,
@@ -550,15 +585,25 @@ async function main() {
       `\n${chalk.bold("Setting environment variables on local Convex deployment...")}`,
     );
     try {
-      await execAsync(
-        `npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
-      );
-      await execAsync(
-        `npx convex env set WORKOS_AUTH_DOMAIN ${WORKOS_AUTH_DOMAIN} --local`,
-      );
-      await execAsync(
-        `npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
-      );
+      const requiredLocalConvexEnv = {
+        WORKOS_CLIENT_ID,
+        WORKOS_AUTH_DOMAIN,
+        CONVEX_SERVICE_ROLE_KEY,
+        AWS_S3_ACCESS_KEY_ID,
+        AWS_S3_SECRET_ACCESS_KEY,
+        AWS_S3_REGION,
+        AWS_S3_BUCKET_NAME,
+      };
+      for (const [name, value] of Object.entries(requiredLocalConvexEnv)) {
+        await execFileAsync("npx", [
+          "convex",
+          "env",
+          "set",
+          name,
+          value,
+          "--local",
+        ]);
+      }
       console.log(
         chalk.green("✓ Environment variables set on local Convex deployment"),
       );
@@ -569,13 +614,7 @@ async function main() {
         ),
       );
       console.log(
-        `   npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
-      );
-      console.log(
-        `   npx convex env set WORKOS_AUTH_DOMAIN ${WORKOS_AUTH_DOMAIN} --local`,
-      );
-      console.log(
-        `   npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
+        "   npx convex env set <NAME> <VALUE> --local (for each required WorkOS, service-role, and AWS_S3_* variable)",
       );
     }
   } else {

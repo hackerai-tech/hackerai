@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
 import { validateServiceKey } from "./lib/utils";
+import { DELETION_COORDINATED_RESUME_CLAIM_VERSION } from "./lib/subscriptionPauseResume";
 
 export const DELETED_USER_ID = "__deleted_user__";
 
@@ -20,6 +21,9 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_customization",
     "extra_usage",
     "team_member_usage",
+    // Shared-organization rows are anonymized in place so the organization's
+    // automatic resume remains intact; all other pause rows are deleted.
+    "subscription_pauses",
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
@@ -67,6 +71,7 @@ type OrphanSubagentTable = "subagent_events" | "subagent_work_items";
 // deletion route already repeats the mutation while `hasMore` is true.
 const MAX_CLEANUP_DOCS_PER_MUTATION = 100;
 const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
+const MAX_RESUME_CLAIMS_PER_DELETION_START = 20;
 
 type ReadBudget = {
   remaining: number;
@@ -351,6 +356,7 @@ async function cleanupUserDataForUser(
   ctx: MutationCtx,
   userId: string,
   mode: CleanupMode,
+  options: { preservedOrganizationIds?: string[] } = {},
 ) {
   const stats = createStats();
   const now = Date.now();
@@ -451,6 +457,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "team_member_usage", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const subscriptionPausesBatch = await collectByIndexBatch<
+    Doc<"subscription_pauses">
+  >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
+    q.eq("user_id", userId),
+  );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
     Doc<"cancellation_reason_details">
   >(
@@ -506,6 +517,7 @@ async function cleanupUserDataForUser(
     localSandboxConnectionsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
+    subscriptionPausesBatch,
     cancellationReasonDetailsBatch,
     researchRunMembersBatch,
     researchUserProfilesBatch,
@@ -524,6 +536,7 @@ async function cleanupUserDataForUser(
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
+  const subscriptionPauses = subscriptionPausesBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
   const researchRunMembers = researchRunMembersBatch.docs;
   const researchUserProfiles = researchUserProfilesBatch.docs;
@@ -541,6 +554,30 @@ async function cleanupUserDataForUser(
       ? []
       : chats.filter((chat) => !incompleteChatIds.has(chat.id));
   if (chatsReadyToDelete.length < chats.length) {
+    stats.hasMore = true;
+  }
+
+  const preservedOrganizationIds = new Set(
+    options.preservedOrganizationIds ?? [],
+  );
+  const subscriptionPausesToAnonymize = subscriptionPauses.filter(
+    (pause) =>
+      pause.organization_id !== undefined &&
+      preservedOrganizationIds.has(pause.organization_id),
+  );
+  const subscriptionPausesReadyToDelete = subscriptionPauses.filter(
+    (pause) =>
+      !subscriptionPausesToAnonymize.includes(pause) &&
+      pause.status !== "resuming",
+  );
+  const heldSubscriptionPauses =
+    subscriptionPauses.length -
+    subscriptionPausesToAnonymize.length -
+    subscriptionPausesReadyToDelete.length;
+  // A resume worker may already be creating a new Stripe subscription. Keep
+  // the deletion fence and this row until that worker settles, then a later
+  // cleanup pass can safely remove the terminal row.
+  if (heldSubscriptionPauses > 0) {
     stats.hasMore = true;
   }
 
@@ -579,6 +616,21 @@ async function cleanupUserDataForUser(
   );
   await deleteDocs(ctx, stats, "extra_usage", extraUsage, mode);
   await deleteDocs(ctx, stats, "team_member_usage", teamMemberUsage, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "subscription_pauses",
+    subscriptionPausesReadyToDelete,
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "subscription_pauses",
+    subscriptionPausesToAnonymize,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
   await deleteDocs(
     ctx,
     stats,
@@ -971,7 +1023,7 @@ export const beginUserDataDeletionByService = mutation({
     serviceKey: v.string(),
     userId: v.string(),
   },
-  returns: v.null(),
+  returns: v.boolean(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const existing = await ctx.db
@@ -979,12 +1031,45 @@ export const beginUserDataDeletionByService = mutation({
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
       .unique();
     if (!existing) {
+      const resumingPauses = await ctx.db
+        .query("subscription_pauses")
+        .withIndex("by_user_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "resuming"),
+        )
+        .take(MAX_RESUME_CLAIMS_PER_DELETION_START + 1);
+
+      if (
+        resumingPauses.length > MAX_RESUME_CLAIMS_PER_DELETION_START ||
+        resumingPauses.some(
+          (pause) =>
+            pause.resume_claim_version !==
+              DELETION_COORDINATED_RESUME_CLAIM_VERSION ||
+            pause.resume_side_effect_authorized_at !== undefined,
+        )
+      ) {
+        return false;
+      }
+
+      // These versioned claims have not crossed the Stripe side-effect
+      // barrier, so canceling them and inserting the fence in this same
+      // transaction safely gives deletion ownership of the user.
+      const canceledAt = Date.now();
+      for (const pause of resumingPauses) {
+        await ctx.db.patch(pause._id, {
+          status: "canceled",
+          canceled_at: canceledAt,
+          resume_claimed_at: undefined,
+          resume_claim_version: undefined,
+          resume_side_effect_authorized_at: undefined,
+          updated_at: canceledAt,
+        });
+      }
       await ctx.db.insert("user_deletion_fences", {
         user_id: args.userId,
-        started_at: Date.now(),
+        started_at: canceledAt,
       });
     }
-    return null;
+    return true;
   },
 });
 
@@ -992,11 +1077,14 @@ export const deleteAllUserDataByService = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
+    preservedOrganizationIds: v.optional(v.array(v.string())),
   },
   returns: cleanupStatsValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    return await cleanupUserDataForUser(ctx, args.userId, "execute");
+    return await cleanupUserDataForUser(ctx, args.userId, "execute", {
+      preservedOrganizationIds: args.preservedOrganizationIds,
+    });
   },
 });
 

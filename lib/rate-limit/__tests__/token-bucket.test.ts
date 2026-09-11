@@ -581,14 +581,29 @@ describe("token-bucket", () => {
     it.each([
       "model-deepseek-v4-flash-vision",
       "model-deepseek-v4-flash-vision-pro",
-      "deepseek/deepseek-v4-flash-vision-exp",
+      "deepseek/deepseek-v4.1-flash",
+      "deepseek/deepseek-v4.1-flash-20260910",
     ])(
-      "should use the DeepSeek vision peak ceiling for %s ($0.44/$1.32)",
+      "should use the DeepSeek V4.1 Flash peak ceiling for %s ($0.30/$1.20)",
       (modelName) => {
-        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(6600);
-        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(19800);
+        expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(4500);
+        expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(18000);
+        expect(
+          calculateRawModelUsageCostDollars({
+            inputTokens: 1_000_000,
+            outputTokens: 1_000_000,
+            cacheReadTokens: 500_000,
+            modelName,
+          }),
+        ).toBeCloseTo(1.353);
       },
     );
+
+    it("preserves historical experimental vision pricing", () => {
+      const modelName = "deepseek/deepseek-v4-flash-vision-exp";
+      expect(calculateTokenCost(1_000_000, "input", modelName)).toBe(6600);
+      expect(calculateTokenCost(1_000_000, "output", modelName)).toBe(19800);
+    });
 
     it.each(["model-kimi-k3", "model-opus-4.6"])(
       "should use Kimi K3 pricing for %s ($3.00/$15.00)",

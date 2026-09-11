@@ -75,6 +75,7 @@ import {
 } from "@/lib/limit-pressure";
 
 export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
+export const AGENT_PERFORMANCE_LOG_SAMPLE_RATE = 0.01;
 export const USAGE_PRICING_VERSION = `request-${NORMAL_USAGE_MULTIPLIER.toFixed(2)}-extra-${EXTRA_USAGE_REQUEST_MULTIPLIER.toFixed(2)}-v2`;
 
 const usagePricingAnalyticsProperties = {
@@ -88,10 +89,10 @@ const usagePricingAnalyticsProperties = {
   ),
 } as const;
 
-const usageSettlementSampleBucket = (usageSettlementId: string): number => {
+const telemetrySampleBucket = (id: string): number => {
   let hash = 2166136261;
-  for (let index = 0; index < usageSettlementId.length; index += 1) {
-    hash ^= usageSettlementId.charCodeAt(index);
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) % 10_000;
@@ -100,8 +101,12 @@ const usageSettlementSampleBucket = (usageSettlementId: string): number => {
 export const isUsageSettlementSuccessSampled = (
   usageSettlementId: string,
 ): boolean =>
-  usageSettlementSampleBucket(usageSettlementId) <
+  telemetrySampleBucket(usageSettlementId) <
   USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE * 10_000;
+
+export const isAgentPerformanceLogSampled = (runId: string): boolean =>
+  telemetrySampleBucket(`agent-performance:${runId}`) <
+  AGENT_PERFORMANCE_LOG_SAMPLE_RATE * 10_000;
 
 export interface ChatLoggerConfig {
   chatId: string;
@@ -1315,6 +1320,7 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  abliteratedProviderSummary,
   posthog,
   userId,
   chatId,
@@ -1370,7 +1376,8 @@ export function captureAgentRun({
 }: Omit<
   AgentCompletionAnalyticsArgs,
   "endpoint" | "chatLogger" | "abliteratedProviderSummary"
->) {
+> &
+  Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
   if (mode !== "agent") return;
   const performanceDiagnostics = buildAgentPerformanceDiagnostics({
     triggerUsageDurationMs,
@@ -1414,12 +1421,18 @@ export function captureAgentRun({
       }
     : undefined;
 
+  // Keep complete percentile data on the existing completion event. Duplicate
+  // diagnostic logs retain errors and a stable 1% sample of other slow runs.
   if (
-    performanceDiagnostics?.firstOutputSlow ||
-    performanceDiagnostics?.runtimeSlow
+    (performanceDiagnostics?.firstOutputSlow ||
+      performanceDiagnostics?.runtimeSlow) &&
+    (outcome === "error" ||
+      isAgentPerformanceLogSampled(triggerRunId ?? chatId))
   ) {
     logger.warn("Slow agent run detected", {
       event: "agent_performance_diagnostic",
+      log_sample_rate:
+        outcome === "error" ? 1 : AGENT_PERFORMANCE_LOG_SAMPLE_RATE,
       service: "agent-long",
       chat_id: chatId,
       ...(triggerRunId && { trigger_run_id: triggerRunId }),
@@ -1602,6 +1615,11 @@ export function captureAgentRun({
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
+      // Versioned call-level evidence supersedes the old final-model flag.
+      ...abliteratedProviderSummary,
+      ...(abliteratedProviderSummary?.model_routing_telemetry_version === 1 && {
+        legacy_fallback_served: fallbackServed,
+      }),
       ...(sandboxInfo?.type && {
         sandbox_type: sandboxInfo.type,
       }),
@@ -1677,7 +1695,15 @@ export function captureAgentCompletionAnalytics(
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,
           response_model: args.responseModel,
-          fallback_served: args.fallbackServed,
+          fallback_served:
+            args.abliteratedProviderSummary?.model_routing_telemetry_version ===
+            1
+              ? args.abliteratedProviderSummary.fallback_served
+              : args.fallbackServed,
+          ...(args.abliteratedProviderSummary
+            ?.model_routing_telemetry_version === 1 && {
+            legacy_fallback_served: args.fallbackServed,
+          }),
           provider_recovery_attempts: args.providerRecoveryAttempts,
           provider_recovery_succeeded: args.providerRecoverySucceeded,
           budget_abort_cap_reason: args.budgetAbortDetails?.capReason,
@@ -1689,6 +1715,7 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
     chatId: args.chatId,

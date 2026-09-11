@@ -1,4 +1,6 @@
 import "@testing-library/jest-dom";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { getFunctionName } from "convex/server";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import {
   act,
@@ -176,6 +178,11 @@ describe("ChatInput - Integration Tests", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    jest
+      .mocked(useAuth)
+      .mockReturnValue({ user: null, entitlements: [] } as ReturnType<
+        typeof useAuth
+      >);
     mockUseQuery.mockReset();
     mockUseQuery.mockReturnValue(undefined);
     mockReadGeneratedTextAttachment.mockReset();
@@ -460,16 +467,24 @@ describe("ChatInput - Integration Tests", () => {
 
   describe("Agent Mode Integration", () => {
     it("renders a glass composer with a narrower sandbox context strip", () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
       window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
-      mockUseQuery.mockReturnValue([
-        {
-          connectionId: "local-sandbox",
-          name: "Local sandbox",
-          isDesktop: false,
-        },
-      ]);
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "localSandbox:listConnections"
+          ? [
+              {
+                connectionId: "local-sandbox",
+                name: "Local sandbox",
+                isDesktop: false,
+              },
+            ]
+          : undefined,
+      );
 
-      render(
+      const { rerender } = render(
         <TestWrapper>
           <ChatInput
             onSubmit={mockOnSubmit}
@@ -502,17 +517,52 @@ describe("ChatInput - Integration Tests", () => {
         "shrink-0",
         "md:hidden",
       );
+
+      jest
+        .mocked(useAuth)
+        .mockReturnValue({ user: null, entitlements: [] } as ReturnType<
+          typeof useAuth
+        >);
+      rerender(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.queryByTestId("chat-input-agent-context"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("chat-input-desktop-permission"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("chat-input-desktop-sandbox"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
     it("moves Agent controls below the input when the composer becomes narrow", () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
       window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
-      mockUseQuery.mockReturnValue([
-        {
-          connectionId: "local-sandbox",
-          name: "Local sandbox",
-          isDesktop: false,
-        },
-      ]);
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "localSandbox:listConnections"
+          ? [
+              {
+                connectionId: "local-sandbox",
+                name: "Local sandbox",
+                isDesktop: false,
+              },
+            ]
+          : undefined,
+      );
 
       let resizeCallback: ResizeObserverCallback | null = null;
       const originalResizeObserverDescriptor = Object.getOwnPropertyDescriptor(

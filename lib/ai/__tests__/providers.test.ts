@@ -19,6 +19,7 @@ import {
   PDF_PARSER_RECOVERY_HEADER,
   sanitizeOpenRouterEncryptedReasoning,
   supportsMultimodalToolResults,
+  resolveTierToProviderKey,
 } from "@/lib/ai/providers";
 
 const edgeFetchPrimitives =
@@ -142,9 +143,7 @@ describe("provider registry", () => {
     ).toBe("minimax/minimax-m3");
     expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
     expect(GLM_5_3_FLASH_SLUG).toBe("z-ai/glm-5.3-flash");
-    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe(
-      "deepseek/deepseek-v4-flash-vision-exp",
-    );
+    expect(DEEPSEEK_V4_FLASH_VISION_SLUG).toBe("deepseek/deepseek-v4.1-flash");
     expect(
       (myProvider.languageModel("model-glm-5.3-flash") as { modelId: string })
         .modelId,
@@ -276,6 +275,16 @@ describe("provider registry", () => {
     expect(isKimiModel("model-opus-4.6")).toBe(true);
     expect(isAnthropicModel("model-opus-4.6")).toBe(false);
     expect(isAnthropicModel("anthropic/claude-opus-4.6")).toBe(true);
+  });
+
+  it("resolves Agent Pro to V4.1 Flash with native image support", () => {
+    const mode = "agent";
+    const key = resolveTierToProviderKey("hackerai-pro", mode)!;
+    expect(myProvider.languageModel(key).modelId).toBe(
+      "deepseek/deepseek-v4.1-flash",
+    );
+    expect(supportsMultimodalToolResults(key)).toBe(true);
+    expect(getModelDisplayName(key)).toBe("DeepSeek V4.1 Flash");
   });
 
   it("classifies the active DeepSeek tier routes as DeepSeek", () => {
@@ -1342,6 +1351,9 @@ describe("supportsMultimodalToolResults", () => {
     expect(supportsMultimodalToolResults(DEEPSEEK_V4_FLASH_VISION_SLUG)).toBe(
       true,
     );
+    expect(
+      supportsMultimodalToolResults("deepseek/deepseek-v4.1-flash-20260910"),
+    ).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.5-pro")).toBe(true);
     expect(supportsMultimodalToolResults("model-grok-4.6-pro")).toBe(true);

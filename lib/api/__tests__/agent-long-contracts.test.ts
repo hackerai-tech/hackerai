@@ -943,6 +943,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(
       /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
     );
+
+    const askSetupCleanup = chatHandlerSrc.indexOf(
+      "execute errors are consumed by createUIMessageStream",
+    );
+    expect(askSetupCleanup).toBeGreaterThan(-1);
+    expect(
+      chatHandlerSrc.slice(askSetupCleanup, askSetupCleanup + 1_000),
+    ).toContain("releasePaidDailyFreeAllowanceReservation");
+
+    const triggerCancelCleanup = taskSrc.slice(
+      taskSrc.indexOf("onCancel: async"),
+      taskSrc.indexOf("run: async"),
+    );
+    expect(triggerCancelCleanup).toContain(
+      "releasePaidDailyFreeAllowanceReservation",
+    );
+    expect(
+      taskSrc.match(/await releasePaidDailyFreeAllowanceReservation\(\)/g),
+    ).toHaveLength(3);
   });
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
@@ -1457,6 +1476,33 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
   });
 
+  test("handled setup rate limits do not fail the Trigger run", () => {
+    expect(taskSrc).toMatch(
+      /const recordAgentLongCaughtErrorForDashboard[\s\S]*isHandledUserRateLimitError\(error\)[\s\S]*recordAgentLongHandledRateLimitForDashboard/,
+    );
+
+    const handledRateLimitIdx = taskSrc.indexOf(
+      "const caughtHandledUserRateLimit = isHandledUserRateLimitError(error)",
+    );
+    const recordedFailureIdx = taskSrc.indexOf(
+      "recordAgentLongCaughtErrorForDashboard",
+      handledRateLimitIdx,
+    );
+    const syntheticFlushIdx = taskSrc.indexOf(
+      "await waitForErrorStream()",
+      recordedFailureIdx,
+    );
+    const handledReturnGuardIdx = taskSrc.indexOf(
+      "recordedFailure.userCorrectable === true",
+      syntheticFlushIdx,
+    );
+
+    expect(handledRateLimitIdx).toBeGreaterThan(-1);
+    expect(recordedFailureIdx).toBeGreaterThan(handledRateLimitIdx);
+    expect(syntheticFlushIdx).toBeGreaterThan(recordedFailureIdx);
+    expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
+  });
+
   test("ChatSDK stream errors preserve their user-correctable classification before provider wrapping", () => {
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
@@ -1500,7 +1546,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(languageModel, stepIndex\) \?\? languageModel;\s*const recoveryModel = recoverAbliterationMedia\(telemetryModel\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*languageModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? languageModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1977,7 +2023,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/caughtErrorUserCorrectable/);
 
     const recordedFailureIdx = taskSrc.indexOf(
-      "const recordedFailure = await recordAgentLongFailureForDashboard",
+      "const recordedFailure = await recordAgentLongCaughtErrorForDashboard",
     );
     const syntheticFlushIdx = taskSrc.indexOf(
       "await waitForErrorStream()",

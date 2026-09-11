@@ -1,6 +1,10 @@
-import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import type {
+  AbliteratedModelTelemetry,
+  ModelStepRouting,
+} from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
   createAbliterationVisionPreprocessor,
@@ -89,6 +93,7 @@ import {
   getSummarizationThresholdTokens,
   MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
+  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
@@ -145,6 +150,10 @@ import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import type { AgentStartupPhase } from "@/lib/chat/agent-run-timing";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import {
+  withProviderStreamTimeout,
+  type ProviderStreamTimeoutOptions,
+} from "@/lib/ai/provider-stream-timeout";
+import {
   guardLanguageModelProviderResponse,
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
@@ -156,7 +165,7 @@ const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
 const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
 const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
-const PRO_AGENT_TEXT_MODEL = "model-deepseek-v4-pro-0813";
+const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
   messages.some((message) =>
@@ -236,11 +245,17 @@ export const resolveAgentModelForImageToolResults = (
   selectedModelOverride?: SelectedModel,
   auxiliaryVisionEnabled = false,
   directGlmVisionEnabled = false,
+  subscription?: SubscriptionTier,
 ): string => {
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
+  // Native Pro vision needs no promotion, and must retain Pro reasoning.
+  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) return modelName;
   if (directGlmVisionEnabled) {
+    if (usesGlmFlashForStandardVision(subscription, selectedModelOverride)) {
+      return STANDARD_AGENT_GLM_VISION_MODEL;
+    }
     if (
       selectedModelOverride === "hackerai-pro" ||
       (!selectedModelOverride &&
@@ -323,6 +338,8 @@ export const isRollingCompactionEffective = (
 export type AgentStreamState = {
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
+  /** UI history before injected reminders/notes, kept for source-derived checkpoints. */
+  sourceUiMessages?: UIMessage[];
   /** Raw UI messages captured before in-memory pruning, for transcript sidecars. */
   transcriptSourceMessages?: UIMessage[];
   /** Context-window usage data; updated after summarization and each step. */
@@ -627,6 +644,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
     baselineModel: string;
@@ -852,6 +870,7 @@ export async function createAgentStream(
   const requestedSlug = requestedLanguageModel.modelId;
   let lastRequestedSlug = requestedSlug;
   let activeStepModelName = modelName;
+  let activeStepRouting: ModelStepRouting = {};
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
   const abortSignal = combineAbortSignals([
@@ -871,8 +890,16 @@ export async function createAgentStream(
     stepIndex: number,
   ): LanguageModel => {
     const telemetryModel =
-      ctx.abliteratedTelemetry?.wrap(languageModel, stepIndex) ?? languageModel;
-    const recoveryModel = recoverAbliterationMedia(telemetryModel);
+      ctx.abliteratedTelemetry?.wrap(
+        languageModel,
+        stepIndex,
+        activeStepRouting,
+      ) ?? languageModel;
+    const recoveryModel = recoverAbliterationMedia(
+      ctx.providerStreamTimeout
+        ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
+        : telemetryModel,
+    );
     const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
@@ -1002,24 +1029,37 @@ export async function createAgentStream(
   let pdfParserEngine: "mistral-ocr" | "cloudflare-ai" = "mistral-ocr";
   let providerPdfAttachmentsDisabled = false;
   let openRouterFileAnnotations: unknown[] | undefined;
+  const getPreVisionModelName = (stepIndex = generationStepOffset) =>
+    ctx.abliteratedStepRouting
+      ? resolveAbliterationModelForGenerationStep({
+          treatmentModel: routeModelName,
+          baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          stepIndex,
+        })
+      : routeModelName;
   const getEffectiveModelName = (stepIndex = generationStepOffset) =>
     resolveAgentModelForImageToolResults(
-      ctx.abliteratedStepRouting
-        ? resolveAbliterationModelForGenerationStep({
-            treatmentModel: routeModelName,
-            baselineModel: ctx.abliteratedStepRouting.baselineModel,
-            stepIndex,
-          })
-        : routeModelName,
+      getPreVisionModelName(stepIndex),
       ctx.mode,
       streamHasImageViewResults,
       ctx.selectedModelOverride,
       ctx.auxiliaryVisionEnabled,
       ctx.directGlmVisionEnabled,
+      ctx.subscription,
     );
   const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
     const effectiveModelName = getEffectiveModelName(stepIndex);
     activeStepModelName = effectiveModelName;
+    const preVisionModelName = getPreVisionModelName(stepIndex);
+    activeStepRouting = {
+      plannedBaselineContinuation:
+        isAbliterationModel(routeModelName) &&
+        preVisionModelName !== routeModelName,
+      visionRoute: preVisionModelName !== effectiveModelName,
+      fallbackModels: getFallbackSlugs(effectiveModelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      }),
+    };
     ctx.onModelStepSelected?.(effectiveModelName);
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
     lastRequestedSlug = languageModel.modelId;
@@ -1277,6 +1317,7 @@ export async function createAgentStream(
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
               messages: state.finalMessages,
+              sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
               subscription: ctx.subscription,
               languageModel: effectiveModelInfo.languageModel,
@@ -1416,6 +1457,7 @@ export async function createAgentStream(
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
               modelMessages: rollingModelMessages,
+              sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
               subscription: ctx.subscription,
               languageModel: effectiveModelInfo.languageModel,
@@ -1458,8 +1500,15 @@ export async function createAgentStream(
               const continuationPrompt = loopRecovery.nudge
                 ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
                 : POST_SUMMARIZATION_CONTINUATION_PROMPT;
-              const retainedModelTail =
-                getRecentCompleteModelTail(rollingModelMessages);
+              const retainedModelTail = getRecentCompleteModelTail(
+                rollingModelMessages,
+                Math.max(
+                  0,
+                  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS -
+                    (inRunResult.userMessageContextTokens ?? 0) -
+                    (inRunResult.runtimeContextTokens ?? 0),
+                ),
+              );
               const nextBaseMessages: ModelMessage[] = [
                 ...compactedModelMessages,
                 ...retainedModelTail,

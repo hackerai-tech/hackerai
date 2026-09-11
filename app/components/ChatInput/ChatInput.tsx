@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
@@ -271,6 +272,7 @@ export const ChatInput = ({
     desktopBridgeStatus,
     defaultLocalSandboxPreference,
   } = useGlobalState();
+  const { user } = useAuth();
   const input = useComposerInput();
   const { setInput } = useComposerActions();
   const isOnline = useOnlineStatus();
@@ -789,7 +791,7 @@ export const ChatInput = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState showAgentControls={isAgent} />;
+    return <ChatInputLoadingState showAgentControls={!!user && isAgent} />;
   }
 
   return (
@@ -912,7 +914,7 @@ export const ChatInput = ({
 
         {/* Compact Agent controls below the input. The composer switches to
             this strip whenever its own width is constrained, even on desktop. */}
-        {isAgent && !showAgentApprovalPrompt && (
+        {user && isAgent && !showAgentApprovalPrompt && (
           <div
             className={`chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}

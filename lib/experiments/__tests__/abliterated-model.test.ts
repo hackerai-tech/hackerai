@@ -323,7 +323,7 @@ describe("moderation-gated Abliteration assignment", () => {
     {
       name: "explicit Pro",
       selectedModelOverride: "hackerai-pro" as SelectedModel,
-      selectedModel: "model-deepseek-v4-pro-0813" as const,
+      selectedModel: "model-deepseek-v4-flash-vision-pro" as const,
     },
     {
       name: "explicit Max",
@@ -354,13 +354,13 @@ describe("moderation-gated Abliteration assignment", () => {
     {
       name: "Pro image attachment",
       selectedModelOverride: "hackerai-pro" as SelectedModel,
-      selectedModel: "model-deepseek-v4-pro-0813" as const,
+      selectedModel: "model-deepseek-v4-flash-vision-pro" as const,
       messages: imageAttachmentMessages,
     },
     {
       name: "Pro image-view tool result",
       selectedModelOverride: "hackerai-pro" as SelectedModel,
-      selectedModel: "model-deepseek-v4-pro-0813" as const,
+      selectedModel: "model-deepseek-v4-flash-vision-pro" as const,
       messages: imageViewMessages,
     },
     {

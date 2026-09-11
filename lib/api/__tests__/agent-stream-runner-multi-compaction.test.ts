@@ -179,6 +179,115 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it.each([false, true])(
+    "preserves native Pro tool vision with direct vision experiment=%s",
+    (directGlmVisionEnabled) => {
+      for (const selection of [undefined, "auto", "hackerai-pro"] as const) {
+        expect(
+          resolveAgentModelForImageToolResults(
+            "model-deepseek-v4-flash-vision-pro",
+            "agent",
+            true,
+            selection,
+            false,
+            directGlmVisionEnabled,
+            "ultra",
+          ),
+        ).toBe("model-deepseek-v4-flash-vision-pro");
+      }
+    },
+  );
+
+  it.each(["pro", "pro-plus"] as const)(
+    "uses GLM Flash for %s Standard and Auto image tool results",
+    (subscription) => {
+      for (const selection of [
+        undefined,
+        "auto",
+        "hackerai-standard",
+      ] as const) {
+        for (const model of [
+          "model-deepseek-v4-flash-0731",
+          "model-deepseek-v4-pro-0813",
+          "model-glm-5.3-flash",
+        ]) {
+          expect(
+            resolveAgentModelForImageToolResults(
+              model,
+              "agent",
+              true,
+              selection,
+              false,
+              true,
+              subscription,
+            ),
+          ).toBe("model-glm-5.3-flash");
+          expect(
+            resolveAgentModelForImageToolResults(
+              model,
+              "agent",
+              false,
+              selection,
+              false,
+              true,
+              subscription,
+            ),
+          ).toBe(model);
+          expect(
+            resolveAgentModelForImageToolResults(
+              model,
+              "agent",
+              true,
+              selection,
+              true,
+              true,
+              subscription,
+            ),
+          ).toBe(model);
+        }
+      }
+      expect(
+        resolveAgentModelForImageToolResults(
+          "model-deepseek-v4-pro-0813",
+          "agent",
+          true,
+          "hackerai-pro",
+          false,
+          true,
+          subscription,
+        ),
+      ).toBe("model-deepseek-v4-flash-vision-pro");
+      expect(
+        resolveAgentModelForImageToolResults(
+          "model-grok-4.6",
+          "agent",
+          true,
+          "hackerai-max",
+          false,
+          false,
+          subscription,
+        ),
+      ).toBe("model-grok-4.6");
+    },
+  );
+
+  it.each(["ultra", "team", "free"] as const)(
+    "preserves %s image tool routing",
+    (subscription) => {
+      expect(
+        resolveAgentModelForImageToolResults(
+          "model-deepseek-v4-flash-0731",
+          "agent",
+          true,
+          "auto",
+          false,
+          subscription !== "free",
+          subscription,
+        ),
+      ).toBe("model-deepseek-v4-flash-vision");
+    },
+  );
+
   it("keeps DeepSeek for text-only Agent steps", () => {
     expect(
       resolveAgentModelForImageToolResults(
@@ -326,7 +435,7 @@ describe("resolveAgentModelAfterSummarization", () => {
     ).toBe("model-deepseek-v4-flash-0731");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
-    ).toBe("model-deepseek-v4-pro-0813");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
     expect(
       resolveAgentModelAfterSummarization(
         "model-deepseek-v4-flash-vision",
@@ -340,7 +449,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-pro-0813");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it("keeps vision routes when compacted context still contains images", () => {
@@ -647,6 +756,7 @@ describe("createAgentStream repeated compaction", () => {
     "routes only the first generation step through Abliteration for %s %s",
     async (mode, subscription, baselineModel) => {
       const onModelStepSelected = jest.fn();
+      const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
         [uiMessage("initial", "Inspect the authorized lab")],
         { usedTokens: 1_000, maxTokens: 128_000 },
@@ -660,6 +770,7 @@ describe("createAgentStream repeated compaction", () => {
             languageModel: (name: string) => ({ modelId: name }),
           },
           platformAuthorized: true,
+          abliteratedTelemetry: { wrap },
           abliteratedStepRouting: {
             baselineModel,
           },
@@ -684,12 +795,28 @@ describe("createAgentStream repeated compaction", () => {
 
       const firstStep = await prepare(0);
       expect(firstStep.model.modelId).toBe("model-abliterated");
+      expect(wrap).toHaveBeenLastCalledWith(
+        expect.objectContaining({ modelId: "model-abliterated" }),
+        0,
+        expect.objectContaining({
+          plannedBaselineContinuation: false,
+          visionRoute: false,
+        }),
+      );
       expect(JSON.stringify(firstStep.messages)).not.toContain(
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
 
       const secondStep = await prepare(1);
       expect(secondStep.model.modelId).toBe(baselineModel);
+      expect(wrap).toHaveBeenLastCalledWith(
+        expect.objectContaining({ modelId: baselineModel }),
+        1,
+        expect.objectContaining({
+          plannedBaselineContinuation: true,
+          visionRoute: false,
+        }),
+      );
       expect(JSON.stringify(secondStep.messages)).toContain(
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
@@ -1320,8 +1447,12 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
+    ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
     ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
-    ["model-deepseek-v4-flash-vision-pro", "model-deepseek-v4-pro-0813"],
+    [
+      "model-deepseek-v4-flash-vision-pro",
+      "model-deepseek-v4-flash-vision-pro",
+    ],
   ])(
     "switches %s back to %s after a text-only persisted summary",
     async (visionModel, textModel) => {
@@ -1456,7 +1587,7 @@ describe("createAgentStream repeated compaction", () => {
       ],
     });
 
-    expect(continued.model.modelId).toBe("model-deepseek-v4-pro-0813");
+    expect(continued.model.modelId).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it.each(["ask", "agent"] as const)(
@@ -1639,6 +1770,8 @@ describe("createAgentStream repeated compaction", () => {
       .mockResolvedValue({
         summaryMessage: summary2,
         summaryText: "summary 2",
+        userMessageContextTokens: 1_024,
+        runtimeContextTokens: 768,
         summarizationUsage: { inputTokens: 10, outputTokens: 2 },
       });
     mockGetProviderPromptPressure
@@ -1674,6 +1807,7 @@ describe("createAgentStream repeated compaction", () => {
       usedTokens: 120_000,
       maxTokens: 128_000,
     });
+    state.sourceUiMessages = [original];
     const stream = (await createAgentStream(
       "test-model",
       createTestStreamContext({
@@ -1710,6 +1844,7 @@ describe("createAgentStream repeated compaction", () => {
           expect.objectContaining({ content: "summary 1" }),
           step1,
         ]),
+        sourceUiMessages: [original],
         transcriptModelMessages: [...initialRaw, step1],
         compactionIndex: 2,
       }),
@@ -1738,6 +1873,15 @@ describe("createAgentStream repeated compaction", () => {
       messages: [...initialRaw, step1, step2],
     });
     expect(third.messages[0].content).toBe("summary 2");
+    const {
+      estimateSummaryInputTokens,
+    } = require("@/lib/chat/summarization/helpers");
+    const {
+      SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
+    } = require("@/lib/chat/summarization/constants");
+    expect(
+      estimateSummaryInputTokens(third.messages.slice(1, -1)),
+    ).toBeLessThanOrEqual(SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS - 1_024 - 768);
     expect(tracker.summarizationCount).toBe(2);
 
     state.lastStepInputTokens = 0;

@@ -314,6 +314,34 @@ significance during an incident. Final rollout decisions must weigh quality gain
 against additional cost. Remove the flag and losing provider path after the final
 decision, targeting cleanup within 60 days of launch.
 
+## Model routing measurement
+
+For outcomes with `model_routing_telemetry_version = 1`, `fallback_served` requires
+text or a tool call from a recovery call using a different requested model, or a
+reported response model in the call's configured upstream fallback list. Planned
+baseline steps and vision selection alone do not establish a fallback. The old
+final-model flag is retained as `legacy_fallback_served` for comparison. Historical
+events without this version must not be interpreted using the corrected definition.
+
+Use `planned_baseline_attempt_count` and `vision_route_attempt_count` for routing
+volume. Use `abliterated_provider_error_count` and `baseline_provider_error_count`
+for provider errors, with their respective provider attempt counts as denominators.
+Use `provider_error_recovery_attempt_count` and `provider_error_recovery_served`
+for retries after errors, including retries on the same model;
+`provider_error_fallback_served` additionally requires a model change. Empty,
+truncated, filtered, and incomplete outputs initiate a separate output recovery
+chain, measured by `output_recovery_attempt_count` and
+`output_recovery_fallback_served`. The initiating reason persists across failed
+retry legs until completion or cancellation. A failure without a subsequent call
+is not a recovery attempt, and reasoning alone does not count as served content.
+
+These bounded summaries accompany `abliterated_model_response_outcome` and, for
+Agent mode, `hackerai-agent_run`; they retain the original experiment assignment
+and contain no user content. `upstream_model_fallback_served` relies on the
+provider reporting a configured alternate model; unreported upstream routing
+cannot be inferred. Keep provider error rates separate from request-level fallback
+and successful task completion rates.
+
 ## Verification
 
 Run the bounded live provider test from this checkout:

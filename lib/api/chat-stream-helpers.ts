@@ -427,6 +427,7 @@ export async function runSummarizationStep(options: {
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
+  sourceUiMessages?: UIMessage[];
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
   onPhaseDuration?: import("@/lib/chat/summarization").ContextCompactionPhaseReporter;
@@ -440,6 +441,7 @@ export async function runSummarizationStep(options: {
     summarizationUsage,
   } = await checkAndSummarizeIfNeeded({
     uiMessages: options.messages,
+    sourceUiMessages: options.sourceUiMessages,
     subscription: options.subscription,
     languageModel: options.languageModel,
     mode: options.mode,
@@ -572,8 +574,8 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Standard uses DeepSeek V4 Flash 0731, Pro uses DeepSeek V4 Pro 0813, and
- * Max uses Grok 4.6. Image turns use DeepSeek V4 Flash Vision. Both DeepSeek
+ * Standard uses DeepSeek V4 Flash 0731. Pro uses V4 Pro 0813 in Ask and
+ * V4.1 Flash in Agent. Max uses Grok 4.6. Image turns use DeepSeek vision. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -689,13 +691,17 @@ export function isAutoModelSelectionForRetry({
 export function isExplicitDeepSeekProSelectionForRetry({
   selectedModel,
   selectedModelOverride,
+  mode,
 }: {
   selectedModel: string;
   selectedModelOverride?: SelectedModel | null;
+  mode?: ChatMode;
 }): boolean {
   return (
     selectedModelOverride === "hackerai-pro" &&
-    EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel)
+    (EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel) ||
+      (mode === "agent" &&
+        selectedModel === "model-deepseek-v4-flash-vision-pro"))
   );
 }
 
@@ -929,6 +935,7 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "z-ai/glm-5.3-20260816": "model-glm-5.3",
   [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
   [DEEPSEEK_V4_FLASH_VISION_SLUG]: "model-deepseek-v4-flash-vision",
+  "deepseek/deepseek-v4.1-flash-20260910": "model-deepseek-v4-flash-vision",
   "moonshotai/kimi-k3": "model-kimi-k3",
   "moonshotai/kimi-k3-20260715": "model-kimi-k3",
 };

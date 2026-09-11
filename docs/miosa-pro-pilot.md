@@ -4,11 +4,12 @@ Owner and rollout/readout decisions: [HAC-78](https://linear.app/hackerai/issue/
 
 ## Approved scope
 
-**Activation on hold (September 5, 2026):** Production remains at 0%. The
-previously working persistent Preview workspace subsequently entered platform
-state `error`; reacquisition returned `SANDBOX_BOOT_FAILED`. See the latest
-section in [the acceptance record](miosa-acceptance-2026-09-05.md). Passing fresh
-creation and short pause/resume tests is insufficient to clear this regression.
+Live activation state and dated acceptance evidence belong in HAC-78 and the
+two PostHog projects, not this runbook. Before activation, require passing
+streaming, file integrity, pause/resume (including long-paused disk restore),
+destroyed-name reuse, and a real Preview Agent plus reconnect. Passing a fresh
+creation test alone is insufficient. Follow the release order below before
+enrolling Production users.
 
 - Production: 5% stable user-level candidate assignment.
 - Preview/development: 100% candidate assignment for eligible testing.

@@ -26,15 +26,16 @@ You'll need the following accounts:
 **Required:**
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
-- [OpenAI](https://platform.openai.com/) - Content moderation
+- [OpenAI](https://platform.openai.com/) - Identifies security requests that should use [abliteration.ai](https://abliteration.ai/) models
 - [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
+- [Amazon S3](https://aws.amazon.com/s3/) - File storage
 - [WorkOS](https://workos.com/) - Authentication and user management
 - [Trigger.dev](https://trigger.dev/) - Required durable runtime for agent tasks
 
 **Optional:**
 
-- [Amazon S3](https://aws.amazon.com/s3/) - File storage (alternative to Convex storage)
+- [abliteration.ai](https://abliteration.ai/) - AI models for security requests that standard models may refuse
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
@@ -66,6 +67,11 @@ pnpm install
 pnpm run setup
 ```
 
+To use abliteration.ai for eligible security requests, create an API key in the
+[abliteration.ai console](https://abliteration.ai/console) and set
+`ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. Without this
+optional key, HackerAI continues using its standard models.
+
 ### Start the development server
 
 This runs both Next.js and Convex dev servers:
@@ -91,15 +97,17 @@ To use the agent locally:
 2. In the Trigger.dev dashboard → your project → **Environment Variables**,
    add the env vars the task needs to run (these live on the worker, not on
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
-   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, and `E2B_API_KEY`. Add
+   `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `AWS_S3_ACCESS_KEY_ID`,
+   `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and
+   `E2B_API_KEY`. Add
    `MIOSA_API_KEY` for the MIOSA rollout or explicit MIOSA testing. New Miosa
    workspaces default to the native `hackerai-tools` template; optionally set
    `MIOSA_TEMPLATE_ID` to override it. An existing `miosa-sandbox-docker`
    override still selects the Docker template, so remove or update that value
    in each intended runtime to use the native default. Existing workspaces
    retain their original runtime and files; E2B remains the cloud fallback.
-   Add any other keys you use
-   (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, S3, etc.).
+   Add any optional keys you use
+   (`ABLITERATION_API_KEY`, `PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
 3. Start the worker in a third terminal:
 
    ```bash

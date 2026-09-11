@@ -28,6 +28,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
 };
 
 const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
+  "model-deepseek-v4-flash-vision-pro",
   "model-deepseek-v4-pro",
   "model-deepseek-v4-pro-0813",
   "model-grok-4.6",

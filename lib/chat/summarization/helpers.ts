@@ -34,6 +34,7 @@ import {
 import {
   AGENT_SUMMARIZATION_PROMPT,
   ASK_SUMMARIZATION_PROMPT,
+  INCREMENTAL_SUMMARIZATION_INSTRUCTIONS,
 } from "./prompts";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
@@ -719,6 +720,7 @@ const getLanguageModelIdentifier = (
   return undefined;
 };
 
+/** Generates a checkpoint and rejects empty or incomplete provider output. */
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
@@ -733,13 +735,12 @@ export const generateSummaryText = async (
   generationOptions?: {
     timeout?: number;
     maxRetries?: number;
-    requireCompleteSummary?: boolean;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
 
   const incrementalNote = hasExistingSummary
-    ? `\n\nIMPORTANT: You are performing an INCREMENTAL summarization. The conversation above contains a <context_summary> message with a previous summary of earlier conversation. Produce a single, unified summary that merges the previous summary with the NEW messages that follow it. Do NOT summarize the summary — integrate new information into a comprehensive updated summary.`
+    ? `\n\n${INCREMENTAL_SUMMARIZATION_INSTRUCTIONS}`
     : "";
 
   // Tools are included solely to match the main streamText prefix for provider
@@ -795,10 +796,7 @@ export const generateSummaryText = async (
     ],
   });
 
-  if (
-    generationOptions?.requireCompleteSummary &&
-    (!result.text.trim() || result.finishReason !== "stop")
-  ) {
+  if (!result.text.trim() || result.finishReason !== "stop") {
     throw new InvalidCompactionSummaryError();
   }
 
