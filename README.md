@@ -26,7 +26,7 @@ You'll need the following accounts:
 **Required:**
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
-- [OpenAI](https://platform.openai.com/) - Content moderation
+- [OpenAI](https://platform.openai.com/) - Request classification for detecting when to use [Aliberated.ai](https://aliberated.ai/) models
 - [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [Amazon S3](https://aws.amazon.com/s3/) - File storage
