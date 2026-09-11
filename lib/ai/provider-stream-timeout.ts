@@ -29,7 +29,18 @@ export type ProviderStreamTimeoutOptions = {
 
 class ProviderStreamTimeoutError extends Error {
   name = "ProviderStreamTimeoutError";
+
+  constructor(
+    message: string,
+    readonly phase: ProviderStreamTimeoutDetails["phase"],
+  ) {
+    super(message);
+  }
 }
+
+/** Identify a local watchdog failure before a provider response could emit output. */
+export const isProviderResponseTimeout = (error: unknown): boolean =>
+  error instanceof ProviderStreamTimeoutError && error.phase === "response";
 
 /** Bound provider I/O without timing tool execution or durable approval waits. */
 export function withProviderStreamTimeout(
@@ -81,6 +92,7 @@ export function withProviderStreamTimeout(
             const timer = setTimeout(() => {
               const error = new ProviderStreamTimeoutError(
                 `Provider ${phase} timed out after ${options.timeoutMs}ms`,
+                phase,
               );
               fail(error);
               cancelProvider(error);

@@ -1,3 +1,4 @@
+import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import {
   evaluateRegionalFreeLimits,
   captureRegionalFreeLimitsExposure,
@@ -5029,7 +5030,10 @@ export const agentLongTask = task({
                               normalizedFinishedMessages,
                               {
                                 allowCompletedTail:
-                                  shouldRecoverAbliterationStreamError,
+                                  shouldRecoverAbliterationStreamError ||
+                                  isProviderResponseTimeout(
+                                    state.providerError,
+                                  ),
                               },
                             )
                           : undefined;
@@ -5387,6 +5391,12 @@ export const agentLongTask = task({
                                     !retryAborted
                                       ? prepareProviderDisconnectContinuation(
                                           normalizedRetryMessages,
+                                          {
+                                            allowCompletedTail:
+                                              isProviderResponseTimeout(
+                                                state.providerError,
+                                              ),
+                                          },
                                         )
                                       : undefined;
                                   const finalRetryModel = nextContinuation

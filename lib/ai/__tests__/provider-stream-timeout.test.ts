@@ -1,7 +1,10 @@
 import { stepCountIs, streamText, tool, type LanguageModel } from "ai";
 import { WritableStream } from "node:stream/web";
 import { z } from "zod";
-import { withProviderStreamTimeout } from "../provider-stream-timeout";
+import {
+  withProviderStreamTimeout,
+  isProviderResponseTimeout,
+} from "../provider-stream-timeout";
 import { isRetriableProviderStreamDisconnectError } from "@/lib/utils/error-utils";
 
 const makeModel = (doStream: jest.Mock): LanguageModel => ({
@@ -244,4 +247,16 @@ it("reports a stalled initial request through the SDK error callback rather than
   ).toBe(true);
   expect(onAbort).not.toHaveBeenCalled();
   expect(jest.getTimerCount()).toBe(0);
+});
+
+it("does not mistake provider errors for local response timeouts", () => {
+  expect(
+    isProviderResponseTimeout(
+      Object.assign(new Error("Provider response timed out after 1000ms"), {
+        name: "ProviderStreamTimeoutError",
+        phase: "response",
+      }),
+    ),
+  ).toBe(false);
+  expect(isProviderResponseTimeout(new Error("request timed out"))).toBe(false);
 });
