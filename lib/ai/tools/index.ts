@@ -44,15 +44,13 @@ import { createPtyParserLogBudget } from "./utils/pty-output-formatter";
 import {
   getCloudSandboxProviderForInstance,
   isE2BSandbox,
-  isMiosaSandbox,
 } from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
+import { MIOSA_COST_PER_MS } from "./utils/miosa-cost";
 import { phLogger } from "@/lib/posthog/server";
 import { MIOSA_NATIVE_TEMPLATE_ID } from "./utils/miosa-runtime";
-import { logger } from "@/lib/logger";
-import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
 import type {
@@ -90,8 +88,6 @@ const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
   miosa: 0,
   e2b: 0,
 });
-const MIOSA_USAGE_READ_TIMEOUT_MS = 2_000;
-const MIOSA_USAGE_CACHE_TTL_MS = 1_000;
 
 // Factory function to create tools with context
 export const createTools = (
@@ -130,70 +126,6 @@ export const createTools = (
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
   let pendingSandbox: Promise<AnySandbox> | null = null;
-  type MiosaSandboxInstance = Extract<AnySandbox, { sandboxKind: "miosa" }>;
-  type MiosaCostSource = {
-    sandbox: MiosaSandboxInstance;
-    baselinePromise: Promise<number | null>;
-    latestCostDollars: number;
-  };
-  const miosaCostSources = new Map<string, MiosaCostSource>();
-  const miosaUsageReads = new Map<string, Promise<number | null>>();
-  let cachedMiosaCostSettlement: {
-    settledAt: number;
-    totalCostDollars: number;
-  } | null = null;
-
-  const readMiosaCostDollars = async (
-    miosaSandbox: MiosaSandboxInstance,
-  ): Promise<number | null> => {
-    const sandboxId = miosaSandbox.sandboxId;
-    let providerRead = miosaUsageReads.get(sandboxId);
-    if (!providerRead) {
-      providerRead = miosaSandbox.sdkSandbox
-        .usage()
-        .then((usage) => usage.estimated_cost_cents / 100)
-        .catch((error) => {
-          logger.warn("MIOSA usage read failed", {
-            event: "miosa_usage_read_failed",
-            service: "agent-tools",
-            environment:
-              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-            request_id: triggerRunId ?? chatId,
-            chat_id: chatId,
-            sandbox_id: sandboxId,
-            sandbox_type: "cloud",
-            sandbox_provider: "miosa",
-            error:
-              error instanceof Error
-                ? redactSensitiveErrorMessage(error.message)
-                : "non_error_rejection",
-          });
-          return null;
-        });
-      miosaUsageReads.set(sandboxId, providerRead);
-      void providerRead.then(() => {
-        if (miosaUsageReads.get(sandboxId) === providerRead) {
-          miosaUsageReads.delete(sandboxId);
-        }
-      });
-    }
-
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        providerRead,
-        new Promise<null>((resolve) => {
-          timeout = setTimeout(
-            () => resolve(null),
-            MIOSA_USAGE_READ_TIMEOUT_MS,
-          );
-          timeout.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timeout) clearTimeout(timeout);
-    }
-  };
 
   const recordSandboxBoot = (info: SandboxBootInfo) => {
     sandboxBootInfo = info;
@@ -214,19 +146,6 @@ export const createTools = (
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
     const provider = getCloudSandboxProviderForInstance(newSandbox);
-    if (isMiosaSandbox(newSandbox)) {
-      const existingSource = miosaCostSources.get(newSandbox.sandboxId);
-      if (existingSource) {
-        existingSource.sandbox = newSandbox;
-      } else {
-        miosaCostSources.set(newSandbox.sandboxId, {
-          sandbox: newSandbox,
-          baselinePromise: readMiosaCostDollars(newSandbox),
-          latestCostDollars: 0,
-        });
-        cachedMiosaCostSettlement = null;
-      }
-    }
     if (isE2BSandbox(newSandbox)) {
       lastE2BSandbox = newSandbox;
       if (runtimePolicy.keepE2BLeaseAliveForRun && !runLeaseHeartbeat) {
@@ -236,7 +155,7 @@ export const createTools = (
         );
       }
     }
-    const now = Date.now();
+    const now = performance.now();
     if (
       sandboxCostSegmentStartedAt !== null &&
       sandboxCostProvider !== null &&
@@ -462,51 +381,6 @@ export const createTools = (
     return buildTools();
   };
 
-  const settleMiosaCostDollars = async (
-    forceFresh = false,
-  ): Promise<number> => {
-    const now = Date.now();
-    if (
-      !forceFresh &&
-      cachedMiosaCostSettlement &&
-      now - cachedMiosaCostSettlement.settledAt < MIOSA_USAGE_CACHE_TTL_MS
-    ) {
-      return cachedMiosaCostSettlement.totalCostDollars;
-    }
-
-    let cacheable = true;
-    await Promise.all(
-      [...miosaCostSources.values()].map(async (source) => {
-        const baseline = await source.baselinePromise;
-        if (baseline === null) {
-          cacheable = false;
-          source.baselinePromise = readMiosaCostDollars(source.sandbox);
-          return;
-        }
-        const current = await readMiosaCostDollars(source.sandbox);
-        if (current !== null) {
-          source.latestCostDollars = Math.max(
-            source.latestCostDollars,
-            current - baseline,
-          );
-        } else {
-          cacheable = false;
-        }
-      }),
-    );
-    const totalCostDollars = [...miosaCostSources.values()].reduce(
-      (total, source) => total + source.latestCostDollars,
-      0,
-    );
-    if (cacheable) {
-      cachedMiosaCostSettlement = {
-        settledAt: Date.now(),
-        totalCostDollars,
-      };
-    }
-    return totalCostDollars;
-  };
-
   const getSandboxSessionUsage = async (): Promise<SandboxSessionUsage> => {
     if (runtimePolicy.chargeSandboxRuntime === false) {
       return {
@@ -521,10 +395,10 @@ export const createTools = (
     const runtimeMs = { ...sandboxAccumulatedRuntimeMs };
     if (sandboxCostSegmentStartedAt !== null && sandboxCostProvider !== null) {
       runtimeMs[sandboxCostProvider] +=
-        Date.now() - sandboxCostSegmentStartedAt;
+        performance.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
-    const miosaCostDollars = await settleMiosaCostDollars(true);
+    const miosaCostDollars = runtimeMs.miosa * MIOSA_COST_PER_MS;
     return {
       totalCostDollars: e2bCostDollars + miosaCostDollars,
       miosaRuntimeMs: runtimeMs.miosa,
@@ -535,13 +409,7 @@ export const createTools = (
   };
 
   const getSandboxSessionCost = async (): Promise<number> => {
-    if (runtimePolicy.chargeSandboxRuntime === false) return 0;
-    let e2bRuntimeMs = sandboxAccumulatedRuntimeMs.e2b;
-    if (sandboxCostSegmentStartedAt !== null && sandboxCostProvider === "e2b") {
-      e2bRuntimeMs += Date.now() - sandboxCostSegmentStartedAt;
-    }
-    const miosaCostDollars = await settleMiosaCostDollars();
-    return e2bRuntimeMs * E2B_COST_PER_MS + miosaCostDollars;
+    return (await getSandboxSessionUsage()).totalCostDollars;
   };
 
   const releaseE2BSandboxIdleLease = async (): Promise<boolean> => {

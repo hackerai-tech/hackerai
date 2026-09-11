@@ -33,6 +33,62 @@ describe("cloud sandbox provider routing", () => {
     jest.clearAllMocks();
   });
 
+  it.each([
+    ["production", undefined, 0],
+    ["production", "true", 1],
+    ["preview", undefined, 1],
+  ])(
+    "gates successful console diagnostics in %s with debug=%s",
+    async (environment, debug, expected) => {
+      const oldEnvironment = process.env.VERCEL_ENV;
+      const oldDebug = process.env.MIOSA_DEBUG_LOGS;
+      process.env.VERCEL_ENV = environment;
+      if (debug) process.env.MIOSA_DEBUG_LOGS = debug;
+      else delete process.env.MIOSA_DEBUG_LOGS;
+      const info = jest.spyOn(console, "info").mockImplementation(() => {});
+      const debugLog = jest
+        .spyOn(console, "debug")
+        .mockImplementation(() => {});
+      mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+        const step = createMiosaAcquisitionDiagnostics({
+          templateId: "hackerai-tools",
+          workspaceName: "private-user",
+          onDiagnostic: options.onDiagnostic,
+        });
+        await step("readiness", async () => undefined);
+        return { sandbox: { sandboxKind: "miosa", sandboxId: "miosa-1" } };
+      });
+      try {
+        await ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { provider: "miosa" },
+        });
+        expect(
+          info.mock.calls.filter(
+            ([message]) => message === "MIOSA sandbox acquisition step",
+          ),
+        ).toHaveLength(0);
+        expect(debugLog).toHaveBeenCalledTimes(expected);
+        expect(mockPostHogEvent).toHaveBeenCalledWith(
+          "miosa_sandbox_acquisition_step",
+          expect.objectContaining({ outcome: "success" }),
+        );
+        expect(mockPostHogEvent).toHaveBeenCalledWith(
+          "cloud_sandbox_acquisition_completed",
+          expect.objectContaining({ outcome: "success" }),
+        );
+      } finally {
+        if (oldEnvironment === undefined) delete process.env.VERCEL_ENV;
+        else process.env.VERCEL_ENV = oldEnvironment;
+        if (oldDebug === undefined) delete process.env.MIOSA_DEBUG_LOGS;
+        else process.env.MIOSA_DEBUG_LOGS = oldDebug;
+        info.mockRestore();
+        debugLog.mockRestore();
+      }
+    },
+  );
+
   it("measures the complete fallback wait without attributing it to an E2B assignment", async () => {
     const clock = jest.spyOn(Date, "now").mockReturnValue(1000);
     const onBoot = jest.fn();
@@ -247,7 +303,7 @@ describe("cloud sandbox provider routing", () => {
     "correlates safe %s step failures in Trigger and PostHog while retaining E2B fallback",
     async (runKind) => {
       const consoleInfo = jest
-        .spyOn(console, "info")
+        .spyOn(console, "warn")
         .mockImplementation(() => {});
       const error = Object.assign(new Error("msk_private raw response body"), {
         name: "ValidationError",

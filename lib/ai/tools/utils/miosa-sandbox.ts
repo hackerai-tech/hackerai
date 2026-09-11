@@ -5,6 +5,11 @@ import type {
 } from "@miosa/sdk";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { createMiosaFiles } from "./miosa-files";
+import {
+  MIOSA_CPU_COUNT,
+  MIOSA_MEMORY_MB,
+  MIOSA_DISK_SIZE_MB,
+} from "./miosa-cost";
 import { waitForMiosaReadiness } from "./miosa-readiness";
 import {
   createMiosaAcquisitionDiagnostics,
@@ -21,9 +26,6 @@ const MIOSA_SANDBOX_VERSION = "v2";
 const MIOSA_ACTIVITY_TIMEOUT_SECONDS = 24 * 60 * 60;
 const MIOSA_IDLE_TIMEOUT_SECONDS = 7 * 60;
 const MIOSA_SNAPSHOT_EXPIRATION_DAYS = 30;
-const MIOSA_CPU_COUNT = 4;
-const MIOSA_MEMORY_MB = 4 * 1024;
-const MIOSA_DISK_SIZE_MB = 20 * 1024;
 const MIOSA_RUNTIME_CONTAINER_NAME = "hackerai-agent";
 const DEFAULT_MIOSA_RUNTIME_IMAGE =
   "hackerai/sandbox@sha256:d00f2c023977f57fc3fa6effc6ea41de28d445170bfa2314564e5eab2ef03976";

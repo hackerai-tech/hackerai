@@ -1894,8 +1894,8 @@ export function captureUsageCost({
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
       ...(sandboxUsage && {
-        sandbox_cost_accounting_version: 1,
-        sandbox_cost_source: "provider_specific",
+        sandbox_cost_accounting_version: 2,
+        sandbox_cost_source: "request_runtime_rate",
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
         sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
         sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,

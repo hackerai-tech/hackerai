@@ -84,12 +84,21 @@ const ensureMiosaCloudSandboxConnection = (options: {
           sandbox_type: "cloud",
           miosa_sandbox_acquisition_step_event_version: 1,
         };
-        // Explicit console output keeps the evidence in Trigger's run trace
-        // even when PostHog's log drain is enabled or ingestion is delayed.
-        console.info("MIOSA sandbox acquisition step", {
+        const logFields = {
           ...fields,
           timestamp: new Date().toISOString(),
-        });
+        };
+        // Keep failures visible without flooding production traces with every
+        // successful lookup/readiness/initialization step. PostHog retains all
+        // step events independently of this troubleshooting switch.
+        if (diagnostic.outcome === "failure") {
+          console.warn("MIOSA sandbox acquisition step", logFields);
+        } else if (
+          process.env.MIOSA_DEBUG_LOGS === "true" ||
+          (process.env.VERCEL_ENV ?? process.env.NODE_ENV) !== "production"
+        ) {
+          console.debug("MIOSA sandbox acquisition step", logFields);
+        }
         phLogger.event("miosa_sandbox_acquisition_step", {
           ...fields,
           userId: options.userId,
@@ -178,8 +187,7 @@ export async function ensureCloudSandboxConnection(options: {
     provider: CloudSandboxProvider,
     outcome: "success" | "error",
   ) => {
-    phLogger.event("cloud_sandbox_acquisition_completed", {
-      userId: options.userId,
+    const fields = {
       chat_id: options.context?.chatId,
       trigger_run_id: options.context?.triggerRunId,
       agent_run_kind: options.context?.runKind ?? "parent",
@@ -198,6 +206,16 @@ export async function ensureCloudSandboxConnection(options: {
       image_version: bootInfo?.image_version,
       sandbox_create_attempts: bootInfo?.create_attempts,
       cloud_sandbox_acquisition_completed_event_version: 1,
+    };
+    // One bounded summary stays in the worker trace even if analytics is delayed.
+    if (outcome === "error" || fallbackUsed) {
+      console.warn("Cloud sandbox acquisition completed", fields);
+    } else {
+      console.info("Cloud sandbox acquisition completed", fields);
+    }
+    phLogger.event("cloud_sandbox_acquisition_completed", {
+      ...fields,
+      userId: options.userId,
     });
   };
 
