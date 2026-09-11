@@ -26,7 +26,7 @@ You'll need the following accounts:
 **Required:**
 
 - [OpenRouter](https://openrouter.ai/) - AI model provider
-- [OpenAI](https://platform.openai.com/) - Request classification for detecting when to use [Aliberated.ai](https://aliberated.ai/) models
+- [OpenAI](https://platform.openai.com/) - Request classification for detecting when to use [abliteration.ai](https://abliteration.ai/) models
 - [E2B](https://e2b.dev/) - Isolated cloud execution in Agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [Amazon S3](https://aws.amazon.com/s3/) - File storage
@@ -35,6 +35,7 @@ You'll need the following accounts:
 
 **Optional:**
 
+- [abliteration.ai](https://abliteration.ai/) - Moderation-gated model provider
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
@@ -66,6 +67,11 @@ pnpm install
 pnpm run setup
 ```
 
+To enable moderation-gated routing to abliteration.ai models, create an API key
+in the [abliteration.ai console](https://abliteration.ai/console) and set
+`ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. Without this
+optional key, HackerAI continues using its baseline models.
+
 ### Start the development server
 
 This runs both Next.js and Convex dev servers:
@@ -94,7 +100,7 @@ To use the agent locally:
    `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `AWS_S3_ACCESS_KEY_ID`,
    `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and one
    cloud sandbox provider, plus any optional keys you use
-   (`PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
+   (`ABLITERATION_API_KEY`, `PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
 3. Start the worker in a third terminal:
 
    ```bash
