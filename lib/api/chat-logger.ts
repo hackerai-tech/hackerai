@@ -1184,11 +1184,13 @@ export function captureToolCalls({
   chatLogger,
   userId,
   mode,
+  triggerRunId,
 }: {
   posthog: PostHog | null;
   chatLogger: ChatLogger | undefined;
   userId: string;
   mode: ChatMode;
+  triggerRunId?: string;
 }) {
   if (!posthog || !chatLogger) return;
   const toolCalls = chatLogger.getToolCalls();
@@ -1219,6 +1221,7 @@ export function captureToolCalls({
       ),
       totalCount: toolCalls.length,
       distinctToolCount: tools.length,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
       tool_usage_event_version: 2,
       $process_person_profile: false,
     },
@@ -1301,6 +1304,7 @@ type AgentCompletionAnalyticsArgs = {
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  handledToolFailureCount?: number;
   messageCount?: number;
   estimatedInputTokens?: number;
   attachmentCount?: number;
@@ -1357,6 +1361,7 @@ export function captureAgentRun({
   activeModelStreamDurationMs,
   activeTerminalWaitDurationMs,
   activeSandboxRecoveryDurationMs,
+  handledToolFailureCount,
   messageCount,
   estimatedInputTokens,
   attachmentCount,
@@ -1520,6 +1525,9 @@ export function captureAgentRun({
     distinctId: userId,
     event: "hackerai-agent_run",
     properties: {
+      ...(handledToolFailureCount !== undefined && {
+        handled_tool_failure_count: handledToolFailureCount,
+      }),
       mode,
       subscription,
       subscription_tier: subscription,
@@ -1732,6 +1740,7 @@ export function captureAgentCompletionAnalytics(
     budgetAbortDetails: args.budgetAbortDetails,
     agentPermissionMode: args.agentPermissionMode,
     triggerRunId: args.triggerRunId,
+    handledToolFailureCount: args.handledToolFailureCount,
     triggerUsageDurationMs: args.triggerUsageDurationMs,
     triggerTotalCostUsd: args.triggerTotalCostUsd,
     startupTimingVersion: args.startupTimingVersion,
@@ -1799,6 +1808,7 @@ export function captureUsageCost({
   fallbackServed,
   experiment,
   regionalFreeLimits,
+  triggerRunId,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1827,6 +1837,7 @@ export function captureUsageCost({
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
   regionalFreeLimits?: RegionalFreeLimitsAssignment;
+  triggerRunId?: string;
 }) {
   if (!posthog) return;
   const includedUsageValueDollars =
@@ -1845,6 +1856,7 @@ export function captureUsageCost({
     event: "hackerai-usage_cost",
     properties: {
       user_id: userId,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
       subscription,
       subscription_tier: subscription,
       ...(organizationId && { organization_id: organizationId }),

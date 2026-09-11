@@ -161,6 +161,45 @@ export async function ensureCloudSandboxConnection(options: {
 }): Promise<{ sandbox: AnySandbox; provider: CloudSandboxProvider }> {
   const startedAt = Date.now();
   const preferredProvider = options.context?.provider ?? "e2b";
+  let bootInfo: SandboxBootInfo | undefined;
+  let fallbackUsed = false;
+  let enrollmentDeniedReason: MiosaEnrollmentError["reason"] | undefined;
+  const onBoot = options.onBoot;
+  options = {
+    ...options,
+    onBoot: (info) => {
+      bootInfo = info;
+      onBoot?.(info);
+    },
+  };
+  // One outcome per acquisition, including failed attempts and the full wait
+  // across providers. Aggregate by run ID, not raw event count, for run metrics.
+  const recordOutcome = (
+    provider: CloudSandboxProvider,
+    outcome: "success" | "error",
+  ) => {
+    phLogger.event("cloud_sandbox_acquisition_completed", {
+      userId: options.userId,
+      chat_id: options.context?.chatId,
+      trigger_run_id: options.context?.triggerRunId,
+      agent_run_kind: options.context?.runKind ?? "parent",
+      subscription_tier: options.context?.subscription,
+      trigger_region: options.context?.triggerRegion,
+      preferred_provider: preferredProvider,
+      provider_selection_reason:
+        options.context?.selectionReason ?? "configured",
+      sandbox_provider: provider,
+      sandbox_type: "cloud",
+      outcome,
+      fallback_used: fallbackUsed,
+      enrollment_denied_reason: enrollmentDeniedReason,
+      duration_ms: Date.now() - startedAt,
+      sandbox_boot_path: bootInfo?.path,
+      image_version: bootInfo?.image_version,
+      sandbox_create_attempts: bootInfo?.create_attempts,
+      cloud_sandbox_acquisition_completed_event_version: 1,
+    });
+  };
 
   if (preferredProvider === "miosa") {
     try {
@@ -169,9 +208,11 @@ export async function ensureCloudSandboxConnection(options: {
       }
       const result = await ensureMiosaCloudSandboxConnection(options);
       recordRolloutExposure(options);
+      recordOutcome("miosa", "success");
       return { ...result, provider: "miosa" };
     } catch (error) {
       if (error instanceof MiosaEnrollmentError) {
+        enrollmentDeniedReason = error.reason;
         phLogger.event("miosa_cloud_sandbox_enrollment_denied", {
           userId: options.userId,
           chat_id: options.context?.chatId,
@@ -187,6 +228,7 @@ export async function ensureCloudSandboxConnection(options: {
           miosa_cloud_sandbox_enrollment_denied_event_version: 2,
         });
       } else {
+        fallbackUsed = true;
         recordRolloutExposure(options);
         recordAcquisitionFailure({
           userId: options.userId,
@@ -215,8 +257,10 @@ export async function ensureCloudSandboxConnection(options: {
 
   try {
     const result = await ensureE2BCloudSandboxConnection(options);
+    recordOutcome("e2b", "success");
     return { ...result, provider: "e2b" };
   } catch (error) {
+    recordOutcome("e2b", "error");
     recordAcquisitionFailure({
       userId: options.userId,
       provider: "e2b",

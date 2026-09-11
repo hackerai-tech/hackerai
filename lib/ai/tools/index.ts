@@ -50,6 +50,7 @@ import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
 import { phLogger } from "@/lib/posthog/server";
+import { MIOSA_NATIVE_TEMPLATE_ID } from "./utils/miosa-runtime";
 import { logger } from "@/lib/logger";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
@@ -266,12 +267,13 @@ export const createTools = (
         subscription,
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
+        trigger_region: cloudSandboxContext.triggerRegion,
         sandbox_boot_path: sandboxBootInfo?.path,
         sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
         image_version:
           provider === "miosa"
-            ? process.env.MIOSA_TEMPLATE_ID
+            ? process.env.MIOSA_TEMPLATE_ID?.trim() || MIOSA_NATIVE_TEMPLATE_ID
             : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
         cloud_sandbox_provider_event_version: 8,
       });

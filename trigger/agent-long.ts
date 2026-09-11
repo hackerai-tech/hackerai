@@ -4010,6 +4010,7 @@ export const agentLongTask = task({
                   });
                 }
                 captureUsageCost({
+                  triggerRunId: ctx.run.id,
                   regionalFreeLimits,
                   posthog,
                   userId,
@@ -4582,7 +4583,13 @@ export const agentLongTask = task({
                 cacheReadTokens: fallbackCacheRead,
                 cacheWriteTokens: fallbackCacheWrite,
               });
-              captureToolCalls({ posthog, chatLogger, userId, mode });
+              captureToolCalls({
+                posthog,
+                chatLogger,
+                userId,
+                mode,
+                triggerRunId: ctx.run.id,
+              });
               await drainBackgroundRunWork();
               // Final reconciliation can change the finish reason to
               // budget-exhausted; do it before analytics and persistence.
@@ -4593,6 +4600,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                handledToolFailureCount,
                 abliteratedProviderSummary: abliteratedTelemetry?.getSummary(),
                 posthog,
                 userId,
@@ -5550,7 +5558,13 @@ export const agentLongTask = task({
                         cacheReadTokens: usageTracker.cacheReadTokens,
                         cacheWriteTokens: usageTracker.cacheWriteTokens,
                       });
-                      captureToolCalls({ posthog, chatLogger, userId, mode });
+                      captureToolCalls({
+                        posthog,
+                        chatLogger,
+                        userId,
+                        mode,
+                        triggerRunId: ctx.run.id,
+                      });
                       await drainBackgroundRunWork();
                       // Final reconciliation can change the finish reason to
                       // budget-exhausted; do it before analytics and
@@ -5562,6 +5576,7 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        handledToolFailureCount,
                         abliteratedProviderSummary:
                           abliteratedTelemetry?.getSummary(),
                         posthog,
