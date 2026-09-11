@@ -33,6 +33,101 @@ describe("cloud sandbox provider routing", () => {
     jest.clearAllMocks();
   });
 
+  it("measures the complete fallback wait without attributing it to an E2B assignment", async () => {
+    const clock = jest.spyOn(Date, "now").mockReturnValue(1000);
+    const onBoot = jest.fn();
+    mockEnsureMiosa.mockImplementationOnce(async () => {
+      clock.mockReturnValue(4000);
+      throw new Error("unavailable");
+    });
+    mockEnsureE2B.mockImplementationOnce(async (context) => {
+      clock.mockReturnValue(4500);
+      context.onBoot({
+        path: "create_fresh",
+        duration_ms: 500,
+        create_attempts: 1,
+      });
+      return { sandbox: { sandboxId: "e2b-1" } };
+    });
+    try {
+      await ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        onBoot,
+        context: {
+          provider: "miosa",
+          selectionReason: "miosa_rollout",
+          triggerRunId: "run-1",
+          subscription: "pro",
+          triggerRegion: "us-east-1",
+        },
+      });
+      const outcomes = mockPostHogEvent.mock.calls.filter(
+        ([event]) => event === "cloud_sandbox_acquisition_completed",
+      );
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0][1]).toEqual(
+        expect.objectContaining({
+          trigger_run_id: "run-1",
+          preferred_provider: "miosa",
+          sandbox_provider: "e2b",
+          outcome: "success",
+          fallback_used: true,
+          duration_ms: 3500,
+          sandbox_boot_path: "create_fresh",
+          trigger_region: "us-east-1",
+        }),
+      );
+      expect(onBoot).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("records an enrollment veto separately from an infrastructure fallback", async () => {
+    mockEnsureMiosa.mockRejectedValueOnce(
+      new MiosaEnrollmentError("existing_e2b_workspace"),
+    );
+    mockEnsureE2B.mockResolvedValueOnce({ sandbox: { sandboxId: "e2b-1" } });
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { provider: "miosa" },
+    });
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_completed",
+      expect.objectContaining({
+        outcome: "success",
+        fallback_used: false,
+        enrollment_denied_reason: "existing_e2b_workspace",
+      }),
+    );
+  });
+
+  it("includes total acquisition failure in the denominator without logging raw errors", async () => {
+    mockEnsureMiosa.mockRejectedValueOnce(new Error("private response"));
+    mockEnsureE2B.mockRejectedValueOnce(new Error("private response"));
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).rejects.toThrow();
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_completed",
+      expect.objectContaining({
+        outcome: "error",
+        fallback_used: true,
+        preferred_provider: "miosa",
+        sandbox_provider: "e2b",
+      }),
+    );
+    expect(JSON.stringify(mockPostHogEvent.mock.calls)).not.toContain(
+      "private response",
+    );
+  });
+
   it("uses MIOSA for treatment assignments", async () => {
     const sandbox = { sandboxKind: "miosa", sandboxId: "miosa-1" };
     mockEnsureMiosa.mockResolvedValue({ sandbox });
@@ -242,6 +337,7 @@ describe("cloud sandbox provider routing", () => {
       ).resolves.toEqual({ sandbox, provider: "e2b" });
       expect(mockPostHogEvent.mock.calls.map(([event]) => event)).toEqual([
         "miosa_cloud_sandbox_enrollment_denied",
+        "cloud_sandbox_acquisition_completed",
       ]);
       expect(mockPostHogEvent).toHaveBeenCalledWith(
         "miosa_cloud_sandbox_enrollment_denied",
@@ -265,7 +361,7 @@ describe("cloud sandbox provider routing", () => {
       setSandbox,
       context: { provider: "miosa" },
     });
-    expect(mockPostHogEvent).toHaveBeenCalledTimes(1);
+    expect(mockPostHogEvent).toHaveBeenCalledTimes(2);
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "miosa_cloud_sandbox_enrollment_denied",
       expect.objectContaining({

@@ -65,6 +65,25 @@ describe("captureToolCalls", () => {
 
     expect(capture).not.toHaveBeenCalled();
   });
+
+  it("correlates aggregate tool counts with the durable Agent run", () => {
+    const capture = jest.fn();
+    captureToolCalls({
+      posthog: { capture },
+      chatLogger: { getToolCalls: () => [{ name: "run_terminal_cmd" }] },
+      userId: "user_123",
+      mode: "agent",
+      triggerRunId: "run_test",
+    });
+    expect(capture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          trigger_run_id: "run_test",
+          totalCount: 1,
+        }),
+      }),
+    );
+  });
 });
 
 describe("captureAgentRun", () => {
@@ -85,6 +104,7 @@ describe("captureAgentRun", () => {
       responseModel: "deepseek/deepseek-v4-pro",
       fallbackServed: false,
       triggerRunId: "run_123",
+      handledToolFailureCount: 2,
       triggerUsageDurationMs: 42_000,
       triggerTotalCostUsd: 0.00714,
       startupTimingVersion: 1,
@@ -133,6 +153,7 @@ describe("captureAgentRun", () => {
         configured_model: "deepseek/deepseek-v4-pro",
         agent_permission_mode: "ask_approval",
         trigger_run_id: "run_123",
+        handled_tool_failure_count: 2,
         trigger_usage_duration_ms: 42_000,
         trigger_total_cost_usd: 0.00714,
         startup_timing_version: 1,
@@ -805,6 +826,7 @@ describe("captureUsageCost", () => {
     const capture = jest.fn();
 
     captureUsageCost({
+      triggerRunId: "run_cost_test",
       posthog: { capture } as any,
       userId: "user_123",
       subscription: "pro",
@@ -868,6 +890,7 @@ describe("captureUsageCost", () => {
       event: "hackerai-usage_cost",
       properties: expect.objectContaining({
         user_id: "user_123",
+        trigger_run_id: "run_cost_test",
         subscription: "pro",
         subscription_tier: "pro",
         organization_id: "org_123",
