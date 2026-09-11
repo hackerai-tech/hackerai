@@ -1927,6 +1927,10 @@ export async function createAgentStream(
         stepOpenRouterMetadata,
         state.openRouterMetadata,
       );
+      ctx.chatLogger?.setModelResponse?.(
+        response?.modelId,
+        state.openRouterMetadata,
+      );
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndex,
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
@@ -2101,6 +2105,7 @@ export async function createAgentStream(
         errorOpenRouterMetadata,
         state.openRouterMetadata,
       );
+      ctx.chatLogger?.setModelResponse?.(undefined, state.openRouterMetadata);
       await refundProviderContentBlockedIfSettled({
         error,
         settled: false,

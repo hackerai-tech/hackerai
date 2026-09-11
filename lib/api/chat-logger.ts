@@ -111,6 +111,7 @@ export const isAgentPerformanceLogSampled = (runId: string): boolean =>
 export interface ChatLoggerConfig {
   chatId: string;
   endpoint: ChatApiEndpoint;
+  requestId?: string;
 }
 
 export interface RequestDetails {
@@ -552,7 +553,11 @@ const getAgentBillingStopReason = (
  * Creates a chat logger instance for tracking wide events
  */
 export function createChatLogger(config: ChatLoggerConfig) {
-  const builder = createWideEventBuilder(config.chatId, config.endpoint);
+  const builder = createWideEventBuilder(
+    config.chatId,
+    config.endpoint,
+    config.requestId,
+  );
 
   // Cache identity/context fields so emitChatError can fire discrete PostHog
   // events without forcing the call site to thread them through. Populated by
@@ -564,8 +569,30 @@ export function createChatLogger(config: ChatLoggerConfig) {
   let extraUsageTelemetry: ExtraUsageTelemetryContext | undefined;
   let lastProviderErrorCategory: ProviderErrorCategory | undefined;
   let lastProviderErrorStatusCode: number | undefined;
+  const setModelResponse = (
+    responseModel: string | undefined,
+    openRouterMetadata?: OpenRouterModelMetadata,
+  ) => {
+    if (responseModel) {
+      builder.setActualModel(responseModel);
+    }
+    if (openRouterMetadata) {
+      builder.setOpenRouterMetadata(openRouterMetadata);
+    }
+  };
 
   return {
+    /**
+     * Correlation/model fields safe to copy into lifecycle logs.
+     */
+    getDiagnosticContext() {
+      return builder.getDiagnosticContext();
+    },
+
+    getRequestId() {
+      return builder.getDiagnosticContext().request_id;
+    },
+
     /**
      * Set initial request details
      */
@@ -657,14 +684,15 @@ export function createChatLogger(config: ChatLoggerConfig) {
       usage: Record<string, unknown> | undefined,
       openRouterMetadata?: OpenRouterModelMetadata,
     ) {
-      if (responseModel) {
-        builder.setActualModel(responseModel);
-      }
-      if (openRouterMetadata) {
-        builder.setOpenRouterMetadata(openRouterMetadata);
-      }
+      setModelResponse(responseModel, openRouterMetadata);
       builder.setUsage(usage);
     },
+
+    /**
+     * Preserve the latest completed model/provider attribution before the
+     * whole stream finishes, so abort and timeout logs can still identify it.
+     */
+    setModelResponse,
 
     /**
      * Record Anthropic prompt repair before provider call.
@@ -812,6 +840,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       lastProviderErrorStatusCode = providerStatusCode;
 
       const logContext = {
+        ...builder.getDiagnosticContext(),
         event: providerErrorEventName(category),
         chat_id: config.chatId,
         endpoint: config.endpoint,
@@ -819,6 +848,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_attribution_available: attributedProviderName !== undefined,
         provider_diagnostic_message: diagnosticMessage,
         provider_error_fingerprint: providerErrorFingerprint,
         ...(providerStatusCode && { provider_status_code: providerStatusCode }),
@@ -837,6 +867,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       }
 
       const phContext = {
+        ...builder.getDiagnosticContext(),
         event: providerErrorEventName(category),
         chatId: config.chatId,
         endpoint: config.endpoint,
@@ -844,6 +875,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_attribution_available: attributedProviderName !== undefined,
         providerDiagnosticMessage: diagnosticMessage,
         providerErrorFingerprint,
         ...(providerStatusCode && { providerStatusCode }),

@@ -2013,6 +2013,7 @@ describe("createChatLogger OpenRouter metadata", () => {
       const chatLogger = createChatLogger({
         chatId: "chat_provider_metadata",
         endpoint: "/api/agent-long",
+        requestId: "fra1::provider-metadata",
       });
       chatLogger.setRequestDetails({
         mode: "agent",
@@ -2039,6 +2040,14 @@ describe("createChatLogger OpenRouter metadata", () => {
           openrouter_upstream_inference_cost: 0.00016,
         },
       );
+      expect(chatLogger.getDiagnosticContext()).toMatchObject({
+        request_id: "fra1::provider-metadata",
+        selected_model: "model-opus-4.6",
+        response_model: "anthropic/claude-opus-4.6",
+        provider_name: "Anthropic Vertex",
+        provider_name_source: "openrouter_response_metadata",
+        provider_attribution_available: true,
+      });
       chatLogger.emitSuccess({
         finishReason: "stop",
         wasAborted: false,
@@ -2047,6 +2056,7 @@ describe("createChatLogger OpenRouter metadata", () => {
       });
 
       const wideEvent = JSON.parse(String(logSpy.mock.calls[0][0]));
+      expect(wideEvent.request_id).toBe("fra1::provider-metadata");
       expect(wideEvent.model).toMatchObject({
         configured: "model-opus-4.6",
         actual: "anthropic/claude-opus-4.6",

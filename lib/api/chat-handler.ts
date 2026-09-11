@@ -251,6 +251,10 @@ export { getStreamContext };
 export const createChatHandler = () => {
   return async (req: NextRequest) => {
     const endpoint = "/api/chat" as const;
+    const incomingRequestId =
+      req.headers.get("x-vercel-id") ??
+      req.headers.get("x-request-id") ??
+      undefined;
     let preemptiveTimeout:
       ReturnType<typeof createPreemptiveTimeout> | undefined;
 
@@ -345,7 +349,12 @@ export const createChatHandler = () => {
         ? rawLimitRescue
         : undefined;
 
-      chatLogger = createChatLogger({ chatId, endpoint });
+      chatLogger = createChatLogger({
+        chatId,
+        endpoint,
+        requestId: incomingRequestId,
+      });
+      const requestId = chatLogger.getRequestId();
       chatLogger.setRequestDetails({
         mode,
         isRegenerate: !!regenerate,
@@ -396,8 +405,9 @@ export const createChatHandler = () => {
           chatId,
           endpoint,
           abortController: userStopSignal,
-          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          requestId,
           userId,
+          getLogContext: () => chatLogger?.getDiagnosticContext() ?? {},
         });
       }
 
@@ -535,7 +545,7 @@ export const createChatHandler = () => {
           isAgentMode(mode) && sandboxPreference === "desktop",
         directGlmVisionEnabled,
         chatId,
-        requestId: req.headers.get("x-vercel-id") ?? undefined,
+        requestId,
       });
 
       // Empty after processing → providers reject the request before the route can stream.
@@ -594,7 +604,7 @@ export const createChatHandler = () => {
           posthog: (posthog ??= PostHogClient()),
           userId,
           selectedModel,
-          requestId: req.headers.get("x-vercel-id") ?? undefined,
+          requestId,
         });
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
@@ -815,7 +825,7 @@ export const createChatHandler = () => {
       const visionSummaryRecovery = createVisionSummaryRecoveryController({
         available: directGlmVisionEnabled,
         service: "chat-handler",
-        requestId: req.headers.get("x-vercel-id") ?? undefined,
+        requestId,
         userId,
         chatId,
         isUserAborted: () => userStopSignal.signal.aborted,
@@ -849,7 +859,7 @@ export const createChatHandler = () => {
                   }) => {
                     return await describeImageWithAuxiliaryVision({
                       ...args,
-                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      requestId,
                       userId,
                       chatId,
                       abortSignal: userStopSignal.signal,
@@ -1006,7 +1016,7 @@ export const createChatHandler = () => {
                     retryWithFreshSandboxOnTransientFailure: true,
                     logContext: {
                       service: "chat-handler",
-                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      requestId,
                       userId,
                       chatId,
                     },
@@ -1023,7 +1033,7 @@ export const createChatHandler = () => {
                     uploadResult,
                     {
                       service: "chat-handler",
-                      requestId: req.headers.get("x-vercel-id") ?? undefined,
+                      requestId,
                       userId,
                       chatId,
                     },
@@ -1514,7 +1524,7 @@ export const createChatHandler = () => {
                   endpoint,
                   mode,
                   model,
-                  requestId: req.headers.get("x-vercel-id") ?? undefined,
+                  requestId,
                   usageSettlementId: usageTracker.usageSettlementId,
                   settlementSequence: usageSettlementSequence,
                   currentCostDollars,
@@ -1793,7 +1803,7 @@ export const createChatHandler = () => {
                         messages: omitImageViewToolResultsForProviderRetry(
                           state.finalMessages,
                         ).messages,
-                        requestId: req.headers.get("x-vercel-id") ?? undefined,
+                        requestId,
                         userId,
                         chatId,
                         abortSignal: userStopSignal.signal,
@@ -2041,8 +2051,7 @@ export const createChatHandler = () => {
                                 omitImageViewToolResultsForProviderRetry(
                                   state.finalMessages,
                                 ).messages,
-                              requestId:
-                                req.headers.get("x-vercel-id") ?? undefined,
+                              requestId,
                               userId,
                               chatId,
                               abortSignal: userStopSignal.signal,
@@ -2475,11 +2484,6 @@ export const createChatHandler = () => {
                       preemptiveTimeout?.isPreemptive() ?? false;
                     const onFinishStartTime = Date.now();
                     const triggerTime = preemptiveTimeout?.getTriggerTime();
-                    const cleanupRequestId =
-                      req.headers.get("x-request-id") ??
-                      req.headers.get("x-vercel-id") ??
-                      undefined;
-
                     const logCleanupStage = ({
                       phase,
                       step,
@@ -2493,6 +2497,7 @@ export const createChatHandler = () => {
 
                       console.info(
                         JSON.stringify({
+                          ...chatLogger?.getDiagnosticContext(),
                           timestamp: new Date().toISOString(),
                           level: "info",
                           event: "preemptive_timeout_cleanup_stage",
@@ -2501,7 +2506,7 @@ export const createChatHandler = () => {
                             process.env.VERCEL_ENV ??
                             process.env.NODE_ENV ??
                             "unknown",
-                          request_id: cleanupRequestId,
+                          request_id: requestId,
                           user_id: userId,
                           chat_id: chatId,
                           endpoint,
@@ -2540,6 +2545,7 @@ export const createChatHandler = () => {
                         const totalElapsed =
                           Date.now() - (triggerTime || onFinishStartTime);
                         phLogger.info("Preemptive timeout cleanup step", {
+                          ...chatLogger?.getDiagnosticContext(),
                           chatId,
                           step,
                           stepDurationMs: stepDuration,
@@ -2551,6 +2557,7 @@ export const createChatHandler = () => {
 
                     if (isPreemptiveAbort) {
                       phLogger.info("Preemptive timeout onFinish started", {
+                        ...chatLogger?.getDiagnosticContext(),
                         chatId,
                         endpoint,
                         timeSinceTriggerMs: triggerTime
