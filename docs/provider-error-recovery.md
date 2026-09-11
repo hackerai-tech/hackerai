@@ -8,6 +8,12 @@ wins. Recovery retains completed tool results and removes only the incomplete
 tail. The existing model selection, billing, authorization, and retry limits
 still apply.
 
+The local provider watchdog distinguishes waiting for a response from waiting
+for a streamed chunk. A response timeout can leave only completed tool results
+in the transcript, with no new step or partial tail to trim. That specific local
+error may retain the completed tail for the existing bounded continuation;
+provider-supplied error wording alone does not enable it.
+
 A rejection delivered through `streamText.onError` before any output can use
 the existing fallback, including an active Abliteration experiment's baseline
 route. This does not enable replay of arbitrary output-bearing 400 failures.
