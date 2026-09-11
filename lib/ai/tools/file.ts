@@ -8,7 +8,10 @@ import type {
 import { truncateOutput } from "@/lib/token-utils";
 import { supportsMultimodalToolResults } from "@/lib/ai/providers";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
-import { isCentrifugoSandbox } from "./utils/sandbox-types";
+import {
+  getSandboxLogFields,
+  isCentrifugoSandbox,
+} from "./utils/sandbox-types";
 import {
   getSandboxUploadedFileUrl,
   uploadSandboxFileToConvex,
@@ -360,10 +363,6 @@ const isRasterImagePath = (path: string): boolean => {
   return extension ? RASTER_IMAGE_EXTENSIONS.has(extension) : false;
 };
 
-function getViewSandboxType(sandbox: any): "centrifugo" | "e2b" {
-  return isCentrifugoSandbox(sandbox) ? "centrifugo" : "e2b";
-}
-
 function getActiveModelName(context: ToolContext): string | undefined {
   return context.getCurrentModelName?.() ?? context.modelName;
 }
@@ -612,7 +611,7 @@ function captureFileViewImageUsage(args: {
     subscription_tier: context.subscription,
     model: getActiveModelName(context),
     configured_model: context.modelName,
-    ...(sandbox ? { sandbox_type: getViewSandboxType(sandbox) } : {}),
+    ...(sandbox ? getSandboxLogFields(sandbox) : {}),
     file_extension: getFileExtension(path),
     stage,
     outcome,
@@ -1459,7 +1458,7 @@ export const createFile = (context: ToolContext) => {
                   event: "file_view_preview_upload_failed",
                   service: "chat-handler",
                   user_id: context.userID,
-                  sandbox_type: getViewSandboxType(sandbox),
+                  ...getSandboxLogFields(sandbox),
                   file_name: filename,
                   source_path: path,
                   kind: viewPayload.kind,

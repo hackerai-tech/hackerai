@@ -1,5 +1,9 @@
 import type { AnySandbox } from "@/types";
-import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
+import {
+  isCentrifugoSandbox,
+  isE2BSandbox,
+  isMiosaSandbox,
+} from "./sandbox-types";
 
 export const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
 
@@ -66,6 +70,7 @@ export function buildSandboxCommandOptions(
       user: "root" as const,
       cwd: "/home/user",
     }),
+    ...(isMiosaSandbox(sandbox) && { cwd: "/home/user" }),
     ...(extraEnvVars && { envVars: extraEnvVars }),
     ...(handlers && {
       onStdout: handlers.onStdout,

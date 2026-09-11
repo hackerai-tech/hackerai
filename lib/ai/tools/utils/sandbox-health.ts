@@ -11,7 +11,8 @@ import type {
   TerminalTimeoutRecoveryOutcome,
 } from "@/types";
 import { createRetryLogger } from "@/lib/posthog/worker";
-import { isE2BSandbox } from "./sandbox-types";
+import { isE2BSandbox, isMiosaSandbox } from "./sandbox-types";
+import { sampleMiosaMetrics } from "./miosa-metrics";
 import { retryWithBackoff } from "./retry-with-backoff";
 import {
   AuthenticationError,
@@ -32,12 +33,36 @@ const MEM_WARNING_THRESHOLD = 90; // percentage
 const FAILURE_METRICS_TIMEOUT_MS = 1000;
 
 /**
+ * Human-readable warning for a resource sample, or null when nothing is hot.
+ * Shared so every provider reports pressure with identical wording.
+ */
+function buildResourceWarning(metrics: SandboxResourceMetrics): string | null {
+  const warnings: string[] = [];
+  if (metrics.cpuPct > CPU_WARNING_THRESHOLD) {
+    warnings.push(`CPU at ${metrics.cpuPct.toFixed(0)}%`);
+  }
+  if (metrics.memPct > MEM_WARNING_THRESHOLD) {
+    warnings.push(`Memory at ${metrics.memPct.toFixed(0)}%`);
+  }
+  return warnings.length > 0 ? warnings.join(", ") : null;
+}
+
+/**
  * Check sandbox resource metrics and return a diagnostic summary.
  * Returns null if metrics are unavailable (non-E2B sandbox or API error).
  */
 async function checkSandboxMetrics(
   sandbox: AnySandbox,
 ): Promise<(SandboxResourceMetrics & { warning: string | null }) | null> {
+  // MIOSA has no live-utilisation series yet, so sample the guest directly.
+  // Without this branch the agent runs blind on MIOSA: no CPU or memory
+  // warning ever fires, and a wedged sandbox looks identical to a healthy one.
+  if (isMiosaSandbox(sandbox)) {
+    const sample = await sampleMiosaMetrics(sandbox);
+    if (!sample) return null;
+    return { ...sample, warning: buildResourceWarning(sample) };
+  }
+
   if (!isE2BSandbox(sandbox)) return null;
 
   try {

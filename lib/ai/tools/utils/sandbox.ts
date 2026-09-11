@@ -3,7 +3,11 @@ import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
-import { getE2BClusterRouting, type E2BClusterConfig } from "./e2b-cluster";
+import {
+  E2BRegionUnavailableError,
+  getE2BClusterRouting,
+  type E2BClusterConfig,
+} from "./e2b-cluster";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { BASH_SANDBOX_AUTOPAUSE_TIMEOUT } from "./e2b-lease";
 export {
@@ -96,8 +100,8 @@ export const ensureSandboxConnection = async (
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
 
-    // Step 1: Look for an existing sandbox across configured clusters. US is
-    // deliberately checked first so it wins ties between equally viable ones.
+    // Step 1: Look only in the cluster selected for this request. Crossing
+    // clusters here would defeat the regional execution policy.
     type DiscoveredSandbox = {
       info: Awaited<
         ReturnType<ReturnType<typeof Sandbox.list>["nextItems"]>
@@ -277,6 +281,8 @@ export const ensureSandboxConnection = async (
     throw lastError;
   } catch (error) {
     console.error("Error creating persistent sandbox:", error);
+
+    if (error instanceof E2BRegionUnavailableError) throw error;
 
     // Surface specific error messages for known E2B errors
     const userMessage = getUserFacingE2BErrorMessage(error);

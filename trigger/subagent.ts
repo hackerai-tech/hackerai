@@ -122,7 +122,11 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
-import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  DEFAULT_TRIGGER_RUN_REGION,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
+import { assertSubagentRunRegion } from "@/lib/ai/subagents/region-guard";
 
 const loadPersistedTerminalOutput = async (
   subagentId: string,
@@ -367,6 +371,23 @@ export const subagentTask = task({
     { ctx, signal: triggerSignal },
   ): Promise<SubagentTaskOutput> => {
     const startedAt = Date.now();
+    const triggerRegion = payload.triggerRegion ?? DEFAULT_TRIGGER_RUN_REGION;
+    await assertSubagentRunRegion(
+      {
+        requestedRegion: triggerRegion,
+        actualRegion: ctx.run.region,
+        environmentType: ctx.environment.type,
+      },
+      async (failure) => {
+        if (payload.convexUrl) setConvexUrl(payload.convexUrl);
+        await finishSubagent({
+          subagentId: payload.subagentId,
+          triggerRunId: ctx.run.id,
+          ...failure,
+        });
+      },
+    );
+
     // The parent Agent run may be using a branch-specific Convex deployment.
     // Trigger preview workers otherwise inherit the dashboard's main URL and
     // cannot see the reservation that the parent just created.
@@ -781,7 +802,7 @@ export const subagentTask = task({
                 }),
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
-                triggerRegion: payload.triggerRegion,
+                triggerRegion,
               },
             );
             const tools = guardSubagentToolExecutions(

@@ -16,7 +16,16 @@ export async function getPostHogFeatureFlagForUser(
   flagKey: string,
   userId: string,
 ): Promise<boolean> {
-  return (await getPostHogFeatureFlagValueForUser(flagKey, userId)) === true;
+  const client = getClient();
+  if (!client) return false;
+  try {
+    const flags = await client.evaluateFlags(userId, {
+      flagKeys: [flagKey],
+    });
+    return flags.getFlag(flagKey) === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function getPostHogFeatureFlagValueForUser(

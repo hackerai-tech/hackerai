@@ -6,7 +6,7 @@ import {
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
 import type { SandboxFallbackInfo } from "./hybrid-sandbox-manager";
-import { isCentrifugoSandbox } from "./sandbox-types";
+import { isCentrifugoSandbox, isMiosaSandbox } from "./sandbox-types";
 
 type SandboxContextForPromptManager = {
   getSandboxInfo?: () => unknown;
@@ -46,6 +46,7 @@ const APPROVED_SANDBOX_CHANGED_MESSAGE =
 export function getAgentApprovalSandboxIdentity(
   sandbox: AnySandbox,
 ): AgentApprovalSandboxIdentity {
+  if (isMiosaSandbox(sandbox)) return "miosa";
   return isCentrifugoSandbox(sandbox)
     ? getAgentApprovalConnectionSandboxIdentity(sandbox.getConnectionId())
     : "e2b";

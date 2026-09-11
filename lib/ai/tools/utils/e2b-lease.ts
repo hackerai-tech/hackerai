@@ -26,6 +26,8 @@ const logLeaseFailure = (
       environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
       request_id: process.env.VERCEL_REQUEST_ID ?? null,
       sandbox_id: sandbox.sandboxId,
+      sandbox_type: "cloud",
+      sandbox_provider: "e2b",
       ...(source && { source }),
       error: error instanceof Error ? error.message : String(error),
     }),

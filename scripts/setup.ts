@@ -112,6 +112,28 @@ async function getE2bApiKey(): Promise<string> {
   return await getE2bApiKey();
 }
 
+async function getMiosaApiKey(): Promise<string> {
+  console.log(
+    `\n${chalk.bold("Getting MIOSA API Key for cloud sandbox rollout")}`,
+  );
+  console.log(
+    "MIOSA is the primary rollout provider. Leave this blank to keep E2B-only cloud execution.",
+  );
+  console.log(
+    "You can create a MIOSA API Key at: https://miosa.ai/dashboard/api-keys",
+  );
+  const key = await question("Enter your MIOSA API Key (optional): ");
+
+  if (!key || key.startsWith("msk_")) {
+    return key;
+  }
+
+  console.log(chalk.red("Invalid MIOSA API Key format"));
+  console.log('MIOSA keys should start with "msk_"');
+
+  return await getMiosaApiKey();
+}
+
 async function getWorkOSApiKey(): Promise<string> {
   console.log(`\n${chalk.bold("Getting WorkOS API Key")}`);
   console.log(
@@ -312,8 +334,13 @@ OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 ABLITERATION_API_KEY=
 
 # =============================================================================
-# CODE EXECUTION - E2B (Required for Agent Mode)
+# CODE EXECUTION - CLOUD SANDBOX (Required for Agent Mode)
 # =============================================================================
+# MIOSA is gradually enabled by PostHog. New workspaces default to hackerai-tools;
+# MIOSA_TEMPLATE_ID optionally overrides it. E2B remains the acquisition fallback.
+MIOSA_API_KEY=${envVars.MIOSA_API_KEY}
+MIOSA_TEMPLATE_ID=
+
 # Sign up at: https://e2b.dev/
 E2B_API_KEY=${envVars.E2B_API_KEY}
 E2B_TEMPLATE=terminal-agent-sandbox
@@ -504,6 +531,7 @@ async function main() {
   // Get required API keys
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
+  const MIOSA_API_KEY = await getMiosaApiKey();
   const {
     AWS_S3_ACCESS_KEY_ID,
     AWS_S3_SECRET_ACCESS_KEY,
@@ -533,6 +561,7 @@ async function main() {
   await writeEnvFile({
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
+    MIOSA_API_KEY,
     AWS_S3_ACCESS_KEY_ID,
     AWS_S3_SECRET_ACCESS_KEY,
     AWS_S3_REGION,

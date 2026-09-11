@@ -34,6 +34,7 @@ import {
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
+import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 
 type SandboxInstance = AnySandbox;
 
@@ -263,6 +264,7 @@ export class HybridSandboxManager implements SandboxManager {
   private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
+  private activeCloudProvider: CloudSandboxProvider;
 
   constructor(
     private userID: string,
@@ -278,6 +280,8 @@ export class HybridSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    this.activeCloudProvider =
+      cloudSandboxContext?.provider ?? getCloudSandboxProvider();
   }
 
   recordHealthFailure(): boolean {
@@ -532,9 +536,8 @@ export class HybridSandboxManager implements SandboxManager {
   getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
       return {
-        type: "e2b",
-        provider:
-          this.cloudSandboxContext?.provider ?? getCloudSandboxProvider(),
+        type: "cloud",
+        provider: this.activeCloudProvider,
       };
     }
     const type: SandboxType =
@@ -547,7 +550,7 @@ export class HybridSandboxManager implements SandboxManager {
       return undefined;
     }
     if (!this.isLocal) {
-      return "e2b";
+      return "cloud";
     }
     return this.sandboxPreference === "desktop"
       ? "desktop"
@@ -555,7 +558,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async supportsInteractivePty(): Promise<boolean> {
-    if (this.sandboxPreference === "e2b") {
+    if (!this.isLocal) {
       return true;
     }
 
@@ -803,6 +806,7 @@ export class HybridSandboxManager implements SandboxManager {
     });
 
     this.sandbox = result.sandbox;
+    this.activeCloudProvider = result.provider;
     this.isLocal = false;
     this.currentConnectionId = null;
     this.currentConnectionName = null;

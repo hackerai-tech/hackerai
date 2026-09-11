@@ -5,8 +5,9 @@ import { phLogger } from "@/lib/posthog/server";
 import { FULL_OUTPUT_SAVED_MESSAGE } from "@/lib/token-utils";
 import {
   asCommonSandbox,
+  isCloudSandbox,
   isCentrifugoSandbox,
-  isE2BSandbox,
+  isMiosaSandbox,
 } from "./sandbox-types";
 
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
@@ -14,7 +15,8 @@ const DESKTOP_RELAY_RETRY_DELAY_MS = 250;
 export const FULL_OUTPUT_SAVE_FAILED_MESSAGE =
   "\n[Full terminal output could not be saved. The output below is truncated. Do not rerun the original command unchanged. If the omitted content is necessary, use a safe, read-only follow-up with narrower output, filters, or line ranges. Otherwise, explain the limitation and continue.]";
 
-type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
+type TerminalOutputPersistenceProvider =
+  "miosa" | "e2b" | "desktop" | "centrifugo";
 type TerminalOutputPersistenceFailureCategory =
   | "timeout"
   | "transport"
@@ -44,6 +46,7 @@ const getPersistenceProvider = (
     }
     return "centrifugo";
   }
+  if (isMiosaSandbox(sandbox)) return "miosa";
   return "e2b";
 };
 
@@ -102,6 +105,20 @@ const canRetryDesktopRelayFailure = (
     category === "relay_unavailable" ||
     category === "unknown");
 
+const getPersistenceSandboxFields = (
+  provider: TerminalOutputPersistenceProvider,
+): {
+  sandbox_type: "cloud" | "desktop" | "remote-connection";
+  sandbox_provider?: "miosa" | "e2b";
+} => {
+  if (provider === "miosa" || provider === "e2b") {
+    return { sandbox_type: "cloud", sandbox_provider: provider };
+  }
+  return {
+    sandbox_type: provider === "desktop" ? "desktop" : "remote-connection",
+  };
+};
+
 const emitPersistenceFailure = (args: {
   provider: TerminalOutputPersistenceProvider;
   attemptCount: number;
@@ -112,6 +129,8 @@ const emitPersistenceFailure = (args: {
   telemetry?: TerminalOutputPersistenceTelemetry;
 }): void => {
   const fields = {
+    ...getPersistenceSandboxFields(args.provider),
+    // Retained for existing dashboards; use sandbox_provider for cloud backend.
     provider: args.provider,
     attempt_count: args.attemptCount,
     result: args.result,
@@ -143,7 +162,7 @@ const emitPersistenceFailure = (args: {
 
 /** Builds a stable, non-identifying output directory for one chat scope. */
 const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
-  const baseDirectory = isE2BSandbox(sandbox)
+  const baseDirectory = isCloudSandbox(sandbox)
     ? "/home/user/terminal_full_output"
     : "/tmp/terminal_full_output";
   const scopeKey = scopeId
@@ -215,6 +234,7 @@ export async function saveFullOutputToFile(
           environment: telemetry?.environment ?? "unknown",
           request_id: telemetry?.requestId ?? null,
           trace_id: telemetry?.triggerRunId ?? null,
+          ...getPersistenceSandboxFields(provider),
           provider,
           failure_category: classifyTerminalOutputPersistenceFailure(err),
         }),

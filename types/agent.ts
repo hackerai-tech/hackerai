@@ -8,21 +8,24 @@ import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager
 import type { PtyParserLogBudget } from "@/lib/ai/tools/utils/pty-output-formatter";
 import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
+import type { MiosaSandbox } from "@/lib/ai/tools/utils/miosa-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { S3StorageRegion } from "@/lib/constants/s3";
 
-// Union type for E2B Sandbox and local CentrifugoSandbox
-export type AnySandbox = Sandbox | CentrifugoSandbox;
+// Union type for cloud providers and local CentrifugoSandbox.
+export type AnySandbox = Sandbox | MiosaSandbox | CentrifugoSandbox;
 
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 
-export type SandboxType = "e2b" | "desktop" | "remote-connection";
+/** Execution environment category used in runtime logs and analytics. */
+export type SandboxType = "cloud" | "desktop" | "remote-connection";
 
 export interface SandboxInfo {
   type: SandboxType;
   name?: string;
+  /** Concrete cloud backend. Omitted for user-owned execution hosts. */
   provider?: CloudSandboxProvider;
 }
 
@@ -192,7 +195,8 @@ export type AgentToolApprovalGrant = "full_access" | "target_prefix";
 export type AgentToolApprovalGrantKind =
   "terminal_command" | "terminal_interaction" | "file_change";
 
-export type AgentApprovalSandboxIdentity = "e2b" | `connection:${string}`;
+export type AgentApprovalSandboxIdentity =
+  "e2b" | "miosa" | `connection:${string}`;
 
 const AGENT_APPROVAL_SANDBOX_SCOPE_VERSION =
   "agent-approval-sandbox-scope-v1" as const;
@@ -212,6 +216,7 @@ const isAgentApprovalSandboxIdentity = (
   value: unknown,
 ): value is AgentApprovalSandboxIdentity =>
   value === "e2b" ||
+  value === "miosa" ||
   (typeof value === "string" &&
     value.startsWith("connection:") &&
     value.length > "connection:".length &&

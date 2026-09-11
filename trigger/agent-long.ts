@@ -26,13 +26,20 @@ import {
   UIMessage,
 } from "ai";
 import type { Geo } from "@vercel/functions";
-import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  assertTriggerRunRegion,
+  DEFAULT_TRIGGER_RUN_REGION,
+  EUROPE_TRIGGER_RUN_REGION,
+  type RequestRegionClass,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
 import PostHogClient from "@/app/posthog";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
 
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
+import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -211,7 +218,6 @@ import type {
 import {
   AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
   canUseExtraUsage,
-  getAgentApprovalConnectionSandboxIdentity,
   getAgentToolApprovalPromptKind,
   getAgentApprovalTargetPrefixForSandbox,
   normalizeMaxModelForSubscription,
@@ -228,6 +234,7 @@ import {
 } from "@/lib/api/agent-stream-runner";
 import {
   assertLocalSandboxFallbackAllowed,
+  getAgentApprovalSandboxIdentity,
   getSandboxFallbackPromptReminder,
   prepareSandboxContextForPrompt,
   writeSandboxFallbackEvent,
@@ -284,7 +291,6 @@ import {
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
 import { FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS } from "@/lib/rate-limit/free-config";
-import { isCentrifugoSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import { AgentRunTimingTracker } from "@/lib/chat/agent-run-timing";
 import {
   BACKGROUND_WORK_DRAIN_TIMEOUT_MS,
@@ -2289,7 +2295,10 @@ export type AgentLongPayload = {
   selectedModel?: SelectedModel;
   autoReviewAssignment?: AgentAutoReviewAssignment;
   userLocation: Geo;
+  /** Actual Trigger.dev execution and generated-file storage region. */
   triggerRegion?: TriggerRunRegion;
+  /** Request geography kept separate from Trigger's execution placement. */
+  requestRegionClass?: RequestRegionClass;
   isAutoContinue?: boolean;
   isAutomaticContinuation?: boolean;
   regenerate?: boolean;
@@ -2357,6 +2366,16 @@ export const agentLongTask = task({
   },
 
   run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal }) => {
+    const triggerRegion = payload.triggerRegion ?? DEFAULT_TRIGGER_RUN_REGION;
+    const requestRegionClass =
+      payload.requestRegionClass ??
+      (triggerRegion === EUROPE_TRIGGER_RUN_REGION ? "europe" : "unknown");
+    assertTriggerRunRegion({
+      requestedRegion: triggerRegion,
+      actualRegion: ctx.run.region,
+      environmentType: ctx.environment.type,
+    });
+
     // Point the Convex client at the correct per-branch preview deployment.
     // NEXT_PUBLIC_CONVEX_URL in Trigger.dev's env vars only reflects the
     // main deployment; preview branches each have their own Convex URL.
@@ -2379,7 +2398,6 @@ export const agentLongTask = task({
       selectedModel: rawSelectedModelOverride,
       autoReviewAssignment,
       userLocation,
-      triggerRegion = "us-east-1",
       isAutoContinue,
       isAutomaticContinuation,
       regenerate,
@@ -2688,6 +2706,21 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
+      const cloudSandboxSelection =
+        !sandboxPreference || sandboxPreference === "e2b"
+          ? await selectCloudSandboxProvider({
+              userId,
+              subscription,
+              environment: ctx.environment.type,
+              triggerRegion,
+              requestRegionClass,
+              featureFlagClient: posthog,
+            })
+          : ({
+              provider: "e2b",
+              reason: "miosa_rollout_control",
+            } as const);
+      const cloudSandboxProvider = cloudSandboxSelection.provider;
       const regionalFreeLimits = await evaluateRegionalFreeLimits({
         posthog,
         userId,
@@ -2715,7 +2748,6 @@ export const agentLongTask = task({
         );
         await checkFreeMonthlyCostLimit(freeUsageSubject, regionalFreeLimits);
       }
-      const cloudSandboxProvider = "e2b" as const;
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],
@@ -3361,18 +3393,11 @@ export const agentLongTask = task({
             };
             let approvalSandboxManager: SandboxManager | undefined;
             const resolveApprovalSandboxIdentity = async () => {
-              if (!sandboxPreference || sandboxPreference === "e2b") {
-                return "e2b" as const;
-              }
               if (!approvalSandboxManager) {
                 throw new Error("Sandbox manager is unavailable for approval");
               }
               const { sandbox } = await approvalSandboxManager.getSandbox();
-              return isCentrifugoSandbox(sandbox)
-                ? getAgentApprovalConnectionSandboxIdentity(
-                    sandbox.getConnectionId(),
-                  )
-                : ("e2b" as const);
+              return getAgentApprovalSandboxIdentity(sandbox);
             };
             const requestToolApproval = buildAgentToolApprovalRequester({
               agentPermissionMode,
@@ -3464,6 +3489,7 @@ export const agentLongTask = task({
               auxiliaryVision,
               {
                 cloudSandboxProvider,
+                cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
                 keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
@@ -3787,7 +3813,7 @@ export const agentLongTask = task({
                 // Title generation starts in parallel with the main run. Wait
                 // for it so its provider cost cannot race final settlement.
                 await titlePromise;
-                const sandboxUsage = getSandboxSessionUsage();
+                const sandboxUsage = await getSandboxSessionUsage();
                 const sandboxCost = sandboxUsage.totalCostDollars;
                 if (sandboxCost > 0) {
                   usageTracker.providerCost += sandboxCost;

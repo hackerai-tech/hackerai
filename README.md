@@ -98,8 +98,15 @@ To use the agent locally:
    add the env vars the task needs to run (these live on the worker, not on
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
    `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `AWS_S3_ACCESS_KEY_ID`,
-   `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and one
-   cloud sandbox provider, plus any optional keys you use
+   `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and
+   `E2B_API_KEY`. Add
+   `MIOSA_API_KEY` for the MIOSA rollout or explicit MIOSA testing. New Miosa
+   workspaces default to the native `hackerai-tools` template; optionally set
+   `MIOSA_TEMPLATE_ID` to override it. An existing `miosa-sandbox-docker`
+   override still selects the Docker template, so remove or update that value
+   in each intended runtime to use the native default. Existing workspaces
+   retain their original runtime and files; E2B remains the cloud fallback.
+   Add any optional keys you use
    (`ABLITERATION_API_KEY`, `PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
 3. Start the worker in a third terminal:
 

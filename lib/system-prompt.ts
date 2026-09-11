@@ -221,16 +221,37 @@ Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-h
 </local_machine_access>`;
 
 const getDefaultSandboxEnvironmentSection = (
-  _provider: CloudSandboxProvider = getCloudSandboxProvider(),
+  provider: CloudSandboxProvider = getCloudSandboxProvider(),
 ): string => {
-  const portScanningSection = `Port-scanning limitation:
+  const portScanningSection =
+    provider === "miosa"
+      ? ""
+      : `Port-scanning limitation:
 - Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful even when no traffic reached the destination.
 - Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent. Never treat a successful low-level connection or implausible scan output as confirmation that a port is open.
 - Explain this environment limitation instead of retrying the scan or changing command options. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack.
 - Narrow application-level checks remain appropriate when they verify expected protocol behavior, such as an HTTP response, completed TLS handshake, or expected service banner.`;
-  const systemEnvironment = `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+  const systemEnvironment =
+    provider === "miosa"
+      ? `- OS: isolated Linux sandbox (with internet access)
+- Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
+- User: privileged sandbox user`
+      : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;
+  const installedTools = `${PREINSTALLED_PENTESTING_TOOLS}
+
+${SANDBOX_TOOL_RECIPES_SECTION}
+
+${AGENT_BROWSER_SECTION}`;
+  const developmentEnvironment =
+    provider === "miosa"
+      ? `Development Environment:
+- Probe runtime and package versions before relying on them; the configured MIOSA template can vary.`
+      : `Development Environment:
+- Python 3.12.11 (commands: python3, pip3)
+- Node.js 20.19.4 (commands: node, npm)
+- Golang 1.24.2 (commands: go)`;
 
   return `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
@@ -250,16 +271,9 @@ ${systemEnvironment}
 - Inline image attachments are already visible in the conversation. If an \`inline_image_attachment\` also lists a sandbox path, use that path only for file-system operations such as metadata extraction, conversion, or scripting; do not call the file view action just to describe the image.
 - VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
-Development Environment:
-- Python 3.12.11 (commands: python3, pip3)
-- Node.js 20.19.4 (commands: node, npm)
-- Golang 1.24.2 (commands: go)
+${developmentEnvironment}
 
-${PREINSTALLED_PENTESTING_TOOLS}
-
-${SANDBOX_TOOL_RECIPES_SECTION}
-
-${AGENT_BROWSER_SECTION}
+${installedTools}
 </sandbox_environment>`;
 };
 

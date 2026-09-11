@@ -23,7 +23,7 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
-import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
+import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceAgentPermissionMode,
   coerceSelectedModel,
@@ -463,8 +463,8 @@ export const createAgentTriggerPost =
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
-      const triggerRegion =
-        getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
+      const { triggerRegion, requestRegionClass } =
+        getRegionalExecutionContextForVercelRequest(req, userLocation);
       const genericDelegationEnabled = agentPermissionMode === "full_access";
 
       assertFreeAgentGates({
@@ -700,6 +700,7 @@ export const createAgentTriggerPost =
         autoReviewAssignment,
         userLocation,
         triggerRegion,
+        requestRegionClass,
         isAutoContinue,
         isAutomaticContinuation,
         regenerate,

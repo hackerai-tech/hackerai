@@ -17,8 +17,9 @@ Before you begin, make sure you have:
    E2B_API_KEY=your_api_key_here
    ```
 
-For the separate EU cluster, add its server-side credentials without replacing
-the US key:
+For European cloud Agent execution, add the separate EU cluster credentials
+without replacing the US key. European runs are restricted to this cluster and
+fail closed when `E2B_EU_API_KEY` is unavailable:
 
 ```dotenv
 E2B_EU_API_KEY=your_eu_api_key_here
