@@ -50,6 +50,13 @@ function classifyDiscoveryError(
 export type MiosaEnrollmentReason =
   "not_pro" | "existing_e2b_workspace" | "workspace_discovery_unavailable";
 
+const MIOSA_ELIGIBLE_SUBSCRIPTIONS = new Set<SubscriptionTier>([
+  "pro",
+  "pro-plus",
+  "team",
+  "ultra",
+]);
+
 /** An enrollment veto is not a MIOSA acquisition failure. */
 export class MiosaEnrollmentError extends Error {
   constructor(
@@ -62,7 +69,7 @@ export class MiosaEnrollmentError extends Error {
 }
 
 /**
- * Admit new Pro and Pro+ workspaces only after authoritative, read-only E2B discovery.
+ * Admit new paid-plan workspaces only after authoritative, read-only E2B discovery.
  * Paused workspaces and older templates still contain user data. Never delete
  * or resume them to make a user eligible. Metadata checks span configured
  * clusters; execution remains restricted to the request's approved region.
@@ -71,7 +78,12 @@ export async function assertFreshMiosaEnrollment(options: {
   userId: string;
   subscription?: SubscriptionTier;
 }): Promise<void> {
-  if (options.subscription !== "pro" && options.subscription !== "pro-plus") {
+  if (
+    !options.subscription ||
+    !MIOSA_ELIGIBLE_SUBSCRIPTIONS.has(options.subscription)
+  ) {
+    // Retain the established reason value so rollout dashboards remain
+    // continuous while paid-plan eligibility expands.
     throw new MiosaEnrollmentError("not_pro");
   }
   // Without the default E2B account, an empty cluster list proves nothing.
