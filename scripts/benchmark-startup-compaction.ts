@@ -6,7 +6,9 @@ import { AGENT_SUMMARIZATION_PROMPT } from "../lib/chat/summarization/prompts";
 config({ path: ".env.local", quiet: true });
 if (!process.env.OPENROUTER_API_KEY)
   throw new Error("OPENROUTER_API_KEY is required");
-mkdirSync(".artifacts/hac102", { recursive: true });
+const useV41 = process.argv.includes("--deepseek-v41");
+const artifactDir = useV41 ? ".artifacts/hac108" : ".artifacts/hac102";
+mkdirSync(artifactDir, { recursive: true });
 const variants = [
   {
     name: "glm-baseline",
@@ -15,8 +17,10 @@ const variants = [
     prompt: AGENT_SUMMARIZATION_PROMPT,
   },
   {
-    name: "deepseek-low",
-    model: "deepseek/deepseek-v4-flash-0731",
+    name: useV41 ? "deepseek-v41-low" : "deepseek-low",
+    model: useV41
+      ? "deepseek/deepseek-v4.1-flash"
+      : "deepseek/deepseek-v4-flash-0731",
     reasoning: { enabled: true, effort: "low" },
     prompt: AGENT_SUMMARIZATION_PROMPT,
   },
@@ -92,7 +96,7 @@ async function run(variant: (typeof variants)[number], size: number) {
       (h) => !text.includes(h),
     );
     writeFileSync(
-      `.artifacts/hac102/${name}.json`,
+      `${artifactDir}/${name}.json`,
       JSON.stringify(result, null, 2),
     );
     const stats = {
@@ -109,7 +113,7 @@ async function run(variant: (typeof variants)[number], size: number) {
       error: result.error,
     };
     writeFileSync(
-      `.artifacts/hac102/${name}-stats.json`,
+      `${artifactDir}/${name}-stats.json`,
       JSON.stringify(stats, null, 2),
     );
     console.log(JSON.stringify(stats));

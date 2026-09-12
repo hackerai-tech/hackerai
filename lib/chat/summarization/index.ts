@@ -1,3 +1,7 @@
+import {
+  getSummarizationModelAssignment,
+  startSummarizationModelMeasurement,
+} from "./model-experiment";
 import "server-only";
 
 import {
@@ -275,7 +279,7 @@ const logContextCompactionRetrying = ({
       mode,
       subscription,
       reason,
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      default_compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
       summarization_attempt: attempt,
       model_id: getLanguageModelId(languageModel),
       retry_model_name: retryModelName,
@@ -323,6 +327,7 @@ const logContextCompactionFailed = ({
 };
 
 export interface CheckAndSummarizeOptions {
+  userId?: string;
   uiMessages: UIMessage[];
   /** History before injected notes/reminders; falls back to uiMessages for direct callers. */
   sourceUiMessages?: UIMessage[];
@@ -447,7 +452,7 @@ const logContextCompactionStarted = ({
       mode,
       subscription,
       reason,
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      default_compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
       total_estimated_tokens: totalEstimatedTokens,
       system_prompt_tokens: systemPromptTokens,
       provider_input_tokens: providerInputTokens,
@@ -472,6 +477,8 @@ const logContextCompactionStarted = ({
 };
 
 const generateSummaryTextWithRetry = async ({
+  userId,
+  scope,
   messagesToSummarize,
   modelMessages,
   mode,
@@ -487,6 +494,8 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration,
   startupCompaction,
 }: {
+  userId?: string;
+  scope: "durable" | "in_run";
   messagesToSummarize: UIMessage[];
   modelMessages?: ModelMessage[];
   mode: ChatMode;
@@ -507,20 +516,33 @@ const generateSummaryTextWithRetry = async ({
     attempt: SummarizationAttempt;
   }
 > => {
-  const summaryLanguageModel = myProvider.languageModel(
-    CONTEXT_COMPACTION_MODEL_NAME,
-  );
   const startedAt = Date.now();
   abortSignal?.throwIfAborted();
-  const variant =
+  const [variant, assignment] = await Promise.all([
     startupCompaction && mode === "agent"
-      ? await getStartupCompactionVariant(startupCompaction.userId)
-      : "control";
+      ? getStartupCompactionVariant(startupCompaction.userId)
+      : Promise.resolve("control" as const),
+    getSummarizationModelAssignment(userId),
+  ]);
+  const selectedModel = assignment?.modelKey ?? CONTEXT_COMPACTION_MODEL_NAME;
+  const summaryLanguageModel = myProvider.languageModel(selectedModel);
   const bounded = variant === "bounded_glm_v1";
   abortSignal?.throwIfAborted();
   if (startupCompaction && mode === "agent") {
     startupCompaction.onAttempt?.({ variant, fallbackUsed: false });
   }
+  let fallbackUsed = false;
+  let outcome: "success" | "error" | "aborted" = "error";
+  let finalUsage:
+    Awaited<ReturnType<typeof generateSummaryText>>["usage"] | undefined;
+  const finishMeasurement = startSummarizationModelMeasurement({
+    userId,
+    chatId,
+    assignment,
+    mode,
+    scope,
+    startupPolicy: variant,
+  });
   try {
     let result: Awaited<ReturnType<typeof generateSummaryText>>;
     try {
@@ -531,7 +553,15 @@ const generateSummaryTextWithRetry = async ({
         chatSystemPrompt,
         hasExistingSummary,
         tools,
-        buildContextCompactionProviderOptions(providerOptions),
+        assignment
+          ? {
+              openrouter: {
+                ...buildContextCompactionProviderOptions(providerOptions)
+                  .openrouter,
+                provider: { sort: "latency", data_collection: "deny" },
+              },
+            }
+          : buildContextCompactionProviderOptions(providerOptions),
         abortSignal,
         modelMessages,
         summaryInputMaxTokens,
@@ -553,6 +583,7 @@ const generateSummaryTextWithRetry = async ({
         throw error;
       }
 
+      fallbackUsed = true;
       const retryModelName = bounded
         ? STARTUP_COMPACTION_FALLBACK_MODEL
         : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
@@ -596,6 +627,8 @@ const generateSummaryTextWithRetry = async ({
         throw retryError;
       }
 
+      outcome = "success";
+      finalUsage = result.usage;
       return {
         ...result,
         languageModel: retryLanguageModel,
@@ -603,12 +636,20 @@ const generateSummaryTextWithRetry = async ({
       };
     }
 
+    outcome = "success";
+    finalUsage = result.usage;
     return {
       ...result,
       languageModel: summaryLanguageModel,
       attempt: "primary",
     };
+  } catch (error) {
+    outcome = abortSignal?.aborted ? "aborted" : "error";
+    if (!fallbackUsed)
+      markSummarizationAttemptError(error, "primary", selectedModel);
+    throw error;
   } finally {
+    finishMeasurement?.(outcome, fallbackUsed, finalUsage);
     reportPhaseDuration(onPhaseDuration, "summary_generation", startedAt);
   }
 };
@@ -671,6 +712,7 @@ const startTranscriptSave = ({
 };
 
 export interface CompactModelMessagesInRunOptions {
+  userId?: string;
   modelMessages: ModelMessage[];
   /** UI history excludes synthetic SDK continuation/approval messages. */
   sourceUiMessages?: UIMessage[];
@@ -713,6 +755,7 @@ export interface InRunModelCompactionResult {
  * caller keeps the result as a run-scoped rolling checkpoint instead.
  */
 export const compactModelMessagesInRun = async ({
+  userId,
   modelMessages,
   sourceUiMessages = [],
   transcriptModelMessages,
@@ -754,7 +797,7 @@ export const compactModelMessagesInRun = async ({
       reason: compactionReason,
       compaction_index: compactionIndex,
       persistence: "run_scoped",
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      default_compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
       model_message_count: modelMessages.length,
       provider_input_tokens: providerInputTokens,
       max_tokens: maxTokens,
@@ -769,6 +812,8 @@ export const compactModelMessagesInRun = async ({
 
   try {
     const summaryPromise = generateSummaryTextWithRetry({
+      userId,
+      scope: "in_run",
       messagesToSummarize: [],
       modelMessages,
       mode,
@@ -816,7 +861,7 @@ export const compactModelMessagesInRun = async ({
         subscription,
         compaction_index: compactionIndex,
         persistence: "run_scoped",
-        compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+        default_compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
         summary_input_tokens: summaryResult.usage.inputTokens,
         summary_output_tokens: summaryResult.usage.outputTokens,
         estimated_compacted_input_tokens:
@@ -848,7 +893,10 @@ export const compactModelMessagesInRun = async ({
                 ? STARTUP_COMPACTION_FALLBACK_MODEL
                 : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode],
             )
-          : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
+          : myProvider.languageModel(
+              (getErrorRecord(error)?.__hackeraiSummarizationModel as string) ??
+                CONTEXT_COMPACTION_MODEL_NAME,
+            ),
       fallbackResult: "no_summarization",
       error,
     });
@@ -928,6 +976,7 @@ const saveTranscriptToSandbox = async (
 
 /** Builds a durable checkpoint when needed, preserving source intent and a bounded tail. */
 export const checkAndSummarizeIfNeeded = async ({
+  userId,
   uiMessages,
   sourceUiMessages,
   subscription,
@@ -1063,6 +1112,8 @@ export const checkAndSummarizeIfNeeded = async ({
     // Run summary generation and transcript saving in parallel — they are
     // independent (transcript is formatted from raw messages, not the summary).
     const summaryPromise = generateSummaryTextWithRetry({
+      userId,
+      scope: "durable",
       messagesToSummarize,
       mode,
       chatSystemPrompt,
@@ -1159,7 +1210,10 @@ export const checkAndSummarizeIfNeeded = async ({
                 ? STARTUP_COMPACTION_FALLBACK_MODEL
                 : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode],
             )
-          : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
+          : myProvider.languageModel(
+              (getErrorRecord(error)?.__hackeraiSummarizationModel as string) ??
+                CONTEXT_COMPACTION_MODEL_NAME,
+            ),
       fallbackResult: "no_summarization",
       error,
     });

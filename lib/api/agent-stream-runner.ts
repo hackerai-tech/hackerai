@@ -1316,6 +1316,7 @@ export async function createAgentStream(
         ) {
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
+              userId: ctx.userId,
               messages: state.finalMessages,
               sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
@@ -1456,6 +1457,7 @@ export async function createAgentStream(
             compactionAttemptCount++;
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
+              userId: ctx.userId,
               modelMessages: rollingModelMessages,
               sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,

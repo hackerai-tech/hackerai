@@ -1259,6 +1259,7 @@ const buildProviderMap = (
     "model-glm-5.2": or(GLM_5_2_SLUG),
     "model-glm-5.3": or(GLM_5_3_SLUG),
     "model-glm-5.3-flash": or(GLM_5_3_FLASH_SLUG),
+    "summarization-deepseek-v41": or("deepseek/deepseek-v4.1-flash"),
     "model-glm-5.3-flash-pro": or(GLM_5_3_FLASH_SLUG),
     "model-glm-5.3-flash-agent": or(GLM_5_3_FLASH_SLUG),
     "model-deepseek-v4-flash-vision": or(DEEPSEEK_V4_FLASH_VISION_SLUG),

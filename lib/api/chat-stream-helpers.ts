@@ -409,6 +409,7 @@ export interface SummarizationStepResult {
 }
 
 export async function runSummarizationStep(options: {
+  userId?: string;
   messages: UIMessage[];
   subscription: SubscriptionTier;
   languageModel: LanguageModel;
@@ -440,6 +441,7 @@ export async function runSummarizationStep(options: {
     summarizedMessages,
     summarizationUsage,
   } = await checkAndSummarizeIfNeeded({
+    userId: options.userId,
     uiMessages: options.messages,
     sourceUiMessages: options.sourceUiMessages,
     subscription: options.subscription,

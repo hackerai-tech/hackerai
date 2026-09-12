@@ -24,9 +24,11 @@ import {
 } from "../constants";
 import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
+const mockExperimentEvent = jest.fn();
 const mockStartupVariant = jest.fn<() => Promise<string | undefined>>();
 jest.doMock("@/lib/posthog/server", () => ({
   getPostHogFeatureFlagVariantForUser: mockStartupVariant,
+  phLogger: { event: mockExperimentEvent },
 }));
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
@@ -553,6 +555,153 @@ describe("checkAndSummarizeIfNeeded", () => {
         }),
       ],
     ]);
+  });
+
+  it.each(["ask", "agent"] as const)(
+    "uses the assigned DeepSeek summarizer for %s in-run compaction and records only metadata",
+    async (mode) => {
+      mockStartupVariant.mockResolvedValue("test");
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: "PRIVATE SUMMARY",
+        usage: { inputTokens: 100, outputTokens: 20 },
+        response: { modelId: "deepseek/deepseek-v4.1-flash" },
+      });
+      const messages: ModelMessage[] = [
+        { role: "user", content: "PRIVATE USER PROMPT" },
+      ];
+      const result = await compactModelMessagesInRun({
+        userId: "test-user",
+        modelMessages: messages,
+        transcriptModelMessages: messages,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode,
+        writer: mockWriter,
+        chatId: null,
+        maxTokens: 128_000,
+        compactionIndex: 1,
+        hasExistingSummary: false,
+      });
+      expect(result?.summaryText).toBe("PRIVATE SUMMARY");
+      expect(mockGenerateText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: { modelId: "summarization-deepseek-v41" },
+          providerOptions: expect.objectContaining({
+            openrouter: expect.objectContaining({
+              reasoning: { enabled: true, effort: "low" },
+            }),
+          }),
+        }),
+      );
+      expect(mockExperimentEvent).toHaveBeenCalledWith(
+        "summarization_model_experiment_finished",
+        expect.objectContaining({
+          experiment_variant: "test",
+          outcome: "success",
+          mode,
+          scope: "in_run",
+          fallback_used: false,
+          served_model: "deepseek/deepseek-v4.1-flash",
+        }),
+      );
+      expect(JSON.stringify(mockExperimentEvent.mock.calls)).not.toMatch(
+        /PRIVATE/,
+      );
+    },
+  );
+
+  it("does not evaluate or expose the model experiment below the compaction threshold", async () => {
+    await checkAndSummarizeIfNeeded({
+      userId: "test-user",
+      uiMessages: [createMessage("short", "user")],
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "ask",
+      writer: mockWriter,
+      chatId: null,
+    });
+    expect(mockStartupVariant).not.toHaveBeenCalled();
+    expect(mockExperimentEvent).not.toHaveBeenCalled();
+  });
+
+  it("preserves the independent startup timeout and fallback with the DeepSeek treatment", async () => {
+    mockStartupVariant.mockImplementation(async (...args: unknown[]) =>
+      args[0] === "agent_startup_compaction_v1" ? "bounded_glm_v1" : "test",
+    );
+    mockGenerateText
+      .mockRejectedValueOnce(
+        Object.assign(new Error("timeout"), { name: "TimeoutError" }),
+      )
+      .mockResolvedValueOnce({
+        finishReason: "stop",
+        text: "Fallback summary",
+        usage: { inputTokens: 123, outputTokens: 20 },
+      });
+    const result = await checkAndSummarizeIfNeeded({
+      userId: "test-user",
+      uiMessages: fourMessagesAboveThreshold,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: mockWriter,
+      chatId: null,
+      startupCompaction: { userId: "test-user" },
+    });
+    expect(result.needsSummarization).toBe(true);
+    expect(mockGenerateText).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        model: { modelId: "summarization-deepseek-v41" },
+        timeout: 30_000,
+        maxRetries: 0,
+      }),
+    );
+    expect(mockGenerateText).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        model: { modelId: "model-deepseek-v4-flash-0731" },
+      }),
+    );
+    expect(mockExperimentEvent).toHaveBeenCalledWith(
+      "summarization_model_experiment_finished",
+      expect.objectContaining({
+        outcome: "success",
+        scope: "durable",
+        startup_policy: "bounded_glm_v1",
+        fallback_used: true,
+      }),
+    );
+  });
+
+  it("records an aborted experiment attempt without starting a fallback", async () => {
+    mockStartupVariant.mockResolvedValue("test");
+    const controller = new AbortController();
+    mockGenerateText.mockImplementation(async () => {
+      controller.abort();
+      throw new Error("cancelled");
+    });
+    await expect(
+      compactModelMessagesInRun({
+        userId: "test-user",
+        modelMessages: [{ role: "user", content: "hello" }],
+        transcriptModelMessages: [],
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
+        chatId: null,
+        maxTokens: 128_000,
+        compactionIndex: 1,
+        hasExistingSummary: false,
+        abortSignal: controller.signal,
+      }),
+    ).rejects.toThrow("cancelled");
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(mockExperimentEvent).toHaveBeenCalledWith(
+      "summarization_model_experiment_finished",
+      expect.objectContaining({ outcome: "aborted", fallback_used: false }),
+    );
   });
 
   it("clears the transient in-run status when summary generation fails", async () => {
