@@ -95,18 +95,22 @@ export function SummarizationStatusDivider({
             >
               {label}
             </Shimmer>
-            <span
-              className="text-xs tabular-nums"
-              aria-live="off"
-              aria-label="Time spent preparing"
-            >
-              {elapsedSeconds}s
-            </span>
+            {elapsedSeconds >= 5 && (
+              <span
+                className="text-xs tabular-nums"
+                aria-live="off"
+                aria-label="Time spent preparing"
+              >
+                {elapsedSeconds}s
+              </span>
+            )}
           </div>
-          <p className="text-xs leading-5">
-            Summarizing earlier messages to make room. Your task will resume
-            automatically.
-          </p>
+          {elapsedSeconds >= 5 && (
+            <p className="text-xs leading-5">
+              Summarizing earlier messages to make room. Your task will resume
+              automatically.
+            </p>
+          )}
           {elapsedSeconds >= 30 && (
             <p className="text-xs leading-5">
               This is taking longer than usual. You can stop the task at any

@@ -5,6 +5,54 @@ import { SummarizationStatusDivider } from "../SummarizationStatusDivider";
 describe("SummarizationStatusDivider", () => {
   afterEach(() => jest.useRealTimers());
 
+  it("reveals details after five seconds and longer-wait guidance after thirty", () => {
+    jest.useFakeTimers();
+    render(
+      <SummarizationStatusDivider status="started" startedAt={Date.now()} />,
+    );
+    expect(screen.getByText("Preparing to continue…")).toBeVisible();
+    expect(
+      screen.queryByLabelText("Time spent preparing"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Summarizing earlier messages/),
+    ).not.toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(4999));
+    expect(
+      screen.queryByLabelText("Time spent preparing"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Summarizing earlier messages/),
+    ).not.toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(1));
+    expect(screen.getByText("5s")).toBeVisible();
+    expect(screen.getByText(/Summarizing earlier messages/)).toBeVisible();
+    act(() => jest.advanceTimersByTime(24_000));
+    expect(
+      screen.queryByText(/taking longer than usual/),
+    ).not.toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(1000));
+    expect(screen.getByText(/taking longer than usual/)).toBeVisible();
+  });
+
+  it("never reveals delayed details when compaction finishes quickly", () => {
+    jest.useFakeTimers();
+    const { rerender } = render(
+      <SummarizationStatusDivider status="started" startedAt={Date.now()} />,
+    );
+    act(() => jest.advanceTimersByTime(3000));
+    rerender(<SummarizationStatusDivider status="completed" />);
+    act(() => jest.advanceTimersByTime(30_000));
+    expect(screen.getByText("Context automatically compacted")).toBeVisible();
+    expect(
+      screen.queryByLabelText("Time spent preparing"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Summarizing earlier messages/),
+    ).not.toBeInTheDocument();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it("keeps elapsed time through retry updates and cleans up on completion", () => {
     jest.useFakeTimers();
     const startedAt = Date.now();
@@ -41,7 +89,12 @@ describe("SummarizationStatusDivider", () => {
     rerender(
       <SummarizationStatusDivider status="started" startedAt={Date.now()} />,
     );
-    expect(screen.getByText("0s")).toBeVisible();
+    expect(
+      screen.queryByLabelText("Time spent preparing"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Summarizing earlier messages/),
+    ).not.toBeInTheDocument();
     unmount();
     expect(jest.getTimerCount()).toBe(0);
   });
