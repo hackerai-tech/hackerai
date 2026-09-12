@@ -4,8 +4,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
+import { miosaErrorDiagnostics } from "@/lib/ai/tools/utils/miosa-acquisition-diagnostics";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
+import { getSandboxLogFields } from "@/lib/ai/tools/utils/sandbox-types";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
+import { phLogger } from "@/lib/posthog/server";
 
 export type SandboxFile = {
   localPath: string;
@@ -58,6 +61,12 @@ type SandboxUploadFailureDetail = {
   reason: SandboxUploadFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
+  sandboxProvider?: "miosa" | "e2b";
+  errorName?: string;
+  errorCode?: string;
+  errorHttpStatus?: number;
+  errorRequestId?: string;
+  errorRetryable?: boolean;
   urlLength?: number;
   protocol?: string;
 };
@@ -983,11 +992,17 @@ const summarizeSandboxUploadFailure = (
   file: SandboxFile,
   error: unknown,
   phase: "acquisition" | "transfer" = "transfer",
+  sandbox?: any,
 ): SandboxUploadFailureDetail => {
   const sandboxReadinessReason =
     phase === "acquisition"
       ? classifySandboxUploadReadinessFailure(error)
       : "unknown";
+  const sandboxFields = sandbox ? getSandboxLogFields(sandbox) : undefined;
+  const providerDiagnostics =
+    sandboxFields?.sandbox_provider === "miosa"
+      ? miosaErrorDiagnostics(error)
+      : undefined;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     error: redactSandboxUploadError(file, error),
@@ -999,6 +1014,24 @@ const summarizeSandboxUploadFailure = (
     ),
     transientSandboxCommand: isTransientSandboxCommandError(error),
     sandboxReadinessReason,
+    ...(sandboxFields?.sandbox_provider && {
+      sandboxProvider: sandboxFields.sandbox_provider,
+    }),
+    ...(providerDiagnostics?.error_name && {
+      errorName: providerDiagnostics.error_name,
+    }),
+    ...(providerDiagnostics?.error_code && {
+      errorCode: providerDiagnostics.error_code,
+    }),
+    ...(providerDiagnostics?.error_http_status && {
+      errorHttpStatus: providerDiagnostics.error_http_status,
+    }),
+    ...(providerDiagnostics?.error_request_id && {
+      errorRequestId: providerDiagnostics.error_request_id,
+    }),
+    ...(providerDiagnostics?.error_retryable !== undefined && {
+      errorRetryable: providerDiagnostics.error_retryable,
+    }),
   };
 
   if (file.kind === "url") {
@@ -1037,6 +1070,8 @@ const uploadSandboxFilesOnce = async (
     summarizeSandboxUploadFailure(
       sandboxFiles[i],
       (results[i] as PromiseRejectedResult).reason,
+      "transfer",
+      sandbox,
     ),
   );
 
@@ -1074,9 +1109,49 @@ const uploadSandboxFilesOnce = async (
         failure_exit_code: primaryFailure.exitCode,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        sandbox_provider: primaryFailure.sandboxProvider ?? null,
+        error_name: primaryFailure.errorName ?? null,
+        error_code: primaryFailure.errorCode ?? null,
+        error_http_status: primaryFailure.errorHttpStatus ?? null,
+        error_request_id: primaryFailure.errorRequestId ?? null,
+        error_retryable: primaryFailure.errorRetryable ?? null,
         protocol: primaryFailure.protocol ?? null,
       }),
     );
+    if (options?.logContext?.userId) {
+      phLogger.event("sandbox_attachment_staging_failed", {
+        userId: options.logContext.userId,
+        chat_id: options.logContext.chatId,
+        request_id: options.logContext.requestId ?? null,
+        ...(options.logContext.service === "agent-long" &&
+          options.logContext.requestId && {
+            trigger_run_id: options.logContext.requestId,
+          }),
+        service: options.logContext.service,
+        environment:
+          process.env.TRIGGER_ENV ??
+          process.env.VERCEL_ENV ??
+          process.env.NODE_ENV ??
+          "unknown",
+        failed_count: failureDetails.length,
+        total_count: sandboxFiles.length,
+        failure_reason: primaryFailure.reason,
+        failure_reason_counts: failureReasonCounts,
+        failure_kind: primaryFailure.kind,
+        failure_exit_code: primaryFailure.exitCode,
+        transient_sandbox_command: primaryFailure.transientSandboxCommand,
+        sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        sandbox_provider: primaryFailure.sandboxProvider ?? null,
+        sandbox_type: primaryFailure.sandboxProvider ? "cloud" : "unknown",
+        error_name: primaryFailure.errorName ?? null,
+        error_code: primaryFailure.errorCode ?? null,
+        error_http_status: primaryFailure.errorHttpStatus ?? null,
+        error_request_id: primaryFailure.errorRequestId ?? null,
+        error_retryable: primaryFailure.errorRetryable ?? null,
+        protocol: primaryFailure.protocol ?? null,
+        sandbox_attachment_staging_failed_event_version: 1,
+      });
+    }
   }
 
   return {
@@ -1119,6 +1194,24 @@ export const getSandboxUploadFailureMetadata = (
           upload_failure_sandbox_readiness_reason:
             failure.sandboxReadinessReason,
         }
+      : {}),
+    ...(failure?.sandboxProvider
+      ? { upload_failure_sandbox_provider: failure.sandboxProvider }
+      : {}),
+    ...(failure?.errorName
+      ? { upload_failure_error_name: failure.errorName }
+      : {}),
+    ...(failure?.errorCode
+      ? { upload_failure_error_code: failure.errorCode }
+      : {}),
+    ...(failure?.errorHttpStatus !== undefined
+      ? { upload_failure_error_http_status: failure.errorHttpStatus }
+      : {}),
+    ...(failure?.errorRequestId
+      ? { upload_failure_error_request_id: failure.errorRequestId }
+      : {}),
+    ...(failure?.errorRetryable !== undefined
+      ? { upload_failure_error_retryable: failure.errorRetryable }
       : {}),
     ...(failure?.protocol ? { upload_failure_protocol: failure.protocol } : {}),
     ...(typeof failure?.urlLength === "number"

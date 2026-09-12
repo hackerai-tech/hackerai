@@ -21,7 +21,7 @@ const createSandbox = ({
   statSizeBytes,
   listedFiles = [],
 }: {
-  sandboxKind?: "centrifugo";
+  sandboxKind?: "centrifugo" | "miosa";
   nativeFileRelay?: boolean;
   statSizeBytes?: number;
   listedFiles?: Array<{ name: string }>;
@@ -123,6 +123,51 @@ describe("saveFullOutputToFile", () => {
       "terminal_output_persistence_failure",
       expect.objectContaining({
         provider: "desktop",
+        attempt_count: 2,
+        result: "recovered",
+        failure_category: "transport",
+        retry_decision: "retried",
+      }),
+    );
+
+    infoSpy.mockRestore();
+    eventSpy.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it("retries one transient Miosa file transport failure and records recovery", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
+    const sandbox = createSandbox({ sandboxKind: "miosa" });
+    sandbox.files.write
+      .mockRejectedValueOnce(
+        new Error("MiosaError: Sandbox file transport is unavailable"),
+      )
+      .mockResolvedValueOnce(undefined);
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+
+    const savePromise = saveFullOutputToFile(
+      sandbox as any,
+      "full output",
+      CHAT_ID,
+      {
+        service: "agent-long",
+        environment: "prod",
+        requestId: "run-1",
+        triggerRunId: "run-1",
+        chatId: CHAT_ID,
+      },
+    );
+    await jest.advanceTimersByTimeAsync(250);
+
+    await expect(savePromise).resolves.toContain(
+      `/home/user/terminal_full_output/chat-${CHAT_KEY}/`,
+    );
+    expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "terminal_output_persistence_failure",
+      expect.objectContaining({
+        provider: "miosa",
         attempt_count: 2,
         result: "recovered",
         failure_category: "transport",

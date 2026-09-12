@@ -1,6 +1,7 @@
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
+import { phLogger } from "@/lib/posthog/server";
 import {
   collectSandboxFiles,
   getSandboxUploadFailureMetadata,
@@ -864,6 +865,80 @@ describe("desktop-local sandbox file helpers", () => {
       }
     },
   );
+
+  it("records safe Miosa diagnostics for attachment staging failures", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const providerError = Object.assign(
+      new Error("Sandbox transport failed for private attachment content"),
+      {
+        name: "MiosaError",
+        code: "FILE_TRANSPORT_UNAVAILABLE",
+        status: 503,
+        requestId: "request-safe-123",
+        retryable: true,
+      },
+    );
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/private-report.pdf?signature=secret",
+            localPath: "/home/user/upload/private-report.pdf",
+          },
+        ],
+        async () => ({
+          sandboxKind: "miosa",
+          commands: { run: jest.fn().mockRejectedValue(providerError) },
+        }),
+        {
+          logContext: {
+            service: "agent-long",
+            requestId: "run-safe-123",
+            userId: "user-safe-123",
+            chatId: "chat-safe-123",
+          },
+        },
+      );
+
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_sandbox_provider: "miosa",
+        upload_failure_error_name: "MiosaError",
+        upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
+        upload_failure_error_http_status: 503,
+        upload_failure_error_request_id: "request-safe-123",
+        upload_failure_error_retryable: true,
+      });
+      const structuredLog = JSON.parse(
+        String(consoleErrorSpy.mock.calls[0]?.[0]),
+      );
+      expect(structuredLog).toMatchObject({
+        event: "sandbox_attachment_staging_failed",
+        sandbox_provider: "miosa",
+        error_code: "FILE_TRANSPORT_UNAVAILABLE",
+        error_http_status: 503,
+        error_request_id: "request-safe-123",
+        error_retryable: true,
+      });
+      expect(JSON.stringify(structuredLog)).not.toContain("private-report");
+      expect(JSON.stringify(structuredLog)).not.toContain("signature=secret");
+      expect(eventSpy).toHaveBeenCalledWith(
+        "sandbox_attachment_staging_failed",
+        expect.objectContaining({
+          sandbox_provider: "miosa",
+          error_code: "FILE_TRANSPORT_UNAVAILABLE",
+          error_request_id: "request-safe-123",
+        }),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+      eventSpy.mockRestore();
+    }
+  });
 
   it("does not refresh non-retryable sandbox acquisition failures", async () => {
     const consoleErrorSpy = jest

@@ -11,7 +11,7 @@ import {
 } from "./sandbox-types";
 
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
-const DESKTOP_RELAY_RETRY_DELAY_MS = 250;
+const PERSISTENCE_RETRY_DELAY_MS = 250;
 export const FULL_OUTPUT_SAVE_FAILED_MESSAGE =
   "\n[Full terminal output could not be saved. The output below is truncated. Do not rerun the original command unchanged. If the omitted content is necessary, use a safe, read-only follow-up with narrower output, filters, or line ranges. Otherwise, explain the limitation and continue.]";
 
@@ -73,7 +73,7 @@ export const classifyTerminalOutputPersistenceFailure = (
     return "relay_unavailable";
   }
   if (
-    /load failed|failed to publish|subscription error|network|disconnected|connection (?:closed|reset)|econnreset/.test(
+    /load failed|failed to publish|subscription error|network|disconnected|connection (?:closed|reset)|econnreset|file transport is unavailable/.test(
       message,
     )
   ) {
@@ -96,14 +96,15 @@ export const classifyTerminalOutputPersistenceFailure = (
   return "unknown";
 };
 
-const canRetryDesktopRelayFailure = (
+const canRetryPersistenceFailure = (
   provider: TerminalOutputPersistenceProvider,
   category: TerminalOutputPersistenceFailureCategory,
 ): boolean =>
-  provider === "desktop" &&
-  (category === "transport" ||
-    category === "relay_unavailable" ||
-    category === "unknown");
+  (provider === "desktop" &&
+    (category === "transport" ||
+      category === "relay_unavailable" ||
+      category === "unknown")) ||
+  (provider === "miosa" && category === "transport");
 
 const getPersistenceSandboxFields = (
   provider: TerminalOutputPersistenceProvider,
@@ -283,7 +284,7 @@ export async function saveFullOutputToFile(
         return null;
       }
     }
-    if (!canRetryDesktopRelayFailure(provider, firstCategory)) {
+    if (!canRetryPersistenceFailure(provider, firstCategory)) {
       emitPersistenceFailure({
         provider,
         attemptCount,
@@ -297,7 +298,7 @@ export async function saveFullOutputToFile(
     }
 
     await new Promise((resolve) =>
-      setTimeout(resolve, DESKTOP_RELAY_RETRY_DELAY_MS),
+      setTimeout(resolve, PERSISTENCE_RETRY_DELAY_MS),
     );
     attemptCount += 1;
     try {

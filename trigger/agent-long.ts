@@ -1434,6 +1434,12 @@ type AgentLongErrorSummary = {
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
   uploadFailureSandboxReadinessReason?: string;
+  uploadFailureSandboxProvider?: string;
+  uploadFailureErrorName?: string;
+  uploadFailureErrorCode?: string;
+  uploadFailureErrorHttpStatus?: number;
+  uploadFailureErrorRequestId?: string;
+  uploadFailureErrorRetryable?: boolean;
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
   uploadRetriedWithFreshSandbox?: boolean;
@@ -1624,6 +1630,30 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       uploadFailureSandboxReadinessReason: getStringMetadata(
         errorMetadata,
         "upload_failure_sandbox_readiness_reason",
+      ),
+      uploadFailureSandboxProvider: getStringMetadata(
+        errorMetadata,
+        "upload_failure_sandbox_provider",
+      ),
+      uploadFailureErrorName: getStringMetadata(
+        errorMetadata,
+        "upload_failure_error_name",
+      ),
+      uploadFailureErrorCode: getStringMetadata(
+        errorMetadata,
+        "upload_failure_error_code",
+      ),
+      uploadFailureErrorHttpStatus: getNumberMetadata(
+        errorMetadata,
+        "upload_failure_error_http_status",
+      ),
+      uploadFailureErrorRequestId: getStringMetadata(
+        errorMetadata,
+        "upload_failure_error_request_id",
+      ),
+      uploadFailureErrorRetryable: getBooleanMetadata(
+        errorMetadata,
+        "upload_failure_error_retryable",
       ),
       uploadFailureProtocol: getStringMetadata(
         errorMetadata,
@@ -1872,6 +1902,30 @@ const recordAgentLongFailureForDashboard = async (
       summary.uploadFailureSandboxReadinessReason,
     );
   }
+  if (summary.uploadFailureSandboxProvider)
+    metadata.set(
+      "uploadFailureSandboxProvider",
+      summary.uploadFailureSandboxProvider,
+    );
+  if (summary.uploadFailureErrorName)
+    metadata.set("uploadFailureErrorName", summary.uploadFailureErrorName);
+  if (summary.uploadFailureErrorCode)
+    metadata.set("uploadFailureErrorCode", summary.uploadFailureErrorCode);
+  if (summary.uploadFailureErrorHttpStatus != null)
+    metadata.set(
+      "uploadFailureErrorHttpStatus",
+      summary.uploadFailureErrorHttpStatus,
+    );
+  if (summary.uploadFailureErrorRequestId)
+    metadata.set(
+      "uploadFailureErrorRequestId",
+      summary.uploadFailureErrorRequestId,
+    );
+  if (summary.uploadFailureErrorRetryable != null)
+    metadata.set(
+      "uploadFailureErrorRetryable",
+      summary.uploadFailureErrorRetryable,
+    );
   if (summary.uploadFailureProtocol)
     metadata.set("uploadFailureProtocol", summary.uploadFailureProtocol);
   if (summary.uploadFailureUrlLength != null)
