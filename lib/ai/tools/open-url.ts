@@ -147,8 +147,13 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
+        const { error_name, error_message, ...failureContext } =
+          toolFailureFields;
         const logFields = {
-          ...toolFailureFields,
+          ...failureContext,
+          // phLogger reserves error_name/error_message for the captured summary.
+          tool_error_name: stringifyRedactedError(error_name).slice(0, 128),
+          tool_error_message: error_message.slice(0, 2_000),
           ...(context?.chatId && { chat_id: context.chatId }),
           ...(context?.userID && { userId: context.userID }),
         };
