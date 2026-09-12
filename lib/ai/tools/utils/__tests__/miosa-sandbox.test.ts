@@ -81,7 +81,13 @@ describe("MIOSA sandbox adapter", () => {
     expect(result.sandbox).toBeInstanceOf(MiosaSandbox);
     expect(mockGetOrCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: expect.stringMatching(/^hackerai-[a-f0-9]{24}-v2$/),
+        name: "hackerai-c6c289e49e9c05b214586038-v2",
+        tags: expect.arrayContaining(["hackerai-user-c6c289e49e9c"]),
+        metadata: expect.objectContaining({
+          provider: "hackerai",
+          sandboxVersion: "v2",
+          userReference: "hackerai-user-c6c289e49e9c",
+        }),
         templateId: "hackerai-kali-promoted",
         cpuCount: 4,
         memoryMb: 4096,

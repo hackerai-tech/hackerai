@@ -1,4 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { miosaExternalUserId, miosaIdentityMetadata } from "./miosa-identity";
 import type {
   Miosa as MiosaClient,
   Sandbox as MiosaSdkSandbox,
@@ -69,11 +70,8 @@ export const miosaCancellationCommand = (processIdPath: string): string =>
     "exit 1",
   ].join("\n");
 
-const externalUserIdForUser = (userId: string): string =>
-  `hackerai-${createHash("sha256").update(userId).digest("hex").slice(0, 24)}`;
-
 const sandboxNameForUser = (userId: string): string =>
-  `${externalUserIdForUser(userId)}-${MIOSA_SANDBOX_VERSION}`;
+  `${miosaExternalUserId(userId)}-${MIOSA_SANDBOX_VERSION}`;
 
 const runtimeInitializationCommand = (runtimeImage: string): string => {
   const image = shellQuote(runtimeImage);
@@ -374,7 +372,8 @@ export async function ensureMiosaSandboxConnection(
     onDiagnostic: options.onDiagnostic,
   });
   const client = await step("client_init", createMiosaClient);
-  const externalUserId = externalUserIdForUser(context.userID);
+  const externalUserId = miosaExternalUserId(context.userID);
+  const identity = miosaIdentityMetadata(context.userID);
   if (options.beforeCreate) {
     const { NotFoundError } = await import("@miosa/sdk");
     try {
@@ -403,9 +402,14 @@ export async function ensureMiosaSandboxConnection(
       externalWorkspaceId: externalUserId,
       externalUserId,
       waitUntilReady: false,
+      tags: [
+        identity.userReference,
+        `hackerai-environment-${identity.environment}`,
+      ],
       metadata: {
         provider: "hackerai",
         sandboxVersion: MIOSA_SANDBOX_VERSION,
+        ...identity,
       },
     }),
   );
@@ -447,7 +451,7 @@ export async function terminateMiosaSandboxesForUser(
 ): Promise<{ total: number; killed: number; alreadyGone: number }> {
   const client = await createMiosaClient();
   const sandboxes = await client.sandboxes.list({
-    externalUserId: externalUserIdForUser(userId),
+    externalUserId: miosaExternalUserId(userId),
   });
   let killed = 0;
   let alreadyGone = 0;
