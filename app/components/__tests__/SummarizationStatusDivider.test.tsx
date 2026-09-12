@@ -101,8 +101,19 @@ describe("SummarizationStatusDivider", () => {
 
   it("shows a failure without a success icon or active timer", () => {
     jest.useFakeTimers();
-    render(<SummarizationStatusDivider status="failed" />);
+    const { rerender } = render(
+      <SummarizationStatusDivider status="started" startedAt={Date.now()} />,
+    );
+    act(() => jest.advanceTimersByTime(5000));
+    rerender(<SummarizationStatusDivider status="failed" />);
     expect(screen.getByText(/Couldn’t summarize/)).toBeVisible();
+    expect(screen.getByTestId("summarization-status")).toHaveAttribute(
+      "aria-live",
+      "polite",
+    );
+    expect(
+      screen.queryByLabelText("Time spent preparing"),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByText("Context automatically compacted"),
     ).not.toBeInTheDocument();

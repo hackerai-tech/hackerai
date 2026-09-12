@@ -69,7 +69,7 @@ export function SummarizationStatusDivider({
         isStarted ? "items-start" : "items-center",
         className,
       )}
-      aria-live={isStarted ? "polite" : undefined}
+      aria-live={isStarted || isFailed ? "polite" : undefined}
       data-testid="summarization-status"
     >
       {isStarted ? (
