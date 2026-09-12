@@ -37,6 +37,8 @@ describe("Miosa support identity", () => {
     expect(metadata.environment).toBe("preview");
     expect(metadata.userReference).toMatch(/^hackerai-user-[a-f0-9]{12}$/);
     expect(JSON.stringify(metadata)).not.toContain("private@example.com");
+    process.env = { TRIGGER_ENV: "  ", VERCEL_ENV: " preview " };
+    expect(miosaIdentityMetadata("user-1").environment).toBe("preview");
     process.env = { NODE_ENV: "production" };
     expect(miosaIdentityMetadata("user-1").environment).toBe("unknown");
   });

@@ -10,9 +10,11 @@ export const miosaUserReference = (userId: string): string =>
 
 export function miosaIdentityMetadata(userId: string) {
   // NODE_ENV is also production in Preview workers; never infer from it.
-  const selected = (process.env.TRIGGER_ENV ?? process.env.VERCEL_ENV ?? "")
-    .trim()
-    .toLowerCase();
+  const selected = (
+    process.env.TRIGGER_ENV?.trim() ||
+    process.env.VERCEL_ENV?.trim() ||
+    ""
+  ).toLowerCase();
   const environment = ["production", "preview", "development"].includes(
     selected,
   )
