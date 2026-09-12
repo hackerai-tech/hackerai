@@ -70,19 +70,20 @@ export const startSummarizationProgress = (
   };
   const emit = (message: string) => {
     if (stopped || signal?.aborted) return;
-    writeSummarizationStarted(writer, compactionIndex, { startedAt, message });
+    try {
+      writeSummarizationStarted(writer, compactionIndex, {
+        startedAt,
+        message,
+      });
+    } catch {
+      // Disconnects must not interrupt generation or a fallback attempt.
+      stop();
+    }
   };
   emit("Preparing to continue…");
-  if (!signal?.aborted) {
+  if (!stopped && !signal?.aborted) {
     timer = setInterval(() => {
-      try {
-        emit(
-          retrying ? "Retrying preparation…" : "Still preparing to continue…",
-        );
-      } catch {
-        // A disconnected writer must not create an uncaught timer exception.
-        stop();
-      }
+      emit(retrying ? "Retrying preparation…" : "Still preparing to continue…");
     }, 15_000);
     timer.unref?.();
     signal?.addEventListener("abort", stop, { once: true });
@@ -100,33 +101,41 @@ export const writeSummarizationFailed = (
   writer: UIMessageStreamWriter,
   compactionIndex?: number,
 ): void => {
-  writer.write({
-    type: "data-summarization",
-    id: compactionIndex
-      ? `summarization-status-${compactionIndex}`
-      : "summarization-status",
-    data: {
-      status: "failed",
-      message:
-        "Couldn’t summarize earlier messages. Your existing context is unchanged.",
-    },
-  });
+  try {
+    writer.write({
+      type: "data-summarization",
+      id: compactionIndex
+        ? `summarization-status-${compactionIndex}`
+        : "summarization-status",
+      data: {
+        status: "failed",
+        message:
+          "Couldn’t summarize earlier messages. Your existing context is unchanged.",
+      },
+    });
+  } catch {
+    // Delivery is best-effort; a disconnected client must not change the summary result.
+  }
 };
 
 export const writeSummarizationCompleted = (
   writer: UIMessageStreamWriter,
   compactionIndex?: number,
 ): void => {
-  writer.write({
-    type: "data-summarization",
-    id: compactionIndex
-      ? `summarization-status-${compactionIndex}`
-      : "summarization-status",
-    data: {
-      status: "completed",
-      message: "Context automatically compacted",
-    },
-  });
+  try {
+    writer.write({
+      type: "data-summarization",
+      id: compactionIndex
+        ? `summarization-status-${compactionIndex}`
+        : "summarization-status",
+      data: {
+        status: "completed",
+        message: "Context automatically compacted",
+      },
+    });
+  } catch {
+    // Delivery is best-effort; a disconnected client must not change the summary result.
+  }
 };
 
 /** Clear the transient compacting indicator without persisting a success. */

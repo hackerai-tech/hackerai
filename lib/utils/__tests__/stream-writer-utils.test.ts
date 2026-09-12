@@ -69,6 +69,25 @@ describe("summarization progress", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  it.each(["initial", "retry"])(
+    "contains a disconnected %s write and releases timers",
+    (phase) => {
+      jest.useFakeTimers();
+      const write = jest.fn().mockImplementation(() => {
+        throw new Error("closed");
+      });
+      if (phase === "retry") write.mockImplementationOnce(() => undefined);
+      const progress = startSummarizationProgress({
+        write,
+      } as unknown as UIMessageStreamWriter);
+      expect(() => progress.retry()).not.toThrow();
+      expect(jest.getTimerCount()).toBe(0);
+      const calls = write.mock.calls.length;
+      jest.advanceTimersByTime(60_000);
+      expect(write).toHaveBeenCalledTimes(calls);
+    },
+  );
+
   it("stops safely when a heartbeat writer disconnects", () => {
     jest.useFakeTimers();
     const write = jest
