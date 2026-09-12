@@ -264,6 +264,7 @@ interface MessagesProps {
   summarizationStatus?: {
     status: "started" | "completed";
     message: string;
+    startedAt?: number;
   } | null;
   mode?: import("@/types").ChatMode;
   agentRunSpendCapWarning?: Extract<
@@ -948,6 +949,7 @@ export const Messages = ({
           <SummarizationStatusDivider
             status={summarizationStatus?.status}
             message={summarizationStatus?.message}
+            startedAt={summarizationStatus?.startedAt}
             className="mb-1 mt-0"
           />
         )}

@@ -11,8 +11,8 @@ import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import { countMessagesTokens, safeCountTokens } from "@/lib/token-utils";
 import {
-  writeSummarizationCleared,
-  writeSummarizationStarted,
+  startSummarizationProgress,
+  writeSummarizationFailed,
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
 import { isCloudSandbox } from "@/lib/ai/tools/utils/sandbox-types";
@@ -486,6 +486,7 @@ const generateSummaryTextWithRetry = async ({
   reason,
   onPhaseDuration,
   startupCompaction,
+  onRetry,
 }: {
   messagesToSummarize: UIMessage[];
   modelMessages?: ModelMessage[];
@@ -501,6 +502,7 @@ const generateSummaryTextWithRetry = async ({
   reason: CompactionLogReason;
   onPhaseDuration?: ContextCompactionPhaseReporter;
   startupCompaction?: StartupCompactionContext;
+  onRetry?: () => void;
 }): Promise<
   Awaited<ReturnType<typeof generateSummaryText>> & {
     languageModel: LanguageModel;
@@ -559,6 +561,7 @@ const generateSummaryTextWithRetry = async ({
       if (bounded)
         startupCompaction?.onAttempt?.({ variant, fallbackUsed: true });
       const retryLanguageModel = myProvider.languageModel(retryModelName);
+      onRetry?.();
       logContextCompactionRetrying({
         chatId,
         mode,
@@ -765,10 +768,15 @@ export const compactModelMessagesInRun = async ({
         providerPromptPressure?.serializedMessageBytes,
     }),
   );
-  writeSummarizationStarted(writer, compactionIndex);
+  const progress = startSummarizationProgress(
+    writer,
+    compactionIndex,
+    abortSignal,
+  );
 
   try {
     const summaryPromise = generateSummaryTextWithRetry({
+      onRetry: progress.retry,
       messagesToSummarize: [],
       modelMessages,
       mode,
@@ -852,8 +860,10 @@ export const compactModelMessagesInRun = async ({
       fallbackResult: "no_summarization",
       error,
     });
-    writeSummarizationCleared(writer, compactionIndex);
+    writeSummarizationFailed(writer, compactionIndex);
     return null;
+  } finally {
+    progress.stop();
   }
 };
 
@@ -1057,12 +1067,13 @@ export const checkAndSummarizeIfNeeded = async ({
     retainedTail: tailSelection.retainedTail,
   });
 
-  writeSummarizationStarted(writer, 1);
+  const progress = startSummarizationProgress(writer, 1, abortSignal);
 
   try {
     // Run summary generation and transcript saving in parallel — they are
     // independent (transcript is formatted from raw messages, not the summary).
     const summaryPromise = generateSummaryTextWithRetry({
+      onRetry: progress.retry,
       messagesToSummarize,
       mode,
       chatSystemPrompt,
@@ -1118,6 +1129,7 @@ export const checkAndSummarizeIfNeeded = async ({
     });
 
     await persistSummary(chatId, finalSummaryText, cutoffMessageId, metadata);
+    writeSummarizationCompleted(writer, 1);
 
     if (savedPath === undefined) {
       const attachTranscriptWork = transcriptSave.promise.then(async (path) => {
@@ -1163,13 +1175,12 @@ export const checkAndSummarizeIfNeeded = async ({
       fallbackResult: "no_summarization",
       error,
     });
+    writeSummarizationFailed(writer, 1);
     return {
       ...NO_SUMMARIZATION(uiMessages),
       summarizationAttempted: true,
     };
   } finally {
-    if (!abortSignal?.aborted) {
-      writeSummarizationCompleted(writer, 1);
-    }
+    progress.stop();
   }
 };

@@ -37,6 +37,7 @@ export const writeUploadCompleteStatus = (
 export const writeSummarizationStarted = (
   writer: UIMessageStreamWriter,
   compactionIndex?: number,
+  progress?: { startedAt: number; message: string },
 ): void => {
   writer.write({
     type: "data-summarization",
@@ -46,25 +47,95 @@ export const writeSummarizationStarted = (
     data: {
       status: "started",
       message: "Automatically compacting context",
+      ...progress,
     },
     transient: true, // Don't persist started state - only show during processing
   });
+};
+
+/** Keep long waits visible without persisting heartbeats in conversation history. */
+export const startSummarizationProgress = (
+  writer: UIMessageStreamWriter,
+  compactionIndex?: number,
+  signal?: AbortSignal,
+) => {
+  const startedAt = Date.now();
+  let retrying = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    stopped = true;
+    clearInterval(timer);
+    signal?.removeEventListener("abort", stop);
+  };
+  const emit = (message: string) => {
+    if (stopped || signal?.aborted) return;
+    try {
+      writeSummarizationStarted(writer, compactionIndex, {
+        startedAt,
+        message,
+      });
+    } catch {
+      // Disconnects must not interrupt generation or a fallback attempt.
+      stop();
+    }
+  };
+  emit("Preparing to continue…");
+  if (!stopped && !signal?.aborted) {
+    timer = setInterval(() => {
+      emit(retrying ? "Retrying preparation…" : "Still preparing to continue…");
+    }, 15_000);
+    timer.unref?.();
+    signal?.addEventListener("abort", stop, { once: true });
+  }
+  return {
+    stop,
+    retry: () => {
+      retrying = true;
+      emit("Retrying preparation…");
+    },
+  };
+};
+
+export const writeSummarizationFailed = (
+  writer: UIMessageStreamWriter,
+  compactionIndex?: number,
+): void => {
+  try {
+    writer.write({
+      type: "data-summarization",
+      id: compactionIndex
+        ? `summarization-status-${compactionIndex}`
+        : "summarization-status",
+      data: {
+        status: "failed",
+        message:
+          "Couldn’t summarize earlier messages. Your existing context is unchanged.",
+      },
+    });
+  } catch {
+    // Delivery is best-effort; a disconnected client must not change the summary result.
+  }
 };
 
 export const writeSummarizationCompleted = (
   writer: UIMessageStreamWriter,
   compactionIndex?: number,
 ): void => {
-  writer.write({
-    type: "data-summarization",
-    id: compactionIndex
-      ? `summarization-status-${compactionIndex}`
-      : "summarization-status",
-    data: {
-      status: "completed",
-      message: "Context automatically compacted",
-    },
-  });
+  try {
+    writer.write({
+      type: "data-summarization",
+      id: compactionIndex
+        ? `summarization-status-${compactionIndex}`
+        : "summarization-status",
+      data: {
+        status: "completed",
+        message: "Context automatically compacted",
+      },
+    });
+  } catch {
+    // Delivery is best-effort; a disconnected client must not change the summary result.
+  }
 };
 
 /** Clear the transient compacting indicator without persisting a success. */

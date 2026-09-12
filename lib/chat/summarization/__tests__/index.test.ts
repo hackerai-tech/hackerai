@@ -555,7 +555,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     ]);
   });
 
-  it("clears the transient in-run status when summary generation fails", async () => {
+  it("reports failure without success when in-run summary generation fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("provider failed"));
     const modelMessages: ModelMessage[] = [
       { role: "user", content: "live context" },
@@ -585,8 +585,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       [
         expect.objectContaining({
           id: "summarization-status-3",
-          data: { status: "completed", message: "" },
-          transient: true,
+          data: expect.objectContaining({ status: "failed" }),
         }),
       ],
     ]);
@@ -1488,7 +1487,61 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
-  it("should write summarization completed even when AI fails", async () => {
+  it.each(["completed", "failed", "retry"])(
+    "keeps the summary outcome when the %s status writer disconnects",
+    async (phase) => {
+      (mockWriter.write as jest.Mock).mockImplementation((chunk: any) => {
+        if (
+          chunk.data?.status === phase ||
+          (phase === "retry" && chunk.data?.message === "Retrying preparation…")
+        ) {
+          throw new Error("writer disconnected");
+        }
+      });
+      if (phase === "failed") {
+        mockGenerateText.mockRejectedValue(new Error("provider failed"));
+      } else {
+        if (phase === "retry") {
+          mockGenerateText.mockRejectedValueOnce(
+            Object.assign(
+              new Error("JSON parsing failed: Unexpected end of JSON input"),
+              { statusCode: 200, responseBody: "" },
+            ),
+          );
+        }
+        mockGenerateText.mockResolvedValue({
+          finishReason: "stop",
+          text: "Retained summary",
+          usage: { inputTokens: 10, outputTokens: 3 },
+        });
+      }
+      const result = await checkAndSummarizeForTest(
+        fourMessagesAboveThreshold,
+        "free",
+        mockLanguageModel,
+        "ask",
+        mockWriter,
+        "chat-disconnected",
+        {},
+        [],
+        undefined,
+        undefined,
+        0,
+        0,
+        "test-system-prompt",
+      );
+      expect(result.needsSummarization).toBe(phase !== "failed");
+      if (phase !== "failed") {
+        expect(result.summaryText).toContain("Retained summary");
+        expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
+      } else {
+        expect(mockSaveChatSummary).not.toHaveBeenCalled();
+      }
+      expect(mockGenerateText).toHaveBeenCalledTimes(phase === "retry" ? 2 : 1);
+    },
+  );
+
+  it("should report failure instead of completion when AI fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
     const result = await checkAndSummarizeForTest(
@@ -1517,7 +1570,11 @@ describe("checkAndSummarizeIfNeeded", () => {
         call[0]?.type === "data-summarization" &&
         call[0]?.data?.status === "completed",
     );
-    expect(completedWrite).toBeDefined();
+    expect(completedWrite).toBeUndefined();
+    expect(writeCalls.some(([chunk]) => chunk.data?.status === "failed")).toBe(
+      true,
+    );
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
   it("retries malformed provider JSON with low reasoning on the fallback summarization model", async () => {
