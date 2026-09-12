@@ -37,6 +37,7 @@ export const writeUploadCompleteStatus = (
 export const writeSummarizationStarted = (
   writer: UIMessageStreamWriter,
   compactionIndex?: number,
+  progress?: { startedAt: number; message: string },
 ): void => {
   writer.write({
     type: "data-summarization",
@@ -46,8 +47,69 @@ export const writeSummarizationStarted = (
     data: {
       status: "started",
       message: "Automatically compacting context",
+      ...progress,
     },
     transient: true, // Don't persist started state - only show during processing
+  });
+};
+
+/** Keep long waits visible without persisting heartbeats in conversation history. */
+export const startSummarizationProgress = (
+  writer: UIMessageStreamWriter,
+  compactionIndex?: number,
+  signal?: AbortSignal,
+) => {
+  const startedAt = Date.now();
+  let retrying = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    stopped = true;
+    clearInterval(timer);
+    signal?.removeEventListener("abort", stop);
+  };
+  const emit = (message: string) => {
+    if (stopped || signal?.aborted) return;
+    writeSummarizationStarted(writer, compactionIndex, { startedAt, message });
+  };
+  emit("Preparing to continue…");
+  if (!signal?.aborted) {
+    timer = setInterval(() => {
+      try {
+        emit(
+          retrying ? "Retrying preparation…" : "Still preparing to continue…",
+        );
+      } catch {
+        // A disconnected writer must not create an uncaught timer exception.
+        stop();
+      }
+    }, 15_000);
+    timer.unref?.();
+    signal?.addEventListener("abort", stop, { once: true });
+  }
+  return {
+    stop,
+    retry: () => {
+      retrying = true;
+      emit("Retrying preparation…");
+    },
+  };
+};
+
+export const writeSummarizationFailed = (
+  writer: UIMessageStreamWriter,
+  compactionIndex?: number,
+): void => {
+  writer.write({
+    type: "data-summarization",
+    id: compactionIndex
+      ? `summarization-status-${compactionIndex}`
+      : "summarization-status",
+    data: {
+      status: "failed",
+      message:
+        "Couldn’t summarize earlier messages. Your existing context is unchanged.",
+    },
   });
 };
 

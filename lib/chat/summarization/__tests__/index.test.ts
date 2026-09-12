@@ -555,7 +555,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     ]);
   });
 
-  it("clears the transient in-run status when summary generation fails", async () => {
+  it("reports failure without success when in-run summary generation fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("provider failed"));
     const modelMessages: ModelMessage[] = [
       { role: "user", content: "live context" },
@@ -585,8 +585,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       [
         expect.objectContaining({
           id: "summarization-status-3",
-          data: { status: "completed", message: "" },
-          transient: true,
+          data: expect.objectContaining({ status: "failed" }),
         }),
       ],
     ]);
@@ -1488,7 +1487,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
-  it("should write summarization completed even when AI fails", async () => {
+  it("should report failure instead of completion when AI fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
     const result = await checkAndSummarizeForTest(
@@ -1517,7 +1516,11 @@ describe("checkAndSummarizeIfNeeded", () => {
         call[0]?.type === "data-summarization" &&
         call[0]?.data?.status === "completed",
     );
-    expect(completedWrite).toBeDefined();
+    expect(completedWrite).toBeUndefined();
+    expect(writeCalls.some(([chunk]) => chunk.data?.status === "failed")).toBe(
+      true,
+    );
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
   it("retries malformed provider JSON with low reasoning on the fallback summarization model", async () => {

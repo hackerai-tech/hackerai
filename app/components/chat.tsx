@@ -315,6 +315,7 @@ interface StreamingEphemeralState {
   summarizationStatus: {
     status: "started" | "completed";
     message: string;
+    startedAt?: number;
   } | null;
   rateLimitWarning: RateLimitWarningData | null;
 }
@@ -1054,6 +1055,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           const summaryData = dataPart.data as {
             status: "started" | "completed";
             message: string;
+            startedAt?: number;
           };
           dispatchStreaming({
             type: "SET_SUMMARIZATION_STATUS",

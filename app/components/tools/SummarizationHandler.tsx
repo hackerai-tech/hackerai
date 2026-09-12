@@ -17,6 +17,7 @@ function areSummarizationPropsEqual(
   if (prev.partIndex !== next.partIndex) return false;
   if (prev.part.data?.status !== next.part.data?.status) return false;
   if (prev.part.data?.message !== next.part.data?.message) return false;
+  if (prev.part.data?.startedAt !== next.part.data?.startedAt) return false;
   return true;
 }
 
@@ -30,6 +31,7 @@ export const SummarizationHandler = memo(function SummarizationHandler({
       key={`${message.id}-summarization-${partIndex}`}
       status={part.data?.status}
       message={part.data?.message}
+      startedAt={part.data?.startedAt}
     />
   );
 }, areSummarizationPropsEqual);
