@@ -20,7 +20,7 @@ describe("fresh MIOSA enrollment", () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it.each(["free", "ultra", "team", undefined] as const)(
+  it.each(["free", undefined] as const)(
     "does not enroll %s into a new workspace",
     async (subscription) => {
       await expect(
@@ -30,7 +30,7 @@ describe("fresh MIOSA enrollment", () => {
     },
   );
 
-  it.each(["pro", "pro-plus"] as const)(
+  it.each(["pro", "pro-plus", "team", "ultra"] as const)(
     "admits %s only when no running or paused workspace exists, regardless of template",
     async (subscription) => {
       await expect(
