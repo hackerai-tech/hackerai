@@ -62,7 +62,7 @@ export class MiosaEnrollmentError extends Error {
 }
 
 /**
- * Admit new Pro workspaces only after authoritative, read-only E2B discovery.
+ * Admit new Pro and Pro+ workspaces only after authoritative, read-only E2B discovery.
  * Paused workspaces and older templates still contain user data. Never delete
  * or resume them to make a user eligible. Metadata checks span configured
  * clusters; execution remains restricted to the request's approved region.
@@ -71,7 +71,7 @@ export async function assertFreshMiosaEnrollment(options: {
   userId: string;
   subscription?: SubscriptionTier;
 }): Promise<void> {
-  if (options.subscription !== "pro") {
+  if (options.subscription !== "pro" && options.subscription !== "pro-plus") {
     throw new MiosaEnrollmentError("not_pro");
   }
   // Without the default E2B account, an empty cluster list proves nothing.
