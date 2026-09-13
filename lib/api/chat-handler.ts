@@ -1817,6 +1817,7 @@ export const createChatHandler = () => {
                   } catch (summaryError) {
                     preemptiveTimeout?.clear();
                     await usageRefundTracker.refund();
+                    userStopSignal.signal.throwIfAborted();
                     chatLogger?.emitUnexpectedError(summaryError);
                     throw error;
                   }

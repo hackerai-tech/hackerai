@@ -4904,6 +4904,7 @@ export const agentLongTask = task({
                         cacheDescription: cacheAuxiliaryVisionDescription,
                       });
                   } catch (summaryError) {
+                    userStopSignal.signal.throwIfAborted();
                     chatLogger?.emitUnexpectedError(summaryError);
                     throw error;
                   }

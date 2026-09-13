@@ -13,6 +13,21 @@ import { parse } from "dotenv";
 import { getSharp } from "next/dist/server/image-optimizer";
 import type { UIMessage } from "ai";
 
+/** Requires one exact CASE|CODE row per fixture, in order, without extra output. */
+export function scoreVisionAnswer(
+  text: string,
+  expected: Array<{ label: string; code: string }>,
+): number {
+  const lines = text
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim());
+  if (lines.length !== expected.length) return 0;
+  return expected.filter(
+    ({ label, code }, index) => lines[index] === `${label}|${code}`,
+  ).length;
+}
+
 /** Exercises synthetic OCR only; no customer data or app session is loaded. */
 async function main() {
   if (!process.env.OPENROUTER_API_KEY) {
@@ -74,8 +89,11 @@ async function main() {
     messages: UIMessage[],
     count: number,
   ) {
-    if (totalReportedCost >= 1)
-      throw new Error("Benchmark reached its reported-cost budget");
+    if (totalReportedCost >= 1) {
+      scores.push({ name, count, skipped: "reported_cost_budget" });
+      console.log(JSON.stringify(scores.at(-1)));
+      return;
+    }
     const start = performance.now();
     try {
       const result = await generateText({
@@ -104,13 +122,7 @@ async function main() {
       });
       const cost = getProviderUsageRawModelCost(result.usage.raw);
       totalReportedCost += cost ?? 0;
-      const correct = fixtures
-        .slice(0, count)
-        .filter(({ label, code }) =>
-          result.text
-            .split("\n")
-            .some((line) => line.includes(label) && line.includes(code)),
-        ).length;
+      const correct = scoreVisionAnswer(result.text, fixtures.slice(0, count));
       scores.push({
         name,
         requestedModel: model,
@@ -143,54 +155,61 @@ async function main() {
   }
   const start = performance.now();
   let recoveryCost = 0;
-  try {
-    if (totalReportedCost >= 1)
-      throw new Error("Benchmark reached its reported-cost budget");
-    const recovered = await describeImageAttachmentsWithAuxiliaryVision({
-      messages: history,
-      abortSignal: deadline,
-      onCost: (cost) => {
-        recoveryCost += cost;
-        totalReportedCost += cost;
-      },
-    });
-    const correct = fixtures.filter(({ label, code }, index) =>
-      recovered[index].parts.some(
-        (part) =>
-          part.type === "text" &&
-          part.text.includes(label) &&
-          part.text.includes(code),
-      ),
-    ).length;
+  if (totalReportedCost >= 1) {
     scores.push({
       name: "recovery-23",
       count: 23,
-      correct,
-      elapsedMs: Math.round(performance.now() - start),
-      cost: recoveryCost,
+      skipped: "reported_cost_budget",
     });
-    writeFileSync(
-      join(output, "recovered.json"),
-      JSON.stringify(recovered, null, 2),
-    );
     console.log(JSON.stringify(scores.at(-1)));
-    for (const count of [1, 11, 23]) {
-      await score(
-        `recovered-answer-${count}`,
-        "model-deepseek-v4-flash-0731",
-        recovered,
-        count,
+  } else {
+    try {
+      const recovered = await describeImageAttachmentsWithAuxiliaryVision({
+        messages: history,
+        abortSignal: deadline,
+        onCost: (cost) => {
+          recoveryCost += cost;
+          totalReportedCost += cost;
+        },
+      });
+      const correct = fixtures.filter(({ label, code }, index) =>
+        recovered[index].parts.some(
+          (part) =>
+            part.type === "text" &&
+            part.text.includes(label) &&
+            part.text.includes(code),
+        ),
+      ).length;
+      scores.push({
+        name: "recovery-23",
+        count: 23,
+        correct,
+        elapsedMs: Math.round(performance.now() - start),
+        cost: recoveryCost,
+      });
+      writeFileSync(
+        join(output, "recovered.json"),
+        JSON.stringify(recovered, null, 2),
       );
+      console.log(JSON.stringify(scores.at(-1)));
+      for (const count of [1, 11, 23]) {
+        await score(
+          `recovered-answer-${count}`,
+          "model-deepseek-v4-flash-0731",
+          recovered,
+          count,
+        );
+      }
+    } catch (error) {
+      scores.push({
+        name: "recovery-23",
+        count: 23,
+        elapsedMs: Math.round(performance.now() - start),
+        cost: recoveryCost,
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      });
+      console.log(JSON.stringify(scores.at(-1)));
     }
-  } catch (error) {
-    scores.push({
-      name: "recovery-23",
-      count: 23,
-      elapsedMs: Math.round(performance.now() - start),
-      cost: recoveryCost,
-      errorName: error instanceof Error ? error.name : "UnknownError",
-    });
-    console.log(JSON.stringify(scores.at(-1)));
   }
   writeFileSync(
     join(output, "scores.json"),
@@ -201,12 +220,13 @@ async function main() {
     process.exitCode = 1;
 }
 
-main().catch((error) => {
-  // Never serialize provider request bodies, response metadata, or credentials.
-  console.error(
-    JSON.stringify({
-      errorName: error instanceof Error ? error.name : "UnknownError",
-    }),
-  );
-  process.exitCode = 1;
-});
+if (require.main === module)
+  main().catch((error) => {
+    // Never serialize provider request bodies, response metadata, or credentials.
+    console.error(
+      JSON.stringify({
+        errorName: error instanceof Error ? error.name : "UnknownError",
+      }),
+    );
+    process.exitCode = 1;
+  });

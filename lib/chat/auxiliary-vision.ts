@@ -260,7 +260,7 @@ export async function describeImageWithAuxiliaryVision({
         timestamp: new Date().toISOString(),
         level: "info",
         event: "auxiliary_vision_description_completed",
-        service: "chat-handler",
+        service: triggerRunId ? "agent-long" : "chat-handler",
         environment:
           process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
         request_id: requestId ?? "unavailable",
@@ -294,7 +294,7 @@ export async function describeImageWithAuxiliaryVision({
         timestamp: new Date().toISOString(),
         level: "warn",
         event: "auxiliary_vision_description_failed",
-        service: "chat-handler",
+        service: triggerRunId ? "agent-long" : "chat-handler",
         environment:
           process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
         request_id: requestId ?? "unavailable",
@@ -433,13 +433,13 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
     ? AbortSignal.any([abortSignal, recoveryController.signal])
     : recoveryController.signal;
   const requestCache = new Map<string, Promise<AuxiliaryVisionResult>>();
-  const failures: unknown[] = [];
+  const failures = new Map<string, unknown>();
   let pendingCostDollars = 0;
   let nextTaskIndex = 0;
   const runWorker = async (): Promise<void> => {
     while (
       nextTaskIndex < tasks.length &&
-      failures.length === 0 &&
+      failures.size === 0 &&
       !recoverySignal.aborted
     ) {
       const task = tasks[nextTaskIndex++];
@@ -491,7 +491,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
           text: `<image_description${filename} trust="untrusted">\n${escapeTagText(result.description)}\n</image_description>`,
         };
       } catch (error) {
-        failures.push(error);
+        failures.set(task.cacheKey, error);
       }
     }
   };
@@ -505,10 +505,10 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
       ),
     );
     recoverySignal.throwIfAborted();
-    if (failures.length > 0) {
+    if (failures.size > 0) {
       throw new AggregateError(
-        failures,
-        `Auxiliary vision failed for ${failures.length} image request(s)`,
+        [...failures.values()],
+        `Auxiliary vision failed for ${failures.size} image request(s)`,
       );
     }
     return updatedMessages;

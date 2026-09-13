@@ -480,6 +480,71 @@ describe("auxiliary vision", () => {
     expect(modelRunner).not.toHaveBeenCalled();
   });
 
+  it("counts distinct failed images once even when several workers share them", async () => {
+    const messages = imageHistory(3);
+    messages[0].parts[1].url = messages[0].parts[0].url;
+    const modelRunner = jest.fn(async () => {
+      throw new Error("Provider failed");
+    });
+    await expect(
+      describeImageAttachmentsWithAuxiliaryVision({ messages, modelRunner }),
+    ).rejects.toMatchObject({
+      message: "Auxiliary vision failed for 2 image request(s)",
+      errors: [expect.any(Error), expect.any(Error)],
+    });
+    expect(modelRunner).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not describe file-view tool results as attachments", async () => {
+    const toolPart = {
+      type: "dynamic-tool",
+      toolName: "file",
+      toolCallId: "call-1",
+      state: "output-available",
+      input: { action: "view" },
+      output: { type: "image", data: "aW1hZ2U=" },
+    } as const;
+    const modelRunner = jest.fn();
+    const result = await describeImageAttachmentsWithAuxiliaryVision({
+      messages: [{ id: "tool-message", role: "assistant", parts: [toolPart] }],
+      modelRunner,
+    });
+    expect(modelRunner).not.toHaveBeenCalled();
+    expect(result[0].parts).toEqual([toolPart]);
+  });
+
+  it.each([undefined, "run-1"])(
+    "attributes descriptor success and failure to the caller with run %s",
+    async (triggerRunId) => {
+      const args = {
+        image: "aW1hZ2U=",
+        mediaType: "image/png",
+        source: "file_view" as const,
+        triggerRunId,
+      };
+      await describeImageWithAuxiliaryVision({
+        ...args,
+        modelRunner: async () => ({ text: "Description" }),
+      });
+      await expect(
+        describeImageWithAuxiliaryVision({
+          ...args,
+          modelRunner: async () => {
+            throw new Error("Provider failed");
+          },
+        }),
+      ).rejects.toThrow("Provider failed");
+      for (const log of [console.info, console.warn]) {
+        expect(
+          JSON.parse((log as jest.Mock).mock.calls.at(-1)[0]),
+        ).toMatchObject({
+          service: triggerRunId ? "agent-long" : "chat-handler",
+          source: "file_view",
+        });
+      }
+    },
+  );
+
   it("cancels in-flight work and stops dispatching queued images", async () => {
     const controller = new AbortController();
     const modelRunner = jest.fn(
