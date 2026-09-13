@@ -1092,6 +1092,24 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toBe("hello world\n");
     });
 
+    it("cancels native evidence stat subscriptions without publishing after cancellation", async () => {
+      const sandbox = createDesktopSandbox();
+      const abort = new AbortController();
+      const pending = sandbox.files.stat("C:\\repo\\capture.http", {
+        signal: abort.signal,
+        timeoutMs: 5000,
+      });
+      const rejected = expect(pending).rejects.toThrow("aborted");
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      abort.abort();
+      await rejected;
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sub.publish).not.toHaveBeenCalled();
+      expect(sub.unsubscribe).toHaveBeenCalled();
+    });
+
     it("reassembles oversized native file read responses", async () => {
       const sandbox = createDesktopSandbox();
       const promise = sandbox.files.read("C:\\repo\\large.txt");

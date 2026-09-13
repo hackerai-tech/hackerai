@@ -176,7 +176,7 @@ describe("security validation subagent runtime contracts", () => {
     );
     expectMarkerOrder(
       acceptResult,
-      "await assertRuntimeAuthorized()",
+      "await verifyResultEvidence(",
       "await markSubagentFinalizing(",
     );
     expect(child).not.toContain(

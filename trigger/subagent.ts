@@ -1,4 +1,9 @@
 import {
+  verifyResultEvidence,
+  evidenceWarningText,
+  type CheckedSubagentResult,
+} from "@/lib/ai/subagents/evidence-references";
+import {
   loadObjectiveCheckpoint,
   objectiveCheckpointEnabledForChild,
 } from "@/lib/db/objective-checkpoint";
@@ -504,7 +509,7 @@ export const subagentTask = task({
     }, SUBAGENT_MAX_ACTIVE_SECONDS * 1_000);
 
     const usageTracker = new UsageTracker();
-    let resultValue: SubagentStructuredResult | undefined;
+    let resultValue: CheckedSubagentResult | undefined;
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -705,8 +710,15 @@ export const subagentTask = task({
                   error: "A structured result was already accepted.",
                 };
               }
-              runtimeStage = "authorization";
-              await assertRuntimeAuthorized();
+              runtimeStage = "evidence_verification";
+              const evidence = await verifyResultEvidence({
+                result: parsed,
+                sandbox,
+                expectedSandboxIdentity: row.sandbox_identity,
+                signal: activeAbort.signal,
+                authorize: assertRuntimeAuthorized,
+              });
+              if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
               const finalizing = await markSubagentFinalizing(
                 row.subagent_id,
@@ -726,9 +738,15 @@ export const subagentTask = task({
                   error: "This subagent is no longer accepting results.",
                 };
               }
-              resultValue = parsed;
+              resultValue = evidence.result;
               return {
                 accepted: true,
+                ...(evidence.result.evidence_verification
+                  ? {
+                      evidence_verification:
+                        evidence.result.evidence_verification,
+                    }
+                  : {}),
                 ...(row.profile === "security_validation" && "verdict" in parsed
                   ? { verdict: parsed.verdict }
                   : "task_status" in parsed
@@ -1453,6 +1471,24 @@ export const subagentTask = task({
               if (!(await beginStructuredResultRecovery("missing_result"))) {
                 break;
               }
+            }
+            const warningText = resultValue && evidenceWarningText(resultValue);
+            if (warningText) {
+              const warningId = `${row.subagent_id}-evidence-warning-${row.continuation_count ?? 0}`;
+              await saveSubagentMessage({
+                subagentId: row.subagent_id,
+                userId: row.user_id,
+                sequence: (row.continuation_count ?? 0) * 10_000 + 9_999,
+                role: "assistant",
+                parts: [{ type: "text", text: warningText }],
+              });
+              writer.write({ type: "text-start", id: warningId });
+              writer.write({
+                type: "text-delta",
+                id: warningId,
+                delta: warningText,
+              });
+              writer.write({ type: "text-end", id: warningId });
             }
           } catch (error) {
             runtimeFailure = error;

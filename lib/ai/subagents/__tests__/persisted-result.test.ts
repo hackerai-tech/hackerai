@@ -2,6 +2,80 @@ import { describe, expect, it } from "@jest/globals";
 import { resultFromPersistedSubagent } from "../persisted-result";
 
 describe("resultFromPersistedSubagent", () => {
+  it("does not expose blank persisted coverage or verification metadata as evidence", () => {
+    const restored = resultFromPersistedSubagent({
+      profile: "general",
+      status: "completed",
+      structured_result: {
+        task_status: "completed",
+        summary: "Synthetic result",
+        evidence_refs: [],
+        artifacts: [],
+        limitations: [],
+        next_steps: [],
+        coverage: [
+          {
+            surface: "Invalid",
+            risk_area: "access",
+            outcome: "Unsupported",
+            evidence_refs: ["   "],
+          },
+          {
+            surface: "Valid",
+            risk_area: "access",
+            outcome: "Observed",
+            evidence_refs: [" file:/tmp/static.txt "],
+          },
+        ],
+        evidence_verification: {
+          checked_refs: [" "],
+          unavailable_refs: [""],
+          warning: " ",
+        },
+      },
+    });
+    expect(restored).not.toHaveProperty("evidence_verification");
+    expect(restored).toMatchObject({
+      coverage: [{ surface: "Valid", evidence_refs: ["file:/tmp/static.txt"] }],
+    });
+  });
+
+  it("trims usable persisted verification gaps while preserving empty attached-reference arrays", () => {
+    const restored = resultFromPersistedSubagent({
+      profile: "general",
+      status: "completed",
+      structured_result: {
+        task_status: "completed",
+        summary: "Synthetic result",
+        evidence_refs: [],
+        artifacts: [],
+        limitations: [],
+        next_steps: [],
+        coverage: [
+          {
+            surface: "Synthetic",
+            risk_area: "access",
+            outcome: "Observed",
+            evidence_refs: [],
+          },
+        ],
+        evidence_verification: {
+          checked_refs: [],
+          unavailable_refs: [" /tmp/capture.http "],
+          warning: " Verification unavailable ",
+        },
+      },
+    });
+    expect(restored).toMatchObject({
+      coverage: [{ evidence_refs: [] }],
+      evidence_verification: {
+        checked_refs: [],
+        unavailable_refs: ["/tmp/capture.http"],
+        warning: "Verification unavailable",
+      },
+    });
+  });
+
   it("preserves a valid bounded terminal result", () => {
     expect(
       resultFromPersistedSubagent({
