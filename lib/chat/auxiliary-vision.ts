@@ -13,8 +13,12 @@ import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 export const AUXILIARY_VISION_MODEL = "auxiliary-vision-model" as const;
 export const AUXILIARY_VISION_TIMEOUT_MS = 20_000;
 export const AUXILIARY_VISION_MAX_OUTPUT_TOKENS = 1_200;
-export const AUXILIARY_VISION_MAX_IMAGES_PER_TURN = 10;
 export const AUXILIARY_VISION_MAX_CONCURRENCY = 3;
+// Bound the entire recovery queue, rather than rejecting a long image history.
+export const AUXILIARY_VISION_RECOVERY_TIMEOUT_MS = 120_000;
+// Stop dispatching new descriptions once reported spend reaches this amount.
+// Up to MAX_CONCURRENCY in-flight calls may still settle above this threshold.
+export const AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS = 0.25;
 const LEGACY_AUXILIARY_VISION_SLUGS = [
   DEEPSEEK_V4_FLASH_VISION_SLUG,
   GLM_5_3_FLASH_SLUG,
@@ -225,6 +229,7 @@ export async function describeImageWithAuxiliaryVision({
     : timeoutController.signal;
 
   try {
+    combinedSignal.throwIfAborted();
     const result = await modelRunner({
       image: withDataUrlPrefix(image, mediaType),
       mediaType,
@@ -232,12 +237,6 @@ export async function describeImageWithAuxiliaryVision({
       abortSignal: combinedSignal,
       userId,
     });
-    const description = result.text.trim();
-    if (!description) {
-      throw new Error("Auxiliary vision model returned an empty description");
-    }
-    const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
-
     const costDollars = getProviderUsageRawModelCost(result.usage?.raw);
     if (
       typeof costDollars === "number" &&
@@ -246,6 +245,14 @@ export async function describeImageWithAuxiliaryVision({
     ) {
       onCost?.(costDollars);
     }
+    // A returned provider charge remains real even if the answer is unusable
+    // or cancellation arrived while the provider was finishing.
+    combinedSignal.throwIfAborted();
+    const description = result.text.trim();
+    if (!description) {
+      throw new Error("Auxiliary vision model returned an empty description");
+    }
+    const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
     const durationMs = Date.now() - startedAt;
     console.info(
       JSON.stringify({
@@ -341,6 +348,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
     model: string;
   }) => Promise<void>;
 }): Promise<UIMessage[]> {
+  abortSignal?.throwIfAborted();
   const updatedMessages = messages.map(
     (message) =>
       ({ ...message, parts: [...(message.parts ?? [])] }) as UIMessage,
@@ -407,23 +415,39 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
     });
   });
 
-  const uniqueImageCount = new Set(tasks.map((task) => task.cacheKey)).size;
-  if (uniqueImageCount > AUXILIARY_VISION_MAX_IMAGES_PER_TURN) {
-    throw new Error(
-      `Auxiliary vision supports at most ${AUXILIARY_VISION_MAX_IMAGES_PER_TURN} new images per turn`,
-    );
-  }
-
+  if (tasks.length === 0) return updatedMessages;
+  const recoveryController = new AbortController();
+  const recoveryTimeout = setTimeout(
+    () =>
+      recoveryController.abort(
+        new DOMException("Image recovery timed out", "TimeoutError"),
+      ),
+    AUXILIARY_VISION_RECOVERY_TIMEOUT_MS,
+  );
+  const recoverySignal = abortSignal
+    ? AbortSignal.any([abortSignal, recoveryController.signal])
+    : recoveryController.signal;
   const requestCache = new Map<string, Promise<AuxiliaryVisionResult>>();
   const failures: unknown[] = [];
   let pendingCostDollars = 0;
   let nextTaskIndex = 0;
   const runWorker = async (): Promise<void> => {
-    while (nextTaskIndex < tasks.length) {
+    while (
+      nextTaskIndex < tasks.length &&
+      failures.length === 0 &&
+      !recoverySignal.aborted
+    ) {
       const task = tasks[nextTaskIndex++];
       try {
         let resultPromise = requestCache.get(task.cacheKey);
         if (!resultPromise) {
+          if (
+            pendingCostDollars >= AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS
+          ) {
+            throw new Error(
+              "Image recovery reached its cost budget. Please retry with fewer images.",
+            );
+          }
           resultPromise = (async () => {
             const result = await describeImageWithAuxiliaryVision({
               image: task.image,
@@ -434,7 +458,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
               userId,
               chatId,
               triggerRunId,
-              abortSignal,
+              abortSignal: recoverySignal,
               onCost: (costDollars) => {
                 pendingCostDollars += costDollars;
               },
@@ -467,20 +491,26 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
     }
   };
 
-  await Promise.all(
-    Array.from(
-      {
-        length: Math.min(AUXILIARY_VISION_MAX_CONCURRENCY, tasks.length),
-      },
-      () => runWorker(),
-    ),
-  );
-  if (failures.length > 0) {
-    throw new AggregateError(
-      failures,
-      `Auxiliary vision failed for ${failures.length} image request(s)`,
+  try {
+    // Drain in-flight calls before returning or charging, including failures.
+    await Promise.all(
+      Array.from(
+        { length: Math.min(AUXILIARY_VISION_MAX_CONCURRENCY, tasks.length) },
+        () => runWorker(),
+      ),
     );
+    recoverySignal.throwIfAborted();
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `Auxiliary vision failed for ${failures.length} image request(s)`,
+      );
+    }
+    return updatedMessages;
+  } finally {
+    clearTimeout(recoveryTimeout);
+    // Cached successes survive a partial failure, so their provider charges
+    // must reach accounting even when no replacement history is returned.
+    if (pendingCostDollars > 0) onCost?.(pendingCostDollars);
   }
-  if (pendingCostDollars > 0) onCost?.(pendingCostDollars);
-  return updatedMessages;
 }
