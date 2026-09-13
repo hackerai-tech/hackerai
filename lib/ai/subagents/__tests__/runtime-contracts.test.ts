@@ -183,7 +183,7 @@ describe("security validation subagent runtime contracts", () => {
       "model: provider.languageModel(activeModelName)",
     );
     const guardedSandboxSetup = child.slice(
-      child.indexOf("const tools = guardSubagentToolExecutions("),
+      child.indexOf("const authorizedTools = guardSubagentToolExecutions("),
       child.indexOf("const provider = createTrackedProvider()"),
     );
     expectMarkerOrder(
