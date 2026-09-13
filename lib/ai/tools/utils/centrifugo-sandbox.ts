@@ -387,7 +387,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     input: FileRequestInput,
     expectedTypes: Set<string>,
     timeoutMs = 30000,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
       throw new Error("Native desktop file relay is not available.");
     }
@@ -399,6 +401,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     );
     const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
     const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
+    signal?.throwIfAborted();
     const client = new Centrifuge(this.config.wsUrl, { token });
     this.activeClients.push(client);
 
@@ -408,7 +411,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let subscription: Subscription | undefined;
       const reassembler = new CentrifugoMessageReassembler();
 
+      const onAbort = () => fail(new Error("Desktop file request aborted"));
       const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
         if (timeoutId) {
           clearTimeout(timeoutId);
           timeoutId = undefined;
@@ -439,6 +444,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         reject(error);
       };
 
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
       timeoutId = setTimeout(() => {
         fail(
           new Error(
@@ -1347,11 +1357,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
   private async statNativeFile(
     rawPath: string,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<FileStatResultMessage> {
     return this.runFileRequest<FileStatResultMessage>(
       { type: "file_stat", path: rawPath },
       new Set(["file_stat_result"]),
-      30000,
+      options?.timeoutMs ?? 30000,
+      options?.signal,
     );
   }
 
@@ -1498,8 +1510,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }
 
   files = {
-    stat: async (rawPath: string): Promise<FileStatResultMessage> => {
-      return this.statNativeFile(rawPath);
+    stat: async (
+      rawPath: string,
+      options?: { signal?: AbortSignal; timeoutMs?: number },
+    ): Promise<FileStatResultMessage> => {
+      return this.statNativeFile(rawPath, options);
     },
 
     readText: async (

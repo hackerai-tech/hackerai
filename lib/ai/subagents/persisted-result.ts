@@ -4,7 +4,8 @@ import {
   agentValidationResultSchema,
   MAX_SECURITY_TASK_COVERAGE_ITEMS,
   securityTaskArtifactSchema,
-  securityTaskCoverageEntrySchema,
+  persistedCoverageEntrySchema,
+  evidenceVerificationSchema,
   securityTaskStatusSchema,
   SUBAGENT_TERMINAL_STATUSES,
   subagentVerdictSchema,
@@ -57,6 +58,12 @@ export const resultFromPersistedSubagent = (
   row: PersistedResultSource,
 ): AgentSubagentResult => {
   const result = asRecord(row.structured_result);
+  const verification = evidenceVerificationSchema.safeParse(
+    result.evidence_verification,
+  );
+  const verificationFields = verification.success
+    ? { evidence_verification: verification.data }
+    : {};
   const terminalStatus = SUBAGENT_TERMINAL_STATUSES.has(row.status)
     ? (row.status as "completed" | "failed" | "canceled" | "timed_out")
     : "failed";
@@ -78,7 +85,7 @@ export const resultFromPersistedSubagent = (
     const coverage = Array.isArray(result.coverage)
       ? result.coverage
           .flatMap((item) => {
-            const parsed = securityTaskCoverageEntrySchema.safeParse(item);
+            const parsed = persistedCoverageEntrySchema.safeParse(item);
             return parsed.success ? [parsed.data] : [];
           })
           .slice(0, MAX_SECURITY_TASK_COVERAGE_ITEMS)
@@ -88,6 +95,7 @@ export const resultFromPersistedSubagent = (
       status: terminalStatus,
       task_status: taskStatus.success ? taskStatus.data : null,
       summary,
+      ...verificationFields,
       evidence_refs: boundedStringArray(result.evidence_refs, 8, 500),
       artifacts,
       limitations: boundedStringArray(result.limitations, 8, 500),
@@ -135,6 +143,7 @@ export const resultFromPersistedSubagent = (
     verdict: verdict.success ? verdict.data : null,
     confidence: confidence.success ? confidence.data : null,
     summary,
+    ...verificationFields,
     ...(observedImpact ? { observed_impact: observedImpact } : {}),
     ...(reproductionSteps.length > 0
       ? { reproduction_steps: reproductionSteps }
