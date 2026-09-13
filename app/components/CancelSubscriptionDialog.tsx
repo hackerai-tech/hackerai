@@ -200,13 +200,14 @@ export const CancelSubscriptionDialog = ({
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
+      if (isProcessing) return;
       openRef.current = nextOpen;
       if (!nextOpen) {
         requestIdRef.current += 1;
       }
       onOpenChange(nextOpen);
     },
-    [onOpenChange],
+    [onOpenChange, isProcessing],
   );
 
   useEffect(() => {

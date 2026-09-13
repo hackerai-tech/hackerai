@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef, useCallback } from "react";
-import { Trash2 } from "lucide-react";
+import { useRef, useCallback, useState } from "react";
+import { Trash2, Loader2 } from "lucide-react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
@@ -20,7 +20,13 @@ interface ManageNotesDialogProps {
 }
 
 // Content component that manages its own state - resets naturally on mount
-const ManageNotesDialogContent = () => {
+const ManageNotesDialogContent = ({
+  deleting,
+  setDeleting,
+}: {
+  deleting: string | null;
+  setDeleting: (value: string | null) => void;
+}) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -49,6 +55,8 @@ const ManageNotesDialogContent = () => {
   }, [status, loadMore]);
 
   const handleDeleteNote = async (noteId: string) => {
+    if (deleting) return;
+    setDeleting(noteId);
     try {
       await deleteNote({ noteId });
     } catch (error) {
@@ -62,10 +70,14 @@ const ManageNotesDialogContent = () => {
             ? error.message
             : "Failed to delete note";
       toast.error(errorMessage);
+    } finally {
+      setDeleting(null);
     }
   };
 
   const handleDeleteAllNotes = async () => {
+    if (deleting) return;
+    setDeleting("all");
     try {
       await deleteAllNotes({});
     } catch (error) {
@@ -79,6 +91,8 @@ const ManageNotesDialogContent = () => {
             ? error.message
             : "Failed to delete all notes";
       toast.error(errorMessage);
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -87,7 +101,7 @@ const ManageNotesDialogContent = () => {
 
   return (
     <>
-      <DialogHeader className="px-6 py-4">
+      <DialogHeader className="shrink-0 px-6 py-4">
         <DialogTitle className="text-lg font-normal text-left">
           Saved notes
         </DialogTitle>
@@ -97,8 +111,8 @@ const ManageNotesDialogContent = () => {
         </div>
       </DialogHeader>
 
-      <div className="flex-1 overflow-hidden px-6 pb-6">
-        <div className="h-[400px] rounded-lg border border-border overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col px-6 pb-6">
+        <div className="h-[400px] min-h-0 rounded-lg border border-border overflow-hidden">
           <div
             ref={scrollContainerRef}
             onScroll={handleScroll}
@@ -154,10 +168,19 @@ const ManageNotesDialogContent = () => {
                           <div className="text-md flex items-center justify-end gap-2">
                             <button
                               onClick={() => handleDeleteNote(note.note_id)}
-                              aria-label="Remove note"
+                              disabled={deleting !== null}
+                              aria-label={
+                                deleting === note.note_id
+                                  ? "Removing note"
+                                  : "Remove note"
+                              }
                               className="text-muted-foreground hover:text-destructive transition-colors"
                             >
-                              <Trash2 className="h-5 w-5" />
+                              {deleting === note.note_id ? (
+                                <Loader2 className="h-5 w-5 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-5 w-5" />
+                              )}
                             </button>
                           </div>
                         </div>
@@ -180,13 +203,14 @@ const ManageNotesDialogContent = () => {
         </div>
 
         {allNotes.length > 0 && (
-          <div className="mt-4 flex justify-end">
+          <div className="mt-4 flex shrink-0 justify-end">
             <Button
               onClick={handleDeleteAllNotes}
+              disabled={deleting !== null}
               variant="outline"
               className="border-destructive text-destructive hover:bg-destructive/10"
             >
-              Delete all
+              {deleting === "all" ? "Deleting…" : "Delete all"}
             </Button>
           </div>
         )}
@@ -197,10 +221,24 @@ const ManageNotesDialogContent = () => {
 
 // Wrapper component that controls mounting/unmounting of content
 const ManageNotesDialog = ({ open, onOpenChange }: ManageNotesDialogProps) => {
+  const [deleting, setDeleting] = useState<string | null>(null);
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[90vh] w-full flex flex-col gap-0 p-0">
-        {open && <ManageNotesDialogContent />}
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        if (!deleting) onOpenChange(value);
+      }}
+    >
+      <DialogContent
+        showCloseButton={deleting === null}
+        className="max-w-4xl max-h-[90vh] w-full flex flex-col gap-0 p-0"
+      >
+        {open && (
+          <ManageNotesDialogContent
+            deleting={deleting}
+            setDeleting={setDeleting}
+          />
+        )}
       </DialogContent>
     </Dialog>
   );

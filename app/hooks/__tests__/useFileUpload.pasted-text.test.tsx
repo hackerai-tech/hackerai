@@ -12,6 +12,7 @@ const generateS3UploadUrlAction = jest.fn();
 let globalState: any;
 
 jest.mock("convex/react", () => ({
+  useConvex: () => ({ query: jest.fn().mockResolvedValue("complete") }),
   useMutation: () => deleteFile,
   useAction: (action: unknown) =>
     String(action).includes("generateS3UploadUrlAction")
@@ -21,6 +22,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    deletions: { getStatusForUser: "getStatusForUser" },
     fileStorage: { deleteFile: "deleteFile" },
     fileActions: { saveFile: "saveFile" },
     s3Actions: { generateS3UploadUrlAction: "generateS3UploadUrlAction" },
@@ -42,6 +44,8 @@ jest.mock("@/app/hooks/useTauri", () => ({
 
 jest.mock("sonner", () => ({
   toast: {
+    loading: jest.fn(),
+    dismiss: jest.fn(),
     error: jest.fn(),
     info: jest.fn(),
     warning: jest.fn(),

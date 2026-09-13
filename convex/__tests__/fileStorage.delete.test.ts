@@ -45,6 +45,7 @@ jest.mock("../_generated/api", () => ({
       saveFileToDb: "internal.fileStorage.saveFileToDb",
     },
     s3Cleanup: {
+      deleteTrackedS3Object: "internal.s3Cleanup.deleteTrackedS3Object",
       deleteS3ObjectAction: "internal.s3Cleanup.deleteS3ObjectAction",
       deleteS3ObjectsBatchAction:
         "internal.s3Cleanup.deleteS3ObjectsBatchAction",
@@ -94,6 +95,8 @@ describe("fileStorage - deleteFile", () => {
         }),
       },
       db: {
+        insert: jest.fn().mockResolvedValue("receipt-1"),
+        patch: jest.fn().mockResolvedValue(undefined),
         get: jest.fn().mockResolvedValue(mockFile),
         delete: jest.fn().mockResolvedValue(undefined),
         patch: jest.fn().mockResolvedValue(undefined),
@@ -238,8 +241,8 @@ describe("fileStorage - deleteFile", () => {
       // Verify S3 deletion was scheduled
       expect(mockCtx.scheduler.runAfter).toHaveBeenCalledWith(
         0,
-        "internal.s3Cleanup.deleteS3ObjectAction",
-        { s3Key: mockFile.s3_key },
+        "internal.s3Cleanup.deleteTrackedS3Object",
+        { deletionId: "receipt-1" },
       );
 
       // Verify aggregate was updated
@@ -252,7 +255,24 @@ describe("fileStorage - deleteFile", () => {
       expect(mockCtx.db.delete).toHaveBeenCalledWith(testFileId);
     });
 
-    it("should delete DB record even if S3 scheduling fails", async () => {
+    it("preserves the regional storage location in the cleanup receipt", async () => {
+      mockFile.s3_key = "users/test-user-123/regional.pdf";
+      mockFile.s3_region = "us-west-2";
+      mockFile.s3_bucket = "test-west-bucket";
+      const { deleteFile } = await import("../fileStorage");
+      await deleteFile.handler(mockCtx, { fileId: testFileId });
+      expect(mockCtx.db.insert).toHaveBeenCalledWith(
+        "pendingFileDeletions",
+        expect.objectContaining({
+          s3_key: mockFile.s3_key,
+          s3_region: "us-west-2",
+          s3_bucket: "test-west-bucket",
+          user_id: testUserId,
+        }),
+      );
+    });
+
+    it("keeps the DB record when S3 scheduling fails", async () => {
       mockFile.s3_key = "users/test-user-123/test-file.pdf";
       mockCtx.db.get.mockResolvedValue(mockFile);
       mockCtx.scheduler.runAfter.mockRejectedValue(
