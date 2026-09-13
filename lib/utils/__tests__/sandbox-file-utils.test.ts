@@ -18,6 +18,67 @@ const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
 const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
   "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
 
+it("records safe validation fields for a Miosa attachment rejection without retrying it", async () => {
+  const error = Object.assign(new Error("Provider rejected the request"), {
+    name: "ValidationError",
+    status: 422,
+    code: "UNKNOWN_ERROR",
+    requestId: "request-attachment",
+    retryable: false,
+    details: {
+      errors: [
+        {
+          loc: ["body", "command"],
+          input: "private command",
+          msg: "private message",
+        },
+      ],
+    },
+  });
+  const run = jest.fn().mockRejectedValue(error);
+  const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await uploadSandboxFiles(
+      [
+        {
+          kind: "url",
+          url: "https://example.com/file?token=private-token",
+          localPath: "/home/user/upload/private-file",
+        },
+      ],
+      async () => ({ sandboxKind: "miosa", commands: { run } }),
+      {
+        logContext: {
+          service: "agent-long",
+          requestId: "run-test",
+          userId: "user-test",
+        },
+      },
+    );
+    expect(result.failedCount).toBe(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_failed",
+      expect.objectContaining({
+        error_request_id: "request-attachment",
+        validation_fields: ["command"],
+        failure_stage: "transfer",
+        transfer_operation: "download_url",
+      }),
+    );
+    expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+      upload_failure_validation_fields: ["command"],
+    });
+    expect(JSON.stringify(eventSpy.mock.calls)).not.toMatch(
+      /private-token|private-file|private command|private message/,
+    );
+  } finally {
+    eventSpy.mockRestore();
+    errorSpy.mockRestore();
+  }
+});
+
 const makeLocalMessage = (): UIMessage =>
   ({
     id: "m1",

@@ -1,5 +1,6 @@
 import { createMiosaFiles } from "../miosa-files";
 import { logger } from "@/lib/logger";
+import { miosaFileErrorDiagnostics } from "../miosa-file-diagnostics";
 
 jest.mock("@/lib/logger", () => ({ logger: { warn: jest.fn() } }));
 
@@ -17,6 +18,61 @@ function setup() {
 }
 
 describe("MIOSA files share the command container namespace", () => {
+  it("keeps a frozen SDK error and records only safe upload diagnostics", async () => {
+    const { sdk, files } = setup();
+    const error = Object.freeze(
+      Object.assign(new Error("private-content"), {
+        name: "ValidationError",
+        code: "UNKNOWN_ERROR",
+        status: 422,
+        requestId: "request-safe",
+        retryable: false,
+      }),
+    );
+    sdk.files.write.mockRejectedValueOnce(error);
+    await expect(files.write("/private/path", "private-content")).rejects.toBe(
+      error,
+    );
+    const diagnostics = miosaFileErrorDiagnostics(error);
+    expect(diagnostics).toMatchObject({
+      file_operation_stage: "upload_stage",
+      error_code: "UNKNOWN_ERROR",
+      error_http_status: 422,
+      error_request_id: "request-safe",
+    });
+    expect(JSON.stringify(diagnostics)).not.toMatch(
+      /private-content|private\/path/,
+    );
+  });
+
+  it("distinguishes destination-copy exit failures from upload failures", async () => {
+    const { sdk, files } = setup();
+    sdk.exec.run.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "private-path",
+      exitCode: 1,
+    });
+    const error = await files
+      .write("/private/path", "content")
+      .catch((error) => error);
+    expect(miosaFileErrorDiagnostics(error)).toMatchObject({
+      file_operation_stage: "write_destination",
+      file_operation_exit_code: 1,
+    });
+    expect(JSON.stringify(miosaFileErrorDiagnostics(error))).not.toContain(
+      "private-path",
+    );
+  });
+
+  it("distinguishes stage-download failure from source-copy failure", async () => {
+    const { sdk, files } = setup();
+    const error = new Error("download failed");
+    sdk.files.readText.mockRejectedValueOnce(error);
+    await expect(files.read("/tmp/file")).rejects.toBe(error);
+    expect(miosaFileErrorDiagnostics(error).file_operation_stage).toBe(
+      "download_stage",
+    );
+  });
   it("runs native file operations directly in the guest without Docker", async () => {
     const { sdk } = setup();
     const files = createMiosaFiles(sdk as never, "native");

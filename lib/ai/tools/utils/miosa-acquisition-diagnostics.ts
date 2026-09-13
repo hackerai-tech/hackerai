@@ -11,7 +11,7 @@ export type MiosaAcquisitionStage =
 
 export type MiosaAcquisitionDiagnostic = {
   stage: MiosaAcquisitionStage;
-  outcome: "success" | "not_found" | "failure";
+  outcome: "success" | "not_found" | "denied" | "failure";
   stage_duration_ms: number;
   acquisition_duration_ms: number;
   requested_template: "hackerai-tools" | "miosa-sandbox-docker" | "custom";
@@ -63,6 +63,11 @@ const VALIDATION_FIELDS = new Set([
   "project_id",
   "region",
   "metadata",
+  "command",
+  "cwd",
+  "envs",
+  "path",
+  "content",
 ]);
 
 type MiosaErrorDiagnostic = {
@@ -181,7 +186,14 @@ export function createMiosaAcquisitionDiagnostics(options: {
           error instanceof Error &&
           error.name === "NotFoundError"
           ? "not_found"
-          : "failure",
+          : stage === "enrollment" &&
+              error instanceof Error &&
+              error.name === "MiosaEnrollmentError" &&
+              "reason" in error &&
+              (error.reason === "not_pro" ||
+                error.reason === "existing_e2b_workspace")
+            ? "denied"
+            : "failure",
         error,
       );
       throw error;

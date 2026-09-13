@@ -67,6 +67,7 @@ type SandboxUploadFailureDetail = {
   errorHttpStatus?: number;
   errorRequestId?: string;
   errorRetryable?: boolean;
+  validationFields?: string[];
   urlLength?: number;
   protocol?: string;
 };
@@ -1032,6 +1033,9 @@ const summarizeSandboxUploadFailure = (
     ...(providerDiagnostics?.error_retryable !== undefined && {
       errorRetryable: providerDiagnostics.error_retryable,
     }),
+    ...(providerDiagnostics?.validation_fields && {
+      validationFields: providerDiagnostics.validation_fields,
+    }),
   };
 
   if (file.kind === "url") {
@@ -1115,6 +1119,10 @@ const uploadSandboxFilesOnce = async (
         error_http_status: primaryFailure.errorHttpStatus ?? null,
         error_request_id: primaryFailure.errorRequestId ?? null,
         error_retryable: primaryFailure.errorRetryable ?? null,
+        validation_fields: primaryFailure.validationFields,
+        failure_stage: "transfer",
+        transfer_operation:
+          primaryFailure.kind === "url" ? "download_url" : "copy_local_file",
         protocol: primaryFailure.protocol ?? null,
       }),
     );
@@ -1148,6 +1156,10 @@ const uploadSandboxFilesOnce = async (
         error_http_status: primaryFailure.errorHttpStatus ?? null,
         error_request_id: primaryFailure.errorRequestId ?? null,
         error_retryable: primaryFailure.errorRetryable ?? null,
+        validation_fields: primaryFailure.validationFields,
+        failure_stage: "transfer",
+        transfer_operation:
+          primaryFailure.kind === "url" ? "download_url" : "copy_local_file",
         protocol: primaryFailure.protocol ?? null,
         sandbox_attachment_staging_failed_event_version: 1,
       });
@@ -1212,6 +1224,9 @@ export const getSandboxUploadFailureMetadata = (
       : {}),
     ...(failure?.errorRetryable !== undefined
       ? { upload_failure_error_retryable: failure.errorRetryable }
+      : {}),
+    ...(failure?.validationFields
+      ? { upload_failure_validation_fields: failure.validationFields }
       : {}),
     ...(failure?.protocol ? { upload_failure_protocol: failure.protocol } : {}),
     ...(typeof failure?.urlLength === "number"

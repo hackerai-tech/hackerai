@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Sandbox } from "@miosa/sdk";
 import { logger } from "@/lib/logger";
 import { miosaRuntimeCommand, type MiosaRuntime } from "./miosa-runtime";
+import { trackMiosaFileOperation } from "./miosa-file-diagnostics";
 
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
@@ -37,27 +38,42 @@ export function createMiosaFiles(
   sandbox: Sandbox,
   runtime: MiosaRuntime = "docker",
 ) {
-  const operate = async (op: string, path: string, stage?: string) => {
-    const env = {
-      HACKERAI_FILE_OP: op,
-      HACKERAI_FILE_PATH: path,
-      ...(stage && { HACKERAI_FILE_STAGE: stage }),
-    };
-    const flags = Object.entries(env)
-      .map(([key, value]) => `--env ${quote(`${key}=${value}`)}`)
-      .join(" ");
-    const result = await sandbox.exec.run(
-      runtime === "native"
-        ? miosaRuntimeCommand("native", `python3 -c ${quote(FILE_OPERATION)}`, {
-            envs: env,
-          })
-        : `docker exec --workdir /home/user ${flags} hackerai-agent python3 -c ${quote(FILE_OPERATION)}`,
-      { timeoutSec: 60 },
+  const operate = async (
+    op: "write" | "read" | "list" | "stat" | "exists" | "remove",
+    path: string,
+    stage?: string,
+  ) =>
+    trackMiosaFileOperation(
+      op === "write" ? "write_destination" : op === "read" ? "read_source" : op,
+      async () => {
+        const env = {
+          HACKERAI_FILE_OP: op,
+          HACKERAI_FILE_PATH: path,
+          ...(stage && { HACKERAI_FILE_STAGE: stage }),
+        };
+        const flags = Object.entries(env)
+          .map(([key, value]) => `--env ${quote(`${key}=${value}`)}`)
+          .join(" ");
+        const result = await sandbox.exec.run(
+          runtime === "native"
+            ? miosaRuntimeCommand(
+                "native",
+                `python3 -c ${quote(FILE_OPERATION)}`,
+                {
+                  envs: env,
+                },
+              )
+            : `docker exec --workdir /home/user ${flags} hackerai-agent python3 -c ${quote(FILE_OPERATION)}`,
+          { timeoutSec: 60 },
+        );
+        if (result.exitCode !== 0)
+          throw Object.assign(
+            new Error(result.stderr || `MIOSA file ${op} failed`),
+            { exitCode: result.exitCode },
+          );
+        return result.stdout;
+      },
     );
-    if (result.exitCode !== 0)
-      throw new Error(result.stderr || `MIOSA file ${op} failed`);
-    return result.stdout;
-  };
   const transfer = async <T>(operation: (stage: string) => Promise<T>) => {
     const stage = `/home/user/.hackerai-transfer-${randomUUID()}`;
     const cleanup = async () => {
@@ -91,7 +107,9 @@ export function createMiosaFiles(
   const read = (path: string) =>
     transfer(async (stage) => {
       await operate("read", path, stage);
-      return sandbox.files.readText(stage);
+      return trackMiosaFileOperation("download_stage", () =>
+        sandbox.files.readText(stage),
+      );
     });
   const statFile = async (
     path: string,
@@ -107,9 +125,11 @@ export function createMiosaFiles(
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> =>
       transfer(async (stage) => {
-        await sandbox.files.write(
-          stage,
-          content instanceof ArrayBuffer ? new Uint8Array(content) : content,
+        await trackMiosaFileOperation("upload_stage", () =>
+          sandbox.files.write(
+            stage,
+            content instanceof ArrayBuffer ? new Uint8Array(content) : content,
+          ),
         );
         await operate("write", path, stage);
       }),
