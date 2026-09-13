@@ -96,6 +96,7 @@ import {
   getUsageSettlementInitialDeduction,
   getUnsettledUsagePoints,
   getPaidDailyFreeAllowanceStatus,
+  hasPaidDailyFreeAllowanceConsent,
   paidDailyFreeAllowanceStatusToMetadata,
   recordPaidDailyFreeAllowanceCost,
   recordFreeMonthlyCost,
@@ -3140,7 +3141,11 @@ export const agentLongTask = task({
                   paidDailyFreeAllowanceStatusToMetadata(allowanceStatus),
               };
 
-              if (!limitRescue) throw error;
+              if (
+                !hasPaidDailyFreeAllowanceConsent(allowanceStatus, limitRescue)
+              ) {
+                throw error;
+              }
 
               const allowanceReservation =
                 await reservePaidDailyFreeAllowanceRequest(allowanceContext);

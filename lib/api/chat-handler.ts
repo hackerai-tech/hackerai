@@ -55,6 +55,7 @@ import {
   getUsageSettlementInitialDeduction,
   getUnsettledUsagePoints,
   getPaidDailyFreeAllowanceStatus,
+  hasPaidDailyFreeAllowanceConsent,
   paidDailyFreeAllowanceStatusToMetadata,
   recordPaidDailyFreeAllowanceCost,
   recordFreeMonthlyCost,
@@ -719,7 +720,7 @@ export const createChatHandler = () => {
           paidDailyFreeAllowance: allowanceMetadata,
         };
 
-        if (!limitRescue) {
+        if (!hasPaidDailyFreeAllowanceConsent(allowanceStatus, limitRescue)) {
           throw error;
         }
 

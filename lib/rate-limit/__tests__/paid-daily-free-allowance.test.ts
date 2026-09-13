@@ -106,6 +106,102 @@ describe("paid daily free allowance", () => {
   };
   const agentContext = { ...askContext, mode: "agent" as const };
 
+  it.each([askContext, agentContext])(
+    "keeps $mode on the allowance after opting in once, until the daily cap",
+    async (ctx) => {
+      const mod = getIsolatedModule();
+      const initialStatus = await mod.getPaidDailyFreeAllowanceStatus(ctx);
+      expect(mod.hasPaidDailyFreeAllowanceConsent(initialStatus)).toBe(false);
+      expect(
+        mod.hasPaidDailyFreeAllowanceConsent(initialStatus, {
+          type: "paid_daily_free_allowance",
+        }),
+      ).toBe(true);
+
+      const first = await mod.reservePaidDailyFreeAllowanceRequest(ctx);
+      expect(first.allowed).toBe(true);
+      await mod.recordPaidDailyFreeAllowanceCost(ctx.userId, 0.1, first);
+
+      // A fresh process/client receives no retry option or in-memory state.
+      const nextRequest = getIsolatedModule();
+      const followUpStatus =
+        await nextRequest.getPaidDailyFreeAllowanceStatus(ctx);
+      expect(nextRequest.hasPaidDailyFreeAllowanceConsent(followUpStatus)).toBe(
+        true,
+      );
+      const followUp =
+        await nextRequest.reservePaidDailyFreeAllowanceRequest(ctx);
+      expect(followUp).toMatchObject({
+        allowed: true,
+        status: { requestsUsed: 2, costRemainingDollars: 0.15 },
+      });
+      await nextRequest.recordPaidDailyFreeAllowanceCost(
+        ctx.userId,
+        0.15,
+        followUp,
+      );
+
+      const exhausted = await nextRequest.getPaidDailyFreeAllowanceStatus(ctx);
+      expect(nextRequest.hasPaidDailyFreeAllowanceConsent(exhausted)).toBe(
+        true,
+      );
+      await expect(
+        nextRequest.reservePaidDailyFreeAllowanceRequest(ctx),
+      ).resolves.toMatchObject({
+        allowed: false,
+        blockReason: "cost_limit_reached",
+      });
+    },
+  );
+
+  it("shares consent across modes, isolates accounts, and resets it each UTC day", async () => {
+    const mod = getIsolatedModule();
+    const first = await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+    // Even a canceled run with no spend should preserve the explicit choice.
+    await mod.recordPaidDailyFreeAllowanceCost(agentContext.userId, 0, first);
+
+    expect(
+      mod.hasPaidDailyFreeAllowanceConsent(
+        await mod.getPaidDailyFreeAllowanceStatus(askContext),
+      ),
+    ).toBe(true);
+    expect(
+      mod.hasPaidDailyFreeAllowanceConsent(
+        await mod.getPaidDailyFreeAllowanceStatus({
+          ...agentContext,
+          userId: "another_user",
+        }),
+      ),
+    ).toBe(false);
+
+    jest.setSystemTime(new Date("2026-06-12T00:00:01.000Z"));
+    expect(
+      mod.hasPaidDailyFreeAllowanceConsent(
+        await mod.getPaidDailyFreeAllowanceStatus(agentContext),
+      ),
+    ).toBe(false);
+  });
+
+  it("still rejects an explicit paid model after opting into the allowance", async () => {
+    const mod = getIsolatedModule();
+    const first = await mod.reservePaidDailyFreeAllowanceRequest(agentContext);
+    await mod.recordPaidDailyFreeAllowanceCost(
+      agentContext.userId,
+      0.01,
+      first,
+    );
+
+    await expect(
+      mod.reservePaidDailyFreeAllowanceRequest({
+        ...agentContext,
+        selectedModel: "hackerai-standard",
+      }),
+    ).resolves.toMatchObject({
+      allowed: false,
+      blockReason: "unsupported_model",
+    });
+  });
+
   it("offers $0.25 of usage per day by default with no request cap", async () => {
     const { getPaidDailyFreeAllowanceStatus } = getIsolatedModule();
 

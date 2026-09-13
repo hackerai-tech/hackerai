@@ -1,6 +1,11 @@
 import "server-only";
 
-import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
+import type {
+  ChatMode,
+  LimitRescueRequest,
+  SelectedModel,
+  SubscriptionTier,
+} from "@/types";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
 import type { LimitCapReason } from "@/lib/limit-pressure";
@@ -349,6 +354,19 @@ export async function getPaidDailyFreeAllowanceStatus(
     resetTimestamp: reset,
     ...(unavailableReason && { unavailableReason }),
   };
+}
+
+/**
+ * A successful reservation records the user's opt-in for the current UTC day.
+ * Reuse it across subsequent requests and clients instead of requiring the CTA
+ * again. Callers must still reserve each request to enforce eligibility,
+ * concurrency, and the remaining daily budget.
+ */
+export function hasPaidDailyFreeAllowanceConsent(
+  status: PaidDailyFreeAllowanceStatus,
+  limitRescue?: LimitRescueRequest,
+): boolean {
+  return Boolean(limitRescue) || status.requestsUsed > 0;
 }
 
 export async function reservePaidDailyFreeAllowanceRequest(
