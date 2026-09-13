@@ -129,20 +129,34 @@ export type ReasoningContentProps = ComponentProps<typeof CollapsibleContent>;
 export function ReasoningContent({
   className,
   children,
+  onScroll,
   ...props
 }: ReasoningContentProps) {
-  const { isActive } = useReasoning();
+  const { isActive, isOpen } = useReasoning();
   const contentRef = useRef<HTMLDivElement>(null);
+  const shouldFollowRef = useRef(true);
 
   useEffect(() => {
-    if (isActive && contentRef.current) {
+    if (!isOpen) {
+      shouldFollowRef.current = true;
+      return;
+    }
+    if (isActive && shouldFollowRef.current && contentRef.current) {
       contentRef.current.scrollTop = contentRef.current.scrollHeight;
     }
-  }, [children, isActive]);
+  }, [children, isActive, isOpen]);
 
   return (
     <CollapsibleContent
       ref={contentRef}
+      onScroll={(event) => {
+        const content = event.currentTarget;
+        // Remember the reader's position before the next streaming update
+        // increases scrollHeight. Allow for fractional scrollTop rounding.
+        shouldFollowRef.current =
+          content.scrollHeight - content.clientHeight - content.scrollTop <= 1;
+        onScroll?.(event);
+      }}
       className={cn(
         "mt-2 space-y-3 text-muted-foreground max-h-60 min-w-0 max-w-full overflow-x-hidden overflow-y-auto break-words",
         "[overflow-wrap:anywhere]",
