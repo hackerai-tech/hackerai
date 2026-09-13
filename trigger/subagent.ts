@@ -1,3 +1,12 @@
+import {
+  verifyResultEvidence,
+  evidenceWarningText,
+  type CheckedSubagentResult,
+} from "@/lib/ai/subagents/evidence-references";
+import {
+  loadObjectiveCheckpoint,
+  objectiveCheckpointEnabledForChild,
+} from "@/lib/db/objective-checkpoint";
 import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   logger as triggerLogger,
@@ -65,7 +74,10 @@ import {
   resolveSubagentModelForImageToolResults,
   resolveSubagentTextModel,
 } from "@/lib/ai/subagents/model-routing";
-import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
+import {
+  assertSubagentSandboxIdentity,
+  getSubagentSandboxIdentity,
+} from "@/lib/ai/subagents/sandbox-identity";
 import {
   assertSubagentRuntimeAuthorized,
   guardSubagentToolExecutions,
@@ -497,7 +509,7 @@ export const subagentTask = task({
     }, SUBAGENT_MAX_ACTIVE_SECONDS * 1_000);
 
     const usageTracker = new UsageTracker();
-    let resultValue: SubagentStructuredResult | undefined;
+    let resultValue: CheckedSubagentResult | undefined;
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -667,6 +679,22 @@ export const subagentTask = task({
               runtimeStage = "result_validation";
               resultSubmissionAttempts += 1;
               const parsed = profile.finalResultTool.schema.parse(input);
+              if (objectiveCheckpoint?.state.blocker) {
+                if ("task_status" in parsed) {
+                  parsed.task_status =
+                    objectiveCheckpoint.state.lastObservation ||
+                    objectiveCheckpoint.state.actions.some(
+                      (a) => a.state === "completed",
+                    )
+                      ? "partial"
+                      : "blocked";
+                }
+                parsed.limitations = [
+                  ...parsed.limitations.slice(0, 7),
+                  objectiveCheckpoint.state.blocker.slice(0, 500),
+                ];
+              }
+
               if (
                 Buffer.byteLength(JSON.stringify(parsed), "utf8") >
                 profile.finalResultTool.maxBytes
@@ -682,8 +710,15 @@ export const subagentTask = task({
                   error: "A structured result was already accepted.",
                 };
               }
-              runtimeStage = "authorization";
-              await assertRuntimeAuthorized();
+              runtimeStage = "evidence_verification";
+              const evidence = await verifyResultEvidence({
+                result: parsed,
+                sandbox,
+                expectedSandboxIdentity: row.sandbox_identity,
+                signal: activeAbort.signal,
+                authorize: assertRuntimeAuthorized,
+              });
+              if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
               const finalizing = await markSubagentFinalizing(
                 row.subagent_id,
@@ -703,9 +738,15 @@ export const subagentTask = task({
                   error: "This subagent is no longer accepting results.",
                 };
               }
-              resultValue = parsed;
+              resultValue = evidence.result;
               return {
                 accepted: true,
+                ...(evidence.result.evidence_verification
+                  ? {
+                      evidence_verification:
+                        evidence.result.evidence_verification,
+                    }
+                  : {}),
                 ...(row.profile === "security_validation" && "verdict" in parsed
                   ? { verdict: parsed.verdict }
                   : "task_status" in parsed
@@ -805,7 +846,7 @@ export const subagentTask = task({
                 triggerRegion,
               },
             );
-            const tools = guardSubagentToolExecutions(
+            const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
               {
@@ -825,6 +866,24 @@ export const subagentTask = task({
             const sandbox = await ensureSandbox();
             runtimeStage = "sandbox_identity_validation";
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
+            const checkpointOwner = {
+              userId: row.user_id,
+              chatId: row.chat_id,
+              triggerRunId: ctx.run.id,
+              subagentId: row.subagent_id,
+            };
+            const objectiveCheckpoint =
+              (await objectiveCheckpointEnabledForChild(checkpointOwner))
+                ? await loadObjectiveCheckpoint({
+                    ...checkpointOwner,
+                    environment: async () =>
+                      getSubagentSandboxIdentity(await ensureSandbox()),
+                    signal: activeAbort.signal,
+                    allowFollowUp: !!row.continuation_count,
+                  })
+                : undefined;
+            const tools =
+              objectiveCheckpoint?.wrap(authorizedTools) ?? authorizedTools;
 
             const provider = createTrackedProvider();
             const getGuardedLanguageModel = (
@@ -1159,7 +1218,17 @@ export const subagentTask = task({
                     12_000,
                     2_000,
                   );
+                  const checkpointRestriction =
+                    objectiveCheckpoint?.restriction(tools);
+                  if (checkpointRestriction)
+                    compacted.messages.push({
+                      role: "user",
+                      content: checkpointRestriction.instruction,
+                    });
                   return {
+                    ...(checkpointRestriction && !structuredResultRecovery
+                      ? { activeTools: checkpointRestriction.activeTools }
+                      : {}),
                     model: getGuardedLanguageModel(
                       activeModelName,
                       generationAttempt,
@@ -1201,6 +1270,14 @@ export const subagentTask = task({
                     spendCapExceeded = true;
                     activeAbort.abort();
                   }
+                  await objectiveCheckpoint?.recordSpend(
+                    usageTracker.computeCostDollars(
+                      selectedModel,
+                      responseModel,
+                    ) +
+                      resolveTriggerRunCost(triggerUsage.getCurrent())
+                        .totalCostDollars,
+                  );
                 },
               });
 
@@ -1394,6 +1471,24 @@ export const subagentTask = task({
               if (!(await beginStructuredResultRecovery("missing_result"))) {
                 break;
               }
+            }
+            const warningText = resultValue && evidenceWarningText(resultValue);
+            if (warningText) {
+              const warningId = `${row.subagent_id}-evidence-warning-${row.continuation_count ?? 0}`;
+              await saveSubagentMessage({
+                subagentId: row.subagent_id,
+                userId: row.user_id,
+                sequence: (row.continuation_count ?? 0) * 10_000 + 9_999,
+                role: "assistant",
+                parts: [{ type: "text", text: warningText }],
+              });
+              writer.write({ type: "text-start", id: warningId });
+              writer.write({
+                type: "text-delta",
+                id: warningId,
+                delta: warningText,
+              });
+              writer.write({ type: "text-end", id: warningId });
             }
           } catch (error) {
             runtimeFailure = error;

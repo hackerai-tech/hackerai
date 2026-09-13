@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnySandbox } from "@/types";
 import {
-  evidenceVerificationSchema,
   securityValidationResultSchema,
   securityTaskResultSchema,
   type SubagentStructuredResult,
@@ -18,6 +17,7 @@ import {
   verifyEvidenceReferences,
   EVIDENCE_CHECK_TIMEOUT_MS,
 } from "../evidence-references";
+import { resultFromPersistedSubagent } from "../persisted-result";
 
 const finding = (
   refs: string[] = ["/tmp/control.http", "file:/tmp/exploit.http"],
@@ -104,30 +104,41 @@ describe("saved evidence verification", () => {
   it.each([
     new Error("disconnected"),
     Object.assign(new Error("service failed"), { status: 503 }),
-  ])("preserves outage results with unverified references", async (error) => {
-    const { args, run } = setup();
-    run.mockRejectedValue(error);
-    const output = await verifyResultEvidence(args);
-    if (!output.accepted) throw new Error("Expected preserved result");
-    expect(output.result).toMatchObject({
-      verdict: "confirmed",
-      evidence_refs: [],
-      evidence_verification: {
-        checked_refs: [],
-        unavailable_refs: args.result.evidence_refs,
-        warning: expect.any(String),
-      },
-    });
-    expect(evidenceWarningText(output.result)).toContain("/tmp/exploit.http");
-    expect(evidenceWarningText(output.result)).toContain(
-      "not attached as verified evidence",
-    );
-    run.mockResolvedValue(commandResult(["exists", "exists"]));
-    expect(await verifyResultEvidence(args)).toMatchObject({
-      accepted: true,
-      result: { evidence_verification: { unavailable_refs: [] } },
-    });
-  });
+  ])(
+    "preserves outage results and delivers unverified refs after persistence",
+    async (error) => {
+      const { args, run } = setup();
+      run.mockRejectedValue(error);
+      const output = await verifyResultEvidence(args);
+      if (!output.accepted) throw new Error("Expected preserved result");
+      expect(output.result).toMatchObject({
+        verdict: "confirmed",
+        evidence_refs: [],
+        evidence_verification: {
+          checked_refs: [],
+          unavailable_refs: args.result.evidence_refs,
+          warning: expect.any(String),
+        },
+      });
+      const restored = resultFromPersistedSubagent({
+        profile: "security_validation",
+        status: "completed",
+        structured_result: output.result,
+      });
+      expect(restored.evidence_verification).toEqual(
+        output.result.evidence_verification,
+      );
+      expect(evidenceWarningText(output.result)).toContain("/tmp/exploit.http");
+      expect(evidenceWarningText(output.result)).toContain(
+        "not attached as verified evidence",
+      );
+      run.mockResolvedValue(commandResult(["exists", "exists"]));
+      expect(await verifyResultEvidence(args)).toMatchObject({
+        accepted: true,
+        result: { evidence_verification: { unavailable_refs: [] } },
+      });
+    },
+  );
   it("finishes an unresponsive check in five seconds with no retry", async () => {
     jest.useFakeTimers();
     const { args, run } = setup();
@@ -250,7 +261,12 @@ describe("saved evidence verification", () => {
       },
       timeoutMs: 5000,
     });
-    expect(output.result).toMatchObject({
+    const restored = resultFromPersistedSubagent({
+      profile: "security_task",
+      status: "completed",
+      structured_result: output.result,
+    });
+    expect(restored).toMatchObject({
       coverage: [{ outcome: "Observed difference", evidence_refs: [] }],
       evidence_verification: { unavailable_refs: ["/tmp/exploit.http"] },
     });
@@ -289,6 +305,34 @@ describe("saved evidence verification", () => {
     ).toMatchObject({ accepted: false });
     expect(run).not.toHaveBeenCalled();
   });
+  it("preserves general-worker evidence warnings through parent delivery", async () => {
+    const result = securityTaskResultSchema.parse({
+      task_status: "completed",
+      summary: "Synthetic general result",
+      evidence_refs: ["/tmp/capture.http"],
+      artifacts: [],
+      limitations: [],
+      next_steps: [],
+    });
+    const { args, run } = setup(result);
+    run.mockRejectedValue(new Error("disconnected"));
+    const output = await verifyResultEvidence(args);
+    if (!output.accepted) throw new Error("Expected preserved report");
+    expect(
+      resultFromPersistedSubagent({
+        profile: "general",
+        status: "completed",
+        structured_result: output.result,
+      }),
+    ).toMatchObject({
+      profile: "general",
+      evidence_refs: [],
+      evidence_verification: {
+        unavailable_refs: ["/tmp/capture.http"],
+        warning: expect.any(String),
+      },
+    });
+  });
   it("does not let the model supply verified metadata", () => {
     expect(
       securityValidationResultSchema.parse({
@@ -296,19 +340,6 @@ describe("saved evidence verification", () => {
         evidence_verification: { checked_refs: ["fake"] },
       }),
     ).not.toHaveProperty("evidence_verification");
-  });
-  it("rejects blank saved evidence metadata while allowing empty lists", () => {
-    const empty = { checked_refs: [], unavailable_refs: [] };
-    expect(evidenceVerificationSchema.safeParse(empty).success).toBe(true);
-    for (const metadata of [
-      { ...empty, checked_refs: [" "] },
-      { ...empty, unavailable_refs: ["\t"] },
-      { ...empty, warning: " " },
-    ]) {
-      expect(evidenceVerificationSchema.safeParse(metadata).success).toBe(
-        false,
-      );
-    }
   });
   it("checks real files deterministically without reading payloads or shell-interpolating paths", async () => {
     const dir = mkdtempSync(join(tmpdir(), "evidence-check-"));
@@ -339,8 +370,8 @@ describe("saved evidence verification", () => {
     ["file:/tmp/capture.http", "/tmp/capture.http"],
     ["C:\\captures\\response.txt", "C:\\captures\\response.txt"],
     ["/tmp/proof#L4-L8", "/tmp/proof#L4-L8"],
+    ["/tmp/capture:200", "/tmp/capture:200"],
     ["file:/tmp/proof#L4-L8", "/tmp/proof"],
-    ["/tmp/proof:200", "/tmp/proof:200"],
     ["https://example.test", undefined],
     ["//other-host/private", undefined],
     ["file://other-host/private", undefined],

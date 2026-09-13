@@ -2148,4 +2148,56 @@ describe("createAgentStream repeated compaction", () => {
     expect(stream.stopWhen[1]()).toBe(true);
     expect(state.stoppedDueToTokenExhaustion).toBe(true);
   });
+  it("keeps checkpoint reporting inside the existing budget and records all step costs", async () => {
+    const abortController = new AbortController();
+    const recordSpend = jest.fn(async () => {
+      expect(abortController.signal.aborted).toBe(true);
+    });
+    const objectiveCheckpoint = {
+      wrap: (tools: unknown) => tools,
+      restriction: () => ({
+        activeTools: [],
+        instruction: "Partial results preserved; workspace unavailable.",
+      }),
+      recordSpend,
+    };
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect fixture")],
+      { usedTokens: 100, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        abortController,
+        objectiveCheckpoint,
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          accumulateStep: () => 0,
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0.2,
+        },
+        getSandboxCostDollars: () => 0.05,
+        getTriggerRunCostDollars: () => 0.03,
+        budgetMonitor: {
+          checkAfterStep: () => ({ type: "abort-agent-run-spend-cap" }),
+        },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      messages: [{ role: "user", content: "Inspect fixture" }],
+      steps: [],
+    });
+    expect(prepared.activeTools).toEqual([]);
+    expect(prepared.toolChoice).toBe("none");
+    expect(prepared.messages.at(-1).content).toContain(
+      "Partial results preserved",
+    );
+    await stream.onStepFinish({
+      usage: { inputTokens: 10, outputTokens: 5 },
+      response: { modelId: "test-model" },
+    });
+    expect(recordSpend).toHaveBeenCalledWith(0.28);
+    expect(state.stoppedDueToAgentRunSpendCap).toBe(true);
+  });
 });

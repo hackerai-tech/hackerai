@@ -176,14 +176,14 @@ describe("security validation subagent runtime contracts", () => {
     );
     expectMarkerOrder(
       acceptResult,
-      "await assertRuntimeAuthorized()",
+      "await verifyResultEvidence(",
       "await markSubagentFinalizing(",
     );
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );
     const guardedSandboxSetup = child.slice(
-      child.indexOf("const tools = guardSubagentToolExecutions("),
+      child.indexOf("const authorizedTools = guardSubagentToolExecutions("),
       child.indexOf("const provider = createTrackedProvider()"),
     );
     expectMarkerOrder(

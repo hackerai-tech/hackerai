@@ -392,12 +392,20 @@ export const evidenceVerificationSchema = z.object({
   warning: z.string().trim().min(1).max(500).optional(),
 });
 export type EvidenceVerification = z.infer<typeof evidenceVerificationSchema>;
+export const persistedCoverageEntrySchema =
+  securityTaskCoverageEntrySchema.extend({
+    evidence_refs: z
+      .array(z.string().trim().min(1).max(500))
+      .max(MAX_SECURITY_TASK_COVERAGE_EVIDENCE_REFS),
+  });
+
 export const agentValidationResultSchema = z.object({
   profile: z.literal(SECURITY_VALIDATION_SUBAGENT_PROFILE),
   status: z.enum(["completed", "failed", "canceled", "timed_out"]),
   verdict: subagentVerdictSchema.nullable(),
   confidence: validationConfidenceSchema.nullable(),
   summary: z.string().max(2_000),
+  evidence_verification: evidenceVerificationSchema.optional(),
   observed_impact: z.string().max(2_000).optional(),
   reproduction_steps: z.array(z.string().max(500)).max(12).optional(),
   evidence_refs: z.array(z.string().max(500)).max(8),
@@ -407,28 +415,47 @@ export const agentValidationResultSchema = z.object({
 
 export type AgentValidationResult = z.infer<typeof agentValidationResultSchema>;
 
-export const agentSecurityTaskResultSchema = z.object({
-  profile: z.literal(SECURITY_TASK_SUBAGENT_PROFILE),
-  status: z.enum(["completed", "failed", "canceled", "timed_out"]),
-  task_status: securityTaskStatusSchema.nullable(),
-  summary: z.string().max(2_000),
-  evidence_refs: z.array(z.string().max(500)).max(8),
-  artifacts: z.array(securityTaskArtifactSchema).max(8),
-  limitations: z.array(z.string().max(500)).max(8),
-  next_steps: z.array(z.string().max(500)).max(8),
-  coverage: z
-    .array(securityTaskCoverageEntrySchema)
-    .max(MAX_SECURITY_TASK_COVERAGE_ITEMS)
-    .optional(),
-});
+const coverageHasEvidenceOrVerificationGap = (value: {
+  coverage?: Array<{ evidence_refs: string[] }>;
+  evidence_verification?: EvidenceVerification;
+}) =>
+  value.coverage?.every((entry) => entry.evidence_refs.length > 0) !== false ||
+  (Boolean(value.evidence_verification?.warning) &&
+    (value.evidence_verification?.unavailable_refs.length ?? 0) > 0);
+
+export const agentSecurityTaskResultSchema = z
+  .object({
+    profile: z.literal(SECURITY_TASK_SUBAGENT_PROFILE),
+    status: z.enum(["completed", "failed", "canceled", "timed_out"]),
+    task_status: securityTaskStatusSchema.nullable(),
+    summary: z.string().max(2_000),
+    evidence_verification: evidenceVerificationSchema.optional(),
+    evidence_refs: z.array(z.string().max(500)).max(8),
+    artifacts: z.array(securityTaskArtifactSchema).max(8),
+    limitations: z.array(z.string().max(500)).max(8),
+    next_steps: z.array(z.string().max(500)).max(8),
+    coverage: z
+      .array(persistedCoverageEntrySchema)
+      .max(MAX_SECURITY_TASK_COVERAGE_ITEMS)
+      .optional(),
+  })
+  .refine(
+    coverageHasEvidenceOrVerificationGap,
+    "Coverage without attached evidence requires a server-recorded verification gap.",
+  );
 export type AgentSecurityTaskResult = z.infer<
   typeof agentSecurityTaskResultSchema
 >;
 
-export const agentGeneralTaskResultSchema =
-  agentSecurityTaskResultSchema.extend({
+export const agentGeneralTaskResultSchema = z
+  .object({
+    ...agentSecurityTaskResultSchema.shape,
     profile: z.literal(GENERAL_SUBAGENT_PROFILE),
-  });
+  })
+  .refine(
+    coverageHasEvidenceOrVerificationGap,
+    "Coverage without attached evidence requires a server-recorded verification gap.",
+  );
 
 export const agentSubagentResultSchema = z.discriminatedUnion("profile", [
   agentValidationResultSchema,
