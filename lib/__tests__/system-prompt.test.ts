@@ -2,6 +2,24 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it("handles name-only OSINT with a privacy-bounded default", async () => {
+    const prompt = await systemPrompt(
+      "user_123",
+      "ask",
+      "pro",
+      "ask-model",
+      null,
+      null,
+    );
+
+    expect(prompt).toContain(
+      "For name-only OSINT requests, proceed without asking for purpose or authority",
+    );
+    expect(prompt).toContain(
+      "ask for a disambiguating identifier only when needed",
+    );
+  });
+
   it("exposes generic bounded delegation when enabled", async () => {
     const disabled = await systemPrompt(
       "user_123",
