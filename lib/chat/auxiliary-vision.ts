@@ -193,6 +193,7 @@ const withDataUrlPrefix = (image: string, mediaType: string): string =>
     ? image
     : `data:${mediaType};base64,${image}`;
 
+/** Reports provider charges even when a returned description cannot be used. */
 export async function describeImageWithAuxiliaryVision({
   image,
   mediaType,
@@ -322,6 +323,10 @@ const escapeTagText = (value: string): string =>
 const escapeTagAttribute = (value: string): string =>
   escapeTagText(value).replaceAll('"', "&quot;");
 
+/**
+ * Builds a complete outbound description history without mutating stored images.
+ * On failure, cached successes and their charges survive for a later retry.
+ */
 export async function describeImageAttachmentsWithAuxiliaryVision({
   messages,
   requestId,

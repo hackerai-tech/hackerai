@@ -13,6 +13,7 @@ import { parse } from "dotenv";
 import { getSharp } from "next/dist/server/image-optimizer";
 import type { UIMessage } from "ai";
 
+/** Exercises synthetic OCR only; no customer data or app session is loaded. */
 async function main() {
   if (!process.env.OPENROUTER_API_KEY) {
     process.env.OPENROUTER_API_KEY = parse(readFileSync(".env.local"))[
@@ -66,6 +67,7 @@ async function main() {
   const scores: Record<string, unknown>[] = [];
   const deadline = AbortSignal.timeout(10 * 60_000);
   let totalReportedCost = 0;
+  /** Scores expected code retention, not general visual reasoning quality. */
   async function score(
     name: string,
     model: string,
@@ -142,6 +144,8 @@ async function main() {
   const start = performance.now();
   let recoveryCost = 0;
   try {
+    if (totalReportedCost >= 1)
+      throw new Error("Benchmark reached its reported-cost budget");
     const recovered = await describeImageAttachmentsWithAuxiliaryVision({
       messages: history,
       abortSignal: deadline,
