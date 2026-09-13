@@ -46,6 +46,118 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
+  it.each([
+    { status: 422, retryable: true },
+    { status: 503, retryable: false },
+    { status: 504, retryable: true },
+  ])(
+    "does not replay Miosa rejected or ambiguous saves: %j",
+    async (details) => {
+      const sandbox = createSandbox({ sandboxKind: "miosa" });
+      sandbox.files.write.mockRejectedValueOnce(
+        Object.assign(new Error("network private-output"), {
+          ...details,
+          name: "MiosaError",
+          code: "UNKNOWN_ERROR",
+          requestId: "request-safe",
+        }),
+      );
+      const eventSpy = jest
+        .spyOn(phLogger, "event")
+        .mockImplementation(() => {});
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await expect(
+          saveFullOutputToFile(sandbox as any, "private-output", CHAT_ID),
+        ).resolves.toBeNull();
+        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+        expect(eventSpy).toHaveBeenCalledWith(
+          "terminal_output_persistence_failure",
+          expect.objectContaining({
+            failure_stage: "write_output",
+            error_http_status: details.status,
+            error_request_id: "request-safe",
+            retry_decision: "not_retryable",
+          }),
+        );
+        expect(JSON.stringify(eventSpy.mock.calls)).not.toContain(
+          "private-output",
+        );
+      } finally {
+        eventSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    },
+  );
+
+  it("retries a provider-confirmed transient 503 only for the fixed output save", async () => {
+    jest.useFakeTimers();
+    const sandbox = createSandbox({ sandboxKind: "miosa" });
+    sandbox.files.write.mockRejectedValueOnce(
+      Object.assign(new Error("unavailable"), {
+        status: 503,
+        retryable: true,
+        requestId: "request-503",
+      }),
+    );
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const pending = saveFullOutputToFile(
+        sandbox as any,
+        "full-output",
+        CHAT_ID,
+      );
+      await jest.advanceTimersByTimeAsync(250);
+      expect(await pending).not.toBeNull();
+      expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+      expect(sandbox.files.write.mock.calls[0]).toEqual(
+        sandbox.files.write.mock.calls[1],
+      );
+      expect(eventSpy).toHaveBeenCalledWith(
+        "terminal_output_persistence_failure",
+        expect.objectContaining({
+          result: "recovered",
+          error_request_id: "request-503",
+          failure_stage: "write_output",
+        }),
+      );
+    } finally {
+      eventSpy.mockRestore();
+      infoSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it("does not attempt a file write when directory creation exits unsuccessfully", async () => {
+    const sandbox = createSandbox({ sandboxKind: "miosa" });
+    sandbox.commands.run.mockResolvedValueOnce({
+      stdout: "",
+      stderr: "private stderr",
+      exitCode: 1,
+    });
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        saveFullOutputToFile(sandbox as any, "data", CHAT_ID),
+      ).resolves.toBeNull();
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+      expect(eventSpy).toHaveBeenCalledWith(
+        "terminal_output_persistence_failure",
+        expect.objectContaining({
+          failure_stage: "ensure_directory",
+          file_operation_exit_code: 1,
+        }),
+      );
+      expect(JSON.stringify(eventSpy.mock.calls)).not.toContain(
+        "private stderr",
+      );
+    } finally {
+      eventSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
   it("stores cloud output in a chat-scoped directory", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
     const sandbox = createSandbox();

@@ -4,6 +4,36 @@ import {
 } from "../miosa-acquisition-diagnostics";
 
 describe("Miosa acquisition diagnostics", () => {
+  it.each([
+    "not_pro",
+    "existing_e2b_workspace",
+    "workspace_discovery_unavailable",
+  ] as const)(
+    "classifies enrollment %s without swallowing the veto",
+    async (reason) => {
+      const onDiagnostic = jest.fn();
+      const step = createMiosaAcquisitionDiagnostics({
+        templateId: "hackerai-tools",
+        workspaceName: "test",
+        onDiagnostic,
+      });
+      const error = Object.assign(new Error("Enrollment denied"), {
+        name: "MiosaEnrollmentError",
+        reason,
+      });
+      await expect(
+        step("enrollment", async () => {
+          throw error;
+        }),
+      ).rejects.toBe(error);
+      expect(onDiagnostic).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome:
+            reason === "workspace_discovery_unavailable" ? "failure" : "denied",
+        }),
+      );
+    },
+  );
   it("retains actionable server identifiers, not raw errors or rejected values", () => {
     const error = Object.assign(
       new Error("Bearer msk_private secret command output"),

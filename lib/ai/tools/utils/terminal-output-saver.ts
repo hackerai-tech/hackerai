@@ -3,6 +3,7 @@ import type { AnySandbox } from "@/types";
 import type { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { phLogger } from "@/lib/posthog/server";
 import { FULL_OUTPUT_SAVED_MESSAGE } from "@/lib/token-utils";
+import { miosaFileErrorDiagnostics } from "./miosa-file-diagnostics";
 import {
   asCommonSandbox,
   isCloudSandbox,
@@ -99,12 +100,35 @@ export const classifyTerminalOutputPersistenceFailure = (
 const canRetryPersistenceFailure = (
   provider: TerminalOutputPersistenceProvider,
   category: TerminalOutputPersistenceFailureCategory,
-): boolean =>
-  (provider === "desktop" &&
+  error: unknown,
+): boolean => {
+  if (provider === "miosa") {
+    const details = miosaFileErrorDiagnostics(error);
+    // Never replay a policy/validation rejection, a non-retryable provider
+    // failure, or an ambiguous timeout. Only this fixed-path output save is
+    // retried, never the user's original terminal command.
+    if (
+      details.error_retryable === false ||
+      category === "timeout" ||
+      (details.error_http_status !== undefined &&
+        details.error_http_status >= 400 &&
+        details.error_http_status < 500)
+    )
+      return false;
+    if (details.error_http_status !== undefined)
+      return (
+        details.error_retryable === true &&
+        [502, 503].includes(details.error_http_status)
+      );
+    return category === "transport";
+  }
+  return (
+    provider === "desktop" &&
     (category === "transport" ||
       category === "relay_unavailable" ||
-      category === "unknown")) ||
-  (provider === "miosa" && category === "transport");
+      category === "unknown")
+  );
+};
 
 const getPersistenceSandboxFields = (
   provider: TerminalOutputPersistenceProvider,
@@ -128,6 +152,8 @@ const emitPersistenceFailure = (args: {
   retryDecision:
     "retried" | "verified_after_timeout" | "skipped_timeout" | "not_retryable";
   telemetry?: TerminalOutputPersistenceTelemetry;
+  error?: unknown;
+  failureStage?: "ensure_directory" | "write_output";
 }): void => {
   const fields = {
     ...getPersistenceSandboxFields(args.provider),
@@ -144,6 +170,10 @@ const emitPersistenceFailure = (args: {
     trigger_run_id: args.telemetry?.triggerRunId ?? null,
     chat_id: args.telemetry?.chatId ?? null,
     user_id: args.telemetry?.userId ?? null,
+    ...(args.provider === "miosa" && {
+      failure_stage: args.failureStage,
+      ...miosaFileErrorDiagnostics(args.error),
+    }),
   };
 
   const payload = JSON.stringify({
@@ -217,10 +247,17 @@ export async function saveFullOutputToFile(
 
   const dir = getOutputDirectory(sandbox, scopeId);
   const filePath = `${dir}/${timestamp}.txt`;
+  let failureStage: "ensure_directory" | "write_output" = "ensure_directory";
   const save = async (): Promise<string> => {
-    await sandbox.commands.run(`mkdir -p ${dir}`, {
+    failureStage = "ensure_directory";
+    const mkdirResult = await sandbox.commands.run(`mkdir -p ${dir}`, {
       timeoutMs: 5000,
     });
+    if (mkdirResult.exitCode !== 0)
+      throw Object.assign(new Error("Output directory creation failed"), {
+        exitCode: mkdirResult.exitCode,
+      });
+    failureStage = "write_output";
     await sandbox.files.write(filePath, fullOutput);
 
     try {
@@ -249,6 +286,7 @@ export async function saveFullOutputToFile(
   try {
     return await save();
   } catch (firstError) {
+    const firstStage = failureStage;
     const firstCategory = classifyTerminalOutputPersistenceFailure(firstError);
     if (provider === "desktop" && firstCategory === "timeout") {
       const stat = (
@@ -284,7 +322,7 @@ export async function saveFullOutputToFile(
         return null;
       }
     }
-    if (!canRetryPersistenceFailure(provider, firstCategory)) {
+    if (!canRetryPersistenceFailure(provider, firstCategory, firstError)) {
       emitPersistenceFailure({
         provider,
         attemptCount,
@@ -293,6 +331,8 @@ export async function saveFullOutputToFile(
         retryDecision:
           firstCategory === "timeout" ? "skipped_timeout" : "not_retryable",
         telemetry,
+        error: firstError,
+        failureStage: firstStage,
       });
       return null;
     }
@@ -310,6 +350,8 @@ export async function saveFullOutputToFile(
         failureCategory: firstCategory,
         retryDecision: "retried",
         telemetry,
+        error: firstError,
+        failureStage: firstStage,
       });
       return savedPath;
     } catch (retryError) {
@@ -320,6 +362,8 @@ export async function saveFullOutputToFile(
         failureCategory: classifyTerminalOutputPersistenceFailure(retryError),
         retryDecision: "retried",
         telemetry,
+        error: retryError,
+        failureStage,
       });
       return null;
     }
