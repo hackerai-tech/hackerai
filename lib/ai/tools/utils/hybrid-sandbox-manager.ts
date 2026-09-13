@@ -13,6 +13,7 @@ import {
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
 import {
+  getCloudSandboxProviderForInstance,
   isCentrifugoSandbox,
   isE2BSandbox,
   type ConnectionInfo,
@@ -265,6 +266,7 @@ export class HybridSandboxManager implements SandboxManager {
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
+  private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
 
   constructor(
     private userID: string,
@@ -281,7 +283,9 @@ export class HybridSandboxManager implements SandboxManager {
   ) {
     this.sandbox = initialSandbox || null;
     this.activeCloudProvider =
-      cloudSandboxContext?.provider ?? getCloudSandboxProvider();
+      getCloudSandboxProviderForInstance(this.sandbox) ??
+      cloudSandboxContext?.provider ??
+      getCloudSandboxProvider();
   }
 
   recordHealthFailure(): boolean {
@@ -784,6 +788,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
+    if (this.cloudAcquisition) return this.cloudAcquisition;
     if (!this.isLocal && this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
@@ -793,16 +798,24 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox };
     }
 
+    this.cloudAcquisition = this.acquireCloudSandbox().finally(() => {
+      this.cloudAcquisition = null;
+    });
+    return this.cloudAcquisition;
+  }
+
+  private async acquireCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     await this.closeCurrentSandbox();
     const result = await ensureCloudSandboxConnection({
       userId: this.userID,
-      setSandbox: (sandbox) => {
-        this.sandbox = sandbox;
-        this.setSandboxCallback(sandbox);
-      },
+      setSandbox: this.setSandboxCallback,
       onBoot: this.onBoot,
       initialSandbox: this.isLocal ? null : this.sandbox,
-      context: this.cloudSandboxContext,
+      // A reconnect must retain the provider that supplied this run's files.
+      context: {
+        ...this.cloudSandboxContext,
+        provider: this.activeCloudProvider,
+      },
     });
 
     this.sandbox = result.sandbox;
@@ -810,13 +823,14 @@ export class HybridSandboxManager implements SandboxManager {
     this.isLocal = false;
     this.currentConnectionId = null;
     this.currentConnectionName = null;
-    this.setSandboxCallback(result.sandbox);
 
     return { sandbox: result.sandbox };
   }
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
+    this.activeCloudProvider =
+      getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
     this.isLocal = isCentrifugoSandbox(sandbox);
     if (this.isLocal && isCentrifugoSandbox(sandbox)) {
       this.currentConnectionId = sandbox.getConnectionId();
@@ -829,6 +843,8 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(reason?: string): Promise<void> {
+    // Settle acquisition before clearing its result; never destroy the VM.
+    await this.cloudAcquisition?.catch(() => undefined);
     const sandbox = this.sandbox;
     this.sandbox = null;
     this.isLocal = false;

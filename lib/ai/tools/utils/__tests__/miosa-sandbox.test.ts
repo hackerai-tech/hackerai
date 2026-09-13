@@ -110,6 +110,89 @@ describe("MIOSA sandbox adapter", () => {
     );
   });
 
+  it("recovers a resume race only after the same workspace passes readiness", async () => {
+    const sdk = createSdkSandbox();
+    mockGetOrCreate.mockRejectedValueOnce(
+      Object.assign(new Error("not paused"), { code: "SANDBOX_NOT_PAUSED" }),
+    );
+    mockGetByName.mockResolvedValueOnce(sdk);
+    const onDiagnostic = jest.fn();
+    const result = await ensureMiosaSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { onDiagnostic },
+    );
+    expect(result.sandbox.sdkSandbox).toBe(sdk);
+    expect(mockGetByName).toHaveBeenCalledWith(
+      mockGetOrCreate.mock.calls[0][0].name,
+    );
+    expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+    expect(sdk.readiness).toHaveBeenCalled();
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "resume_conflict_refresh",
+        outcome: "success",
+      }),
+    );
+  });
+
+  it.each(["paused", "error", "destroyed", "resuming"])(
+    "does not hide a resume conflict when current state is %s",
+    async (state) => {
+      const error = Object.assign(new Error("not paused"), {
+        code: "SANDBOX_NOT_PAUSED",
+      });
+      mockGetOrCreate.mockRejectedValueOnce(error);
+      const sdk = createSdkSandbox();
+      sdk.state = state;
+      mockGetByName.mockResolvedValueOnce(sdk);
+      const setSandbox = jest.fn();
+      await expect(
+        ensureMiosaSandboxConnection({ userID: "user-1", setSandbox }),
+      ).rejects.toBe(error);
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(sdk.exec.stream).not.toHaveBeenCalled();
+      expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("preserves a resume conflict if the workspace lookup fails", async () => {
+    const error = Object.assign(new Error("not paused"), {
+      code: "SANDBOX_NOT_PAUSED",
+    });
+    mockGetOrCreate.mockRejectedValueOnce(error);
+    mockGetByName.mockRejectedValueOnce(new Error("lookup unavailable"));
+    await expect(
+      ensureMiosaSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+    ).rejects.toBe(error);
+  });
+
+  it("does not recover disk errors by replacing a workspace", async () => {
+    const error = Object.assign(new Error("disk unavailable"), {
+      code: "DISK_RECOVERY_REQUIRED",
+    });
+    mockGetOrCreate.mockRejectedValueOnce(error);
+    await expect(
+      ensureMiosaSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+    ).rejects.toBe(error);
+    expect(mockGetByName).not.toHaveBeenCalled();
+    expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("still rejects failed readiness after a running-state refresh", async () => {
+    mockGetOrCreate.mockRejectedValueOnce(
+      Object.assign(new Error("not paused"), { code: "SANDBOX_NOT_PAUSED" }),
+    );
+    const sdk = createSdkSandbox();
+    sdk.readiness.mockResolvedValueOnce({ ready: false, state: "error" });
+    mockGetByName.mockResolvedValueOnce(sdk);
+    const setSandbox = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection({ userID: "user-1", setSandbox }),
+    ).rejects.toThrow();
+    expect(setSandbox).not.toHaveBeenCalled();
+    expect(sdk.exec.stream).not.toHaveBeenCalled();
+  });
+
   it("records acquisition stages without changing the SDK getOrCreate contract", async () => {
     const onDiagnostic = jest.fn();
     mockGetByName.mockRejectedValueOnce(
