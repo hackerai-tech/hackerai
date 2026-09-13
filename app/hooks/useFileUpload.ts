@@ -940,11 +940,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           uploadedFile.generatedTextAttachment?.id ||
           uploadedFile.generatedTextAttachmentId ||
           uploadedFile.localAttachmentId;
-        if (attachmentId)
-          await removeGeneratedTextAttachment(
+        if (attachmentId && isTauriEnvironment()) {
+          const removed = await removeGeneratedTextAttachment(
             attachmentId,
             uploadedFile.file.name,
           );
+          if (!removed)
+            throw new Error("Failed to remove pasted text attachment");
+        }
       }
       const currentIndex = uploadedFilesRef.current.findIndex(
         (item) => item.file === uploadedFile.file,

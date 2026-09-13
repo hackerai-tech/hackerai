@@ -96,7 +96,6 @@ describe("fileStorage - deleteFile", () => {
       },
       db: {
         insert: jest.fn().mockResolvedValue("receipt-1"),
-        patch: jest.fn().mockResolvedValue(undefined),
         get: jest.fn().mockResolvedValue(mockFile),
         delete: jest.fn().mockResolvedValue(undefined),
         patch: jest.fn().mockResolvedValue(undefined),

@@ -512,6 +512,42 @@ describe("POST /api/delete-account", () => {
     },
   );
 
+  it("holds all organization locks until concurrent cleanup settles after a failure", async () => {
+    const memberships = ["a", "b"].map((id) => ({
+      id: `membership_${id}`,
+      organizationId: `org_${id}`,
+      userId: "user_123",
+      role: { slug: "member" },
+    }));
+    mockListOrganizationMemberships
+      .mockResolvedValueOnce({ data: memberships } as never)
+      .mockResolvedValueOnce({ data: [memberships[0]] } as never)
+      .mockResolvedValueOnce({ data: [memberships[1]] } as never);
+    let finishCleanup!: () => void;
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    mockDeleteOrganizationMembership
+      .mockRejectedValueOnce(new Error("Provider unavailable") as never)
+      .mockImplementationOnce(() => {
+        notifyStarted();
+        return pending as never;
+      });
+    const responsePromise = POST(request() as any);
+    await started;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockMembershipLockRelease).not.toHaveBeenCalled();
+    finishCleanup();
+    const response = await responsePromise;
+    expect(response.status).toBe(500);
+    expect(mockMembershipLockRelease).toHaveBeenCalledTimes(2);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
   it("does not claim success when membership removal fails", async () => {
     const membership = {
       id: "membership_user",

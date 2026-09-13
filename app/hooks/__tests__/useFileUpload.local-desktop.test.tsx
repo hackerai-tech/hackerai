@@ -3,6 +3,7 @@ import { ConvexError } from "convex/values";
 import { useFileUpload } from "../useFileUpload";
 import {
   getLocalFileMetadata,
+  isTauriEnvironment,
   pickLocalFiles,
   readLocalFile,
   removeGeneratedTextAttachment,
@@ -80,6 +81,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (isTauriEnvironment as jest.Mock).mockReturnValue(true);
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
     globalState = {
       uploadedFiles: [],
@@ -128,6 +130,45 @@ describe("useFileUpload desktop-local agent attachments", () => {
     expect(toast.error).toHaveBeenCalledWith("Storage unavailable");
     errorSpy.mockRestore();
   });
+
+  it.each([true, false])(
+    "handles a false local cleanup result with Tauri available: %s",
+    async (available) => {
+      (isTauriEnvironment as jest.Mock).mockReturnValue(available);
+      (removeGeneratedTextAttachment as jest.Mock).mockResolvedValue(false);
+      globalState.uploadedFiles = [
+        {
+          file: new File(["test"], "Pasted text.txt", { type: "text/plain" }),
+          storage: "local-desktop",
+          generatedSource: "pasted-text",
+          generatedTextAttachmentId: "paste-1",
+          uploaded: true,
+        },
+      ];
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const { result } = renderHook(() => useFileUpload("agent"));
+      await act(async () => {
+        await result.current.handleRemoveFile(0);
+      });
+      if (available) {
+        expect(removeGeneratedTextAttachment).toHaveBeenCalledWith(
+          "paste-1",
+          "Pasted text.txt",
+        );
+        expect(removeUploadedFile).not.toHaveBeenCalled();
+        expect(toast.error).toHaveBeenCalledWith(
+          "Failed to remove pasted text attachment",
+        );
+      } else {
+        expect(removeGeneratedTextAttachment).not.toHaveBeenCalled();
+        expect(removeUploadedFile).toHaveBeenCalledWith(0);
+        expect(toast.error).not.toHaveBeenCalled();
+      }
+      errorSpy.mockRestore();
+    },
+  );
 
   it("uses Tauri file paths for large files without calling S3 in desktop Agent mode", async () => {
     (pickLocalFiles as jest.Mock).mockResolvedValue([

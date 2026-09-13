@@ -428,7 +428,7 @@ export const POST = async (req: NextRequest) => {
     // and identity resources after proving this user is the sole active admin.
     stage = "delete_memberships_and_organizations";
     await assertMembershipLocksOwned();
-    await Promise.all(
+    const organizationResults = await Promise.allSettled(
       membershipDeletionPlans.map(
         async ({ membership, deleteOrganization }) => {
           const orgId = membership.organizationId;
@@ -473,6 +473,14 @@ export const POST = async (req: NextRequest) => {
         },
       ),
     );
+
+    // Keep membership locks held until every concurrent cleanup has stopped.
+    const organizationFailure = organizationResults.find(
+      (result) => result.status === "rejected",
+    );
+    if (organizationFailure?.status === "rejected") {
+      throw organizationFailure.reason;
+    }
 
     // Purge Redis rate-limit keys. Best-effort: WorkOS user deletion proceeds
     // even if this fails so the account is not left in a half-deleted state.

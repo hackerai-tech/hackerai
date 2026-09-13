@@ -119,11 +119,6 @@ function createMockCtx(tables: Tables, subject = "user_123") {
   let insertedDocuments = 0;
 
   const db = {
-    insert: jest.fn(async (table: string, value: Record<string, unknown>) => {
-      const id = `receipt-${(tables[table] ?? []).length}`;
-      (tables[table] ??= []).push({ ...value, _id: id });
-      return id;
-    }),
     query: jest.fn((table: string) =>
       createQueryBuilder(tables, table, readCounter),
     ),
