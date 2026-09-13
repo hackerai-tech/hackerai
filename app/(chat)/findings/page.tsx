@@ -138,6 +138,7 @@ function FindingsPageContent() {
     () => searchParams.get("finding"),
   );
   const selectedFindingTriggerRef = useRef<HTMLAnchorElement | null>(null);
+  const findingsHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
@@ -365,7 +366,13 @@ function FindingsPageContent() {
             <ShieldCheck className="size-4" aria-hidden="true" />
           </div>
           <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold text-foreground">Findings</h1>
+            <h1
+              ref={findingsHeadingRef}
+              tabIndex={-1}
+              className="text-lg font-semibold text-foreground"
+            >
+              Findings
+            </h1>
             <p className="hidden text-xs text-muted-foreground sm:block">
               Confirmed vulnerabilities, evidence, and remediation guidance
             </p>
@@ -708,6 +715,14 @@ function FindingsPageContent() {
                               findingId: finding.finding_id,
                             })}
                             prefetch={false}
+                            ref={(element) => {
+                              if (
+                                element &&
+                                selectedFindingId === finding.finding_id
+                              ) {
+                                selectedFindingTriggerRef.current = element;
+                              }
+                            }}
                             onClick={(event) => {
                               if (
                                 event.button !== 0 ||
@@ -848,9 +863,12 @@ function FindingsPageContent() {
             overlayClassName="bg-black/60 backdrop-blur-sm"
             aria-describedby={undefined}
             onCloseAutoFocus={(event) => {
-              event.preventDefault();
-              if (selectedFindingTriggerRef.current?.isConnected) {
-                selectedFindingTriggerRef.current.focus();
+              const target = selectedFindingTriggerRef.current?.isConnected
+                ? selectedFindingTriggerRef.current
+                : findingsHeadingRef.current;
+              if (target?.isConnected) {
+                event.preventDefault();
+                target.focus();
               }
             }}
             className="inset-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-none border-0 p-0 shadow-none sm:inset-auto sm:top-1/2 sm:left-1/2 sm:h-[calc(100dvh-3rem)] sm:w-[calc(100vw-3rem)] sm:max-w-6xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:border sm:shadow-2xl"

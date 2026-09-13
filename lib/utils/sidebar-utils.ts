@@ -12,6 +12,7 @@ import {
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
 import {
+  createFindingFailureContent,
   createToolInputErrorContent,
   isToolInputValidationError,
 } from "@/lib/chat/tool-error-display";
@@ -857,15 +858,20 @@ export function extractSidebarContentFromMessage(
 
     if (
       part.type === "tool-create_vulnerability_report" &&
-      part.state === "output-available"
+      (part.state === "output-available" || part.state === "output-error")
     ) {
       const result = part.output?.result ?? part.output;
       if (
+        part.state === "output-available" &&
         result?.success === true &&
         typeof result.finding_id === "string" &&
+        result.finding_id &&
         typeof result.title === "string" &&
+        result.title &&
         typeof result.target === "string" &&
+        result.target &&
         typeof result.severity === "string" &&
+        result.severity &&
         typeof result.cvss_score === "number"
       ) {
         contentList.push({
@@ -878,6 +884,25 @@ export function extractSidebarContentFromMessage(
           isExecuting: false,
           toolCallId: part.toolCallId || "",
         });
+      } else if (!(
+        result?.success === false &&
+        result.error === "duplicate" &&
+        part.state === "output-available"
+      )) {
+        contentList.push(
+          createFindingFailureContent({
+            toolCallId: part.toolCallId || "",
+            reason:
+              part.state === "output-error"
+                ? "general"
+                : result?.success === false
+                  ? result.error === "validation" ||
+                    result.error === "chat_not_found"
+                    ? result.error
+                    : "general"
+                  : "invalid_result",
+          }),
+        );
       }
     }
   });

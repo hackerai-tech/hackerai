@@ -262,6 +262,59 @@ describe("terminal sidebar output", () => {
     },
   );
 
+  it.each([
+    { state: "output-error", errorText: "private transport failure" },
+    {
+      state: "output-available",
+      output: { success: false, error: "general", message: "private failure" },
+    },
+    {
+      state: "output-available",
+      output: { result: { success: false, error: "chat_not_found" } },
+    },
+    {
+      state: "output-available",
+      output: { success: true, finding_id: "incomplete" },
+    },
+  ])(
+    "retains synthesized finding errors for sidebar navigation: %j",
+    (part) => {
+      const contents = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-create_vulnerability_report",
+            toolCallId: "finding-failure",
+            ...part,
+          },
+        ],
+      });
+      expect(contents).toHaveLength(1);
+      expect(contents[0]).toMatchObject({
+        kind: "tool-error",
+        toolCallId: "finding-failure",
+        isExecuting: false,
+      });
+      expect(JSON.stringify(contents)).not.toContain("private");
+    },
+  );
+
+  it("does not offer sidebar details for duplicate finding rejections", () => {
+    expect(
+      extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-create_vulnerability_report",
+            toolCallId: "duplicate",
+            state: "output-available",
+            output: { success: false, error: "duplicate" },
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
   it("keeps dynamic tool parameter failures visible without copying payloads", () => {
     const [error] = extractSidebarContentFromMessage({
       role: "assistant",

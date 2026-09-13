@@ -343,7 +343,7 @@ describe("FindingsPage", () => {
     expect(window.location.search).toBe("");
   });
 
-  it("opens a finding directly from the URL", () => {
+  it("opens a finding directly from the URL and restores its row focus", async () => {
     mockSearchParams.set("finding", "finding-1");
     window.history.replaceState({}, "", "/findings?finding=finding-1");
 
@@ -357,6 +357,33 @@ describe("FindingsPage", () => {
     expect(mockCapture).toHaveBeenCalledWith("finding_viewed", {
       surface: "findings_page",
     });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("link", { name: /Confirmed IDOR/i }),
+      ).toHaveFocus(),
+    );
+  });
+
+  it("focuses the workspace heading when a URL-opened finding is not in the list", async () => {
+    mockSearchParams.set("finding", "finding-1");
+    window.history.replaceState({}, "", "/findings?finding=finding-1");
+    mockUsePaginatedQuery.mockReturnValue({
+      results: [],
+      status: "Exhausted",
+      loadMore: jest.fn(),
+    });
+    render(<Page />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close vulnerability report" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "Findings", exact: true }),
+      ).toHaveFocus(),
+    );
   });
 
   it("keeps a full-screen mobile close path and restores list focus", async () => {

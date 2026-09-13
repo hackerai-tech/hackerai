@@ -378,6 +378,7 @@ describe("ComputerSidebar reconnect behavior", () => {
     const toolError = createToolInputErrorContent({
       toolType: "tool-create_vulnerability_report",
       toolCallId: "finding-error",
+      errorText: rawError,
     });
 
     render(
