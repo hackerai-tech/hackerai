@@ -7,9 +7,21 @@ import { cn } from "@/lib/utils";
 import { buttonVariants } from "@/components/ui/button";
 
 function AlertDialog({
+  pending = false,
+  onOpenChange,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
-  return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />;
+}: React.ComponentProps<typeof AlertDialogPrimitive.Root> & {
+  pending?: boolean;
+}) {
+  return (
+    <AlertDialogPrimitive.Root
+      data-slot="alert-dialog"
+      {...props}
+      onOpenChange={(open) => {
+        if (!pending) onOpenChange?.(open);
+      }}
+    />
+  );
 }
 
 function AlertDialogTrigger({

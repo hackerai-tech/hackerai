@@ -1,5 +1,6 @@
 "use client";
 
+import { useDeletionConfirmation } from "@/app/hooks/useDeletionConfirmation";
 import { useState } from "react";
 import { toast } from "sonner";
 import type { Doc } from "@/convex/_generated/dataModel";
@@ -26,6 +27,7 @@ export function ProjectDeleteDialog({
   open,
   onOpenChange,
 }: ProjectDeleteDialogProps) {
+  const confirmDeletion = useDeletionConfirmation();
   const deleteProject = useDeleteProject();
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -38,7 +40,11 @@ export function ProjectDeleteDialog({
     if (isDeleting) return;
     setIsDeleting(true);
     try {
-      await deleteProject({ projectId: project._id });
+      await confirmDeletion(
+        () => deleteProject({ projectId: project._id }),
+        { projectId: project._id },
+        "Deleting project…",
+      );
       toast.success("Project deleted");
       onOpenChange(false);
     } catch (error) {

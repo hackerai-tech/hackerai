@@ -109,6 +109,19 @@ const validationConfidenceValidator = v.union(
 );
 
 export default defineSchema({
+  pendingFileDeletions: defineTable({
+    s3_region: v.optional(v.string()),
+    s3_bucket: v.optional(v.string()),
+    user_id: v.string(),
+    chat_id: v.optional(v.string()),
+    file_id: v.id("files"),
+    s3_key: v.string(),
+    scheduled_function_id: v.optional(v.id("_scheduled_functions")),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_user_chat", ["user_id", "chat_id"])
+    .index("by_file", ["file_id"]),
+
   projects: defineTable({
     user_id: v.string(),
     name: v.string(),

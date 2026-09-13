@@ -27,6 +27,30 @@ describe("FileUploadPreview generated pasted text attachments", () => {
     jest.useRealTimers();
   });
 
+  it("shows file removal progress and blocks duplicate requests", async () => {
+    let finish!: () => void;
+    const onRemoveFile = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    render(
+      <FileUploadPreview
+        uploadedFiles={[createGeneratedTextUpload("Test file")]}
+        onRemoveFile={onRemoveFile}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove file" }));
+    expect(
+      screen.getByRole("button", { name: "Removing file" }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Removing file" }));
+    expect(onRemoveFile).toHaveBeenCalledTimes(1);
+    await act(async () => finish());
+    expect(screen.getByRole("button", { name: "Remove file" })).toBeEnabled();
+  });
+
   it("renders a compact Codex-style text-file card", () => {
     const onShowGeneratedTextInField = jest.fn();
     render(

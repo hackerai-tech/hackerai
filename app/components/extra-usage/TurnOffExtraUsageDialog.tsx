@@ -24,8 +24,13 @@ const TurnOffExtraUsageDialog = ({
   isLoading,
 }: TurnOffExtraUsageDialogProps) => {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        if (!isLoading) onOpenChange(value);
+      }}
+    >
+      <DialogContent showCloseButton={!isLoading} className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Turn off extra usage?</DialogTitle>
         </DialogHeader>

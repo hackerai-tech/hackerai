@@ -23,6 +23,7 @@ jest.mock("convex/values", () => ({
 jest.mock("../_generated/api", () => ({
   internal: {
     s3Cleanup: {
+      deleteTrackedS3Object: "deleteTrackedS3Object",
       deleteS3ObjectsBatchAction: "deleteS3ObjectsBatchAction",
     },
   },
@@ -832,8 +833,8 @@ describe("userDeletion", () => {
     );
     expect(scheduler.runAfter).toHaveBeenCalledWith(
       0,
-      "deleteS3ObjectsBatchAction",
-      { s3Keys: ["users/user_123/file.pdf"] },
+      "deleteTrackedS3Object",
+      { deletionId: expect.any(String) },
     );
 
     expect(deletedIds.indexOf("feedback-user")).toBeLessThan(
@@ -1275,8 +1276,8 @@ describe("userDeletion", () => {
 
     expect(scheduler.runAfter).toHaveBeenCalledWith(
       0,
-      "deleteS3ObjectsBatchAction",
-      { s3Keys: ["users/user_123/file.pdf"] },
+      "deleteTrackedS3Object",
+      { deletionId: expect.any(String) },
     );
   });
 

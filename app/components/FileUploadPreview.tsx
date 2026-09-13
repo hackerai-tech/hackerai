@@ -42,6 +42,10 @@ export const FileUploadPreview = ({
   onShowGeneratedTextInField,
   generatedTextAttachmentsAvailable = true,
 }: FileUploadPreviewProps) => {
+  const [removingFile, setRemovingFile] = useState<
+    File | LocalDesktopFile | null
+  >(null);
+  const removalPendingRef = useRef(false);
   const [filePreviews, setFilePreviews] = useState<FilePreview[]>([]);
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
@@ -157,8 +161,11 @@ export const FileUploadPreview = ({
   );
 
   const handleRemoveUploadedFile = useCallback(
-    (index: number) => {
+    async (index: number) => {
+      if (removalPendingRef.current) return;
+      removalPendingRef.current = true;
       const removedFile = uploadedFiles[index]?.file;
+      setRemovingFile(removedFile ?? null);
       if (removedFile) {
         setSelectedFile((current) =>
           current?.file === removedFile ? null : current,
@@ -173,7 +180,12 @@ export const FileUploadPreview = ({
         hasPendingTextSaveRef.current = false;
         setHasPendingTextSave(false);
       }
-      onRemoveFile(index);
+      try {
+        await onRemoveFile(index);
+      } finally {
+        removalPendingRef.current = false;
+        setRemovingFile(null);
+      }
     },
     [
       clearTextSaveTimeout,
@@ -250,7 +262,6 @@ export const FileUploadPreview = ({
     if (uploadedFiles && uploadedFiles.length > 0) {
       loadPreviews();
     } else {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFilePreviews([]);
       // Don't clear cache when no files - we might get the same files back
     }
@@ -563,10 +574,19 @@ export const FileUploadPreview = ({
                       variant="secondary"
                       size="sm"
                       className="transition-colors flex h-6 w-6 items-center justify-center rounded-full border-[rgba(0,0,0,0.1)] bg-black text-white dark:border-[rgba(255,255,255,0.1)] dark:bg-white dark:text-black p-0"
-                      aria-label="Remove file"
+                      disabled={removingFile !== null}
+                      aria-label={
+                        removingFile === filePreview.file
+                          ? "Removing file"
+                          : "Remove file"
+                      }
                       data-testid="remove-file"
                     >
-                      <X className="h-3 w-3" />
+                      {removingFile === filePreview.file ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <X className="h-3 w-3" />
+                      )}
                     </Button>
                   </div>
                 </div>

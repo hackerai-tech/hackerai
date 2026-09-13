@@ -1,6 +1,6 @@
+import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { mutation, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
 import { validateServiceKey } from "./lib/utils";
@@ -8,6 +8,8 @@ import { DELETION_COORDINATED_RESUME_CLAIM_VERSION } from "./lib/subscriptionPau
 
 export const DELETED_USER_ID = "__deleted_user__";
 
+// pendingFileDeletions receipts remain until storage confirms cleanup; the
+// account API checks them before removing the external identity.
 export const USER_DELETION_TABLE_POLICY = {
   delete: [
     "projects",
@@ -331,24 +333,9 @@ async function deleteFiles(
   if (mode === "dryRun") return;
 
   for (const file of unique) {
+    await scheduleFileDeletion(ctx, file);
     await fileCountAggregate.deleteIfExists(ctx, file);
     await ctx.db.delete(file._id);
-  }
-
-  if (s3Objects.length > 0) {
-    const cleanupArgs = s3Objects.some(
-      (object) => object.s3Region || object.s3Bucket,
-    )
-      ? { s3Objects }
-      : { s3Keys: s3Objects.map((object) => object.s3Key) };
-    await ctx.scheduler.runAfter(
-      0,
-      internal.s3Cleanup.deleteS3ObjectsBatchAction,
-      cleanupArgs,
-    );
-    console.log(
-      `Scheduled deletion of ${s3Objects.length} S3 objects for deleted user data cleanup`,
-    );
   }
 }
 

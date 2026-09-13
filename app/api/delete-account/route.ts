@@ -28,6 +28,8 @@ type MembershipDeletionPlan = {
   blockReason?: string;
 };
 
+import { waitForDeletion } from "@/lib/utils/wait-for-deletion";
+
 const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
 const MAX_CONVEX_ORGANIZATION_CLEANUP_BATCHES = 50;
 
@@ -95,15 +97,7 @@ function parseConvexCleanupResult(result: unknown): ParsedConvexCleanupResult {
 }
 
 async function removeMembership(membership: OrganizationMembership) {
-  try {
-    await workos.userManagement.deleteOrganizationMembership(membership.id);
-  } catch (memErr) {
-    console.error(
-      "Failed to delete organization membership:",
-      membership.id,
-      memErr,
-    );
-  }
+  await workos.userManagement.deleteOrganizationMembership(membership.id);
 }
 
 async function getMembershipDeletionPlan(
@@ -160,12 +154,10 @@ async function getMembershipDeletionPlan(
         isSoleActiveMember && isAdmin && !hasPendingInvitation,
     };
   } catch (e) {
-    console.warn(
-      "Failed to verify organization membership count; removing membership only:",
-      membership.organizationId,
-      e,
+    throw new Error(
+      "Could not verify organization membership. Please try again.",
+      { cause: e },
     );
-    return { membership, deleteOrganization: false };
   }
 }
 
@@ -233,6 +225,14 @@ async function deleteConvexUserData(
     }
 
     if (!parsedResult.hasMore) {
+      await waitForDeletion(
+        () =>
+          convex.query(api.deletions.getStatusForBackend, {
+            serviceKey,
+            userId,
+          }),
+        20_000,
+      );
       return true;
     }
   }
@@ -428,7 +428,7 @@ export const POST = async (req: NextRequest) => {
     // and identity resources after proving this user is the sole active admin.
     stage = "delete_memberships_and_organizations";
     await assertMembershipLocksOwned();
-    await Promise.all(
+    const organizationResults = await Promise.allSettled(
       membershipDeletionPlans.map(
         async ({ membership, deleteOrganization }) => {
           const orgId = membership.organizationId;
@@ -438,46 +438,28 @@ export const POST = async (req: NextRequest) => {
             return;
           }
 
-          // Load organization to get Stripe customer ID if present
-          let org: any = null;
-          try {
-            org = await workos.organizations.getOrganization(orgId);
-          } catch (e) {
-            console.warn("Failed to load organization:", orgId, e);
-          }
-
-          const stripeCustomerId: string | undefined = org?.stripeCustomerId;
-
-          // Cancel all subscriptions for the Stripe customer (no status checks), then delete the customer
+          // Confirm owned billing and identity deletion before reporting success.
+          const org = await workos.organizations.getOrganization(orgId);
+          const stripeCustomerId = org.stripeCustomerId;
           if (stripeCustomerId) {
-            const subs = await stripe.subscriptions.list({
-              customer: stripeCustomerId,
-              status: "all",
-              limit: 100,
-            });
-
-            // Cancel subscriptions, continue on failures
-            for (const sub of subs.data) {
-              try {
-                await stripe.subscriptions.cancel(sub.id as string);
-              } catch (subErr) {
-                console.warn(
-                  "Failed to cancel subscription, continuing:",
-                  sub.id,
-                  subErr,
-                );
+            // Deleting a customer can precede a failed org deletion. Retrieval
+            // distinguishes that completed stage when the user retries.
+            const customer = await stripe.customers.retrieve(stripeCustomerId);
+            if (!customer.deleted) {
+              const subs = await stripe.subscriptions.list({
+                customer: stripeCustomerId,
+                status: "all",
+                limit: 100,
+              });
+              for (const sub of subs.data) {
+                if (
+                  sub.status === "canceled" ||
+                  sub.status === "incomplete_expired"
+                )
+                  continue;
+                await stripe.subscriptions.cancel(sub.id);
               }
-            }
-
-            // Delete the Stripe customer after cancellations
-            try {
               await stripe.customers.del(stripeCustomerId);
-            } catch (custErr) {
-              console.error(
-                "Failed to delete Stripe customer:",
-                stripeCustomerId,
-                custErr,
-              );
             }
           }
 
@@ -487,20 +469,18 @@ export const POST = async (req: NextRequest) => {
             assertMembershipLocksOwned,
           );
 
-          // Delete the WorkOS organization only for verified single-member orgs.
-          try {
-            await workos.organizations.deleteOrganization(orgId);
-          } catch (orgDeleteErr) {
-            console.warn(
-              "Failed to delete organization, removing membership instead:",
-              orgId,
-              orgDeleteErr,
-            );
-            await removeMembership(membership);
-          }
+          await workos.organizations.deleteOrganization(orgId);
         },
       ),
     );
+
+    // Keep membership locks held until every concurrent cleanup has stopped.
+    const organizationFailure = organizationResults.find(
+      (result) => result.status === "rejected",
+    );
+    if (organizationFailure?.status === "rejected") {
+      throw organizationFailure.reason;
+    }
 
     // Purge Redis rate-limit keys. Best-effort: WorkOS user deletion proceeds
     // even if this fails so the account is not left in a half-deleted state.

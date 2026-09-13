@@ -1,3 +1,4 @@
+import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -248,38 +249,19 @@ async function deleteMessageForChatDeletion(
   ctx: MutationCtx,
   message: Doc<"messages">,
 ) {
-  // Skip deleting files for copied messages (they reference original chat files)
+  // Copied messages reference the original task's files.
   if (!message.source_message_id && message.file_ids?.length) {
     for (const fileId of message.file_ids) {
-      try {
-        const file = await ctx.db.get(fileId);
-        if (file) {
-          if (file.s3_key) {
-            await ctx.scheduler.runAfter(
-              0,
-              internal.s3Cleanup.deleteS3ObjectAction,
-              {
-                s3Key: file.s3_key,
-                ...(file.s3_region ? { s3Region: file.s3_region } : {}),
-                ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
-              },
-            );
-          }
-          await fileCountAggregate.deleteIfExists(ctx, file);
-          await ctx.db.delete(file._id);
-        }
-      } catch (error) {
-        console.error(`Failed to delete file ${fileId}:`, error);
+      const file = await ctx.db.get(fileId);
+      if (file) {
+        await scheduleFileDeletion(ctx, file, message.chat_id);
+        await fileCountAggregate.deleteIfExists(ctx, file);
+        await ctx.db.delete(file._id);
       }
     }
   }
-
-  if (message.feedback_id) {
-    try {
-      await ctx.db.delete(message.feedback_id);
-    } catch (error) {
-      console.error(`Failed to delete feedback ${message.feedback_id}:`, error);
-    }
+  if (message.feedback_id && (await ctx.db.get(message.feedback_id))) {
+    await ctx.db.delete(message.feedback_id);
   }
 
   await ctx.db.delete(message._id);
@@ -371,13 +353,8 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   }
 
   if (chat.latest_summary_id) {
-    try {
+    if (await ctx.db.get(chat.latest_summary_id)) {
       await ctx.db.delete(chat.latest_summary_id);
-    } catch (error) {
-      console.error(
-        `Failed to delete summary ${chat.latest_summary_id}:`,
-        error,
-      );
     }
     await ctx.db.patch(chat._id, { latest_summary_id: undefined });
   }
@@ -392,12 +369,7 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     0,
     DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE,
   )) {
-    try {
-      await ctx.db.delete(summary._id);
-    } catch (error) {
-      console.error(`Failed to delete summary ${summary._id}:`, error);
-      // Continue with deletion even if summary cleanup fails
-    }
+    await ctx.db.delete(summary._id);
   }
 
   if (summaries.length > DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE) {
@@ -442,11 +414,7 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
 
   if (summaries.length > 0) {
     for (const summary of summaries) {
-      try {
-        await ctx.db.delete(summary._id);
-      } catch (error) {
-        console.error(`Failed to delete summary ${summary._id}:`, error);
-      }
+      await ctx.db.delete(summary._id);
     }
 
     await scheduleDeleteAllChatsBatch(ctx, userId);

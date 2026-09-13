@@ -1,3 +1,4 @@
+import { useDeletionConfirmation } from "@/app/hooks/useDeletionConfirmation";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { useMutation, useAction } from "convex/react";
@@ -178,6 +179,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   // Track last shown rate limit warning to avoid spamming (show once per minute max)
   const lastRateLimitWarningRef = useRef<number>(0);
 
+  const confirmDeletion = useDeletionConfirmation();
+  const removingFilesRef = useRef(new Set<object>());
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
   const generateS3UploadUrlAction = useAction(
@@ -916,38 +919,50 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   };
 
   const handleRemoveFile = async (indexToRemove: number) => {
-    const uploadedFile = uploadedFiles[indexToRemove];
-
-    // Persisted uploads are stored in S3; local desktop files stay on-device.
-    if (uploadedFile?.fileId && uploadedFile.storage !== "local-desktop") {
-      try {
-        await deleteFile({
-          fileId: uploadedFile.fileId as Id<"files">,
-        });
-      } catch (error) {
-        console.error("Failed to delete file from storage:", error);
-        toast.error("Failed to delete file from storage");
+    const uploadedFile = uploadedFilesRef.current[indexToRemove];
+    if (!uploadedFile || removingFilesRef.current.has(uploadedFile.file))
+      return;
+    removingFilesRef.current.add(uploadedFile.file);
+    try {
+      if (uploadedFile.fileId && uploadedFile.storage !== "local-desktop") {
+        const fileId = uploadedFile.fileId as Id<"files">;
+        await confirmDeletion(
+          () => deleteFile({ fileId }),
+          { fileId },
+          "Removing file…",
+        );
       }
-    }
-
-    if (
-      uploadedFile?.storage === "local-desktop" &&
-      uploadedFile.generatedSource === "pasted-text"
-    ) {
-      const generatedTextAttachmentId =
-        uploadedFile.generatedTextAttachment?.id ||
-        uploadedFile.generatedTextAttachmentId ||
-        uploadedFile.localAttachmentId;
-      if (generatedTextAttachmentId) {
-        removeGeneratedTextAttachment(
-          generatedTextAttachmentId,
-          uploadedFile.file.name,
-        ).catch(console.error);
+      if (
+        uploadedFile.storage === "local-desktop" &&
+        uploadedFile.generatedSource === "pasted-text"
+      ) {
+        const attachmentId =
+          uploadedFile.generatedTextAttachment?.id ||
+          uploadedFile.generatedTextAttachmentId ||
+          uploadedFile.localAttachmentId;
+        if (attachmentId && isTauriEnvironment()) {
+          const removed = await removeGeneratedTextAttachment(
+            attachmentId,
+            uploadedFile.file.name,
+          );
+          if (!removed)
+            throw new Error("Failed to remove pasted text attachment");
+        }
       }
+      const currentIndex = uploadedFilesRef.current.findIndex(
+        (item) => item.file === uploadedFile.file,
+      );
+      if (currentIndex !== -1) removeUploadedFile(currentIndex);
+    } catch (error) {
+      console.error("Failed to delete file from storage:", error);
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to delete file from storage",
+      );
+    } finally {
+      removingFilesRef.current.delete(uploadedFile.file);
     }
-
-    // removeUploadedFile in GlobalState will automatically handle token removal
-    removeUploadedFile(indexToRemove);
   };
 
   const handleUpdateGeneratedTextFile = useCallback(
