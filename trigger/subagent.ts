@@ -3,6 +3,10 @@ import {
   evidenceWarningText,
   type CheckedSubagentResult,
 } from "@/lib/ai/subagents/evidence-references";
+import {
+  loadObjectiveCheckpoint,
+  objectiveCheckpointEnabledForChild,
+} from "@/lib/db/objective-checkpoint";
 import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   logger as triggerLogger,
@@ -70,7 +74,10 @@ import {
   resolveSubagentModelForImageToolResults,
   resolveSubagentTextModel,
 } from "@/lib/ai/subagents/model-routing";
-import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
+import {
+  assertSubagentSandboxIdentity,
+  getSubagentSandboxIdentity,
+} from "@/lib/ai/subagents/sandbox-identity";
 import {
   assertSubagentRuntimeAuthorized,
   guardSubagentToolExecutions,
@@ -672,6 +679,22 @@ export const subagentTask = task({
               runtimeStage = "result_validation";
               resultSubmissionAttempts += 1;
               const parsed = profile.finalResultTool.schema.parse(input);
+              if (objectiveCheckpoint?.state.blocker) {
+                if ("task_status" in parsed) {
+                  parsed.task_status =
+                    objectiveCheckpoint.state.lastObservation ||
+                    objectiveCheckpoint.state.actions.some(
+                      (a) => a.state === "completed",
+                    )
+                      ? "partial"
+                      : "blocked";
+                }
+                parsed.limitations = [
+                  ...parsed.limitations.slice(0, 7),
+                  objectiveCheckpoint.state.blocker.slice(0, 500),
+                ];
+              }
+
               if (
                 Buffer.byteLength(JSON.stringify(parsed), "utf8") >
                 profile.finalResultTool.maxBytes
@@ -823,7 +846,7 @@ export const subagentTask = task({
                 triggerRegion,
               },
             );
-            const tools = guardSubagentToolExecutions(
+            const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
               {
@@ -843,6 +866,24 @@ export const subagentTask = task({
             const sandbox = await ensureSandbox();
             runtimeStage = "sandbox_identity_validation";
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
+            const checkpointOwner = {
+              userId: row.user_id,
+              chatId: row.chat_id,
+              triggerRunId: ctx.run.id,
+              subagentId: row.subagent_id,
+            };
+            const objectiveCheckpoint =
+              (await objectiveCheckpointEnabledForChild(checkpointOwner))
+                ? await loadObjectiveCheckpoint({
+                    ...checkpointOwner,
+                    environment: async () =>
+                      getSubagentSandboxIdentity(await ensureSandbox()),
+                    signal: activeAbort.signal,
+                    allowFollowUp: !!row.continuation_count,
+                  })
+                : undefined;
+            const tools =
+              objectiveCheckpoint?.wrap(authorizedTools) ?? authorizedTools;
 
             const provider = createTrackedProvider();
             const getGuardedLanguageModel = (
@@ -1177,7 +1218,17 @@ export const subagentTask = task({
                     12_000,
                     2_000,
                   );
+                  const checkpointRestriction =
+                    objectiveCheckpoint?.restriction(tools);
+                  if (checkpointRestriction)
+                    compacted.messages.push({
+                      role: "user",
+                      content: checkpointRestriction.instruction,
+                    });
                   return {
+                    ...(checkpointRestriction && !structuredResultRecovery
+                      ? { activeTools: checkpointRestriction.activeTools }
+                      : {}),
                     model: getGuardedLanguageModel(
                       activeModelName,
                       generationAttempt,
@@ -1219,6 +1270,14 @@ export const subagentTask = task({
                     spendCapExceeded = true;
                     activeAbort.abort();
                   }
+                  await objectiveCheckpoint?.recordSpend(
+                    usageTracker.computeCostDollars(
+                      selectedModel,
+                      responseModel,
+                    ) +
+                      resolveTriggerRunCost(triggerUsage.getCurrent())
+                        .totalCostDollars,
+                  );
                 },
               });
 

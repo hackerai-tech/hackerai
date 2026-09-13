@@ -1,3 +1,7 @@
+import {
+  objectiveCheckpointSchema,
+  summarizeObjectiveCheckpoint,
+} from "@/lib/chat/objective-checkpoint";
 import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   idempotencyKeys,
@@ -742,6 +746,13 @@ export const createListAgentsTool = (context: ToolContext) =>
         work_ledger: work_ledger.map((item) => ({
           agent_id: toSubagentHandle(item.subagent_id),
           owner: item.owner,
+          objective_checkpoint: item.objective_checkpoint
+            ? summarizeObjectiveCheckpoint(
+                objectiveCheckpointSchema.parse(
+                  JSON.parse(item.objective_checkpoint),
+                ),
+              )
+            : undefined,
           status: item.status,
           dependencies: item.dependencies,
           refs: item.refs,

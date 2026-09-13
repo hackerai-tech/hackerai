@@ -512,6 +512,7 @@ export const getChatByIdFromClient = query({
       const {
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
+        objective_checkpoint: _privateObjectiveCheckpoint,
         ...chatPublic
       } = chat;
 
@@ -614,7 +615,11 @@ export const getChatById = query({
 
       // Drop legacy codex_thread_id from the response — preserved on the row
       // for old data but not exposed to callers.
-      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+      const {
+        codex_thread_id: _legacy,
+        objective_checkpoint: _privateObjectiveCheckpoint,
+        ...chatPublic
+      } = chat;
       return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id (backend):", error);
@@ -1085,22 +1090,24 @@ export const getUserChats = query({
       );
 
       // Step 4: Enhance chats using the map
-      const enhancedChats = combinedPage.map((chat) => {
-        if (chat.branched_from_chat_id) {
-          const branchedFromChat = branchedChatMap.get(
-            chat.branched_from_chat_id,
-          );
-          return {
-            ...chat,
-            branched_from_title: resolveBranchedFromTitle(
-              chat,
-              branchedFromChat,
-              identity.subject,
-            ),
-          };
-        }
-        return chat;
-      });
+      const enhancedChats = combinedPage.map(
+        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => {
+          if (chat.branched_from_chat_id) {
+            const branchedFromChat = branchedChatMap.get(
+              chat.branched_from_chat_id,
+            );
+            return {
+              ...chat,
+              branched_from_title: resolveBranchedFromTitle(
+                chat,
+                branchedFromChat,
+                identity.subject,
+              ),
+            };
+          }
+          return chat;
+        },
+      );
 
       return {
         ...result,

@@ -747,15 +747,17 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
               />
             </div>
 
-            <div className="mt-8 flex justify-center">
-              <Button
-                variant="secondary"
-                className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
-                onClick={handleTeamClick}
-              >
-                View Team Plans
-              </Button>
-            </div>
+            {!hasSubscription && (
+              <div className="mt-8 flex justify-center">
+                <Button
+                  variant="secondary"
+                  className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
+                  onClick={handleTeamClick}
+                >
+                  View Team Plans
+                </Button>
+              </div>
+            )}
 
             <p className="text-muted-foreground mx-auto mt-8 max-w-[88rem] text-center text-xs">
               Learn how we handle your data on our{" "}
