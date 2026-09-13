@@ -387,9 +387,9 @@ export type SubagentStructuredResult =
 
 // Server-owned metadata; deliberately absent from model submission schemas.
 export const evidenceVerificationSchema = z.object({
-  checked_refs: z.array(z.string().max(500)).max(40),
-  unavailable_refs: z.array(z.string().max(500)).max(40),
-  warning: z.string().max(500).optional(),
+  checked_refs: z.array(z.string().trim().min(1).max(500)).max(40),
+  unavailable_refs: z.array(z.string().trim().min(1).max(500)).max(40),
+  warning: z.string().trim().min(1).max(500).optional(),
 });
 export type EvidenceVerification = z.infer<typeof evidenceVerificationSchema>;
 export const agentValidationResultSchema = z.object({

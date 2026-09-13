@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnySandbox } from "@/types";
 import {
+  evidenceVerificationSchema,
   securityValidationResultSchema,
   securityTaskResultSchema,
   type SubagentStructuredResult,
@@ -295,6 +296,19 @@ describe("saved evidence verification", () => {
         evidence_verification: { checked_refs: ["fake"] },
       }),
     ).not.toHaveProperty("evidence_verification");
+  });
+  it("rejects blank saved evidence metadata while allowing empty lists", () => {
+    const empty = { checked_refs: [], unavailable_refs: [] };
+    expect(evidenceVerificationSchema.safeParse(empty).success).toBe(true);
+    for (const metadata of [
+      { ...empty, checked_refs: [" "] },
+      { ...empty, unavailable_refs: ["\t"] },
+      { ...empty, warning: " " },
+    ]) {
+      expect(evidenceVerificationSchema.safeParse(metadata).success).toBe(
+        false,
+      );
+    }
   });
   it("checks real files deterministically without reading payloads or shell-interpolating paths", async () => {
     const dir = mkdtempSync(join(tmpdir(), "evidence-check-"));
