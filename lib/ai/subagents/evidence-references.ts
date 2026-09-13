@@ -28,7 +28,9 @@ export function evidenceFilePath(ref: string): string | undefined {
   if (!path || /[\x00-\x1f]/.test(path) || /^[a-z]+:\/\//i.test(path))
     return undefined;
   // Existing static citations use file:src/auth.ts:42; check the file, not the line.
-  return path.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)$/, "");
+  return ref.startsWith("file:")
+    ? path.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L?\d+)?)$/, "")
+    : path;
 }
 
 const permissionDenied = (error: unknown): boolean => {
