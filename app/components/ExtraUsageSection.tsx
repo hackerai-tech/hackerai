@@ -118,6 +118,12 @@ const ExtraUsageSection = () => {
         amountDollars,
         baseUrl: window.location.origin,
         checkoutAttemptId,
+        // Return to the stopped chat so its live balance can offer Continue.
+        // The pathname avoids forwarding transient checkout or pricing flags.
+        returnPath:
+          window.location.pathname.length <= 400
+            ? window.location.pathname
+            : "/",
       });
 
       if (result.url) {
