@@ -97,6 +97,7 @@ export {
 } from "./free-monthly-cost";
 export {
   getPaidDailyFreeAllowanceStatus,
+  hasPaidDailyFreeAllowanceConsent,
   reservePaidDailyFreeAllowanceRequest,
   recordPaidDailyFreeAllowanceCost,
   paidDailyFreeAllowanceStatusToMetadata,
