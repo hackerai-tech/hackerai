@@ -388,30 +388,52 @@ export async function ensureMiosaSandboxConnection(
     }
   }
   const sdkSandbox = await step("get_or_create", () =>
-    client.sandboxes.getOrCreate({
-      name: workspaceName,
-      templateId,
-      cpuCount: MIOSA_CPU_COUNT,
-      memoryMb: MIOSA_MEMORY_MB,
-      diskSizeMb: MIOSA_DISK_SIZE_MB,
-      persistent: true,
-      timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
-      idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
-      snapshotExpirationDays: MIOSA_SNAPSHOT_EXPIRATION_DAYS,
-      keepLastSnapshots: 1,
-      externalWorkspaceId: externalUserId,
-      externalUserId,
-      waitUntilReady: false,
-      tags: [
-        identity.userReference,
-        `hackerai-environment-${identity.environment}`,
-      ],
-      metadata: {
-        provider: "hackerai",
-        sandboxVersion: MIOSA_SANDBOX_VERSION,
-        ...identity,
-      },
-    }),
+    client.sandboxes
+      .getOrCreate({
+        name: workspaceName,
+        templateId,
+        cpuCount: MIOSA_CPU_COUNT,
+        memoryMb: MIOSA_MEMORY_MB,
+        diskSizeMb: MIOSA_DISK_SIZE_MB,
+        persistent: true,
+        timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
+        idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
+        snapshotExpirationDays: MIOSA_SNAPSHOT_EXPIRATION_DAYS,
+        keepLastSnapshots: 1,
+        externalWorkspaceId: externalUserId,
+        externalUserId,
+        waitUntilReady: false,
+        tags: [
+          identity.userReference,
+          `hackerai-environment-${identity.environment}`,
+        ],
+        metadata: {
+          provider: "hackerai",
+          sandboxVersion: MIOSA_SANDBOX_VERSION,
+          ...identity,
+        },
+      })
+      .catch(async (error: unknown) => {
+        if (
+          !(error instanceof Error) ||
+          !("code" in error) ||
+          error.code !== "SANDBOX_NOT_PAUSED"
+        )
+          throw error;
+
+        // Another run may have resumed the shared workspace after getOrCreate's
+        // lookup. Re-read that same name, never create a replacement or retry a
+        // destructive/ambiguous lifecycle operation. Readiness still runs below.
+        return step("resume_conflict_refresh", async () => {
+          const current = await client.sandboxes
+            .getByName(workspaceName)
+            .catch(() => {
+              throw error;
+            });
+          if (current.state !== "running") throw error;
+          return current;
+        });
+      }),
   );
   const runtime = miosaRuntimeForTemplate(sdkSandbox.data.template_id);
   await step(

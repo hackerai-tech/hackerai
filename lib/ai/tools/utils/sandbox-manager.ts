@@ -13,7 +13,11 @@ import {
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
-import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
+import {
+  getCloudSandboxProviderForInstance,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+} from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 // One failed initial readiness check plus one failed reconnect is enough to
@@ -26,6 +30,7 @@ export class DefaultSandboxManager implements SandboxManager {
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
+  private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
 
   constructor(
     private userID: string,
@@ -36,7 +41,9 @@ export class DefaultSandboxManager implements SandboxManager {
   ) {
     this.sandbox = initialSandbox || null;
     this.activeCloudProvider =
-      cloudSandboxContext?.provider ?? getCloudSandboxProvider();
+      getCloudSandboxProviderForInstance(this.sandbox) ??
+      cloudSandboxContext?.provider ??
+      getCloudSandboxProvider();
   }
 
   recordHealthFailure(): boolean {
@@ -77,6 +84,7 @@ export class DefaultSandboxManager implements SandboxManager {
   async getSandbox(): Promise<{
     sandbox: AnySandbox;
   }> {
+    if (this.acquisition) return this.acquisition;
     if (this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
@@ -86,12 +94,23 @@ export class DefaultSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox };
     }
 
+    this.acquisition = this.acquireSandbox().finally(() => {
+      this.acquisition = null;
+    });
+    return this.acquisition;
+  }
+
+  private async acquireSandbox(): Promise<{ sandbox: AnySandbox }> {
     const result = await ensureCloudSandboxConnection({
       userId: this.userID,
       setSandbox: this.setSandboxCallback,
       onBoot: this.onBoot,
       initialSandbox: this.sandbox,
-      context: this.cloudSandboxContext,
+      // Reconnect to the provider that actually supplied this run's files.
+      context: {
+        ...this.cloudSandboxContext,
+        provider: this.activeCloudProvider,
+      },
     });
     this.sandbox = result.sandbox;
     this.activeCloudProvider = result.provider;
@@ -105,10 +124,14 @@ export class DefaultSandboxManager implements SandboxManager {
 
   setSandbox(sandbox: AnySandbox): void {
     this.sandbox = sandbox;
+    this.activeCloudProvider =
+      getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
     this.setSandboxCallback(sandbox);
   }
 
   async resetSandbox(_reason?: string): Promise<void> {
+    // Do not let an in-flight acquisition repopulate the cache after reset.
+    await this.acquisition?.catch(() => undefined);
     // E2B is shared per user, so recovery only forgets its SDK connection.
     // Relay sandboxes own a websocket client, which is safe to close while the
     // underlying sandbox continues running.

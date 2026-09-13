@@ -5,6 +5,7 @@ export type MiosaAcquisitionStage =
   | "lookup_existing"
   | "enrollment"
   | "get_or_create"
+  | "resume_conflict_refresh"
   | "readiness"
   | "initialize_runtime";
 
