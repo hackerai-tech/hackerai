@@ -4,21 +4,27 @@ import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
+import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
+import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
+import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
+import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 
-export type SubscriptionCancellationStatus = {
-  hasActiveSubscription: boolean;
-  cancelAtPeriodEnd: boolean;
-  currentPeriodEnd?: number;
-};
+type CurrentSubscriptionStatus = NonNullable<
+  SubscriptionCancellationStatus["subscriptionStatus"]
+>;
 
-function currentPeriodEndMs(subscription: unknown): number | undefined {
-  const currentPeriodEnd = (subscription as { current_period_end?: unknown })
-    .current_period_end;
-  return typeof currentPeriodEnd === "number" &&
-    Number.isFinite(currentPeriodEnd) &&
-    currentPeriodEnd > 0
-    ? currentPeriodEnd * 1000
-    : undefined;
+function isCurrentSubscriptionStatus(
+  status: string,
+): status is CurrentSubscriptionStatus {
+  return ["active", "trialing", "past_due", "unpaid"].includes(status);
+}
+
+function hasCurrentSubscriptionStatus<T extends { status: string }>(
+  subscription: T,
+): subscription is T & { status: CurrentSubscriptionStatus } {
+  return isCurrentSubscriptionStatus(subscription.status);
 }
 
 export default async function getSubscriptionCancellationStatusAction(): Promise<SubscriptionCancellationStatus> {
@@ -49,6 +55,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
+      expand: ["data.items.data.price", "data.schedule"],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
@@ -60,8 +67,8 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     });
     throw error;
   }
-  const currentSubscription = subscriptions.data.find((subscription) =>
-    ["active", "trialing", "past_due", "unpaid"].includes(subscription.status),
+  const currentSubscription = subscriptions.data.find(
+    hasCurrentSubscriptionStatus,
   );
 
   if (!currentSubscription) {
@@ -71,9 +78,58 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     };
   }
 
+  const latestInvoiceId = stripeObjectId(currentSubscription.latest_invoice);
+  const item = currentSubscription.items?.data[0];
+  const price = item?.price;
+  const renewalAmountDollars =
+    price?.unit_amount == null
+      ? undefined
+      : (price.unit_amount * (item.quantity ?? 1)) / 100;
+  const cancelAtPeriodEnd = currentSubscription.cancel_at_period_end === true;
+  const currentPeriodEnd = subscriptionCurrentPeriodEndMs(currentSubscription);
+  const pause = cancelAtPeriodEnd
+    ? subscriptionPauseFromMetadata(currentSubscription.metadata)
+    : null;
+  const pendingChange = await resolvePendingPlanChange(
+    currentSubscription.schedule,
+    price?.id,
+  );
+  const pendingPrice = pendingChange?.price;
   return {
     hasActiveSubscription: true,
-    cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
-    currentPeriodEnd: currentPeriodEndMs(currentSubscription),
+    cancelAtPeriodEnd,
+    currentPeriodEnd,
+    subscriptionStatus: currentSubscription.status,
+    ...(pause && {
+      pause: {
+        months: pause.months,
+        resumeAt: pause.resumeAtMs,
+        ...(currentPeriodEnd && { pauseEffectiveAt: currentPeriodEnd }),
+      },
+    }),
+    ...(pendingChange && {
+      pendingPlanChange: {
+        effectiveAt: pendingChange.effectiveAtMs,
+        ...(pendingPrice?.lookup_key && {
+          targetPlan: pendingPrice.lookup_key,
+          targetTier: planLookupKeyToTier(pendingPrice.lookup_key) ?? undefined,
+        }),
+        ...(typeof pendingPrice?.unit_amount === "number" && {
+          targetAmountDollars: pendingPrice.unit_amount / 100,
+        }),
+        ...(pendingPrice?.currency && { currency: pendingPrice.currency }),
+      },
+    }),
+    ...(latestInvoiceId && { latestInvoiceId }),
+    ...(price?.id && { stripePriceId: price.id }),
+    ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
+    ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),
+    ...(price?.currency && { renewalCurrency: price.currency }),
+    ...(price?.recurring?.interval && {
+      renewalInterval: price.recurring.interval,
+    }),
+    ...(price?.recurring?.interval_count && {
+      renewalIntervalCount: price.recurring.interval_count,
+    }),
   };
 }

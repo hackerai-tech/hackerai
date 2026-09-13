@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockGetSubscriptionCancellationStatus = jest.fn();
@@ -9,6 +9,7 @@ const mockRedirectToBillingPortal = jest.fn();
 const mockSetMigrateFromPentestgptDialogOpen = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
+const mockCaptureAuthenticatedEvent = jest.fn();
 let mockOnCancellationCompleted:
   | ((result: {
       cancelAtPeriodEnd: boolean;
@@ -35,6 +36,11 @@ jest.mock("@/lib/billing/client", () => ({
   getSubscriptionCancellationStatus: mockGetSubscriptionCancellationStatus,
   keepSubscription: mockKeepSubscription,
   redirectToBillingPortal: mockRedirectToBillingPortal,
+  resumeSubscription: jest.fn(),
+}));
+
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
 }));
 
 jest.mock("sonner", () => ({
@@ -72,6 +78,21 @@ describe("AccountTab", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it("shows the actual Stripe renewal amount and interval", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      renewalAmountDollars: 29,
+      renewalCurrency: "usd",
+      renewalInterval: "month",
+      renewalIntervalCount: 1,
+    } as never);
+
+    render(<AccountTab />);
+
+    expect(await screen.findByText("Renews at $29 every month")).toBeVisible();
+  });
+
   it("shows scheduled cancellation state instead of the cancel action", async () => {
     const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
     const expectedPeriodEnd = new Intl.DateTimeFormat(undefined, {
@@ -84,6 +105,10 @@ describe("AccountTab", () => {
       hasActiveSubscription: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd,
+      renewalAmountDollars: 29,
+      renewalCurrency: "usd",
+      renewalInterval: "month",
+      renewalIntervalCount: 1,
     } as never);
 
     render(<AccountTab />);
@@ -92,6 +117,7 @@ describe("AccountTab", () => {
     expect(
       screen.getByText(`Your plan stays active until ${expectedPeriodEnd}.`),
     ).toBeVisible();
+    expect(screen.queryByText(/renews at/i)).not.toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
@@ -144,6 +170,98 @@ describe("AccountTab", () => {
       expect(mockRedirectToBillingPortal).toHaveBeenCalledTimes(1);
     });
     expect(window.location.hash).toBe("#billing");
+  });
+
+  it("does not open the payment portal before billing status resolves", async () => {
+    mockGetSubscriptionCancellationStatus.mockReturnValue(
+      new Promise((resolve) => {
+        void resolve;
+      }) as never,
+    );
+
+    render(<AccountTab />);
+
+    const paymentButton = screen.getAllByRole("button", {
+      name: /^manage$/i,
+    })[1];
+    expect(paymentButton).toBeDisabled();
+
+    const user = userEvent.setup();
+    await user.click(paymentButton);
+    expect(mockRedirectToBillingPortal).not.toHaveBeenCalled();
+  });
+
+  it("shows a past-due warning and opens payment method update directly", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "past_due",
+      latestInvoiceId: "in_past_due",
+    } as never);
+    mockRedirectToBillingPortal.mockResolvedValue("#payment-method" as never);
+
+    render(<AccountTab />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Your renewal payment failed—update your payment method to keep your plan.",
+    );
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "recovery_prompt_impressed",
+      expect.objectContaining({
+        surface: "account_settings",
+        subscription_tier: "pro",
+        subscription_status: "past_due",
+        stripe_invoice_id: "in_past_due",
+      }),
+    );
+
+    const user = userEvent.setup();
+    await user.click(
+      within(alert).getByRole("button", { name: "Update payment" }),
+    );
+
+    await waitFor(() => {
+      expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
+        "payment_method",
+      );
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "billing_past_due_payment_update_clicked",
+      expect.objectContaining({
+        surface: "account_settings",
+        stripe_invoice_id: "in_past_due",
+      }),
+    );
+    expect(window.location.hash).toBe("#payment-method");
+  });
+
+  it("does not offer the direct payment update flow after retries are exhausted", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "unpaid",
+      latestInvoiceId: "in_unpaid",
+    } as never);
+    mockRedirectToBillingPortal.mockResolvedValue("#billing" as never);
+
+    render(<AccountTab />);
+
+    await waitFor(() => {
+      expect(mockGetSubscriptionCancellationStatus).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /^manage$/i })[1]);
+
+    await waitFor(() => {
+      expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(undefined);
+    });
+    expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
+      "billing_past_due_banner_impressed",
+      expect.anything(),
+    );
   });
 
   it("updates the tab when cancellation is scheduled from the dialog", async () => {
@@ -308,5 +426,62 @@ describe("AccountTab", () => {
 
     expect(screen.getByText("No active subscription")).toBeVisible();
     expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  });
+
+  it("shows the scheduled pause and lets the user cancel it", async () => {
+    const currentPeriodEnd = Date.UTC(2026, 9, 1, 12);
+    const resumeAt = Date.UTC(2026, 11, 1, 12);
+    const format = (value: number) =>
+      new Intl.DateTimeFormat(undefined, {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      }).format(new Date(value));
+    mockGetSubscriptionCancellationStatus.mockResolvedValue({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd,
+      pause: { months: 2, pauseEffectiveAt: currentPeriodEnd, resumeAt },
+    } as never);
+    mockKeepSubscription.mockResolvedValue({
+      kept: true,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd,
+      alreadyKept: false,
+      pauseCanceled: true,
+    } as never);
+
+    render(<AccountTab />);
+
+    expect(await screen.findByText("Pause scheduled.")).toBeVisible();
+    expect(
+      screen.getByText(
+        (content) =>
+          content.includes(
+            `Billing pauses after that and resumes automatically on ${format(resumeAt)}.`,
+          ),
+        { selector: "div" },
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Cancellation scheduled."),
+    ).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+    await waitFor(() => {
+      expect(screen.getByText("Cancel pause")).toBeVisible();
+    });
+    await user.click(screen.getByText("Cancel pause"));
+
+    await waitFor(() => {
+      expect(mockKeepSubscription).toHaveBeenCalledTimes(1);
+    });
+    expect(mockToastSuccess).toHaveBeenCalledWith(
+      "Pause canceled. Your plan will renew as usual.",
+    );
+    await waitFor(() => {
+      expect(screen.queryByText("Pause scheduled.")).not.toBeInTheDocument();
+    });
   });
 });

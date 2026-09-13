@@ -23,7 +23,8 @@ import { isTauriEnvironment, pickLocalFolder } from "@/app/hooks/useTauri";
 interface ProjectCreateDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: (projectId: Id<"projects">) => void;
+  onCreated: (projectId: Id<"projects">, projectName: string) => void;
+  showSuccessToast?: boolean;
 }
 
 const getFolderName = (path: string): string => {
@@ -35,6 +36,7 @@ export function ProjectCreateDialog({
   open,
   onOpenChange,
   onCreated,
+  showSuccessToast = true,
 }: ProjectCreateDialogProps) {
   const createProject = useCreateProject();
   const isMobile = useIsMobile();
@@ -87,9 +89,9 @@ export function ProjectCreateDialog({
         name: trimmedName,
         ...(folderPath ? { folderPath } : {}),
       });
-      onCreated(projectId);
+      onCreated(projectId, trimmedName);
       onOpenChange(false);
-      toast.success("Project created");
+      if (showSuccessToast) toast.success("Project created");
     } catch (error) {
       console.error("Failed to create project:", error);
       toast.error("Failed to create project", {

@@ -1,7 +1,4 @@
-import {
-  getCancellationStatus,
-  getTempCancellationStatus,
-} from "@/lib/db/actions";
+import { getCancellationStatus } from "@/lib/db/actions";
 import {
   createRedisSubscriber,
   getCancelChannel,
@@ -11,7 +8,6 @@ import { logger } from "@/lib/logger";
 
 type PollOptions = {
   chatId: string;
-  isTemporary: boolean;
   abortController: AbortController;
   onStop: () => void;
   pollIntervalMs?: number;
@@ -26,6 +22,7 @@ type PreemptiveTimeoutOptions = {
   requestId?: string;
   userId?: string;
   safetyBuffer?: number;
+  getLogContext?: () => Record<string, unknown>;
 };
 
 type CancellationSubscriberResult = {
@@ -36,12 +33,11 @@ type CancellationSubscriberResult = {
 
 /**
  * Creates a cancellation poller that checks for stream cancellation signals
- * and triggers abort when detected. Works for both regular and temporary chats.
+ * and triggers abort when detected.
  * This is the fallback when Redis pub/sub is unavailable.
  */
 export const createCancellationPoller = ({
   chatId,
-  isTemporary,
   abortController,
   onStop,
   pollIntervalMs = 1000,
@@ -54,18 +50,10 @@ export const createCancellationPoller = ({
 
     timeoutId = setTimeout(async () => {
       try {
-        if (isTemporary) {
-          const status = await getTempCancellationStatus({ chatId });
-          if (status?.canceled) {
-            abortController.abort();
-            return;
-          }
-        } else {
-          const status = await getCancellationStatus({ chatId });
-          if (status?.canceled_at) {
-            abortController.abort();
-            return;
-          }
+        const status = await getCancellationStatus({ chatId });
+        if (status?.canceled_at) {
+          abortController.abort();
+          return;
         }
       } catch {
         // Silently ignore polling errors
@@ -116,7 +104,6 @@ export const createCancellationPoller = ({
  */
 export const createCancellationSubscriber = async ({
   chatId,
-  isTemporary,
   abortController,
   onStop,
   pollIntervalMs = 1000,
@@ -153,13 +140,11 @@ export const createCancellationSubscriber = async ({
     phLogger.warn("redis_pubsub_unavailable", {
       event: "redis.pubsub_unavailable",
       chatId,
-      isTemporary,
       error,
     });
     cleanupSubscriber();
     fallbackPoller = createCancellationPoller({
       chatId,
-      isTemporary,
       abortController,
       onStop: callOnStopOnce,
       pollIntervalMs,
@@ -246,7 +231,6 @@ export const createCancellationSubscriber = async ({
   // Fallback to polling when Redis is unavailable
   return createCancellationPoller({
     chatId,
-    isTemporary,
     abortController,
     onStop,
     pollIntervalMs,
@@ -264,6 +248,7 @@ export const createPreemptiveTimeout = ({
   requestId,
   userId,
   safetyBuffer = 60,
+  getLogContext,
 }: PreemptiveTimeoutOptions) => {
   // Use endpoint-specific max duration based on Vercel function limits
   const maxDuration = endpoint === "/api/chat" ? 420 : 800;
@@ -277,7 +262,16 @@ export const createPreemptiveTimeout = ({
     triggerTime = Date.now();
     isPreemptive = true;
 
+    let logContext: Record<string, unknown> = {};
+    try {
+      logContext = getLogContext?.() ?? {};
+    } catch {
+      // Observability enrichment must never prevent the protective abort.
+      logContext = { log_context_resolution_failed: true };
+    }
+
     const fields = {
+      ...logContext,
       event: "chat.preemptive_timeout_triggered",
       request_id: requestId ?? "unknown",
       service: "hackerai-web",

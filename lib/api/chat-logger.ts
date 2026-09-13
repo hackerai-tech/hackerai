@@ -1,3 +1,7 @@
+import {
+  regionalFreeLimitsProperties,
+  type RegionalFreeLimitsAssignment,
+} from "@/lib/experiments/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -29,10 +33,34 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import type { AnalyticsRequestContext } from "@/lib/analytics/request-context";
+import {
+  getExperimentAnalyticsProperties,
+  type ExperimentAnalyticsContext,
+} from "@/lib/analytics/experiment-context";
+import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
+import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
+import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
+import {
+  EXTRA_USAGE_MULTIPLIER,
+  extraUsagePointsToDollars,
+} from "@/convex/lib/extraUsagePricing";
+import {
+  EXTRA_USAGE_REQUEST_MULTIPLIER,
+  NORMAL_USAGE_MULTIPLIER,
+  POINTS_PER_DOLLAR,
+} from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import type { SandboxSessionUsage } from "@/lib/ai/tools";
+import type { TriggerRunCostBreakdown } from "@/lib/billing/trigger-run-cost";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
 import type { BudgetAbortDetails } from "@/lib/chat/budget-monitor";
-import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import {
+  extractOpenRouterMetadataFromError,
+  mergeOpenRouterMetadata,
+  type OpenRouterModelMetadata,
+} from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
   extractRetryAttempts,
@@ -47,11 +75,24 @@ import {
 } from "@/lib/limit-pressure";
 
 export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
+export const AGENT_PERFORMANCE_LOG_SAMPLE_RATE = 0.01;
+export const USAGE_PRICING_VERSION = `request-${NORMAL_USAGE_MULTIPLIER.toFixed(2)}-extra-${EXTRA_USAGE_REQUEST_MULTIPLIER.toFixed(2)}-v2`;
 
-const usageSettlementSampleBucket = (usageSettlementId: string): number => {
+const usagePricingAnalyticsProperties = {
+  usage_pricing_version: USAGE_PRICING_VERSION,
+  request_usage_multiplier: NORMAL_USAGE_MULTIPLIER,
+  included_usage_multiplier: NORMAL_USAGE_MULTIPLIER,
+  extra_usage_multiplier: EXTRA_USAGE_REQUEST_MULTIPLIER,
+  extra_usage_balance_multiplier: EXTRA_USAGE_MULTIPLIER,
+  effective_extra_usage_multiplier: Number(
+    (EXTRA_USAGE_REQUEST_MULTIPLIER * EXTRA_USAGE_MULTIPLIER).toFixed(4),
+  ),
+} as const;
+
+const telemetrySampleBucket = (id: string): number => {
   let hash = 2166136261;
-  for (let index = 0; index < usageSettlementId.length; index += 1) {
-    hash ^= usageSettlementId.charCodeAt(index);
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) % 10_000;
@@ -60,17 +101,21 @@ const usageSettlementSampleBucket = (usageSettlementId: string): number => {
 export const isUsageSettlementSuccessSampled = (
   usageSettlementId: string,
 ): boolean =>
-  usageSettlementSampleBucket(usageSettlementId) <
+  telemetrySampleBucket(usageSettlementId) <
   USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE * 10_000;
+
+export const isAgentPerformanceLogSampled = (runId: string): boolean =>
+  telemetrySampleBucket(`agent-performance:${runId}`) <
+  AGENT_PERFORMANCE_LOG_SAMPLE_RATE * 10_000;
 
 export interface ChatLoggerConfig {
   chatId: string;
   endpoint: ChatApiEndpoint;
+  requestId?: string;
 }
 
 export interface RequestDetails {
   mode: ChatMode;
-  isTemporary: boolean;
   isRegenerate: boolean;
 }
 
@@ -125,13 +170,14 @@ function posthogProviderException(
     }
     return enriched;
   }
-  if (message === "Provider streaming error" || message === error.message) {
-    return error;
-  }
-
   const enriched = new Error(message);
   enriched.name = error.name;
-  (enriched as Error & { cause?: unknown }).cause = error;
+  if (typeof details.errorStack === "string") {
+    enriched.stack = details.errorStack;
+  }
+  // Do not attach the original provider error as a cause. AI SDK errors carry
+  // enumerable responseBody/data fields, and telemetry transports may traverse
+  // or serialize those properties even when the top-level message is safe.
   return enriched;
 }
 
@@ -191,7 +237,6 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "processing_input_other_part_count",
   "processing_input_regenerate",
   "processing_input_auto_continue",
-  "processing_input_temporary",
   "processing_input_sandbox_preference",
   "capReason",
   "limitType",
@@ -207,8 +252,16 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerErrorRetriable",
   "paidDailyFreeAllowance",
   "upload_failure_kind",
+  "upload_failure_reason",
   "upload_failure_cause",
   "upload_failure_transient_sandbox_command",
+  "upload_failure_sandbox_readiness_reason",
+  "upload_failure_sandbox_provider",
+  "upload_failure_error_name",
+  "upload_failure_error_code",
+  "upload_failure_error_http_status",
+  "upload_failure_error_request_id",
+  "upload_failure_error_retryable",
   "upload_failure_protocol",
   "upload_failure_url_length",
   "upload_retried_with_fresh_sandbox",
@@ -506,7 +559,11 @@ const getAgentBillingStopReason = (
  * Creates a chat logger instance for tracking wide events
  */
 export function createChatLogger(config: ChatLoggerConfig) {
-  const builder = createWideEventBuilder(config.chatId, config.endpoint);
+  const builder = createWideEventBuilder(
+    config.chatId,
+    config.endpoint,
+    config.requestId,
+  );
 
   // Cache identity/context fields so emitChatError can fire discrete PostHog
   // events without forcing the call site to thread them through. Populated by
@@ -518,8 +575,30 @@ export function createChatLogger(config: ChatLoggerConfig) {
   let extraUsageTelemetry: ExtraUsageTelemetryContext | undefined;
   let lastProviderErrorCategory: ProviderErrorCategory | undefined;
   let lastProviderErrorStatusCode: number | undefined;
+  const setModelResponse = (
+    responseModel: string | undefined,
+    openRouterMetadata?: OpenRouterModelMetadata,
+  ) => {
+    if (responseModel) {
+      builder.setActualModel(responseModel);
+    }
+    if (openRouterMetadata) {
+      builder.setOpenRouterMetadata(openRouterMetadata);
+    }
+  };
 
   return {
+    /**
+     * Correlation/model fields safe to copy into lifecycle logs.
+     */
+    getDiagnosticContext() {
+      return builder.getDiagnosticContext();
+    },
+
+    getRequestId() {
+      return builder.getDiagnosticContext().request_id;
+    },
+
     /**
      * Set initial request details
      */
@@ -574,6 +653,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Record the first model chunk (first call wins within a request)
+     */
+    markFirstChunk() {
+      builder.markFirstChunk();
+    },
+
+    /**
      * Set sandbox execution info
      */
     setSandbox(info: ChatWideEvent["sandbox"] | null) {
@@ -604,14 +690,15 @@ export function createChatLogger(config: ChatLoggerConfig) {
       usage: Record<string, unknown> | undefined,
       openRouterMetadata?: OpenRouterModelMetadata,
     ) {
-      if (responseModel) {
-        builder.setActualModel(responseModel);
-      }
-      if (openRouterMetadata) {
-        builder.setOpenRouterMetadata(openRouterMetadata);
-      }
+      setModelResponse(responseModel, openRouterMetadata);
       builder.setUsage(usage);
     },
+
+    /**
+     * Preserve the latest completed model/provider attribution before the
+     * whole stream finishes, so abort and timeout logs can still identify it.
+     */
+    setModelResponse,
 
     /**
      * Record Anthropic prompt repair before provider call.
@@ -698,17 +785,27 @@ export function createChatLogger(config: ChatLoggerConfig) {
         fallbackModelSlugs?: string[];
         userId?: string;
         subscription?: string;
-        isTemporary?: boolean;
         providerRequest?: ProviderRequestDiagnostics;
+        openRouterMetadata?: OpenRouterModelMetadata;
       },
     ) {
-      const { providerRequest, ...providerContext } = context;
+      const {
+        providerRequest,
+        openRouterMetadata: providedOpenRouterMetadata,
+        ...providerContext
+      } = context;
       const details = extractErrorDetails(error);
+      const openRouterMetadata = mergeOpenRouterMetadata(
+        providedOpenRouterMetadata ?? {},
+        extractOpenRouterMetadataFromError(error),
+      );
       const attempts = extractRetryAttempts(error);
       const category = getProviderErrorCategory(details);
       const providerStatusCode = getProviderStatusCode(details);
       const diagnosticMessage = getProviderDiagnosticMessage(details);
       const providerName = nonEmptyString(details.providerName);
+      const attributedProviderName =
+        nonEmptyString(openRouterMetadata.provider_name) ?? providerName;
       const configuredModel =
         nonEmptyString(providerContext.model) ??
         nonEmptyString(providerRequest?.model);
@@ -717,18 +814,19 @@ export function createChatLogger(config: ChatLoggerConfig) {
         nonEmptyString(providerRequest?.requested_model_slug);
       const modelProviderSlug = getModelProviderSlug(requestedModelSlug);
       const openrouterGenerationId = nonEmptyString(
-        details.openrouterGenerationId,
+        openRouterMetadata.openrouter_generation_id ??
+          details.openrouterGenerationId,
       );
       const providerErrorFingerprint = buildProviderErrorFingerprint({
         category,
         statusCode: providerStatusCode,
         requestedModelSlug,
         modelProviderSlug,
-        providerName,
+        providerName: attributedProviderName,
       });
       const normalizedProviderContext = {
-        ...(providerName && {
-          provider_name: providerName,
+        ...(attributedProviderName && {
+          provider_name: attributedProviderName,
           provider_name_source: "openrouter_error_metadata",
         }),
         ...(configuredModel && { configured_model: configuredModel }),
@@ -737,11 +835,18 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...(openrouterGenerationId && {
           openrouter_generation_id: openrouterGenerationId,
         }),
+        ...(openRouterMetadata.openrouter_request_id && {
+          openrouter_request_id: openRouterMetadata.openrouter_request_id,
+        }),
+        ...(openRouterMetadata.openrouter_upstream_id && {
+          openrouter_upstream_id: openRouterMetadata.openrouter_upstream_id,
+        }),
       };
       lastProviderErrorCategory = category;
       lastProviderErrorStatusCode = providerStatusCode;
 
       const logContext = {
+        ...builder.getDiagnosticContext(),
         event: providerErrorEventName(category),
         chat_id: config.chatId,
         endpoint: config.endpoint,
@@ -749,6 +854,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_attribution_available: attributedProviderName !== undefined,
         provider_diagnostic_message: diagnosticMessage,
         provider_error_fingerprint: providerErrorFingerprint,
         ...(providerStatusCode && { provider_status_code: providerStatusCode }),
@@ -767,6 +873,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       }
 
       const phContext = {
+        ...builder.getDiagnosticContext(),
         event: providerErrorEventName(category),
         chatId: config.chatId,
         endpoint: config.endpoint,
@@ -774,6 +881,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_attribution_available: attributedProviderName !== undefined,
         providerDiagnosticMessage: diagnosticMessage,
         providerErrorFingerprint,
         ...(providerStatusCode && { providerStatusCode }),
@@ -804,14 +912,16 @@ export function createChatLogger(config: ChatLoggerConfig) {
           typeof details.isRetryable === "boolean"
             ? details.isRetryable
             : isRetriableProviderCategory(category),
-        providerName,
-        providerNameSource: providerName
+        providerName: attributedProviderName,
+        providerNameSource: attributedProviderName
           ? "openrouter_error_metadata"
           : undefined,
         configuredModel,
         requestedModelSlug,
         modelProviderSlug,
         openrouterGenerationId,
+        openrouterRequestId: openRouterMetadata.openrouter_request_id,
+        openrouterUpstreamId: openRouterMetadata.openrouter_upstream_id,
         providerErrorFingerprint,
         attempts,
       });
@@ -902,21 +1012,23 @@ export function createChatLogger(config: ChatLoggerConfig) {
               paidDailyFreeAllowance?.available,
             paid_daily_free_allowance_unavailable_reason:
               paidDailyFreeAllowance?.unavailableReason,
-            paid_daily_free_allowance_requests_remaining:
-              paidDailyFreeAllowance?.requestsRemaining,
-            paid_daily_free_allowance_request_limit:
-              paidDailyFreeAllowance?.requestLimit,
+            paid_daily_free_allowance_requests_today:
+              paidDailyFreeAllowance?.requestsUsed,
+            paid_daily_free_allowance_cost_used_today_dollars:
+              paidDailyFreeAllowance?.costUsedDollars,
             paid_daily_free_allowance_cost_remaining_dollars:
               paidDailyFreeAllowance?.costRemainingDollars,
             paid_daily_free_allowance_cost_limit_dollars:
               paidDailyFreeAllowance?.costLimitDollars,
-            paid_daily_free_allowance_rollout_percent:
-              paidDailyFreeAllowance?.rolloutPercent,
             chat_id: config.chatId,
             endpoint: config.endpoint,
             $set: {
               subscription_tier: subscription,
               last_limit_hit_at: new Date().toISOString(),
+              ...(pressure.paidMonthlyExhaustion && {
+                paid_monthly_last_exhausted_at: new Date().toISOString(),
+                paid_monthly_last_exhausted_tier: subscription,
+              }),
             },
           }),
         );
@@ -1102,19 +1214,21 @@ export function captureAgentBudgetAbort({
 
 /**
  * Capture aggregated tool usage to PostHog at end of request.
- * One event is emitted per tool to keep analytics useful while
- * avoiding the cost of one PostHog event per individual tool call.
+ * One event is emitted per request with a JSON tool-count map so exact tool
+ * totals remain queryable without one billable event per tool.
  */
 export function captureToolCalls({
   posthog,
   chatLogger,
   userId,
   mode,
+  triggerRunId,
 }: {
   posthog: PostHog | null;
   chatLogger: ChatLogger | undefined;
   userId: string;
   mode: ChatMode;
+  triggerRunId?: string;
 }) {
   if (!posthog || !chatLogger) return;
   const toolCalls = chatLogger.getToolCalls();
@@ -1134,22 +1248,62 @@ export function captureToolCalls({
     aggregatedToolCalls.set(tool.name, { name: tool.name, count: 1 });
   }
 
-  for (const tool of aggregatedToolCalls.values()) {
-    posthog.capture({
-      distinctId: userId,
-      event: "hackerai-tool_usage",
-      properties: {
-        mode,
-        toolName: tool.name,
-        count: tool.count,
-      },
-    });
-  }
+  const tools = Array.from(aggregatedToolCalls.values());
+  posthog.capture({
+    distinctId: userId,
+    event: "hackerai-tool_usage",
+    properties: {
+      mode,
+      toolCountsByName: JSON.stringify(
+        Object.fromEntries(tools.map((tool) => [tool.name, tool.count])),
+      ),
+      totalCount: toolCalls.length,
+      distinctToolCount: tools.length,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      tool_usage_event_version: 2,
+      $process_person_profile: false,
+    },
+  });
 }
 
 export type AgentRunOutcome = "success" | "aborted" | "error";
 
+export type AgentAbortSource =
+  | "budget_exhausted"
+  | "agent_spend_cap"
+  | "elapsed_timeout"
+  | "user_stop"
+  | "request_cancel"
+  | "unknown";
+
+export function resolveAgentAbortSource({
+  outcome,
+  stoppedDueToBudgetExhaustion = false,
+  stoppedDueToAgentRunSpendCap = false,
+  stoppedDueToElapsedTimeout = false,
+  userStopRequested = false,
+  requestCancelled = false,
+}: {
+  outcome: AgentRunOutcome;
+  stoppedDueToBudgetExhaustion?: boolean;
+  stoppedDueToAgentRunSpendCap?: boolean;
+  stoppedDueToElapsedTimeout?: boolean;
+  userStopRequested?: boolean;
+  requestCancelled?: boolean;
+}): AgentAbortSource | undefined {
+  if (outcome !== "aborted") return undefined;
+  if (stoppedDueToBudgetExhaustion) return "budget_exhausted";
+  if (stoppedDueToAgentRunSpendCap) return "agent_spend_cap";
+  if (stoppedDueToElapsedTimeout) return "elapsed_timeout";
+  if (userStopRequested) return "user_stop";
+  if (requestCancelled) return "request_cancel";
+  return "unknown";
+}
+
 type AgentCompletionAnalyticsArgs = {
+  // Every completion path must explicitly forward its request telemetry.
+  abliteratedProviderSummary:
+    ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
   posthog: PostHog | null;
   userId: string;
   chatId: string;
@@ -1158,6 +1312,7 @@ type AgentCompletionAnalyticsArgs = {
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
   configuredModelId: string;
@@ -1169,20 +1324,53 @@ type AgentCompletionAnalyticsArgs = {
   triggerRunId?: string;
   triggerUsageDurationMs?: number;
   triggerTotalCostUsd?: number;
+  startupTimingVersion?: 1;
+  routePreTriggerDurationMs?: number;
+  triggerTaskStartLatencyMs?: number;
+  taskToFirstModelStartMs?: number;
+  requestToFirstModelStartMs?: number;
+  requestToFirstModelChunkMs?: number;
+  startupCompactionVariant?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionVariant;
+  startupCompactionFallbackUsed?: boolean;
+  startupSubphaseTimingVersion?: 1;
+  startupSummaryGenerationDurationMs?: number;
+  startupTranscriptSavingDurationMs?: number;
+  startupSandboxContextDurationMs?: number;
+  startupMessageSerializationDurationMs?: number;
   approvalWaitCount?: number;
   approvalWaitDurationMs?: number;
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  handledToolFailureCount?: number;
+  messageCount?: number;
+  estimatedInputTokens?: number;
+  attachmentCount?: number;
+  imageAttachmentCount?: number;
+  isNewChat?: boolean;
+  hadSummarization?: boolean;
+  isAutoContinue?: boolean;
+  stepLimitTelemetry?: AgentStepLimitTelemetry;
+  experiment?: ExperimentAnalyticsContext;
+  upstreamProvider?: string;
+  providerErrorProvider?: string;
+  providerErrorCategory?: string;
+  providerErrorStatusCode?: number;
+  providerRecoveryAttempts?: number;
+  providerRecoveryModels?: readonly string[];
+  providerRecoverySucceeded?: boolean;
 };
 
 export function captureAgentRun({
+  abliteratedProviderSummary,
   posthog,
   userId,
+  chatId,
   mode,
   subscription,
   sandboxInfo,
   outcome,
+  abortSource,
   selectedModel,
   configuredModelId,
   responseModel,
@@ -1193,43 +1381,198 @@ export function captureAgentRun({
   triggerRunId,
   triggerUsageDurationMs,
   triggerTotalCostUsd,
+  startupTimingVersion,
+  routePreTriggerDurationMs,
+  triggerTaskStartLatencyMs,
+  taskToFirstModelStartMs,
+  requestToFirstModelStartMs,
+  requestToFirstModelChunkMs,
+  startupCompactionVariant,
+  startupCompactionFallbackUsed,
+  startupSubphaseTimingVersion,
+  startupSummaryGenerationDurationMs,
+  startupTranscriptSavingDurationMs,
+  startupSandboxContextDurationMs,
+  startupMessageSerializationDurationMs,
   approvalWaitCount,
   approvalWaitDurationMs,
   activeModelStreamDurationMs,
   activeTerminalWaitDurationMs,
   activeSandboxRecoveryDurationMs,
-}: {
-  posthog: PostHog | null;
-  userId: string;
-  mode: ChatMode;
-  subscription: string;
-  sandboxInfo: SandboxInfo | null;
-  outcome: AgentRunOutcome;
-  selectedModel: string;
-  configuredModelId: string;
-  responseModel?: string;
-  fallbackServed?: boolean;
-  finishReason?: string;
-  budgetAbortDetails?: BudgetAbortDetails;
-  agentPermissionMode?: AgentPermissionMode;
-  triggerRunId?: string;
-  triggerUsageDurationMs?: number;
-  triggerTotalCostUsd?: number;
-  approvalWaitCount?: number;
-  approvalWaitDurationMs?: number;
-  activeModelStreamDurationMs?: number;
-  activeTerminalWaitDurationMs?: number;
-  activeSandboxRecoveryDurationMs?: number;
-}) {
-  if (!posthog || mode !== "agent") return;
+  handledToolFailureCount,
+  messageCount,
+  estimatedInputTokens,
+  attachmentCount,
+  imageAttachmentCount,
+  isNewChat,
+  hadSummarization,
+  isAutoContinue,
+  stepLimitTelemetry,
+  experiment,
+  upstreamProvider,
+  providerErrorProvider,
+  providerErrorCategory,
+  providerErrorStatusCode,
+  providerRecoveryAttempts,
+  providerRecoveryModels,
+  providerRecoverySucceeded,
+}: Omit<
+  AgentCompletionAnalyticsArgs,
+  "endpoint" | "chatLogger" | "abliteratedProviderSummary"
+> &
+  Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
+  if (mode !== "agent") return;
+  const performanceDiagnostics = buildAgentPerformanceDiagnostics({
+    triggerUsageDurationMs,
+    routePreTriggerDurationMs,
+    triggerTaskStartLatencyMs,
+    taskToFirstModelStartMs,
+    requestToFirstModelStartMs,
+    requestToFirstModelChunkMs,
+    approvalWaitDurationMs,
+    activeModelStreamDurationMs,
+    activeTerminalWaitDurationMs,
+    activeSandboxRecoveryDurationMs,
+  });
+  const performanceDiagnosticProperties = performanceDiagnostics
+    ? {
+        performance_diagnostics_version: performanceDiagnostics.version,
+        initial_delay_phase: performanceDiagnostics.initialDelayPhase,
+        initial_delay_phase_duration_ms:
+          performanceDiagnostics.initialDelayPhaseDurationMs,
+        ...(performanceDiagnostics.providerFirstChunkDurationMs !==
+          undefined && {
+          provider_first_chunk_duration_ms:
+            performanceDiagnostics.providerFirstChunkDurationMs,
+        }),
+        primary_runtime_phase: performanceDiagnostics.primaryRuntimePhase,
+        primary_runtime_phase_duration_ms:
+          performanceDiagnostics.primaryRuntimePhaseDurationMs,
+        accounted_runtime_duration_ms:
+          performanceDiagnostics.accountedRuntimeDurationMs,
+        ...(performanceDiagnostics.unattributedRuntimeDurationMs !==
+          undefined && {
+          unattributed_runtime_duration_ms:
+            performanceDiagnostics.unattributedRuntimeDurationMs,
+        }),
+        ...(performanceDiagnostics.firstOutputSlow !== undefined && {
+          first_output_slow: performanceDiagnostics.firstOutputSlow,
+        }),
+        ...(performanceDiagnostics.runtimeSlow !== undefined && {
+          runtime_slow: performanceDiagnostics.runtimeSlow,
+        }),
+      }
+    : undefined;
+
+  // Keep complete percentile data on the existing completion event. Duplicate
+  // diagnostic logs retain errors and a stable 1% sample of other slow runs.
+  if (
+    (performanceDiagnostics?.firstOutputSlow ||
+      performanceDiagnostics?.runtimeSlow) &&
+    (outcome === "error" ||
+      isAgentPerformanceLogSampled(triggerRunId ?? chatId))
+  ) {
+    logger.warn("Slow agent run detected", {
+      event: "agent_performance_diagnostic",
+      log_sample_rate:
+        outcome === "error" ? 1 : AGENT_PERFORMANCE_LOG_SAMPLE_RATE,
+      service: "agent-long",
+      chat_id: chatId,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
+      outcome,
+      subscription_tier: subscription,
+      selected_model: selectedModel,
+      configured_model: configuredModelId,
+      ...(responseModel && { response_model: responseModel }),
+      ...(upstreamProvider && { upstream_provider: upstreamProvider }),
+      ...(sandboxInfo?.type && { sandbox_type: sandboxInfo.type }),
+      ...(sandboxInfo?.provider && {
+        sandbox_provider: sandboxInfo.provider,
+      }),
+      ...(triggerUsageDurationMs !== undefined && {
+        trigger_usage_duration_ms: triggerUsageDurationMs,
+      }),
+      ...(requestToFirstModelChunkMs !== undefined && {
+        request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(triggerTaskStartLatencyMs !== undefined && {
+        trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
+      }),
+      ...(startupSubphaseTimingVersion !== undefined && {
+        startup_subphase_timing_version: startupSubphaseTimingVersion,
+      }),
+      ...(startupSummaryGenerationDurationMs !== undefined && {
+        startup_summary_generation_duration_ms:
+          startupSummaryGenerationDurationMs,
+      }),
+      ...(startupTranscriptSavingDurationMs !== undefined && {
+        startup_transcript_saving_duration_ms:
+          startupTranscriptSavingDurationMs,
+      }),
+      ...(startupSandboxContextDurationMs !== undefined && {
+        startup_sandbox_context_duration_ms: startupSandboxContextDurationMs,
+      }),
+      ...(startupMessageSerializationDurationMs !== undefined && {
+        startup_message_serialization_duration_ms:
+          startupMessageSerializationDurationMs,
+      }),
+      ...(activeModelStreamDurationMs !== undefined && {
+        active_model_stream_duration_ms: activeModelStreamDurationMs,
+      }),
+      ...(activeTerminalWaitDurationMs !== undefined && {
+        active_terminal_wait_duration_ms: activeTerminalWaitDurationMs,
+      }),
+      ...(approvalWaitDurationMs !== undefined && {
+        approval_wait_duration_ms: approvalWaitDurationMs,
+      }),
+      ...(activeSandboxRecoveryDurationMs !== undefined && {
+        active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
+      }),
+      ...(finishReason && { finish_reason: finishReason }),
+      ...(abortSource && { abort_source: abortSource }),
+      ...(providerErrorCategory && {
+        provider_error_category: providerErrorCategory,
+      }),
+      ...(providerErrorStatusCode !== undefined && {
+        provider_error_status_code: providerErrorStatusCode,
+      }),
+      ...performanceDiagnosticProperties,
+      ...(messageCount !== undefined && { message_count: messageCount }),
+      ...(estimatedInputTokens !== undefined && {
+        estimated_input_tokens: estimatedInputTokens,
+      }),
+      ...(attachmentCount !== undefined && {
+        attachment_count: attachmentCount,
+      }),
+      ...(imageAttachmentCount !== undefined && {
+        image_attachment_count: imageAttachmentCount,
+      }),
+      ...(isNewChat !== undefined && { is_new_chat: isNewChat }),
+      ...(hadSummarization !== undefined && {
+        had_summarization: hadSummarization,
+      }),
+    });
+  }
+
+  if (!posthog) return;
   posthog.capture({
     distinctId: userId,
     event: "hackerai-agent_run",
     properties: {
+      ...(handledToolFailureCount !== undefined && {
+        handled_tool_failure_count: handledToolFailureCount,
+      }),
       mode,
       subscription,
       subscription_tier: subscription,
+      chat_id: chatId,
       outcome,
+      ...(outcome === "aborted" &&
+        abortSource && { abort_source: abortSource }),
       selected_model: selectedModel,
       configured_model: configuredModelId,
       ...(agentPermissionMode && {
@@ -1241,6 +1584,46 @@ export function captureAgentRun({
       }),
       ...(triggerTotalCostUsd !== undefined && {
         trigger_total_cost_usd: triggerTotalCostUsd,
+      }),
+      ...(startupTimingVersion !== undefined && {
+        startup_timing_version: startupTimingVersion,
+      }),
+      ...(routePreTriggerDurationMs !== undefined && {
+        route_pre_trigger_duration_ms: routePreTriggerDurationMs,
+      }),
+      ...(triggerTaskStartLatencyMs !== undefined && {
+        trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
+      }),
+      ...(taskToFirstModelStartMs !== undefined && {
+        task_to_first_model_start_ms: taskToFirstModelStartMs,
+      }),
+      ...(requestToFirstModelStartMs !== undefined && {
+        request_to_first_model_start_ms: requestToFirstModelStartMs,
+      }),
+      ...(requestToFirstModelChunkMs !== undefined && {
+        request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
+      }),
+      ...(startupSubphaseTimingVersion !== undefined && {
+        startup_subphase_timing_version: startupSubphaseTimingVersion,
+      }),
+      ...(startupSummaryGenerationDurationMs !== undefined && {
+        startup_summary_generation_duration_ms:
+          startupSummaryGenerationDurationMs,
+      }),
+      ...(startupTranscriptSavingDurationMs !== undefined && {
+        startup_transcript_saving_duration_ms:
+          startupTranscriptSavingDurationMs,
+      }),
+      ...(startupSandboxContextDurationMs !== undefined && {
+        startup_sandbox_context_duration_ms: startupSandboxContextDurationMs,
+      }),
+      ...(startupMessageSerializationDurationMs !== undefined && {
+        startup_message_serialization_duration_ms:
+          startupMessageSerializationDurationMs,
       }),
       ...(approvalWaitCount !== undefined && {
         approval_wait_count: approvalWaitCount,
@@ -1257,18 +1640,83 @@ export function captureAgentRun({
       ...(activeSandboxRecoveryDurationMs !== undefined && {
         active_sandbox_recovery_duration_ms: activeSandboxRecoveryDurationMs,
       }),
+      ...performanceDiagnosticProperties,
+      ...(messageCount !== undefined && { message_count: messageCount }),
+      ...(estimatedInputTokens !== undefined && {
+        estimated_input_tokens: estimatedInputTokens,
+      }),
+      ...(attachmentCount !== undefined && {
+        attachment_count: attachmentCount,
+      }),
+      ...(imageAttachmentCount !== undefined && {
+        image_attachment_count: imageAttachmentCount,
+      }),
+      ...(isNewChat !== undefined && { is_new_chat: isNewChat }),
+      ...(hadSummarization !== undefined && {
+        had_summarization: hadSummarization,
+      }),
+      ...(isAutoContinue !== undefined && {
+        is_auto_continue: isAutoContinue,
+      }),
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
+      // Versioned call-level evidence supersedes the old final-model flag.
+      ...abliteratedProviderSummary,
+      ...(abliteratedProviderSummary?.model_routing_telemetry_version === 1 && {
+        legacy_fallback_served: fallbackServed,
+      }),
       ...(sandboxInfo?.type && {
         sandbox_type: sandboxInfo.type,
       }),
+      ...(sandboxInfo?.provider && {
+        sandbox_provider: sandboxInfo.provider,
+      }),
       ...(finishReason && { finish_reason: finishReason }),
+      ...(upstreamProvider && { upstream_provider: upstreamProvider }),
+      ...(providerErrorProvider && {
+        provider_error_provider: providerErrorProvider,
+      }),
+      ...(providerErrorCategory && {
+        provider_error_category: providerErrorCategory,
+      }),
+      ...(providerErrorStatusCode !== undefined && {
+        provider_error_status_code: providerErrorStatusCode,
+      }),
+      ...(providerRecoveryAttempts !== undefined && {
+        provider_recovery_attempts: providerRecoveryAttempts,
+      }),
+      ...(providerRecoveryModels && {
+        provider_recovery_models: [...providerRecoveryModels],
+      }),
+      ...(providerRecoverySucceeded !== undefined && {
+        provider_recovery_succeeded: providerRecoverySucceeded,
+      }),
+      ...(stepLimitTelemetry && {
+        step_limit_telemetry_version: stepLimitTelemetry.version,
+        configured_max_steps: stepLimitTelemetry.configuredMaxSteps,
+        agent_step_count: stepLimitTelemetry.stepCount,
+        step_limit_reached: stepLimitTelemetry.stepLimitReached,
+        initial_todo_count: stepLimitTelemetry.initialTodoCount,
+        initial_unfinished_todo_count:
+          stepLimitTelemetry.initialUnfinishedTodoCount,
+        final_todo_count: stepLimitTelemetry.finalTodoCount,
+        final_unfinished_todo_count:
+          stepLimitTelemetry.finalUnfinishedTodoCount,
+        todo_write_count: stepLimitTelemetry.todoWriteCount,
+        todo_created_this_run_count: stepLimitTelemetry.todoCreatedThisRunCount,
+        todo_updated_this_run_count: stepLimitTelemetry.todoUpdatedThisRunCount,
+        todo_removed_this_run_count: stepLimitTelemetry.todoRemovedThisRunCount,
+        current_run_todo_count: stepLimitTelemetry.currentRunTodoCount,
+        current_run_unfinished_todo_count:
+          stepLimitTelemetry.currentRunUnfinishedTodoCount,
+      }),
       ...(budgetAbortDetails && {
         budget_abort_cap_reason: budgetAbortDetails.capReason,
         budget_abort_billing_stop_reason: budgetAbortDetails.billingStopReason,
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
+      ...getExperimentAnalyticsProperties(experiment),
     },
   });
 }
@@ -1277,13 +1725,51 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  if (isAbliterationExperimentKey(args.experiment?.key)) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "abliterated_model_response_outcome",
+        properties: {
+          ...args.abliteratedProviderSummary,
+          ...getExperimentAnalyticsProperties(args.experiment),
+          chat_id: args.chatId,
+          mode,
+          subscription_tier: subscription,
+          outcome,
+          abort_source: args.abortSource,
+          finish_reason: args.finishReason,
+          configured_model: args.configuredModelId,
+          response_model: args.responseModel,
+          fallback_served:
+            args.abliteratedProviderSummary?.model_routing_telemetry_version ===
+            1
+              ? args.abliteratedProviderSummary.fallback_served
+              : args.fallbackServed,
+          ...(args.abliteratedProviderSummary
+            ?.model_routing_telemetry_version === 1 && {
+            legacy_fallback_served: args.fallbackServed,
+          }),
+          provider_recovery_attempts: args.providerRecoveryAttempts,
+          provider_recovery_succeeded: args.providerRecoverySucceeded,
+          budget_abort_cap_reason: args.budgetAbortDetails?.capReason,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      /* Analytics must never interrupt response persistence. */
+    }
+  }
   captureAgentRun({
+    abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
+    chatId: args.chatId,
     mode,
     subscription,
     sandboxInfo,
     outcome,
+    abortSource: args.abortSource,
     selectedModel: args.selectedModel,
     configuredModelId: args.configuredModelId,
     responseModel: args.responseModel,
@@ -1292,20 +1778,54 @@ export function captureAgentCompletionAnalytics(
     budgetAbortDetails: args.budgetAbortDetails,
     agentPermissionMode: args.agentPermissionMode,
     triggerRunId: args.triggerRunId,
+    handledToolFailureCount: args.handledToolFailureCount,
     triggerUsageDurationMs: args.triggerUsageDurationMs,
     triggerTotalCostUsd: args.triggerTotalCostUsd,
+    startupTimingVersion: args.startupTimingVersion,
+    routePreTriggerDurationMs: args.routePreTriggerDurationMs,
+    triggerTaskStartLatencyMs: args.triggerTaskStartLatencyMs,
+    taskToFirstModelStartMs: args.taskToFirstModelStartMs,
+    requestToFirstModelStartMs: args.requestToFirstModelStartMs,
+    requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
+    startupCompactionVariant: args.startupCompactionVariant,
+    startupCompactionFallbackUsed: args.startupCompactionFallbackUsed,
+    startupSubphaseTimingVersion: args.startupSubphaseTimingVersion,
+    startupSummaryGenerationDurationMs: args.startupSummaryGenerationDurationMs,
+    startupTranscriptSavingDurationMs: args.startupTranscriptSavingDurationMs,
+    startupSandboxContextDurationMs: args.startupSandboxContextDurationMs,
+    startupMessageSerializationDurationMs:
+      args.startupMessageSerializationDurationMs,
     approvalWaitCount: args.approvalWaitCount,
     approvalWaitDurationMs: args.approvalWaitDurationMs,
     activeModelStreamDurationMs: args.activeModelStreamDurationMs,
     activeTerminalWaitDurationMs: args.activeTerminalWaitDurationMs,
     activeSandboxRecoveryDurationMs: args.activeSandboxRecoveryDurationMs,
+    messageCount: args.messageCount,
+    estimatedInputTokens: args.estimatedInputTokens,
+    attachmentCount: args.attachmentCount,
+    imageAttachmentCount: args.imageAttachmentCount,
+    isNewChat: args.isNewChat,
+    hadSummarization: args.hadSummarization,
+    isAutoContinue: args.isAutoContinue,
+    stepLimitTelemetry: args.stepLimitTelemetry,
+    experiment: args.experiment,
+    upstreamProvider: args.upstreamProvider,
+    providerErrorProvider: args.providerErrorProvider,
+    providerErrorCategory: args.providerErrorCategory,
+    providerErrorStatusCode: args.providerErrorStatusCode,
+    providerRecoveryAttempts: args.providerRecoveryAttempts,
+    providerRecoveryModels: args.providerRecoveryModels,
+    providerRecoverySucceeded: args.providerRecoverySucceeded,
   });
 }
 
 /**
  * Capture one cost event per request with usage. In PostHog, answer
  * "how much does each user cost you?" by summing cost_dollars on
- * hackerai-usage_cost grouped by distinct_id (or user_id).
+ * hackerai-usage_cost grouped by distinct_id (or user_id). Sum
+ * consumption_contribution_dollars for extra-usage value consumed minus
+ * provider/tool cost; subscription revenue is intentionally reported
+ * separately.
  */
 export function captureUsageCost({
   posthog,
@@ -1320,6 +1840,13 @@ export function captureUsageCost({
   responseModel,
   paidDailyFreeAllowance,
   usageSettlement,
+  sandboxUsage,
+  triggerRunUsage,
+  analyticsRequestContext,
+  fallbackServed,
+  experiment,
+  regionalFreeLimits,
+  triggerRunId,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1334,7 +1861,7 @@ export function captureUsageCost({
   paidDailyFreeAllowance?: {
     active: boolean;
     cutOff?: boolean;
-    requestLimit?: number;
+    requestsToday?: number;
     costLimitDollars?: number;
     resetTimestamp?: number;
   };
@@ -1342,13 +1869,32 @@ export function captureUsageCost({
     id: string;
     midRunCount: number;
   };
+  sandboxUsage?: SandboxSessionUsage;
+  triggerRunUsage?: TriggerRunCostBreakdown;
+  analyticsRequestContext?: AnalyticsRequestContext;
+  fallbackServed?: boolean;
+  experiment?: ExperimentAnalyticsContext;
+  regionalFreeLimits?: RegionalFreeLimitsAssignment;
+  triggerRunId?: string;
 }) {
   if (!posthog) return;
+  const includedUsageValueDollars =
+    usage.includedPointsDeducted / POINTS_PER_DOLLAR;
+  const extraUsageChargeDollars = extraUsagePointsToDollars(
+    usage.extraUsagePointsDeducted,
+  );
+  const coveredUsageValueDollars =
+    includedUsageValueDollars + extraUsageChargeDollars;
+  const coveredUsageCostDollars =
+    usage.includedCostDollars + usage.extraUsageCostDollars;
+  const coveredUsageContributionDollars =
+    coveredUsageValueDollars - coveredUsageCostDollars;
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
     properties: {
       user_id: userId,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
       subscription,
       subscription_tier: subscription,
       ...(organizationId && { organization_id: organizationId }),
@@ -1367,17 +1913,50 @@ export function captureUsageCost({
       uncovered_cost_dollars: usage.uncoveredCostDollars,
       included_points_deducted: usage.includedPointsDeducted,
       extra_usage_points_deducted: usage.extraUsagePointsDeducted,
+      usage_economics_version: 2,
+      ...usagePricingAnalyticsProperties,
+      included_usage_value_dollars: includedUsageValueDollars,
+      extra_usage_charge_dollars: extraUsageChargeDollars,
+      covered_usage_value_dollars: coveredUsageValueDollars,
+      covered_usage_cost_dollars: coveredUsageCostDollars,
+      covered_usage_contribution_dollars: coveredUsageContributionDollars,
+      ...(coveredUsageValueDollars > 0 && {
+        covered_usage_margin_ratio:
+          coveredUsageContributionDollars / coveredUsageValueDollars,
+      }),
+      consumption_contribution_dollars:
+        extraUsageChargeDollars - usage.costDollars,
       uncovered_points: usage.uncoveredPoints,
       usage_deduction_failed: usage.usageDeductionFailed,
       usage_deduction_failure_reason: usage.usageDeductionFailureReason,
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
+      ...(sandboxUsage && {
+        sandbox_cost_accounting_version: 2,
+        sandbox_cost_source: "request_runtime_rate",
+        sandbox_cost_dollars: sandboxUsage.totalCostDollars,
+        sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
+        sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,
+        sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
+        sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
+      }),
+      ...(triggerRunUsage && {
+        trigger_run_cost_accounting_version: 1,
+        trigger_run_cost_source: "trigger_usage_api",
+        trigger_run_cost_dollars: triggerRunUsage.totalCostDollars,
+        trigger_compute_cost_dollars: triggerRunUsage.computeCostDollars,
+        trigger_base_cost_dollars: triggerRunUsage.baseCostDollars,
+        trigger_usage_duration_ms: triggerRunUsage.durationMs,
+      }),
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       total_tokens: usage.totalTokens,
       cache_read_tokens: usage.cacheReadTokens ?? 0,
       cache_write_tokens: usage.cacheWriteTokens ?? 0,
       cost_source: usage.costSource,
+      ...(analyticsRequestContext?.posthogSessionId && {
+        $session_id: analyticsRequestContext.posthogSessionId,
+      }),
       ...(usageSettlement && {
         usage_settlement_id: usageSettlement.id,
         mid_run_usage_settlement_count: usageSettlement.midRunCount,
@@ -1393,13 +1972,15 @@ export function captureUsageCost({
         paid_daily_free_allowance_active: true,
         paid_daily_free_allowance_cut_off:
           paidDailyFreeAllowance.cutOff === true,
-        paid_daily_free_allowance_request_limit:
-          paidDailyFreeAllowance.requestLimit,
+        paid_daily_free_allowance_requests_today:
+          paidDailyFreeAllowance.requestsToday,
         paid_daily_free_allowance_cost_limit_dollars:
           paidDailyFreeAllowance.costLimitDollars,
         paid_daily_free_allowance_reset_timestamp:
           paidDailyFreeAllowance.resetTimestamp,
       }),
+      ...getExperimentAnalyticsProperties(experiment),
+      ...regionalFreeLimitsProperties(regionalFreeLimits),
     },
   });
 }
@@ -1423,8 +2004,11 @@ export function captureUsageSettlement({
   settlementSequence,
   currentCostDollars,
   requestedDeltaPoints,
+  sandboxCostDollars,
+  triggerRunCostDollars,
   deduction,
   forced,
+  experiment,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1439,8 +2023,11 @@ export function captureUsageSettlement({
   settlementSequence: number;
   currentCostDollars: number;
   requestedDeltaPoints: number;
+  sandboxCostDollars?: number;
+  triggerRunCostDollars?: number;
   deduction: UsageDeductionResult;
   forced: boolean;
+  experiment?: ExperimentAnalyticsContext;
 }) {
   if (!posthog) return;
   const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
@@ -1468,16 +2055,28 @@ export function captureUsageSettlement({
       settlement_sequence: settlementSequence,
       current_cost_dollars: currentCostDollars,
       requested_delta_points: requestedDeltaPoints,
+      ...(sandboxCostDollars !== undefined && {
+        sandbox_cost_dollars: sandboxCostDollars,
+        sandbox_cost_source: "configured_baseline_estimate",
+        sandbox_cost_accounting_version: 1,
+      }),
+      ...(triggerRunCostDollars !== undefined && {
+        trigger_run_cost_dollars: triggerRunCostDollars,
+        trigger_run_cost_source: "trigger_usage_api",
+        trigger_run_cost_accounting_version: 1,
+      }),
       included_points_deducted: deduction.includedPointsDeducted,
       extra_usage_points_deducted: deduction.extraUsagePointsDeducted,
       uncovered_points: deduction.uncoveredPoints,
       usage_deduction_failed: deduction.usageDeductionFailed,
       usage_deduction_failure_reason: deduction.usageDeductionFailureReason,
       forced,
+      ...usagePricingAnalyticsProperties,
       settlement_capture_reason: anomalous ? "anomaly" : "sampled_success",
       settlement_run_sampled: runSampled,
       settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
       settlement_event_version: 2,
+      ...getExperimentAnalyticsProperties(experiment),
     },
   });
 }

@@ -1,6 +1,6 @@
 import {
   assertFreeAgentGates,
-  assertTemporaryChatAccess,
+  assertChatModeAccess,
   countFileAttachments,
   stripImageAttachments,
 } from "@/lib/api/chat-stream-helpers";
@@ -36,33 +36,36 @@ describe("assertFreeAgentGates", () => {
   });
 });
 
-describe("assertTemporaryChatAccess", () => {
-  it("rejects temporary chats for free users", () => {
-    expect(() =>
-      assertTemporaryChatAccess({
-        isTemporary: true,
-        subscription: "free",
-      }),
-    ).toThrow(ChatSDKError);
-  });
+describe("assertChatModeAccess", () => {
+  it.each([undefined, null, "temporary", "Agent", 1])(
+    "rejects invalid chat mode %p",
+    (mode) => {
+      expect(() =>
+        assertChatModeAccess({ mode, subscription: "free" }),
+      ).toThrow(ChatSDKError);
+    },
+  );
 
-  it("allows regular chats for free users", () => {
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "rejects Ask mode for %s users",
+    (subscription) => {
+      expect(() => assertChatModeAccess({ mode: "ask", subscription })).toThrow(
+        ChatSDKError,
+      );
+    },
+  );
+
+  it("allows Ask mode for free users", () => {
     expect(() =>
-      assertTemporaryChatAccess({
-        isTemporary: false,
-        subscription: "free",
-      }),
+      assertChatModeAccess({ mode: "ask", subscription: "free" }),
     ).not.toThrow();
   });
 
-  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "allows temporary chats for %s users",
+  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    "allows Agent mode for %s users",
     (subscription) => {
       expect(() =>
-        assertTemporaryChatAccess({
-          isTemporary: true,
-          subscription,
-        }),
+        assertChatModeAccess({ mode: "agent", subscription }),
       ).not.toThrow();
     },
   );

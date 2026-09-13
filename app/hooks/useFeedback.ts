@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { toast } from "sonner";
 import type { ChatMessage } from "@/types";
+import { captureMessageFeedback } from "@/lib/analytics/client";
 
 interface UseFeedbackProps {
   messages: ChatMessage[];
@@ -43,6 +44,12 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
             toast.error("That message is no longer available.");
             return;
           }
+
+          captureMessageFeedback({
+            messageId,
+            feedbackType: "positive",
+            previousFeedbackType: existingFeedback,
+          });
 
           // Update local message state and merge metadata
           setMessages(
@@ -88,6 +95,12 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
             toast.error("That message is no longer available.");
             return;
           }
+
+          captureMessageFeedback({
+            messageId,
+            feedbackType: "negative",
+            previousFeedbackType: existingFeedback,
+          });
 
           // Update local message state and merge metadata
           setMessages(

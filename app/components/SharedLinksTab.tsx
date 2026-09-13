@@ -52,11 +52,11 @@ const SharedLinksTab = () => {
     try {
       await unshareChat({ chatId });
       toast.success(`"${formatTaskTitle(chatTitle)}" is no longer shared`);
+      setUnshareTarget(null);
     } catch (error) {
       console.error("Failed to unshare chat:", error);
       toast.error("Failed to unshare task");
     } finally {
-      setUnshareTarget(null);
       setIsUnsharing(false);
     }
   };
@@ -67,11 +67,11 @@ const SharedLinksTab = () => {
     try {
       await unshareAllChats();
       toast.success("All tasks unshared successfully");
+      setShowUnshareAll(false);
     } catch (error) {
       console.error("Failed to unshare all chats:", error);
       toast.error("Failed to unshare all tasks");
     } finally {
-      setShowUnshareAll(false);
       setIsUnsharingAll(false);
     }
   };
@@ -184,6 +184,7 @@ const SharedLinksTab = () => {
 
       {/* Unshare Single Chat Confirmation Dialog */}
       <AlertDialog
+        pending={isUnsharing}
         open={unshareTarget !== null}
         onOpenChange={(open) => !open && setUnshareTarget(null)}
       >
@@ -199,7 +200,8 @@ const SharedLinksTab = () => {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isUnsharing}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
+              onClick={(event) => {
+                event.preventDefault();
                 if (unshareTarget) {
                   const chat = sharedChats.find(
                     (c: SharedChat) => c.id === unshareTarget,
@@ -219,7 +221,11 @@ const SharedLinksTab = () => {
       </AlertDialog>
 
       {/* Unshare All Confirmation Dialog */}
-      <AlertDialog open={showUnshareAll} onOpenChange={setShowUnshareAll}>
+      <AlertDialog
+        pending={isUnsharingAll}
+        open={showUnshareAll}
+        onOpenChange={setShowUnshareAll}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Unshare all tasks?</AlertDialogTitle>
@@ -234,7 +240,10 @@ const SharedLinksTab = () => {
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleUnshareAll}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleUnshareAll();
+              }}
               disabled={isUnsharingAll}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

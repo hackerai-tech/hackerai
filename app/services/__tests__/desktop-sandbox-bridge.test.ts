@@ -1,4 +1,9 @@
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
+import {
+  CentrifugoMessageReassembler,
+  isCentrifugoTransportFragment,
+} from "@/packages/local/src/centrifugo-transport";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -8,6 +13,7 @@ const mockSubscription = {
   unsubscribe: jest.fn(),
   removeAllListeners: jest.fn(),
   publish: jest.fn().mockResolvedValue(undefined),
+  ready: jest.fn().mockResolvedValue(undefined),
 };
 
 const mockClient = {
@@ -15,10 +21,28 @@ const mockClient = {
   connect: jest.fn(),
   disconnect: jest.fn(),
   on: jest.fn(),
+  ready: jest.fn().mockResolvedValue(undefined),
 };
+let mockClientOptions: {
+  getToken?: () => Promise<string>;
+  emulationEndpoint?: string;
+} | null = null;
+let mockClientEndpoint: unknown = null;
 
 jest.mock("centrifuge", () => ({
-  Centrifuge: jest.fn().mockImplementation(() => mockClient),
+  Centrifuge: jest.fn().mockImplementation((endpoint, options) => {
+    mockClientEndpoint = endpoint;
+    mockClientOptions = options;
+    return mockClient;
+  }),
+  errorCodes: {
+    timeout: 1,
+    connectionClosed: 11,
+  },
+}));
+
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: jest.fn(),
 }));
 
 // Mock Tauri IPC
@@ -65,8 +89,27 @@ function buildConfig(overrides: Record<string, unknown> = {}) {
       .fn()
       .mockResolvedValue({ ok: true, centrifugoToken: "new-token" }),
     disconnectDesktop: jest.fn().mockResolvedValue({ success: true }),
+    heartbeatDesktop: jest.fn().mockResolvedValue({ success: true }),
     ...overrides,
   };
+}
+
+function getClientHandler(
+  eventName: string,
+): (ctx: Record<string, unknown>) => void {
+  const call = mockClient.on.mock.calls.find(([event]) => event === eventName);
+  if (!call) throw new Error(`No client ${eventName} handler registered`);
+  return call[1];
+}
+
+function getSubscriptionHandler(
+  eventName: string,
+): (ctx: Record<string, unknown>) => void {
+  const call = mockSubscription.on.mock.calls.find(
+    ([event]) => event === eventName,
+  );
+  if (!call) throw new Error(`No subscription ${eventName} handler registered`);
+  return call[1];
 }
 
 function getPublicationHandler(): (ctx: { data: unknown }) => void {
@@ -81,6 +124,8 @@ function getPublicationHandler(): (ctx: { data: unknown }) => void {
 beforeEach(() => {
   jest.clearAllMocks();
   capturedChannel = null;
+  mockClientEndpoint = null;
+  mockClientOptions = null;
   global.fetch = originalFetch;
 
   mockInvokeHandler = async (cmd: string) => {
@@ -115,6 +160,136 @@ describe("desktop capability registration", () => {
         capabilities: { commands: true, pty: true, files: true },
       }),
     );
+  });
+});
+
+it("waits for the relay and subscription before reporting ready", async () => {
+  const onConnectionState = jest.fn();
+  const config = buildConfig({ onConnectionState });
+  const bridge = new DesktopSandboxBridge(config);
+
+  await bridge.start();
+  await Promise.resolve();
+
+  expect(mockClientEndpoint).toEqual([
+    {
+      transport: "websocket",
+      endpoint: "ws://localhost:8000/connection/websocket",
+    },
+    {
+      transport: "http_stream",
+      endpoint: "http://localhost:8000/connection/http_stream",
+    },
+  ]);
+  expect(mockClientOptions?.emulationEndpoint).toBe(
+    "http://localhost:8000/emulation",
+  );
+  expect(mockClient.ready).toHaveBeenCalledWith(15_000);
+  expect(mockSubscription.ready).toHaveBeenCalledWith(15_000);
+  expect(config.heartbeatDesktop).toHaveBeenCalledWith({
+    connectionId: "conn-123",
+  });
+  expect(onConnectionState).toHaveBeenCalledWith("connected");
+
+  await bridge.stop();
+});
+
+it("reports reconnecting and restored subscription state", async () => {
+  const onConnectionState = jest.fn();
+  const config = buildConfig({ onConnectionState });
+  const bridge = new DesktopSandboxBridge(config);
+  await bridge.start();
+
+  getClientHandler("connecting")({ code: 1, reason: "transport closed" });
+  getSubscriptionHandler("subscribing")({
+    code: 1,
+    reason: "transport closed",
+  });
+  getSubscriptionHandler("subscribed")({
+    recovered: true,
+    wasRecovering: true,
+  });
+
+  expect(onConnectionState).toHaveBeenNthCalledWith(2, "connecting");
+  expect(onConnectionState).toHaveBeenNthCalledWith(3, "connecting");
+  expect(onConnectionState).toHaveBeenLastCalledWith("connected");
+  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+    "desktop_bridge_relay_state_changed",
+    expect.objectContaining({
+      state: "connected",
+      source: "subscription",
+      recovered: true,
+    }),
+  );
+
+  await bridge.stop();
+});
+
+it("requests a fresh bridge after a terminal transport disconnect", async () => {
+  const onTerminated = jest.fn();
+  const config = buildConfig({ onTerminated });
+  const bridge = new DesktopSandboxBridge(config);
+  await bridge.start();
+
+  getClientHandler("disconnected")({ code: 3500, reason: "transport closed" });
+
+  expect(onTerminated).toHaveBeenCalledWith("transport_disconnected");
+  expect(bridge.getConnectionId()).toBeNull();
+  expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+    "desktop_bridge_relay_state_changed",
+    expect.objectContaining({ state: "disconnected", code: 3500 }),
+  );
+});
+
+describe("terminal connection state", () => {
+  it("notifies the owner when the server terminates the connection", async () => {
+    const onTerminated = jest.fn();
+    mockSubscription.unsubscribe.mockImplementationOnce(() => {
+      throw new Error("already unsubscribed");
+    });
+    const config = buildConfig({
+      onTerminated,
+      refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
+        ok: false,
+        terminated: true,
+        reason: "connection_inactive",
+        connectionId: "conn-123",
+        clientVersion: "desktop",
+        status: "disconnected",
+        disconnectReason: "presence_sweep",
+        msSinceDisconnected: 100,
+        msSinceLastHeartbeat: 200,
+        msSinceCreated: 300,
+      }),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    await expect(mockClientOptions?.getToken?.()).rejects.toThrow(
+      "Centrifugo refresh aborted: connection_inactive",
+    );
+
+    expect(onTerminated).toHaveBeenCalledWith("connection_inactive");
+    expect(bridge.getConnectionId()).toBeNull();
+    expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.removeAllListeners).toHaveBeenCalledTimes(1);
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unauthenticated token refresh termination", async () => {
+    const onTerminated = jest.fn();
+    const error = { data: { code: "UNAUTHORIZED" } };
+    const config = buildConfig({
+      onTerminated,
+      refreshCentrifugoTokenDesktop: jest.fn().mockRejectedValue(error),
+    });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    await expect(mockClientOptions?.getToken?.()).rejects.toBe(error);
+
+    expect(onTerminated).toHaveBeenCalledWith("unauthenticated");
+    expect(bridge.getConnectionId()).toBeNull();
   });
 });
 
@@ -249,6 +424,30 @@ describe("targetConnectionId filtering", () => {
 });
 
 describe("command cancellation acknowledgement", () => {
+  it("acknowledges cancellation when the command already exited", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+    const invokeHandler = jest.fn().mockResolvedValue(undefined);
+    mockInvokeHandler = invokeHandler;
+
+    handler({
+      data: {
+        type: "command_cancel",
+        commandId: "cmd-already-gone",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(invokeHandler).not.toHaveBeenCalled();
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "command_cancel_result",
+      commandId: "cmd-already-gone",
+      canceled: true,
+    });
+  });
+
   it.each([true, false])(
     "publishes the native cancellation result when invoke returns %s",
     async (nativeResult) => {
@@ -314,7 +513,7 @@ describe("command cancellation acknowledgement", () => {
 // ── native desktop file relay ─────────────────────────────────────────
 
 describe("native desktop file relay", () => {
-  it("handles file_read with the local desktop file server", async () => {
+  it("handles file_read through native IPC without loopback HTTP", async () => {
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
     await bridge.start();
@@ -322,22 +521,19 @@ describe("native desktop file relay", () => {
     const handler = getPublicationHandler();
 
     mockInvokeHandler = async (cmd: string) => {
-      if (cmd === "get_cmd_server_info") {
-        return { port: 49152, token: "file-token" };
+      if (cmd === "desktop_file_request") {
+        return {
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 12,
+          totalLines: 1,
+          content: "hello world\n",
+          startLine: 1,
+          truncated: false,
+        };
       }
       throw new Error(`Unexpected command: ${cmd}`);
     };
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        path: "C:\\repo\\app.ts",
-        sizeBytes: 12,
-        totalLines: 1,
-        content: "hello world\n",
-        startLine: 1,
-        truncated: false,
-      }),
-    } as Response);
+    global.fetch = jest.fn();
 
     handler({
       data: {
@@ -353,22 +549,18 @@ describe("native desktop file relay", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:49152/files/read",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer file-token",
-        }),
-        body: JSON.stringify({
-          path: "C:\\repo\\app.ts",
-          range_start: 1,
-          range_end: 1,
-          max_full_bytes: 1024,
-          max_result_bytes: 1024,
-        }),
-      }),
-    );
+    const { invoke } = await import("@tauri-apps/api/core");
+    expect(invoke).toHaveBeenCalledWith("desktop_file_request", {
+      request: {
+        path: "C:\\repo\\app.ts",
+        range_start: 1,
+        range_end: 1,
+        max_full_bytes: 1024,
+        max_result_bytes: 1024,
+        type: "file_read",
+      },
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
     expect(mockSubscription.publish).toHaveBeenCalledWith({
       type: "file_read_result",
       requestId: "file-req-1",
@@ -376,6 +568,103 @@ describe("native desktop file relay", () => {
       sizeBytes: 12,
       totalLines: 1,
       content: "hello world\n",
+      startLine: 1,
+    });
+  });
+
+  it("handles file_stat through the same structured native bridge", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        return {
+          kind: "file",
+          path: "C:\\repo\\app.ts",
+          sizeBytes: 12,
+        };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+
+    handler({
+      data: {
+        type: "file_stat",
+        requestId: "file-stat-1",
+        path: "C:\\repo\\app.ts",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_stat_result",
+      requestId: "file-stat-1",
+      kind: "file",
+      path: "C:\\repo\\app.ts",
+      sizeBytes: 12,
+    });
+  });
+
+  it("fragments oversized file_read responses below the relay limit", async () => {
+    mockSubscription.publish.mockResolvedValue(undefined);
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+    const content = "large file line\n".repeat(6_000);
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        return {
+          path: "C:\\repo\\large.txt",
+          sizeBytes: content.length,
+          totalLines: 6_000,
+          content,
+          startLine: 1,
+          truncated: false,
+        };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn();
+
+    handler({
+      data: {
+        type: "file_read",
+        requestId: "file-req-large",
+        path: "C:\\repo\\large.txt",
+        maxFullBytes: 1024 * 1024,
+        maxResultBytes: 1024 * 1024,
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const fragments = mockSubscription.publish.mock.calls
+      .map(([message]: [unknown]) => message)
+      .filter(isCentrifugoTransportFragment);
+    expect(fragments.length).toBeGreaterThan(1);
+    expect(
+      fragments.every(
+        (fragment) =>
+          new TextEncoder().encode(JSON.stringify(fragment)).byteLength <
+          64 * 1024,
+      ),
+    ).toBe(true);
+
+    const reassembler = new CentrifugoMessageReassembler();
+    let reassembled: unknown = null;
+    for (const fragment of fragments) {
+      reassembled = reassembler.accept(fragment) ?? reassembled;
+    }
+    expect(reassembled).toEqual({
+      type: "file_read_result",
+      requestId: "file-req-large",
+      path: "C:\\repo\\large.txt",
+      sizeBytes: content.length,
+      totalLines: 6_000,
+      content,
       startLine: 1,
     });
   });
@@ -390,15 +679,12 @@ describe("native desktop file relay", () => {
     (invoke as jest.Mock).mockClear();
 
     mockInvokeHandler = async (cmd: string) => {
-      if (cmd === "get_cmd_server_info") {
-        return { port: 49152, token: "file-token" };
+      if (cmd === "desktop_file_request") {
+        return { ok: true };
       }
       throw new Error(`Unexpected command: ${cmd}`);
     };
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true }),
-    } as Response);
+    global.fetch = jest.fn();
 
     handler({
       data: {
@@ -416,23 +702,23 @@ describe("native desktop file relay", () => {
       "execute_stream_command",
       expect.anything(),
     );
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:49152/files/write",
-      expect.objectContaining({
-        body: JSON.stringify({
-          path: "C:\\repo\\app.ts",
-          content: "updated",
-          is_base64: false,
-        }),
-      }),
-    );
+    expect(invoke).toHaveBeenCalledWith("desktop_file_request", {
+      request: {
+        path: "C:\\repo\\app.ts",
+        content: "updated",
+        is_base64: false,
+        allowed_root: undefined,
+        type: "file_write",
+      },
+    });
+    expect(global.fetch).not.toHaveBeenCalled();
     expect(mockSubscription.publish).toHaveBeenCalledWith({
       type: "file_ok",
       requestId: "file-req-2",
     });
   });
 
-  it("passes base64 append requests through to the local file server", async () => {
+  it("forwards the allowed project root to native IPC", async () => {
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
     await bridge.start();
@@ -440,15 +726,50 @@ describe("native desktop file relay", () => {
     const handler = getPublicationHandler();
 
     mockInvokeHandler = async (cmd: string) => {
-      if (cmd === "get_cmd_server_info") {
-        return { port: 49152, token: "file-token" };
+      if (cmd === "desktop_file_request") {
+        return { ok: true };
       }
       throw new Error(`Unexpected command: ${cmd}`);
     };
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true }),
-    } as Response);
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-req-root",
+        path: "C:\\repo\\app.ts",
+        content: "updated",
+        allowedRoot: "C:\\repo",
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const { invoke } = await import("@tauri-apps/api/core");
+    expect(invoke).toHaveBeenCalledWith("desktop_file_request", {
+      request: {
+        path: "C:\\repo\\app.ts",
+        content: "updated",
+        is_base64: false,
+        allowed_root: "C:\\repo",
+        type: "file_write",
+      },
+    });
+  });
+
+  it("passes base64 append requests through native IPC", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        return { ok: true };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
 
     handler({
       data: {
@@ -463,19 +784,148 @@ describe("native desktop file relay", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
+    const { invoke } = await import("@tauri-apps/api/core");
+    expect(invoke).toHaveBeenCalledWith("desktop_file_request", {
+      request: {
+        path: "C:\\repo\\asset.bin",
+        content: "AAEC",
+        is_base64: true,
+        allowed_root: undefined,
+        type: "file_append",
+      },
+    });
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_ok",
+      requestId: "file-req-3",
+    });
+  });
+
+  it("falls back to the loopback bridge for older desktop binaries", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        throw new Error("Command desktop_file_request not found");
+      }
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-legacy-1",
+        path: "C:\\repo\\legacy.txt",
+        content: "compatible",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
     expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:49152/files/append",
+      "http://127.0.0.1:49152/files/write",
       expect.objectContaining({
         body: JSON.stringify({
-          path: "C:\\repo\\asset.bin",
-          content: "AAEC",
-          is_base64: true,
+          path: "C:\\repo\\legacy.txt",
+          content: "compatible",
+          is_base64: false,
         }),
       }),
     );
     expect(mockSubscription.publish).toHaveBeenCalledWith({
       type: "file_ok",
-      requestId: "file-req-3",
+      requestId: "file-legacy-1",
+    });
+  });
+
+  it("falls back when native file IPC is blocked by an older Tauri ACL", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        throw new Error("Command desktop_file_request not allowed by ACL");
+      }
+      if (cmd === "get_cmd_server_info") {
+        return { port: 49152, token: "file-token" };
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true }),
+    } as Response);
+    const publicationPublished = new Promise<void>((resolve) => {
+      mockSubscription.publish.mockImplementationOnce(async () => {
+        resolve();
+      });
+    });
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-acl-fallback-1",
+        path: "C:\\repo\\transcript.json",
+        content: "compatible",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await publicationPublished;
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/write",
+      expect.objectContaining({
+        body: JSON.stringify({
+          path: "C:\\repo\\transcript.json",
+          content: "compatible",
+          is_base64: false,
+        }),
+      }),
+    );
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_ok",
+      requestId: "file-acl-fallback-1",
+    });
+  });
+
+  it("does not fall back when native IPC reports a real file error", async () => {
+    const bridge = new DesktopSandboxBridge(buildConfig());
+    await bridge.start();
+    const handler = getPublicationHandler();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request") {
+        throw new Error("Write error: Permission denied");
+      }
+      throw new Error(`Unexpected command: ${cmd}`);
+    };
+    global.fetch = jest.fn();
+
+    handler({
+      data: {
+        type: "file_write",
+        requestId: "file-denied-1",
+        path: "/root/denied.txt",
+        content: "nope",
+        targetConnectionId: "conn-123",
+      },
+    });
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockSubscription.publish).toHaveBeenCalledWith({
+      type: "file_error",
+      requestId: "file-denied-1",
+      message: "Write error: Permission denied",
     });
   });
 });
@@ -568,7 +1018,12 @@ describe("forwardChunk", () => {
     ]);
 
     expect(calls).toContainEqual([
-      { type: "stdout", commandId: "cmd-fwd", data: "hello world" },
+      {
+        type: "stdout",
+        commandId: "cmd-fwd",
+        data: "hello world",
+        sequence: 0,
+      },
     ]);
   });
 
@@ -587,7 +1042,7 @@ describe("forwardChunk", () => {
     const calls = await startBridgeAndForwardChunks([{ type: "exit" }]);
 
     expect(calls).toContainEqual([
-      { type: "exit", commandId: "cmd-fwd", exitCode: -1 },
+      { type: "exit", commandId: "cmd-fwd", exitCode: -1, sequence: 0 },
     ]);
   });
 
@@ -597,7 +1052,7 @@ describe("forwardChunk", () => {
     ]);
 
     expect(calls).toContainEqual([
-      { type: "exit", commandId: "cmd-fwd", exitCode: 42 },
+      { type: "exit", commandId: "cmd-fwd", exitCode: 42, sequence: 0 },
     ]);
   });
 
@@ -607,7 +1062,7 @@ describe("forwardChunk", () => {
     ]);
 
     expect(calls).toContainEqual([
-      { type: "exit", commandId: "cmd-fwd", exitCode: 0 },
+      { type: "exit", commandId: "cmd-fwd", exitCode: 0, sequence: 0 },
     ]);
   });
 
@@ -648,6 +1103,527 @@ describe("forwardChunk", () => {
     expect(mockSubscription.publish).toHaveBeenCalledTimes(
       publishCountAfterStop,
     );
+  });
+
+  it("drops a queued stream chunk when the bridge stops before publishing it", async () => {
+    let releaseFirstPublish!: () => void;
+    const firstPublishBlocked = new Promise<void>((resolve) => {
+      releaseFirstPublish = resolve;
+    });
+    let firstPublishStarted!: () => void;
+    const firstPublishStartedPromise = new Promise<void>((resolve) => {
+      firstPublishStarted = resolve;
+    });
+    mockSubscription.publish.mockImplementationOnce(async () => {
+      firstPublishStarted();
+      await firstPublishBlocked;
+    });
+
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+
+      mockInvokeHandler = async () => undefined;
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-queued-stop",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const firstChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "first",
+      }) as unknown as Promise<void>;
+      await firstPublishStartedPromise;
+      const queuedChunk = capturedChannel!.onmessage!({
+        type: "stderr",
+        data: "queued",
+      }) as unknown as Promise<void>;
+
+      await bridge.stop();
+      releaseFirstPublish();
+
+      await expect(Promise.all([firstChunk, queuedChunk])).resolves.toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        "[DesktopSandboxBridge] Failed to publish result:",
+        expect.anything(),
+      );
+    } finally {
+      releaseFirstPublish();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      label: "structured connection closed",
+      publishError: { code: 11, message: "connection closed" },
+      directForwardFailure: undefined,
+      reason: "connection_closed",
+    },
+    {
+      label: "JSON-encoded Error timeout",
+      publishError: new Error(JSON.stringify({ code: 1, message: "timeout" })),
+      directForwardFailure: undefined,
+      reason: "timeout",
+    },
+    {
+      label: "plain connection closed message",
+      publishError: undefined,
+      directForwardFailure: "connection closed",
+      reason: "connection_closed",
+    },
+  ])(
+    "exhausts retries for $label and reports the command once",
+    async ({ publishError, directForwardFailure, reason }) => {
+      jest.useFakeTimers();
+      let finishCommand!: () => void;
+      const commandFinished = new Promise<void>((resolve) => {
+        finishCommand = resolve;
+      });
+      mockInvokeHandler = async (cmd: string) => {
+        if (cmd === "execute_stream_command") {
+          await commandFinished;
+          return undefined;
+        }
+        return undefined;
+      };
+      if (publishError !== undefined) {
+        mockSubscription.publish.mockRejectedValue(publishError);
+      }
+      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      let forwardChunkSpy: jest.SpyInstance | null = null;
+
+      try {
+        const bridge = new DesktopSandboxBridge(buildConfig());
+        await bridge.start();
+        if (directForwardFailure !== undefined) {
+          forwardChunkSpy = jest
+            .spyOn(
+              bridge as unknown as {
+                forwardChunk: (
+                  commandId: string,
+                  chunk: unknown,
+                ) => Promise<void>;
+              },
+              "forwardChunk",
+            )
+            .mockRejectedValue(directForwardFailure);
+        }
+        const handler = getPublicationHandler();
+        handler({
+          data: {
+            type: "command",
+            commandId: "cmd-publish-failure",
+            command: "test",
+            chatId: "chat-1",
+            triggerRunId: "run-1",
+            targetConnectionId: "conn-123",
+          },
+        });
+        await jest.advanceTimersByTimeAsync(0);
+
+        const firstChunk = capturedChannel!.onmessage!({
+          type: "stdout",
+          data: "first",
+        }) as unknown as Promise<void>;
+        await jest.advanceTimersByTimeAsync(250);
+        await jest.advanceTimersByTimeAsync(500);
+        await expect(firstChunk).resolves.toBeUndefined();
+        expect(captureAuthenticatedEvent).toHaveBeenCalledTimes(2);
+        expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+          1,
+          "desktop_stream_publish_failed",
+          {
+            connectionId: "conn-123",
+            commandId: "cmd-publish-failure",
+            chatId: "chat-1",
+            triggerRunId: "run-1",
+            chunkType: "stdout",
+            reason,
+            attempt: 1,
+            maxAttempts: 3,
+          },
+        );
+        expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+          2,
+          "desktop_stream_publish_recovery_exhausted",
+          {
+            connectionId: "conn-123",
+            commandId: "cmd-publish-failure",
+            chatId: "chat-1",
+            triggerRunId: "run-1",
+            chunkType: "stdout",
+            reason,
+            attempts: 3,
+            exhaustionReason: "attempts",
+            recoveryLatencyMs: 750,
+          },
+        );
+
+        const structuredLog = warnSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "desktop_stream_publish_failed");
+        expect(structuredLog).toEqual(
+          expect.objectContaining({
+            timestamp: expect.any(String),
+            level: "warn",
+            event: "desktop_stream_publish_failed",
+            service: "desktop_bridge",
+            environment: "test",
+            request_id: "cmd-publish-failure",
+            connection_id: "conn-123",
+            command_id: "cmd-publish-failure",
+            chat_id: "chat-1",
+            trigger_run_id: "run-1",
+            chunk_type: "stdout",
+            reason,
+            attempt: 1,
+            max_attempts: 3,
+          }),
+        );
+      } finally {
+        finishCommand();
+        forwardChunkSpy?.mockRestore();
+        mockSubscription.publish.mockResolvedValue(undefined);
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("preserves sequence continuity after a chunk exhausts its retries", async () => {
+    jest.useFakeTimers();
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    const publishError = { code: 11, message: "connection closed" };
+    mockSubscription.publish
+      .mockRejectedValueOnce(publishError)
+      .mockRejectedValueOnce(publishError)
+      .mockRejectedValueOnce(publishError)
+      .mockResolvedValue(undefined);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-sequence-after-exhaustion",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const firstChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "dropped",
+      }) as unknown as Promise<void>;
+      const secondChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "delivered",
+      }) as unknown as Promise<void>;
+
+      await jest.advanceTimersByTimeAsync(250);
+      await jest.advanceTimersByTimeAsync(500);
+      await Promise.all([
+        expect(firstChunk).resolves.toBeUndefined(),
+        expect(secondChunk).resolves.toBeUndefined(),
+      ]);
+
+      expect(mockSubscription.publish).toHaveBeenNthCalledWith(4, {
+        type: "stdout",
+        commandId: "cmd-sequence-after-exhaustion",
+        data: "delivered",
+        sequence: 1,
+      });
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it("retries a transient publish after reconnect and reports recovery", async () => {
+    jest.useFakeTimers();
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    mockSubscription.publish
+      .mockRejectedValueOnce({ code: 11, message: "connection closed" })
+      .mockResolvedValue(undefined);
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-publish-recovery",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const chunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "recovered",
+      }) as unknown as Promise<void>;
+      await jest.advanceTimersByTimeAsync(250);
+      await expect(chunk).resolves.toBeUndefined();
+
+      expect(mockClient.ready).toHaveBeenCalledWith(5_000);
+      expect(mockSubscription.ready).toHaveBeenCalledWith(5_000);
+      expect(mockSubscription.publish).toHaveBeenNthCalledWith(1, {
+        type: "stdout",
+        commandId: "cmd-publish-recovery",
+        data: "recovered",
+        sequence: 0,
+      });
+      expect(mockSubscription.publish).toHaveBeenNthCalledWith(2, {
+        type: "stdout",
+        commandId: "cmd-publish-recovery",
+        data: "recovered",
+        sequence: 0,
+      });
+      expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+        1,
+        "desktop_stream_publish_failed",
+        expect.objectContaining({
+          commandId: "cmd-publish-recovery",
+          reason: "connection_closed",
+          attempt: 1,
+          maxAttempts: 3,
+        }),
+      );
+      expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+        2,
+        "desktop_stream_publish_recovered",
+        expect.objectContaining({
+          commandId: "cmd-publish-recovery",
+          reason: "connection_closed",
+          attempts: 2,
+          recoveryLatencyMs: 250,
+        }),
+      );
+
+      finishCommand();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+        3,
+        "desktop_stream_command_settled",
+        {
+          connectionId: "conn-123",
+          commandId: "cmd-publish-recovery",
+          outcome: "recovered",
+          observedChunks: 1,
+          publishedChunks: 1,
+          exhaustedChunks: 0,
+          terminalChunkObserved: null,
+          terminalChunkPublished: false,
+          sequenceComplete: true,
+          durationMs: 250,
+        },
+      );
+      expect(
+        infoSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "desktop_stream_command_settled"),
+      ).toEqual(
+        expect.objectContaining({
+          level: "info",
+          outcome: "recovered",
+          observed_chunks: 1,
+          published_chunks: 1,
+          exhausted_chunks: 0,
+          terminal_chunk_observed: null,
+          terminal_chunk_published: false,
+          sequence_complete: true,
+          duration_ms: 250,
+        }),
+      );
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
+      infoSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it("stops retrying when the command recovery deadline is reached", async () => {
+    jest.useFakeTimers();
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    mockSubscription.publish.mockRejectedValue({
+      code: 11,
+      message: "connection closed",
+    });
+    const rejectAtTimeout = (timeoutMs: number) =>
+      new Promise<void>((_, reject) => {
+        setTimeout(() => reject(new Error("ready timeout")), timeoutMs);
+      });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      mockClient.ready.mockImplementationOnce(rejectAtTimeout);
+      mockSubscription.ready.mockImplementationOnce(rejectAtTimeout);
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-publish-deadline",
+          command: "test",
+          timeout: 1_000,
+          targetConnectionId: "conn-123",
+        },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const chunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "late",
+      }) as unknown as Promise<void>;
+      await jest.advanceTimersByTimeAsync(250);
+      await jest.advanceTimersByTimeAsync(3_750);
+      await expect(chunk).resolves.toBeUndefined();
+
+      expect(mockSubscription.publish).toHaveBeenCalledTimes(1);
+      expect(mockClient.ready).toHaveBeenCalledWith(3_750);
+      expect(mockSubscription.ready).toHaveBeenCalledWith(3_750);
+      expect(captureAuthenticatedEvent).toHaveBeenNthCalledWith(
+        2,
+        "desktop_stream_publish_recovery_exhausted",
+        expect.objectContaining({
+          commandId: "cmd-publish-deadline",
+          attempts: 1,
+          exhaustionReason: "deadline",
+          recoveryLatencyMs: 4_000,
+        }),
+      );
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      mockClient.ready.mockResolvedValue(undefined);
+      mockSubscription.ready.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
+  it("preserves unexpected publish rejections for error tracking", async () => {
+    let finishCommand!: () => void;
+    const commandFinished = new Promise<void>((resolve) => {
+      finishCommand = resolve;
+    });
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        await commandFinished;
+      }
+      return undefined;
+    };
+    mockSubscription.publish.mockRejectedValue({
+      code: 999,
+      message: "unexpected publish failure",
+    });
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      handler({
+        data: {
+          type: "command",
+          commandId: "cmd-unknown-publish-failure",
+          command: "test",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const firstChunk = capturedChannel!.onmessage!({
+        type: "stdout",
+        data: "first",
+      }) as unknown as Promise<void>;
+      const secondChunk = capturedChannel!.onmessage!({
+        type: "stderr",
+        data: "second",
+      }) as unknown as Promise<void>;
+      await expect(firstChunk).rejects.toThrow("unexpected publish failure");
+      await expect(secondChunk).rejects.toThrow("unexpected publish failure");
+      expect(captureAuthenticatedEvent).not.toHaveBeenCalled();
+      expect(warnSpy.mock.calls).not.toContainEqual([
+        expect.stringContaining("desktop_stream_publish_failed"),
+      ]);
+    } finally {
+      finishCommand();
+      mockSubscription.publish.mockResolvedValue(undefined);
+      warnSpy.mockRestore();
+    }
   });
 });
 

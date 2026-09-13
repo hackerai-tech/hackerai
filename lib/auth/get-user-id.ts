@@ -93,24 +93,6 @@ export const getUserIDAndPro = async (
   }
 };
 
-/**
- * Get the current user ID only if the user has signed in recently.
- * Enforces a freshness window (default 10 minutes) using session.user.lastSignInAt.
- * Throws ChatSDKError if unauthenticated or if the last sign-in is stale.
- *
- * @param req - NextRequest object (server-side only)
- * @param windowMs - Freshness window in milliseconds (default 10 minutes)
- * @returns Promise<string> - User ID
- * @throws ChatSDKError - When user is not authenticated or login is stale
- */
-export const getUserIDWithFreshLogin = async (
-  req: NextRequest,
-  windowMs: number = 10 * 60 * 1000,
-): Promise<string> => {
-  const { userId } = await getUserIDWithFreshLoginContext(req, windowMs);
-  return userId;
-};
-
 export const getUserIDWithFreshLoginContext = async (
   req: NextRequest,
   windowMs: number = 10 * 60 * 1000,

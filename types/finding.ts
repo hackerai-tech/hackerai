@@ -37,6 +37,8 @@ export interface FindingDetailRecord extends FindingSummary {
   poc_script_code: string;
   remediation_steps: string;
   evidence: string;
+  evidence_refs?: string[];
+  evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
   assumptions: string;
   fix_effort: "trivial" | "low" | "medium" | "high";
   cvss_breakdown: Cvss31Breakdown;

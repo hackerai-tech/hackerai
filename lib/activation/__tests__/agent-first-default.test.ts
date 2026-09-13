@@ -19,7 +19,6 @@ const baseEligibility: AgentFirstDefaultEligibility = {
   isMobile: false,
   subscription: "free",
   subscriptionResolved: true,
-  temporaryChatsEnabled: false,
   userPresent: true,
 };
 
@@ -91,15 +90,6 @@ describe("shouldDefaultFreeUserToAgent", () => {
       }),
     ).toBe(false);
   });
-
-  it("does not default temporary chats to Agent", () => {
-    expect(
-      shouldDefaultFreeUserToAgent({
-        ...baseEligibility,
-        temporaryChatsEnabled: true,
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("shouldDefaultUltraUserToAgent", () => {
@@ -143,15 +133,6 @@ describe("shouldDefaultUltraUserToAgent", () => {
       shouldDefaultUltraUserToAgent({
         ...ultraEligibility,
         subscription: "pro-plus",
-      }),
-    ).toBe(false);
-  });
-
-  it("does not default temporary chats to Agent", () => {
-    expect(
-      shouldDefaultUltraUserToAgent({
-        ...ultraEligibility,
-        temporaryChatsEnabled: true,
       }),
     ).toBe(false);
   });
@@ -201,15 +182,6 @@ describe("shouldDefaultProPlusUserToAgent", () => {
       }),
     ).toBe(false);
   });
-
-  it("does not default temporary chats to Agent", () => {
-    expect(
-      shouldDefaultProPlusUserToAgent({
-        ...proPlusEligibility,
-        temporaryChatsEnabled: true,
-      }),
-    ).toBe(false);
-  });
 });
 
 describe("shouldDefaultPaidUserToAgent", () => {
@@ -251,16 +223,6 @@ describe("shouldDefaultPaidUserToAgent", () => {
         ...paidEligibility,
         subscription: "pro",
         hasUserSelectedModeThisSession: true,
-      }),
-    ).toBe(false);
-  });
-
-  it("does not default temporary chats to Agent", () => {
-    expect(
-      shouldDefaultPaidUserToAgent({
-        ...paidEligibility,
-        subscription: "pro",
-        temporaryChatsEnabled: true,
       }),
     ).toBe(false);
   });

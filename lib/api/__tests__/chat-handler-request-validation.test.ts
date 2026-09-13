@@ -1,24 +1,100 @@
+import fs from "fs";
+import path from "path";
 import {
-  requireBooleanFlag,
   requireChatMessagesArray,
+  requireRetiredTemporaryFieldAbsent,
+  requireVercelChatMode,
 } from "@/lib/api/chat-request-validation";
 
 describe("chat-handler request validation", () => {
-  it("accepts only boolean request flags", () => {
-    expect(requireBooleanFlag("temporary", undefined)).toBe(false);
-    expect(requireBooleanFlag("temporary", false)).toBe(false);
-    expect(requireBooleanFlag("temporary", true)).toBe(true);
+  it("checks original image attachments before Flash routing", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../chat-handler.ts"),
+      "utf8",
+    );
+    const routingStart = source.indexOf("const flashRoutingAssignment");
+    const routingEnd = source.indexOf("if (flashRoutingAssignment)");
+    const attachmentCheck = source.indexOf(
+      "countFileAttachments(fetched.truncatedMessages).imageCount > 0",
+    );
+    expect(routingStart).toBeGreaterThan(-1);
+    expect(routingEnd).toBeGreaterThan(-1);
+    expect(attachmentCheck).toBeGreaterThan(routingStart);
+    expect(attachmentCheck).toBeLessThan(routingEnd);
+  });
+  it("enforces the Trigger.dev Agent boundary before Vercel auth or billing work", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../chat-handler.ts"),
+      "utf8",
+    );
+    const modeBoundary = source.indexOf("requireVercelChatMode(rawMode)");
+    const authentication = source.indexOf("getUserIDAndPro(req)");
+    const billingGate = source.indexOf(
+      "assertUserCanMakeCostIncurringRequest(userId)",
+    );
 
-    expect(() => requireBooleanFlag("temporary", "false")).toThrow(
+    expect(modeBoundary).toBeGreaterThan(-1);
+    expect(modeBoundary).toBeLessThan(authentication);
+    expect(modeBoundary).toBeLessThan(billingGate);
+  });
+
+  it.each([true, false])(
+    "rejects retired temporary=%s before persistence",
+    (temporary) => {
+      const persist = jest.fn();
+
+      expect(() => {
+        const body = { messages: [], temporary };
+        requireRetiredTemporaryFieldAbsent(body);
+        persist(body);
+      }).toThrow(
+        expect.objectContaining({
+          type: "bad_request",
+          surface: "api",
+          statusCode: 400,
+          cause: "Invalid chat request: temporary is no longer supported.",
+          metadata: expect.objectContaining({
+            invalid_request_field: "temporary",
+            invalid_request_field_reason: "retired_field",
+          }),
+        }),
+      );
+
+      expect(persist).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts requests that omit the retired temporary field", () => {
+    expect(() =>
+      requireRetiredTemporaryFieldAbsent({ messages: [] }),
+    ).not.toThrow();
+  });
+
+  it("rejects legacy Vercel Agent execution before downstream work", () => {
+    expect(() => requireVercelChatMode("agent")).toThrow(
       expect.objectContaining({
         type: "bad_request",
         surface: "api",
         statusCode: 400,
-        cause: "Invalid chat request: temporary must be a boolean.",
+        cause:
+          "Agent requests must use the Trigger.dev-backed /api/agent endpoint.",
         metadata: expect.objectContaining({
-          invalid_request_field: "temporary",
-          invalid_request_field_type: "string",
-          invalid_request_field_reason: "not_boolean",
+          invalid_request_field: "mode",
+          invalid_request_field_reason: "agent_requires_trigger_route",
+          required_endpoint: "/api/agent",
+        }),
+      }),
+    );
+  });
+
+  it("keeps /api/chat limited to ask mode", () => {
+    expect(requireVercelChatMode("ask")).toBe("ask");
+    expect(() => requireVercelChatMode("unknown")).toThrow(
+      expect.objectContaining({
+        type: "bad_request",
+        metadata: expect.objectContaining({
+          invalid_request_field: "mode",
+          invalid_request_field_reason: "invalid_mode",
         }),
       }),
     );

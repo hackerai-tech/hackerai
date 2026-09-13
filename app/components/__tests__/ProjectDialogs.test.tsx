@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { useConvex } from "convex/react";
 import type { Doc } from "@/convex/_generated/dataModel";
 
 const mockUpdateProject = jest.fn<any>().mockResolvedValue(null);
@@ -38,6 +39,7 @@ const project = {
 describe("project management dialogs", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    (useConvex().query as jest.Mock<any>).mockResolvedValue("complete");
     mockIsTauriEnvironment = false;
   });
 

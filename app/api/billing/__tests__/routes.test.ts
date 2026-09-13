@@ -59,7 +59,7 @@ describe("billing API routes", () => {
     );
     const { POST } = await import("../portal/route");
 
-    const response = await POST();
+    const response = await POST(request(null) as never);
 
     await expect(response.json()).resolves.toEqual({
       url: "https://billing.stripe.com/session",
@@ -73,12 +73,36 @@ describe("billing API routes", () => {
     );
     const { POST } = await import("../portal/route");
 
-    const response = await POST();
+    const response = await POST(request(null) as never);
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
       error: "Only admins or owners can manage billing",
     });
+  });
+
+  it("passes payment method update mode to the billing portal action", async () => {
+    mockRedirectToBillingPortal.mockResolvedValue(
+      "https://billing.stripe.com/payment-method" as never,
+    );
+    const { POST } = await import("../portal/route");
+
+    const response = await POST(request({ flow: "payment_method" }) as never);
+
+    expect(response.status).toBe(200);
+    expect(mockRedirectToBillingPortal).toHaveBeenCalledWith("payment_method");
+  });
+
+  it("rejects unsupported billing portal flows", async () => {
+    const { POST } = await import("../portal/route");
+
+    const response = await POST(request({ flow: "cancel" }) as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "Invalid billing portal flow",
+    });
+    expect(mockRedirectToBillingPortal).not.toHaveBeenCalled();
   });
 
   it("returns subscription cancellation status", async () => {
@@ -129,6 +153,7 @@ describe("billing API routes", () => {
       request({
         cancellationReason: {
           reasonCategory: "too_expensive",
+          reasonSubcategory: "too_expensive_low_frequency",
           reasonDetails: "Budget changed",
         },
       }) as never,
@@ -138,6 +163,7 @@ describe("billing API routes", () => {
     expect(mockCancelSubscription).toHaveBeenCalledWith({
       cancellationReason: {
         reasonCategory: "too_expensive",
+        reasonSubcategory: "too_expensive_low_frequency",
         reasonDetails: "Budget changed",
       },
     });

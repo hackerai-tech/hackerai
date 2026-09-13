@@ -1,7 +1,16 @@
 jest.mock("@e2b/code-interpreter", () => ({
-  Sandbox: class MockSandbox {},
+  Sandbox: class MockSandbox {
+    static list = jest.fn();
+    static connect = jest.fn();
+  },
 }));
 
+import { Sandbox } from "@e2b/code-interpreter";
+
+const sandboxApi = Sandbox as unknown as {
+  list: jest.Mock;
+  connect: jest.Mock;
+};
 const mockConvexQuery = jest.fn();
 const mockConvexMutation = jest.fn();
 
@@ -15,11 +24,13 @@ jest.mock("@/lib/db/convex-client", () => ({
 import {
   filterConnectionsByPresence,
   HybridSandboxManager,
+  isSameLocalMachine,
   LOCAL_SANDBOX_PRESENCE_GRACE_MS,
 } from "../hybrid-sandbox-manager";
 import {
   assertAgentApprovalSandboxIdentity,
   assertLocalSandboxFallbackAllowed,
+  getAgentApprovalSandboxIdentity,
   getSandboxFallbackErrorMessage,
   getSandboxFallbackPromptReminder,
   getSandboxWithFallbackGuard,
@@ -98,6 +109,52 @@ describe("filterConnectionsByPresence", () => {
 
     expect(result.availableConnections).toEqual([live]);
     expect(result.staleConnections).toEqual([stale]);
+  });
+});
+
+describe("isSameLocalMachine", () => {
+  const kaliConnection = makeConnection({
+    connectionId: "conn-old",
+    name: "4p3x",
+    isDesktop: false,
+    osInfo: {
+      platform: "linux",
+      arch: "x86_64",
+      release: "6.18.5-kali1-amd64",
+      hostname: "4p3x",
+    },
+  });
+
+  it("matches a restarted runner on the same host", () => {
+    expect(
+      isSameLocalMachine(
+        kaliConnection,
+        makeConnection({
+          ...kaliConnection,
+          connectionId: "conn-new",
+          lastSeen: Date.now(),
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects another host and connections without host identity", () => {
+    expect(
+      isSameLocalMachine(
+        kaliConnection,
+        makeConnection({
+          ...kaliConnection,
+          connectionId: "conn-other",
+          osInfo: { ...kaliConnection.osInfo!, hostname: "other-host" },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isSameLocalMachine(
+        kaliConnection,
+        makeConnection({ connectionId: "conn-unknown", osInfo: undefined }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -382,6 +439,38 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     ).toThrow("selected sandbox changed after approval");
   });
 
+  it("keeps MIOSA approvals isolated from E2B", () => {
+    const miosa = { sandboxKind: "miosa" as const } as never;
+    const e2b = { commands: {} } as never;
+
+    expect(getAgentApprovalSandboxIdentity(miosa)).toBe("miosa");
+    expect(getAgentApprovalSandboxIdentity(e2b)).toBe("e2b");
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: miosa,
+        expectedSandboxIdentity: "e2b",
+      }),
+    ).toThrow("selected sandbox changed after approval");
+  });
+
+  it("advertises interactive PTY after a local preference falls back to MIOSA", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { provider: "miosa" },
+    );
+
+    await expect(manager.supportsInteractivePty()).resolves.toBe(true);
+  });
+
   it("blocks Desktop-local attachment preparation when Desktop falls back", () => {
     let error: unknown;
     try {
@@ -563,20 +652,382 @@ describe("HybridSandboxManager prompt-time fallback", () => {
 });
 
 describe("HybridSandboxManager reset cleanup", () => {
-  let warnSpy: jest.SpyInstance;
-  let debugSpy: jest.SpyInstance;
-
   beforeEach(() => {
-    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    debugSpy = jest.spyOn(console, "debug").mockImplementation(() => {});
+    sandboxApi.list.mockReset();
+    sandboxApi.connect.mockReset();
+    mockConvexQuery.mockReset();
+    mockConvexMutation.mockReset();
   });
 
-  afterEach(() => {
-    warnSpy.mockRestore();
-    debugSpy.mockRestore();
+  it("returns a cached E2B sandbox after a transient lease refresh failure", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "e2b",
+        "service-key",
+        null,
+        "pro",
+      );
+      const sandbox = Object.assign(new Sandbox(), {
+        sandboxId: "sandbox-1",
+        setTimeout: jest.fn(async () => {
+          throw new Error("temporary refresh failure");
+        }),
+      });
+      manager.setSandbox(sandbox as any);
+
+      await expect(manager.getSandbox()).resolves.toEqual({ sandbox });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('"source":"hybrid_manager_cache"'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
-  it("downgrades already-gone E2B sandbox reset failures", async () => {
+  it("keeps a cloud fallback pinned when the preferred desktop reconnects", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "desktop",
+      "service-key",
+      null,
+      "pro",
+    );
+    const sandbox = Object.assign(new Sandbox(), {
+      sandboxId: "sandbox-1",
+      setTimeout: jest.fn(async () => {}),
+    });
+    manager.setSandbox(sandbox as any);
+    mockConvexQuery.mockResolvedValue([
+      makeConnection({
+        connectionId: "desktop-conn",
+        name: "Desktop",
+        isDesktop: true,
+      }),
+    ]);
+
+    await expect(manager.getSandbox()).resolves.toEqual({ sandbox });
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
+  it("marks E2B unavailable after the initial check and reconnect both fail", () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "e2b",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    expect(manager.recordHealthFailure()).toBe(false);
+    expect(manager.recordHealthFailure()).toBe(true);
+    expect(manager.isSandboxUnavailable()).toBe(true);
+  });
+
+  it("persists and excludes an unresponsive local connection", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const setSandbox = jest.fn();
+    const unresponsive = makeConnection({
+      connectionId: "conn-unresponsive",
+      name: "Unresponsive",
+    });
+    const healthy = makeConnection({
+      connectionId: "conn-healthy",
+      name: "Healthy",
+    });
+    mockConvexQuery.mockResolvedValue([unresponsive, healthy]);
+    mockConvexMutation.mockResolvedValue({ success: true });
+
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        setSandbox,
+        "conn-unresponsive",
+        "service-key",
+        null,
+        "pro",
+        undefined,
+        undefined,
+        "run-123",
+      );
+
+      await manager.quarantineLocalConnection(
+        "conn-unresponsive",
+        "command_unresponsive",
+      );
+
+      expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
+        serviceKey: "service-key",
+        connectionId: "conn-unresponsive",
+        reason: "command_unresponsive",
+      });
+      await expect(manager.listConnections()).resolves.toEqual([healthy]);
+      const queryCallsBeforeStrictRetry = mockConvexQuery.mock.calls.length;
+      await manager.resetSandbox("attachment_retry");
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "The selected local sandbox stopped responding",
+      );
+      expect(mockConvexQuery).toHaveBeenCalledTimes(
+        queryCallsBeforeStrictRetry,
+      );
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(sandboxApi.list).not.toHaveBeenCalled();
+
+      const quarantineLog = JSON.parse(
+        String(
+          warnSpy.mock.calls.find(([value]) =>
+            String(value).includes("local_sandbox_connection_quarantined"),
+          )?.[0],
+        ),
+      );
+      expect(quarantineLog).toMatchObject({
+        level: "warn",
+        event: "local_sandbox_connection_quarantined",
+        service: "agent-long",
+        request_id: "run-123",
+        user_id: "user-1",
+        connection_id: "conn-unresponsive",
+        reason: "command_unresponsive",
+      });
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("recovers an unsubscribed relay only onto the same machine", async () => {
+    const originalWsUrl = process.env.CENTRIFUGO_WS_URL;
+    const originalTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+    process.env.CENTRIFUGO_WS_URL = "ws://centrifugo.test/connection/websocket";
+    process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stale = makeConnection({
+      connectionId: "conn-stale",
+      name: "4p3x",
+      isDesktop: false,
+      osInfo: {
+        platform: "linux",
+        arch: "x86_64",
+        release: "6.18.5-kali1-amd64",
+        hostname: "4p3x",
+      },
+    });
+    const replacement = makeConnection({
+      ...stale,
+      connectionId: "conn-replacement",
+      lastSeen: 2_000,
+    });
+    const otherHost = makeConnection({
+      ...stale,
+      connectionId: "conn-other",
+      name: "other-host",
+      osInfo: { ...stale.osInfo!, hostname: "other-host" },
+      lastSeen: 3_000,
+    });
+    const setSandbox = jest.fn();
+    const manager = new HybridSandboxManager(
+      "user-1",
+      setSandbox,
+      "conn-stale",
+      "service-key",
+      null,
+      "free",
+      undefined,
+      undefined,
+      "run-123",
+    );
+    const staleSandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => stale.connectionId,
+      getConnectionName: () => stale.name,
+      getConnectionInfo: () => stale,
+      getCloudProvider: () => null,
+    };
+    manager.setSandbox(staleSandbox as any);
+    jest
+      .spyOn(manager, "listConnections")
+      .mockResolvedValue([otherHost, replacement]);
+    mockConvexMutation.mockResolvedValue({ success: true });
+
+    try {
+      const recovered = await manager.recoverLocalConnection(
+        stale.connectionId,
+        "command_relay_unsubscribed",
+      );
+
+      expect((recovered.sandbox as any).getConnectionId()).toBe(
+        "conn-replacement",
+      );
+      expect(manager.getEffectivePreference()).toBe("conn-replacement");
+      expect(mockConvexMutation).toHaveBeenCalledWith(expect.anything(), {
+        serviceKey: "service-key",
+        connectionId: "conn-stale",
+        reason: "command_unresponsive",
+      });
+      expect(setSandbox).toHaveBeenLastCalledWith(recovered.sandbox);
+    } finally {
+      warnSpy.mockRestore();
+      if (originalWsUrl === undefined) delete process.env.CENTRIFUGO_WS_URL;
+      else process.env.CENTRIFUGO_WS_URL = originalWsUrl;
+      if (originalTokenSecret === undefined)
+        delete process.env.CENTRIFUGO_TOKEN_SECRET;
+      else process.env.CENTRIFUGO_TOKEN_SECRET = originalTokenSecret;
+    }
+  });
+
+  it("fails closed when only a different machine is connected", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const stale = makeConnection({
+      connectionId: "conn-stale",
+      name: "4p3x",
+      isDesktop: false,
+      osInfo: {
+        platform: "linux",
+        arch: "x86_64",
+        release: "6.18.5-kali1-amd64",
+        hostname: "4p3x",
+      },
+    });
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "conn-stale",
+      "service-key",
+      null,
+      "pro",
+    );
+    manager.setSandbox({
+      sandboxKind: "centrifugo",
+      getConnectionId: () => stale.connectionId,
+      getConnectionName: () => stale.name,
+      getConnectionInfo: () => stale,
+      getCloudProvider: () => null,
+    } as any);
+    jest.spyOn(manager, "listConnections").mockResolvedValue([
+      makeConnection({
+        connectionId: "conn-other",
+        name: "other-host",
+        osInfo: { ...stale.osInfo!, hostname: "other-host" },
+      }),
+    ]);
+    mockConvexMutation.mockResolvedValue({ success: true });
+
+    try {
+      await expect(
+        manager.recoverLocalConnection(
+          stale.connectionId,
+          "command_relay_unsubscribed",
+        ),
+      ).rejects.toThrow("selected local sandbox stopped responding");
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "selected local sandbox stopped responding",
+      );
+      expect(sandboxApi.list).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("retries quarantine persistence before a fresh manager lists connections", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const unresponsive = makeConnection({
+      connectionId: "conn-unresponsive",
+      name: "Unresponsive",
+    });
+    const healthy = makeConnection({
+      connectionId: "conn-healthy",
+      name: "Healthy",
+    });
+    let persisted = false;
+    mockConvexMutation
+      .mockRejectedValueOnce(new Error("temporary Convex failure"))
+      .mockRejectedValueOnce(new Error("temporary Convex failure"))
+      .mockImplementationOnce(async () => {
+        persisted = true;
+        return { success: true };
+      });
+    mockConvexQuery.mockImplementation(async () =>
+      persisted ? [healthy] : [unresponsive, healthy],
+    );
+
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "conn-unresponsive",
+        "service-key",
+        null,
+        "pro",
+      );
+
+      await expect(
+        manager.quarantineLocalConnection(
+          "conn-unresponsive",
+          "command_unresponsive",
+        ),
+      ).resolves.toBeUndefined();
+      expect(mockConvexMutation).toHaveBeenCalledTimes(3);
+
+      const freshManager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "conn-unresponsive",
+        "service-key",
+        null,
+        "pro",
+      );
+      await expect(freshManager.listConnections()).resolves.toEqual([healthy]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("surfaces quarantine persistence failure and retries on a later call", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockConvexMutation.mockRejectedValue(new Error("Convex unavailable"));
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "conn-unresponsive",
+      "service-key",
+      null,
+      "pro",
+    );
+
+    try {
+      await expect(
+        manager.quarantineLocalConnection(
+          "conn-unresponsive",
+          "command_unresponsive",
+        ),
+      ).rejects.toThrow("Convex unavailable");
+      expect(mockConvexMutation).toHaveBeenCalledTimes(3);
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "The selected local sandbox stopped responding",
+      );
+
+      await expect(
+        manager.quarantineLocalConnection(
+          "conn-unresponsive",
+          "command_unresponsive",
+        ),
+      ).rejects.toThrow("Convex unavailable");
+      expect(mockConvexMutation).toHaveBeenCalledTimes(6);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("forgets an E2B connection without killing the shared user sandbox", async () => {
+    const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
+    process.env.CLOUD_SANDBOX_PROVIDER = "e2b";
     const manager = new HybridSandboxManager(
       "user-1",
       jest.fn(),
@@ -586,24 +1037,36 @@ describe("HybridSandboxManager reset cleanup", () => {
       "pro",
     );
     const sandbox = {
-      kill: jest
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error("sandbox not_found"), { status: 404 }),
-        ),
+      kill: jest.fn(),
     };
+    const replacement = Object.assign(new Sandbox(), {
+      sandboxId: "sandbox-2",
+    });
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => [
+        {
+          sandboxId: "sandbox-2",
+          state: "running",
+          metadata: { sandboxVersion: "v12" },
+        },
+      ]),
+    });
+    sandboxApi.connect.mockResolvedValue(replacement);
 
-    manager.setSandbox(sandbox as any);
-    await manager.resetSandbox("test");
+    try {
+      manager.setSandbox(sandbox as any);
+      await manager.resetSandbox("test");
+      const reacquired = await manager.getSandbox();
 
-    expect(sandbox.kill).toHaveBeenCalled();
-    expect(debugSpy).toHaveBeenCalledWith(
-      expect.stringContaining("Failed to kill E2B sandbox during reset"),
-      expect.any(Error),
-    );
-    expect(warnSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining("Failed to kill E2B sandbox during reset"),
-      expect.anything(),
-    );
+      expect(sandbox.kill).not.toHaveBeenCalled();
+      expect(reacquired.sandbox).toBe(replacement);
+      expect(reacquired.sandbox).not.toBe(sandbox);
+    } finally {
+      if (originalProvider === undefined) {
+        delete process.env.CLOUD_SANDBOX_PROVIDER;
+      } else {
+        process.env.CLOUD_SANDBOX_PROVIDER = originalProvider;
+      }
+    }
   });
 });

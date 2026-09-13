@@ -14,7 +14,6 @@ export type AgentFirstDefaultEligibility = {
   isMobile: boolean | undefined;
   subscription: SubscriptionTier;
   subscriptionResolved: boolean;
-  temporaryChatsEnabled: boolean;
   userPresent: boolean;
 };
 
@@ -89,14 +88,12 @@ export function getAgentFirstDefaultDecision({
   isMobile,
   subscription,
   subscriptionResolved,
-  temporaryChatsEnabled,
   userPresent,
 }: AgentFirstDefaultEligibility): AgentFirstDefaultDecision | null {
   const baseEligible =
     userPresent &&
     subscriptionResolved &&
     !isCheckingProPlan &&
-    !temporaryChatsEnabled &&
     chatMode === "ask" &&
     !hasSavedChatMode &&
     !hasUserSelectedModeThisSession;

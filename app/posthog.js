@@ -9,6 +9,7 @@ export default function PostHogClient() {
     host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
     flushAt: 20,
     flushInterval: 0,
+    featureFlagsRequestTimeoutMs: 750,
   });
 
   return posthogClient;

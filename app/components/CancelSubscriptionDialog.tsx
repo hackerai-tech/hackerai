@@ -13,13 +13,25 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { cancelSubscription } from "@/lib/billing/client";
+import {
+  cancelSubscription,
+  downgradeSubscription,
+  getRetentionOffers,
+  pauseSubscription,
+} from "@/lib/billing/client";
+import type {
+  DowngradeSubscriptionResult,
+  PauseSubscriptionResult,
+  RetentionOffers,
+} from "@/lib/billing/api-types";
 import { toast } from "sonner";
 import {
+  ArrowDownCircle,
   CheckCircle2,
   Heart,
   Loader2,
   LockKeyhole,
+  PauseCircle,
   X as XIcon,
 } from "lucide-react";
 import {
@@ -31,8 +43,16 @@ import {
 import type { SubscriptionTier } from "@/types";
 import {
   CANCELLATION_REASON_OPTIONS,
+  CANCELLATION_REASON_SUBCATEGORY_OPTIONS,
+  getCancellationReasonSubcategoryOptions,
   type CancellationReasonCategory,
+  type CancellationReasonSubcategory,
 } from "@/lib/billing/cancellation-reasons";
+import {
+  PAUSE_DURATION_MONTH_OPTIONS,
+  type PauseDurationMonths,
+  type RetentionOfferType,
+} from "@/lib/billing/retention-offers";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import {
   PAID_FUNNEL_EVENTS,
@@ -44,6 +64,8 @@ type CancelSubscriptionDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCancellationCompleted?: (result: CancellationResult) => void;
+  onPauseScheduled?: (result: PauseSubscriptionResult) => void;
+  onDowngradeApplied?: (result: DowngradeSubscriptionResult) => void;
 };
 
 type CancellationResult = {
@@ -52,17 +74,27 @@ type CancellationResult = {
   alreadyScheduled?: boolean;
 };
 
-type CancellationStep = "feedback" | "confirm";
+type RetentionOfferResult =
+  | { type: "pause"; result: PauseSubscriptionResult }
+  | { type: "downgrade"; result: DowngradeSubscriptionResult };
+
+type CancellationStep = "reason" | "details" | "offer" | "confirm";
 
 const reasonOptionBadges = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const visibleCancellationReasonValues: CancellationReasonCategory[] = [
   "too_expensive",
   "not_using_enough",
   "missing_feature",
+  "results_not_good_enough",
   "hit_usage_limits",
   "too_slow_or_unreliable",
   "other",
 ];
+
+const OFFER_ANALYTICS_CONTEXT = {
+  surface: "cancel_subscription_dialog",
+  source: "account_settings",
+} as const;
 
 function getFeaturesForTier(tier: SubscriptionTier) {
   switch (tier) {
@@ -98,34 +130,84 @@ function getPlanDisplayName(tier: SubscriptionTier) {
   }
 }
 
+function formatLongDate(timestamp?: number) {
+  if (!timestamp) return null;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(timestamp));
+}
+
+function pluralizeMonths(months: number) {
+  return `${months} month${months === 1 ? "" : "s"}`;
+}
+
+function shownOfferTypes(offers: RetentionOffers): RetentionOfferType[] {
+  const types: RetentionOfferType[] = [];
+  if (offers.downgrade.eligible) types.push("downgrade");
+  if (offers.pause.eligible && offers.pause.options.length > 0) {
+    types.push("pause");
+  }
+  return types;
+}
+
+function formatMoney(amount?: number, currency?: string) {
+  if (amount === undefined) return null;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: (currency ?? "usd").toUpperCase(),
+      maximumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `$${amount}`;
+  }
+}
+
 export const CancelSubscriptionDialog = ({
   open,
   onOpenChange,
   onCancellationCompleted,
+  onPauseScheduled,
+  onDowngradeApplied,
 }: CancelSubscriptionDialogProps) => {
   const { subscription } = useGlobalState();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isLoadingOffers, setIsLoadingOffers] = useState(false);
   const [reasonCategory, setReasonCategory] = useState<
     CancellationReasonCategory | ""
+  >("");
+  const [reasonSubcategory, setReasonSubcategory] = useState<
+    CancellationReasonSubcategory | ""
   >("");
   const [reasonDetails, setReasonDetails] = useState("");
   const [showValidation, setShowValidation] = useState(false);
   const [cancellationResult, setCancellationResult] =
     useState<CancellationResult | null>(null);
-  const [step, setStep] = useState<CancellationStep>("feedback");
+  const [offerResult, setOfferResult] = useState<RetentionOfferResult | null>(
+    null,
+  );
+  const [offers, setOffers] = useState<RetentionOffers | null>(null);
+  const [selectedPauseMonths, setSelectedPauseMonths] =
+    useState<PauseDurationMonths>(1);
+  const [selectedOffer, setSelectedOffer] =
+    useState<RetentionOfferType>("pause");
+  const [step, setStep] = useState<CancellationStep>("reason");
   const openRef = useRef(open);
   const wasOpenRef = useRef(false);
   const requestIdRef = useRef(0);
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
+      if (isProcessing) return;
       openRef.current = nextOpen;
       if (!nextOpen) {
         requestIdRef.current += 1;
       }
       onOpenChange(nextOpen);
     },
-    [onOpenChange],
+    [onOpenChange, isProcessing],
   );
 
   useEffect(() => {
@@ -136,11 +218,17 @@ export const CancelSubscriptionDialog = ({
     if (!open) {
       requestIdRef.current += 1;
       setReasonCategory("");
+      setReasonSubcategory("");
       setReasonDetails("");
       setShowValidation(false);
       setIsProcessing(false);
+      setIsLoadingOffers(false);
       setCancellationResult(null);
-      setStep("feedback");
+      setOfferResult(null);
+      setOffers(null);
+      setSelectedPauseMonths(1);
+      setSelectedOffer("pause");
+      setStep("reason");
       return;
     }
 
@@ -152,28 +240,211 @@ export const CancelSubscriptionDialog = ({
       PAID_FUNNEL_EVENTS.cancellationStarted,
       paidFunnelProperties({
         subscription_tier: subscription,
-        surface: "cancel_subscription_dialog",
-        source: "account_settings",
+        ...OFFER_ANALYTICS_CONTEXT,
       }),
     );
   }, [open, subscription]);
 
-  const handleContinueToConfirmation = useCallback(() => {
-    const trimmedReasonDetails = reasonDetails.trim();
-    if (!reasonCategory || !trimmedReasonDetails) {
+  const handleContinueToDetails = useCallback(() => {
+    if (!reasonCategory) {
       setShowValidation(true);
       return;
     }
 
     setShowValidation(false);
+    setStep("details");
+  }, [reasonCategory]);
+
+  const handleContinueToConfirmation = useCallback(async () => {
+    const trimmedReasonDetails = reasonDetails.trim();
+    if (!reasonCategory) {
+      setShowValidation(true);
+      setStep("reason");
+      return;
+    }
+    if (!reasonSubcategory || !trimmedReasonDetails) {
+      setShowValidation(true);
+      return;
+    }
+
+    setShowValidation(false);
+
+    if (offers) {
+      setStep(shownOfferTypes(offers).length > 0 ? "offer" : "confirm");
+      return;
+    }
+
+    setIsLoadingOffers(true);
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    let nextOffers: RetentionOffers | null = null;
+    try {
+      nextOffers = await getRetentionOffers({ reasonCategory });
+    } catch {
+      // Offers are optional. Fall through to the plain cancellation flow.
+      nextOffers = null;
+    }
+    if (!openRef.current || requestIdRef.current !== requestId) {
+      return;
+    }
+    setIsLoadingOffers(false);
+
+    const offerTypes = nextOffers ? shownOfferTypes(nextOffers) : [];
+    if (nextOffers && offerTypes.length > 0) {
+      setOffers(nextOffers);
+      setSelectedOffer(offerTypes[0]);
+      setStep("offer");
+      captureAuthenticatedEvent(
+        PAID_FUNNEL_EVENTS.retentionOfferImpressed,
+        paidFunnelProperties({
+          subscription_tier: subscription,
+          reason_category: reasonCategory,
+          reason_subcategory: reasonSubcategory,
+          offers_shown: offerTypes,
+          pause_offered: offerTypes.includes("pause"),
+          downgrade_offered: offerTypes.includes("downgrade"),
+          downgrade_target_tier: nextOffers.downgrade.eligible
+            ? nextOffers.downgrade.targetTier
+            : undefined,
+          pause_effective_at: nextOffers.pause.pauseEffectiveAt
+            ? new Date(nextOffers.pause.pauseEffectiveAt).toISOString()
+            : undefined,
+          ...OFFER_ANALYTICS_CONTEXT,
+        }),
+      );
+      return;
+    }
+
     setStep("confirm");
-  }, [reasonCategory, reasonDetails]);
+  }, [offers, reasonCategory, reasonDetails, reasonSubcategory, subscription]);
+
+  const handleDeclineOffers = useCallback(() => {
+    if (offers) {
+      captureAuthenticatedEvent(
+        PAID_FUNNEL_EVENTS.retentionOfferDeclined,
+        paidFunnelProperties({
+          subscription_tier: subscription,
+          reason_category: reasonCategory,
+          reason_subcategory: reasonSubcategory,
+          offers_shown: shownOfferTypes(offers),
+          ...OFFER_ANALYTICS_CONTEXT,
+        }),
+      );
+    }
+    setStep("confirm");
+  }, [offers, reasonCategory, reasonSubcategory, subscription]);
+
+  const handleAcceptPause = useCallback(async () => {
+    const trimmedReasonDetails = reasonDetails.trim();
+    if (!reasonCategory || !reasonSubcategory || !trimmedReasonDetails) {
+      setShowValidation(true);
+      setStep("details");
+      return;
+    }
+
+    setIsProcessing(true);
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    try {
+      const result = await pauseSubscription({
+        months: selectedPauseMonths,
+        cancellationReason: {
+          reasonCategory,
+          reasonSubcategory,
+          reasonDetails: trimmedReasonDetails,
+        },
+      });
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
+      setOfferResult({ type: "pause", result });
+      onPauseScheduled?.(result);
+      toast.success(
+        result.alreadyScheduled
+          ? "Your plan is already scheduled to pause"
+          : "Pause scheduled",
+      );
+    } catch (error) {
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
+      toast.error(
+        error instanceof Error ? error.message : "Failed to pause subscription",
+      );
+    } finally {
+      if (openRef.current && requestIdRef.current === requestId) {
+        setIsProcessing(false);
+      }
+    }
+  }, [
+    onPauseScheduled,
+    reasonCategory,
+    reasonDetails,
+    reasonSubcategory,
+    selectedPauseMonths,
+  ]);
+
+  const handleAcceptDowngrade = useCallback(async () => {
+    const trimmedReasonDetails = reasonDetails.trim();
+    if (!reasonCategory || !reasonSubcategory || !trimmedReasonDetails) {
+      setShowValidation(true);
+      setStep("details");
+      return;
+    }
+
+    setIsProcessing(true);
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    try {
+      const result = await downgradeSubscription({
+        cancellationReason: {
+          reasonCategory,
+          reasonSubcategory,
+          reasonDetails: trimmedReasonDetails,
+        },
+      });
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
+      setOfferResult({ type: "downgrade", result });
+      onDowngradeApplied?.(result);
+      toast.success(`Switch to ${getPlanDisplayName(result.toTier)} scheduled`);
+    } catch (error) {
+      if (!openRef.current || requestIdRef.current !== requestId) {
+        return;
+      }
+      toast.error(
+        error instanceof Error ? error.message : "Failed to switch plan",
+      );
+    } finally {
+      if (openRef.current && requestIdRef.current === requestId) {
+        setIsProcessing(false);
+      }
+    }
+  }, [onDowngradeApplied, reasonCategory, reasonDetails, reasonSubcategory]);
+
+  const handleAcceptSelectedOffer = useCallback(() => {
+    if (selectedOffer === "downgrade") {
+      void handleAcceptDowngrade();
+      return;
+    }
+    void handleAcceptPause();
+  }, [handleAcceptDowngrade, handleAcceptPause, selectedOffer]);
+
+  const handleOfferResultDone = useCallback(() => {
+    handleOpenChange(false);
+  }, [handleOpenChange]);
 
   const handleCancelSubscription = useCallback(async () => {
     const trimmedReasonDetails = reasonDetails.trim();
-    if (!reasonCategory || !trimmedReasonDetails) {
+    if (!reasonCategory) {
       setShowValidation(true);
-      setStep("feedback");
+      setStep("reason");
+      return;
+    }
+    if (!reasonSubcategory || !trimmedReasonDetails) {
+      setShowValidation(true);
+      setStep("details");
       return;
     }
 
@@ -184,6 +455,7 @@ export const CancelSubscriptionDialog = ({
       const result = await cancelSubscription({
         cancellationReason: {
           reasonCategory,
+          reasonSubcategory,
           reasonDetails: trimmedReasonDetails,
         },
       });
@@ -221,68 +493,143 @@ export const CancelSubscriptionDialog = ({
         setIsProcessing(false);
       }
     }
-  }, [onCancellationCompleted, reasonCategory, reasonDetails]);
+  }, [
+    onCancellationCompleted,
+    reasonCategory,
+    reasonDetails,
+    reasonSubcategory,
+  ]);
 
   const handleReasonCategoryChange = useCallback(
     (value: string) => {
       const nextReasonCategory = value as CancellationReasonCategory;
       setReasonCategory(nextReasonCategory);
+      setReasonSubcategory("");
+      setOffers(null);
       setShowValidation(false);
       captureAuthenticatedEvent(
         PAID_FUNNEL_EVENTS.cancellationReasonSelected,
         paidFunnelProperties({
           subscription_tier: subscription,
           reason_category: nextReasonCategory,
-          surface: "cancel_subscription_dialog",
-          source: "account_settings",
+          ...OFFER_ANALYTICS_CONTEXT,
         }),
       );
     },
     [subscription],
   );
 
+  const handleReasonSubcategoryChange = useCallback(
+    (value: string) => {
+      if (!reasonCategory) return;
+
+      const nextReasonSubcategory = value as CancellationReasonSubcategory;
+      setReasonSubcategory(nextReasonSubcategory);
+      setShowValidation(false);
+      captureAuthenticatedEvent(
+        PAID_FUNNEL_EVENTS.cancellationReasonFollowUpSelected,
+        paidFunnelProperties({
+          subscription_tier: subscription,
+          reason_category: reasonCategory,
+          reason_subcategory: nextReasonSubcategory,
+          ...OFFER_ANALYTICS_CONTEXT,
+        }),
+      );
+    },
+    [reasonCategory, subscription],
+  );
+
   const handleBack = useCallback(() => {
     if (step === "confirm") {
-      setStep("feedback");
+      setStep(
+        offers && shownOfferTypes(offers).length > 0 ? "offer" : "details",
+      );
+      return;
+    }
+    if (step === "offer") {
+      setStep("details");
+      return;
+    }
+    if (step === "details") {
+      setStep("reason");
       return;
     }
 
     handleOpenChange(false);
-  }, [handleOpenChange, step]);
+  }, [handleOpenChange, offers, step]);
 
   const features = getFeaturesForTier(subscription);
   const planName = getPlanDisplayName(subscription);
   const trimmedReasonDetails = reasonDetails.trim();
-  const hasRequiredReason = Boolean(reasonCategory && trimmedReasonDetails);
+  const hasRequiredReason = Boolean(reasonCategory);
+  const hasRequiredDetails = Boolean(reasonSubcategory && trimmedReasonDetails);
   const detailsMissing = showValidation && !trimmedReasonDetails;
   const categoryMissing = showValidation && !reasonCategory;
-  const periodEndDate = cancellationResult?.currentPeriodEnd
-    ? new Intl.DateTimeFormat(undefined, {
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-      }).format(new Date(cancellationResult.currentPeriodEnd))
-    : null;
+  const subcategoryMissing = showValidation && !reasonSubcategory;
+  const periodEndDate = formatLongDate(cancellationResult?.currentPeriodEnd);
   const canceledImmediately = cancellationResult?.cancelAtPeriodEnd === false;
   const isConfirmStep = step === "confirm";
-  const StepIcon = cancellationResult
-    ? CheckCircle2
-    : isConfirmStep
-      ? LockKeyhole
-      : Heart;
+  const isDetailsStep = step === "details";
+  const isOfferStep = step === "offer";
+  const StepIcon =
+    cancellationResult || offerResult
+      ? CheckCircle2
+      : isConfirmStep
+        ? LockKeyhole
+        : Heart;
   const stepLabel = cancellationResult
     ? canceledImmediately
       ? "Subscription canceled"
       : "Cancellation scheduled"
-    : isConfirmStep
-      ? "Final confirmation"
-      : "Your feedback";
+    : offerResult
+      ? offerResult.type === "pause"
+        ? "Pause scheduled"
+        : "Switch scheduled"
+      : isConfirmStep
+        ? "Final confirmation"
+        : isOfferStep
+          ? "Before you cancel"
+          : isDetailsStep
+            ? "Your feedback"
+            : "Main reason";
   const selectedReasonLabel = CANCELLATION_REASON_OPTIONS.find(
     (option) => option.value === reasonCategory,
   )?.label;
+  const selectedReasonSubcategoryLabel =
+    CANCELLATION_REASON_SUBCATEGORY_OPTIONS.find(
+      (option) => option.value === reasonSubcategory,
+    )?.label;
   const visibleCancellationReasonOptions = CANCELLATION_REASON_OPTIONS.filter(
     (option) => visibleCancellationReasonValues.includes(option.value),
   );
+  const visibleReasonSubcategoryOptions = reasonCategory
+    ? getCancellationReasonSubcategoryOptions(reasonCategory)
+    : [];
+  const pauseOffer =
+    offers?.pause.eligible && offers.pause.options.length > 0
+      ? offers.pause
+      : null;
+  const selectedPauseOption =
+    pauseOffer?.options.find(
+      (option) => option.months === selectedPauseMonths,
+    ) ??
+    pauseOffer?.options[0] ??
+    null;
+  const pauseEffectiveDate = formatLongDate(pauseOffer?.pauseEffectiveAt);
+  const pauseResumeDate = formatLongDate(selectedPauseOption?.resumeAt);
+  const downgradeOffer = offers?.downgrade.eligible ? offers.downgrade : null;
+  const downgradeTargetName = downgradeOffer
+    ? getPlanDisplayName(downgradeOffer.targetTier)
+    : null;
+  const downgradeTargetPrice = formatMoney(
+    downgradeOffer?.targetAmountDollars,
+    downgradeOffer?.currency,
+  );
+  const downgradeEffectiveDate = formatLongDate(downgradeOffer?.effectiveAt);
+  const primaryOfferLabel =
+    selectedOffer === "downgrade" && downgradeTargetName
+      ? `Switch to ${downgradeTargetName}`
+      : `Pause for ${pluralizeMonths(selectedPauseMonths)}`;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -308,7 +655,55 @@ export const CancelSubscriptionDialog = ({
           </button>
         </div>
 
-        {cancellationResult ? (
+        {offerResult ? (
+          <>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
+              <DialogHeader className="gap-3 text-left sm:text-left">
+                <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
+                  {offerResult.type === "pause"
+                    ? "Pause scheduled"
+                    : `Switching to ${getPlanDisplayName(offerResult.result.toTier)}`}
+                </DialogTitle>
+                <DialogDescription className="text-base leading-7">
+                  {offerResult.type === "pause"
+                    ? `Your ${planName} plan stays active until ${
+                        formatLongDate(offerResult.result.pauseEffectiveAt) ??
+                        "the end of your current billing period"
+                      }. Billing then pauses for ${pluralizeMonths(
+                        offerResult.result.months,
+                      )} and your plan resumes automatically on ${
+                        formatLongDate(offerResult.result.resumeAt) ??
+                        "the resume date"
+                      }. You can resume sooner or cancel the pause from Account settings.`
+                    : `You keep ${planName} until ${
+                        formatLongDate(offerResult.result.effectiveAt) ??
+                        "the end of your current billing period"
+                      }. From then your plan is ${getPlanDisplayName(
+                        offerResult.result.toTier,
+                      )}${
+                        formatMoney(
+                          offerResult.result.targetAmountDollars,
+                          offerResult.result.currency,
+                        )
+                          ? ` at ${formatMoney(
+                              offerResult.result.targetAmountDollars,
+                              offerResult.result.currency,
+                            )} per month`
+                          : ""
+                      }. Nothing is charged today. You can keep ${planName} instead anytime before then from Account settings.`}
+                </DialogDescription>
+              </DialogHeader>
+            </div>
+            <DialogFooter className="border-t border-border px-6 py-5 sm:px-8">
+              <Button
+                className="h-11 w-full sm:w-44"
+                onClick={handleOfferResultDone}
+              >
+                Done
+              </Button>
+            </DialogFooter>
+          </>
+        ) : cancellationResult ? (
           <>
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
               <DialogHeader className="gap-3 text-left sm:text-left">
@@ -335,6 +730,179 @@ export const CancelSubscriptionDialog = ({
               </Button>
             </DialogFooter>
           </>
+        ) : isOfferStep ? (
+          <>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5 sm:px-8 sm:py-6">
+              <DialogHeader className="gap-2 text-left sm:text-left">
+                <DialogTitle className="text-2xl leading-tight font-semibold sm:text-3xl">
+                  {downgradeOffer && pauseOffer
+                    ? "Keep your setup for less?"
+                    : downgradeOffer
+                      ? "Switch to a cheaper plan instead?"
+                      : "Pause your plan instead?"}
+                </DialogTitle>
+                <DialogDescription className="text-sm leading-6 sm:text-base">
+                  {downgradeOffer && pauseOffer
+                    ? "Pick an option. Your chats, files, and settings stay as they are."
+                    : downgradeOffer
+                      ? "Nothing changes until your renewal. Your chats, files, and settings stay as they are."
+                      : "No charges while paused. Your plan comes back automatically with the same price and your saved card."}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div
+                className="mt-4 space-y-3"
+                role="radiogroup"
+                aria-label="Alternatives to cancelling"
+              >
+                {downgradeOffer && downgradeTargetName ? (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selectedOffer === "downgrade"}
+                    onClick={() => setSelectedOffer("downgrade")}
+                    disabled={isProcessing}
+                    className={cn(
+                      "flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                      selectedOffer === "downgrade"
+                        ? "border-violet-500/70 bg-premium-bg"
+                        : "border-border bg-muted/40 hover:bg-muted",
+                    )}
+                  >
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
+                      <ArrowDownCircle className="size-5" aria-hidden="true" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-base font-semibold text-foreground">
+                        {`Switch to ${downgradeTargetName}`}
+                        {downgradeTargetPrice ? (
+                          <span className="font-normal text-muted-foreground">
+                            {` · ${downgradeTargetPrice}/month`}
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                        {downgradeEffectiveDate
+                          ? `Keep ${planName} until ${downgradeEffectiveDate}, then renew as ${downgradeTargetName}. Nothing changes today.`
+                          : `Keep ${planName} until your renewal, then switch to ${downgradeTargetName}. Nothing changes today.`}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
+
+                {pauseOffer ? (
+                  <div
+                    role="radio"
+                    aria-checked={selectedOffer === "pause"}
+                    aria-label="Pause your plan"
+                    tabIndex={0}
+                    onClick={() => setSelectedOffer("pause")}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedOffer("pause");
+                      }
+                    }}
+                    className={cn(
+                      "cursor-pointer rounded-lg border p-4 transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+                      selectedOffer === "pause"
+                        ? "border-violet-500/70 bg-premium-bg"
+                        : "border-border bg-muted/40 hover:bg-muted",
+                    )}
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-premium-bg text-premium-text">
+                        <PauseCircle className="size-5" aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <span className="block text-base font-semibold text-foreground">
+                          Pause your plan
+                        </span>
+                        <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                          {pauseEffectiveDate
+                            ? `${planName} stays active until ${pauseEffectiveDate}. `
+                            : ""}
+                          {pauseResumeDate
+                            ? `No charges until it resumes automatically on ${pauseResumeDate}.`
+                            : "No charges while paused. It resumes automatically."}
+                        </span>
+                      </div>
+                    </div>
+                    <div
+                      className="mt-3 grid grid-cols-3 gap-2"
+                      role="radiogroup"
+                      aria-label="Pause duration"
+                    >
+                      {PAUSE_DURATION_MONTH_OPTIONS.map((months) => {
+                        const isSelected = selectedPauseMonths === months;
+                        const available = pauseOffer.options.some(
+                          (option) => option.months === months,
+                        );
+                        if (!available) return null;
+
+                        return (
+                          <button
+                            key={months}
+                            type="button"
+                            role="radio"
+                            aria-checked={isSelected}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedOffer("pause");
+                              setSelectedPauseMonths(months);
+                            }}
+                            disabled={isProcessing}
+                            className={cn(
+                              "h-10 rounded-md border text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                              isSelected
+                                ? "border-violet-500/70 bg-premium-text text-background"
+                                : "border-border bg-background/60 text-foreground hover:bg-muted",
+                            )}
+                          >
+                            {pluralizeMonths(months)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="space-y-2 border-t border-border px-6 py-4 sm:px-8">
+              <Button
+                onClick={handleAcceptSelectedOffer}
+                disabled={isProcessing || (!pauseOffer && !downgradeOffer)}
+                className="h-11 w-full"
+              >
+                {isProcessing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  primaryOfferLabel
+                )}
+              </Button>
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleBack}
+                  disabled={isProcessing}
+                  className="h-9 px-2"
+                >
+                  Back
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleDeclineOffers}
+                  disabled={isProcessing}
+                  className="h-9 px-2 text-muted-foreground"
+                >
+                  No thanks, continue to cancel
+                </Button>
+              </div>
+            </div>
+          </>
         ) : isConfirmStep ? (
           <>
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
@@ -359,8 +927,16 @@ export const CancelSubscriptionDialog = ({
               </div>
 
               <div className="mt-5 rounded-md border border-border bg-background/60 p-3 text-sm text-muted-foreground">
-                <span className="font-medium text-foreground">Reason:</span>{" "}
-                {selectedReasonLabel}
+                <p>
+                  <span className="font-medium text-foreground">Reason:</span>{" "}
+                  {selectedReasonLabel}
+                </p>
+                <p className="mt-1">
+                  <span className="font-medium text-foreground">
+                    What happened:
+                  </span>{" "}
+                  {selectedReasonSubcategoryLabel}
+                </p>
               </div>
             </div>
 
@@ -381,6 +957,129 @@ export const CancelSubscriptionDialog = ({
                 variant="outline"
                 onClick={handleBack}
                 disabled={isProcessing}
+                className="h-11 w-full sm:w-36"
+              >
+                Back
+              </Button>
+            </div>
+          </>
+        ) : isDetailsStep ? (
+          <>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-7 sm:px-8">
+              <DialogHeader className="gap-3 text-left sm:text-left">
+                <DialogTitle className="text-3xl leading-tight font-semibold sm:text-4xl">
+                  Tell us what happened
+                </DialogTitle>
+                <DialogDescription className="text-base leading-7">
+                  A little more detail helps us focus on the right improvement.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="mt-6 rounded-md border border-border bg-muted/40 p-3 text-sm">
+                <span className="font-medium text-foreground">
+                  Main reason:
+                </span>{" "}
+                <span className="text-muted-foreground">
+                  {selectedReasonLabel}
+                </span>
+              </div>
+
+              <div className="mt-6 space-y-2">
+                <Label id="cancellation-reason-subcategory-label">
+                  What best describes what happened?
+                </Label>
+                <div
+                  className="space-y-2"
+                  role="radiogroup"
+                  aria-labelledby="cancellation-reason-subcategory-label"
+                  aria-invalid={subcategoryMissing}
+                >
+                  {visibleReasonSubcategoryOptions.map((option, index) => {
+                    const isSelected = reasonSubcategory === option.value;
+
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={isSelected}
+                        onClick={() =>
+                          handleReasonSubcategoryChange(option.value)
+                        }
+                        disabled={isProcessing || isLoadingOffers}
+                        className={cn(
+                          "flex min-h-12 w-full items-center gap-3 rounded-md border px-4 py-2.5 text-left text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50",
+                          isSelected
+                            ? "border-violet-500/70 bg-premium-bg text-foreground"
+                            : "border-border bg-muted/40 text-foreground hover:bg-muted",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "flex size-7 shrink-0 items-center justify-center rounded-md text-xs font-semibold",
+                            isSelected
+                              ? "bg-premium-text text-background"
+                              : "bg-premium-bg text-premium-text",
+                          )}
+                        >
+                          {index + 1}
+                        </span>
+                        <span>{option.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {subcategoryMissing ? (
+                  <p className="text-xs text-destructive">
+                    Please select what best describes the issue.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="mt-6 space-y-2">
+                <Label htmlFor="cancellation-reason-details">
+                  Tell us a little more
+                </Label>
+                <Textarea
+                  id="cancellation-reason-details"
+                  value={reasonDetails}
+                  onChange={(event) => {
+                    setReasonDetails(event.target.value);
+                    setShowValidation(false);
+                  }}
+                  maxLength={2000}
+                  disabled={isProcessing || isLoadingOffers}
+                  aria-invalid={detailsMissing}
+                  placeholder="A short note is required before continuing."
+                  className="min-h-28 resize-none bg-muted/30"
+                />
+                {detailsMissing ? (
+                  <p className="text-xs text-destructive">
+                    Please write a cancellation reason.
+                  </p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-3 border-t border-border px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
+              <Button
+                onClick={handleContinueToConfirmation}
+                disabled={isProcessing || isLoadingOffers}
+                className={cn(
+                  "h-11 w-full sm:w-36",
+                  !hasRequiredDetails && "opacity-60",
+                )}
+              >
+                {isLoadingOffers ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  "Next"
+                )}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleBack}
+                disabled={isProcessing || isLoadingOffers}
                 className="h-11 w-full sm:w-36"
               >
                 Back
@@ -443,35 +1142,11 @@ export const CancelSubscriptionDialog = ({
                   Please select a main reason.
                 </p>
               ) : null}
-
-              <div className="mt-6 space-y-2">
-                <Label htmlFor="cancellation-reason-details">
-                  Tell us what happened
-                </Label>
-                <Textarea
-                  id="cancellation-reason-details"
-                  value={reasonDetails}
-                  onChange={(event) => {
-                    setReasonDetails(event.target.value);
-                    setShowValidation(false);
-                  }}
-                  maxLength={2000}
-                  disabled={isProcessing}
-                  aria-invalid={detailsMissing}
-                  placeholder="A short note is required before continuing."
-                  className="min-h-28 resize-none bg-muted/30"
-                />
-                {detailsMissing ? (
-                  <p className="text-xs text-destructive">
-                    Please write a cancellation reason.
-                  </p>
-                ) : null}
-              </div>
             </div>
 
             <div className="flex flex-col-reverse gap-3 border-t border-border px-6 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
               <Button
-                onClick={handleContinueToConfirmation}
+                onClick={handleContinueToDetails}
                 disabled={isProcessing}
                 className={cn(
                   "h-11 w-full sm:w-36",

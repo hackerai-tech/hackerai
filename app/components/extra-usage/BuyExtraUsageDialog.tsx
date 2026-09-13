@@ -23,6 +23,7 @@ type BuyExtraUsageDialogProps = {
   description?: string;
   lineItemLabel?: string;
   paymentMethodMode?: "personal" | "checkout";
+  recommendedAmountDollars?: number;
 };
 
 /** Format card brand name for display */
@@ -32,6 +33,45 @@ const formatCardBrand = (brand: string | null): string => {
 };
 
 const MAX_AMOUNT = 999_999;
+const PRESET_AMOUNTS = [15, 30, 50] as const;
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
+export const getApproximateWeeklyExtraUsageSpend = (
+  monthlySpentDollars: number | undefined,
+  now = Date.now(),
+): number | undefined => {
+  if (
+    monthlySpentDollars === undefined ||
+    !Number.isFinite(monthlySpentDollars) ||
+    monthlySpentDollars <= 0
+  ) {
+    return undefined;
+  }
+
+  const date = new Date(now);
+  const monthStart = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
+  const elapsedDays = Math.max(1, (now - monthStart) / DAY_MS);
+  return (monthlySpentDollars / elapsedDays) * 7;
+};
+
+export const getRecommendedExtraUsagePurchaseAmount = (
+  recentExtraUsageSpendDollars: number | undefined,
+): number | undefined => {
+  if (
+    recentExtraUsageSpendDollars === undefined ||
+    !Number.isFinite(recentExtraUsageSpendDollars) ||
+    recentExtraUsageSpendDollars <= 0
+  ) {
+    return undefined;
+  }
+
+  const preset = PRESET_AMOUNTS.find(
+    (amount) => amount >= recentExtraUsageSpendDollars,
+  );
+  if (preset !== undefined) return preset;
+
+  return Math.min(MAX_AMOUNT, Math.ceil(recentExtraUsageSpendDollars / 5) * 5);
+};
 
 /** Format number with commas (e.g., 1000 -> 1,000) */
 const formatWithCommas = (value: string): string => {
@@ -52,6 +92,7 @@ type ContentProps = {
   description: string;
   lineItemLabel: string;
   paymentMethodMode: "personal" | "checkout";
+  recommendedAmountDollars?: number;
 };
 
 const BuyExtraUsageDialogContent = ({
@@ -61,8 +102,13 @@ const BuyExtraUsageDialogContent = ({
   description,
   lineItemLabel,
   paymentMethodMode,
+  recommendedAmountDollars,
 }: ContentProps) => {
-  const [purchaseAmount, setPurchaseAmount] = useState<string>("15");
+  const [purchaseAmountOverride, setPurchaseAmountOverride] = useState<
+    string | null
+  >(null);
+  const purchaseAmount =
+    purchaseAmountOverride ?? String(recommendedAmountDollars ?? 15);
   const [paymentMethod, setPaymentMethod] = useState<{
     hasPaymentMethod: boolean;
     last4: string | null;
@@ -137,10 +183,47 @@ const BuyExtraUsageDialogContent = ({
       </DialogHeader>
       <div className="flex flex-col gap-5 pt-4">
         <div>
-          <label className="block text-muted-foreground text-sm mb-3">
-            {description}
+          <p className="text-muted-foreground text-sm mb-3">{description}</p>
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            {PRESET_AMOUNTS.map((amount) => {
+              const isSelected = parsedAmount === amount;
+              const isRecommended = recommendedAmountDollars === amount;
+
+              return (
+                <Button
+                  key={amount}
+                  type="button"
+                  variant={isSelected ? "default" : "outline"}
+                  className="h-auto min-h-11 flex-col gap-0.5 py-2"
+                  aria-pressed={isSelected}
+                  onClick={() => {
+                    setPurchaseAmountOverride(String(amount));
+                  }}
+                >
+                  <span>${amount}</span>
+                  {isRecommended && (
+                    <span className="text-[10px] font-normal opacity-80">
+                      Recommended
+                    </span>
+                  )}
+                </Button>
+              );
+            })}
+          </div>
+          {recommendedAmountDollars !== undefined && (
+            <p className="text-sm text-muted-foreground mb-3">
+              ${formatWithCommas(String(recommendedAmountDollars))} should cover
+              approximately your next week.
+            </p>
+          )}
+          <label
+            htmlFor="extra-usage-purchase-amount"
+            className="block text-sm font-medium mb-2"
+          >
+            Custom amount
           </label>
           <Input
+            id="extra-usage-purchase-amount"
             placeholder="$15"
             className="w-full"
             type="text"
@@ -148,7 +231,7 @@ const BuyExtraUsageDialogContent = ({
             onChange={(e) => {
               // Remove $ and commas, keep only digits (whole dollars only)
               const val = e.target.value.replace(/[^0-9]/g, "");
-              setPurchaseAmount(val);
+              setPurchaseAmountOverride(val);
             }}
             aria-label="Purchase amount"
           />
@@ -232,6 +315,7 @@ const BuyExtraUsageDialog = ({
   description = "Get extra usage to keep using HackerAI when you hit a limit.",
   lineItemLabel = "Extra usage",
   paymentMethodMode = "personal",
+  recommendedAmountDollars,
 }: BuyExtraUsageDialogProps) => {
   const handleOpenChange = (newOpen: boolean) => {
     onOpenChange(newOpen);
@@ -249,6 +333,7 @@ const BuyExtraUsageDialog = ({
             description={description}
             lineItemLabel={lineItemLabel}
             paymentMethodMode={paymentMethodMode}
+            recommendedAmountDollars={recommendedAmountDollars}
           />
         )}
       </DialogContent>

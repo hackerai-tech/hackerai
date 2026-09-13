@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import {
   confirmProcessTermination,
+  isProcessTreeTerminationConfirmed,
   LOCAL_CANCEL_CONFIRMATION_TIMEOUT_MS,
 } from "../command-cancellation";
 
@@ -26,7 +27,32 @@ describe("confirmProcessTermination", () => {
     expect(requestTermination).toHaveBeenCalledTimes(1);
     expect(settled).toBe(false);
 
-    proc.emit("close", null, "SIGTERM");
+    proc.exitCode = 0;
+    proc.emit("close", 0, null);
+    await expect(confirmation).resolves.toBe(true);
+  });
+
+  it("waits for the process tree after the root process exits", async () => {
+    const proc = new FakeProcess();
+    let processTreeAlive = true;
+    const confirmation = confirmProcessTermination(
+      proc,
+      jest.fn(),
+      LOCAL_CANCEL_CONFIRMATION_TIMEOUT_MS,
+      () => !processTreeAlive,
+    );
+    let settled = false;
+    void confirmation.then(() => {
+      settled = true;
+    });
+
+    proc.exitCode = 0;
+    proc.emit("close", 0, null);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+
+    processTreeAlive = false;
+    await jest.advanceTimersByTimeAsync(50);
     await expect(confirmation).resolves.toBe(true);
   });
 
@@ -67,5 +93,49 @@ describe("confirmProcessTermination", () => {
       confirmProcessTermination(proc, requestTermination),
     ).resolves.toBe(true);
     expect(requestTermination).not.toHaveBeenCalled();
+  });
+});
+
+describe("isProcessTreeTerminationConfirmed", () => {
+  it("does not treat a terminated Unix root as a terminated process group", () => {
+    const proc = new FakeProcess();
+    proc.exitCode = 0;
+    Object.assign(proc, { pid: 123 });
+    const signalProcessGroup = jest.fn();
+
+    expect(
+      isProcessTreeTerminationConfirmed(
+        proc as FakeProcess & { pid: number },
+        "darwin",
+        signalProcessGroup,
+      ),
+    ).toBe(false);
+    expect(signalProcessGroup).toHaveBeenCalledWith(-123, 0);
+  });
+
+  it("confirms Unix process-group termination only after ESRCH", () => {
+    const proc = Object.assign(new FakeProcess(), { pid: 123 });
+    const missingProcessGroup = jest.fn(() => {
+      const error = new Error("No such process") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    });
+
+    expect(
+      isProcessTreeTerminationConfirmed(proc, "linux", missingProcessGroup),
+    ).toBe(true);
+  });
+
+  it("does not confirm Unix process-group termination on probe errors", () => {
+    const proc = Object.assign(new FakeProcess(), { pid: 123 });
+    const deniedProbe = jest.fn(() => {
+      const error = new Error("Not permitted") as NodeJS.ErrnoException;
+      error.code = "EPERM";
+      throw error;
+    });
+
+    expect(isProcessTreeTerminationConfirmed(proc, "linux", deniedProbe)).toBe(
+      false,
+    );
   });
 });

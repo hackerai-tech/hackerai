@@ -14,6 +14,13 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -67,6 +74,10 @@ const isMaxModel = (model: SelectedModel): boolean => model === "hackerai-max";
 const canUnlockMaxWithExtraUsage = (subscription: SubscriptionTier): boolean =>
   subscription !== "free" && subscription !== "ultra";
 
+const canChoosePersonalMaxAccessPath = (
+  subscription: SubscriptionTier,
+): boolean => subscription === "pro" || subscription === "pro-plus";
+
 const isModelLockedForSubscription = (
   subscription: SubscriptionTier,
   model: SelectedModel,
@@ -88,10 +99,30 @@ const getLockedModelCta = (
 const getLockedModelAnnouncement = (
   model: SelectedModel,
   subscription: SubscriptionTier,
-): string =>
-  `${getLockedModelCta(model, subscription)}${
+): string => {
+  if (isMaxModel(model) && canChoosePersonalMaxAccessPath(subscription)) {
+    return "Use Extra Usage or upgrade to Ultra for Max mode";
+  }
+
+  return `${getLockedModelCta(model, subscription)}${
     isMaxModel(model) ? " for Max mode" : " to unlock"
   }`;
+};
+
+const openMaxUltraUpgrade = ({
+  mobile,
+  subscription,
+}: {
+  mobile: boolean;
+  subscription: SubscriptionTier;
+}) => {
+  redirectToPricing({
+    surface: mobile ? "model_selector_mobile" : "model_selector",
+    source: "max_model_gate",
+    from_tier: subscription,
+    cta_text: "Upgrade to Ultra",
+  });
+};
 
 const handleLockedModelCta = ({
   mobile,
@@ -409,6 +440,7 @@ const ModelOptionList = ({
 
 export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [maxAccessDialogOpen, setMaxAccessDialogOpen] = useState(false);
   const { subscription } = useGlobalState();
   const isMobile = Boolean(useIsMobile());
 
@@ -474,6 +506,14 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       )
     ) {
       setOpen(false);
+      if (
+        isMaxModel(option.id) &&
+        canChoosePersonalMaxAccessPath(subscription)
+      ) {
+        setMaxAccessDialogOpen(true);
+        return;
+      }
+
       handleLockedModelCta({
         mobile: isMobile,
         option,
@@ -497,6 +537,44 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       <span className="truncate">{triggerLabel}</span>
       <ChevronDown className="h-3 w-3 ml-0.5 shrink-0" />
     </Button>
+  );
+
+  const maxAccessDialog = (
+    <Dialog open={maxAccessDialogOpen} onOpenChange={setMaxAccessDialogOpen}>
+      <DialogContent className="w-[calc(100%-2rem)] max-w-sm rounded-2xl p-5">
+        <DialogHeader>
+          <DialogTitle>Unlock HackerAI Max</DialogTitle>
+          <DialogDescription className="leading-relaxed">
+            On Pro and Pro+, use Extra Usage to pay for Max as you go, or
+            upgrade to Ultra to have Max included.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2 pt-2">
+          <Button
+            type="button"
+            onClick={() => {
+              setMaxAccessDialogOpen(false);
+              openSettingsDialog("Extra Usage");
+            }}
+          >
+            Use Extra Usage
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setMaxAccessDialogOpen(false);
+              openMaxUltraUpgrade({
+                mobile: isMobile,
+                subscription,
+              });
+            }}
+          >
+            Upgrade to Ultra
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 
   if (isMobile) {
@@ -529,6 +607,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             />
           </SheetContent>
         </Sheet>
+        {maxAccessDialog}
       </>
     );
   }
@@ -552,6 +631,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
           />
         </PopoverContent>
       </Popover>
+      {maxAccessDialog}
     </>
   );
 }

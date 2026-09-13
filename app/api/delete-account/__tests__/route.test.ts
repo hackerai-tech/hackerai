@@ -5,8 +5,15 @@ import { stripe } from "../../stripe";
 import { workos } from "../../workos";
 import { fenceAndGetActiveAgentResourcesForUser } from "@/lib/db/actions";
 import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
+import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { logger } from "@/lib/logger";
+import { acquireTeamInvitationLock } from "@/lib/billing/team-invitation-lock";
 
 const mockConvexMutation = jest.fn();
+const mockMembershipLockAssertOwned = jest.fn();
+const mockMembershipLockRelease = jest.fn();
+const mockConvexQuery = jest.fn().mockResolvedValue("complete");
 
 jest.mock("next/server", () => ({
   NextResponse: {
@@ -28,6 +35,7 @@ jest.mock("@/lib/rate-limit/token-bucket", () => ({
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: jest.fn(() => ({
     mutation: mockConvexMutation,
+    query: mockConvexQuery,
   })),
 }));
 
@@ -39,13 +47,41 @@ jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
   closeAndCancelAgentResources: jest.fn(),
 }));
 
+jest.mock("@/lib/db/subagents", () => ({
+  cancelSubagentsForUserDeletion: jest.fn(),
+}));
+
+jest.mock("@/lib/ai/tools/utils/cloud-sandbox", () => ({
+  terminateCloudSandboxesForUser: jest.fn(),
+}));
+
+jest.mock("@/lib/logger", () => ({
+  logger: {
+    error: jest.fn(),
+    info: jest.fn(),
+    warn: jest.fn(),
+  },
+}));
+
+jest.mock("@/lib/billing/team-invitation-lock", () => ({
+  acquireTeamInvitationLock: jest.fn(),
+  TeamInvitationLockUnavailableError: class extends Error {},
+}));
+
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    deletions: { getStatusForBackend: "deletions.getStatusForBackend" },
     accountIdentities: {
       markDeleted: "accountIdentities.markDeleted",
     },
     userDeletion: {
+      beginUserDataDeletionByService:
+        "userDeletion.beginUserDataDeletionByService",
       deleteAllUserDataByService: "userDeletion.deleteAllUserDataByService",
+    },
+    subscriptionPauses: {
+      deleteForDeletedOrganization:
+        "subscriptionPauses.deleteForDeletedOrganization",
     },
   },
 }));
@@ -57,6 +93,7 @@ jest.mock("../../stripe", () => ({
       cancel: jest.fn(),
     },
     customers: {
+      retrieve: jest.fn().mockResolvedValue({ deleted: false }),
       del: jest.fn(),
     },
   },
@@ -66,6 +103,7 @@ jest.mock("../../workos", () => ({
   workos: {
     userManagement: {
       listOrganizationMemberships: jest.fn(),
+      listInvitations: jest.fn(),
       deleteOrganizationMembership: jest.fn(),
       deleteUser: jest.fn(),
     },
@@ -88,6 +126,14 @@ const mockListOrganizationMemberships = workos.userManagement
   .listOrganizationMemberships as jest.MockedFunction<
   typeof workos.userManagement.listOrganizationMemberships
 >;
+const mockListInvitations = workos.userManagement
+  .listInvitations as jest.MockedFunction<
+  typeof workos.userManagement.listInvitations
+>;
+const mockAcquireTeamInvitationLock =
+  acquireTeamInvitationLock as jest.MockedFunction<
+    typeof acquireTeamInvitationLock
+  >;
 const mockDeleteOrganizationMembership = workos.userManagement
   .deleteOrganizationMembership as jest.MockedFunction<
   typeof workos.userManagement.deleteOrganizationMembership
@@ -119,8 +165,26 @@ const mockCloseAndCancelAgentResources =
   closeAndCancelAgentResources as jest.MockedFunction<
     typeof closeAndCancelAgentResources
   >;
+const mockCancelSubagentsForUserDeletion =
+  cancelSubagentsForUserDeletion as jest.MockedFunction<
+    typeof cancelSubagentsForUserDeletion
+  >;
+const mockTerminateCloudSandboxesForUser =
+  terminateCloudSandboxesForUser as jest.MockedFunction<
+    typeof terminateCloudSandboxesForUser
+  >;
+const mockLoggerError = logger.error as jest.MockedFunction<
+  typeof logger.error
+>;
+const mockLoggerWarn = logger.warn as jest.MockedFunction<typeof logger.warn>;
 
-const request = () => ({ url: "https://hackerai.test/api/delete-account" });
+const request = () => ({
+  url: "https://hackerai.test/api/delete-account",
+  headers: {
+    get: (name: string) =>
+      name === "x-vercel-id" ? "iad1::opaque-request" : null,
+  },
+});
 
 describe("POST /api/delete-account", () => {
   beforeEach(() => {
@@ -131,6 +195,13 @@ describe("POST /api/delete-account", () => {
       freeQuotaSubject: "free_quota:v1:identity_hash",
     });
     mockDeleteUserRateLimitKeys.mockResolvedValue(undefined);
+    mockListInvitations.mockResolvedValue({ data: [] } as never);
+    mockMembershipLockAssertOwned.mockResolvedValue(undefined);
+    mockMembershipLockRelease.mockResolvedValue(undefined);
+    mockAcquireTeamInvitationLock.mockResolvedValue({
+      assertOwned: mockMembershipLockAssertOwned,
+      release: mockMembershipLockRelease,
+    });
     mockFenceAndGetActiveAgentResourcesForUser.mockResolvedValue({
       resources: [],
       hasMore: false,
@@ -139,11 +210,26 @@ describe("POST /api/delete-account", () => {
       canceledTriggerRuns: 0,
       closedApprovalSessions: 0,
     } as never);
-    mockConvexMutation.mockImplementation(async (functionReference) =>
-      functionReference === "userDeletion.deleteAllUserDataByService"
-        ? { hasMore: false }
-        : null,
-    );
+    mockCancelSubagentsForUserDeletion.mockResolvedValue({
+      triggerRunIds: [],
+      hasMore: false,
+    } as never);
+    mockTerminateCloudSandboxesForUser.mockResolvedValue({
+      total: 0,
+      killed: 0,
+      alreadyGone: 0,
+    });
+    mockConvexMutation.mockImplementation(async (functionReference) => {
+      if (functionReference === "userDeletion.deleteAllUserDataByService") {
+        return { hasMore: false };
+      }
+      if (
+        functionReference === "subscriptionPauses.deleteForDeletedOrganization"
+      ) {
+        return { deletedCount: 0, hasMore: false };
+      }
+      return null;
+    });
     mockDeleteOrganizationMembership.mockResolvedValue(undefined as never);
     mockDeleteUser.mockResolvedValue(undefined as never);
     mockDeleteOrganization.mockResolvedValue(undefined as never);
@@ -152,6 +238,10 @@ describe("POST /api/delete-account", () => {
   });
 
   it("removes only the caller's membership for shared organizations", async () => {
+    mockCancelSubagentsForUserDeletion.mockResolvedValue({
+      triggerRunIds: ["child-run-1"],
+      hasMore: false,
+    } as never);
     const callerMembership = {
       id: "membership_user",
       organizationId: "org_team",
@@ -189,6 +279,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: ["org_team"],
       },
     );
     expect(mockDeleteOrganizationMembership).toHaveBeenCalledWith(
@@ -200,22 +291,40 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteCustomer).not.toHaveBeenCalled();
     expect(mockDeleteOrganization).not.toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
+      [{ chatId: "subagent", triggerRunId: "child-run-1" }],
+      "account-deleted",
+    );
     expect(mockConvexMutation.mock.invocationCallOrder[0]).toBeLessThan(
       mockFenceAndGetActiveAgentResourcesForUser.mock.invocationCallOrder[0],
     );
     expect(
       mockFenceAndGetActiveAgentResourcesForUser.mock.invocationCallOrder[0],
     ).toBeLessThan(
+      mockCancelSubagentsForUserDeletion.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockCancelSubagentsForUserDeletion.mock.invocationCallOrder[0],
+    ).toBeLessThan(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
     );
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
-    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[1]);
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    ).toBeLessThan(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[2]);
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteOrganizationMembership.mock.invocationCallOrder[0],
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
+    );
+    expect(mockDeleteUserRateLimitKeys).toHaveBeenCalledWith(
+      "user_123",
+      "free_quota:v1:identity_hash",
     );
   });
 
@@ -254,6 +363,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: ["org_solo"],
       },
     );
     expect(mockListSubscriptions).toHaveBeenCalledWith({
@@ -264,9 +374,196 @@ describe("POST /api/delete-account", () => {
     expect(mockCancelSubscription).toHaveBeenCalledWith("sub_1");
     expect(mockCancelSubscription).toHaveBeenCalledWith("sub_2");
     expect(mockDeleteCustomer).toHaveBeenCalledWith("cus_123");
+    expect(mockConvexMutation).toHaveBeenCalledWith(
+      "subscriptionPauses.deleteForDeletedOrganization",
+      {
+        serviceKey: "service_key",
+        organizationId: "org_solo",
+      },
+    );
     expect(mockDeleteOrganization).toHaveBeenCalledWith("org_solo");
     expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockAcquireTeamInvitationLock).toHaveBeenCalledWith("org_solo");
+    expect(mockMembershipLockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a solo-admin deletion while an invitation can become active", async () => {
+    const callerMembership = {
+      id: "membership_user",
+      organizationId: "org_solo",
+      userId: "user_123",
+      role: { slug: "admin" },
+    };
+
+    mockListOrganizationMemberships
+      .mockResolvedValueOnce({ data: [callerMembership] } as never)
+      .mockResolvedValueOnce({ data: [callerMembership] } as never);
+    mockListInvitations.mockResolvedValueOnce({
+      data: [{ id: "invitation_1", state: "pending" }],
+    } as never);
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain("last admin");
+    expect(mockListInvitations.mock.invocationCallOrder[0]).toBeLessThan(
+      mockListOrganizationMemberships.mock.invocationCallOrder[1],
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(mockDeleteOrganization).not.toHaveBeenCalled();
+    expect(mockMembershipLockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries when an invitation mutation owns the organization lock", async () => {
+    const callerMembership = {
+      id: "membership_user",
+      organizationId: "org_solo",
+      userId: "user_123",
+      role: { slug: "admin" },
+    };
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [callerMembership],
+    } as never);
+    mockAcquireTeamInvitationLock.mockResolvedValueOnce(null);
+
+    const response = await POST(request() as any);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "account_cleanup_in_progress",
+    });
+    expect(mockListInvitations).not.toHaveBeenCalled();
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+
+  it("retries before identity cleanup while a billing resume is authorized", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexMutation.mockResolvedValueOnce(false);
+
+    const response = await POST(request() as any);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      code: "account_cleanup_in_progress",
+    });
+    expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("stops before cleanup when organization ownership cannot be verified", async () => {
+    const membership = {
+      id: "membership_user",
+      organizationId: "org_solo",
+      userId: "user_123",
+      role: { slug: "admin" },
+    };
+    mockListOrganizationMemberships
+      .mockResolvedValueOnce({ data: [membership] } as never)
+      .mockRejectedValueOnce(new Error("Provider unavailable") as never);
+    const response = await POST(request() as any);
+    expect(response.status).toBe(500);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("does not remove identity before pending attachment cleanup is confirmed", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexQuery.mockResolvedValueOnce("failed");
+    const response = await POST(request() as any);
+    expect(response.status).toBe(500);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it.each(["customer", "organization", "subscription"])(
+    "does not claim success when %s cleanup fails",
+    async (stage) => {
+      const membership = {
+        id: "membership_user",
+        organizationId: "org_solo",
+        userId: "user_123",
+        role: { slug: "admin" },
+      };
+      mockListOrganizationMemberships
+        .mockResolvedValueOnce({ data: [membership] } as never)
+        .mockResolvedValueOnce({ data: [membership] } as never);
+      mockGetOrganization.mockResolvedValue({
+        id: "org_solo",
+        stripeCustomerId: "cus_123",
+      } as never);
+      mockListSubscriptions.mockResolvedValue({
+        data: [{ id: "sub_1", status: "active" }],
+      } as never);
+      const failed =
+        stage === "customer"
+          ? mockDeleteCustomer
+          : stage === "organization"
+            ? mockDeleteOrganization
+            : mockCancelSubscription;
+      failed.mockRejectedValueOnce(new Error("Provider unavailable") as never);
+      const response = await POST(request() as any);
+      expect(response.status).toBe(500);
+      expect(mockDeleteUser).not.toHaveBeenCalled();
+    },
+  );
+
+  it("holds all organization locks until concurrent cleanup settles after a failure", async () => {
+    const memberships = ["a", "b"].map((id) => ({
+      id: `membership_${id}`,
+      organizationId: `org_${id}`,
+      userId: "user_123",
+      role: { slug: "member" },
+    }));
+    mockListOrganizationMemberships
+      .mockResolvedValueOnce({ data: memberships } as never)
+      .mockResolvedValueOnce({ data: [memberships[0]] } as never)
+      .mockResolvedValueOnce({ data: [memberships[1]] } as never);
+    let finishCleanup!: () => void;
+    let notifyStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      notifyStarted = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    mockDeleteOrganizationMembership
+      .mockRejectedValueOnce(new Error("Provider unavailable") as never)
+      .mockImplementationOnce(() => {
+        notifyStarted();
+        return pending as never;
+      });
+    const responsePromise = POST(request() as any);
+    await started;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockMembershipLockRelease).not.toHaveBeenCalled();
+    finishCleanup();
+    const response = await responsePromise;
+    expect(response.status).toBe(500);
+    expect(mockMembershipLockRelease).toHaveBeenCalledTimes(2);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("does not claim success when membership removal fails", async () => {
+    const membership = {
+      id: "membership_user",
+      organizationId: "org_team",
+      userId: "user_123",
+      role: { slug: "member" },
+    };
+    mockListOrganizationMemberships
+      .mockResolvedValueOnce({ data: [membership] } as never)
+      .mockResolvedValueOnce({ data: [membership] } as never);
+    mockDeleteOrganizationMembership.mockRejectedValueOnce(
+      new Error("Provider unavailable") as never,
+    );
+    const response = await POST(request() as any);
+    expect(response.status).toBe(500);
+    expect(mockDeleteUser).not.toHaveBeenCalled();
   });
 
   it("marks identity and runs Convex cleanup before deleting a WorkOS user with no memberships", async () => {
@@ -279,6 +576,14 @@ describe("POST /api/delete-account", () => {
     expect(response.status).toBe(200);
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       1,
+      "userDeletion.beginUserDataDeletionByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+      },
+    );
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      2,
       "accountIdentities.markDeleted",
       {
         serviceKey: "service_key",
@@ -287,14 +592,15 @@ describe("POST /api/delete-account", () => {
       },
     );
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
-      2,
+      3,
       "userDeletion.deleteAllUserDataByService",
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: [],
       },
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -352,6 +658,7 @@ describe("POST /api/delete-account", () => {
     } as never);
     mockConvexMutation
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockRejectedValueOnce(new Error("Convex cleanup failed"));
 
     const response = await POST(request() as any);
@@ -392,8 +699,13 @@ describe("POST /api/delete-account", () => {
     );
     expect(
       mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
-    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[1]);
-    expect(mockConvexMutation.mock.invocationCallOrder[1]).toBeLessThan(
+    ).toBeLessThan(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockConvexMutation.mock.invocationCallOrder[2]);
+    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
   });
@@ -415,7 +727,27 @@ describe("POST /api/delete-account", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toBe("Trigger cleanup failed");
-    expect(mockConvexMutation).toHaveBeenCalledTimes(1);
+    expect(mockConvexMutation).toHaveBeenCalledTimes(2);
+    expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
+    expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+  });
+
+  it("keeps cloud session identifiers when provider termination fails", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
+      new Error("AWS termination failed"),
+    );
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body.error).toBe("AWS termination failed");
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalled();
+    expect(mockConvexMutation).toHaveBeenCalledTimes(2);
     expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
     expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
     expect(mockDeleteUser).not.toHaveBeenCalled();
@@ -427,6 +759,7 @@ describe("POST /api/delete-account", () => {
     } as never);
     mockConvexMutation
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ hasMore: true })
       .mockResolvedValueOnce({ hasMore: false });
 
@@ -435,18 +768,18 @@ describe("POST /api/delete-account", () => {
     expect(response.status).toBe(200);
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       1,
-      "accountIdentities.markDeleted",
+      "userDeletion.beginUserDataDeletionByService",
       {
         serviceKey: "service_key",
-        identityHash: "free_quota:v1:identity_hash",
         userId: "user_123",
       },
     );
     expect(mockConvexMutation).toHaveBeenNthCalledWith(
       2,
-      "userDeletion.deleteAllUserDataByService",
+      "accountIdentities.markDeleted",
       {
         serviceKey: "service_key",
+        identityHash: "free_quota:v1:identity_hash",
         userId: "user_123",
       },
     );
@@ -456,19 +789,82 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: [],
       },
     );
-    expect(mockConvexMutation.mock.invocationCallOrder[2]).toBeLessThan(
+    expect(mockConvexMutation).toHaveBeenNthCalledWith(
+      4,
+      "userDeletion.deleteAllUserDataByService",
+      {
+        serviceKey: "service_key",
+        userId: "user_123",
+        preservedOrganizationIds: [],
+      },
+    );
+    expect(mockConvexMutation.mock.invocationCallOrder[3]).toBeLessThan(
       mockDeleteUser.mock.invocationCallOrder[0],
     );
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockLoggerError).not.toHaveBeenCalled();
+  });
+
+  it("returns a continuation response with bounded progress when cleanup needs another request", async () => {
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [],
+    } as never);
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      // Older Convex deployments returned only the completion marker. Keep
+      // that deploy-skew shape compatible while collecting newer progress.
+      .mockResolvedValueOnce({ hasMore: true })
+      .mockResolvedValue({
+        hasMore: true,
+        deleted: { feedback: 40, messages: 40 },
+        anonymized: { usage_logs: 10 },
+        s3ObjectsQueued: 2,
+      });
+
+    const response = await POST(request() as any);
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toEqual({ code: "account_cleanup_in_progress" });
+    expect(mockConvexMutation).toHaveBeenCalledTimes(52);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "account_cleanup_continuation_required",
+      {
+        event: "account_cleanup_continuation_required",
+        service: "hackerai-web",
+        environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+        request_id: "iad1::opaque-request",
+        user_id: "user_123",
+        reason: "cleanup_batch_limit_exhausted",
+        batch_limit: 50,
+        progress_stats_batches: 49,
+        batches_with_progress: 49,
+        deleted_documents: 3920,
+        anonymized_documents: 490,
+        s3_objects_queued: 98,
+        last_batch_deleted_documents: 80,
+        last_batch_anonymized_documents: 10,
+        last_batch_s3_objects_queued: 2,
+      },
+    );
+    expect(mockDeleteOrganizationMembership).not.toHaveBeenCalled();
+    expect(mockDeleteUserRateLimitKeys).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+    expect(mockLoggerError).not.toHaveBeenCalled();
   });
 
   it("does not delete external identity resources when Convex cleanup returns an unexpected shape", async () => {
     mockListOrganizationMemberships.mockResolvedValueOnce({
       data: [],
     } as never);
-    mockConvexMutation.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    mockConvexMutation
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
 
     const response = await POST(request() as any);
     const body = await response.json();
@@ -534,6 +930,7 @@ describe("POST /api/delete-account", () => {
       {
         serviceKey: "service_key",
         userId: "user_123",
+        preservedOrganizationIds: ["org_team"],
       },
     );
   });

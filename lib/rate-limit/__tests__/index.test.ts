@@ -12,7 +12,7 @@ describe("checkRateLimit", () => {
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
   const mockPointsPerDollar = 10_000;
-  const mockUsageMultiplier = 1.4;
+  const mockUsageMultiplier = 1.3;
 
   beforeEach(() => {
     jest.resetModules();
@@ -74,7 +74,7 @@ describe("checkRateLimit", () => {
       const { checkRateLimitCapacity } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
-      mockEvalFn.mockResolvedValue(4);
+      mockEvalFn.mockResolvedValue(1);
 
       const result = await checkRateLimitCapacity("user-123", "agent", "free");
 
@@ -86,21 +86,21 @@ describe("checkRateLimit", () => {
         ],
         [10],
       );
-      expect(result.remaining).toBe(4);
+      expect(result.remaining).toBe(1);
     });
 
-    it("rejects post-wait Agent capacity below the two-unit cost", async () => {
+    it("rejects post-wait Agent capacity when no units remain", async () => {
       const { checkRateLimitCapacity } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
-      mockEvalFn.mockResolvedValue(1);
+      mockEvalFn.mockResolvedValue(0);
 
       await expect(
         checkRateLimitCapacity("user-123", "agent", "free"),
       ).rejects.toMatchObject({ type: "rate_limit" });
     });
 
-    it("should use the shared free rate limit with cost 2 in agent mode", async () => {
+    it("should use the shared free rate limit with cost 1 in agent mode", async () => {
       const { checkRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
@@ -113,7 +113,7 @@ describe("checkRateLimit", () => {
           expect.stringMatching(/^free_limit:user-123:free:\d+$/),
           "free_referral_bonus:user-123",
         ],
-        [10, 2, expect.any(Number)],
+        [10, 1, expect.any(Number)],
       );
       expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();
       expect(result.remaining).toBe(5);
@@ -221,7 +221,13 @@ describe("checkRateLimit", () => {
 
       await expect(
         checkRateLimitCapacity("user-123", "agent", "pro"),
-      ).rejects.toMatchObject({ type: "rate_limit" });
+      ).rejects.toMatchObject({
+        type: "rate_limit",
+        metadata: {
+          subscription: "pro",
+          capReason: "monthly_exhausted",
+        },
+      });
     });
 
     it("allows exhausted included capacity when current extra usage is usable", async () => {

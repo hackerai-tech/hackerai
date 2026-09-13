@@ -4,6 +4,76 @@ These instructions apply to Codex and other coding agents working in this
 repository. Keep them durable, repo-scoped, and free of volatile business
 metrics.
 
+## Start Here
+
+Use [README.md](README.md) for setup and `package.json` for available commands.
+`CLAUDE.md` imports this file so repository instructions have one source.
+
+The Next.js app handles UI and HTTP requests; Convex owns persisted data;
+Trigger.dev owns durable Agent runs. Ask and Agent share model-streaming logic
+in `lib/api/agent-stream-runner.ts`. Trace both callers when changing that
+boundary. Local and desktop clients connect through separate sandbox transports;
+success on one transport does not prove the others work.
+
+## Code Design and Maintenance
+
+Prefer the smallest design that handles the actual requirement. Keep provider
+and transport differences at their adapters and share domain logic across
+callers. Extract a module when it gives a responsibility a clear owner, not just
+to reduce a file's line count. Avoid speculative abstractions and pass-through
+wrappers that add navigation without behavior.
+
+Before deleting code or dependencies, check imports, scripts, framework entry
+points, generated references, and dynamic loading. Treat unused-code reports as
+candidates to verify. Keep refactors focused on one concern and preserve public
+contracts and authorization boundaries.
+
+## Documentation and Skills
+
+Keep documentation for decisions, cross-service constraints, operational
+procedures, and pitfalls that are hard to infer from the code. Put local
+implementation explanations beside the code they explain. Avoid file catalogs,
+restating types or control flow, and recording PR summaries in durable docs.
+Rewrite or remove stale guidance when behavior changes.
+
+Keep `.agents/skills/` for HackerAI-owned workflows, such as user research.
+Do not vendor generic third-party coding skills or copy SDK manuals into the
+repository; consult the installed dependency's docs or its official reference
+when needed. Product runtime skills under `lib/ai/subagents/` and their vendored
+sources under `third_party/` are a separate application dependency.
+
+## Focused Validation
+
+Use the smallest check that proves the changed behavior: targeted tests, lint,
+and type checking for the affected scope. Test outcomes and meaningful logic,
+not assertions that repeat the implementation. Preserve required commit hooks
+and CI checks; avoid repeating the full suite after it passes unless new changes
+or failures justify another run.
+
+For cross-cutting changes, identify the affected paths: Ask and Agent, web and
+desktop, cloud and local sandboxes, and relevant model providers. Check recovery
+as well as the happy path, including cancellation, retry, and reconnect when
+applicable. Apply the visual and manual verification rules below.
+
+## Worktree Dependencies
+
+Each checkout or worktree must have its own `node_modules` links. Never copy,
+move, or manually link an installed `node_modules` tree between the main
+checkout and another worktree. Sharing pnpm's global content-addressable store
+is safe; sharing the installed dependency tree is not.
+
+After creating a worktree, install its dependencies with
+`corepack pnpm install --frozen-lockfile`. If the local dependency guard reports
+links outside the checkout, repair that checkout with
+`corepack pnpm install --force --frozen-lockfile` before running development
+commands.
+
+Do not pre-create a Convex deployment for worktrees that may only need static
+checks or PR publication. `pnpm run dev:local` owns lazy local Convex setup: it
+selects an existing local deployment and creates one for the current worktree
+only when the Convex CLI reports that none exists. Never copy `.convex` state
+between worktrees.
+
 ## HackerAI Product Direction
 
 HackerAI is primarily built for individual security practitioners: bug bounty
@@ -32,6 +102,35 @@ For production Vercel logs, use `--no-branch` unless intentionally investigating
 a preview branch. Avoid hard-coding current revenue, user counts, team-share
 percentages, pricing, or other volatile metrics in durable instructions; use
 qualitative direction and source-of-truth references instead.
+
+## Feature Rollouts and Measurement
+
+For meaningful user-facing features or behavior changes, consider a PostHog
+feature flag or experiment so the release can be staged and its impact
+evaluated. Good candidates include new workflows, changed defaults,
+onboarding or pricing changes, costly Agent behavior, operationally risky
+behavior, and UX changes with uncertain impact. Do not require a flag for every
+change: routine refactors, minor visual polish, accessibility fixes, and
+correctness or security fixes that should reach everyone immediately are not
+flag candidates.
+
+Before implementation, document in the owning Linear issue the hypothesis,
+eligible population, primary success metric, guardrail metrics, actual exposure
+event, rollback condition, owner, readout or review date, and flag removal plan.
+Start with internal users or an explicit allowlist, then ramp gradually. Choose
+each rollout percentage based on risk, expected sample size, and current
+traffic, and record it in Linear and PostHog rather than assuming a universal
+percentage. Assignment must be deterministic and stable.
+
+Keep assignment, exposure, activation, and outcome distinct. Emit exposure
+only when the user actually encounters the changed experience. Analytics must
+remain privacy-safe: never send prompts, targets, findings, evidence, code,
+payloads, or other user content.
+
+Shipping the implementation does not complete the experiment. Review the
+PostHog readout before expanding the rollout, removing the flag, or calling the
+experiment complete. Every flag needs an owner and cleanup plan so stale flags
+do not accumulate.
 
 ## Pull Request Review Workflow
 
@@ -134,3 +233,13 @@ Manual steps should say:
 - What should happen.
 
 If manual verification is not needed, say automated validation was sufficient.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

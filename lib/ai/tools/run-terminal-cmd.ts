@@ -1,7 +1,11 @@
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
-import type { ToolContext } from "@/types";
+import type {
+  AgentAutoReviewTerminalInspection,
+  SandboxReadinessFailureReason,
+  ToolContext,
+} from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
@@ -10,9 +14,17 @@ import { terminateProcessReliably } from "./utils/process-termination";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import {
   waitForSandboxReady,
-  getSandboxDiagnostics,
+  classifySandboxReadinessFailureReason,
+  observeSandboxResourceFailure,
+  observeSandboxRecovery,
+  observeTerminalTimeoutRecovery,
 } from "./utils/sandbox-health";
-import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
+import {
+  isCloudSandbox,
+  isE2BSandbox,
+  isMiosaSandbox,
+  isCentrifugoSandbox,
+} from "./utils/sandbox-types";
 import {
   buildSandboxCommandOptions,
   augmentCommandPath,
@@ -27,9 +39,13 @@ import {
   DEFAULT_PTY_ROWS,
   type PtySession,
 } from "./utils/pty-session-manager";
-import { getSessionSnapshots } from "./utils/pty-output-formatter";
+import {
+  getSessionSnapshots,
+  type PtyParserLogContext,
+} from "./utils/pty-output-formatter";
 import {
   getSandboxWithFallbackGuard,
+  getAgentApprovalSandboxIdentity,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import {
@@ -38,12 +54,22 @@ import {
   stripAnsi,
   peekExited,
 } from "./utils/pty-wait-utils";
-import { captureAgentBrowserUsage } from "./utils/agent-browser-usage";
+import {
+  captureAgentBrowserUsage,
+  getAgentBrowserRuntimeEnv,
+} from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
   RUN_TERMINAL_MAX_TIMEOUT_SECONDS,
   createRunTerminalCmdToolSchema,
 } from "./schemas";
+import { withE2BSandboxLeaseHeartbeat } from "./utils/sandbox";
+import {
+  collectAgentAutoReviewTerminalInspection,
+  getAgentAutoReviewInspectionKind,
+  terminalInspectionMatches,
+} from "@/lib/chat/agent-auto-review-evidence";
+import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
@@ -54,6 +80,27 @@ const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // return in ~half a second instead of blocking the user-supplied timeout
 // ceiling. The agent can follow up with action=wait/send.
 const INTERACTIVE_QUIET_WINDOW_MS = 500;
+const getTerminalProcessStatus = (
+  result: Record<string, unknown>,
+): string | undefined => {
+  if (result.processStarted === true && typeof result.exitCode === "number") {
+    return `Process exited with code ${result.exitCode}`;
+  }
+
+  if (
+    typeof result.exited === "object" &&
+    result.exited !== null &&
+    typeof (result.exited as { exitCode?: unknown }).exitCode === "number"
+  ) {
+    return `Process exited with code ${(result.exited as { exitCode: number }).exitCode}`;
+  }
+
+  if (typeof result.session === "string" && result.session) {
+    return `Process running with session ID ${result.session}`;
+  }
+
+  return undefined;
+};
 
 type RunTerminalCmdInput = {
   command: string;
@@ -91,6 +138,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     ptySessionManager,
     chatId,
   } = context;
+  const ptyScopeId = context.ptyScopeId ?? chatId;
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
@@ -101,8 +149,69 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("sandbox_recovery", operation)
       : operation();
+  const buildTerminalLogContext = (): Pick<
+    PtyParserLogContext,
+    "service" | "environment" | "request_id" | "trigger_run_id"
+  > => ({
+    service: context.triggerRunId ? "agent-long" : "chat-handler",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    request_id: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    trigger_run_id: context.triggerRunId ?? null,
+  });
+  const buildPtyParserLogContext = (
+    sessionId: string,
+  ): PtyParserLogContext => ({
+    ...buildTerminalLogContext(),
+    chat_id: context.chatId,
+    user_id: context.userID,
+    session_id: sessionId,
+    log_budget: context.ptyParserLogBudget,
+  });
+  const buildTerminalOutputPersistenceTelemetry = () => ({
+    service: context.triggerRunId
+      ? ("agent-long" as const)
+      : ("chat-handler" as const),
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    requestId: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    triggerRunId: context.triggerRunId ?? null,
+    chatId: context.chatId,
+    userId: context.userID,
+  });
+  const logSandboxReadinessRecovery = (args: {
+    level: "info" | "warn" | "error";
+    outcome: "started" | "reconnected" | "failed" | "skipped_unavailable";
+    sandboxId?: string;
+    initialFailureReason: SandboxReadinessFailureReason;
+    finalFailureReason?: SandboxReadinessFailureReason;
+  }): void => {
+    const payload = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: args.level,
+      event: "e2b_sandbox_readiness_recovery",
+      ...buildTerminalLogContext(),
+      chat_id: context.chatId,
+      user_id: context.userID,
+      subscription: context.subscription ?? "unknown",
+      sandbox_id: args.sandboxId ?? null,
+      outcome: args.outcome,
+      initial_failure_reason: args.initialFailureReason,
+      final_failure_reason: args.finalFailureReason ?? null,
+    });
+    if (args.level === "error") console.error(payload);
+    else if (args.level === "warn") console.warn(payload);
+    else console.info(payload);
+  };
   const runTerminalCmdTool = createRunTerminalCmdToolSchema({
     approvalGated: !!context.requestToolApproval,
+    modelName: context.getCurrentModelName?.() ?? context.modelName,
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;
@@ -174,6 +283,39 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         MAX_TIMEOUT_SECONDS,
       );
 
+      let terminalInspection: AgentAutoReviewTerminalInspection | undefined;
+      const inspectionKind = context.autoReviewEvidenceEnabled
+        ? getAgentAutoReviewInspectionKind(command)
+        : null;
+      if (inspectionKind) {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager,
+          });
+          terminalInspection = await collectAgentAutoReviewTerminalInspection({
+            command,
+            sandbox,
+          });
+        } catch (error) {
+          console.warn({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_auto_review_inspection_failed",
+            service: "agent",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            tool_call_id: toolCallId,
+            inspection_kind: inspectionKind,
+            failure_class: error instanceof Error ? error.name : typeof error,
+          });
+          terminalInspection = {
+            kind: inspectionKind,
+            status: "unresolved" as const,
+            reason: "inspection_failed" as const,
+          };
+        }
+      }
+
       const approval = await context.requestToolApproval?.({
         toolCallId,
         toolName: "run_terminal_cmd",
@@ -182,6 +324,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         brief,
         justification,
         prefixRule: prefix_rule,
+        autoReviewContext: {
+          type: "terminal_command",
+          command,
+          ...(terminalInspection ? { inspection: terminalInspection } : {}),
+        },
       });
       if (approval && !approval.approved) {
         return {
@@ -196,11 +343,37 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       const approvedSandboxIdentity = approval?.approved
         ? approval.sandboxIdentity
         : undefined;
-      const getApprovedExecutionSandbox = () =>
-        getSandboxWithFallbackGuard({
+      let terminalInspectionRevalidated = false;
+      const getApprovedExecutionSandbox = async () => {
+        const result = await getSandboxWithFallbackGuard({
           sandboxManager,
           expectedSandboxIdentity: approvedSandboxIdentity,
         });
+        if (
+          approval?.approved &&
+          approval.approvalSource === "auto_review" &&
+          terminalInspection?.status === "resolved" &&
+          !terminalInspectionRevalidated
+        ) {
+          const currentInspection =
+            await collectAgentAutoReviewTerminalInspection({
+              command,
+              sandbox: result.sandbox,
+            });
+          if (
+            !terminalInspectionMatches({
+              reviewed: terminalInspection,
+              current: currentInspection,
+            })
+          ) {
+            throw new Error(
+              "The command's inspected files changed after automatic review. The command was not run. Retry it so the current action can be reviewed.",
+            );
+          }
+          terminalInspectionRevalidated = true;
+        }
+        return result;
+      };
 
       // ─── Interactive PTY exec branch ─────────────────────────────────
       if (interactive) {
@@ -209,13 +382,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
-          if (!isE2B && !isCentrifugo) {
+          if (!isE2B && !isCentrifugo && !isMiosaSandbox(sandbox)) {
             return {
               result: {
                 output: "",
                 exitCode: 1,
                 error:
-                  "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
+                  "Interactive PTY requires E2B, MIOSA, or local (Centrifugo) sandbox.",
               },
             };
           }
@@ -243,13 +416,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             interactive: true,
             isBackground: false,
           });
+          const agentBrowserEnv =
+            isE2B || isMiosaSandbox(sandbox)
+              ? getAgentBrowserRuntimeEnv(command)
+              : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
-          const session = await ptySessionManager.create(chatId, {
+          const session = await ptySessionManager.create(ptyScopeId, {
             cols,
             rows,
+            sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
+            originalCommand: command,
+            workingDirectory: isCentrifugo
+              ? typeof sandbox.getWorkingDirectory === "function"
+                ? sandbox.getWorkingDirectory()
+                : undefined
+              : buildSandboxCommandOptions(sandbox).cwd,
             createHandle: async () => {
               if (isCentrifugo) {
                 const { createCentrifugoPtyHandle } =
@@ -261,9 +445,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   cwd: sandbox.getWorkingDirectory(),
                 });
               }
+              if (isMiosaSandbox(sandbox)) {
+                const { createMiosaPtyHandle } =
+                  await import("./utils/miosa-pty-adapter");
+                return createMiosaPtyHandle(sandbox, {
+                  cols,
+                  rows,
+                  cwd: buildSandboxCommandOptions(sandbox).cwd,
+                  envs: agentBrowserEnv,
+                });
+              }
               return createE2BPtyHandle(sandbox, {
                 cols,
                 rows,
+                envs: agentBrowserEnv,
               });
             },
           });
@@ -285,20 +480,25 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // Stream output chunks as they arrive. Resolve early on a brief
           // quiet window so launching a REPL/shell returns when its prompt
           // finishes drawing rather than blocking the full timeout ceiling.
-          const delta = await measureTerminalWait(() =>
-            waitForOutput(
-              session,
-              effectiveStreamTimeout * 1000,
-              abortSignal,
-              emitTerminal,
-              (s) => ptySessionManager.consumeDelta(s),
-              { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
-            ),
-          );
+          const waitForInitialOutput = () =>
+            measureTerminalWait(() =>
+              waitForOutput(
+                session,
+                effectiveStreamTimeout * 1000,
+                abortSignal,
+                emitTerminal,
+                (s) => ptySessionManager.consumeDelta(s),
+                { quietMs: INTERACTIVE_QUIET_WINDOW_MS },
+              ),
+            );
+          const delta = await (isE2B
+            ? withE2BSandboxLeaseHeartbeat(sandbox, waitForInitialOutput)
+            : waitForInitialOutput());
           await drainEmitQueue();
           const snapshots = await getSessionSnapshots(
             ptySessionManager,
             session,
+            buildPtyParserLogContext(session.sessionId),
           );
           // If the command finished during the quiet window (e.g. a one-shot
           // `echo … && whoami`), surface that so the agent doesn't try to
@@ -329,6 +529,66 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       try {
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await getApprovedExecutionSandbox();
+        const executeWithLocalRelayRecovery = async (
+          sandboxInstance: typeof sandbox,
+        ) => {
+          try {
+            return await executeCommand(sandboxInstance);
+          } catch (error) {
+            if (
+              !isCentrifugoSandbox(sandboxInstance) ||
+              !isLocalCommandRelayUnsubscribedError(error) ||
+              !sandboxManager.recoverLocalConnection
+            ) {
+              throw error;
+            }
+
+            const staleConnectionId = sandboxInstance.getConnectionId();
+            console.warn(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "warn",
+                event: "agent_terminal_local_relay_recovery_started",
+                ...buildTerminalLogContext(),
+                chat_id: context.chatId,
+                user_id: context.userID,
+                subscription: context.subscription ?? "unknown",
+                tool_call_id: toolCallId,
+                stale_connection_id: staleConnectionId,
+              }),
+            );
+
+            await measureSandboxRecovery(() =>
+              sandboxManager.recoverLocalConnection!(
+                staleConnectionId,
+                "command_relay_unsubscribed",
+              ),
+            );
+            const { sandbox: recoveredSandbox } =
+              await getApprovedExecutionSandbox();
+
+            console.warn(
+              JSON.stringify({
+                timestamp: new Date().toISOString(),
+                level: "warn",
+                event: "agent_terminal_local_relay_recovery_completed",
+                ...buildTerminalLogContext(),
+                chat_id: context.chatId,
+                user_id: context.userID,
+                subscription: context.subscription ?? "unknown",
+                tool_call_id: toolCallId,
+                stale_connection_id: staleConnectionId,
+                replacement_connection_id: isCentrifugoSandbox(recoveredSandbox)
+                  ? recoveredSandbox.getConnectionId()
+                  : null,
+              }),
+            );
+
+            // The relay presence check rejects before the command is published,
+            // so one retry on the verified same-machine successor is safe.
+            return executeCommand(recoveredSandbox);
+          }
+        };
 
         // Bail early if sandbox was already marked unavailable by any tool
         if (sandboxManager.isSandboxUnavailable()) {
@@ -342,11 +602,17 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           };
         }
 
-        // Only health-check E2B sandboxes — local sandboxes don't need it
+        // Health-check cloud sandboxes; local sandboxes have relay-specific checks.
         // (they relay commands through Convex and have their own connectivity)
-        if (isE2BSandbox(sandbox)) {
+        if (isCloudSandbox(sandbox)) {
           try {
-            await waitForSandboxReady(sandbox, 5, abortSignal);
+            await waitForSandboxReady(
+              sandbox,
+              5,
+              abortSignal,
+              context.onSandboxResourceMetrics,
+              "initial",
+            );
             sandboxManager.resetHealthFailures();
           } catch (healthError) {
             // If aborted, don't retry - propagate the abort
@@ -357,11 +623,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               throw healthError;
             }
 
+            const initialFailureReason =
+              classifySandboxReadinessFailureReason(healthError);
             const exceeded = sandboxManager.recordHealthFailure();
             if (exceeded) {
-              console.error(
-                "[Terminal Command] Sandbox health check failed too many times, marking unavailable",
-              );
+              observeSandboxRecovery(context.onSandboxResourceMetrics, {
+                outcome: "skipped_unavailable",
+                initialFailureReason,
+              });
+              logSandboxReadinessRecovery({
+                level: "error",
+                outcome: "skipped_unavailable",
+                sandboxId: sandbox.sandboxId,
+                initialFailureReason,
+              });
               return {
                 result: {
                   output: "",
@@ -373,54 +648,102 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             }
 
             const recovery = await measureSandboxRecovery(async () => {
-              // Sandbox health check failed - log diagnostics and wait briefly before recreating
-              const diagnostics = await getSandboxDiagnostics(sandbox).catch(
-                () => "diagnostics unavailable",
-              );
-              console.warn(
-                `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before recreating sandbox`,
-              );
+              // Discard this worker's connection and reconnect the shared
+              // sandbox. Never kill it: another Agent run may own commands.
+              logSandboxReadinessRecovery({
+                level: "warn",
+                outcome: "started",
+                sandboxId: sandbox.sandboxId,
+                initialFailureReason,
+              });
               await new Promise((resolve) => setTimeout(resolve, 2000));
 
-              // Reset cached instance to force ensureSandboxConnection to create a fresh one
-              sandboxManager.setSandbox(null as any);
-              const { sandbox: freshSandbox } =
+              // Reset only the cached SDK instance.
+              await sandboxManager.resetSandbox?.(
+                "terminal_health_check_failed",
+              );
+              const { sandbox: reconnectedSandbox } =
                 await getApprovedExecutionSandbox();
 
-              // Verify the fresh sandbox is ready
+              // Verify the reconnected sandbox is ready
               try {
-                await waitForSandboxReady(freshSandbox, 5, abortSignal);
+                await waitForSandboxReady(
+                  reconnectedSandbox,
+                  5,
+                  abortSignal,
+                  context.onSandboxResourceMetrics,
+                  "reconnect",
+                );
                 sandboxManager.resetHealthFailures();
-              } catch (freshHealthError) {
+              } catch (reconnectedHealthError) {
                 if (
-                  freshHealthError instanceof DOMException &&
-                  freshHealthError.name === "AbortError"
+                  reconnectedHealthError instanceof DOMException &&
+                  reconnectedHealthError.name === "AbortError"
                 ) {
-                  throw freshHealthError;
+                  throw reconnectedHealthError;
                 }
-                sandboxManager.recordHealthFailure();
+                const finalFailureReason =
+                  classifySandboxReadinessFailureReason(reconnectedHealthError);
+                const unavailable = sandboxManager.recordHealthFailure();
+                observeSandboxRecovery(context.onSandboxResourceMetrics, {
+                  outcome: unavailable
+                    ? "failed_unavailable"
+                    : "failed_retryable",
+                  initialFailureReason,
+                  finalFailureReason,
+                });
+                logSandboxReadinessRecovery({
+                  level: "error",
+                  outcome: "failed",
+                  sandboxId: isE2BSandbox(reconnectedSandbox)
+                    ? reconnectedSandbox.sandboxId
+                    : undefined,
+                  initialFailureReason,
+                  finalFailureReason,
+                });
                 return {
                   ok: false as const,
                   response: {
                     result: {
                       output: "",
                       exitCode: 1,
-                      error:
-                        "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+                      error: unavailable
+                        ? "Sandbox is unavailable after the initial health check and reconnect both failed. Do NOT retry terminal or sandbox commands in this run. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support."
+                        : "Sandbox reconnection failed. The sandbox environment is not responding.",
                     },
                   },
                 };
               }
 
-              return { ok: true as const, sandbox: freshSandbox };
+              observeSandboxRecovery(context.onSandboxResourceMetrics, {
+                outcome: "reconnected",
+                initialFailureReason,
+              });
+              logSandboxReadinessRecovery({
+                level: "info",
+                outcome: "reconnected",
+                sandboxId: isE2BSandbox(reconnectedSandbox)
+                  ? reconnectedSandbox.sandboxId
+                  : undefined,
+                initialFailureReason,
+              });
+              return { ok: true as const, sandbox: reconnectedSandbox };
             });
 
             if (!recovery.ok) return recovery.response;
-            return executeCommand(recovery.sandbox);
+            return await (isE2BSandbox(recovery.sandbox) && !is_background
+              ? withE2BSandboxLeaseHeartbeat(recovery.sandbox, () =>
+                  executeWithLocalRelayRecovery(recovery.sandbox),
+                )
+              : executeWithLocalRelayRecovery(recovery.sandbox));
           }
         }
 
-        return executeCommand(sandbox);
+        return await (isE2BSandbox(sandbox) && !is_background
+          ? withE2BSandboxLeaseHeartbeat(sandbox, () =>
+              executeWithLocalRelayRecovery(sandbox),
+            )
+          : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
           captureAgentBrowserUsage({
@@ -461,13 +784,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               exitCode: number;
               pid?: number;
             }> | null = null;
+            let resumableTimeoutObserved = false;
 
             const forgetUnexposedCommandSession = () => {
               if (!commandSession || commandSessionExposed) return;
-              ptySessionManager.forget(chatId, commandSession.sessionId);
+              ptySessionManager.forget(ptyScopeId, commandSession.sessionId);
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
+              if (isMiosaSandbox(sandboxInstance)) {
+                commandAbortController.abort();
+                if (!runPromise) return false;
+                try {
+                  await runPromise;
+                  return false;
+                } catch (error) {
+                  return error instanceof Error && error.name === "AbortError";
+                }
+              }
               if (isCentrifugoSandbox(sandboxInstance)) {
                 if (cancelCentrifugoCommand) {
                   return cancelCentrifugoCommand();
@@ -512,12 +846,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               processId: number | null;
               terminationError?: unknown;
             }) => {
+              const sandboxInfo = sandboxManager.getSandboxInfo();
               console.warn(
                 JSON.stringify({
+                  timestamp: new Date().toISOString(),
                   level: "warn",
                   event: "agent_terminal_noisy_timeout",
-                  service: "chat-handler",
-                  timestamp: new Date().toISOString(),
+                  ...buildTerminalLogContext(),
                   chat_id: chatId,
                   user_id: context.userID,
                   mode: context.mode,
@@ -528,15 +863,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   output_truncated: handler?.wasTruncated() ?? false,
                   output_full_output_capped:
                     handler?.wasFullOutputCapped() ?? false,
-                  sandbox_type:
-                    sandboxManager.getSandboxType("run_terminal_cmd"),
+                  ...(sandboxInfo?.type && {
+                    sandbox_type: sandboxInfo.type,
+                  }),
+                  ...(sandboxInfo?.provider && {
+                    sandbox_provider: sandboxInfo.provider,
+                  }),
                   pid: fields.processId ?? undefined,
                   termination_attempted: fields.terminationAttempted,
                   termination_succeeded: fields.terminationSucceeded,
-                  termination_error:
+                  termination_error_name:
                     fields.terminationError instanceof Error
-                      ? fields.terminationError.message
-                      : undefined,
+                      ? fields.terminationError.name
+                      : null,
                 }),
               );
             };
@@ -622,6 +961,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 result: {
                   output: result.output,
                   exitCode: terminated ? 130 : null,
+                  ...(terminated ? { processStarted: true } : {}),
                   error: terminated
                     ? "Command execution aborted by user"
                     : "Command cancellation could not be confirmed. The local session was retained so termination can be retried.",
@@ -706,6 +1046,29 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     ? undefined
                     : commandSession?.sessionId;
                   if (resumableSession) commandSessionExposed = true;
+                  resumableTimeoutObserved = Boolean(resumableSession);
+                  const resourceFailureObservation = isE2BSandbox(
+                    sandboxInstance,
+                  )
+                    ? observeSandboxResourceFailure(
+                        sandboxInstance,
+                        context.onSandboxResourceMetrics,
+                        "terminal_command_timeout",
+                        "terminal_command_timed_out",
+                        {
+                          timeoutSeconds: effectiveStreamTimeout,
+                          terminalTimeoutOutcome: commandTerminated
+                            ? "command_terminated"
+                            : resumableSession
+                              ? "session_resumable"
+                              : "wait_expired_untracked",
+                          terminationAttempted,
+                          terminationSucceeded,
+                          sessionReturned: Boolean(resumableSession),
+                          isBackground: is_background,
+                        },
+                      )
+                    : Promise.resolve();
                   const timeoutMessage = commandTerminated
                     ? TERMINATED_TIMEOUT_MESSAGE(
                         effectiveStreamTimeout,
@@ -717,6 +1080,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         resumableSession,
                       );
 
+                  await resourceFailureObservation.catch(() => {
+                    // Analytics must never delay or mask terminal timeout handling
+                  });
                   await createTerminalWriter(timeoutMessage);
 
                   abortSignal?.removeEventListener("abort", onAbort);
@@ -732,6 +1098,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     result: {
                       output: result.output,
                       exitCode: commandTerminated ? 124 : null,
+                      ...(commandTerminated ? { processStarted: true } : {}),
                       timedOut: true,
                       ...(resumableSession && {
                         session: resumableSession,
@@ -756,10 +1123,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     kill: terminateManagedCommand,
                   });
                   return ptySessionManager
-                    .create(chatId, {
+                    .create(ptyScopeId, {
                       cols,
                       rows,
                       kind: "command",
+                      sandboxIdentity:
+                        getAgentApprovalSandboxIdentity(sandboxInstance),
+                      originalCommand: command,
+                      workingDirectory:
+                        isCentrifugoSandbox(sandboxInstance) &&
+                        typeof sandboxInstance.getWorkingDirectory ===
+                          "function"
+                          ? sandboxInstance.getWorkingDirectory()
+                          : buildSandboxCommandOptions(sandboxInstance).cwd,
                       createHandle: async () => commandHandle!,
                     })
                     .then((session) => {
@@ -781,6 +1157,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
+            // agent-browser is installed in MIOSA sandboxes too, and needs the
+            // same runtime env there. Gating this on E2B alone left Chromium
+            // running without its configured flags on MIOSA.
+            const agentBrowserEnv =
+              isE2BSandbox(sandboxInstance) || isMiosaSandbox(sandboxInstance)
+                ? getAgentBrowserRuntimeEnv(command)
+                : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
@@ -792,8 +1175,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   },
                 }
               : isE2BSandbox(sandboxInstance)
-                ? { ...commonOptions, signal: abortSignal }
-                : commonOptions;
+                ? {
+                    ...commonOptions,
+                    ...(agentBrowserEnv && { envs: agentBrowserEnv }),
+                    signal: abortSignal,
+                  }
+                : isMiosaSandbox(sandboxInstance)
+                  ? {
+                      ...commonOptions,
+                      signal: is_background
+                        ? abortSignal
+                        : commandAbortController.signal,
+                      ...(agentBrowserEnv && { envVars: agentBrowserEnv }),
+                    }
+                  : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)
@@ -808,6 +1203,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // a process is terminated externally (e.g., by our abort handler).
                 // We must not retry these as the termination was intentional.
                 if (error.message.includes("signal:")) {
+                  return true;
+                }
+
+                // Presence is checked before the command is published. Handle
+                // this once at the sandbox layer instead of backing off against
+                // the same stale relay connection six times.
+                if (isLocalCommandRelayUnsubscribedError(error)) {
                   return true;
                 }
 
@@ -905,6 +1307,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   commandHandle?.setPid(exec.pid);
                 }
                 commandHandle?.resolveExit(exec.exitCode ?? 0);
+                if (resumableTimeoutObserved && isE2BSandbox(sandboxInstance)) {
+                  observeTerminalTimeoutRecovery(
+                    context.onSandboxResourceMetrics,
+                    (exec.exitCode ?? 0) === 0
+                      ? "completed_success"
+                      : "completed_nonzero",
+                  );
+                  resumableTimeoutObserved = false;
+                }
 
                 if (handler) {
                   handler.cleanup();
@@ -944,6 +1355,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       sandbox: sandboxInstance,
                       terminalWriter: createTerminalWriter,
                       scopeId: chatId,
+                      telemetry: buildTerminalOutputPersistenceTelemetry(),
                     });
                     if (saveMsg) {
                       outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
@@ -958,6 +1370,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                           output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
                         }
                       : {
+                          processStarted: true,
                           exitCode: exec.exitCode ?? 0,
                           output: outputWithSaveInfo,
                           error:
@@ -975,6 +1388,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 }
               })
               .catch(async (error) => {
+                if (resumableTimeoutObserved && isE2BSandbox(sandboxInstance)) {
+                  observeTerminalTimeoutRecovery(
+                    context.onSandboxResourceMetrics,
+                    error instanceof CommandExitError
+                      ? "completed_nonzero"
+                      : "execution_failed",
+                  );
+                  resumableTimeoutObserved = false;
+                }
                 commandHandle?.resolveExit(
                   error instanceof CommandExitError ? error.exitCode : null,
                 );
@@ -999,6 +1421,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         sandbox: sandboxInstance,
                         terminalWriter: createTerminalWriter,
                         scopeId: chatId,
+                        telemetry: buildTerminalOutputPersistenceTelemetry(),
                       });
                       if (saveMsg) {
                         outputWithSaveInfo =
@@ -1008,6 +1431,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
                     resolve({
                       result: {
+                        processStarted: true,
                         exitCode: error.exitCode,
                         output: outputWithSaveInfo,
                         error: error.message,
@@ -1037,6 +1461,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     // fields. rawSnapshot stays in the persisted tool result so the
     // sidebar's xterm renderer can replay it. No-op for non-interactive
     // results, which never include rawSnapshot.
+    //
+    // Prepend a plain-language process state so partial stdout cannot be
+    // mistaken for a successful command when the structural result explicitly
+    // marks a completed process or a still-running session.
     toModelOutput({ output }) {
       if (typeof output !== "object" || output === null) {
         return { type: "text", value: String(output ?? "") };
@@ -1049,7 +1477,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         string,
         unknown
       >;
-      return { type: "text", value: JSON.stringify({ result: rest }) };
+      const processStatus = getTerminalProcessStatus(rest);
+      const serializedResult = JSON.stringify({ result: rest });
+
+      return {
+        type: "text",
+        value: processStatus
+          ? `${processStatus}\n${serializedResult}`
+          : serializedResult,
+      };
     },
   });
 };

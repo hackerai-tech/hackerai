@@ -17,6 +17,7 @@ jest.mock("convex/values", () => ({
     optional: jest.fn(() => "optional"),
     object: jest.fn(() => "object"),
     union: jest.fn(() => "union"),
+    literal: jest.fn(() => "literal"),
     array: jest.fn(() => "array"),
     boolean: jest.fn(() => "boolean"),
   },
@@ -44,6 +45,7 @@ jest.mock("../_generated/api", () => ({
       saveFileToDb: "internal.fileStorage.saveFileToDb",
     },
     s3Cleanup: {
+      deleteTrackedS3Object: "internal.s3Cleanup.deleteTrackedS3Object",
       deleteS3ObjectAction: "internal.s3Cleanup.deleteS3ObjectAction",
       deleteS3ObjectsBatchAction:
         "internal.s3Cleanup.deleteS3ObjectsBatchAction",
@@ -93,13 +95,97 @@ describe("fileStorage - deleteFile", () => {
         }),
       },
       db: {
+        insert: jest.fn().mockResolvedValue("receipt-1"),
         get: jest.fn().mockResolvedValue(mockFile),
         delete: jest.fn().mockResolvedValue(undefined),
+        patch: jest.fn().mockResolvedValue(undefined),
       },
       scheduler: {
         runAfter: jest.fn().mockResolvedValue(undefined),
       },
     };
+  });
+
+  describe("auxiliary vision cache", () => {
+    it("stores a bounded description only on an owned image", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      (isSupportedImageMediaType as jest.Mock).mockReturnValue(true);
+      mockFile.media_type = "image/png";
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: testUserId,
+          fileId: testFileId,
+          description: "  A terminal shows a 403 error.  ",
+          model: "google/gemini-3.6-flash",
+        }),
+      ).resolves.toBeNull();
+
+      expect(mockCtx.db.patch).toHaveBeenCalledWith(testFileId, {
+        auxiliary_vision_description: "A terminal shows a 403 error.",
+        auxiliary_vision_model: "google/gemini-3.6-flash",
+      });
+    });
+
+    it("rejects cache writes for another user's file", async () => {
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: "other-user",
+          fileId: testFileId,
+          description: "Description",
+          model: "google/gemini-3.6-flash",
+        }),
+      ).rejects.toThrow("File does not belong to user");
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    });
+
+    it("rejects cache writes for non-image files", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      (isSupportedImageMediaType as jest.Mock).mockReturnValue(false);
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: testUserId,
+          fileId: testFileId,
+          description: "Description",
+          model: "google/gemini-3.6-flash",
+        }),
+      ).rejects.toThrow(
+        "Auxiliary vision descriptions are only valid for images",
+      );
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["empty", "   "],
+      ["overlong", "x".repeat(12_001)],
+    ])("rejects %s cache descriptions", async (_label, description) => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      (isSupportedImageMediaType as jest.Mock).mockReturnValue(true);
+      mockFile.media_type = "image/png";
+      const { saveAuxiliaryVisionDescription } = await import("../fileStorage");
+
+      await expect(
+        saveAuxiliaryVisionDescription.handler(mockCtx, {
+          serviceKey: "service-key",
+          userId: testUserId,
+          fileId: testFileId,
+          description,
+          model: "google/gemini-3.6-flash",
+        }),
+      ).rejects.toThrow("Auxiliary vision description has an invalid length");
+      expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    });
   });
 
   describe("Authentication and Authorization", () => {
@@ -154,8 +240,8 @@ describe("fileStorage - deleteFile", () => {
       // Verify S3 deletion was scheduled
       expect(mockCtx.scheduler.runAfter).toHaveBeenCalledWith(
         0,
-        "internal.s3Cleanup.deleteS3ObjectAction",
-        { s3Key: mockFile.s3_key },
+        "internal.s3Cleanup.deleteTrackedS3Object",
+        { deletionId: "receipt-1" },
       );
 
       // Verify aggregate was updated
@@ -168,7 +254,24 @@ describe("fileStorage - deleteFile", () => {
       expect(mockCtx.db.delete).toHaveBeenCalledWith(testFileId);
     });
 
-    it("should delete DB record even if S3 scheduling fails", async () => {
+    it("preserves the regional storage location in the cleanup receipt", async () => {
+      mockFile.s3_key = "users/test-user-123/regional.pdf";
+      mockFile.s3_region = "us-west-2";
+      mockFile.s3_bucket = "test-west-bucket";
+      const { deleteFile } = await import("../fileStorage");
+      await deleteFile.handler(mockCtx, { fileId: testFileId });
+      expect(mockCtx.db.insert).toHaveBeenCalledWith(
+        "pendingFileDeletions",
+        expect.objectContaining({
+          s3_key: mockFile.s3_key,
+          s3_region: "us-west-2",
+          s3_bucket: "test-west-bucket",
+          user_id: testUserId,
+        }),
+      );
+    });
+
+    it("keeps the DB record when S3 scheduling fails", async () => {
       mockFile.s3_key = "users/test-user-123/test-file.pdf";
       mockCtx.db.get.mockResolvedValue(mockFile);
       mockCtx.scheduler.runAfter.mockRejectedValue(

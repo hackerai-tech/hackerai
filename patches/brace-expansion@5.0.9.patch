@@ -1,0 +1,13 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -285,5 +285,9 @@ function expand_(str, max, maxLength, isTop) {
+         str = m.post;
+     }
+     return acc;
+ }
++// Older CommonJS consumers call the package export directly. Preserve that
++// contract while retaining the named exports introduced in version 5.
++module.exports = Object.assign(expand, exports);
++module.exports.default = expand;
+ //# sourceMappingURL=index.js.map

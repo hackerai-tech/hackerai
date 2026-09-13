@@ -1,5 +1,5 @@
 import readline from "node:readline";
-import { exec } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
@@ -7,6 +7,7 @@ import path from "node:path";
 import chalk from "chalk";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 function question(query: string): Promise<string> {
   const rl = readline.createInterface({
@@ -20,6 +21,17 @@ function question(query: string): Promise<string> {
       resolve(ans);
     }),
   );
+}
+
+async function getRequiredAnswer(
+  prompt: string,
+  defaultValue?: string,
+): Promise<string> {
+  const answer = (await question(prompt)).trim() || defaultValue;
+  if (answer) return answer;
+
+  console.log(chalk.red("This value is required"));
+  return await getRequiredAnswer(prompt, defaultValue);
 }
 
 async function getOpenRouterApiKey(): Promise<string> {
@@ -56,19 +68,30 @@ async function getOpenAiApiKey(): Promise<string> {
   return await getOpenAiApiKey();
 }
 
-async function getXaiApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting XAI API Key for Agent mode")}`);
-  console.log("You can find your XAI API Key at: https://xai.com/api-keys");
-  const key = await question("Enter your XAI API Key: ");
+async function getS3Config(): Promise<{
+  AWS_S3_ACCESS_KEY_ID: string;
+  AWS_S3_SECRET_ACCESS_KEY: string;
+  AWS_S3_REGION: string;
+  AWS_S3_BUCKET_NAME: string;
+}> {
+  console.log(`\n${chalk.bold("Getting required Amazon S3 configuration")}`);
+  console.log("Create a bucket and credentials at: https://aws.amazon.com/s3/");
 
-  if (key.startsWith("xai-")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid XAI API Key format"));
-  console.log('XAI keys should start with "xai-"');
-
-  return await getXaiApiKey();
+  return {
+    AWS_S3_ACCESS_KEY_ID: await getRequiredAnswer(
+      "Enter your AWS S3 access key ID: ",
+    ),
+    AWS_S3_SECRET_ACCESS_KEY: await getRequiredAnswer(
+      "Enter your AWS S3 secret access key: ",
+    ),
+    AWS_S3_REGION: await getRequiredAnswer(
+      "Enter your AWS S3 region [us-east-1]: ",
+      "us-east-1",
+    ),
+    AWS_S3_BUCKET_NAME: await getRequiredAnswer(
+      "Enter your AWS S3 bucket name: ",
+    ),
+  };
 }
 
 async function getE2bApiKey(): Promise<string> {
@@ -87,6 +110,28 @@ async function getE2bApiKey(): Promise<string> {
   console.log('E2B keys should start with "e2b_"');
 
   return await getE2bApiKey();
+}
+
+async function getMiosaApiKey(): Promise<string> {
+  console.log(
+    `\n${chalk.bold("Getting MIOSA API Key for cloud sandbox rollout")}`,
+  );
+  console.log(
+    "MIOSA is the primary rollout provider. Leave this blank to keep E2B-only cloud execution.",
+  );
+  console.log(
+    "You can create a MIOSA API Key at: https://miosa.ai/dashboard/api-keys",
+  );
+  const key = await question("Enter your MIOSA API Key (optional): ");
+
+  if (!key || key.startsWith("msk_")) {
+    return key;
+  }
+
+  console.log(chalk.red("Invalid MIOSA API Key format"));
+  console.log('MIOSA keys should start with "msk_"');
+
+  return await getMiosaApiKey();
 }
 
 async function getWorkOSApiKey(): Promise<string> {
@@ -113,6 +158,48 @@ async function getWorkOSClientId(): Promise<string> {
     'You can find your WorkOS Client ID in the dashboard under the "Quick start" section: https://dashboard.workos.com/get-started',
   );
   return await question("Enter your WorkOS Client ID: ");
+}
+
+async function getWorkOSAuthDomain(): Promise<string> {
+  console.log(`\n${chalk.bold("Getting WorkOS Authentication API Domain")}`);
+  console.log(
+    "Press enter to use api.workos.com, or enter the custom domain configured in WorkOS.",
+  );
+
+  const input = (
+    await question("Enter your WorkOS auth domain [api.workos.com]: ")
+  ).trim();
+  const configuredDomain = input || "api.workos.com";
+
+  try {
+    const authOrigin = new URL(
+      configuredDomain.includes("://")
+        ? configuredDomain
+        : `https://${configuredDomain}`,
+    );
+
+    if (
+      authOrigin.protocol === "https:" &&
+      !authOrigin.username &&
+      !authOrigin.password &&
+      !authOrigin.port &&
+      /^[a-z0-9.-]+$/i.test(authOrigin.hostname) &&
+      /^\/+$/.test(authOrigin.pathname) &&
+      !authOrigin.search &&
+      !authOrigin.hash
+    ) {
+      return authOrigin.hostname;
+    }
+  } catch {
+    // Show the validation message below.
+  }
+
+  console.log(
+    chalk.red(
+      "Invalid WorkOS auth domain. Enter a hostname or HTTPS origin without a path.",
+    ),
+  );
+  return await getWorkOSAuthDomain();
 }
 
 function generateWorkOSCookiePassword(): string {
@@ -150,6 +237,7 @@ async function configureWorkOSDashboard() {
 
 async function configureConvexDashboard(
   workOSClientId: string,
+  workOSAuthDomain: string,
   convexServiceRoleKey: string,
 ) {
   console.log(`\n${chalk.bold("Configure Convex Dashboard")}`);
@@ -161,9 +249,10 @@ async function configureConvexDashboard(
   console.log("3. Go to Settings → Environment Variables");
   console.log("4. Add the following required variables:\n");
   console.log(chalk.bold(`   WORKOS_CLIENT_ID=${workOSClientId}`));
+  console.log(chalk.bold(`   WORKOS_AUTH_DOMAIN=${workOSAuthDomain}`));
   console.log(chalk.bold(`   CONVEX_SERVICE_ROLE_KEY=${convexServiceRoleKey}`));
+  console.log("   - AWS_S3_* variables from .env.local");
   console.log("\nOptional variables (add later if using these features):");
-  console.log("   - AWS_S3_* variables (if using S3 storage)");
   console.log("   - REDIS_URL (if using Redis for stream resumption)");
   console.log("   - STRIPE_* variables (if using Stripe payments)");
   return await question(
@@ -182,6 +271,10 @@ WORKOS_API_KEY=${envVars.WORKOS_API_KEY}
 
 # ⚠️ IMPORTANT: Also add this to Convex Dashboard → Environment Variables
 WORKOS_CLIENT_ID=${envVars.WORKOS_CLIENT_ID}
+
+# Use api.workos.com unless WorkOS has configured a custom Authentication API domain.
+# ⚠️ IMPORTANT: Also add this to Convex Dashboard → Environment Variables
+WORKOS_AUTH_DOMAIN=${envVars.WORKOS_AUTH_DOMAIN}
 
 # Generate with: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 WORKOS_COOKIE_PASSWORD=${envVars.WORKOS_COOKIE_PASSWORD}
@@ -203,22 +296,30 @@ NEXT_PUBLIC_CONVEX_URL=${envVars.NEXT_PUBLIC_CONVEX_URL || ""}
 CONVEX_SERVICE_ROLE_KEY=${envVars.CONVEX_SERVICE_ROLE_KEY}
 
 # =============================================================================
-# S3 FILE STORAGE (Optional - Feature Flag Controlled)
+# S3 FILE STORAGE (Required)
 # =============================================================================
-# AWS S3 credentials for file storage (only needed if S3 is enabled)
+# AWS S3 credentials for file storage
 # Sign up at: https://aws.amazon.com/s3/
-# ⚠️ IMPORTANT: If using S3, also add these to Convex Dashboard → Environment Variables
-AWS_S3_ACCESS_KEY_ID=
-AWS_S3_SECRET_ACCESS_KEY=
-AWS_S3_REGION=us-east-1
-AWS_S3_BUCKET_NAME=
+# ⚠️ IMPORTANT: Also add these to Convex Dashboard → Environment Variables
+# and Trigger.dev → Environment Variables.
+AWS_S3_ACCESS_KEY_ID=${envVars.AWS_S3_ACCESS_KEY_ID}
+AWS_S3_SECRET_ACCESS_KEY=${envVars.AWS_S3_SECRET_ACCESS_KEY}
+AWS_S3_REGION=${envVars.AWS_S3_REGION}
+AWS_S3_BUCKET_NAME=${envVars.AWS_S3_BUCKET_NAME}
+
+# Regional storage rollout. Keep false until the matching bucket names and IAM
+# access are configured in both Convex and Trigger.dev for this environment.
+S3_REGIONAL_STORAGE_ENABLED=false
+AWS_S3_BUCKET_NAME_EU_CENTRAL_1=
+AWS_S3_BUCKET_NAME_US_EAST_1=
+AWS_S3_BUCKET_NAME_US_WEST_2=
 
 # Optional S3 configuration (defaults shown, uncomment to override)
 # S3_URL_LIFETIME_SECONDS=3600
 # S3_URL_EXPIRATION_BUFFER_SECONDS=300
 
 # =============================================================================
-# AI PROVIDERS (Required)
+# AI PROVIDERS
 # =============================================================================
 # OpenRouter - Get key at: https://openrouter.ai/
 OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
@@ -226,12 +327,20 @@ OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 # OpenAI - Get key at: https://platform.openai.com/
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 
-# XAI (Grok) - Get key at: https://x.ai/
-XAI_API_KEY=${envVars.XAI_API_KEY}
+# Optional abliteration.ai provider for eligible security requests that
+# standard models may refuse.
+# Create a key at: https://abliteration.ai/console
+# Configure independently in Vercel and Trigger.dev; the PostHog flag is also required.
+ABLITERATION_API_KEY=
 
 # =============================================================================
-# CODE EXECUTION - E2B (Required for Agent Mode)
+# CODE EXECUTION - CLOUD SANDBOX (Required for Agent Mode)
 # =============================================================================
+# MIOSA is gradually enabled by PostHog. New workspaces default to hackerai-tools;
+# MIOSA_TEMPLATE_ID optionally overrides it. E2B remains the acquisition fallback.
+MIOSA_API_KEY=${envVars.MIOSA_API_KEY}
+MIOSA_TEMPLATE_ID=
+
 # Sign up at: https://e2b.dev/
 E2B_API_KEY=${envVars.E2B_API_KEY}
 E2B_TEMPLATE=terminal-agent-sandbox
@@ -422,12 +531,19 @@ async function main() {
   // Get required API keys
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
-  const XAI_API_KEY = await getXaiApiKey();
+  const MIOSA_API_KEY = await getMiosaApiKey();
+  const {
+    AWS_S3_ACCESS_KEY_ID,
+    AWS_S3_SECRET_ACCESS_KEY,
+    AWS_S3_REGION,
+    AWS_S3_BUCKET_NAME,
+  } = await getS3Config();
   const E2B_API_KEY = await getE2bApiKey();
 
   // Get WorkOS configuration
   const WORKOS_API_KEY = await getWorkOSApiKey();
   const WORKOS_CLIENT_ID = await getWorkOSClientId();
+  const WORKOS_AUTH_DOMAIN = await getWorkOSAuthDomain();
   const NEXT_PUBLIC_BASE_URL = "http://localhost:3000";
   const NEXT_PUBLIC_WORKOS_REDIRECT_URI = `${NEXT_PUBLIC_BASE_URL}/callback`;
   const WORKOS_COOKIE_PASSWORD = generateWorkOSCookiePassword();
@@ -445,10 +561,15 @@ async function main() {
   await writeEnvFile({
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
-    XAI_API_KEY,
+    MIOSA_API_KEY,
+    AWS_S3_ACCESS_KEY_ID,
+    AWS_S3_SECRET_ACCESS_KEY,
+    AWS_S3_REGION,
+    AWS_S3_BUCKET_NAME,
     E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,
+    WORKOS_AUTH_DOMAIN,
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,
     WORKOS_COOKIE_PASSWORD,
     ACCOUNT_IDENTITY_HMAC_SECRET,
@@ -464,12 +585,25 @@ async function main() {
       `\n${chalk.bold("Setting environment variables on local Convex deployment...")}`,
     );
     try {
-      await execAsync(
-        `npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
-      );
-      await execAsync(
-        `npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
-      );
+      const requiredLocalConvexEnv = {
+        WORKOS_CLIENT_ID,
+        WORKOS_AUTH_DOMAIN,
+        CONVEX_SERVICE_ROLE_KEY,
+        AWS_S3_ACCESS_KEY_ID,
+        AWS_S3_SECRET_ACCESS_KEY,
+        AWS_S3_REGION,
+        AWS_S3_BUCKET_NAME,
+      };
+      for (const [name, value] of Object.entries(requiredLocalConvexEnv)) {
+        await execFileAsync("npx", [
+          "convex",
+          "env",
+          "set",
+          name,
+          value,
+          "--local",
+        ]);
+      }
       console.log(
         chalk.green("✓ Environment variables set on local Convex deployment"),
       );
@@ -480,15 +614,16 @@ async function main() {
         ),
       );
       console.log(
-        `   npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
-      );
-      console.log(
-        `   npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
+        "   npx convex env set <NAME> <VALUE> --local (for each required WorkOS, service-role, and AWS_S3_* variable)",
       );
     }
   } else {
     // Configure Convex Dashboard for cloud deployments
-    await configureConvexDashboard(WORKOS_CLIENT_ID, CONVEX_SERVICE_ROLE_KEY);
+    await configureConvexDashboard(
+      WORKOS_CLIENT_ID,
+      WORKOS_AUTH_DOMAIN,
+      CONVEX_SERVICE_ROLE_KEY,
+    );
   }
 
   const devCommand = useLocal ? "pnpm run dev:local" : "pnpm run dev";

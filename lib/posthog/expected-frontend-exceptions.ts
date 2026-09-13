@@ -32,6 +32,7 @@ const MANUAL_CHAT_STOP_ABORT_MESSAGES = new Set([
 const REACT_DOM_MUTATION_MESSAGES = new Set([
   "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
   "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+  "NotFoundError: Node.removeChild: The node to be removed is not a child of this node",
   "NotFoundError: The object can not be found here.",
 ]);
 
@@ -60,11 +61,12 @@ const CHUNK_LOAD_MESSAGE_FRAGMENTS = [
 
 const NEXT_SERVER_ACTION_SOURCE_FRAGMENTS = [
   "next/src/client/components/router-reducer/reducers/server-action-reducer.ts",
+  "next/src/client/components/segment-cache/fetch.ts",
   "/docs/messages/failed-to-find-server-action",
 ];
 
 const NEXT_GENERATED_CHUNK_SOURCE_PATTERN =
-  /^(?:https?:\/\/[^/]+)?\/_next\/static\/chunks\/[^?\s]+\.js(?:\?[^#\s]*)?(?::\d+){0,2}$/i;
+  /^(?:https?:\/\/[^/]+)?\/_next\/static\/(?:immutable\/)?chunks\/[^?\s]+\.js(?:\?[^#\s]*)?(?::\d+){0,2}$/i;
 const VERCEL_DEPLOYMENT_ID_PATTERN = /[?&]dpl=(dpl_[A-Za-z0-9]+)/;
 
 const INJECTED_THIRD_PARTY_SOURCE_PREFIXES = [
@@ -166,19 +168,10 @@ const hasChunkLoadMessage = (strings: string[]): boolean =>
 const hasStaleServerActionMessage = (strings: string[]): boolean =>
   includesAny(strings, STALE_SERVER_ACTION_MESSAGE_FRAGMENTS);
 
-const hasOnlyNextServerActionFrames = (frameSources: string[]): boolean =>
-  frameSources.length > 0 &&
-  frameSources.every((source) =>
-    NEXT_SERVER_ACTION_SOURCE_FRAGMENTS.some((fragment) =>
-      source.includes(fragment),
-    ),
-  );
-
-const hasOnlyNextGeneratedChunkFrames = (frameSources: string[]): boolean =>
-  frameSources.length > 0 &&
-  frameSources.every((source) =>
-    NEXT_GENERATED_CHUNK_SOURCE_PATTERN.test(source),
-  );
+const isExpectedNextServerActionFrame = (source: string): boolean =>
+  NEXT_SERVER_ACTION_SOURCE_FRAGMENTS.some((fragment) =>
+    source.includes(fragment),
+  ) || NEXT_GENERATED_CHUNK_SOURCE_PATTERN.test(source);
 
 const hasOnlyInjectedThirdPartyFrames = (frameSources: string[]): boolean =>
   frameSources.length > 0 &&
@@ -191,8 +184,8 @@ const hasOnlyInjectedThirdPartyFrames = (frameSources: string[]): boolean =>
 const hasOnlyExpectedNextServerActionFrames = (
   frameSources: string[],
 ): boolean =>
-  hasOnlyNextServerActionFrames(frameSources) ||
-  hasOnlyNextGeneratedChunkFrames(frameSources);
+  frameSources.length > 0 &&
+  frameSources.every(isExpectedNextServerActionFrame);
 
 const hasStackOverflowMessage = (strings: string[]): boolean =>
   hasExactStringFrom(strings, STACK_OVERFLOW_MESSAGES);
@@ -308,6 +301,41 @@ const getRouteKind = (currentUrl: unknown): string | undefined => {
     return undefined;
   }
 };
+
+const stripUrlQueryAndFragment = (value: string): string => {
+  const queryIndex = value.indexOf("?");
+  const fragmentIndex = value.indexOf("#");
+  const firstSensitiveIndex =
+    queryIndex === -1
+      ? fragmentIndex
+      : fragmentIndex === -1
+        ? queryIndex
+        : Math.min(queryIndex, fragmentIndex);
+
+  return firstSensitiveIndex === -1
+    ? value
+    : value.slice(0, firstSensitiveIndex);
+};
+
+export function sanitizeFrontendExceptionUrlProperties<
+  T extends PostHogEventLike,
+>(event: T): T {
+  if (event.event !== "$exception" || !event.properties) return event;
+
+  const currentUrl = event.properties.$current_url;
+  const referrer = event.properties.$referrer;
+  event.properties = {
+    ...event.properties,
+    ...(typeof currentUrl === "string"
+      ? { $current_url: stripUrlQueryAndFragment(currentUrl) }
+      : {}),
+    ...(typeof referrer === "string"
+      ? { $referrer: stripUrlQueryAndFragment(referrer) }
+      : {}),
+  };
+
+  return event;
+}
 
 const getDeploymentIdFromFrameSources = (
   frameSources: string[],

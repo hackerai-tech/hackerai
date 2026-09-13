@@ -9,6 +9,7 @@ import {
   paidFunnelProperties,
   upgradeCtaImpressionInsertId,
 } from "@/lib/analytics/paid-funnel";
+import { POSTHOG_SESSION_ID_HEADER } from "@/lib/analytics/request-context";
 
 type ClientAnalyticsProperties = Record<string, unknown>;
 
@@ -17,8 +18,19 @@ type PostHogClient = typeof posthogJs & {
 };
 type PostHogCaptureOptions = Parameters<PostHogClient["capture"]>[2];
 
+type PendingAuthenticatedEvent = {
+  userId: string;
+  event: string;
+  properties: ClientAnalyticsProperties;
+  options?: PostHogCaptureOptions;
+};
+
 let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
+let authenticatedAnalyticsUserId: string | null = null;
+let identifiedAnalyticsUserId: string | null = null;
+const pendingAuthenticatedEvents: PendingAuthenticatedEvent[] = [];
+const MAX_PENDING_AUTHENTICATED_EVENTS = 100;
 const UPGRADE_IMPRESSION_STORAGE_KEY =
   "hackerai:analytics:upgrade-impressions:v1";
 
@@ -51,6 +63,84 @@ function getReadyPostHogClient() {
   return posthogClient?.__loaded ? posthogClient : null;
 }
 
+function captureWithPostHogClient(
+  posthog: PostHogClient,
+  event: string,
+  properties: ClientAnalyticsProperties,
+  options?: PostHogCaptureOptions,
+) {
+  try {
+    if (options) {
+      posthog.capture(event, properties, options);
+    } else {
+      posthog.capture(event, properties);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function queueAuthenticatedEvent(event: PendingAuthenticatedEvent) {
+  const uuid = event.options?.uuid;
+  if (
+    uuid &&
+    pendingAuthenticatedEvents.some(
+      (pendingEvent) =>
+        pendingEvent.userId === event.userId &&
+        pendingEvent.options?.uuid === uuid,
+    )
+  ) {
+    return;
+  }
+
+  pendingAuthenticatedEvents.push(event);
+  if (pendingAuthenticatedEvents.length > MAX_PENDING_AUTHENTICATED_EVENTS) {
+    pendingAuthenticatedEvents.shift();
+  }
+}
+
+export function setAuthenticatedAnalyticsUserId(userId: string | null) {
+  if (authenticatedAnalyticsUserId === userId) return;
+  authenticatedAnalyticsUserId = userId;
+  identifiedAnalyticsUserId = null;
+  pendingAuthenticatedEvents.splice(0);
+}
+
+export function flushPendingAuthenticatedEvents(userId: string) {
+  if (
+    authenticatedAnalyticsUserId !== userId ||
+    identifiedAnalyticsUserId !== userId
+  ) {
+    return false;
+  }
+
+  const posthog = getReadyPostHogClient();
+  if (!posthog || pendingAuthenticatedEvents.length === 0) return false;
+
+  const pendingEvents = pendingAuthenticatedEvents.splice(0);
+  for (const pendingEvent of pendingEvents) {
+    if (pendingEvent.userId !== userId) continue;
+    if (
+      !captureWithPostHogClient(
+        posthog,
+        pendingEvent.event,
+        pendingEvent.properties,
+        pendingEvent.options,
+      )
+    ) {
+      queueAuthenticatedEvent(pendingEvent);
+    }
+  }
+  return pendingAuthenticatedEvents.length === 0;
+}
+
+export function confirmAuthenticatedAnalyticsUserId(userId: string) {
+  if (authenticatedAnalyticsUserId !== userId) return false;
+  identifiedAnalyticsUserId = userId;
+  return flushPendingAuthenticatedEvents(userId);
+}
+
 export function captureAuthenticatedEvent(
   event: string,
   properties: ClientAnalyticsProperties = {},
@@ -64,16 +154,66 @@ export function captureAuthenticatedEvent(
     return false;
   }
 
-  try {
-    if (options) {
-      posthog.capture(event, properties, options);
-    } else {
-      posthog.capture(event, properties);
-    }
+  return captureWithPostHogClient(posthog, event, properties, options);
+}
+
+export function captureQueuedAuthenticatedEvent({
+  event,
+  properties = {},
+  dedupeKey,
+}: {
+  event: string;
+  properties?: ClientAnalyticsProperties;
+  dedupeKey: string;
+}) {
+  const userId = authenticatedAnalyticsUserId;
+  if (!userId) return false;
+
+  const options = {
+    uuid: uuidv5([userId, event, dedupeKey].join(":"), uuidv5.URL),
+  };
+
+  if (
+    identifiedAnalyticsUserId === userId &&
+    captureAuthenticatedEvent(event, properties, options)
+  ) {
     return true;
-  } catch {
-    return false;
   }
+  if (!process.env.NEXT_PUBLIC_POSTHOG_KEY) return false;
+
+  queueAuthenticatedEvent({ userId, event, properties, options });
+  void loadPostHogClient()
+    .then(() => flushPendingAuthenticatedEvents(userId))
+    .catch(() => {});
+  return true;
+}
+
+export function captureMessageFeedback({
+  messageId,
+  feedbackType,
+  previousFeedbackType,
+}: {
+  messageId: string;
+  feedbackType: "positive" | "negative";
+  previousFeedbackType?: "positive" | "negative";
+}) {
+  const event = "message_feedback_submitted";
+  const properties = {
+    message_id: messageId,
+    feedback_type: feedbackType,
+    is_initial_feedback: previousFeedbackType === undefined,
+    ...(previousFeedbackType && {
+      previous_feedback_type: previousFeedbackType,
+    }),
+    feedback_event_version: 1,
+  };
+  return captureQueuedAuthenticatedEvent({
+    event,
+    properties,
+    dedupeKey: [messageId, previousFeedbackType ?? "none", feedbackType].join(
+      ":",
+    ),
+  });
 }
 
 export function addAuthenticatedExceptionStep(
@@ -219,11 +359,9 @@ export function getPostHogRequestHeaders(): HeadersInit {
   const posthog = getReadyPostHogClient();
   if (!posthog) return {};
 
-  const distinctId = posthog.get_distinct_id();
   const sessionId = posthog.get_session_id?.();
 
   return {
-    ...(distinctId && { "X-POSTHOG-DISTINCT-ID": distinctId }),
-    ...(sessionId && { "X-POSTHOG-SESSION-ID": sessionId }),
+    ...(sessionId && { [POSTHOG_SESSION_ID_HEADER]: sessionId }),
   };
 }

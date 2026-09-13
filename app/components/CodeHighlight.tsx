@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import { memo, useState, useMemo } from "react";
 import ShikiHighlighter, { isInlineCode, type Element } from "react-shiki";
+import { useIsCodeFenceIncomplete } from "streamdown";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import {
-  shouldUseShikiHighlighter,
+  isLanguageSupported as isShikiLanguageSupported,
   ShikiErrorBoundary,
 } from "@/lib/utils/shiki";
 
@@ -12,6 +13,18 @@ interface CodeHighlightProps {
   children?: ReactNode | undefined;
   node?: unknown;
 }
+
+export const MAX_STREAMING_HIGHLIGHT_CHARS = 20_000;
+export const MAX_HIGHLIGHT_CHARS = 100_000;
+export const MAX_HIGHLIGHT_LINES = 2_000;
+
+const exceedsLineLimit = (code: string, limit: number): boolean => {
+  let lines = 1;
+  for (let index = 0; index < code.length; index += 1) {
+    if (code.charCodeAt(index) === 10 && ++lines > limit) return true;
+  }
+  return false;
+};
 
 const CodeHighlightImpl = ({
   className,
@@ -24,22 +37,46 @@ const CodeHighlightImpl = ({
   const codeContent = String(children);
 
   const [isWrapped, setIsWrapped] = useState(false);
+  const isIncomplete = useIsCodeFenceIncomplete();
 
   const isInline: boolean | undefined = node
     ? isInlineCode(node as Element)
     : undefined;
 
-  // Check if language is supported by Shiki
-  const shouldUsePlainText = useMemo(() => {
-    return !shouldUseShikiHighlighter(language);
+  const isLanguageSupported = useMemo(() => {
+    return isShikiLanguageSupported(language);
   }, [language]);
+
+  // Avoid scanning every growing block for newlines. Character length gives us
+  // an O(1) streaming guard; the line limit is evaluated once the fence closes.
+  const isLargeStreamingBlock =
+    isIncomplete && codeContent.length > MAX_STREAMING_HIGHLIGHT_CHARS;
+  const isOversizedCompletedBlock = useMemo(
+    () =>
+      !isIncomplete &&
+      (codeContent.length > MAX_HIGHLIGHT_CHARS ||
+        exceedsLineLimit(codeContent, MAX_HIGHLIGHT_LINES)),
+    [codeContent, isIncomplete],
+  );
+  const shouldUsePlainText =
+    !isLanguageSupported || isLargeStreamingBlock || isOversizedCompletedBlock;
+  const highlightMode = shouldUsePlainText
+    ? isLargeStreamingBlock
+      ? "plain-streaming"
+      : isOversizedCompletedBlock
+        ? "plain-large"
+        : "plain-unsupported"
+    : "highlighted";
 
   const handleToggleWrap = () => {
     setIsWrapped(!isWrapped);
   };
 
   return !isInline ? (
-    <div className="shiki not-prose relative rounded-lg bg-card border border-border my-2 overflow-hidden">
+    <div
+      className="shiki not-prose relative rounded-lg bg-card border border-border my-2 overflow-hidden"
+      data-highlight-mode={highlightMode}
+    >
       {/* Menu bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-muted border-b border-border">
         {/* Left side - Language */}
@@ -91,6 +128,7 @@ const CodeHighlightImpl = ({
               language={language}
               theme="houston"
               delay={150}
+              engine="javascript"
               addDefaultStyles={false}
               showLanguage={false}
               className={`shiki not-prose relative bg-card text-sm font-[450] text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 ${

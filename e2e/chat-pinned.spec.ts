@@ -256,7 +256,9 @@ test.describe("Pinned Chats", () => {
     }).toPass({ timeout: TIMEOUTS.MEDIUM });
   });
 
-  test("unpin moves chat to top of unpinned list", async ({ page }) => {
+  test("unpin restores chat to its chronological position", async ({
+    page,
+  }) => {
     const sidebar = new SidebarComponent(page);
     await sidebar.expandIfCollapsed();
 
@@ -285,11 +287,12 @@ test.describe("Pinned Chats", () => {
     await sidebar.openChatOptionsByIndex(0);
     await page.getByRole("menuitem", { name: "Unpin" }).click();
 
-    // Wait for backend to update - menu should show "Pin" and unpinned chat stays at top
+    // Wait for backend to update - menu should show "Pin" and the task should
+    // return to the position determined by its existing activity time.
     await expect(async () => {
       const titlesAfterUnpin = await getOrderedChatTitles(sidebar);
-      expect(titlesAfterUnpin[0]).toBe(titlesBeforePin[1]);
-      expect(titlesAfterUnpin[1]).toBe(titlesBeforePin[0]);
+      expect(titlesAfterUnpin[0]).toBe(titlesBeforePin[0]);
+      expect(titlesAfterUnpin[1]).toBe(titlesBeforePin[1]);
 
       await sidebar.openChatOptionsByIndex(0);
       await expect(

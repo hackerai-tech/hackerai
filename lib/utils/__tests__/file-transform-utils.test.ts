@@ -68,27 +68,66 @@ const fileUrlInfo = (
     sizeBytes: number;
     mediaType: string;
     name: string;
+    auxiliaryVisionDescription: string;
+    auxiliaryVisionModel: string;
   }> = {},
 ) => ({
   url,
   sizeBytes: overrides.sizeBytes ?? 2 * 1024 * 1024,
   mediaType: overrides.mediaType ?? "image/png",
   name: overrides.name ?? "image.png",
+  ...(overrides.auxiliaryVisionDescription && {
+    auxiliaryVisionDescription: overrides.auxiliaryVisionDescription,
+  }),
+  ...(overrides.auxiliaryVisionModel && {
+    auxiliaryVisionModel: overrides.auxiliaryVisionModel,
+  }),
 });
 
 describe("processMessageFiles image size guards", () => {
   const originalFetch = global.fetch;
   let consoleWarnSpy: jest.SpyInstance;
+  let consoleInfoSpy: jest.SpyInstance;
 
   beforeEach(() => {
     mockConvexAction.mockResolvedValue([]);
     mockConvexQuery.mockResolvedValue([]);
     consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    consoleInfoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
     consoleWarnSpy.mockRestore();
+    consoleInfoSpy.mockRestore();
+  });
+
+  it("does not preserve client auxiliary metadata on URL-only images", async () => {
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "image/png",
+        name: "legacy.png",
+        url: "https://example.com/legacy.png",
+        auxiliaryVisionDescription: "Client-supplied description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
+      }),
+      "ask",
+      "user123",
+      undefined,
+      "pro",
+    );
+
+    expect(result.messages[0].parts[1]).toEqual({
+      type: "text",
+      text: '[Image "legacy.png" omitted: URL-backed image attachments must be reattached before they can be sent to the model]',
+    });
+    expect(result.messages[0].parts[1]).not.toHaveProperty(
+      "auxiliaryVisionDescription",
+    );
+    expect(result.messages[0].parts[1]).not.toHaveProperty(
+      "auxiliaryVisionModel",
+    );
   });
 
   it("omits stored images when trusted file size is over the provider download limit", async () => {
@@ -162,6 +201,8 @@ describe("processMessageFiles image size guards", () => {
       fileUrlInfo("https://storage.example/actually-small.png", {
         sizeBytes: 2 * 1024 * 1024,
         name: "actually-small.png",
+        auxiliaryVisionDescription: "Cached trusted description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
       }),
     ]);
     global.fetch = jest.fn(async () => {
@@ -179,11 +220,19 @@ describe("processMessageFiles image size guards", () => {
         name: "actually-small.png",
         size: 40 * 1024 * 1024,
         url: "https://example.com/actually-small.png",
+        auxiliaryVisionDescription: "Client-supplied description",
+        auxiliaryVisionModel: "google/gemini-3.6-flash",
       }),
       "ask",
       "user123",
       undefined,
       "pro",
+      false,
+      {
+        chatId: "chat-1",
+        triggerRunId: "run-1",
+        requestId: "run-1",
+      },
     );
 
     expect(result.messages[0].parts[1]).toMatchObject({
@@ -191,6 +240,24 @@ describe("processMessageFiles image size guards", () => {
       mediaType: "image/png",
       name: "actually-small.png",
       url: "https://storage.example/actually-small.png",
+      auxiliaryVisionDescription: "Cached trusted description",
+      auxiliaryVisionModel: "google/gemini-3.6-flash",
+    });
+    const successEvent = consoleInfoSpy.mock.calls
+      .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
+      .find((payload) => payload.event === "persisted_image_reload_succeeded");
+    expect(successEvent).toMatchObject({
+      service: "agent-long",
+      request_id: "run-1",
+      user_id: "user123",
+      chat_id: "chat-1",
+      trigger_run_id: "run-1",
+      mode: "ask",
+      subscription_tier: "pro",
+      reload_stage: "owner_checked_storage_lookup",
+      image_count: 1,
+      metadata_lookup_image_count: 1,
+      legacy_fallback_image_count: 0,
     });
   });
 
@@ -336,13 +403,14 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/small.png",
-        localPath: "/home/user/upload/small.png",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/small.png",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/small\.png$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       expect.objectContaining({
@@ -354,9 +422,90 @@ describe("processMessageFiles image size guards", () => {
       }),
       {
         type: "text",
-        text: '<inline_image_attachment filename="small.png" sandbox_path="/home/user/upload/small.png" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />',
+        text: `<inline_image_attachment filename="small.png" sandbox_path="${result.sandboxFiles[0].localPath}" already_visible_to_model="true" use_sandbox_path_for="file_operations_only" />`,
       },
     ]);
+  });
+
+  it("keeps Agent PDFs provider-visible while still staging a sandbox copy", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/report.pdf", {
+        sizeBytes: 1024,
+        mediaType: "application/pdf",
+        name: "report.pdf",
+      }),
+    ]);
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "application/pdf",
+        fileId: "file_pdf",
+        name: "report.pdf",
+        url: "https://client.example/report.pdf",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/report.pdf",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/report\.pdf$/,
+    );
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      expect.objectContaining({
+        type: "file",
+        mediaType: "application/pdf",
+        name: "report.pdf",
+        url: "https://storage.example/report.pdf",
+        size: 1024,
+      }),
+      {
+        type: "text",
+        text: `<attachment filename="report.pdf" local_path="${result.sandboxFiles[0].localPath}" />`,
+      },
+    ]);
+    expect(result.containsPdfFiles).toBe(true);
+  });
+
+  it("keeps oversized Agent PDFs sandbox-only", async () => {
+    mockConvexAction.mockResolvedValue([
+      fileUrlInfo("https://storage.example/large.pdf", {
+        sizeBytes: 21 * 1024 * 1024,
+        mediaType: "application/pdf",
+        name: "large.pdf",
+      }),
+    ]);
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        mediaType: "application/pdf",
+        fileId: "file_large_pdf",
+        name: "large.pdf",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: `<attachment filename="large.pdf" local_path="${result.sandboxFiles[0].localPath}" />`,
+      },
+    ]);
+    expect(result.containsPdfFiles).toBe(false);
   });
 
   it("omits stored images whose storage URL does not return valid image bytes", async () => {
@@ -496,18 +645,19 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/broken.png",
-        localPath: "/home/user/upload/broken.png",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/broken.png",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/broken\.png$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: '<attachment filename="broken.png" local_path="/home/user/upload/broken.png" />',
+        text: `<attachment filename="broken.png" local_path="${result.sandboxFiles[0].localPath}" />`,
       },
     ]);
   });
@@ -590,18 +740,80 @@ describe("processMessageFiles image size guards", () => {
       "pro",
     );
 
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/large.png",
-        localPath: "/home/user/upload/large.png",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/large.png",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/large\.png$/,
+    );
     expect(result.messages[0].parts).toEqual([
       { type: "text", text: "what is this?" },
       {
         type: "text",
-        text: '<attachment filename="large.png" local_path="/home/user/upload/large.png" />',
+        text: `<attachment filename="large.png" local_path="${result.sandboxFiles[0].localPath}" />`,
+      },
+    ]);
+  });
+
+  it("probes legacy Agent images without trusted size before provider use", async () => {
+    mockConvexAction.mockResolvedValue([
+      {
+        url: "https://storage.example/legacy-large.png",
+        mediaType: "image/png",
+        name: "legacy-large.png",
+      },
+    ]);
+    const cancelRangeBody = jest.fn(async () => undefined);
+    const fetchSpy = jest.fn(async (_url, init?: RequestInit) => {
+      if (init?.method === "HEAD") {
+        return responseLike({});
+      }
+      return responseLike({
+        status: 206,
+        headers: {
+          "content-range": `bytes 0-${5 * 1024 * 1024}/${40 * 1024 * 1024}`,
+        },
+        body: {
+          cancel: cancelRangeBody,
+          getReader: () => {
+            throw new Error("Known range total should avoid reading the body");
+          },
+        },
+      });
+    });
+    global.fetch = fetchSpy as any;
+
+    const result = await processMessageFiles(
+      makeMessage({
+        type: "file",
+        fileId: "file_legacy_large",
+        mediaType: "image/png",
+        name: "legacy-large.png",
+      }),
+      "agent",
+      "user123",
+      "/home/user/upload",
+      "pro",
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(cancelRangeBody).toHaveBeenCalledTimes(1);
+    expect(result.sandboxFiles).toHaveLength(1);
+    const localPath = result.sandboxFiles[0].localPath;
+    expect(localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/legacy-large\.png$/,
+    );
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/legacy-large.png",
+    });
+    expect(result.messages[0].parts).toEqual([
+      { type: "text", text: "what is this?" },
+      {
+        type: "text",
+        text: `<attachment filename="legacy-large.png" local_path="${localPath}" />`,
       },
     ]);
   });
@@ -631,13 +843,14 @@ describe("processMessageFiles image size guards", () => {
     );
 
     expect(mockConvexAction).toHaveBeenCalledTimes(2);
-    expect(result.sandboxFiles).toEqual([
-      {
-        kind: "url",
-        url: "https://storage.example/secret.txt",
-        localPath: "/home/user/upload/secret.txt",
-      },
-    ]);
+    expect(result.sandboxFiles).toHaveLength(1);
+    expect(result.sandboxFiles[0]).toMatchObject({
+      kind: "url",
+      url: "https://storage.example/secret.txt",
+    });
+    expect(result.sandboxFiles[0].localPath).toMatch(
+      /^\/home\/user\/upload\/[a-f0-9]{64}\/secret\.txt$/,
+    );
     expect(JSON.stringify(result.messages)).not.toContain(
       "https://client.example/secret.txt",
     );

@@ -2,8 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { workos } from "../../workos";
 import { stripe } from "../../stripe";
 import { requireAdminOrg } from "../team-auth";
+import {
+  acquireTeamInvitationLock,
+  TeamInvitationLockUnavailableError,
+  type TeamInvitationLock,
+} from "@/lib/billing/team-invitation-lock";
 
 export const POST = async (req: NextRequest) => {
+  let invitationLock: TeamInvitationLock | null = null;
   try {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;
@@ -14,6 +20,17 @@ export const POST = async (req: NextRequest) => {
 
     if (!email || typeof email !== "string") {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
+    }
+
+    invitationLock = await acquireTeamInvitationLock(organizationId);
+    if (!invitationLock) {
+      return NextResponse.json(
+        {
+          error: "Another invitation is being processed",
+          message: "Please retry after the current invitation finishes.",
+        },
+        { status: 409 },
+      );
     }
 
     // Get organization to access Stripe customer ID
@@ -91,6 +108,7 @@ export const POST = async (req: NextRequest) => {
 
     // Always send an invitation for explicit consent
     // This works for both existing and new users
+    await invitationLock.assertOwned();
     await workos.userManagement.sendInvitation({
       email,
       organizationId,
@@ -103,10 +121,24 @@ export const POST = async (req: NextRequest) => {
       message: "Invitation sent successfully",
     });
   } catch (error: unknown) {
+    if (error instanceof TeamInvitationLockUnavailableError) {
+      return NextResponse.json(
+        { error: "Team invitation service temporarily unavailable" },
+        { status: 503 },
+      );
+    }
     const errorMessage =
       error instanceof Error ? error.message : "An error occurred";
     console.error("Failed to invite team member:", error);
     return NextResponse.json({ error: errorMessage }, { status: 500 });
+  } finally {
+    if (invitationLock) {
+      try {
+        await invitationLock.release();
+      } catch (error) {
+        console.error("Failed to release team invitation lock:", error);
+      }
+    }
   }
 };
 

@@ -1,3 +1,5 @@
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+
 /**
  * Extracts a readable error message from any error type.
  */
@@ -22,14 +24,6 @@ export const getErrorMessage = (err: unknown): string => {
 const truncate = (str: string, max: number): string => {
   return str.length > max ? str.slice(0, max) + "…" : str;
 };
-
-const SENSITIVE_KEYS = new Set([
-  "requestBodyValues",
-  "prompt",
-  "messages",
-  "content",
-  "text",
-]);
 
 const OPENROUTER_DETAIL_MAX_LENGTH = 500;
 
@@ -75,6 +69,70 @@ const collectErrorSources = (
   return sources;
 };
 
+const OPENROUTER_REQUEST_SIZE_GUARD_HEADER =
+  "x-hackerai-openrouter-request-size-guard";
+const OPENROUTER_REQUEST_BYTES_BEFORE_HEADER =
+  "x-hackerai-openrouter-request-bytes-before";
+const OPENROUTER_REQUEST_BYTES_AFTER_HEADER =
+  "x-hackerai-openrouter-request-bytes-after";
+const OPENROUTER_REQUEST_LIMIT_BYTES_HEADER =
+  "x-hackerai-openrouter-request-limit-bytes";
+
+export type LocalOpenRouterRequestSizeGuardDetails = {
+  requestId?: string;
+  requestBytesBefore?: number;
+  requestBytesAfter?: number;
+  limitBytes?: number;
+};
+
+const getResponseHeader = (
+  source: Record<string, unknown>,
+  headerName: string,
+): string | undefined => {
+  if (!isRecord(source.responseHeaders)) return undefined;
+  const entry = Object.entries(source.responseHeaders).find(
+    ([name]) => name.toLowerCase() === headerName,
+  );
+  return typeof entry?.[1] === "string" ? entry[1] : undefined;
+};
+
+const parseNonNegativeInteger = (
+  value: string | undefined,
+): number | undefined => {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+export const getLocalOpenRouterRequestSizeGuardDetails = (
+  error: unknown,
+): LocalOpenRouterRequestSizeGuardDetails | undefined => {
+  const guardSource = collectErrorSources(error).find(
+    (source) =>
+      isRecord(source) &&
+      getResponseHeader(source, OPENROUTER_REQUEST_SIZE_GUARD_HEADER) ===
+        "rejected",
+  );
+  if (!isRecord(guardSource)) return undefined;
+
+  return {
+    requestId: getResponseHeader(guardSource, "x-hackerai-request-id"),
+    requestBytesBefore: parseNonNegativeInteger(
+      getResponseHeader(guardSource, OPENROUTER_REQUEST_BYTES_BEFORE_HEADER),
+    ),
+    requestBytesAfter: parseNonNegativeInteger(
+      getResponseHeader(guardSource, OPENROUTER_REQUEST_BYTES_AFTER_HEADER),
+    ),
+    limitBytes: parseNonNegativeInteger(
+      getResponseHeader(guardSource, OPENROUTER_REQUEST_LIMIT_BYTES_HEADER),
+    ),
+  };
+};
+
+export const isLocalOpenRouterRequestSizeGuardError = (
+  error: unknown,
+): boolean => getLocalOpenRouterRequestSizeGuardDetails(error) !== undefined;
+
 const getOpenRouterPayload = (
   source: unknown,
 ): Record<string, unknown> | null => {
@@ -117,6 +175,19 @@ const getOpenRouterProviderInfo = (
     const nested = isRecord(payload.error) ? payload.error : undefined;
     if (!nested) continue;
 
+    // Parameter paths can otherwise echo arbitrary request data. Retain only
+    // known schema paths and normalize numeric indices to avoid cardinality.
+    if (typeof nested.param === "string") {
+      const param = nested.param.replace(/\[\d+\]/g, "[]");
+      if (
+        /^(?:model|messages(?:\[\])?(?:\.(?:role|content|tool_calls|tool_call_id|type|image_url|url|function|name|arguments)(?:\[\])?)*|tools(?:\[\])?(?:\.function(?:\.(?:name|parameters))?)?|tool_choice|max_tokens|temperature|reasoning)$/.test(
+          param,
+        )
+      ) {
+        details.providerErrorParam ??= param;
+      }
+    }
+
     if (
       details.providerErrorCode === undefined &&
       (typeof nested.code === "number" || typeof nested.code === "string")
@@ -129,7 +200,7 @@ const getOpenRouterProviderInfo = (
       nested.message.length > 0
     ) {
       details.providerErrorMessage = truncate(
-        nested.message,
+        redactSensitiveErrorMessage(nested.message),
         OPENROUTER_DETAIL_MAX_LENGTH,
       );
     }
@@ -149,7 +220,7 @@ const getOpenRouterProviderInfo = (
       metadata.raw.length > 0
     ) {
       details.providerRawError = truncate(
-        metadata.raw,
+        redactSensitiveErrorMessage(metadata.raw),
         OPENROUTER_DETAIL_MAX_LENGTH,
       );
     }
@@ -234,45 +305,6 @@ export const isProviderContextOrMediaOverflowError = (
 ): boolean => classifyProviderOverflowError(error) !== null;
 
 /**
- * Removes sensitive user data from provider error objects.
- * Fields containing user prompts/messages are completely removed.
- * Uses WeakSet to guard against circular references.
- */
-const removeSensitiveData = (data: unknown): unknown => {
-  const seen = new WeakSet<object>();
-
-  const recurse = (value: unknown): unknown => {
-    if (value === null || value === undefined) return value;
-    if (typeof value !== "object") return value;
-
-    if (seen.has(value)) return "[Circular]";
-    seen.add(value);
-
-    if (Array.isArray(value)) {
-      return value.map(recurse);
-    }
-
-    const obj = value as Record<string, unknown>;
-    const cleaned: Record<string, unknown> = {};
-
-    for (const [key, val] of Object.entries(obj)) {
-      if (SENSITIVE_KEYS.has(key)) {
-        continue;
-      }
-      if (val && typeof val === "object") {
-        cleaned[key] = recurse(val);
-      } else {
-        cleaned[key] = val;
-      }
-    }
-
-    return cleaned;
-  };
-
-  return recurse(data);
-};
-
-/**
  * Extracts structured error details for logging to PostHog or other services.
  * Handles both standard Error objects and provider-specific error formats (AI SDK, etc.)
  * Sensitive user data (prompts, messages) is removed from the output.
@@ -292,12 +324,12 @@ export const extractErrorDetails = (
       (typeof primaryRecord?.name === "string"
         ? primaryRecord.name
         : "UnknownError"),
-    errorMessage: getErrorMessage(error),
+    errorMessage: redactSensitiveErrorMessage(getErrorMessage(error)),
   };
 
   // Add stack trace if available
   if (err?.stack) {
-    details.errorStack = err.stack;
+    details.errorStack = redactSensitiveErrorMessage(err.stack);
   }
 
   // Extract provider-specific error details (AI SDK format). Walk common
@@ -307,19 +339,33 @@ export const extractErrorDetails = (
       details.statusCode = source.statusCode;
     }
     if (details.providerUrl === undefined && "url" in source) {
-      details.providerUrl = source.url;
+      details.providerUrl =
+        typeof source.url === "string"
+          ? redactSensitiveErrorMessage(source.url)
+          : source.url;
     }
-    if (details.responseBody === undefined && "responseBody" in source) {
-      details.responseBody = removeSensitiveData(source.responseBody);
+    if (details.responseBodyPresent === undefined && "responseBody" in source) {
+      // Provider response bodies can contain parsed attachments, file
+      // annotations, inline images, or user text under provider-specific keys.
+      // Keep only presence/size diagnostics; getOpenRouterProviderInfo below
+      // extracts the bounded status, provider, request ID, and reason fields.
+      details.responseBodyPresent = source.responseBody !== undefined;
+      if (typeof source.responseBody === "string") {
+        details.responseBodyLength = source.responseBody.length;
+      }
     }
     if (details.isRetryable === undefined && "isRetryable" in source) {
       details.isRetryable = source.isRetryable;
     }
-    if (details.providerData === undefined && "data" in source) {
-      details.providerData = removeSensitiveData(source.data);
+    if (details.providerDataPresent === undefined && "data" in source) {
+      // `data` is an opaque provider payload with the same privacy risks as a
+      // response body. Never copy it into telemetry.
+      details.providerDataPresent = source.data !== undefined;
     }
     if (details.cause === undefined && "cause" in source && source.cause) {
-      details.cause = getErrorMessage(source.cause);
+      details.cause = redactSensitiveErrorMessage(
+        getErrorMessage(source.cause),
+      );
     }
     if (details.errorCode === undefined && "code" in source) {
       details.errorCode = source.code;
@@ -339,6 +385,11 @@ export type ProviderErrorCategory =
   | "stream_terminated"
   | "timeout"
   | "unknown";
+
+const PROVIDER_STREAM_TERMINATION_PATTERN =
+  /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
+const PROVIDER_STREAM_DISCONNECT_PATTERN =
+  /terminated|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i;
 
 const parseHttpStatus = (value: unknown): number | undefined => {
   const code =
@@ -376,6 +427,39 @@ export const isInvalidImageInputError = (error: unknown): boolean =>
 const PROVIDER_CONTENT_BLOCK_PATTERN =
   /\bPROHIBITED_CONTENT\b|\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b.{0,80}\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b|\b(?:block(?:ed)?|flag(?:ged)?|reject(?:ed)?|prohibit(?:ed)?|violate(?:s|d|ion)?|unsafe|harmful)\b.{0,80}\b(?:content[_ -]?(?:filter(?:ing)?|policy)|safety policy|moderation policy|safety system|moderation system)\b|\bblocked by (?:the )?(?:provider )?(?:safety|moderation)(?: system| filter)?\b|\b(?:unsafe|harmful) content\b/i;
 
+export const PROVIDER_CONTENT_BLOCKED_USER_MESSAGE =
+  "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
+
+export const isProviderContentFilterFinishReason = (
+  finishReason: unknown,
+): finishReason is "content-filter" => finishReason === "content-filter";
+
+export const createProviderContentBlockedFinishReasonError = (): Error & {
+  statusCode: 403;
+  finishReason: "content-filter";
+} =>
+  Object.assign(
+    new Error(
+      "PROHIBITED_CONTENT: provider returned content-filter finish reason",
+    ),
+    {
+      name: "ProviderContentBlockedFinishReasonError",
+      statusCode: 403 as const,
+      finishReason: "content-filter" as const,
+    },
+  );
+
+export const isProviderContentBlockedFinishReasonError = (
+  error: unknown,
+): boolean =>
+  Boolean(
+    error &&
+    typeof error === "object" &&
+    ((error as { finishReason?: unknown }).finishReason === "content-filter" ||
+      (error as { name?: unknown }).name ===
+        "ProviderContentBlockedFinishReasonError"),
+  );
+
 export const isProviderContentBlockedDetails = (
   details: Record<string, unknown>,
 ): boolean => {
@@ -412,11 +496,7 @@ export const getProviderErrorCategory = (
   if (statusCode != null && statusCode >= 400) return "provider_4xx";
 
   const message = getProviderMessageText(details);
-  if (
-    /terminated|aborted|abort|network connection lost|connection (?:reset|closed|lost)|socket hang up|unexpected eof/i.test(
-      message,
-    )
-  ) {
+  if (PROVIDER_STREAM_TERMINATION_PATTERN.test(message)) {
     return "stream_terminated";
   }
   if (/timeout|timed out/i.test(message)) return "timeout";
@@ -433,6 +513,25 @@ export const getProviderErrorCategory = (
 
 export const isProviderStreamTerminatedError = (error: unknown): boolean =>
   getProviderErrorCategory(extractErrorDetails(error)) === "stream_terminated";
+
+/** Allow one replay-safe continuation for provider disconnects and transient failures. */
+export const isRetriableProviderStreamDisconnectError = (
+  error: unknown,
+): boolean => {
+  const details = extractErrorDetails(error);
+  const category = getProviderErrorCategory(details);
+  // SSE errors use `code`, while HTTP errors use `statusCode`. Preserve the
+  // stable error category, but honor an upstream 5xx regardless of wording.
+  // A bare AbortError still must not turn user cancellation into a retry.
+  const statusCode = getProviderStatusCode(details);
+  if (category === "content_blocked") return false;
+  if (statusCode != null && statusCode >= 500 && statusCode <= 599) return true;
+  if (category === "timeout" || category === "provider_5xx") return true;
+  return (
+    category === "stream_terminated" &&
+    PROVIDER_STREAM_DISCONNECT_PATTERN.test(getProviderMessageText(details))
+  );
+};
 
 export interface ProviderAttempt {
   status_code?: number;
@@ -516,7 +615,7 @@ const toAttempt = (error: unknown): ProviderAttempt => {
         : undefined;
   return {
     status_code: statusCode,
-    message: getErrorMessage(error),
+    message: redactSensitiveErrorMessage(getErrorMessage(error)),
     error_name: errorName,
     request_id: extractRequestId(error),
     provider_name:
@@ -564,7 +663,7 @@ export const getUserFriendlyProviderError = (error: unknown): string => {
   }
 
   if (isProviderContentBlockedError(error)) {
-    return "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.";
+    return PROVIDER_CONTENT_BLOCKED_USER_MESSAGE;
   }
 
   if (overflowKind === "media") {
@@ -637,13 +736,13 @@ function extractProviderDetails(error: unknown): {
         }
         // metadata.raw has the most specific upstream error
         if (typeof meta.raw === "string" && meta.raw.length > 0) {
-          detail = truncate(meta.raw, 300);
+          detail = truncate(redactSensitiveErrorMessage(meta.raw), 300);
         }
       }
 
       // Fall back to data.error.message
       if (!detail && typeof nested.message === "string") {
-        detail = truncate(nested.message, 300);
+        detail = truncate(redactSensitiveErrorMessage(nested.message), 300);
       }
     }
   }
@@ -694,13 +793,13 @@ function extractMessageFromResponseBody(body: string): string | undefined {
     const parsed = JSON.parse(body);
     const msg = parsed?.error?.message ?? parsed?.message;
     if (typeof msg === "string" && msg.length > 0) {
-      return truncate(msg, 300);
+      return truncate(redactSensitiveErrorMessage(msg), 300);
     }
   } catch {
     // Not JSON — return a trimmed snippet if it's short enough to be useful
     const trimmed = body.trim();
     if (trimmed.length > 0 && trimmed.length <= 300) {
-      return trimmed;
+      return redactSensitiveErrorMessage(trimmed);
     }
   }
   return undefined;

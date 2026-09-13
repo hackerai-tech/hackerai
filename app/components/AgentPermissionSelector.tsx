@@ -1,7 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import { Check, ChevronDown, Hand, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Check,
+  ChevronDown,
+  Hand,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -9,6 +15,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useAgentAutoReviewAvailability } from "@/app/contexts/AgentAutoReviewAvailabilityContext";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { AgentPermissionMode } from "@/types";
 
@@ -25,18 +32,25 @@ type PermissionOption = {
   icon: typeof ShieldAlert;
 };
 
-const options: PermissionOption[] = [
+const baseOptions: PermissionOption[] = [
   {
     id: "ask_approval",
     label: "Ask for approval",
-    description: "Always ask before running commands and editing files",
+    description: "Always ask before commands and file changes.",
     shortLabel: "Ask for approval",
     icon: Hand,
   },
   {
+    id: "auto_review",
+    label: "Approve for me",
+    description: "Only ask for actions detected as potentially unsafe.",
+    shortLabel: "Approve for me",
+    icon: ShieldCheck,
+  },
+  {
     id: "full_access",
     label: "Full access",
-    description: "Run commands and edit files without asking",
+    description: "Run commands and edit files without asking.",
     shortLabel: "Full access",
     icon: ShieldAlert,
   },
@@ -48,14 +62,41 @@ export function AgentPermissionSelector({
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
+  const { agentAutoReviewAvailable, resolveAgentAutoReviewAvailability } =
+    useAgentAutoReviewAvailability();
+  useEffect(() => {
+    resolveAgentAutoReviewAvailability();
+  }, [resolveAgentAutoReviewAvailability]);
+
+  useEffect(() => {
+    if (
+      agentAutoReviewAvailable === false &&
+      agentPermissionMode === "auto_review"
+    ) {
+      setAgentPermissionMode("ask_approval");
+    }
+  }, [agentAutoReviewAvailable, agentPermissionMode, setAgentPermissionMode]);
+
+  const showAutoReview =
+    agentAutoReviewAvailable === true ||
+    (agentAutoReviewAvailable === null &&
+      agentPermissionMode === "auto_review");
+
+  const options = useMemo(
+    () =>
+      showAutoReview
+        ? baseOptions
+        : baseOptions.filter((option) => option.id !== "auto_review"),
+    [showAutoReview],
+  );
   const selectedOption =
     options.find((option) => option.id === agentPermissionMode) ?? options[0];
   const Icon = selectedOption.icon;
 
   const buttonClassName =
     size === "md"
-      ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-      : "h-8 px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : "h-8 max-w-full px-2.5 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-5 w-5 shrink-0";
 
@@ -67,9 +108,12 @@ export function AgentPermissionSelector({
           size={size === "md" ? "default" : "sm"}
           className={buttonClassName}
         >
-          <Icon className={iconClassName} />
-          <span className="truncate">{selectedOption.shortLabel}</span>
+          <Icon className={iconClassName} aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">
+            {selectedOption.shortLabel}
+          </span>
           <ChevronDown
+            aria-hidden="true"
             className={
               size === "md"
                 ? "h-4 w-4 ml-1 shrink-0"
@@ -118,7 +162,7 @@ export function AgentPermissionSelector({
                     : "hover:bg-muted"
                 }`}
               >
-                <OptionIcon className="h-4 w-4 shrink-0" />
+                <OptionIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
                 <div className="flex-1 min-w-0">
                   <div className="truncate text-sm font-medium">
                     {option.label}
@@ -133,7 +177,9 @@ export function AgentPermissionSelector({
                     {option.description}
                   </div>
                 </div>
-                {selected && <Check className="h-4 w-4 shrink-0" />}
+                {selected && (
+                  <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
+                )}
               </button>
             );
           })}

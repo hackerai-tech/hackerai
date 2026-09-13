@@ -6,28 +6,70 @@ import { useEffect } from "react";
 import { useGlobalState } from "./contexts/GlobalState";
 import {
   enrichFrontendExceptionEvent,
+  sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "@/lib/posthog/expected-frontend-exceptions";
-import { getPostHogClient, loadPostHogClient } from "@/lib/analytics/client";
+import {
+  confirmAuthenticatedAnalyticsUserId,
+  getPostHogClient,
+  loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
+} from "@/lib/analytics/client";
+import {
+  createPostHogIdentitySignature,
+  POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+} from "@/lib/analytics/identity";
+import {
+  firstTouchPersonProperties,
+  type FirstTouchAttribution,
+} from "@/lib/analytics/acquisition";
 
 let lastIdentifiedSignature: string | null = null;
 
-export function PostHogProvider({ children }: { children: React.ReactNode }) {
+function isEnglishLocale(locale: string | null | undefined) {
+  const normalizedLocale = locale?.trim().replaceAll("_", "-");
+  if (!normalizedLocale) return false;
+
+  try {
+    return new Intl.Locale(normalizedLocale).language === "en";
+  } catch {
+    return false;
+  }
+}
+
+export function PostHogProvider({
+  analyticsAllowed,
+  children,
+  consentRequired = false,
+  firstTouchAttribution = null,
+}: {
+  analyticsAllowed: boolean;
+  children: React.ReactNode;
+  consentRequired?: boolean;
+  firstTouchAttribution?: FirstTouchAttribution | null;
+}) {
   const { subscription } = useGlobalState();
   const { user } = useAuth();
   const userId = user?.id;
   const userEmail = user?.email;
   const userFirstName = user?.firstName;
   const userLastName = user?.lastName;
+  const userLocale = user?.locale;
 
   useEffect(() => {
     const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
     if (!posthogKey) return;
 
-    const shouldTrack = Boolean(userId);
+    const shouldTrack = Boolean(userId) && analyticsAllowed;
+    setAuthenticatedAnalyticsUserId(shouldTrack ? userId! : null);
 
     if (!shouldTrack) {
       lastIdentifiedSignature = null;
+      try {
+        window.localStorage.removeItem(POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY);
+      } catch {
+        // Storage can be unavailable in privacy-restricted browsers.
+      }
       const posthog = getPostHogClient();
       if (posthog?.__loaded) {
         posthog.stopSessionRecording();
@@ -48,6 +90,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
             process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
           capture_pageview: false,
           autocapture: false,
+          advanced_disable_feature_flags: true,
           capture_exceptions: {
             capture_unhandled_errors: true,
             capture_unhandled_rejections: true,
@@ -55,11 +98,17 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           },
           disable_session_recording: true,
           before_send: (event) => {
-            if (!event || shouldDropExpectedFrontendException(event)) {
+            if (!event) {
               return null;
             }
 
-            return enrichFrontendExceptionEvent(event);
+            const sanitizedEvent =
+              sanitizeFrontendExceptionUrlProperties(event);
+            if (shouldDropExpectedFrontendException(sanitizedEvent)) {
+              return null;
+            }
+
+            return enrichFrontendExceptionEvent(sanitizedEvent);
           },
         } satisfies Partial<PostHogConfig>;
 
@@ -78,22 +127,65 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
         const name =
           [userFirstName, userLastName].filter(Boolean).join(" ") || userEmail;
-        const identitySignature = JSON.stringify([
-          userId,
-          userEmail,
+        const identitySignature = createPostHogIdentitySignature({
+          userId: userId!,
+          email: userEmail,
           name,
           subscription,
-        ]);
+          firstTouchAttribution,
+        });
         if (lastIdentifiedSignature !== identitySignature) {
-          posthog.identify(userId!, {
-            email: userEmail,
-            name,
-            subscription,
-          });
+          let persistedIdentitySignature: string | null = null;
+          try {
+            persistedIdentitySignature = window.localStorage.getItem(
+              POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+            );
+          } catch {
+            // Storage can be unavailable in privacy-restricted browsers.
+          }
+
+          const shouldUpdatePersonProperties =
+            persistedIdentitySignature !== identitySignature;
+          const personProperties = shouldUpdatePersonProperties
+            ? {
+                email: userEmail,
+                name,
+                subscription,
+              }
+            : undefined;
+          if (shouldUpdatePersonProperties && firstTouchAttribution) {
+            posthog.identify(
+              userId!,
+              personProperties,
+              firstTouchPersonProperties(firstTouchAttribution),
+            );
+          } else {
+            posthog.identify(userId!, personProperties);
+          }
           lastIdentifiedSignature = identitySignature;
+
+          if (shouldUpdatePersonProperties) {
+            try {
+              window.localStorage.setItem(
+                POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+                identitySignature,
+              );
+            } catch {
+              // Best-effort cross-load deduplication only.
+            }
+          }
         }
 
-        if (subscription !== "free") {
+        confirmAuthenticatedAnalyticsUserId(userId!);
+
+        const replayLocale =
+          userLocale == null ? window.navigator.language : userLocale;
+        const shouldRecordSession =
+          !consentRequired &&
+          subscription !== "free" &&
+          isEnglishLocale(replayLocale);
+
+        if (shouldRecordSession) {
           if (!posthog.sessionRecordingStarted()) {
             posthog.startSessionRecording();
           }
@@ -107,7 +199,17 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [subscription, userEmail, userFirstName, userId, userLastName]);
+  }, [
+    analyticsAllowed,
+    consentRequired,
+    firstTouchAttribution,
+    subscription,
+    userEmail,
+    userFirstName,
+    userId,
+    userLastName,
+    userLocale,
+  ]);
 
-  return <>{children}</>;
+  return children;
 }

@@ -4,11 +4,19 @@ import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import type { AnySandbox } from "@/types";
-import { isCentrifugoSandbox, isE2BSandbox } from "./sandbox-types";
+import {
+  getSandboxLogFields,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+} from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 import { getConvexClient } from "@/lib/db/convex-client";
-import { MAX_GENERATED_FILE_SIZE_BYTES } from "@/lib/constants/s3";
+import {
+  MAX_GENERATED_FILE_SIZE_BYTES,
+  type S3StorageLocation,
+  type S3StorageRegion,
+} from "@/lib/constants/s3";
 import { logger } from "@/lib/logger";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
@@ -29,6 +37,40 @@ export type UploadedFileInfo = {
   s3Key?: string;
   sizeBytes: number;
 };
+
+/**
+ * Mint a fresh, user-scoped download URL for a previously uploaded sandbox
+ * file. Presigned S3 URLs are intentionally not persisted in tool output
+ * because they expire; the stable file ID is persisted instead.
+ */
+export async function getSandboxUploadedFileUrl(args: {
+  fileId: Id<"files">;
+  userId: string;
+}): Promise<string | undefined> {
+  if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
+    throw new Error(
+      "NEXT_PUBLIC_CONVEX_URL is required for sandbox file downloads",
+    );
+  }
+
+  if (!process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "CONVEX_SERVICE_ROLE_KEY is required for sandbox file downloads. " +
+        "This is a server-only secret and must never be exposed to the client.",
+    );
+  }
+
+  const urls = await getConvexClient().action(
+    api.s3Actions.getFileUrlsByFileIdsAction,
+    {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
+      userId: args.userId,
+      fileIds: [args.fileId],
+    },
+  );
+
+  return urls[0] ?? undefined;
+}
 
 /**
  * Extract error message from ConvexError or regular Error
@@ -122,7 +164,7 @@ async function getSandboxFileSize(
         {
           event: "sandbox_generated_file_size_command_threw",
           service: "chat-handler",
-          sandbox_type: getSandboxLogType(sandbox),
+          ...getSandboxLogFields(sandbox),
           file_name: getFileNameFromPath(fullPath),
           file_path: fullPath,
           error: errorToLog(error),
@@ -142,7 +184,7 @@ async function getSandboxFileSize(
     logger.error("sandbox_generated_file_size_failed", undefined, {
       event: "sandbox_generated_file_size_failed",
       service: "chat-handler",
-      sandbox_type: getSandboxLogType(sandbox),
+      ...getSandboxLogFields(sandbox),
       file_name: getFileNameFromPath(fullPath),
       file_path: fullPath,
       stat_exit_code: statResult.exitCode,
@@ -178,7 +220,7 @@ async function getSandboxFileSize(
         {
           event: "sandbox_generated_file_size_windows_command_threw",
           service: "chat-handler",
-          sandbox_type: getSandboxLogType(sandbox),
+          ...getSandboxLogFields(sandbox),
           file_name: getFileNameFromPath(fullPath),
           file_path: fullPath,
           stat_exit_code: statResult.exitCode,
@@ -199,7 +241,7 @@ async function getSandboxFileSize(
   logger.error("sandbox_generated_file_size_failed", undefined, {
     event: "sandbox_generated_file_size_failed",
     service: "chat-handler",
-    sandbox_type: getSandboxLogType(sandbox),
+    ...getSandboxLogFields(sandbox),
     file_name: getFileNameFromPath(fullPath),
     file_path: fullPath,
     stat_exit_code: statResult.exitCode,
@@ -218,10 +260,6 @@ function assertSandboxFileSizeAllowed(fileName: string, size: number): void {
   throw new Error(
     `File "${fileName}" exceeds the maximum generated file size limit of ${MAX_GENERATED_FILE_SIZE_MB} MB. Current size: ${(size / (1024 * 1024)).toFixed(2)} MB`,
   );
-}
-
-function getSandboxLogType(sandbox: AnySandbox): "e2b" | "centrifugo" {
-  return isE2BSandbox(sandbox) ? "e2b" : "centrifugo";
 }
 
 function errorToLog(error: unknown) {
@@ -320,7 +358,11 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
   const { sandbox, fullPath, uploadUrl, mediaType } = args;
   const fileName = getFileNameFromPath(fullPath);
 
-  if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
+  if (
+    !isE2BSandbox(sandbox) &&
+    "uploadToUrl" in sandbox.files &&
+    typeof sandbox.files.uploadToUrl === "function"
+  ) {
     try {
       await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
       return;
@@ -328,7 +370,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
       logger.warn("sandbox_generated_file_native_upload_failed", {
         event: "sandbox_generated_file_native_upload_failed",
         service: "chat-handler",
-        sandbox_type: getSandboxLogType(sandbox),
+        ...getSandboxLogFields(sandbox),
         file_name: fileName,
         file_path: fullPath,
         media_type: mediaType,
@@ -358,7 +400,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
         {
           event: "sandbox_generated_file_upload_failed",
           service: "chat-handler",
-          sandbox_type: getSandboxLogType(sandbox),
+          ...getSandboxLogFields(sandbox),
           file_name: fileName,
           file_path: fullPath,
           media_type: mediaType,
@@ -375,7 +417,7 @@ async function uploadGeneratedFileFromSandboxToUrl(args: {
     logger.error("sandbox_generated_file_upload_failed", undefined, {
       event: "sandbox_generated_file_upload_failed",
       service: "chat-handler",
-      sandbox_type: getSandboxLogType(sandbox),
+      ...getSandboxLogFields(sandbox),
       file_name: fileName,
       file_path: fullPath,
       media_type: mediaType,
@@ -393,6 +435,7 @@ export async function uploadSandboxFileToConvex(args: {
   fullPath: string;
   mediaType?: string;
   name?: string;
+  storageRegion?: S3StorageRegion;
 }): Promise<UploadedFileInfo> {
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
@@ -420,7 +463,7 @@ export async function uploadSandboxFileToConvex(args: {
       media_type: mediaType,
       size_bytes: fileSize,
       limit_bytes: MAX_GENERATED_FILE_SIZE_BYTES,
-      sandbox_type: getSandboxLogType(sandbox),
+      ...getSandboxLogFields(sandbox),
     });
   }
   assertSandboxFileSizeAllowed(name, fileSize);
@@ -428,15 +471,20 @@ export async function uploadSandboxFileToConvex(args: {
 
   let uploadUrl: string;
   let s3Key: string;
+  let storageLocation: S3StorageLocation;
   try {
-    const generatedUrl = await generateS3UploadUrl(
-      name,
-      mediaType,
-      userId,
-      fileSize,
-    );
+    const generatedUrl = args.storageRegion
+      ? await generateS3UploadUrl(
+          name,
+          mediaType,
+          userId,
+          fileSize,
+          args.storageRegion,
+        )
+      : await generateS3UploadUrl(name, mediaType, userId, fileSize);
     uploadUrl = generatedUrl.uploadUrl;
     s3Key = generatedUrl.s3Key;
+    storageLocation = generatedUrl.storageLocation;
   } catch (error) {
     logger.error(
       "sandbox_generated_file_upload_url_failed",
@@ -449,7 +497,7 @@ export async function uploadSandboxFileToConvex(args: {
         file_path: fullPath,
         media_type: mediaType,
         size_bytes: fileSize,
-        sandbox_type: getSandboxLogType(sandbox),
+        ...getSandboxLogFields(sandbox),
         error: errorToLog(error),
       },
     );
@@ -476,7 +524,7 @@ export async function uploadSandboxFileToConvex(args: {
         media_type: mediaType,
         size_bytes: fileSize,
         s3_key: s3Key,
-        sandbox_type: getSandboxLogType(sandbox),
+        ...getSandboxLogFields(sandbox),
         error: errorToLog(error),
       },
     );
@@ -493,6 +541,8 @@ export async function uploadSandboxFileToConvex(args: {
         size: fileSize,
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         userId,
+        s3Region: storageLocation.region,
+        s3Bucket: storageLocation.bucket,
       },
     );
 
@@ -514,7 +564,7 @@ export async function uploadSandboxFileToConvex(args: {
         file_name: name,
         media_type: mediaType,
         size_bytes: fileSize,
-        sandbox_type: getSandboxLogType(sandbox),
+        ...getSandboxLogFields(sandbox),
         error: errorToLog(error),
       },
     );

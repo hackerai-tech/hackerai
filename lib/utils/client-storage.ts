@@ -16,11 +16,13 @@ export type ConversationDraft = {
 
 export type ConversationDraftAttachment = {
   kind: "file" | "pasted-text";
-  fileId: string;
+  storage?: "s3" | "local-desktop";
+  fileId?: string;
   name: string;
   mediaType: string;
   size: number;
   generatedSource?: "pasted-text";
+  generatedTextAttachmentId?: string;
   tokens?: number;
   timestamp: number;
 };
@@ -33,18 +35,337 @@ export type ConversationDraftStore = {
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
+export const SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY =
+  "hackerai:sidebar:open-projects:v1";
+export const SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX =
+  "hackerai:sidebar:task-last-visited-at:v1:";
 const DRAFT_ATTACHMENT_RESTORE_TTL_MS = 24 * 60 * 60 * 1000;
 const HAS_AUTHENTICATED_BEFORE_STORAGE_KEY = "hackerai_has_authed_before";
 const SELECTED_MODEL_STORAGE_KEY = "selected_model";
-const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
+export const AGENT_PERMISSION_MODE_STORAGE_KEY = "agent_permission_mode";
+const EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT = "[]";
+const MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES = 100;
+const openSidebarProjectIdsListeners = new Set<() => void>();
+let openSidebarProjectIdsMemorySnapshot =
+  EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
+const sidebarTaskLastVisitedAtListeners = new Map<string, Set<() => void>>();
+let sidebarTaskLastVisitedAtMemory: Record<string, number> = {};
+let sidebarTaskLastVisitedAtSubscriberCount = 0;
+let draftStoreMemory:
+  { raw: string | null; store: ConversationDraftStore } | undefined;
 
 const isBrowser = (): boolean => typeof window !== "undefined";
 
-export const readDraftStore = (): ConversationDraftStore => {
-  if (!isBrowser()) return { drafts: [] };
+export const parseOpenSidebarProjectIdsSnapshot = (raw: string): string[] => {
   try {
-    const raw = window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
-    if (!raw) return { drafts: [] };
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+
+    return Array.from(
+      new Set(
+        parsed.filter(
+          (projectId): projectId is string =>
+            typeof projectId === "string" && projectId.length > 0,
+        ),
+      ),
+    );
+  } catch {
+    return [];
+  }
+};
+
+export const getOpenSidebarProjectIdsSnapshot = (): string => {
+  if (!isBrowser()) return EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
+  try {
+    return (
+      window.localStorage.getItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY) ??
+      EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT
+    );
+  } catch {
+    return openSidebarProjectIdsMemorySnapshot;
+  }
+};
+
+export const getServerOpenSidebarProjectIdsSnapshot = (): string =>
+  EMPTY_SIDEBAR_OPEN_PROJECT_IDS_SNAPSHOT;
+
+export const subscribeOpenSidebarProjectIds = (
+  onStoreChange: () => void,
+): (() => void) => {
+  if (!isBrowser()) return () => undefined;
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY) onStoreChange();
+  };
+
+  openSidebarProjectIdsListeners.add(onStoreChange);
+  window.addEventListener("storage", handleStorage);
+
+  return () => {
+    openSidebarProjectIdsListeners.delete(onStoreChange);
+    window.removeEventListener("storage", handleStorage);
+  };
+};
+
+export const readOpenSidebarProjectIds = (): string[] =>
+  parseOpenSidebarProjectIdsSnapshot(getOpenSidebarProjectIdsSnapshot());
+
+export const writeOpenSidebarProjectIds = (
+  projectIds: Iterable<string>,
+): void => {
+  if (!isBrowser()) return;
+  try {
+    const uniqueProjectIds = Array.from(
+      new Set(
+        Array.from(projectIds).filter((projectId) => projectId.length > 0),
+      ),
+    );
+    openSidebarProjectIdsMemorySnapshot = JSON.stringify(uniqueProjectIds);
+
+    if (uniqueProjectIds.length === 0) {
+      window.localStorage.removeItem(SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(
+        SIDEBAR_OPEN_PROJECT_IDS_STORAGE_KEY,
+        openSidebarProjectIdsMemorySnapshot,
+      );
+    }
+  } catch {
+    // Browser storage can be disabled or unavailable.
+  }
+
+  openSidebarProjectIdsListeners.forEach((listener) => listener());
+};
+
+export const parseSidebarTaskLastVisitedAt = (
+  raw: string | null,
+): number | undefined => {
+  if (raw === null || raw.trim().length === 0) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+export const getSidebarTaskLastVisitedAtStorageKey = (taskId: string): string =>
+  `${SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX}${encodeURIComponent(taskId)}`;
+
+const getTaskIdFromSidebarTaskLastVisitedAtStorageKey = (
+  key: string,
+): string | undefined => {
+  if (!key.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+    return undefined;
+  }
+
+  try {
+    const taskId = decodeURIComponent(
+      key.slice(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX.length),
+    );
+    return taskId.length > 0 ? taskId : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const notifySidebarTaskLastVisitedAt = (taskId: string): void => {
+  sidebarTaskLastVisitedAtListeners
+    .get(taskId)
+    ?.forEach((listener) => listener());
+};
+
+const pruneSidebarTaskLastVisitedAt = (): void => {
+  const entries: Array<{ key: string; taskId: string; visitedAt: number }> = [];
+  const invalidKeys: string[] = [];
+
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (!key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+      continue;
+    }
+
+    const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+    const visitedAt = parseSidebarTaskLastVisitedAt(
+      window.localStorage.getItem(key),
+    );
+    if (!taskId || visitedAt === undefined) {
+      invalidKeys.push(key);
+      continue;
+    }
+    entries.push({ key, taskId, visitedAt });
+  }
+
+  const entriesToRemove = entries
+    .sort((left, right) => right.visitedAt - left.visitedAt)
+    .slice(MAX_SIDEBAR_TASK_LAST_VISITED_AT_ENTRIES);
+
+  [...invalidKeys, ...entriesToRemove.map((entry) => entry.key)].forEach(
+    (key) => {
+      const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+      window.localStorage.removeItem(key);
+      if (taskId) {
+        delete sidebarTaskLastVisitedAtMemory[taskId];
+        notifySidebarTaskLastVisitedAt(taskId);
+      }
+    },
+  );
+};
+
+const handleSidebarTaskLastVisitedAtStorage = (event: StorageEvent): void => {
+  if (event.storageArea !== window.localStorage) return;
+
+  if (event.key === null) {
+    const taskIds = Object.keys(sidebarTaskLastVisitedAtMemory);
+    sidebarTaskLastVisitedAtMemory = {};
+    taskIds.forEach(notifySidebarTaskLastVisitedAt);
+    return;
+  }
+
+  const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(event.key);
+  if (!taskId) return;
+
+  const previous = sidebarTaskLastVisitedAtMemory[taskId];
+  const stored = parseSidebarTaskLastVisitedAt(event.newValue);
+  const next =
+    stored === undefined ? undefined : Math.max(previous ?? 0, stored);
+  if (next === undefined) {
+    delete sidebarTaskLastVisitedAtMemory[taskId];
+  } else {
+    sidebarTaskLastVisitedAtMemory[taskId] = next;
+    if (next !== stored) {
+      try {
+        window.localStorage.setItem(event.key, String(next));
+      } catch {
+        // Keep the maximum timestamp in memory if storage is unavailable.
+      }
+    }
+  }
+  if (previous !== next) notifySidebarTaskLastVisitedAt(taskId);
+};
+
+export const readSidebarTaskLastVisitedAt = (
+  taskId: string,
+): number | undefined => {
+  if (!isBrowser() || taskId.length === 0) return undefined;
+
+  try {
+    const memoryValue = sidebarTaskLastVisitedAtMemory[taskId];
+    const stored = parseSidebarTaskLastVisitedAt(
+      window.localStorage.getItem(
+        getSidebarTaskLastVisitedAtStorageKey(taskId),
+      ),
+    );
+    if (stored === undefined) {
+      delete sidebarTaskLastVisitedAtMemory[taskId];
+      return undefined;
+    }
+
+    const resolved = Math.max(memoryValue ?? 0, stored);
+    sidebarTaskLastVisitedAtMemory[taskId] = resolved;
+    if (resolved !== stored) {
+      window.localStorage.setItem(
+        getSidebarTaskLastVisitedAtStorageKey(taskId),
+        String(resolved),
+      );
+    }
+    return resolved;
+  } catch {
+    return sidebarTaskLastVisitedAtMemory[taskId];
+  }
+};
+
+export const markSidebarTaskVisited = (
+  taskId: string,
+  visitedAt: number = Date.now(),
+): void => {
+  if (
+    !isBrowser() ||
+    taskId.length === 0 ||
+    !Number.isFinite(visitedAt) ||
+    visitedAt < 0
+  ) {
+    return;
+  }
+
+  const current = readSidebarTaskLastVisitedAt(taskId);
+  const nextVisitedAt = Math.max(current ?? 0, visitedAt);
+  if (current === nextVisitedAt) return;
+  sidebarTaskLastVisitedAtMemory[taskId] = nextVisitedAt;
+
+  try {
+    window.localStorage.setItem(
+      getSidebarTaskLastVisitedAtStorageKey(taskId),
+      String(nextVisitedAt),
+    );
+    pruneSidebarTaskLastVisitedAt();
+  } catch {
+    // Browser storage can be disabled or unavailable; keep the in-memory state.
+  }
+
+  notifySidebarTaskLastVisitedAt(taskId);
+};
+
+export const getServerSidebarTaskLastVisitedAt = (): undefined => undefined;
+
+export const subscribeSidebarTaskLastVisitedAt = (
+  taskId: string,
+  onStoreChange: () => void,
+): (() => void) => {
+  if (!isBrowser()) return () => undefined;
+
+  const listeners = sidebarTaskLastVisitedAtListeners.get(taskId) ?? new Set();
+  listeners.add(onStoreChange);
+  sidebarTaskLastVisitedAtListeners.set(taskId, listeners);
+
+  if (sidebarTaskLastVisitedAtSubscriberCount === 0) {
+    window.addEventListener("storage", handleSidebarTaskLastVisitedAtStorage);
+  }
+  sidebarTaskLastVisitedAtSubscriberCount += 1;
+
+  return () => {
+    const currentListeners = sidebarTaskLastVisitedAtListeners.get(taskId);
+    currentListeners?.delete(onStoreChange);
+    if (currentListeners?.size === 0) {
+      sidebarTaskLastVisitedAtListeners.delete(taskId);
+    }
+
+    sidebarTaskLastVisitedAtSubscriberCount = Math.max(
+      0,
+      sidebarTaskLastVisitedAtSubscriberCount - 1,
+    );
+    if (sidebarTaskLastVisitedAtSubscriberCount === 0) {
+      window.removeEventListener(
+        "storage",
+        handleSidebarTaskLastVisitedAtStorage,
+      );
+    }
+  };
+};
+
+export const clearSidebarTaskLastVisitedAt = (): void => {
+  if (!isBrowser()) return;
+
+  const taskIds = new Set(Object.keys(sidebarTaskLastVisitedAtMemory));
+  sidebarTaskLastVisitedAtMemory = {};
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key?.startsWith(SIDEBAR_TASK_LAST_VISITED_AT_STORAGE_PREFIX)) {
+        continue;
+      }
+      keysToRemove.push(key);
+      const taskId = getTaskIdFromSidebarTaskLastVisitedAtStorageKey(key);
+      if (taskId) taskIds.add(taskId);
+    }
+    keysToRemove.forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Browser storage can be disabled or unavailable.
+  }
+  taskIds.forEach(notifySidebarTaskLastVisitedAt);
+};
+
+const parseDraftStore = (raw: string | null): ConversationDraftStore => {
+  if (!raw) return { drafts: [] };
+
+  try {
     const parsed = JSON.parse(raw);
     const drafts = Array.isArray(parsed?.drafts) ? parsed.drafts : [];
     const userId =
@@ -55,13 +376,30 @@ export const readDraftStore = (): ConversationDraftStore => {
   }
 };
 
+export const readDraftStore = (): ConversationDraftStore => {
+  if (!isBrowser()) return { drafts: [] };
+
+  try {
+    const raw = window.localStorage.getItem(CONVERSATION_DRAFTS_STORAGE_KEY);
+    // Reuse the parsed snapshot while still noticing replacements from another
+    // tab or direct localStorage writes in this one.
+    if (draftStoreMemory?.raw === raw) return draftStoreMemory.store;
+
+    const store = parseDraftStore(raw);
+    draftStoreMemory = { raw, store };
+    return store;
+  } catch {
+    return draftStoreMemory?.store ?? { drafts: [] };
+  }
+};
+
 export const writeDraftStore = (store: ConversationDraftStore): void => {
   if (!isBrowser()) return;
+
   try {
-    window.localStorage.setItem(
-      CONVERSATION_DRAFTS_STORAGE_KEY,
-      JSON.stringify({ drafts: store.drafts, userId: store.userId }),
-    );
+    const raw = JSON.stringify({ drafts: store.drafts, userId: store.userId });
+    draftStoreMemory = { raw, store };
+    window.localStorage.setItem(CONVERSATION_DRAFTS_STORAGE_KEY, raw);
   } catch {
     // ignore
   }
@@ -203,27 +541,67 @@ const normalizeDraftAttachments = (
   if (!Array.isArray(attachments)) return [];
   const cutoff = Date.now() - DRAFT_ATTACHMENT_RESTORE_TTL_MS;
 
-  return attachments.filter(
-    (attachment): attachment is ConversationDraftAttachment => {
-      if (!attachment || typeof attachment !== "object") return false;
-      const value = attachment as Partial<ConversationDraftAttachment>;
-      const validKind = value.kind === "file" || value.kind === "pasted-text";
+  return attachments.flatMap((attachment) => {
+    if (!attachment || typeof attachment !== "object") return [];
+    const value = attachment as Partial<ConversationDraftAttachment>;
+    const kind = value.kind;
+    const validKind = kind === "file" || kind === "pasted-text";
+    const storage = value.storage === "local-desktop" ? "local-desktop" : "s3";
+    const hasFileId =
+      typeof value.fileId === "string" && value.fileId.length > 0;
+    const hasGeneratedTextAttachmentId =
+      typeof value.generatedTextAttachmentId === "string" &&
+      value.generatedTextAttachmentId.length > 0;
 
-      return (
-        validKind &&
-        (typeof value.generatedSource === "undefined" ||
-          value.generatedSource === "pasted-text") &&
-        typeof value.fileId === "string" &&
-        value.fileId.length > 0 &&
-        typeof value.name === "string" &&
-        value.name.length > 0 &&
-        typeof value.mediaType === "string" &&
-        typeof value.size === "number" &&
-        typeof value.timestamp === "number" &&
-        value.timestamp > cutoff
-      );
-    },
-  );
+    if (
+      !validKind ||
+      (typeof value.generatedSource !== "undefined" &&
+        value.generatedSource !== "pasted-text") ||
+      (storage === "s3" && !hasFileId) ||
+      (storage === "local-desktop" &&
+        (kind !== "pasted-text" || !hasGeneratedTextAttachmentId)) ||
+      typeof value.name !== "string" ||
+      value.name.length === 0 ||
+      typeof value.mediaType !== "string" ||
+      typeof value.size !== "number" ||
+      typeof value.timestamp !== "number" ||
+      value.timestamp <= cutoff
+    ) {
+      return [];
+    }
+
+    const normalized: ConversationDraftAttachment = {
+      kind,
+      name: value.name,
+      mediaType: value.mediaType,
+      size: value.size,
+      timestamp: value.timestamp,
+    };
+
+    if (storage === "local-desktop") {
+      normalized.storage = "local-desktop";
+    }
+
+    if (hasFileId) {
+      normalized.fileId = value.fileId;
+    }
+
+    if (typeof value.tokens === "number") {
+      normalized.tokens = value.tokens;
+    }
+
+    if (value.generatedSource === "pasted-text") {
+      normalized.generatedSource = "pasted-text";
+    }
+
+    if (kind === "pasted-text") {
+      if (typeof value.generatedTextAttachmentId === "string") {
+        normalized.generatedTextAttachmentId = value.generatedTextAttachmentId;
+      }
+    }
+
+    return [normalized];
+  });
 };
 
 export const getDraftAttachmentsById = (
@@ -311,19 +689,9 @@ export const removeDraft = (id: string): void => {
   writeDraftStore({ ...store, drafts: nextDrafts });
 };
 
-export const getDrafts = (): Array<ConversationDraft> =>
-  readDraftStore().drafts;
-
-export const getUserIdFromDrafts = (): string | undefined =>
-  readDraftStore().userId;
-
-export const setUserIdInDrafts = (userId: string): void => {
-  const store = readDraftStore();
-  writeDraftStore({ ...store, userId });
-};
-
 export const clearAllDrafts = (): void => {
   if (!isBrowser()) return;
+  draftStoreMemory = { raw: null, store: { drafts: [] } };
   try {
     window.localStorage.removeItem(CONVERSATION_DRAFTS_STORAGE_KEY);
   } catch {

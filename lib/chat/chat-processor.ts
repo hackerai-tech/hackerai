@@ -18,25 +18,19 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import {
-  AUTH_DISCLAIMER,
-  type SupportedLang,
-} from "@/lib/chat/auth-disclaimer";
-import {
   ABORTED_TOOL_ERROR_TEXT,
+  getIncompleteToolErrorText,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
+import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 /**
- * Get maximum steps allowed for a user based on mode and subscription.
- * Agent mode: 100 steps (all tiers).
- * Ask mode: Free 15, Paid 100.
+ * Get maximum steps allowed for a request.
+ * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
  */
-export const getMaxStepsForUser = (
-  mode: ChatMode,
-  subscription: SubscriptionTier,
-): number => {
-  if (isAgentMode(mode)) return 100;
-  return subscription === "free" ? 15 : 100;
+export const getMaxStepsForUser = (mode: ChatMode): number => {
+  if (isAgentMode(mode)) return 500;
+  return 15;
 };
 
 /**
@@ -44,12 +38,11 @@ export const getMaxStepsForUser = (
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid ASK on the Standard/auto route normally uses DeepSeek V4 Pro
- *   (text-only); image-only prompts promote to MiniMax M3, while PDF prompts
- *   stay on Grok 4.5 for native document support. Paid Agent Auto/Standard
- *   routes use DeepSeek V4 Pro for text-only prompts and MiniMax M3 when
- *   provider-visible media is attached. HackerAI Pro uses Grok 4.5 for both
- *   text and vision; its GLM 5.2 fallback is configured downstream.
+ *   Paid Agent Auto and Standard use DeepSeek V4 Flash 0731. Ask Ultra Auto
+ *   and Ask Pro use DeepSeek V4 Pro 0813. Agent Pro uses DeepSeek V4.1
+ *   Flash with native vision, while Max uses Grok 4.6.
+ *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
+ *   image turns use DeepSeek V4 Flash Vision before fallbacks.
  * @returns Model name to use
  */
 export function selectModel(
@@ -57,8 +50,12 @@ export function selectModel(
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
   hasImageAttachment?: boolean,
-  hasPdfAttachment?: boolean,
-  options: { extraUsageAvailable?: boolean } = {},
+  _hasPdfAttachment?: boolean,
+  options: {
+    extraUsageAvailable?: boolean;
+    auxiliaryVisionEnabled?: boolean;
+    directGlmVisionEnabled?: boolean;
+  } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
   const allowedSelectedModel = normalizeMaxModelForSubscription(
@@ -66,28 +63,57 @@ export function selectModel(
     subscription,
     options,
   );
-  // DeepSeek routes are text-only, so image/PDF prompts promote to a
-  // media-capable route unless the selected tier intentionally uses a
-  // multimodal/file-capable model such as Kimi or Opus. PDFs take precedence
-  // when mixed with images because the MiniMax ask route is image-scoped.
+  // Pro/Pro+ Standard and Auto use GLM Flash for lower-cost direct vision.
+  // Other paid image routes retain DeepSeek Vision. The auxiliary treatment
+  // is reserved for MiniMax summary recovery after direct routes fail.
+  // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
   const isFreeAsk = !isAgent && subscription === "free";
-  const hasAskImage = !isAgent && !!hasImageAttachment;
-  const hasAskPdf = !isAgent && !!hasPdfAttachment;
-  const hasProviderMedia = !!hasImageAttachment || !!hasPdfAttachment;
-  const paidAskMediaModel: ModelName = hasAskPdf
+  const hasAskImage =
+    !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
+  const hasProviderImage =
+    !!hasImageAttachment && !options.auxiliaryVisionEnabled;
+  const paidStandardTextModel: ModelName = "model-deepseek-v4-flash-0731";
+  const paidAutoTextModel: ModelName =
+    !isAgent && subscription === "ultra"
+      ? "model-deepseek-v4-pro-0813"
+      : paidStandardTextModel;
+  // Paid Agent Pro accepts original images without a separate vision route.
+  // Ask and paid Agent Auto/Standard retain their existing model selection.
+  if (
+    isAgent &&
+    subscription !== "free" &&
+    allowedSelectedModel === "hackerai-pro"
+  ) {
+    return "model-deepseek-v4-flash-vision-pro";
+  }
+  const directVisionModel: ModelName =
+    allowedSelectedModel === "hackerai-pro" ||
+    ((!allowedSelectedModel || allowedSelectedModel === "auto") &&
+      paidAutoTextModel === "model-deepseek-v4-pro-0813")
+      ? "model-deepseek-v4-flash-vision-pro"
+      : "model-deepseek-v4-flash-vision";
+  if (
+    options.directGlmVisionEnabled &&
+    hasImageAttachment &&
+    allowedSelectedModel !== "hackerai-max"
+  ) {
+    if (usesGlmFlashForStandardVision(subscription, allowedSelectedModel)) {
+      return "model-glm-5.3-flash";
+    }
+    return directVisionModel;
+  }
+  const paidAskMediaModel: ModelName = hasAskImage
     ? "model-grok-4.5"
-    : hasAskImage
-      ? "ask-model"
-      : "model-deepseek-v4-pro";
+    : paidAutoTextModel;
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
       ? "agent-model-free"
-      : hasProviderMedia
-        ? "agent-model"
-        : "model-deepseek-v4-pro"
+      : hasProviderImage
+        ? "model-grok-4.5"
+        : paidAutoTextModel
     : isFreeAsk
-      ? "ask-model-free"
+      ? "ask-model-free-glm"
       : paidAskMediaModel;
 
   // Free users always route through the auto router; paid users may pick an
@@ -100,22 +126,16 @@ export function selectModel(
     return autoModel;
   }
 
-  // Paid Standard mirrors each mode's Auto split, but uses explicit keys so
-  // any UI that reads `getModelDisplayName` shows the picked model rather than
-  // the auto-router label.
+  // Explicit Standard remains on Flash even when Ultra Auto uses Pro.
+  // Keep an explicit key so model display surfaces show the selected tier.
   if (allowedSelectedModel === "hackerai-standard") {
-    if (isAgent) {
-      return hasProviderMedia ? "model-minimax-m3" : "model-deepseek-v4-pro";
-    }
-    return hasAskPdf
-      ? "model-grok-4.5"
-      : hasAskImage
-        ? "model-minimax-m3"
-        : "model-deepseek-v4-pro";
+    return hasProviderImage ? "model-grok-4.5" : paidStandardTextModel;
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
-    return "model-grok-4.5-pro";
+    return hasProviderImage
+      ? "model-grok-4.5-pro"
+      : "model-deepseek-v4-pro-0813";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -123,8 +143,7 @@ export function selectModel(
 }
 
 /**
- * Media file parts used by selectModel to decide whether the text-only
- * DeepSeek ask route is viable.
+ * Media file parts used by selectModel and OpenRouter PDF parser setup.
  */
 function getMediaAttachmentRouting(messages: UIMessage[]): {
   hasImage: boolean;
@@ -143,40 +162,6 @@ function getMediaAttachmentRouting(messages: UIMessage[]): {
   });
 
   return { hasImage, hasPdf };
-}
-
-/**
- * Adds authorization message to the last user message.
- * Language is detected by moderation from the same combined text it scored,
- * since a short reply like "yes its mine" doesn't carry enough signal.
- */
-export function addAuthMessage(
-  messages: UIMessage[],
-  moderationLanguage: SupportedLang,
-) {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") {
-      const message = messages[i];
-
-      if (!message.parts) {
-        message.parts = [];
-      }
-
-      const textParts = message.parts.filter(
-        (part: any) => part.type === "text",
-      ) as Array<{ type: "text"; text: string }>;
-
-      const disclaimer = AUTH_DISCLAIMER[moderationLanguage];
-
-      const firstTextPart = textParts[0];
-      if (firstTextPart) {
-        firstTextPart.text = `${firstTextPart.text} ${disclaimer}`;
-      } else {
-        message.parts.push({ type: "text", text: disclaimer });
-      }
-      break;
-    }
-  }
 }
 
 const ABORT_RENDERABLE_TOOL_TYPES = new Set([
@@ -259,7 +244,10 @@ function logIncompleteToolPartHandled({
   );
 }
 
-function createAbortedToolPart(part: any): any | null {
+function createAbortedToolPart(
+  part: any,
+  errorText = ABORTED_TOOL_ERROR_TEXT,
+): any | null {
   if (
     !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
     !part.toolCallId ||
@@ -272,7 +260,7 @@ function createAbortedToolPart(part: any): any | null {
   return {
     ...restPart,
     state: "output-error",
-    errorText: ABORTED_TOOL_ERROR_TEXT,
+    errorText,
   };
 }
 
@@ -311,7 +299,10 @@ export function fixIncompleteMessageParts(
 
     if (isIncomplete || hasWrongFormat) {
       if (isIncomplete && part.output == null && part.result == null) {
-        const abortedPart = createAbortedToolPart(part);
+        const abortedPart = createAbortedToolPart(
+          part,
+          getIncompleteToolErrorText(options?.logContext?.finishReason),
+        );
         if (abortedPart) {
           logIncompleteToolPartHandled({
             action: "converted_to_output_error",
@@ -613,8 +604,7 @@ export function limitImageParts(
   });
 }
 
-// isAnthropicModel is imported from @/lib/ai/providers
-// (covers both Sonnet and Opus)
+// isAnthropicModel is imported from @/lib/ai/providers.
 
 /**
  * Strips providerMetadata from all parts in all messages.
@@ -655,6 +645,8 @@ function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
 
 // UI-only part types that should not be sent to AI providers
 const UI_ONLY_PART_TYPES = new Set([
+  "data-agent-auto-review",
+  "data-agent-auto-review-lifecycle",
   "data-summarization",
   "data-shared-finding",
 ]);
@@ -687,6 +679,11 @@ export async function processChatMessages({
   modelOverride,
   extraUsageAvailable = false,
   allowLocalDesktopFiles = false,
+  auxiliaryVisionEnabled = false,
+  directGlmVisionEnabled = false,
+  chatId,
+  triggerRunId,
+  requestId,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
@@ -696,6 +693,11 @@ export async function processChatMessages({
   modelOverride?: SelectedModel;
   extraUsageAvailable?: boolean;
   allowLocalDesktopFiles?: boolean;
+  auxiliaryVisionEnabled?: boolean;
+  directGlmVisionEnabled?: boolean;
+  chatId?: string;
+  triggerRunId?: string;
+  requestId?: string;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
@@ -720,6 +722,7 @@ export async function processChatMessages({
       uploadBasePath,
       subscription,
       allowLocalDesktopFiles,
+      { chatId, triggerRunId, requestId },
     );
 
   // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.
@@ -772,7 +775,11 @@ export async function processChatMessages({
     modelOverride,
     mediaAttachmentRouting.hasImage,
     mediaAttachmentRouting.hasPdf,
-    { extraUsageAvailable },
+    {
+      extraUsageAvailable,
+      auxiliaryVisionEnabled,
+      directGlmVisionEnabled,
+    },
   );
 
   // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
@@ -793,14 +800,12 @@ export async function processChatMessages({
     subscription !== "free",
   );
 
-  // If moderation allows, add authorization message
-  if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(cleanedMessages, moderationResult.language);
-  }
-
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    platformAuthorized: moderationResult.shouldUncensorResponse,
+    allowsAbliterationContinuation:
+      moderationResult.allowsAbliterationContinuation,
   };
 }

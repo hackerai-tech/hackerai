@@ -14,9 +14,14 @@ import {
   type FileListResultMessage,
 } from "@/lib/centrifugo/types";
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import {
+  CentrifugoMessageReassembler,
+  fragmentMatchesCorrelation,
+} from "@/packages/local/src/centrifugo-transport";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
 import { validateDownloadUrl } from "./path-validation";
+import { LocalCommandRelayUnsubscribedError } from "./local-sandbox-errors";
 
 const VALID_MESSAGE_TYPES = new Set([
   "command",
@@ -58,8 +63,53 @@ const COMMAND_CANCEL_ACK_TIMEOUT_MS = 5000;
 const TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN =
   /\b(?:deadline_exceeded|operation timed out:.*\btimeoutMs\b|exceeding ['"]?timeoutMs['"]?|Command timeout after \d+ms)\b/i;
 
+type HttpClient = "curl" | "wget" | "powershell";
+
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const getPathBasename = (path: string): string | undefined => {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1];
+};
+
+const redactTransferDetails = (
+  value: string,
+  url: string,
+  paths: string[],
+): string => {
+  let redacted = value;
+  const urlVariants = [url];
+  let urlPathname: string | undefined;
+  try {
+    const parsed = new URL(url);
+    urlVariants.push(`${parsed.origin}${parsed.pathname}`);
+    if (parsed.pathname && parsed.pathname !== "/") {
+      urlPathname = parsed.pathname;
+      urlVariants.push(parsed.pathname);
+    }
+  } catch {
+    urlVariants.push(url.split("?")[0]);
+  }
+  for (const urlVariant of new Set(
+    urlVariants.sort((left, right) => right.length - left.length),
+  )) {
+    redacted = redacted.split(urlVariant).join("[redacted-url]");
+  }
+  const pathVariants = paths.flatMap((path) => [path, getPathBasename(path)]);
+  for (const path of new Set(
+    pathVariants
+      .filter((value): value is string => Boolean(value))
+      .sort((left, right) => right.length - left.length),
+  )) {
+    redacted = redacted.split(path).join("[redacted-destination-path]");
+  }
+  const sourceBasename = urlPathname ? getPathBasename(urlPathname) : undefined;
+  if (sourceBasename) {
+    redacted = redacted.split(sourceBasename).join("[redacted-url]");
+  }
+  return redacted;
+};
 
 const isTransientCommandTimeoutError = (error: unknown): boolean =>
   TRANSIENT_COMMAND_TIMEOUT_ERROR_PATTERN.test(getErrorMessage(error));
@@ -91,6 +141,19 @@ export function parseSandboxMessage(
 
   if (typeof msg.commandId !== "string") {
     console.warn("Invalid sandbox message: commandId is not a string", msg);
+    return null;
+  }
+
+  if (
+    msg.sequence !== undefined &&
+    (typeof msg.sequence !== "number" ||
+      !Number.isSafeInteger(msg.sequence) ||
+      msg.sequence < 0)
+  ) {
+    console.warn(
+      "Invalid sandbox message: sequence is not a non-negative integer",
+      { commandId: msg.commandId, sequence: msg.sequence },
+    );
     return null;
   }
 
@@ -193,7 +256,7 @@ interface CommandResult {
 type DistributiveOmit<T, K extends keyof any> = T extends unknown
   ? Omit<T, K>
   : never;
-type FileRequestInput = DistributiveOmit<
+export type FileRequestInput = DistributiveOmit<
   FileRequestMessage,
   "requestId" | "targetConnectionId"
 >;
@@ -216,6 +279,8 @@ export class CentrifugoSandbox extends EventEmitter {
     private connectionInfo: ConnectionInfo,
     private config: CentrifugoConfig,
     private workingDirectory?: string,
+    private triggerRunId?: string,
+    private chatId?: string,
   ) {
     super();
   }
@@ -226,6 +291,19 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getConnectionName(): string {
     return this.connectionInfo.name;
+  }
+
+  /** Returns the immutable identity metadata used to bind recovery to this host. */
+  getConnectionInfo(): Readonly<ConnectionInfo> {
+    return {
+      ...this.connectionInfo,
+      ...(this.connectionInfo.osInfo
+        ? { osInfo: { ...this.connectionInfo.osInfo } }
+        : {}),
+      ...(this.connectionInfo.capabilities
+        ? { capabilities: { ...this.connectionInfo.capabilities } }
+        : {}),
+    };
   }
 
   getWorkingDirectory(): string | undefined {
@@ -241,6 +319,11 @@ export class CentrifugoSandbox extends EventEmitter {
       this.connectionInfo.isDesktop === true &&
       this.connectionInfo.capabilities?.files === true
     );
+  }
+
+  /** Native write/append support may be available without the full file API. */
+  protected supportsNativeFileMutations(): boolean {
+    return this.supportsNativeFileRelay();
   }
 
   getUserId(): string {
@@ -300,11 +383,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return this.getSandboxContext();
   }
 
-  private async runFileRequest<T extends FileResponseMessage>(
+  protected async runFileRequest<T extends FileResponseMessage>(
     input: FileRequestInput,
     expectedTypes: Set<string>,
     timeoutMs = 30000,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     if (!this.supportsNativeFileRelay()) {
       throw new Error("Native desktop file relay is not available.");
     }
@@ -316,6 +401,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     );
     const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
     const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
+    signal?.throwIfAborted();
     const client = new Centrifuge(this.config.wsUrl, { token });
     this.activeClients.push(client);
 
@@ -323,8 +409,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let settled = false;
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
+      const reassembler = new CentrifugoMessageReassembler();
 
+      const onAbort = () => fail(new Error("Desktop file request aborted"));
       const cleanup = () => {
+        signal?.removeEventListener("abort", onAbort);
         if (timeoutId) {
           clearTimeout(timeoutId);
           timeoutId = undefined;
@@ -355,6 +444,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         reject(error);
       };
 
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
       timeoutId = setTimeout(() => {
         fail(
           new Error(
@@ -366,8 +460,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       subscription = client.newSubscription(channel);
       subscription.on("publication", (ctx) => {
         if (settled) return;
+        if (!fragmentMatchesCorrelation(ctx.data, "requestId", requestId)) {
+          return;
+        }
 
-        const message = parseFileResponseMessage(ctx.data);
+        const reassembled = reassembler.accept(ctx.data);
+        if (!reassembled) return;
+        const message = parseFileResponseMessage(reassembled);
         if (!message || message.requestId !== requestId) return;
 
         if (message.type === "file_error") {
@@ -428,6 +527,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             ...input,
             path: this.resolveWorkingPath(input.path),
             requestId,
+            ...(this.workingDirectory &&
+            (input.type === "file_write" || input.type === "file_append")
+              ? { allowedRoot: this.workingDirectory }
+              : {}),
             targetConnectionId: this.connectionInfo.connectionId,
           } as FileRequestMessage;
 
@@ -499,8 +602,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let cancelRequested = false;
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
+        let lastStreamSequence = -1;
         let cancelAttemptPromise: Promise<boolean> | null = null;
         let resolveCancelAttempt: ((confirmed: boolean) => void) | null = null;
+        const reassembler = new CentrifugoMessageReassembler();
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -657,12 +762,47 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         subscription.on("publication", (ctx) => {
           if (settled) return;
+          if (!fragmentMatchesCorrelation(ctx.data, "commandId", commandId)) {
+            return;
+          }
 
-          const message = parseSandboxMessage(ctx.data);
+          const reassembled = reassembler.accept(ctx.data);
+          if (!reassembled) return;
+          const message = parseSandboxMessage(reassembled);
           if (!message) return;
           if (message.commandId !== commandId) return;
           if (message.type === "command" || message.type === "command_cancel") {
             return;
+          }
+
+          const sequence = "sequence" in message ? message.sequence : undefined;
+          if (sequence !== undefined) {
+            if (sequence <= lastStreamSequence) return;
+            if (sequence !== lastStreamSequence + 1) {
+              settled = true;
+              cleanup();
+              console.error(
+                JSON.stringify({
+                  timestamp: new Date().toISOString(),
+                  level: "error",
+                  event: "local_command_stream_sequence_gap",
+                  service: "web",
+                  environment: process.env.NODE_ENV ?? "unknown",
+                  request_id: commandId,
+                  command_id: commandId,
+                  connection_id: this.connectionInfo.connectionId,
+                  expected_sequence: lastStreamSequence + 1,
+                  received_sequence: sequence,
+                }),
+              );
+              reject(
+                new Error(
+                  `Local sandbox output stream lost a chunk (expected sequence ${lastStreamSequence + 1}, received ${sequence}). Reconnect the local runner or Desktop app, then try again.`,
+                ),
+              );
+              return;
+            }
+            lastStreamSequence = sequence;
           }
           if (!tFirstMessage) tFirstMessage = Date.now();
 
@@ -761,8 +901,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 settled = true;
                 cleanup();
                 reject(
-                  new Error(
-                    `Local sandbox connection ${this.connectionInfo.connectionId} is not subscribed to the command relay. Reconnect the local runner or Desktop app, wait until it is ready, then try again.`,
+                  new LocalCommandRelayUnsubscribedError(
+                    this.connectionInfo.connectionId,
                   ),
                 );
                 return;
@@ -791,6 +931,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               timeout,
               background: opts?.background,
               displayName: opts?.displayName,
+              chatId: this.chatId,
+              triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
             };
 
@@ -876,7 +1018,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
-  private resolveWorkingPath(path: string): string {
+  protected resolveWorkingPath(path: string): string {
     if (!this.workingDirectory) return path;
     const isAbsolute =
       path.startsWith("/") ||
@@ -912,7 +1054,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Docker containers are always Linux regardless of host OS.
    */
   isWindows(): boolean {
-    return this.connectionInfo.osInfo?.platform === "win32";
+    return (
+      this.connectionInfo.osInfo?.platform === "win32" ||
+      this.shellKind === "cmd"
+    );
   }
 
   /**
@@ -935,7 +1080,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Uses double quotes on Windows (cmd.exe), single quotes on POSIX.
    */
   private escapeForTarget(value: string): string {
-    return escapeShellValue(value, this.connectionInfo.osInfo?.platform);
+    return escapeShellValue(
+      value,
+      this.isWindows() ? "win32" : this.connectionInfo.osInfo?.platform,
+    );
   }
 
   /**
@@ -959,19 +1107,23 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
    * Detect whether the remote shell is bash (git-bash on Windows, or any
    * POSIX host) or cmd.exe. Cached per sandbox instance.
    *
-   * Probe: `echo $BASH_VERSION` — bash substitutes the version string,
-   * cmd.exe echoes the literal `$BASH_VERSION`.
+   * Probe: `echo $BASH_VERSION` — cmd.exe echoes the literal variable while
+   * POSIX shells either expand it (Bash) or emit an empty line (sh/dash/zsh).
    */
   private async detectShell(): Promise<"bash" | "cmd"> {
     if (this.shellKind) return this.shellKind;
-    if (!this.isWindows()) {
+    const declaredPlatform = this.connectionInfo.osInfo?.platform;
+    // Older desktop clients did not publish osInfo. Probe those connections
+    // instead of assuming Bash: a Windows cmd relay would otherwise receive
+    // single-quoted signed URLs and split their `&` query fields into commands.
+    if (declaredPlatform && declaredPlatform !== "win32") {
       this.shellKind = "bash";
       return "bash";
     }
     const probe = await this.runSetupCommand("echo $BASH_VERSION", {
       displayName: "",
     });
-    this.shellKind = /^\d/.test(probe.stdout.trim()) ? "bash" : "cmd";
+    this.shellKind = probe.stdout.trim() === "$BASH_VERSION" ? "cmd" : "bash";
     return this.shellKind;
   }
 
@@ -1013,6 +1165,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   private async shellContext(rawPath: string): Promise<{
     useBash: boolean;
     path: string;
+    nativePath: string;
     escapePath: (value: string) => string;
     escapeValue: (value: string) => string;
   }> {
@@ -1028,7 +1181,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const escapeValue = useBash
       ? (v: string) => `'${v.replace(/'/g, "'\\''")}'`
       : (v: string) => this.escapeForTarget(v);
-    return { useBash, path, escapePath, escapeValue };
+    return { useBash, path, nativePath, escapePath, escapeValue };
   }
 
   /**
@@ -1053,8 +1206,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     }
   }
 
-  // Cache for detected HTTP client (curl or wget)
-  private httpClient: "curl" | "wget" | null = null;
+  // Cache for the detected HTTP client.
+  private httpClient: HttpClient | null = null;
+  private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).
   // --retry-all-errors requires curl >= 7.71.0
@@ -1092,26 +1246,42 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }
 
   /**
-   * Detect available HTTP client (curl or wget).
+   * Detect an available HTTP client for the target platform.
    * Alpine Linux uses wget by default, most other distros have curl.
-   * On Windows (cmd.exe), curl resolves to the real curl.exe bundled with Win10+.
+   * Windows falls back to PowerShell when curl.exe is unavailable.
    */
-  private async detectHttpClient(): Promise<"curl" | "wget"> {
+  private async detectHttpClient(): Promise<HttpClient> {
     if (this.httpClient) return this.httpClient;
 
-    // On Windows, curl.exe is bundled since Win10 build 17063 and there's no
-    // wget to fall back to. Skip detection since `command -v` is POSIX-only.
-    // If curl is missing on an older Windows Server, the download command
-    // itself will fail with a clear "curl is not recognized" error.
+    // Most supported Windows versions bundle curl.exe, but hardened or older
+    // installations can omit it. Probe with syntax matching the selected
+    // shell, then fall back to Windows PowerShell's HTTP client.
     if (this.isWindows()) {
-      this.httpClient = "curl";
-      return "curl";
+      const shell = await this.detectShell();
+      const curlCheck = await this.runSetupCommand(
+        shell === "bash" ? "command -v curl || true" : "where curl 2>nul",
+        { displayName: "" },
+      );
+      if (
+        curlCheck.exitCode === 0 &&
+        /curl(?:\.exe)?/i.test(curlCheck.stdout)
+      ) {
+        this.httpClient = "curl";
+        return "curl";
+      }
+
+      this.httpClient = "powershell";
+      return "powershell";
     }
 
     const curlCheck = await this.runSetupCommand("command -v curl || true", {
       displayName: "",
     });
-    if (curlCheck.stdout.includes("curl")) {
+    const curlPath = curlCheck.stdout.trim().split(/\s+/)[0] ?? "";
+    // Strict Snap packages use a private /tmp mount namespace. A shell probe
+    // can report the destination writable while Snap curl still cannot open
+    // that same host path, so prefer the already-supported wget when present.
+    if (curlPath && !curlPath.endsWith("/snap/bin/curl")) {
       this.httpClient = "curl";
       return "curl";
     }
@@ -1120,21 +1290,80 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       displayName: "",
     });
     if (wgetCheck.stdout.includes("wget")) {
+      if (curlPath.endsWith("/snap/bin/curl")) {
+        this.snapCurlFallbackSelected = true;
+        console.warn(
+          "[centrifugo-http]",
+          JSON.stringify({
+            level: "warn",
+            event: "centrifugo_http_client_fallback_selected",
+            service: "web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            timestamp: new Date().toISOString(),
+            trace_id: this.connectionInfo.connectionId,
+            user_id: this.userId,
+            connection_id: this.connectionInfo.connectionId,
+            from_client: "curl",
+            from_package: "snap",
+            to_client: "wget",
+            reason: "snap_filesystem_confinement",
+          }),
+        );
+      }
       this.httpClient = "wget";
       return "wget";
+    }
+
+    if (curlPath) {
+      this.httpClient = "curl";
+      return "curl";
     }
 
     this.httpClient = "curl";
     return "curl";
   }
 
+  private static encodePowerShellValue(value: string): string {
+    const encoded = Buffer.from(value, "utf8").toString("base64");
+    return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`;
+  }
+
+  private async preparePowerShellCommand(
+    script: string,
+  ): Promise<{ command: string; cleanup: () => Promise<void> }> {
+    const scriptPath = `/tmp/hackerai-transfer-${crypto.randomUUID()}.ps1`;
+    const nativeScriptPath = this.toNativePath(
+      this.resolveWorkingPath(scriptPath),
+    );
+    try {
+      // files.write already chunks legacy cmd.exe writes below its command
+      // length limit and uses the native file relay when the client supports it.
+      await this.files.write(nativeScriptPath, script);
+      const { useBash, path, escapePath } =
+        await this.shellContext(nativeScriptPath);
+      const executable = useBash ? "powershell.exe" : "powershell";
+      return {
+        command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
+        cleanup: async () => {
+          await this.files.remove(nativeScriptPath);
+        },
+      };
+    } catch (error) {
+      await this.files.remove(nativeScriptPath).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async statNativeFile(
     rawPath: string,
+    options?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<FileStatResultMessage> {
     return this.runFileRequest<FileStatResultMessage>(
       { type: "file_stat", path: rawPath },
       new Set(["file_stat_result"]),
-      30000,
+      options?.timeoutMs ?? 30000,
+      options?.signal,
     );
   }
 
@@ -1205,20 +1434,27 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       return;
     }
 
+    await this.sendNativeBase64Chunks(rawPath, encodedContent, "file_write");
+  }
+
+  private async sendNativeBase64Chunks(
+    rawPath: string,
+    encodedContent: string,
+    firstChunkType: "file_write" | "file_append",
+  ): Promise<void> {
     for (
       let offset = 0;
       offset < encodedContent.length;
       offset += CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
     ) {
-      const chunk = encodedContent.slice(
-        offset,
-        offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
-      );
       await this.runFileRequest<FileOkMessage>(
         {
-          type: offset === 0 ? "file_write" : "file_append",
+          type: offset === 0 ? firstChunkType : "file_append",
           path: rawPath,
-          content: chunk,
+          content: encodedContent.slice(
+            offset,
+            offset + CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS,
+          ),
           isBase64: true,
         },
         new Set(["file_ok"]),
@@ -1231,14 +1467,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     rawPath: string,
     content: string,
   ): Promise<void> {
-    await this.runFileRequest<FileOkMessage>(
-      {
-        type: "file_append",
-        path: rawPath,
-        content,
-      },
-      new Set(["file_ok"]),
-      120000,
+    if (
+      Buffer.byteLength(content, "utf8") <=
+      CentrifugoSandbox.MAX_NATIVE_FILE_MESSAGE_CHARS
+    ) {
+      await this.runFileRequest<FileOkMessage>(
+        {
+          type: "file_append",
+          path: rawPath,
+          content,
+        },
+        new Set(["file_ok"]),
+        120000,
+      );
+      return;
+    }
+
+    await this.sendNativeBase64Chunks(
+      rawPath,
+      Buffer.from(content, "utf8").toString("base64"),
+      "file_append",
     );
   }
 
@@ -1262,8 +1510,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }
 
   files = {
-    stat: async (rawPath: string): Promise<FileStatResultMessage> => {
-      return this.statNativeFile(rawPath);
+    stat: async (
+      rawPath: string,
+      options?: { signal?: AbortSignal; timeoutMs?: number },
+    ): Promise<FileStatResultMessage> => {
+      return this.statNativeFile(rawPath, options);
     },
 
     readText: async (
@@ -1278,7 +1529,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     },
 
     append: async (rawPath: string, content: string): Promise<void> => {
-      if (this.supportsNativeFileRelay()) {
+      if (this.supportsNativeFileMutations()) {
         await this.appendNativeTextFile(rawPath, content);
         return;
       }
@@ -1291,7 +1542,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       rawPath: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
-      if (this.supportsNativeFileRelay()) {
+      if (this.supportsNativeFileMutations()) {
         await this.writeNativeFile(rawPath, content);
         return;
       }
@@ -1340,27 +1591,30 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         // Write base64 to temp file, then certutil -decode to target
         // certutil adds header/footer lines, so we write raw base64 via echo
         const tempFile = this.escapeForTarget(`${path}.b64tmp.${Date.now()}`);
-        for (let i = 0; i < chunks.length; i++) {
-          const operator = i === 0 ? ">" : ">>";
-          const result = await this.commands.run(
-            `echo ${chunks[i]} ${operator} ${tempFile}`,
-            { displayName: i === 0 ? `Writing: ${fileName}` : "" },
-          );
-          if (result.exitCode !== 0) {
-            throw new Error(`Failed to write file: ${result.stderr}`);
+        try {
+          for (let i = 0; i < chunks.length; i++) {
+            const operator = i === 0 ? ">" : ">>";
+            const result = await this.commands.run(
+              `echo ${chunks[i]} ${operator} ${tempFile}`,
+              { displayName: i === 0 ? `Writing: ${fileName}` : "" },
+            );
+            if (result.exitCode !== 0) {
+              throw new Error(`Failed to write file: ${result.stderr}`);
+            }
           }
-        }
-        // Decode and clean up temp file
-        const decodeResult = await this.commands.run(
-          `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
-          { displayName: "" },
-        );
-        if (decodeResult.exitCode !== 0) {
-          // Clean up temp file on failure
-          await this.commands.run(`del /q /f ${tempFile}`, {
-            displayName: "",
-          });
-          throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+          // Decode and clean up temp file
+          const decodeResult = await this.commands.run(
+            `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+            { displayName: "" },
+          );
+          if (decodeResult.exitCode !== 0) {
+            throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+          }
+        } catch (error) {
+          await this.commands
+            .run(`del /q /f ${tempFile}`, { displayName: "" })
+            .catch(() => undefined);
+          throw error;
         }
       } else if (
         isBinary &&
@@ -1455,8 +1709,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         displayName: `Preparing: ${fileName}`,
       });
       if (result.exitCode !== 0) {
-        throw new Error(
-          `Failed to prepare local file: ${result.stderr || result.stdout}`,
+        const failureDetail =
+          result.stderr || result.stdout || `exit status ${result.exitCode}`;
+        throw Object.assign(
+          new Error(`Failed to prepare local file: ${failureDetail}`),
+          { exitCode: result.exitCode },
         );
       }
     },
@@ -1520,7 +1777,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
       // `if not exist` breaks under bash and leaves the target dir missing,
       // causing curl to fail with the Windows "invalid filename syntax" error.
-      const { useBash, path, escapePath, escapeValue } =
+      const { useBash, path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
       const dir = CentrifugoSandbox.parentDir(path);
@@ -1529,6 +1786,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(url);
       const escapedDir = dir ? escapePath(dir) : "";
+      let cleanupPowerShellScript: (() => Promise<void>) | undefined;
 
       // Combine mkdir + download into a single command to avoid separate
       // round-trips through the sandbox bridge (e.g. Tauri desktop app),
@@ -1554,10 +1812,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           .filter(Boolean)
           .join(" ");
         downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
-      } else {
+      } else if (httpClient === "wget") {
         downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+      } else {
+        const powerShellScript = [
+          "$ErrorActionPreference='Stop'",
+          "$ProgressPreference='SilentlyContinue'",
+          `$url=${CentrifugoSandbox.encodePowerShellValue(url)}`,
+          `$destination=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
+          "$directory=[IO.Path]::GetDirectoryName($destination)",
+          "if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }",
+          "Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $destination",
+        ].join("; ");
+        const prepared = await this.preparePowerShellCommand(powerShellScript);
+        downloadPart = prepared.command;
+        cleanupPowerShellScript = prepared.cleanup;
       }
-      const command = `${mkdirPart} ${downloadPart}`;
+      const command =
+        httpClient === "powershell"
+          ? downloadPart
+          : `${mkdirPart} ${downloadPart}`;
 
       // JS-level retry safety net on top of curl's --retry, for transient
       // network/TLS errors that can survive curl's own retry loop:
@@ -1569,67 +1843,80 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       //   56 = failure receiving network data
       //   92 = HTTP/2 stream error
       //   124 = local command wrapper timeout
-      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92, 124]);
+      const transientExitCodes =
+        httpClient === "curl"
+          ? new Set([7, 18, 23, 28, 35, 56, 92, 124])
+          : httpClient === "wget"
+            ? new Set([4, 124])
+            : new Set<number>();
       const MAX_ATTEMPTS = 3;
 
-      let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        try {
-          result = await this.commands.run(command, {
-            displayName:
-              attempt === 1
-                ? `Downloading: ${fileName}`
-                : `Downloading: ${fileName} (retry ${attempt - 1})`,
-            timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
-          });
-        } catch (error) {
+      try {
+        let result: Awaited<ReturnType<typeof this.commands.run>> | null = null;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            result = await this.commands.run(command, {
+              displayName:
+                attempt === 1
+                  ? `Downloading: ${fileName}`
+                  : `Downloading: ${fileName} (retry ${attempt - 1})`,
+              timeoutMs: FILE_DOWNLOAD_TIMEOUT_MS,
+            });
+          } catch (error) {
+            if (
+              attempt === MAX_ATTEMPTS ||
+              !isTransientCommandTimeoutError(error)
+            ) {
+              throw error;
+            }
+            console.warn(
+              `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS}, retrying: ${redactTransferDetails(getErrorMessage(error), url, [rawPath, path])}`,
+            );
+            await new Promise((r) => setTimeout(r, 500 * attempt));
+            continue;
+          }
+
+          if (result.exitCode === 0) break;
           if (
             attempt === MAX_ATTEMPTS ||
-            !isTransientCommandTimeoutError(error)
+            !transientExitCodes.has(result.exitCode)
           ) {
-            throw error;
+            break;
           }
           console.warn(
-            `[centrifugo-download] command timeout on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying: ${getErrorMessage(error)}`,
+            `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
           );
           await new Promise((r) => setTimeout(r, 500 * attempt));
-          continue;
         }
-
-        if (result.exitCode === 0) break;
-        if (
-          attempt === MAX_ATTEMPTS ||
-          !TRANSIENT_EXIT_CODES.has(result.exitCode)
-        ) {
-          break;
+        if (!result) {
+          throw new Error("Download command failed without returning a result");
         }
-        console.warn(
-          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying`,
-        );
-        await new Promise((r) => setTimeout(r, 500 * attempt));
-        continue;
-      }
-      if (!result) {
-        throw new Error("Download command failed without returning a result");
-      }
-      if (result.exitCode !== 0) {
-        // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
-        // Fall back to the target's own directory context when the destination
-        // is a drive root and `dir` is empty. Avoid listing directory contents:
-        // this can be a user's local machine in desktop dangerous mode.
-        const diagDir = escapedDir || (useBash ? "/" : '"."');
-        const diagCmd = useBash
-          ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
-          : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
-        const diag = await this.commands.run(diagCmd, { displayName: "" });
-        throw new Error(
-          `Failed to download file: ${result.stderr}\n` +
-            `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
-            `  path: ${path}\n` +
-            `  command: ${httpClient}\n` +
-            `  exitCode: ${result.exitCode}\n` +
-            `  diagnostics: ${diag.stdout}`,
-        );
+        if (result.exitCode !== 0) {
+          // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
+          // Fall back to the target's own directory context when the destination
+          // is a drive root and `dir` is empty. Avoid listing directory contents:
+          // this can be a user's local machine in desktop dangerous mode.
+          const diagDir = escapedDir || (useBash ? "/" : '"."');
+          const diagCmd = useBash
+            ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
+            : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
+          const diag = await this.commands.run(diagCmd, { displayName: "" });
+          const safeStderr = redactTransferDetails(result.stderr, url, [
+            rawPath,
+            path,
+            nativePath,
+          ]);
+          throw new Error(
+            `Failed to download file: ${safeStderr}\n` +
+              `  source: [redacted-url]\n` +
+              `  destination: [redacted-destination-path]\n` +
+              `  command: ${httpClient}\n` +
+              `  exitCode: ${result.exitCode}\n` +
+              `  diagnostics: ${diag.stdout}`,
+          );
+        }
+      } finally {
+        await cleanupPowerShellScript?.().catch(() => undefined);
       }
     },
 
@@ -1638,7 +1925,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const { path, escapePath, escapeValue } =
+      const { path, nativePath, escapePath, escapeValue } =
         await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
@@ -1647,6 +1934,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           displayName: "",
         });
         if (versionCheck.stdout.toLowerCase().includes("busybox")) {
+          if (this.snapCurlFallbackSelected) {
+            throw new Error(
+              "File upload failed: Snap curl cannot safely access sandbox file paths, and BusyBox wget does not support PUT requests. Install GNU wget or a native curl package to enable file uploads.",
+            );
+          }
           throw new Error(
             "File upload failed: curl is not available and BusyBox wget does not support PUT requests. " +
               "Install curl to enable file uploads (e.g., 'apk add curl' on Alpine or 'apt install curl' on Debian).",
@@ -1670,17 +1962,41 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               .join(" ")
           : "";
 
-      const command =
-        httpClient === "curl"
-          ? `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
-          : `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
+      let command: string;
+      let cleanupPowerShellScript: (() => Promise<void>) | undefined;
+      if (httpClient === "curl") {
+        command = `curl ${curlUploadFlags} -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`;
+      } else if (httpClient === "wget") {
+        command = `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
+      } else {
+        const powerShellScript = [
+          "$ErrorActionPreference='Stop'",
+          "$ProgressPreference='SilentlyContinue'",
+          `$url=${CentrifugoSandbox.encodePowerShellValue(uploadUrl)}`,
+          `$source=${CentrifugoSandbox.encodePowerShellValue(nativePath)}`,
+          `$contentType=${CentrifugoSandbox.encodePowerShellValue(contentType)}`,
+          "Invoke-WebRequest -UseBasicParsing -Method Put -Uri $url -InFile $source -ContentType $contentType",
+        ].join("; ");
+        const prepared = await this.preparePowerShellCommand(powerShellScript);
+        command = prepared.command;
+        cleanupPowerShellScript = prepared.cleanup;
+      }
 
-      const result = await this.commands.run(command, {
-        timeoutMs: 120000,
-        displayName: `Uploading: ${fileName}`,
-      });
-      if (result.exitCode !== 0) {
-        throw new Error(`Failed to upload file: ${result.stderr}`);
+      try {
+        const result = await this.commands.run(command, {
+          timeoutMs: 120000,
+          displayName: `Uploading: ${fileName}`,
+        });
+        if (result.exitCode !== 0) {
+          const safeStderr = redactTransferDetails(result.stderr, uploadUrl, [
+            rawPath,
+            path,
+            nativePath,
+          ]);
+          throw new Error(`Failed to upload file: ${safeStderr}`);
+        }
+      } finally {
+        await cleanupPowerShellScript?.().catch(() => undefined);
       }
     },
   };

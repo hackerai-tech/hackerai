@@ -181,4 +181,37 @@ describe("ChunkLoadRecovery", () => {
     addEventListener.mockRestore();
     removeEventListener.mockRestore();
   });
+
+  it("does not mask errors whose ErrorEvent fields are inaccessible", () => {
+    let errorListener: ((event: ErrorEvent) => void) | undefined;
+    const addEventListener = jest
+      .spyOn(window, "addEventListener")
+      .mockImplementation((type, listener) => {
+        if (type === "error" && typeof listener === "function") {
+          errorListener = listener as (event: ErrorEvent) => void;
+        }
+      });
+    const preventDefault = jest.fn();
+    const event = { preventDefault } as unknown as ErrorEvent;
+    Object.defineProperties(event, {
+      error: {
+        get: () => {
+          throw new Error('Permission denied to access property "error"');
+        },
+      },
+      message: {
+        get: () => {
+          throw new Error('Permission denied to access property "message"');
+        },
+      },
+    });
+
+    const { unmount } = render(createElement(ChunkLoadRecovery));
+
+    expect(() => errorListener?.(event)).not.toThrow();
+    expect(preventDefault).not.toHaveBeenCalled();
+
+    unmount();
+    addEventListener.mockRestore();
+  });
 });

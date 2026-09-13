@@ -30,6 +30,7 @@ type FindingOutput = {
   cvss_score?: number;
   error?: "validation" | "duplicate" | "chat_not_found" | "general";
   message?: string;
+  warning?: string;
 };
 
 const failureAction = (output: FindingOutput) => {
@@ -47,7 +48,7 @@ const SavedFindingCard = ({
       "finding_id" | "title" | "target" | "severity" | "cvss_score"
     >
   > &
-    Pick<FindingOutput, "endpoint">;
+    Pick<FindingOutput, "endpoint" | "warning">;
   toolCallId: string;
 }) => {
   const finding = useQuery(api.findings.getFinding, {
@@ -89,13 +90,20 @@ const SavedFindingCard = ({
   };
 
   return (
-    <FindingCard
-      title={content.title}
-      target={content.endpoint || content.target}
-      severity={content.severity}
-      cvssScore={content.cvssScore}
-      onClick={handleOpen}
-    />
+    <div className="space-y-2">
+      <FindingCard
+        title={content.title}
+        target={content.endpoint || content.target}
+        severity={content.severity}
+        cvssScore={content.cvssScore}
+        onClick={handleOpen}
+      />
+      {(finding?.evidence_verification?.warning ?? output.warning) && (
+        <p role="note" className="text-xs text-amber-600 dark:text-amber-400">
+          Evidence verification incomplete. Open the report for details.
+        </p>
+      )}
+    </div>
   );
 };
 
@@ -185,6 +193,7 @@ export const FindingToolHandler = memo(function FindingToolHandler({
       return (
         <SavedFindingCard
           output={{
+            warning: result.warning,
             finding_id: result.finding_id,
             title: result.title,
             target: result.target,

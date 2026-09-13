@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import DeleteAccountDialog from "../DeleteAccountDialog";
 
@@ -13,6 +13,10 @@ jest.mock("sonner", () => ({
     error: jest.fn(),
   },
 }));
+
+const mockFetch = jest.fn();
+global.fetch = mockFetch as typeof fetch;
+jest.spyOn(console, "error").mockImplementation(() => {});
 
 describe("DeleteAccountDialog", () => {
   const mockUser = {
@@ -28,6 +32,8 @@ describe("DeleteAccountDialog", () => {
     render(<DeleteAccountDialog open={open} onOpenChange={jest.fn()} />);
 
   beforeEach(() => {
+    jest.clearAllMocks();
+    mockFetch.mockReset();
     mockUseAuth.mockReturnValue({
       user: {
         ...mockUser,
@@ -35,6 +41,16 @@ describe("DeleteAccountDialog", () => {
       },
     } as ReturnType<typeof useAuth>);
   });
+
+  const confirmDeletion = () => {
+    fireEvent.change(screen.getByTestId("delete-phrase-input"), {
+      target: { value: "DELETE" },
+    });
+    fireEvent.change(screen.getByTestId("email-confirmation"), {
+      target: { value: mockUser.email },
+    });
+    fireEvent.click(screen.getByTestId("delete-button"));
+  };
 
   it("keeps the delete button visible but disabled before confirmation", () => {
     renderDialog();
@@ -112,5 +128,89 @@ describe("DeleteAccountDialog", () => {
     expect(
       (screen.getByTestId("delete-phrase-input") as HTMLInputElement).value,
     ).toBe("");
+  });
+
+  it("continues account cleanup across bounded server requests", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({ code: "account_cleanup_in_progress" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({ code: "account_cleanup_in_progress" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "terminal cleanup failure" }),
+      });
+
+    renderDialog();
+    confirmDeletion();
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+    expect(mockFetch).toHaveBeenNthCalledWith(1, "/api/delete-account", {
+      method: "POST",
+    });
+    expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/delete-account", {
+      method: "POST",
+    });
+    expect(mockFetch).toHaveBeenNthCalledWith(3, "/api/delete-account", {
+      method: "POST",
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("delete-button")).toBeEnabled(),
+    );
+  });
+
+  it("finishes external cleanup only after the continuation completes", async () => {
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({ code: "account_cleanup_in_progress" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+      });
+
+    renderDialog();
+    confirmDeletion();
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+    expect(mockFetch).toHaveBeenNthCalledWith(1, "/api/delete-account", {
+      method: "POST",
+    });
+    expect(mockFetch).toHaveBeenNthCalledWith(2, "/api/delete-account", {
+      method: "POST",
+    });
+    expect(mockFetch).toHaveBeenNthCalledWith(3, "/api/clear-auth-cookies", {
+      method: "POST",
+    });
+  });
+
+  it("stops cleanup continuation after the client request bound", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ code: "account_cleanup_in_progress" }),
+    });
+
+    renderDialog();
+    confirmDeletion();
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(10));
+    await waitFor(() =>
+      expect(screen.getByTestId("delete-button")).toBeEnabled(),
+    );
   });
 });

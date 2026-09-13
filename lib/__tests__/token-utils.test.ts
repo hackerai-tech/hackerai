@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@jest/globals";
+import { decode, encode } from "gpt-tokenizer";
 import {
   getMaxTokensForSubscription,
   MAX_TOKENS_FREE,
@@ -21,6 +22,33 @@ describe("getMaxTokensForSubscription", () => {
     expect(getMaxTokensForSubscription("ultra")).toBe(MAX_TOKENS_PAID);
     expect(getMaxTokensForSubscription("team")).toBe(MAX_TOKENS_PAID);
     expect(getMaxTokensForSubscription()).toBe(MAX_TOKENS_PAID);
+  });
+});
+
+describe("large tokenizer batches", () => {
+  it("preserves every token in a split larger than the JS argument limit", () => {
+    // This is one BPE split with 150,000 tokens. gpt-tokenizer's encode()
+    // spreads that batch into push(), which overflows Node's call stack.
+    const content = "\u0001".repeat(150_000);
+    const tokens = safeEncode(content);
+
+    expect(tokens).toHaveLength(safeCountTokens(content));
+    expect(decode(tokens)).toBe(content);
+    expect(safeCountTokens(sliceByTokens(content, 20))).toBe(20);
+    expect(
+      safeCountTokens(truncateContent(content, "[cut]", 40)),
+    ).toBeLessThanOrEqual(40);
+  });
+
+  it.each([
+    "ordinary text and punctuation!\nnext line",
+    "你好 🌍 café\n",
+    "literal <|im_start|> sentinel <|im_end|>",
+    "",
+  ])("keeps exact BPE output for %j", (content) => {
+    expect(safeEncode(content)).toEqual(
+      encode(content, { disallowedSpecial: new Set() }),
+    );
   });
 });
 

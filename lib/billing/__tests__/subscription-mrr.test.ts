@@ -136,4 +136,12 @@ describe("subscription MRR normalization", () => {
       priceBillingInterval(price({ amountCents: 2500, interval: "month" })),
     ).toBe("month");
   });
+
+  it("ignores unknown future Stripe billing intervals", () => {
+    expect(
+      priceBillingInterval({
+        recurring: { interval: "future_interval" },
+      } as any),
+    ).toBeUndefined();
+  });
 });

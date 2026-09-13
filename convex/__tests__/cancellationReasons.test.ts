@@ -100,6 +100,7 @@ describe("cancellation reason feedback export", () => {
         plan: "pro",
         subscription_tier: "pro",
         reason_category: "too_expensive",
+        reason_subcategory: "too_expensive_low_frequency",
         status: "started",
         source: "in_app",
         recent_usage_segment: "moderate",
@@ -141,9 +142,11 @@ describe("cancellation reason feedback export", () => {
       {
         createdAt: "2026-06-21T12:00:00.000Z",
         reasonCategory: "too_expensive",
+        reasonSubcategory: "too_expensive_low_frequency",
         subscriptionTier: "pro",
         plan: "pro",
         status: "started",
+        retentionOfferAccepted: null,
         source: "in_app",
         recentUsageSegment: "moderate",
         recentUsageRequestCount: 24,
@@ -204,6 +207,7 @@ describe("cancellation reason feedback export", () => {
           id === "in-window-reason"
             ? {
                 reason_category: "missing_feature",
+                reason_subcategory: "missing_capability",
                 subscription_tier: "pro-plus",
                 plan: "pro-plus",
                 status: "started",
@@ -235,9 +239,11 @@ describe("cancellation reason feedback export", () => {
       {
         createdAt: new Date(inWindowCreatedAt).toISOString(),
         reasonCategory: "missing_feature",
+        reasonSubcategory: "missing_capability",
         subscriptionTier: "pro-plus",
         plan: "pro-plus",
         status: "started",
+        retentionOfferAccepted: null,
         source: "in_app",
         recentUsageSegment: "light",
         recentUsageRequestCount: 3,

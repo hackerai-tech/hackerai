@@ -31,7 +31,10 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
+import {
+  useSandboxPreference,
+  type DesktopBridgeStatus,
+} from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { resolveSubscriptionTier } from "@/lib/auth/entitlements";
 import { clearSharedToken, setSharedToken } from "@/lib/auth/shared-token";
@@ -56,12 +59,17 @@ import {
   getAgentFirstDefaultDecision,
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
+import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
+import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import {
+  ComposerStateProvider,
+  useComposerActions,
+} from "@/app/contexts/ComposerState";
+
+const ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
+const ENTITLEMENT_REFRESH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 
 interface GlobalStateType {
-  // Input state
-  input: string;
-  setInput: (value: string) => void;
-
   // File upload state
   uploadedFiles: UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
@@ -81,6 +89,9 @@ interface GlobalStateType {
   // Chat mode state
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
+  chatModeAccessResolved: boolean;
+  paidAgentOnlyActive: boolean;
+  freeDesktopAgentOnlyActive: boolean;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -137,6 +148,8 @@ interface GlobalStateType {
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
+  desktopBridgeStatus: DesktopBridgeStatus;
+  retryDesktopBridge: () => void;
 
   // Whether a local sandbox (desktop or remote) is available
   hasLocalSandbox: boolean;
@@ -152,6 +165,7 @@ interface GlobalStateType {
   setSelectedModel: (model: SelectedModel) => void;
 
   // Utility methods
+  getInput: () => string;
   clearInput: () => void;
   clearUploadedFiles: () => void;
   openSidebar: (content: SidebarContent) => void;
@@ -160,10 +174,6 @@ interface GlobalStateType {
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
-
-  // Temporary chats preference
-  temporaryChatsEnabled: boolean;
-  setTemporaryChatsEnabled: (enabled: boolean) => void;
 
   // Team pricing dialog state
   teamPricingDialogOpen: boolean;
@@ -179,11 +189,26 @@ interface GlobalStateType {
 
   // Register a chat reset function that will be invoked on initializeNewChat
   setChatReset: (fn: (() => void) | null) => void;
+  // Register stream cleanup that runs before navigating to another chat
+  setChatNavigationHandler: (fn: ((nextChatId: string) => void) | null) => void;
 }
+
+type GlobalStateActionsType = Pick<
+  GlobalStateType,
+  | "closeSidebar"
+  | "initializeChat"
+  | "initializeNewChat"
+  | "setActiveProjectId"
+  | "setChatSidebarOpen"
+  | "setSandboxPreference"
+>;
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
   undefined,
 );
+const GlobalStateActionsContext = createContext<
+  GlobalStateActionsType | undefined
+>(undefined);
 
 interface GlobalStateProviderProps {
   children: ReactNode;
@@ -207,9 +232,10 @@ interface LocalSandboxConnection {
   };
 }
 
-export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
+const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
+  const { clearInput, getInput } = useComposerActions();
   const {
     user,
     entitlements,
@@ -224,7 +250,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const initialSavedChatModeRef = useRef<ChatMode | null>(null);
   const hasUserSelectedModeThisSessionRef = useRef(false);
   const agentFirstDefaultAppliedRef = useRef(false);
-  const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatModeState] = useState<ChatMode>(() => {
     const saved = readChatMode();
@@ -232,10 +257,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     initialSavedChatModeRef.current = saved;
     return saved;
   });
-  const setChatMode = useCallback((mode: ChatMode) => {
-    hasUserSelectedModeThisSessionRef.current = true;
-    setChatModeState(mode);
-  }, []);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -245,6 +266,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSubscription(tier);
   }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
+  const [entitlementApiResolvedUserId, setEntitlementApiResolvedUserId] =
+    useState<string | null>(null);
+  const [entitlementRefreshRetryNonce, setEntitlementRefreshRetryNonce] =
+    useState(0);
   const subscriptionFromEntitlements = useMemo<SubscriptionTier | null>(() => {
     if (!Array.isArray(entitlements)) return null;
     return resolveSubscriptionTier(entitlements);
@@ -411,7 +436,18 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
   const chatResetRef = useRef<(() => void) | null>(null);
-  const desktopEntitlementRefreshUserRef = useRef<string | null>(null);
+  const chatNavigationHandlerRef = useRef<
+    ((nextChatId: string) => void) | null
+  >(null);
+  const entitlementRefreshUserRef = useRef<string | null>(null);
+  const entitlementRefreshFailureRef = useRef<{
+    userId: string;
+    count: number;
+  } | null>(null);
+  const [entitlementRefreshFailure, setEntitlementRefreshFailure] = useState<{
+    userId: string;
+    count: number;
+  } | null>(null);
 
   // Rate limit warning dismissal state (persists across chat switches)
   const [
@@ -436,8 +472,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // Tauri detection + sandbox preference (co-located in a custom hook)
-  const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
-    useSandboxPreference(!!user);
+  const {
+    sandboxPreference,
+    setSandboxPreference,
+    desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
+  } = useSandboxPreference(!!user);
 
   const [agentPermissionMode, setAgentPermissionMode] =
     useState<AgentPermissionMode>(() => readAgentPermissionMode());
@@ -470,19 +511,34 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     typeof window !== "undefined" &&
     new URL(window.location.href).searchParams.get("refresh") ===
       "entitlements";
-  const desktopEntitlementRefreshPending =
+  const automaticEntitlementRefreshNeeded =
     Boolean(user) &&
     !authLoading &&
-    subscriptionFromEntitlements === "free" &&
-    isTauriEnvironment() &&
-    desktopEntitlementRefreshUserRef.current !== user?.id &&
+    (subscriptionFromEntitlements === null ||
+      (subscriptionFromEntitlements === "free" && isTauriEnvironment())) &&
     !entitlementRefreshRequested;
+  const automaticEntitlementRefreshPending =
+    automaticEntitlementRefreshNeeded &&
+    subscriptionFromEntitlements === null &&
+    entitlementApiResolvedUserId !== user?.id &&
+    entitlementRefreshUserRef.current !== user?.id;
   const subscriptionResolved =
     Boolean(user) &&
     !authLoading &&
-    subscriptionFromEntitlements !== null &&
+    (subscriptionFromEntitlements !== null ||
+      entitlementApiResolvedUserId === user?.id) &&
     !entitlementRefreshRequested &&
-    !desktopEntitlementRefreshPending;
+    !automaticEntitlementRefreshPending;
+  const tokenFreeAutomaticRefreshExhausted =
+    subscriptionFromEntitlements === "free" &&
+    entitlementRefreshFailure?.userId === user?.id &&
+    (entitlementRefreshFailure?.count ?? 0) >
+      ENTITLEMENT_REFRESH_RETRY_DELAYS_MS.length;
+  const freeSubscriptionResolved =
+    subscriptionResolved &&
+    (!automaticEntitlementRefreshNeeded ||
+      entitlementApiResolvedUserId === user?.id ||
+      tokenFreeAutomaticRefreshExhausted);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -505,6 +561,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     if (!subscriptionResolved) return;
+    if (subscription === "free" && !freeSubscriptionResolved) return;
     const normalizedModel = normalizeSelectedModelForSubscription(
       selectedModel,
       subscription,
@@ -512,55 +569,30 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     if (normalizedModel !== selectedModel) {
       setSelectedModelRaw(normalizedModel);
     }
-  }, [selectedModel, subscription, subscriptionResolved]);
+  }, [
+    freeSubscriptionResolved,
+    selectedModel,
+    subscription,
+    subscriptionResolved,
+  ]);
 
   const setSelectedModelState = useCallback((model: SelectedModel) => {
     setSelectedModelRaw(model);
   }, []);
 
-  // Initialize temporary chats from URL parameter
-  const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get("temporary-chat") === "true";
-  });
-  const temporaryChatSubscription =
+  const paidAgentSubscription =
     subscriptionFromEntitlements !== null &&
     subscriptionFromEntitlements !== "free"
       ? subscriptionFromEntitlements
       : subscription;
-  const temporaryChatAccessResolved =
-    subscriptionResolved || (!authLoading && !user);
-
-  // Remove stale or manually forged temporary-chat state once the user's
-  // subscription has been resolved. The API independently enforces this gate.
-  useEffect(() => {
-    if (
-      !temporaryChatAccessResolved ||
-      temporaryChatSubscription !== "free" ||
-      !temporaryChatsEnabled
-    ) {
-      return;
-    }
-
-    setTemporaryChatsEnabled(false);
-    const url = new URL(window.location.href);
-    url.searchParams.delete("temporary-chat");
-    window.history.replaceState({}, "", url.toString());
-  }, [
-    temporaryChatAccessResolved,
-    temporaryChatsEnabled,
-    temporaryChatSubscription,
-  ]);
+  const agentFirstSubscriptionResolved =
+    paidAgentSubscription === "free"
+      ? freeSubscriptionResolved
+      : subscriptionResolved;
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
 
-    const selectedSubscription =
-      subscriptionFromEntitlements === null ||
-      subscriptionFromEntitlements === "free"
-        ? subscription
-        : subscriptionFromEntitlements;
     const savedModePresent = initialSavedChatModeRef.current !== null;
     const userSelectedModeThisSession =
       hasUserSelectedModeThisSessionRef.current;
@@ -572,9 +604,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       hasUserSelectedModeThisSession: userSelectedModeThisSession,
       isCheckingProPlan,
       isMobile,
-      subscription: selectedSubscription,
-      subscriptionResolved,
-      temporaryChatsEnabled,
+      subscription: paidAgentSubscription,
+      subscriptionResolved: agentFirstSubscriptionResolved,
       userPresent: Boolean(user),
     });
 
@@ -611,15 +642,20 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const now = new Date().toISOString();
     const agentFirstProperties = {
       experiment_key: agentDefaultDecision.experimentKey,
-      first_experience_event_version: 2,
+      first_experience_event_version: 4,
       variant: "agent_first",
-      subscription: selectedSubscription,
+      assignment_type: "deterministic_eligibility",
+      assignment_unit: "authenticated_user",
+      randomized_assignment: false,
+      control_variant_available: false,
+      exposure_trigger: "default_applied",
+      subscription: paidAgentSubscription,
       eligible_subscription_tier: agentDefaultDecision.eligibleSubscriptionTier,
-      selected_subscription_tier: selectedSubscription,
+      selected_subscription_tier: paidAgentSubscription,
       selection_reason: agentDefaultDecision.selectionReason,
       default_applied: true,
       has_local_sandbox: hasLocalSandbox,
-      sandbox_type: sandboxType,
+      sandbox_type: sandboxType === "e2b" ? "cloud" : sandboxType,
       sandbox_preference: sandboxType,
       surface: "new_chat",
       previous_saved_mode: savedModePresent,
@@ -638,18 +674,91 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     );
   }, [
     chatMode,
+    agentFirstSubscriptionResolved,
     defaultLocalSandboxPreference,
     hasLocalSandbox,
     isCheckingProPlan,
     isMobile,
+    paidAgentSubscription,
     sandboxPreference,
     selectedModel,
     setSandboxPreference,
-    subscription,
-    subscriptionFromEntitlements,
     subscriptionResolved,
-    temporaryChatsEnabled,
     user,
+  ]);
+
+  const chatModeAccessResolved =
+    !authLoading && (!user || (subscriptionResolved && !isCheckingProPlan));
+  const paidAgentOnlyActive =
+    Boolean(user) &&
+    subscriptionResolved &&
+    !isCheckingProPlan &&
+    paidAgentSubscription !== "free";
+  const freeDesktopAgentOnlyActive =
+    Boolean(user) &&
+    freeSubscriptionResolved &&
+    !isCheckingProPlan &&
+    paidAgentSubscription === "free" &&
+    isTauriEnvironment();
+  const agentOnlyActive = paidAgentOnlyActive || freeDesktopAgentOnlyActive;
+  const accessibleChatMode: ChatMode = agentOnlyActive ? "agent" : chatMode;
+  const freeDesktopSandboxPreference = useMemo(
+    () =>
+      freeDesktopAgentOnlyActive
+        ? resolveFreeDesktopSandboxPreference({
+            sandboxPreference,
+            desktopBridgeActive,
+            localConnections,
+          })
+        : null,
+    [
+      desktopBridgeActive,
+      freeDesktopAgentOnlyActive,
+      localConnections,
+      sandboxPreference,
+    ],
+  );
+
+  const setChatMode = useCallback(
+    (mode: ChatMode) => {
+      if (agentOnlyActive && mode !== "agent") return;
+      hasUserSelectedModeThisSessionRef.current = true;
+      setChatModeState(mode);
+    },
+    [agentOnlyActive],
+  );
+
+  useAutoSelectNewRemoteConnection({
+    connections: localConnections,
+    enabled: Boolean(user),
+    chatMode: accessibleChatMode,
+    setChatMode,
+    subscription: paidAgentSubscription,
+    freeSubscriptionResolved,
+    sandboxPreference,
+    setSandboxPreference,
+    selectedModel,
+    setSelectedModel: setSelectedModelState,
+  });
+
+  useEffect(() => {
+    if (!agentOnlyActive) return;
+    if (
+      freeDesktopSandboxPreference &&
+      sandboxPreference !== freeDesktopSandboxPreference
+    ) {
+      setSandboxPreference(freeDesktopSandboxPreference);
+    }
+    if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
+      setSelectedModelRaw("auto");
+    }
+  }, [
+    agentOnlyActive,
+    freeDesktopSandboxPreference,
+    freeDesktopAgentOnlyActive,
+    sandboxPreference,
+    selectedModel,
+    setSandboxPreference,
   ]);
 
   // Initialize team pricing dialog from URL hash
@@ -695,7 +804,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     if (!user) {
       setSubscription("free");
-      desktopEntitlementRefreshUserRef.current = null;
+      entitlementRefreshUserRef.current = null;
+      entitlementRefreshFailureRef.current = null;
+      setEntitlementRefreshFailure(null);
+      setEntitlementApiResolvedUserId(null);
       return;
     }
 
@@ -704,57 +816,120 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [user, subscriptionFromEntitlements, setSubscriptionWithNormalize]);
 
-  // Desktop sessions are created through a separate OAuth transfer flow. Older
-  // desktop sessions may be unscoped, so refresh once to pull WorkOS
-  // entitlements from the user's organization before showing them as free.
+  // AuthKit can omit entitlements on unscoped sessions, including web preview
+  // sessions. Resolve those through the authoritative API before exposing mode
+  // access. Desktop sessions also recheck token-free state because their
+  // separate OAuth transfer flow may leave paid entitlements stale.
   useEffect(() => {
-    const refreshDesktopEntitlements = async () => {
-      if (!user || typeof window === "undefined" || !isTauriEnvironment()) {
+    let cancelled = false;
+    let requestSettled = false;
+    let controller: AbortController | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const refreshEntitlements = async () => {
+      if (!user || typeof window === "undefined") {
+        setIsCheckingProPlan(false);
         return;
       }
 
-      const currentEntitlements = Array.isArray(entitlements)
-        ? entitlements
-        : [];
-      if (resolveSubscriptionTier(currentEntitlements) !== "free") {
+      if (
+        !automaticEntitlementRefreshNeeded ||
+        entitlementApiResolvedUserId === user.id
+      ) {
+        setIsCheckingProPlan(false);
         return;
       }
 
-      const url = new URL(window.location.href);
-      if (url.searchParams.get("refresh") === "entitlements") {
+      if (entitlementRefreshUserRef.current === user.id) {
         return;
       }
-
-      if (desktopEntitlementRefreshUserRef.current === user.id) {
-        return;
-      }
-      desktopEntitlementRefreshUserRef.current = user.id;
+      entitlementRefreshUserRef.current = user.id;
 
       setIsCheckingProPlan(true);
+      controller = new AbortController();
+      timeoutId = setTimeout(
+        () => controller?.abort(),
+        ENTITLEMENT_REFRESH_TIMEOUT_MS,
+      );
       try {
         const response = await fetch("/api/entitlements", {
           credentials: "include",
+          signal: controller.signal,
         });
-        if (!response.ok) return;
+        if (!response.ok) {
+          throw new Error("Entitlement refresh failed");
+        }
 
         const data = await response.json();
-        await refreshAuthTokenAfterEntitlementRefresh();
-        setSubscriptionWithNormalize(
-          resolveSubscriptionTier(
-            Array.isArray(data.entitlements) ? data.entitlements : [],
-          ),
+        if (cancelled) return;
+        const tier = resolveSubscriptionTier(
+          Array.isArray(data.entitlements) ? data.entitlements : [],
         );
+        setSubscriptionWithNormalize(tier);
+        setEntitlementApiResolvedUserId(user.id);
+        entitlementRefreshFailureRef.current = null;
+        setEntitlementRefreshFailure(null);
+        // The API response is authoritative for the UI. Refresh AuthKit and the
+        // shared access token in the background so a slow token refresh cannot
+        // keep the free Ask/Agent selector hidden.
+        void refreshAuthTokenAfterEntitlementRefresh();
       } catch {
-        // Keep the token-derived tier; this is only a best-effort desktop heal.
+        // Keep access unresolved when AuthKit omitted entitlements. A token-free
+        // desktop session can still safely fall back to its token-derived tier.
+        if (!cancelled) {
+          if (entitlementRefreshUserRef.current === user.id) {
+            entitlementRefreshUserRef.current = null;
+          }
+          const previousFailureCount =
+            entitlementRefreshFailureRef.current?.userId === user.id
+              ? entitlementRefreshFailureRef.current.count
+              : 0;
+          const failureCount = previousFailureCount + 1;
+          const nextFailure = {
+            userId: user.id,
+            count: failureCount,
+          };
+          entitlementRefreshFailureRef.current = nextFailure;
+          setEntitlementRefreshFailure(nextFailure);
+          const retryDelay =
+            ENTITLEMENT_REFRESH_RETRY_DELAYS_MS[failureCount - 1];
+          if (retryDelay !== undefined) {
+            retryTimeoutId = setTimeout(
+              () => setEntitlementRefreshRetryNonce((nonce) => nonce + 1),
+              retryDelay,
+            );
+          }
+        }
       } finally {
-        setIsCheckingProPlan(false);
+        requestSettled = true;
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (!cancelled) setIsCheckingProPlan(false);
       }
     };
 
-    refreshDesktopEntitlements();
+    refreshEntitlements();
+
+    return () => {
+      cancelled = true;
+      if (
+        controller !== null &&
+        !requestSettled &&
+        entitlementRefreshUserRef.current === user?.id
+      ) {
+        entitlementRefreshUserRef.current = null;
+      }
+      controller?.abort();
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (retryTimeoutId !== null) clearTimeout(retryTimeoutId);
+    };
   }, [
     user,
-    entitlements,
+    authLoading,
+    entitlementRefreshRequested,
+    automaticEntitlementRefreshNeeded,
+    entitlementApiResolvedUserId,
+    entitlementRefreshRetryNonce,
     refreshAuthTokenAfterEntitlementRefresh,
     setSubscriptionWithNormalize,
   ]);
@@ -798,7 +973,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
               ? tier
               : "free",
           );
+          setEntitlementApiResolvedUserId(user.id);
         } else {
+          // Multiple active memberships without a selected session org are
+          // ambiguous. Keep the last trustworthy tier instead of displaying a
+          // false downgrade while the user selects an organization.
+          if (response.status === 409) return;
+
           if (response.status === 401) {
             if (typeof window !== "undefined") {
               const { clientLogout } = await import("@/lib/utils/logout");
@@ -824,27 +1005,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     refreshAuthTokenAfterEntitlementRefresh,
     setSubscriptionWithNormalize,
   ]);
-
-  // Listen for URL changes to sync temporary chat state
-  useEffect(() => {
-    const handleUrlChange = () => {
-      if (typeof window === "undefined") return;
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlTemporaryEnabled = urlParams.get("temporary-chat") === "true";
-
-      // Only update state if it differs from URL to avoid infinite loops
-      if (temporaryChatsEnabled !== urlTemporaryEnabled) {
-        setTemporaryChatsEnabled(urlTemporaryEnabled);
-      }
-    };
-
-    // Listen for popstate events (browser back/forward)
-    window.addEventListener("popstate", handleUrlChange);
-
-    return () => {
-      window.removeEventListener("popstate", handleUrlChange);
-    };
-  }, [temporaryChatsEnabled]);
 
   // Listen for hash changes to sync team pricing dialog state
   useEffect(() => {
@@ -908,10 +1068,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       window.removeEventListener("popstate", handleUrlChange);
     };
   }, [migrateFromPentestgptDialogOpen]);
-
-  const clearInput = () => {
-    setInput("");
-  };
 
   const clearUploadedFiles = () => {
     setUploadedFiles([]);
@@ -992,12 +1148,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
+    chatNavigationHandlerRef.current?.(chatId);
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    // Navigating to an existing chat means we're no longer in temporary chat mode
-    setTemporaryChatsEnabled(false);
     setActiveProjectId(null);
   }, []);
 
@@ -1014,6 +1169,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
   }, []);
+
+  const setChatNavigationHandler = useCallback(
+    (fn: ((nextChatId: string) => void) | null) => {
+      chatNavigationHandlerRef.current = fn;
+    },
+    [],
+  );
 
   const openSidebar = useCallback((content: SidebarContent) => {
     setSidebarContent(content);
@@ -1040,31 +1202,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const toggleChatSidebar = () => {
     setChatSidebarOpen((prev: boolean) => !prev);
   };
-
-  // Custom setter for temporary chats that also updates URL
-  const setTemporaryChatsEnabledWithUrl = useCallback(
-    (enabled: boolean) => {
-      if (
-        enabled &&
-        (!subscriptionResolved || temporaryChatSubscription === "free")
-      ) {
-        return;
-      }
-
-      setTemporaryChatsEnabled(enabled);
-
-      if (typeof window !== "undefined") {
-        const url = new URL(window.location.href);
-        if (enabled) {
-          url.searchParams.set("temporary-chat", "true");
-        } else {
-          url.searchParams.delete("temporary-chat");
-        }
-        window.history.replaceState({}, "", url.toString());
-      }
-    },
-    [subscriptionResolved, temporaryChatSubscription],
-  );
 
   // Custom setter for team welcome dialog that also updates URL
   const setTeamWelcomeDialogOpenWithUrl = useCallback((open: boolean) => {
@@ -1098,9 +1235,26 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
+  const actionsValue = useMemo<GlobalStateActionsType>(
+    () => ({
+      closeSidebar,
+      initializeChat,
+      initializeNewChat,
+      setActiveProjectId,
+      setChatSidebarOpen,
+      setSandboxPreference,
+    }),
+    [
+      closeSidebar,
+      initializeChat,
+      initializeNewChat,
+      setActiveProjectId,
+      setChatSidebarOpen,
+      setSandboxPreference,
+    ],
+  );
+
   const value: GlobalStateType = {
-    input,
-    setInput,
     uploadedFiles,
     setUploadedFiles,
     addUploadedFile,
@@ -1108,8 +1262,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     updateUploadedFile,
     getTotalTokens,
     isUploadingFiles,
-    chatMode,
+    chatMode: accessibleChatMode,
     setChatMode,
+    chatModeAccessResolved,
+    paidAgentOnlyActive,
+    freeDesktopAgentOnlyActive,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
@@ -1131,6 +1288,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     subscription,
     isCheckingProPlan,
 
+    getInput,
     clearInput,
     clearUploadedFiles,
     openSidebar,
@@ -1139,9 +1297,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
-
-    temporaryChatsEnabled,
-    setTemporaryChatsEnabled: setTemporaryChatsEnabledWithUrl,
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,
@@ -1154,6 +1309,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       setMigrateFromPentestgptDialogOpenWithUrl,
 
     setChatReset,
+    setChatNavigationHandler,
 
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
@@ -1174,6 +1330,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,
+    desktopBridgeStatus,
+    retryDesktopBridge,
     hasLocalSandbox,
     localConnections,
     defaultLocalSandboxPreference,
@@ -1183,16 +1341,36 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   };
 
   return (
-    <GlobalStateContext.Provider value={value}>
-      {children}
-    </GlobalStateContext.Provider>
+    <GlobalStateActionsContext.Provider value={actionsValue}>
+      <GlobalStateContext.Provider value={value}>
+        {children}
+      </GlobalStateContext.Provider>
+    </GlobalStateActionsContext.Provider>
   );
 };
+
+export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
+  children,
+}) => (
+  <ComposerStateProvider>
+    <GlobalStateProviderInner>{children}</GlobalStateProviderInner>
+  </ComposerStateProvider>
+);
 
 export const useGlobalState = (): GlobalStateType => {
   const context = useContext(GlobalStateContext);
   if (context === undefined) {
     throw new Error("useGlobalState must be used within a GlobalStateProvider");
+  }
+  return context;
+};
+
+export const useGlobalStateActions = (): GlobalStateActionsType => {
+  const context = useContext(GlobalStateActionsContext);
+  if (context === undefined) {
+    throw new Error(
+      "useGlobalStateActions must be used within a GlobalStateProvider",
+    );
   }
   return context;
 };

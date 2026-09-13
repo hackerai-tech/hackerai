@@ -42,6 +42,25 @@ export const findLastAssistantMessageIndex = (
 };
 
 /**
+ * Finds the last user-authored message, ignoring hidden auto-continue prompts.
+ */
+export const findLastUserMessageIndex = (
+  messages: Array<{
+    role: "user" | "assistant" | "system";
+    metadata?: { isAutoContinue?: boolean };
+  }>,
+): number | undefined => {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === "user" && !message.metadata?.isAutoContinue) {
+      return index;
+    }
+  }
+
+  return undefined;
+};
+
+/**
  * Represents a citation/source extracted from web tool outputs
  */
 export type WebSource = {

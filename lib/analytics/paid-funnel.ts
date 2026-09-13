@@ -14,12 +14,31 @@ export const PAID_FUNNEL_EVENTS = {
   addCreditCheckoutSucceeded: "add_credit_checkout_succeeded",
   checkoutStarted: "checkout_started",
   checkoutSucceeded: "checkout_succeeded",
+  checkoutRedirectSuppressed: "checkout_redirect_suppressed",
   cancellationStarted: "cancellation_started",
   cancellationReasonSelected: "cancellation_reason_selected",
+  cancellationReasonFollowUpSelected: "cancellation_reason_follow_up_selected",
   cancellationReasonSubmitted: "cancellation_reason_free_text_submitted",
   cancellationCompleted: "cancellation_completed",
   cancellationReversed: "cancellation_reversed",
+  retentionOfferEvaluated: "retention_offer_evaluated",
+  retentionOfferImpressed: "retention_offer_impressed",
+  retentionOfferAccepted: "retention_offer_accepted",
+  retentionOfferDeclined: "retention_offer_declined",
+  retentionDowngradeScheduled: "retention_downgrade_scheduled",
+  retentionDowngradeCanceled: "retention_downgrade_canceled",
+  subscriptionPauseScheduled: "subscription_pause_scheduled",
+  subscriptionPauseCanceled: "subscription_pause_canceled",
+  subscriptionPauseResumed: "subscription_pause_resumed",
+  subscriptionPauseResumeFailed: "subscription_pause_resume_failed",
   billingPaymentFailed: "billing_payment_failed",
+  billingPaymentRecovered: "billing_payment_recovered",
+  recoveryPromptImpressed: "recovery_prompt_impressed",
+  billingPastDuePaymentUpdateClicked: "billing_past_due_payment_update_clicked",
+  paymentUpdateOpened: "payment_update_opened",
+  paymentMethodUpdated: "payment_method_updated",
+  invoicePaid: "invoice_paid",
+  subscriptionRefunded: "subscription_refunded",
   limitHit: "limit_hit",
   paidDailyFreeAllowanceImpressed: "paid_daily_free_allowance_impressed",
   paidDailyFreeAllowanceClicked: "paid_daily_free_allowance_clicked",
@@ -33,6 +52,13 @@ export function cancellationCompletionInsertId(
   stripeSubscriptionId: string,
 ): string {
   return `${PAID_FUNNEL_EVENTS.cancellationCompleted}:${stripeSubscriptionId}`;
+}
+
+export function billingPaymentRecoveryInsertId(
+  stripeEventId: string,
+  userId: string,
+): string {
+  return `${PAID_FUNNEL_EVENTS.billingPaymentRecovered}:${stripeEventId}:${userId}`;
 }
 
 export function checkoutStartedInsertId(checkoutAttemptId: string): string {
@@ -132,5 +158,24 @@ export function paidFunnelProperties(properties: Record<string, unknown> = {}) {
   return {
     ...properties,
     paid_funnel_event_version: PAID_FUNNEL_EVENT_VERSION,
+  };
+}
+
+export function subscriptionChurnHealthProperties(
+  reason: string | null | undefined,
+) {
+  const churnType =
+    reason === "payment_failed"
+      ? "involuntary"
+      : reason === "cancellation_requested"
+        ? "voluntary"
+        : reason === "payment_disputed"
+          ? "dispute"
+          : "unknown";
+
+  return {
+    churn_type: churnType,
+    voluntary_churn: churnType === "voluntary",
+    involuntary_churn: churnType === "involuntary",
   };
 }

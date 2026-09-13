@@ -65,7 +65,6 @@ export async function GET(
   }
 
   const recentStreamId: string | undefined = chat.active_stream_id;
-  const isTemporary = chat.temporary === true;
 
   const emptyDataStream = createUIMessageStream<ChatMessage>({
     execute: () => {},
@@ -146,7 +145,6 @@ export async function GET(
         // Abort on explicit stop button click (via Redis pub/sub or polling)
         const cancellationSubscriber = await createCancellationSubscriber({
           chatId,
-          isTemporary,
           abortController,
           onStop: () => {},
         });

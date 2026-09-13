@@ -67,7 +67,7 @@ Two different strategies are used based on subscription tier:
 
 - 10 request units per day (configure via `FREE_RATE_LIMIT_REQUESTS`)
 - Ask mode costs 1 unit
-- Agent mode (local sandbox only) costs 2 units, so the default budget allows up to 5 agent requests
+- Agent mode (local sandbox only) costs 1 unit, so the default budget allows up to 10 agent requests
 
 **Paid tiers — Cost-based token bucket (monthly, shared across all modes):**
 
@@ -93,13 +93,9 @@ pnpm paid-allowance:dev status pro
 pnpm paid-allowance:dev reset pro
 ```
 
-For local manual testing, run the app with the allowance rollout forced on:
+The allowance has no rollout flag and no per-request cap: every paid plan that reached its monthly limit gets up to `PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD` (default 0.25) of low-cost-model usage per UTC day, shared between Ask and Agent. Setting the variable to `0` disables it.
 
-```bash
-PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT=100 pnpm dev
-```
-
-Then sign in as the pro test user, send a text-only Ask message, confirm the limit error keeps **Add Credits** primary, and use **Try free Ask** to retry on the allowance route.
+Sign in as the pro test user with the model selector on Auto, send a message, confirm the limit error keeps **Add Credits** primary, and use **Use free Ask today** or **Use free Agent today** to retry on the allowance route. Retry again to confirm there is no request cap, and use `block-cost` to confirm the cost cap blocks the next rescue. A user who picked a specific model is not offered the allowance.
 
 ## Other Scripts
 

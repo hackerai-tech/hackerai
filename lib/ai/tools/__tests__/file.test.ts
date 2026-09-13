@@ -1,4 +1,5 @@
 jest.mock("../utils/sandbox-file-uploader", () => ({
+  getSandboxUploadedFileUrl: jest.fn(),
   uploadSandboxFileToConvex: jest.fn(),
 }));
 
@@ -11,7 +12,10 @@ jest.mock("@/lib/logger", () => ({
 }));
 
 import { createFile } from "../file";
-import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
+import {
+  getSandboxUploadedFileUrl,
+  uploadSandboxFileToConvex,
+} from "../utils/sandbox-file-uploader";
 import { phLogger } from "@/lib/posthog/server";
 import type { ToolContext } from "@/types";
 
@@ -24,6 +28,10 @@ type FakeCommandResult = {
 const mockUploadSandboxFileToConvex =
   uploadSandboxFileToConvex as jest.MockedFunction<
     typeof uploadSandboxFileToConvex
+  >;
+const mockGetSandboxUploadedFileUrl =
+  getSandboxUploadedFileUrl as jest.MockedFunction<
+    typeof getSandboxUploadedFileUrl
   >;
 const mockPhEvent = phLogger.event as jest.MockedFunction<
   typeof phLogger.event
@@ -191,6 +199,46 @@ describe("file tool large text safety", () => {
       "allowed on desktop A",
       { user: "user" },
     );
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "call-1",
+        operation: "file_write",
+        target: "C:\\repo\\approved-on-a.txt",
+        autoReviewContext: {
+          type: "file_change",
+          action: "write",
+          path: "C:\\repo\\approved-on-a.txt",
+          text: "allowed on desktop A",
+          complete: true,
+        },
+      }),
+    );
+  });
+
+  test("marks oversized file changes incomplete for human fallback", async () => {
+    const { sandbox } = makeNativeDesktopSandbox("desktop-a");
+    const requestToolApproval = jest.fn(async () => ({
+      approved: false as const,
+      approvalId: "approval-1",
+      reason: "human approval required",
+    }));
+    const tool = createFile(makeContext(sandbox, { requestToolApproval }));
+
+    await runTool(tool, {
+      action: "write",
+      path: "C:\\repo\\large.txt",
+      text: "x".repeat(24 * 1024 + 1),
+    });
+
+    expect(requestToolApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autoReviewContext: expect.objectContaining({
+          type: "file_change",
+          complete: false,
+        }),
+      }),
+    );
+    expect(sandbox.files.write).not.toHaveBeenCalled();
   });
 
   test("blocks file operations when a selected local sandbox falls back", async () => {
@@ -541,14 +589,18 @@ describe("file tool large text safety", () => {
 describe("file tool image view", () => {
   beforeEach(() => {
     mockUploadSandboxFileToConvex.mockReset();
+    mockGetSandboxUploadedFileUrl.mockReset();
     mockPhEvent.mockReset();
   });
 
   test("allows Kimi to view sandbox images as multimodal tool output", async () => {
     mockUploadSandboxFileToConvex.mockResolvedValue({
+      url: "https://s3.example/screenshot.png?signature=fresh",
       fileId: "file-1" as never,
       name: "screenshot.png",
       mediaType: "image/png",
+      sizeBytes: 68,
+      tokens: 0,
     });
 
     const commandRun = jest
@@ -565,24 +617,10 @@ describe("file tool image view", () => {
           stderr: "",
           exitCode: 0,
         };
-      })
-      .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-        return {
-          stdout: JSON.stringify({
-            path: "/tmp/screenshot.png",
-            mediaType: "image/png",
-            sizeBytes: 68,
-            kind: "image",
-            data: VALID_PNG_BASE64,
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
       });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     const result = await runTool(tool, {
@@ -604,12 +642,16 @@ describe("file tool image view", () => {
           text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
         },
         {
-          type: "image-data",
-          data: VALID_PNG_BASE64,
-          mediaType: "image/png",
+          type: "image-url",
+          url: "https://s3.example/screenshot.png?signature=fresh",
         },
       ],
     });
+
+    expect(commandRun).toHaveBeenCalledTimes(1);
+    expect(mockGetSandboxUploadedFileUrl).not.toHaveBeenCalled();
+    expect(result).not.toHaveProperty("url");
+    expect(result).not.toHaveProperty("previewFiles.0.url");
 
     expect(mockPhEvent).toHaveBeenCalledTimes(1);
     expect(mockPhEvent).toHaveBeenCalledWith(
@@ -637,9 +679,12 @@ describe("file tool image view", () => {
 
   test("allows a non-vision Agent model to initiate a vision handoff", async () => {
     mockUploadSandboxFileToConvex.mockResolvedValue({
+      url: "https://s3.example/screenshot.png?signature=fresh",
       fileId: "file-1" as never,
       name: "screenshot.png",
       mediaType: "image/png",
+      sizeBytes: 68,
+      tokens: 0,
     });
 
     const commandRun = jest
@@ -652,20 +697,6 @@ describe("file tool image view", () => {
             mediaType: "image/png",
             sizeBytes: 68,
             kind: "image",
-          }),
-          stderr: "",
-          exitCode: 0,
-        };
-      })
-      .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
-        return {
-          stdout: JSON.stringify({
-            path: "/tmp/screenshot.png",
-            mediaType: "image/png",
-            sizeBytes: 68,
-            kind: "image",
-            data: VALID_PNG_BASE64,
           }),
           stderr: "",
           exitCode: 0,
@@ -705,12 +736,276 @@ describe("file tool image view", () => {
           text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
         },
         {
+          type: "image-url",
+          url: "https://s3.example/screenshot.png?signature=fresh",
+        },
+      ],
+    });
+    expect(commandRun).toHaveBeenCalledTimes(1);
+  });
+
+  test("refreshes the signed URL for a persisted image tool result", async () => {
+    mockGetSandboxUploadedFileUrl.mockResolvedValue(
+      "https://s3.example/screenshot.png?signature=renewed",
+    );
+    const commandRun = jest.fn<Promise<FakeCommandResult>, [string, any?]>();
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
+    );
+
+    await expect(
+      runToModelOutput(tool, {
+        action: "view",
+        content: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        path: "/tmp/screenshot.png",
+        filename: "screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        previewUploadSucceeded: true,
+        previewFiles: [
+          {
+            fileId: "file-1",
+            name: "screenshot.png",
+            mediaType: "image/png",
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-url",
+          url: "https://s3.example/screenshot.png?signature=renewed",
+        },
+      ],
+    });
+
+    expect(mockGetSandboxUploadedFileUrl).toHaveBeenCalledWith({
+      fileId: "file-1",
+      userId: "user-1",
+    });
+    expect(commandRun).not.toHaveBeenCalled();
+  });
+
+  test("falls back to inline image data when a signed URL cannot be refreshed", async () => {
+    mockGetSandboxUploadedFileUrl.mockRejectedValue(
+      new Error("temporary URL refresh failure"),
+    );
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const tool = createFile(
+      makeContext(makeSandbox(commandRun), { modelName: "model-kimi-k3" }),
+    );
+
+    await expect(
+      runToModelOutput(tool, {
+        action: "view",
+        content: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        path: "/tmp/screenshot.png",
+        filename: "screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        previewUploadSucceeded: true,
+        previewFiles: [
+          {
+            fileId: "file-1",
+            name: "screenshot.png",
+            mediaType: "image/png",
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
           type: "image-data",
           data: VALID_PNG_BASE64,
           mediaType: "image/png",
         },
       ],
     });
+  });
+
+  test("returns an auxiliary description to DeepSeek without exposing image data", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    const describeImage = jest.fn(async () => ({
+      description: "A browser displays a 403 Forbidden response.",
+    }));
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: { describeImage },
+      }),
+    );
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+
+    expect(describeImage).toHaveBeenCalledWith({
+      image: VALID_PNG_BASE64,
+      mediaType: "image/png",
+      filename: "screenshot.png",
+      source: "file_view",
+    });
+    expect(result).toMatchObject({
+      action: "view",
+      visionDescription: "A browser displays a 403 Forbidden response.",
+    });
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "text",
+      value:
+        'Viewing image file: screenshot.png (image/png, 68 bytes).\n<image_description filename="screenshot.png" trust="untrusted">\nA browser displays a 403 Forbidden response.\n</image_description>',
+    });
+    expect(commandRun).toHaveBeenCalledTimes(1);
+  });
+
+  test("hands the original image to direct vision after auxiliary failover", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async (_command, opts) => {
+      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      return {
+        stdout: JSON.stringify({
+          path: "/tmp/screenshot.png",
+          mediaType: "image/png",
+          sizeBytes: 68,
+          kind: "image",
+          data: VALID_PNG_BASE64,
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+    let auxiliaryVisionEnabled = true;
+    const describeImage = jest.fn(async () => {
+      auxiliaryVisionEnabled = false;
+      throw new Error("provider failed");
+    });
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: {
+          isEnabled: () => auxiliaryVisionEnabled,
+          describeImage,
+        },
+      }),
+    );
+
+    const result = await runTool(tool, {
+      action: "view",
+      path: "/tmp/screenshot.png",
+      brief: "Inspect the screenshot",
+    });
+
+    expect(result).toMatchObject({
+      action: "view",
+      visionDescriptionError: expect.any(String),
+    });
+    await expect(runToModelOutput(tool, result)).resolves.toEqual({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: "Viewing image file: screenshot.png (image/png, 68 bytes).",
+        },
+        {
+          type: "image-data",
+          data: VALID_PNG_BASE64,
+          mediaType: "image/png",
+        },
+      ],
+    });
+    expect(describeImage).toHaveBeenCalledTimes(1);
+    expect(commandRun).toHaveBeenCalledTimes(2);
+  });
+
+  test("propagates a user stop during an auxiliary file-view description", async () => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      fileId: "file-1" as never,
+      name: "screenshot.png",
+      mediaType: "image/png",
+    });
+    const commandRun = jest.fn(async () => ({
+      stdout: JSON.stringify({
+        path: "/tmp/screenshot.png",
+        mediaType: "image/png",
+        sizeBytes: 68,
+        kind: "image",
+        data: VALID_PNG_BASE64,
+      }),
+      stderr: "",
+      exitCode: 0,
+    }));
+    const abortError = new DOMException("Stopped", "AbortError");
+    const sandbox = makeSandbox(commandRun);
+    const tool = createFile(
+      makeContext(sandbox, {
+        modelName: "model-deepseek-v4-pro-0813",
+        auxiliaryVision: {
+          isAborted: () => true,
+          describeImage: jest.fn(async () => {
+            throw abortError;
+          }),
+        },
+      }),
+    );
+
+    await expect(
+      runTool(tool, {
+        action: "view",
+        path: "/tmp/screenshot.png",
+        brief: "Inspect the screenshot",
+      }),
+    ).rejects.toBe(abortError);
   });
 
   test("redirects raster image reads to the view action", async () => {
@@ -728,7 +1023,7 @@ describe("file tool image view", () => {
       }),
     ).resolves.toEqual({
       error:
-        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+        "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.",
     });
     expect(commandRun).not.toHaveBeenCalled();
   });
@@ -762,7 +1057,7 @@ describe("file tool image view", () => {
         }),
       ).resolves.toEqual({
         error:
-          "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+          "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.",
       });
       expect(commandRun).toHaveBeenCalledTimes(1);
       expect(sandbox.files.read).not.toHaveBeenCalled();
@@ -784,7 +1079,7 @@ describe("file tool image view", () => {
       }),
     ).resolves.toEqual({
       error:
-        "Raster image files cannot be read as text. Use the view action instead; Agent will automatically route image inspection to a vision-capable model when necessary.",
+        "Raster image files cannot be read as text. Use the view action instead; Agent will inspect the image with its configured vision path.",
     });
     expect(commandRun).not.toHaveBeenCalled();
   });
@@ -888,7 +1183,7 @@ describe("file tool image view", () => {
     });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     await expect(
@@ -934,7 +1229,7 @@ describe("file tool image view", () => {
     });
     const sandbox = makeSandbox(commandRun);
     const tool = createFile(
-      makeContext(sandbox, { modelName: "model-kimi-k2.7-code" }),
+      makeContext(sandbox, { modelName: "model-kimi-k3" }),
     );
 
     await expect(

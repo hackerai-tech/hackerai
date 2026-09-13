@@ -85,7 +85,7 @@ export const WebToolHandler = memo(function WebToolHandler({
     }
 
     const searchInput = input as WebSearchInput;
-    if (searchInput.queries && searchInput.queries.length > 0) {
+    if (Array.isArray(searchInput.queries) && searchInput.queries.length > 0) {
       return searchInput.queries.join(", ");
     }
 
@@ -101,7 +101,7 @@ export const WebToolHandler = memo(function WebToolHandler({
     if (!input) return "";
 
     const searchInput = input as WebSearchInput;
-    if (searchInput.queries && searchInput.queries.length > 0) {
+    if (Array.isArray(searchInput.queries) && searchInput.queries.length > 0) {
       return searchInput.queries.join(", ");
     }
 

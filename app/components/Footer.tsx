@@ -2,9 +2,15 @@
 
 import React from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import {
+  AnalyticsConsentPreferences,
+  useAnalyticsConsentPreferencesAvailable,
+} from "@/app/components/AnalyticsConsentManager";
 
 const Footer: React.FC = () => {
   const { user, loading } = useAuth();
+  const analyticsPreferencesAvailable =
+    useAnalyticsConsentPreferencesAvailable();
 
   if (loading || user) {
     return null;
@@ -40,6 +46,20 @@ const Footer: React.FC = () => {
         >
           Security &amp; Trust
         </a>
+        {analyticsPreferencesAvailable ? (
+          <>
+            {" "}
+            <span className="text-muted-foreground">&middot;</span>{" "}
+            <AnalyticsConsentPreferences>
+              <button
+                type="button"
+                className="text-foreground decoration-foreground focus-visible:ring-ring rounded-sm underline focus-visible:ring-2 focus-visible:outline-none"
+              >
+                Cookie settings
+              </button>
+            </AnalyticsConsentPreferences>
+          </>
+        ) : null}
       </span>
     </div>
   );

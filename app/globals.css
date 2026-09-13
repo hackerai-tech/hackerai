@@ -1,6 +1,60 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "@radix-ui/themes/styles.css";
+@import "@workos-inc/widgets/styles.css";
 @source "../node_modules/streamdown/dist/index.js";
+
+/* Keep WorkOS widget dialogs above HackerAI's z-50 dialog portals. */
+.woswidgets-dialog-overlay {
+  z-index: 60;
+}
+
+/* Keep the embedded WorkOS security card visually aligned with HackerAI. */
+.hackerai-security-widget {
+  container-type: inline-size;
+  --color-panel-solid: var(--card);
+  --color-panel: var(--card);
+  --base-card-surface-box-shadow: 0 0 0 1px var(--border);
+  --gray-2: color-mix(in srgb, var(--muted) 50%, var(--card));
+  --gray-4: var(--border);
+  --gray-11: var(--muted-foreground);
+  --gray-12: var(--foreground);
+}
+
+.hackerai-security-widget .woswidgets-card-list-item:not(:first-child) {
+  border-color: var(--border);
+}
+
+.hackerai-security-widget .woswidgets-button.button--secondary {
+  color: var(--foreground);
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+@media (hover: hover) {
+  .hackerai-security-widget .woswidgets-button.button--secondary:hover {
+    background-color: var(--muted);
+  }
+}
+
+@container (max-width: 26rem) {
+  .hackerai-security-widget .woswidgets-card-list-item .rt-Grid {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .hackerai-security-widget .woswidgets-card-list-item .woswidgets-button {
+    grid-column: 2;
+    justify-self: start;
+    width: fit-content;
+    max-width: 100%;
+    height: auto;
+    min-height: var(--space-6);
+    margin-top: var(--space-1);
+    padding-block: var(--space-1);
+    white-space: normal;
+    text-wrap: balance;
+  }
+}
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant desktop (@media (min-width: 950px));
@@ -161,6 +215,57 @@
   }
 }
 
+.message-navigator-preview-glass {
+  background: color-mix(
+    in srgb,
+    var(--popover) 18%,
+    color-mix(in srgb, var(--popover) 80%, transparent)
+  );
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, var(--foreground) 10%, transparent);
+  box-shadow: 0 16px 40px -18px rgb(0 0 0 / 55%);
+}
+
+.dark .message-navigator-preview-glass {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 18px 44px -18px rgb(0 0 0 / 80%);
+}
+
+.chat-input-glass-surface {
+  background: var(--fill-input-chat);
+  background: color-mix(in srgb, var(--fill-input-chat) 86%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.chat-input-glass-context {
+  background: var(--fill-input-chat);
+  background: color-mix(in srgb, var(--fill-input-chat) 76%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.dark .chat-input-glass-surface {
+  background: var(--fill-input-chat);
+  background: color-mix(in srgb, var(--fill-input-chat) 90%, transparent);
+}
+
+.dark .chat-input-glass-context {
+  background: var(--fill-input-chat);
+  background: color-mix(in srgb, var(--fill-input-chat) 82%, transparent);
+}
+
+@supports not (
+  (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
+) {
+  .chat-input-glass-surface,
+  .chat-input-glass-context {
+    background: var(--fill-input-chat);
+  }
+}
+
 @keyframes shimmer {
   0% {
     background-position: 200% 0;
@@ -310,4 +415,38 @@
 
 *::-webkit-scrollbar-corner {
   background: var(--scrollbar-track);
+}
+
+/* Preserve scrollbar space so task titles do not shift when it appears. */
+.sidebar-chat-scroll {
+  scrollbar-color: transparent transparent;
+}
+
+.sidebar-chat-scroll::-webkit-scrollbar,
+.sidebar-chat-scroll::-webkit-scrollbar-track,
+.sidebar-chat-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.sidebar-chat-scroll::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-color: transparent;
+}
+
+.sidebar-chat-scroll[data-scrolling="true"] {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.sidebar-chat-scroll[data-scrolling="true"]::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+
+@media (hover: hover) {
+  .sidebar-chat-scroll:hover {
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  .sidebar-chat-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+  }
 }

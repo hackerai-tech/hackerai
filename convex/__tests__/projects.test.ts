@@ -252,8 +252,14 @@ describe("projects", () => {
     expect(patch).toHaveBeenCalledWith("project-1", {
       deletion_started_at: expect.any(Number),
     });
-    expect(patch).toHaveBeenCalledWith("task-1", { project_id: undefined });
-    expect(patch).toHaveBeenCalledWith("task-2", { project_id: undefined });
+    expect(patch).toHaveBeenCalledWith("task-1", {
+      project_id: undefined,
+      agent_approval_grants: undefined,
+    });
+    expect(patch).toHaveBeenCalledWith("task-2", {
+      project_id: undefined,
+      agent_approval_grants: undefined,
+    });
     expect(deleteDocument).toHaveBeenCalledWith("project-1");
     expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
     expect(projectEq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
@@ -293,6 +299,62 @@ describe("projects", () => {
     expect(projectEq).toHaveBeenNthCalledWith(2, "project_id", "project-1");
     expect(order).toHaveBeenCalledWith("desc");
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 5 });
+  });
+
+  it("does not expose a renamed source title after sharing is revoked", async () => {
+    const page = {
+      page: [
+        {
+          _id: "fork-1",
+          id: "fork-1",
+          user_id: "user-1",
+          title: "My fork",
+          branched_from_chat_id: "source-1",
+          branched_from_title: "Title when forked",
+          project_id: "project-1",
+          update_time: 1,
+        },
+      ],
+      isDone: true,
+      continueCursor: "",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const order = jest.fn<any>().mockReturnValue({ paginate });
+    const projectWithIndex = jest.fn<any>().mockReturnValue({ order });
+    const sourceFirst = jest.fn<any>().mockResolvedValue({
+      _id: "source-1",
+      id: "source-1",
+      user_id: "source-owner",
+      title: "Private title after revocation",
+      update_time: 2,
+    });
+    const sourceWithIndex = jest.fn<any>().mockReturnValue({
+      first: sourceFirst,
+    });
+    const ctx = {
+      auth: authenticated,
+      db: {
+        get: jest.fn<any>().mockResolvedValue(project),
+        query: jest
+          .fn<any>()
+          .mockReturnValueOnce({ withIndex: projectWithIndex })
+          .mockReturnValueOnce({ withIndex: sourceWithIndex }),
+      },
+    };
+
+    await expect(
+      getProjectThreads.handler(ctx as any, {
+        projectId: "project-1" as any,
+        paginationOpts: { cursor: null, numItems: 5 },
+      }),
+    ).resolves.toEqual({
+      ...page,
+      page: [
+        expect.objectContaining({
+          branched_from_title: "Title when forked",
+        }),
+      ],
+    });
   });
 
   it("returns no tasks when the project is not owned by the user", async () => {

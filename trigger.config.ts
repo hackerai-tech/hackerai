@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import { defineConfig } from "@trigger.dev/sdk";
 import { additionalPackages } from "@trigger.dev/build/extensions/core";
+import packageJson from "./package.json";
 
 if (process.env.NODE_ENV !== "production") {
   config({ path: ".env.local" });
@@ -13,9 +14,9 @@ export default defineConfig({
   // "WebSocket constructor not found" when CentrifugoSandbox connects.
   runtime: "node-22",
   logLevel: "log",
-  // Up to two hours per agent-long run. The task enforces a lower free-plan
-  // runtime cap inside trigger/agent-long.ts.
-  maxDuration: 2 * 60 * 60,
+  // Up to four hours per agent-long run. The task stops active work slightly
+  // earlier so cleanup can finish before Trigger.dev enforces this ceiling.
+  maxDuration: 4 * 60 * 60,
   retries: {
     enabledInDev: false,
     default: {
@@ -28,6 +29,9 @@ export default defineConfig({
   },
   dirs: ["./trigger"],
   build: {
+    autoDetectExternal: true,
+    keepNames: true,
+    minify: false,
     // Native modules that must be installed at deploy time, not bundled.
     // @e2b/code-interpreter is pure JS and intentionally NOT listed here —
     // bundling it lets esbuild convert chalk's ESM to CJS inline, avoiding
@@ -35,7 +39,13 @@ export default defineConfig({
     external: ["node-pty", "sharp"],
     extensions: [
       additionalPackages({
-        packages: ["node-pty", "sharp"],
+        // AI SDK's guarded download uses createRequire("undici"), which the
+        // bundler cannot discover. Install the same pinned version as the app.
+        packages: [
+          "node-pty",
+          "sharp",
+          `undici@${packageJson.dependencies.undici}`,
+        ],
       }),
     ],
   },

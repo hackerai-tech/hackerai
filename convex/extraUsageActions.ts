@@ -58,6 +58,41 @@ function canManageOrganizationBilling(membership: BillingMembership): boolean {
   return (status === undefined || status === "active") && !!hasBillingRole;
 }
 
+const DEFAULT_APPLICATION_ORIGINS = new Set(["https://hackerai.co"]);
+
+/** Restrict Stripe return URLs to exact server-configured application origins. */
+function isAllowedApplicationOrigin(url: URL): boolean {
+  const hostname = url.hostname.toLowerCase();
+  const isLocalhost =
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]";
+
+  if (isLocalhost) {
+    return url.protocol === "http:" || url.protocol === "https:";
+  }
+
+  if (url.protocol !== "https:") {
+    return false;
+  }
+
+  const allowedOrigins = new Set(DEFAULT_APPLICATION_ORIGINS);
+  for (const configuredOrigin of (
+    process.env.EXTRA_USAGE_CHECKOUT_ALLOWED_ORIGINS ?? ""
+  ).split(",")) {
+    const value = configuredOrigin.trim();
+    if (!value) continue;
+
+    try {
+      allowedOrigins.add(new URL(value).origin);
+    } catch {
+      // Ignore malformed server configuration rather than trusting it.
+    }
+  }
+
+  return allowedOrigins.has(url.origin);
+}
+
 async function getStripeCustomerId(userId: string): Promise<string | null> {
   const workos = getWorkOS();
 
@@ -499,6 +534,9 @@ export const createPurchaseSession = action({
     amountDollars: v.number(),
     baseUrl: v.string(),
     checkoutAttemptId: v.optional(v.string()),
+    returnPath: v.optional(v.string()),
+    resumeAfterPurchase: v.optional(v.boolean()),
+    enableExtraUsageAfterPurchase: v.optional(v.boolean()),
   },
   returns: v.object({
     url: v.union(v.string(), v.null()),
@@ -522,9 +560,29 @@ export const createPurchaseSession = action({
       return { url: null, error: "Maximum amount is $999,999" };
     }
 
-    // Basic URL validation
-    if (!args.baseUrl || !args.baseUrl.startsWith("http")) {
+    let applicationOrigin: string;
+    try {
+      const applicationUrl = new URL(args.baseUrl);
+      if (!isAllowedApplicationOrigin(applicationUrl)) {
+        return { url: null, error: "Invalid base URL" };
+      }
+      applicationOrigin = applicationUrl.origin;
+    } catch {
       return { url: null, error: "Invalid base URL" };
+    }
+
+    let returnUrl: URL | undefined;
+    if (
+      args.returnPath !== undefined &&
+      (!args.returnPath.startsWith("/") || args.returnPath.length > 400)
+    ) {
+      return { url: null, error: "Invalid return path" };
+    }
+    if (args.returnPath) {
+      returnUrl = new URL(args.returnPath, applicationOrigin);
+      if (returnUrl.origin !== applicationOrigin) {
+        return { url: null, error: "Invalid return path" };
+      }
     }
 
     try {
@@ -569,9 +627,14 @@ export const createPurchaseSession = action({
           ...(args.checkoutAttemptId && {
             checkoutAttemptId: args.checkoutAttemptId,
           }),
+          ...(args.returnPath && { returnPath: args.returnPath }),
+          ...(args.resumeAfterPurchase && { resumeAfterPurchase: "true" }),
+          ...(args.enableExtraUsageAfterPurchase && {
+            enableExtraUsageAfterPurchase: "true",
+          }),
         },
-        success_url: `${args.baseUrl}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: args.baseUrl,
+        success_url: `${applicationOrigin}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: returnUrl?.toString() ?? applicationOrigin,
       });
 
       try {

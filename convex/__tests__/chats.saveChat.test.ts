@@ -72,11 +72,13 @@ const makeCtx = ({
   insertResult = "chat-doc-1",
   project,
   authenticatedUserId = "user-1",
+  deletionFenced = false,
 }: {
   existingChat?: Record<string, unknown> | null;
   insertResult?: string;
   project?: Record<string, unknown> | null;
   authenticatedUserId?: string | null;
+  deletionFenced?: boolean;
 }) => {
   const unique = jest.fn<any>().mockResolvedValue(existingChat ?? null);
   const first = jest.fn<any>().mockResolvedValue(existingChat ?? null);
@@ -91,7 +93,17 @@ const makeCtx = ({
     build(q);
     return { first, unique };
   });
-  const query = jest.fn(() => ({ withIndex }));
+  const query = jest.fn((table: string) =>
+    table === "user_deletion_fences"
+      ? {
+          withIndex: jest.fn(() => ({
+            first: jest
+              .fn<any>()
+              .mockResolvedValue(deletionFenced ? { _id: "fence-1" } : null),
+          })),
+        }
+      : { withIndex },
+  );
   const insert = jest.fn<any>().mockResolvedValue(insertResult);
   const normalizeId = jest.fn<any>((_table: string, id: string) => id);
   const get = jest.fn<any>().mockResolvedValue(project ?? null);
@@ -127,6 +139,18 @@ const makeCtx = ({
 };
 
 describe("saveChat", () => {
+  it("rejects chat creation after account deletion starts", async () => {
+    const { saveChat } = await import("../chats");
+    const { ctx, insert } = makeCtx({ deletionFenced: true });
+
+    await expect(saveChat.handler(ctx, saveChatArgs)).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "ACCOUNT_DELETION_IN_PROGRESS",
+      }),
+    });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("uses unique chat id lookup before inserting", async () => {
     const { saveChat } = await import("../chats");
     const { ctx, first, indexEq, insert, unique, withIndex } = makeCtx({});
@@ -291,6 +315,107 @@ describe("saveChat", () => {
   });
 });
 
+describe("updateChatTitle", () => {
+  it("updates the sidebar title without clearing active stream state", async () => {
+    const { updateChatTitle } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        active_stream_id: "stream-1",
+        canceled_at: 123,
+      },
+    });
+
+    await expect(
+      updateChatTitle.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "chat-1",
+        title: "  Generated Sidebar Title  ",
+      }),
+    ).resolves.toBeNull();
+
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      title: "Generated Sidebar Title",
+      update_time: expect.any(Number),
+    });
+    const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(update).not.toHaveProperty("active_stream_id");
+    expect(update).not.toHaveProperty("canceled_at");
+  });
+
+  it("does nothing if the chat was deleted while its title generated", async () => {
+    const { updateChatTitle } = await import("../chats");
+    const { ctx, patch } = makeCtx({ existingChat: null });
+
+    await expect(
+      updateChatTitle.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "deleted-chat",
+        title: "Generated Title",
+      }),
+    ).resolves.toBeNull();
+
+    expect(patch).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateChat", () => {
+  it("records the finish time when clearing an active stream", async () => {
+    const { updateChat } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        active_stream_id: "stream-1",
+      },
+    });
+
+    await expect(
+      updateChat.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "chat-1",
+        finishReason: "stop",
+      }),
+    ).resolves.toBeNull();
+
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_stream_id: undefined,
+        canceled_at: undefined,
+        finish_reason: "stop",
+        last_run_finished_at: expect.any(Number),
+      }),
+    );
+  });
+
+  it("does not overwrite the finish time for a metadata-only cleanup", async () => {
+    const { updateChat } = await import("../chats");
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        last_run_finished_at: 123,
+      },
+    });
+
+    await expect(
+      updateChat.handler(ctx, {
+        serviceKey: SERVICE_KEY,
+        chatId: "chat-1",
+        todos: [],
+      }),
+    ).resolves.toBeNull();
+
+    const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(update).not.toHaveProperty("last_run_finished_at");
+  });
+});
+
 describe("moveChatToProject", () => {
   it("moves an owned chat to an owned project", async () => {
     const { moveChatToProject } = await import("../chats");
@@ -313,6 +438,7 @@ describe("moveChatToProject", () => {
     expect(get).toHaveBeenCalledWith("project-1");
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: "project-1",
+      agent_approval_grants: undefined,
       update_time: expect.any(Number),
     });
     expect(patch).toHaveBeenCalledWith("project-1", {
@@ -364,7 +490,39 @@ describe("moveChatToProject", () => {
     expect(get).not.toHaveBeenCalled();
     expect(patch).toHaveBeenCalledWith("chat-doc-1", {
       project_id: undefined,
+      agent_approval_grants: undefined,
       update_time: expect.any(Number),
     });
+  });
+
+  it("preserves approvals when the project assignment does not change", async () => {
+    const { moveChatToProject } = await import("../chats");
+    const existingGrants = [
+      {
+        kind: "terminal_command",
+        targetPrefix: '["npm","test"]',
+        executable: "npm",
+        argv: ["npm", "test"],
+      },
+    ];
+    const { ctx, patch } = makeCtx({
+      existingChat: {
+        _id: "chat-doc-1",
+        id: "chat-1",
+        user_id: "user-1",
+        project_id: "project-1",
+        agent_approval_grants: existingGrants,
+      },
+      project: { _id: "project-1", user_id: "user-1" },
+    });
+
+    await expect(
+      moveChatToProject.handler(ctx, {
+        chatId: "chat-1",
+        projectId: "project-1" as any,
+      }),
+    ).resolves.toBe(false);
+
+    expect(patch).not.toHaveBeenCalled();
   });
 });

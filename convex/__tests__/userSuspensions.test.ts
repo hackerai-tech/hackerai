@@ -35,8 +35,9 @@ type SuspensionRow = {
   category:
     | "early_fraud_warning"
     | "dispute_fraudulent"
-    | "dispute_billing_hold";
-  source: "stripe";
+    | "dispute_billing_hold"
+    | "support_confirmed_fraud";
+  source: "stripe" | "support";
   source_id: string;
   source_reason?: string;
   stripe_customer_id: string;
@@ -158,6 +159,27 @@ describe("userSuspensions", () => {
       created_at: 10_000,
       updated_at: 10_000,
       source_created_at: 1_000,
+    });
+  });
+
+  it("creates a support-confirmed fraud suspension with an honest source", async () => {
+    const { upsertActive } = await import("../userSuspensions");
+    const { ctx, rows } = makeMockCtx();
+
+    const id = await (upsertActive as any).handler(ctx, {
+      ...baseArgs,
+      category: "support_confirmed_fraud",
+      source: "support",
+      sourceId: "support_case:intercom_456",
+      sourceReason: "confirmed_unauthorized_charge",
+    });
+
+    expect(id).toBe("id-1");
+    expect(rows[0]).toMatchObject({
+      category: "support_confirmed_fraud",
+      source: "support",
+      source_id: "support_case:intercom_456",
+      source_reason: "confirmed_unauthorized_charge",
     });
   });
 
@@ -294,6 +316,60 @@ describe("userSuspensions", () => {
     });
 
     expect(result.source_id).toBe("dp_fraud");
+    expect(ctx.__withIndex).toHaveBeenCalledWith(
+      "by_user_status_category_source_created",
+      expect.any(Function),
+    );
+  });
+
+  it("returns the newest active chat-access block from Stripe or support", async () => {
+    const { getActiveChatAccessBlockByUser } =
+      await import("../userSuspensions");
+    const { ctx } = makeMockCtx([
+      {
+        _id: "id-1",
+        user_id: "user_123",
+        status: "active",
+        category: "dispute_fraudulent",
+        source: "stripe",
+        source_id: "dp_fraud",
+        stripe_customer_id: "cus_123",
+        created_at: 1_000,
+        updated_at: 1_000,
+        source_created_at: 1_000,
+      },
+      {
+        _id: "id-2",
+        user_id: "user_123",
+        status: "active",
+        category: "support_confirmed_fraud",
+        source: "support",
+        source_id: "support_case:intercom_456",
+        stripe_customer_id: "cus_123",
+        created_at: 2_000,
+        updated_at: 2_000,
+        source_created_at: 9_000,
+      },
+      {
+        _id: "id-3",
+        user_id: "user_123",
+        status: "active",
+        category: "dispute_billing_hold",
+        source: "stripe",
+        source_id: "dp_billing_newer",
+        stripe_customer_id: "cus_123",
+        created_at: 3_000,
+        updated_at: 3_000,
+        source_created_at: 10_000,
+      },
+    ]);
+
+    const result = await (getActiveChatAccessBlockByUser as any).handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      userId: "user_123",
+    });
+
+    expect(result.source_id).toBe("support_case:intercom_456");
     expect(ctx.__withIndex).toHaveBeenCalledWith(
       "by_user_status_category_source_created",
       expect.any(Function),

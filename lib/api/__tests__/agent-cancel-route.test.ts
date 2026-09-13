@@ -3,10 +3,8 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 const mockGetUserIDAndPro = jest.fn();
 const mockGetChatById = jest.fn();
 const mockSetActiveTriggerRun = jest.fn();
-const mockGetTemporaryRefreshHandle = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 const mockCancelAgentTriggerRun = jest.fn();
-const mockClearTemporaryRefreshCookie = jest.fn();
 const mockLoggerWarn = jest.fn();
 
 jest.mock("next/server", () => ({
@@ -41,9 +39,7 @@ jest.mock("@/lib/db/actions", () => ({
 
 jest.mock("@/lib/api/agent-approval-session", () => ({
   cancelAgentTriggerRun: mockCancelAgentTriggerRun,
-  clearTemporaryAgentApprovalRefreshCookie: mockClearTemporaryRefreshCookie,
   closeAgentApprovalSession: mockCloseAgentApprovalSession,
-  getTemporaryAgentApprovalRefreshHandle: mockGetTemporaryRefreshHandle,
 }));
 
 jest.mock("@/lib/api/agent-route-errors", () => ({
@@ -56,9 +52,14 @@ jest.mock("@/lib/logger", () => ({
   logger: { warn: mockLoggerWarn },
 }));
 
-const request = () =>
+const request = (
+  body: {
+    chatId: string;
+    expectedTriggerRunId?: string;
+  } = { chatId: "chat-1" },
+) =>
   ({
-    json: jest.fn(async () => ({ chatId: "temporary-chat-1" })),
+    json: jest.fn(async () => body),
     headers: {
       get: jest.fn((name: string) =>
         name === "x-vercel-id" ? "req_agent_cancel" : null,
@@ -71,50 +72,16 @@ describe("agent cancel route", () => {
     jest.clearAllMocks();
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
     mockGetChatById.mockResolvedValue(null as never);
-    mockGetTemporaryRefreshHandle.mockReturnValue({
-      userId: "user-1",
-      chatId: "temporary-chat-1",
-      runId: "run-1",
-      approvalSessionId: "approval-session-1",
-    });
   });
 
-  it("cancels a temporary run and clears its refresh mapping", async () => {
+  it("rejects cancellation when the persisted chat is missing", async () => {
     const { createAgentCancelPost } = await import("../agent-cancel-route");
-    const req = request();
-    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
-      req,
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      canceled: true,
-      runId: "run-1",
-    });
-    expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
-      "approval-session-1",
-      "agent-run-canceled",
-    );
-    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
-    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
-    expect(mockClearTemporaryRefreshCookie).toHaveBeenCalledWith(response, {
-      req,
-      userId: "user-1",
-      chatId: "temporary-chat-1",
-    });
-  });
-
-  it("rejects a temporary cancellation without a valid mapping", async () => {
-    const { createAgentCancelPost } = await import("../agent-cancel-route");
-    mockGetTemporaryRefreshHandle.mockReturnValue(null);
-
     const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
       request(),
     );
 
     expect(response.status).toBe(403);
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
-    expect(mockClearTemporaryRefreshCookie).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       "Rejected Agent cancellation request",
       expect.objectContaining({
@@ -122,10 +89,10 @@ describe("agent cancel route", () => {
         request_id: "req_agent_cancel",
         endpoint: "/api/agent",
         route: "/api/agent/cancel",
-        reason: "temporary_refresh_missing",
+        reason: "chat_missing",
         status_code: 403,
         user_id: "user-1",
-        chat_id: "temporary-chat-1",
+        chat_id: "chat-1",
       }),
     );
   });
@@ -139,7 +106,6 @@ describe("agent cancel route", () => {
     );
 
     expect(response.status).toBe(403);
-    expect(mockGetTemporaryRefreshHandle).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       "Rejected Agent cancellation request",
@@ -148,8 +114,96 @@ describe("agent cancel route", () => {
         reason: "chat_owner_mismatch",
         status_code: 403,
         user_id: "user-1",
-        chat_id: "temporary-chat-1",
+        chat_id: "chat-1",
       }),
     );
+  });
+
+  it("cancels the expected active run for a persisted chat", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      user_id: "user-1",
+      active_trigger_run_id: "run-1",
+      active_agent_approval_session_id: "approval-session-1",
+    } as never);
+
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({
+        chatId: "chat-1",
+        expectedTriggerRunId: "run-1",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      triggerRunId: null,
+      approvalSessionId: null,
+      expectedRunId: "run-1",
+      expectedApprovalSessionId: "approval-session-1",
+      clearApprovalPending: true,
+    });
+  });
+
+  it("does not let a stale cancellation stop a replacement run", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      user_id: "user-1",
+      active_trigger_run_id: "run-2",
+    } as never);
+
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({
+        chatId: "chat-1",
+        expectedTriggerRunId: "run-1",
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      canceled: false,
+      reason: "stale_run",
+      activeTriggerRunId: "run-2",
+    });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Rejected Agent cancellation request",
+      expect.objectContaining({
+        event: "agent_cancel_rejected",
+        request_id: "req_agent_cancel",
+        endpoint: "/api/agent",
+        route: "/api/agent/cancel",
+        reason: "stale_run",
+        status_code: 409,
+        user_id: "user-1",
+        chat_id: "chat-1",
+      }),
+    );
+    expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
+    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
+  });
+
+  it("reports an explicit null when a stale cancellation has no active run", async () => {
+    const { createAgentCancelPost } = await import("../agent-cancel-route");
+    mockGetChatById.mockResolvedValue({
+      user_id: "user-1",
+      active_trigger_run_id: null,
+    } as never);
+
+    const response = await createAgentCancelPost({ endpoint: "/api/agent" })(
+      request({
+        chatId: "chat-1",
+        expectedTriggerRunId: "run-1",
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      canceled: false,
+      reason: "stale_run",
+      activeTriggerRunId: null,
+    });
+    expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
   });
 });

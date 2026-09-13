@@ -1,4 +1,5 @@
 import { ChatSDKError } from "@/lib/errors";
+import { getLimitPressureContext } from "@/lib/limit-pressure";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "./free-config";
 import { createRedisClient } from "./redis";
 
@@ -47,9 +48,18 @@ export async function acquireFreeRunConcurrencyLock(
   });
 
   if (acquired !== "OK") {
+    const capReason = "free_concurrency";
     throw new ChatSDKError(
       "rate_limit:chat",
       "You already have a free request running. Please wait for it to finish before starting another one.",
+      {
+        subscription: "free",
+        capReason,
+        ...getLimitPressureContext({
+          subscription: "free",
+          capReason,
+        }),
+      },
     );
   }
 

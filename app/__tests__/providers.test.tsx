@@ -1,5 +1,9 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 import { render, waitFor } from "@testing-library/react";
+import {
+  createPostHogIdentitySignature,
+  POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+} from "@/lib/analytics/identity";
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: jest.fn(),
@@ -12,8 +16,10 @@ jest.mock("../contexts/GlobalState", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
+  confirmAuthenticatedAnalyticsUserId: jest.fn(),
   getPostHogClient: jest.fn(() => null),
   loadPostHogClient: jest.fn(),
+  setAuthenticatedAnalyticsUserId: jest.fn(),
 }));
 
 process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
@@ -22,20 +28,40 @@ process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
 const { useAuth } = jest.requireMock<
   typeof import("@workos-inc/authkit-nextjs/components")
 >("@workos-inc/authkit-nextjs/components");
-const { loadPostHogClient } = jest.requireMock<
-  typeof import("@/lib/analytics/client")
->("@/lib/analytics/client");
+const { useGlobalState } = jest.requireMock<
+  typeof import("../contexts/GlobalState")
+>("../contexts/GlobalState");
+const {
+  confirmAuthenticatedAnalyticsUserId,
+  getPostHogClient,
+  loadPostHogClient,
+  setAuthenticatedAnalyticsUserId,
+} = jest.requireMock<typeof import("@/lib/analytics/client")>(
+  "@/lib/analytics/client",
+);
 const { PostHogProvider } =
   require("../providers") as typeof import("../providers");
 
 const mockUseAuth = useAuth as jest.Mock;
+const mockUseGlobalState = useGlobalState as jest.Mock;
+const mockConfirmAuthenticatedAnalyticsUserId =
+  confirmAuthenticatedAnalyticsUserId as jest.Mock;
+const mockGetPostHogClient = getPostHogClient as jest.Mock;
 const mockLoadPostHogClient = loadPostHogClient as jest.Mock;
+const mockSetAuthenticatedAnalyticsUserId =
+  setAuthenticatedAnalyticsUserId as jest.Mock;
 
 describe("PostHogProvider", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.NEXT_PUBLIC_POSTHOG_KEY = "phc_test";
     process.env.NEXT_PUBLIC_POSTHOG_HOST = "https://us.i.posthog.com";
+    window.localStorage.clear();
+    mockGetPostHogClient.mockReturnValue(null);
+
+    mockUseGlobalState.mockReturnValue({
+      subscription: "pro",
+    });
 
     mockUseAuth.mockReturnValue({
       user: {
@@ -43,6 +69,7 @@ describe("PostHogProvider", () => {
         email: "user@example.com",
         firstName: "Test",
         lastName: "User",
+        locale: "en-US",
       },
     });
   });
@@ -64,7 +91,7 @@ describe("PostHogProvider", () => {
     mockLoadPostHogClient.mockResolvedValue(posthog);
 
     render(
-      <PostHogProvider>
+      <PostHogProvider analyticsAllowed>
         <div>child</div>
       </PostHogProvider>,
     );
@@ -81,12 +108,320 @@ describe("PostHogProvider", () => {
         },
         capture_pageview: false,
         autocapture: false,
+        advanced_disable_feature_flags: true,
       }),
     );
     expect(posthog.set_config).not.toHaveBeenCalled();
     expect(posthog.opt_in_capturing).toHaveBeenCalledWith({
       captureEventName: false,
     });
+    expect(posthog.identify).toHaveBeenCalledWith("user-123", {
+      email: "user@example.com",
+      name: "Test User",
+      subscription: "pro",
+    });
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
+      "user-123",
+    );
+    expect(mockConfirmAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(
+      "user-123",
+    );
+    expect(posthog.identify.mock.invocationCallOrder[0]).toBeLessThan(
+      mockConfirmAuthenticatedAnalyticsUserId.mock.invocationCallOrder[0]!,
+    );
+
+    const [, config] = posthog.init.mock.calls[0] as unknown as [
+      string,
+      {
+        before_send: (event: {
+          event: string;
+          properties: Record<string, unknown>;
+        }) => {
+          event?: string;
+          properties?: Record<string, unknown>;
+        } | null;
+      },
+    ];
+    const retainedException = config.before_send({
+      event: "$exception",
+      properties: {
+        $current_url: "https://hackerai.co/auth-error?state=secret",
+        $referrer: "https://idp.example/callback?code=secret",
+        $exception_values: ["Unexpected application error"],
+      },
+    });
+
+    expect(retainedException?.properties).toMatchObject({
+      $current_url: "https://hackerai.co/auth-error",
+      $referrer: "https://idp.example/callback",
+    });
+    expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
+    expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+  });
+
+  it.each(["fr-FR", "es_ES", "invalid locale", "   "])(
+    "does not record a paid user's %s session",
+    async (locale) => {
+      const posthog = {
+        __loaded: false,
+        init: jest.fn(),
+        set_config: jest.fn(),
+        opt_in_capturing: jest.fn(),
+        has_opted_out_capturing: jest.fn(() => false),
+        identify: jest.fn(),
+        sessionRecordingStarted: jest.fn(() => false),
+        startSessionRecording: jest.fn(),
+        stopSessionRecording: jest.fn(),
+        reset: jest.fn(),
+        opt_out_capturing: jest.fn(),
+      };
+      mockUseAuth.mockReturnValue({
+        user: {
+          id: "user-123",
+          email: "user@example.com",
+          firstName: "Test",
+          lastName: "User",
+          locale,
+        },
+      });
+      mockLoadPostHogClient.mockResolvedValue(posthog);
+
+      render(
+        <PostHogProvider analyticsAllowed>
+          <div>child</div>
+        </PostHogProvider>,
+      );
+
+      await waitFor(() =>
+        expect(posthog.stopSessionRecording).toHaveBeenCalledTimes(1),
+      );
+      expect(posthog.startSessionRecording).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not record sessions where analytics consent is required", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider analyticsAllowed consentRequired>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() =>
+      expect(posthog.stopSessionRecording).toHaveBeenCalledTimes(1),
+    );
+    expect(posthog.startSessionRecording).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the primary browser locale when account locale is missing", async () => {
+    const languageSpy = jest
+      .spyOn(window.navigator, "language", "get")
+      .mockReturnValue("en-CA");
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: "user-123",
+        email: "user@example.com",
+        firstName: "Test",
+        lastName: "User",
+        locale: null,
+      },
+    });
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    try {
+      render(
+        <PostHogProvider analyticsAllowed>
+          <div>child</div>
+        </PostHogProvider>,
+      );
+
+      await waitFor(() =>
+        expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1),
+      );
+      expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
+    } finally {
+      languageSpy.mockRestore();
+    }
+  });
+
+  it("clears the queued analytics identity when the user signs out", () => {
+    mockUseAuth.mockReturnValue({ user: null });
+
+    render(
+      <PostHogProvider analyticsAllowed>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(null);
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+  });
+
+  it("does not initialize or identify PostHog without analytics permission", () => {
+    window.localStorage.setItem(
+      POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+      "previous-identity",
+    );
+
+    render(
+      <PostHogProvider analyticsAllowed={false}>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(mockSetAuthenticatedAnalyticsUserId).toHaveBeenCalledWith(null);
+    expect(mockLoadPostHogClient).not.toHaveBeenCalled();
+    expect(
+      window.localStorage.getItem(POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY),
+    ).toBeNull();
+  });
+
+  it("stops and clears a loaded PostHog client when consent is withdrawn", () => {
+    const posthog = {
+      __loaded: true,
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockGetPostHogClient.mockReturnValue(posthog);
+
+    render(
+      <PostHogProvider analyticsAllowed={false}>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    expect(posthog.stopSessionRecording).toHaveBeenCalledTimes(1);
+    expect(posthog.reset).toHaveBeenCalledTimes(1);
+    expect(posthog.opt_out_capturing).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resend unchanged person properties across app loads", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockUseAuth.mockReturnValue({
+      user: {
+        id: "user-deduped",
+        email: "deduped@example.com",
+        firstName: "Deduped",
+        lastName: "User",
+      },
+    });
+    const signature = createPostHogIdentitySignature({
+      userId: "user-deduped",
+      email: "deduped@example.com",
+      name: "Deduped User",
+      subscription: "pro",
+    });
+    window.localStorage.setItem(
+      POSTHOG_IDENTITY_SIGNATURE_STORAGE_KEY,
+      signature,
+    );
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider analyticsAllowed>
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() => expect(posthog.identify).toHaveBeenCalledTimes(1));
+    expect(posthog.identify).toHaveBeenCalledWith("user-deduped", undefined);
+  });
+
+  it("sets sanitized first-touch properties once during identification", async () => {
+    const posthog = {
+      __loaded: false,
+      init: jest.fn(),
+      set_config: jest.fn(),
+      opt_in_capturing: jest.fn(),
+      has_opted_out_capturing: jest.fn(() => false),
+      identify: jest.fn(),
+      sessionRecordingStarted: jest.fn(() => false),
+      startSessionRecording: jest.fn(),
+      stopSessionRecording: jest.fn(),
+      reset: jest.fn(),
+      opt_out_capturing: jest.fn(),
+    };
+    mockLoadPostHogClient.mockResolvedValue(posthog);
+
+    render(
+      <PostHogProvider
+        analyticsAllowed
+        firstTouchAttribution={{
+          version: 1,
+          source: "github",
+          medium: "social",
+          campaign: "aug_launch",
+          referringDomain: "github.com",
+          entrySurface: "home",
+          capturedAt: "2026-08-14T12:00:00.000Z",
+        }}
+      >
+        <div>child</div>
+      </PostHogProvider>,
+    );
+
+    await waitFor(() => expect(posthog.identify).toHaveBeenCalledTimes(1));
+    expect(posthog.identify).toHaveBeenCalledWith(
+      "user-123",
+      {
+        email: "user@example.com",
+        name: "Test User",
+        subscription: "pro",
+      },
+      {
+        acquisition_attribution_version: 1,
+        acquisition_source_bucket: "github",
+        acquisition_attribution_source: "post_auth_identify",
+        referral_link_present: false,
+        first_touch_attribution_version: 1,
+        first_touch_source: "github",
+        first_touch_medium: "social",
+        first_touch_campaign: "aug_launch",
+        first_touch_referring_domain: "github.com",
+        first_touch_entry_surface: "home",
+        first_touch_captured_at: "2026-08-14T12:00:00.000Z",
+      },
+    );
   });
 
   it("applies exception hooks when the shared client is already initialized", async () => {
@@ -106,7 +441,7 @@ describe("PostHogProvider", () => {
     mockLoadPostHogClient.mockResolvedValue(posthog);
 
     render(
-      <PostHogProvider>
+      <PostHogProvider analyticsAllowed>
         <div>child</div>
       </PostHogProvider>,
     );

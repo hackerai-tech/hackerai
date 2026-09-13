@@ -1,3 +1,19 @@
+import type {
+  AbliteratedModelTelemetry,
+  ModelStepRouting,
+} from "@/lib/analytics/abliterated-model";
+import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import {
+  AbliterationVisionError,
+  createAbliterationVisionPreprocessor,
+} from "@/lib/chat/abliteration-vision";
+import { createAbliterationMediaRecovery } from "@/lib/chat/abliteration-media-recovery";
+import {
+  getProviderToolCallDiagnostics,
+  splitProviderToolCallBatches,
+} from "@/lib/chat/provider-tool-call-batches";
 /**
  * Shared streamText factory for the agent loop.
  *
@@ -15,13 +31,14 @@
 
 import {
   convertToModelMessages,
-  stepCountIs,
   streamText,
+  type LanguageModel,
   type ModelMessage,
   type UIMessage,
   type UIMessageStreamWriter,
   type ToolSet,
 } from "ai";
+import { randomUUID } from "crypto";
 import {
   buildProviderOptions,
   buildSystemPrompt,
@@ -30,6 +47,7 @@ import {
   runSummarizationStep,
   getFallbackSlugs,
   isXaiSafetyError,
+  resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
 import {
   elapsedTimeExceeds,
@@ -62,7 +80,12 @@ import {
   toolResultsContainImageViewResult,
   uiMessagesContainImageViewResult,
 } from "@/lib/chat/multimodal-tool-result-recovery";
-import { isAnthropicModel, isDeepSeekModel } from "@/lib/ai/providers";
+import {
+  isAnthropicModel,
+  isDeepSeekModel,
+  PDF_PARSER_ENGINE_HEADER,
+  PDF_PARSER_RECOVERY_HEADER,
+} from "@/lib/ai/providers";
 import { MAX_OUTPUT_TOKENS } from "@/lib/ai/output-limits";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
@@ -70,15 +93,24 @@ import {
   getSummarizationThresholdTokens,
   MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM,
   ROLLING_COMPACTION_MAX_SIZE_RATIO,
+  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
 } from "@/lib/chat/summarization/constants";
 import { compactModelMessagesInRun } from "@/lib/chat/summarization";
-import { getLatestCompletedToolTransaction } from "@/lib/chat/summarization/helpers";
+import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import {
+  extractSubagentDeliveryClaims,
+  requiresSubagentParentGate,
+  SUBAGENT_PARENT_GATE_EXTRA_STEPS,
+  type SubagentDeliveryClaim,
+  type SubagentParentCompletionGate,
+} from "@/lib/ai/subagents/parent-delivery";
 import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
+import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -86,10 +118,17 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import {
   extractOpenRouterMetadata,
+  extractOpenRouterMetadataFromError,
+  fetchOpenRouterGenerationMetadata,
   mergeOpenRouterMetadata,
+  type OpenRouterModelMetadata,
 } from "@/lib/api/openrouter-metadata";
 import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-usage-cost";
-import { classifyProviderOverflowError } from "@/lib/utils/error-utils";
+import {
+  classifyProviderOverflowError,
+  isProviderContentBlockedFinishReasonError,
+} from "@/lib/utils/error-utils";
+import { createProviderContentBlockedRefundLifecycle } from "@/lib/api/provider-content-blocked-refund";
 import type { UsageTracker } from "@/lib/usage-tracker";
 import type {
   BudgetAbortDetails,
@@ -103,20 +142,144 @@ import type {
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { createTrackedProvider } from "@/lib/ai/providers";
-import type { ProviderRequestDiagnostics } from "@/lib/logger";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type {
+  ProviderRequestDiagnostics,
+  ProviderRequestRetentionDiagnostics,
+} from "@/lib/logger";
+import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
+import type { AgentStartupPhase } from "@/lib/chat/agent-run-timing";
+import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
+import {
+  withProviderStreamTimeout,
+  type ProviderStreamTimeoutOptions,
+} from "@/lib/ai/provider-stream-timeout";
+import {
+  guardLanguageModelProviderResponse,
+  MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+} from "@/lib/ai/provider-response-guard";
 
-const AGENT_STANDARD_VISION_MODEL = "model-kimi-k2.7-code";
-const FREE_AGENT_VISION_MODEL = "model-minimax-m3";
+const STANDARD_AGENT_VISION_MODEL = "model-grok-4.5";
+const PRO_AGENT_VISION_MODEL = "model-grok-4.5-pro";
+const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
+const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
+const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
+const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
+const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
+
+const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
+  messages.some((message) =>
+    message.parts?.some(
+      (part) =>
+        part.type === "file" &&
+        typeof part.mediaType === "string" &&
+        part.mediaType.startsWith("image/"),
+    ),
+  );
+
+export const omitPdfFilePartsFromModelMessages = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  let changed = false;
+  const nextMessages = messages.flatMap<ModelMessage>((message) => {
+    if (message.role !== "user" || !Array.isArray(message.content)) {
+      return message;
+    }
+    const content = message.content.filter((part) => {
+      const shouldRemove =
+        part.type === "file" && part.mediaType === "application/pdf";
+      changed ||= shouldRemove;
+      return !shouldRemove;
+    });
+    if (content.length === message.content.length) return message;
+    return content.length === 0 ? [] : { ...message, content };
+  });
+  return changed ? nextMessages : messages;
+};
+
+const getResponseHeader = (
+  headers: unknown,
+  name: string,
+): string | undefined => {
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (!headers || typeof headers !== "object") return undefined;
+  const headerRecord = headers as Record<string, unknown>;
+  const target = name.toLowerCase();
+  const entry = Object.entries(headerRecord).find(
+    ([key]) => key.toLowerCase() === target,
+  );
+  return typeof entry?.[1] === "string" ? entry[1] : undefined;
+};
+
+export const resolveAgentModelAfterSummarization = (
+  modelName: string,
+  mode: ChatMode,
+  compactedContextHasImages: boolean,
+): string => {
+  if (mode !== "agent" || compactedContextHasImages) return modelName;
+  if (modelName === STANDARD_AGENT_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
+  if (modelName === STANDARD_AGENT_GLM_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_GLM_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
+  if (modelName === STANDARD_AGENT_DEEPSEEK_VISION_MODEL) {
+    return STANDARD_AGENT_TEXT_MODEL;
+  }
+  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) {
+    return PRO_AGENT_TEXT_MODEL;
+  }
+  return modelName;
+};
 
 export const resolveAgentModelForImageToolResults = (
   modelName: string,
   mode: ChatMode,
   hasImageToolResults: boolean,
+  selectedModelOverride?: SelectedModel,
+  auxiliaryVisionEnabled = false,
+  directGlmVisionEnabled = false,
+  subscription?: SubscriptionTier,
 ): string => {
-  if (mode !== "agent" || !hasImageToolResults) return modelName;
-  if (modelName === "agent-model-free") return FREE_AGENT_VISION_MODEL;
-  return isDeepSeekModel(modelName) ? AGENT_STANDARD_VISION_MODEL : modelName;
+  if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
+    return modelName;
+  }
+  // Native Pro vision needs no promotion, and must retain Pro reasoning.
+  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) return modelName;
+  if (directGlmVisionEnabled) {
+    if (usesGlmFlashForStandardVision(subscription, selectedModelOverride)) {
+      return STANDARD_AGENT_GLM_VISION_MODEL;
+    }
+    if (
+      selectedModelOverride === "hackerai-pro" ||
+      (!selectedModelOverride &&
+        (modelName === "model-deepseek-v4-pro" ||
+          modelName === "model-deepseek-v4-pro-0813" ||
+          modelName === PRO_AGENT_GLM_VISION_MODEL ||
+          modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL))
+    ) {
+      return PRO_AGENT_DEEPSEEK_VISION_MODEL;
+    }
+    return STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
+  }
+  if (
+    selectedModelOverride === "hackerai-pro" ||
+    (!selectedModelOverride &&
+      (modelName === "model-deepseek-v4-pro" ||
+        modelName === "model-deepseek-v4-pro-0813"))
+  ) {
+    return PRO_AGENT_DEEPSEEK_VISION_MODEL;
+  }
+  if (isDeepSeekModel(modelName)) {
+    return STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
+  }
+  return modelName;
 };
 
 export const resolveFallbackServedTelemetry = ({
@@ -175,6 +338,8 @@ export const isRollingCompactionEffective = (
 export type AgentStreamState = {
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
+  /** UI history before injected reminders/notes, kept for source-derived checkpoints. */
+  sourceUiMessages?: UIMessage[];
   /** Raw UI messages captured before in-memory pruning, for transcript sidecars. */
   transcriptSourceMessages?: UIMessage[];
   /** Context-window usage data; updated after summarization and each step. */
@@ -188,9 +353,16 @@ export type AgentStreamState = {
   fallbackServed: boolean | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
+  /** Best-effort OpenRouter IDs/provider attribution, including failed streams. */
+  openRouterMetadata: OpenRouterModelMetadata;
   /** True when a provider rejected an image-bearing tool result. */
   providerRejectedMultimodalToolResults: boolean;
   /** Stop-condition flags set by the respective onFired callbacks. */
+  configuredMaxSteps: number;
+  /** Total completed model steps across provider attempts in this request. */
+  agentStepCount: number;
+  /** True only when the final provider attempt stopped at the step condition. */
+  stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
   /** Maps to stoppedDueToPreemptiveTimeout in chat-handler, stoppedDueToElapsedTimeout in agent-long. */
   stoppedDueToElapsedTimeout: boolean;
@@ -219,7 +391,11 @@ export function initAgentStreamState(
     responseModel: undefined,
     fallbackServed: undefined,
     providerError: undefined,
+    openRouterMetadata: {},
     providerRejectedMultimodalToolResults: false,
+    configuredMaxSteps: 0,
+    agentStepCount: 0,
+    stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
     stoppedDueToDoomLoop: false,
@@ -244,6 +420,53 @@ export const resetServedModelTelemetryForRetry = (
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
+
+export const getOpenRouterFileAnnotations = (
+  providerMetadata: unknown,
+): unknown[] | undefined => {
+  if (!isRecord(providerMetadata)) return undefined;
+  const openrouter = providerMetadata.openrouter;
+  if (!isRecord(openrouter) || !Array.isArray(openrouter.annotations)) {
+    return undefined;
+  }
+  return openrouter.annotations.length > 0
+    ? [...openrouter.annotations]
+    : undefined;
+};
+
+export const addOpenRouterFileAnnotationsToLastAssistantMessage = (
+  messages: ModelMessage[],
+  annotations: unknown[] | undefined,
+): ModelMessage[] => {
+  if (!annotations?.length) return messages;
+
+  const index = messages.findLastIndex(
+    (message) => message.role === "assistant",
+  );
+  if (index < 0) return messages;
+
+  const message = messages[index] as ModelMessage & {
+    providerOptions?: Record<string, unknown>;
+  };
+  const providerOptions = isRecord(message.providerOptions)
+    ? message.providerOptions
+    : {};
+  const openrouter = isRecord(providerOptions.openrouter)
+    ? providerOptions.openrouter
+    : {};
+  const nextMessages = [...messages];
+  nextMessages[index] = {
+    ...message,
+    providerOptions: {
+      ...providerOptions,
+      openrouter: {
+        ...openrouter,
+        annotations,
+      },
+    },
+  } as ModelMessage;
+  return nextMessages;
+};
 
 const ESTIMATED_BYTES_PER_TOKEN = 4;
 
@@ -412,6 +635,7 @@ const buildProviderRequestDiagnostics = (args: {
     active_tools_mode: args.activeTools ? "subset" : "all",
     ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
+    ...getProviderToolCallDiagnostics(args.messages),
   };
 };
 
@@ -420,6 +644,11 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  providerStreamTimeout?: ProviderStreamTimeoutOptions;
+  abliteratedTelemetry?: AbliteratedModelTelemetry;
+  abliteratedStepRouting?: {
+    baselineModel: string;
+  };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
   tools: ToolSet;
@@ -427,14 +656,13 @@ export type AgentStreamContext = {
   endpoint: ChatApiEndpoint;
   userId: string;
   subscription: SubscriptionTier;
+  selectedModelOverride?: SelectedModel;
   chatId: string;
-  temporary: boolean | undefined;
   fileTokens: Record<string, number>;
   noteInjectionOpts: {
     userId: string;
     subscription: SubscriptionTier;
     shouldIncludeNotes: boolean;
-    isTemporary: boolean | undefined;
   };
   systemPromptTokens: number;
   ctxSystemTokens: number;
@@ -442,10 +670,17 @@ export type AgentStreamContext = {
   streamStartTime: number;
   contextUsageOn: boolean;
   isReasoningModel: boolean;
+  platformAuthorized: boolean;
+  /** Images are represented as auxiliary descriptions; never promote the active model. */
+  auxiliaryVisionEnabled?: boolean;
+  /** Eligible paid image turns promote directly to GLM Flash before summary recovery. */
+  directGlmVisionEnabled?: boolean;
   providerReasoningOverride?: {
     modelName: string;
     reasoning: ProviderReasoningOverride;
   };
+  /** Provider model IDs that must not be used by an OpenRouter fallback. */
+  excludedProviderModelSlugs?: readonly string[];
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
   getActiveElapsedTimeMs?: () => number;
@@ -466,12 +701,35 @@ export type AgentStreamContext = {
   usageRefundTracker: UsageRefundTracker;
   onBudgetAbort?: (details: BudgetAbortDetails & { model: string }) => void;
   onModelStreamStart?: () => void;
+  /** Called after step preparation, immediately before the actual provider call. */
+  onProviderRequestStart?: (configuredModel: string) => void;
   onModelStreamFinish?: () => void;
+  onModelChunk?: () => void;
+  onModelStepSelected?: (modelName: string) => void;
+  onStartupCompactionAttempt?: (
+    attempt: import("@/lib/chat/summarization/startup-compaction").StartupCompactionAttempt,
+  ) => void;
+  onStartupPhaseDuration?: (
+    phase: AgentStartupPhase,
+    durationMs: number,
+  ) => void;
+  registerBackgroundWork?: (work: Promise<void>) => void;
+  onProviderRequestDiagnostics?: (
+    diagnostics: ProviderRequestDiagnostics,
+    retention: ProviderRequestRetentionDiagnostics,
+  ) => void;
+  /** Current cumulative runtime cost outside UsageTracker, such as a sandbox. */
+  getSandboxCostDollars?: () => number | Promise<number>;
+  /** Current cumulative Trigger.dev run cost, including compute and invocation. */
+  getTriggerRunCostDollars?: () => number;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
+    sandboxCostDollars: number;
+    triggerRunCostDollars: number;
     force: boolean;
     model: string;
   }) => Promise<void>;
+  subagentCompletionGate?: SubagentParentCompletionGate;
 
   /**
    * Platform-specific: return a finish-reason string if a hard platform
@@ -490,7 +748,90 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
+  const generationStepOffset = state.agentStepCount;
+  state.configuredMaxSteps = configuredMaxSteps;
+  const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
+  let pendingDeliveryClaims: SubagentDeliveryClaim[] = [];
+  let hasObservedSubagents = false;
+  const parentGateReminder =
+    "A delegated subagent is still active or has an unconsumed result. Call wait_for_agents now. You cannot finish this response until every delegated result has been incorporated.";
+  const resolveParentGate = async (
+    toolResults: readonly unknown[],
+  ): Promise<{
+    blocked: boolean;
+    reminder?: string;
+    toolChoice?: { type: "tool"; toolName: "wait_for_agents" };
+  }> => {
+    const gate = ctx.subagentCompletionGate;
+    if (!gate) return { blocked: false };
+
+    const claims = extractSubagentDeliveryClaims(toolResults);
+    let injectedClaims: SubagentDeliveryClaim[] = [];
+    if (claims.length > 0) {
+      hasObservedSubagents = true;
+      try {
+        await gate.markInjected(claims);
+        pendingDeliveryClaims = claims;
+        injectedClaims = claims;
+      } catch {
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "subagent_result_injection_ack_failed",
+            service: "agent-stream",
+            environment:
+              process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+            request_id: ctx.chatId,
+            claim_count: claims.length,
+          }),
+        );
+        return {
+          blocked: true,
+          reminder: parentGateReminder,
+          toolChoice: { type: "tool", toolName: "wait_for_agents" },
+        };
+      }
+    }
+
+    try {
+      const completionState = await gate.getState();
+      hasObservedSubagents ||=
+        completionState.activeCount > 0 ||
+        completionState.unconsumedSubagentIds.length > 0;
+      const blocked = requiresSubagentParentGate(
+        completionState,
+        injectedClaims,
+      );
+      if (!blocked) return { blocked: false };
+      gate.onBlocked?.(completionState);
+      return {
+        blocked: true,
+        reminder: parentGateReminder,
+        toolChoice: { type: "tool", toolName: "wait_for_agents" },
+      };
+    } catch {
+      if (!hasObservedSubagents) return { blocked: false };
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "subagent_parent_gate_lookup_failed",
+          service: "agent-stream",
+          environment:
+            process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+          request_id: ctx.chatId,
+        }),
+      );
+      return {
+        blocked: true,
+        reminder: parentGateReminder,
+        toolChoice: { type: "tool", toolName: "wait_for_agents" },
+      };
+    }
+  };
   const getActiveToolsWithExclusions = async (
     excludedToolNames: ReadonlySet<string> = new Set(),
   ): Promise<Array<keyof typeof ctx.tools> | undefined> => {
@@ -528,6 +869,8 @@ export async function createAgentStream(
   const requestedLanguageModel = ctx.trackedProvider.languageModel(modelName);
   const requestedSlug = requestedLanguageModel.modelId;
   let lastRequestedSlug = requestedSlug;
+  let activeStepModelName = modelName;
+  let activeStepRouting: ModelStepRouting = {};
   const assistantContentLoopMonitor = createAssistantContentLoopMonitor();
   const assistantContentLoopAbortController = new AbortController();
   const abortSignal = combineAbortSignals([
@@ -541,8 +884,42 @@ export async function createAgentStream(
   let compactionAttemptCount = 0;
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
-    !ctx.temporary &&
     compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+  const getNamespacedLanguageModel = (
+    languageModel: LanguageModel,
+    stepIndex: number,
+  ): LanguageModel => {
+    const telemetryModel =
+      ctx.abliteratedTelemetry?.wrap(
+        languageModel,
+        stepIndex,
+        activeStepRouting,
+      ) ?? languageModel;
+    const recoveryModel = recoverAbliterationMedia(
+      ctx.providerStreamTimeout
+        ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
+        : telemetryModel,
+    );
+    const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
+      onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
+        console.warn("[agent-stream] provider tool calls bounded", {
+          event: "provider_tool_call_guard_applied",
+          model:
+            typeof languageModel === "string"
+              ? languageModel
+              : languageModel.modelId,
+          step: stepIndex + 1,
+          droppedToolCallCount,
+          maxToolCalls,
+        });
+      },
+      maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
+    });
+    return namespaceLanguageModelToolCalls(
+      guardedModel,
+      `r${toolCallRunNamespace}c${ctx.summarizationTracker.summarizationCount}s${stepIndex}`,
+    );
+  };
   type AbortStepLike = {
     usage?: unknown;
     response?: Parameters<typeof extractOpenRouterMetadata>[0]["response"] & {
@@ -565,7 +942,7 @@ export async function createAgentStream(
     state.fallbackServed = resolveFallbackServedTelemetry({
       requestedModel: lastRequestedSlug,
       responseModel: state.responseModel,
-      fallbackModels: getFallbackSlugs(modelName, ctx.mode, {
+      fallbackModels: getFallbackSlugs(activeStepModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
       }),
     });
@@ -618,8 +995,8 @@ export async function createAgentStream(
       console.warn("[doom-loop] Applying active tool exclusions", {
         event: "doom_loop_tool_exclusion_recovery",
         chatId: ctx.chatId,
-        modelName,
-        requestedModel: requestedSlug,
+        modelName: activeStepModelName,
+        requestedModel: lastRequestedSlug,
         responseModel: state.responseModel,
         reason: loopCheck.reason,
         consecutiveCount: loopCheck.consecutiveCount,
@@ -640,17 +1017,50 @@ export async function createAgentStream(
 
   const initialActiveTools = await getActiveTools();
   const maxOutputTokens = MAX_OUTPUT_TOKENS;
-  let streamHasImageViewResults = uiMessagesContainImageViewResult(
-    state.finalMessages,
+  let routeModelName = modelName;
+  let streamHasImageViewResults =
+    !ctx.auxiliaryVisionEnabled &&
+    uiMessagesContainImageViewResult(state.finalMessages);
+  let streamHasPdfAttachments = state.finalMessages.some((message) =>
+    message.parts?.some(
+      (part) => part.type === "file" && part.mediaType === "application/pdf",
+    ),
   );
-  const getEffectiveModelName = () =>
+  let pdfParserEngine: "mistral-ocr" | "cloudflare-ai" = "mistral-ocr";
+  let providerPdfAttachmentsDisabled = false;
+  let openRouterFileAnnotations: unknown[] | undefined;
+  const getPreVisionModelName = (stepIndex = generationStepOffset) =>
+    ctx.abliteratedStepRouting
+      ? resolveAbliterationModelForGenerationStep({
+          treatmentModel: routeModelName,
+          baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          stepIndex,
+        })
+      : routeModelName;
+  const getEffectiveModelName = (stepIndex = generationStepOffset) =>
     resolveAgentModelForImageToolResults(
-      modelName,
+      getPreVisionModelName(stepIndex),
       ctx.mode,
       streamHasImageViewResults,
+      ctx.selectedModelOverride,
+      ctx.auxiliaryVisionEnabled,
+      ctx.directGlmVisionEnabled,
+      ctx.subscription,
     );
-  const getEffectiveModelInfo = () => {
-    const effectiveModelName = getEffectiveModelName();
+  const getEffectiveModelInfo = (stepIndex = generationStepOffset) => {
+    const effectiveModelName = getEffectiveModelName(stepIndex);
+    activeStepModelName = effectiveModelName;
+    const preVisionModelName = getPreVisionModelName(stepIndex);
+    activeStepRouting = {
+      plannedBaselineContinuation:
+        isAbliterationModel(routeModelName) &&
+        preVisionModelName !== routeModelName,
+      visionRoute: preVisionModelName !== effectiveModelName,
+      fallbackModels: getFallbackSlugs(effectiveModelName, ctx.mode, {
+        hasMultimodalToolResults: streamHasImageViewResults,
+      }),
+    };
+    ctx.onModelStepSelected?.(effectiveModelName);
     const languageModel = ctx.trackedProvider.languageModel(effectiveModelName);
     lastRequestedSlug = languageModel.modelId;
     return {
@@ -661,36 +1071,84 @@ export async function createAgentStream(
   };
   const getStepProviderOptions = (
     effectiveModelName = getEffectiveModelName(),
-  ) =>
-    buildProviderOptions(
+  ) => {
+    const requestedModelSlug =
+      ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    return buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
       effectiveModelName,
       ctx.mode,
       {
+        requestedModelSlug,
+        isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
+        hasPdfAttachments:
+          streamHasPdfAttachments && !providerPdfAttachmentsDisabled,
+        pdfParserEngine,
+        excludedModelSlugs: ctx.excludedProviderModelSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
       },
     );
-  const prepareProviderMessages = (
+  };
+  const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    userId: ctx.userId,
+    chatId: ctx.chatId,
+    abortSignal,
+    onCost: (cost) => {
+      ctx.usageTracker.providerCost += cost;
+      ctx.usageTracker.nonModelCost += cost;
+      ctx.chatLogger?.getBuilder().addToolCost(cost);
+    },
+  });
+  const recoverAbliterationMedia = createAbliterationMediaRecovery(
+    preprocessAbliterationImages,
+    abortSignal,
+  );
+  let latestToolCallBatchSplitCount = 0;
+  const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
-  ): ModelMessage[] => {
-    const nonEmptyMessages = filterEmptyAssistantMessages(messages);
-    if (!isAnthropicModel(effectiveModelName)) return nonEmptyMessages;
+  ): Promise<ModelMessage[]> => {
+    const toolCallRepair = isAbliterationModel(effectiveModelName)
+      ? splitProviderToolCallBatches(messages)
+      : { messages, splitCount: 0 };
+    latestToolCallBatchSplitCount = toolCallRepair.splitCount;
+    const visionMessages = isAbliterationModel(effectiveModelName)
+      ? await preprocessAbliterationImages(toolCallRepair.messages)
+      : toolCallRepair.messages;
+    const providerMessages = providerPdfAttachmentsDisabled
+      ? omitPdfFilePartsFromModelMessages(visionMessages)
+      : visionMessages;
+    const nonEmptyMessages = filterEmptyAssistantMessages(providerMessages);
+    let repairedMessages = nonEmptyMessages;
 
-    const repair = repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
-    if (repair.action !== "none") {
-      ctx.chatLogger?.recordAnthropicPromptRepair({
-        action: repair.action,
-        reason: repair.reason,
-        trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
-        model: effectiveModelName,
-      });
+    if (isAnthropicModel(effectiveModelName)) {
+      const repair =
+        repairAnthropicModelMessagesWithTelemetry(nonEmptyMessages);
+      if (repair.action !== "none") {
+        ctx.chatLogger?.recordAnthropicPromptRepair({
+          action: repair.action,
+          reason: repair.reason,
+          trailingAssistantContentTypes: repair.trailingAssistantContentTypes,
+          model: effectiveModelName,
+        });
+      }
+      repairedMessages = repair.messages as ModelMessage[];
     }
-    return repair.messages as ModelMessage[];
+
+    const messagesWithAuthorization = preparePlatformAuthorizationForModel(
+      repairedMessages,
+      ctx.platformAuthorized,
+      effectiveModelName,
+    );
+
+    return addOpenRouterFileAnnotationsToLastAssistantMessage(
+      messagesWithAuthorization,
+      openRouterFileAnnotations,
+    );
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
@@ -699,6 +1157,8 @@ export async function createAgentStream(
     stepIndex: number;
     source: ProviderRequestDiagnostics["source"];
     messages: ModelMessage[];
+    rawMessages?: ModelMessage[];
+    rollingMessages?: ModelMessage[];
     providerOptions: unknown;
     activeTools: Array<keyof typeof ctx.tools> | undefined;
   }) => {
@@ -716,34 +1176,70 @@ export async function createAgentStream(
       maxOutputTokens,
       hasMultimodalToolResults: streamHasImageViewResults,
     });
+    latestProviderRequestDiagnostics.tool_call_batches_split =
+      latestToolCallBatchSplitCount;
     ctx.chatLogger?.recordProviderRequestDiagnostics(
       latestProviderRequestDiagnostics,
     );
+    ctx.onProviderRequestDiagnostics?.(latestProviderRequestDiagnostics, {
+      raw_message_count: args.rawMessages?.length ?? args.messages.length,
+      rolling_message_count:
+        args.rollingMessages?.length ?? args.messages.length,
+      final_ui_message_count: state.finalMessages.length,
+      transcript_source_message_count:
+        state.transcriptSourceMessages?.length ?? 0,
+      summarization_count: ctx.summarizationTracker.summarizationCount,
+      compaction_attempt_count: compactionAttemptCount,
+    });
     return latestProviderRequestDiagnostics;
   };
+  const promptSerializationTools = createPromptSerializationTools(ctx.tools);
+  const initialSerializationStartedAt = Date.now();
+  let initialSerializedMessages: ModelMessage[];
+  try {
+    initialSerializedMessages = await convertToModelMessages(
+      state.finalMessages,
+      {
+        tools: promptSerializationTools,
+      },
+    );
+  } finally {
+    ctx.onStartupPhaseDuration?.(
+      "message_serialization",
+      Date.now() - initialSerializationStartedAt,
+    );
+  }
   const initialModelInfo = getEffectiveModelInfo();
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
   );
-  const promptSerializationTools = createPromptSerializationTools(ctx.tools);
-  const initialModelMessages = prepareProviderMessages(
-    await convertToModelMessages(state.finalMessages, {
-      tools: promptSerializationTools,
-    }),
+  const initialModelMessages = await prepareProviderMessages(
+    initialSerializedMessages,
     initialModelInfo.modelName,
   );
   recordProviderRequestDiagnostics({
     modelName: initialModelInfo.modelName,
     requestedSlug: initialModelInfo.requestedSlug,
-    stepIndex: 0,
+    stepIndex: generationStepOffset,
     source: "initial",
     messages: initialModelMessages,
+    rawMessages: initialModelMessages,
+    rollingMessages: initialModelMessages,
     providerOptions: initialProviderOptions,
     activeTools: initialActiveTools,
   });
 
+  const refundProviderContentBlockedIfSettled =
+    createProviderContentBlockedRefundLifecycle({
+      hasUsage: () => ctx.usageTracker.hasUsage,
+      refund: () => ctx.usageRefundTracker.refund(),
+    });
+
   return streamText({
-    model: initialModelInfo.languageModel,
+    model: getNamespacedLanguageModel(
+      initialModelInfo.languageModel,
+      generationStepOffset,
+    ),
     maxOutputTokens,
     system: buildSystemPrompt(
       ctx.currentSystemPrompt,
@@ -754,10 +1250,19 @@ export async function createAgentStream(
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
-    experimental_onStepStart: () => ctx.onModelStreamStart?.(),
+    experimental_onStepStart: ({ model }) => {
+      ctx.onModelStreamStart?.();
+      if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
+    },
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
-    prepareStep: async ({ steps, messages }) => {
+    prepareStep: async ({ steps, messages, stepNumber }) => {
+      const localGenerationStepIndex =
+        Number.isInteger(stepNumber) && stepNumber >= 0
+          ? stepNumber
+          : steps.length;
+      const generationStepIndex =
+        generationStepOffset + localGenerationStepIndex;
       const rawModelMessages = messages as ModelMessage[];
       let rollingModelMessages = buildRollingModelMessages(
         rawModelMessages,
@@ -766,6 +1271,19 @@ export async function createAgentStream(
       rollingModelMessages = limitModelImageToolResults(
         rollingModelMessages as Array<Record<string, unknown>>,
       ).messages as ModelMessage[];
+      const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
+      const toolResults =
+        (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
+        [];
+      const parentGate = await resolveParentGate(toolResults);
+      const enforceParentGateTool = (
+        activeTools: Array<keyof typeof ctx.tools> | undefined,
+      ): Array<keyof typeof ctx.tools> | undefined => {
+        if (!parentGate.blocked || !activeTools) return activeTools;
+        return activeTools.includes("wait_for_agents")
+          ? activeTools
+          : [...activeTools, "wait_for_agents"];
+      };
       try {
         const pruneResult = pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
@@ -773,14 +1291,13 @@ export async function createAgentStream(
           state.finalMessages = pruneResult.messages;
         }
 
-        const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
-        const toolResults =
-          (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
-          [];
-        if (toolResultsContainImageViewResult(toolResults)) {
+        if (
+          !ctx.auxiliaryVisionEnabled &&
+          toolResultsContainImageViewResult(toolResults)
+        ) {
           streamHasImageViewResults = true;
         }
-        const effectiveModelInfo = getEffectiveModelInfo();
+        const effectiveModelInfo = getEffectiveModelInfo(generationStepIndex);
 
         const loopRecovery = getDoomLoopRecovery(steps, steps.length);
         const providerPromptPressure =
@@ -800,6 +1317,7 @@ export async function createAgentStream(
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
               messages: state.finalMessages,
+              sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
               subscription: ctx.subscription,
               languageModel: effectiveModelInfo.languageModel,
@@ -821,6 +1339,15 @@ export async function createAgentStream(
               ),
               transcriptMessages: state.transcriptSourceMessages,
               providerPromptPressure,
+              onPhaseDuration: ctx.onStartupPhaseDuration,
+              ...(generationStepIndex === 0 &&
+                ctx.mode === "agent" && {
+                  startupCompaction: {
+                    userId: ctx.userId,
+                    onAttempt: ctx.onStartupCompactionAttempt,
+                  },
+                }),
+              registerBackgroundWork: ctx.registerBackgroundWork,
             });
 
             if (result.summarizationAttempted) {
@@ -839,16 +1366,38 @@ export async function createAgentStream(
               }
               state.finalMessages = result.summarizedMessages;
               state.transcriptSourceMessages = undefined;
-              const activeTools = await getActiveToolsForRecovery(loopRecovery);
+              streamHasImageViewResults =
+                !ctx.auxiliaryVisionEnabled &&
+                uiMessagesContainImageViewResult(result.summarizedMessages);
+              routeModelName = resolveAgentModelAfterSummarization(
+                routeModelName,
+                ctx.mode,
+                streamHasImageViewResults ||
+                  uiMessagesContainImageAttachment(result.summarizedMessages),
+              );
+              const continuationModelInfo =
+                getEffectiveModelInfo(generationStepIndex);
+              const activeTools = enforceParentGateTool(
+                await getActiveToolsForRecovery(loopRecovery),
+              );
               const providerOptions = getStepProviderOptions(
-                effectiveModelInfo.modelName,
+                continuationModelInfo.modelName,
               );
-              let summarizedModelMessages = await convertToModelMessages(
-                result.summarizedMessages,
-                {
-                  tools: createPromptSerializationTools(ctx.tools),
-                },
-              );
+              const summarySerializationStartedAt = Date.now();
+              let summarizedModelMessages: ModelMessage[];
+              try {
+                summarizedModelMessages = await convertToModelMessages(
+                  result.summarizedMessages,
+                  {
+                    tools: createPromptSerializationTools(ctx.tools),
+                  },
+                );
+              } finally {
+                ctx.onStartupPhaseDuration?.(
+                  "message_serialization",
+                  Date.now() - summarySerializationStartedAt,
+                );
+              }
               state.postSummarizationContinuationActive = true;
               state.postSummarizationToolCallCount = 0;
               state.postSummarizationText = "";
@@ -858,29 +1407,44 @@ export async function createAgentStream(
               summarizedModelMessages = [
                 ...summarizedModelMessages,
                 { role: "user", content: continuationPrompt },
+                ...(parentGate.reminder
+                  ? [{ role: "user" as const, content: parentGate.reminder }]
+                  : []),
               ];
               rollingContextCheckpoint = {
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
-              const preparedMessages = prepareProviderMessages(
+              const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
-                effectiveModelInfo.modelName,
+                continuationModelInfo.modelName,
               );
               recordProviderRequestDiagnostics({
-                modelName: effectiveModelInfo.modelName,
-                requestedSlug: effectiveModelInfo.requestedSlug,
-                stepIndex: steps.length + 1,
+                modelName: continuationModelInfo.modelName,
+                requestedSlug: continuationModelInfo.requestedSlug,
+                stepIndex: generationStepIndex + 1,
                 source: "summarized_prepare_step",
                 messages: preparedMessages,
+                rawMessages: rawModelMessages,
+                rollingMessages: summarizedModelMessages,
                 providerOptions,
                 activeTools,
               });
               return {
-                model: effectiveModelInfo.languageModel,
+                model: getNamespacedLanguageModel(
+                  continuationModelInfo.languageModel,
+                  generationStepIndex,
+                ),
                 activeTools,
                 providerOptions,
                 messages: preparedMessages,
+                system: buildSystemPrompt(
+                  ctx.currentSystemPrompt,
+                  continuationModelInfo.modelName,
+                ),
+                ...(parentGate.toolChoice
+                  ? { toolChoice: parentGate.toolChoice }
+                  : {}),
               };
             }
           } else if (
@@ -893,6 +1457,7 @@ export async function createAgentStream(
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
               modelMessages: rollingModelMessages,
+              sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
               subscription: ctx.subscription,
               languageModel: effectiveModelInfo.languageModel,
@@ -921,6 +1486,7 @@ export async function createAgentStream(
                       part.text.includes("<context_summary>"),
                   ),
                 ),
+              registerBackgroundWork: ctx.registerBackgroundWork,
             });
 
             if (!inRunResult) {
@@ -934,18 +1500,22 @@ export async function createAgentStream(
               const continuationPrompt = loopRecovery.nudge
                 ? `${POST_SUMMARIZATION_CONTINUATION_PROMPT}\n\n${loopRecovery.nudge}`
                 : POST_SUMMARIZATION_CONTINUATION_PROMPT;
-              const lastStepResponseMessages =
-                (
-                  lastStep as
-                    { response?: { messages?: ModelMessage[] } } | undefined
-                )?.response?.messages ?? [];
-              const retainedToolTransaction = getLatestCompletedToolTransaction(
-                lastStepResponseMessages,
+              const retainedModelTail = getRecentCompleteModelTail(
+                rollingModelMessages,
+                Math.max(
+                  0,
+                  SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS -
+                    (inRunResult.userMessageContextTokens ?? 0) -
+                    (inRunResult.runtimeContextTokens ?? 0),
+                ),
               );
               const nextBaseMessages: ModelMessage[] = [
                 ...compactedModelMessages,
-                ...retainedToolTransaction,
+                ...retainedModelTail,
                 { role: "user", content: continuationPrompt },
+                ...(parentGate.reminder
+                  ? [{ role: "user" as const, content: parentGate.reminder }]
+                  : []),
               ];
               const effectiveCompaction = isRollingCompactionEffective(
                 rollingModelMessages,
@@ -999,7 +1569,7 @@ export async function createAgentStream(
                       ctx.summarizationTracker.summarizationCount,
                     persistence: "run_scoped",
                     raw_message_count: rawModelMessages.length,
-                    retained_tool_message_count: retainedToolTransaction.length,
+                    retained_model_tail_message_count: retainedModelTail.length,
                   }),
                 );
                 rollingContextCheckpoint = {
@@ -1007,33 +1577,58 @@ export async function createAgentStream(
                   rawMessageCursor: rawModelMessages.length,
                 };
                 rollingModelMessages = nextBaseMessages;
+                streamHasImageViewResults =
+                  !ctx.auxiliaryVisionEnabled &&
+                  limitModelImageToolResults(
+                    nextBaseMessages as Array<Record<string, unknown>>,
+                  ).totalImageCount > 0;
+                routeModelName = resolveAgentModelAfterSummarization(
+                  routeModelName,
+                  ctx.mode,
+                  streamHasImageViewResults,
+                );
+                const continuationModelInfo =
+                  getEffectiveModelInfo(generationStepIndex);
                 state.postSummarizationContinuationActive = true;
                 state.postSummarizationToolCallCount = 0;
                 state.postSummarizationText = "";
 
-                const activeTools =
-                  await getActiveToolsForRecovery(loopRecovery);
-                const providerOptions = getStepProviderOptions(
-                  effectiveModelInfo.modelName,
+                const activeTools = enforceParentGateTool(
+                  await getActiveToolsForRecovery(loopRecovery),
                 );
-                const preparedMessages = prepareProviderMessages(
+                const providerOptions = getStepProviderOptions(
+                  continuationModelInfo.modelName,
+                );
+                const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
-                  effectiveModelInfo.modelName,
+                  continuationModelInfo.modelName,
                 );
                 recordProviderRequestDiagnostics({
-                  modelName: effectiveModelInfo.modelName,
-                  requestedSlug: effectiveModelInfo.requestedSlug,
-                  stepIndex: steps.length + 1,
+                  modelName: continuationModelInfo.modelName,
+                  requestedSlug: continuationModelInfo.requestedSlug,
+                  stepIndex: generationStepIndex + 1,
                   source: "summarized_prepare_step",
                   messages: preparedMessages,
+                  rawMessages: rawModelMessages,
+                  rollingMessages: nextBaseMessages,
                   providerOptions,
                   activeTools,
                 });
                 return {
-                  model: effectiveModelInfo.languageModel,
+                  model: getNamespacedLanguageModel(
+                    continuationModelInfo.languageModel,
+                    generationStepIndex,
+                  ),
                   activeTools,
                   providerOptions,
                   messages: preparedMessages,
+                  system: buildSystemPrompt(
+                    ctx.currentSystemPrompt,
+                    continuationModelInfo.modelName,
+                  ),
+                  ...(parentGate.toolChoice
+                    ? { toolChoice: parentGate.toolChoice }
+                    : {}),
                 };
               }
             }
@@ -1059,55 +1654,136 @@ export async function createAgentStream(
             { role: "user", content: loopRecovery.nudge },
           ] as typeof updatedMessages;
         }
+        if (parentGate.reminder) {
+          updatedMessages = [
+            ...updatedMessages,
+            { role: "user", content: parentGate.reminder },
+          ] as typeof updatedMessages;
+        }
 
-        const activeTools = await getActiveToolsForRecovery(loopRecovery);
+        const activeTools = enforceParentGateTool(
+          await getActiveToolsForRecovery(loopRecovery),
+        );
         const providerOptions = getStepProviderOptions(
           effectiveModelInfo.modelName,
         );
-        const preparedMessages = prepareProviderMessages(
+        const preparedMessages = (await prepareProviderMessages(
           addCacheBreakpointToLastUserMessage(
             updatedMessages,
             effectiveModelInfo.modelName,
           ) as ModelMessage[],
           effectiveModelInfo.modelName,
-        ) as typeof messages;
+        )) as typeof messages;
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
           requestedSlug: effectiveModelInfo.requestedSlug,
-          stepIndex: steps.length + 1,
+          stepIndex: generationStepIndex + 1,
           source: "prepare_step",
           messages: preparedMessages as ModelMessage[],
+          rawMessages: rawModelMessages,
+          rollingMessages: rollingModelMessages,
           providerOptions,
           activeTools,
         });
         return {
-          model: effectiveModelInfo.languageModel,
+          model: getNamespacedLanguageModel(
+            effectiveModelInfo.languageModel,
+            generationStepIndex,
+          ),
           activeTools,
           providerOptions,
           messages: preparedMessages,
+          system: buildSystemPrompt(
+            ctx.currentSystemPrompt,
+            effectiveModelInfo.modelName,
+          ),
+          ...(parentGate.toolChoice
+            ? { toolChoice: parentGate.toolChoice }
+            : {}),
         };
       } catch (error) {
+        if (error instanceof AbliterationVisionError || abortSignal.aborted)
+          throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
           // Expected on user stop
         } else {
           console.error("[agent-stream] prepareStep error:", error);
         }
-        const providerOptions = getStepProviderOptions();
-        const fallbackMessages = prepareProviderMessages(
+        const fallbackModelInfo = getEffectiveModelInfo(generationStepIndex);
+        const providerOptions = getStepProviderOptions(
+          fallbackModelInfo.modelName,
+        );
+        const fallbackMessages = (await prepareProviderMessages(
           rollingModelMessages,
-        ) as typeof messages;
+          fallbackModelInfo.modelName,
+        )) as typeof messages;
+        recordProviderRequestDiagnostics({
+          modelName: fallbackModelInfo.modelName,
+          requestedSlug: lastRequestedSlug,
+          stepIndex: generationStepIndex + 1,
+          source: "prepare_step",
+          messages: fallbackMessages as ModelMessage[],
+          rawMessages: rawModelMessages,
+          rollingMessages: rollingModelMessages,
+          providerOptions,
+          activeTools: undefined,
+        });
         return {
+          model: getNamespacedLanguageModel(
+            fallbackModelInfo.languageModel,
+            generationStepIndex,
+          ),
           providerOptions,
           messages: fallbackMessages,
-          ...(ctx.currentSystemPrompt
-            ? { system: ctx.currentSystemPrompt }
-            : undefined),
+          ...(parentGate.toolChoice
+            ? { toolChoice: parentGate.toolChoice }
+            : {}),
+          system: buildSystemPrompt(
+            ctx.currentSystemPrompt,
+            fallbackModelInfo.modelName,
+          ),
         };
       }
     },
 
     stopWhen: [
-      stepCountIs(getMaxStepsForUser(ctx.mode, ctx.subscription)),
+      async ({ steps }) => {
+        const completedGenerationSteps = generationStepOffset + steps.length;
+        if (completedGenerationSteps < configuredMaxSteps) return false;
+        const gate = ctx.subagentCompletionGate;
+        if (gate) {
+          try {
+            const completionState = await gate.getState();
+            const hasActive = completionState.activeCount > 0;
+            const hasUnconsumed =
+              completionState.unconsumedSubagentIds.length > 0;
+            const withinActiveReserve =
+              completedGenerationSteps <
+              configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS;
+            const withinResultReserve =
+              completedGenerationSteps <=
+              configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS;
+            if (
+              (hasActive && withinActiveReserve) ||
+              (hasUnconsumed && withinResultReserve)
+            ) {
+              hasObservedSubagents = true;
+              gate.onBlocked?.(completionState);
+              return false;
+            }
+          } catch {
+            if (
+              hasObservedSubagents &&
+              completedGenerationSteps <
+                configuredMaxSteps + SUBAGENT_PARENT_GATE_EXTRA_STEPS
+            ) {
+              return false;
+            }
+          }
+        }
+        state.stoppedDueToStepLimit = true;
+        return true;
+      },
       tokenExhaustedAfterSummarization({
         threshold: summarizationThreshold,
         getLastStepInputTokens: () => state.lastStepInputTokens,
@@ -1135,6 +1811,7 @@ export async function createAgentStream(
     ],
 
     onChunk: async (chunk) => {
+      ctx.onModelChunk?.();
       if (chunk.chunk.type === "text-delta") {
         if (state.postSummarizationContinuationActive) {
           state.postSummarizationText += chunk.chunk.text;
@@ -1155,8 +1832,8 @@ export async function createAgentStream(
             chatId: ctx.chatId,
             endpoint: ctx.endpoint,
             mode: ctx.mode,
-            modelName,
-            requestedModel: requestedSlug,
+            modelName: activeStepModelName,
+            requestedModel: lastRequestedSlug,
             responseModel: state.responseModel,
             reason: loopDetection.reason,
             repeatedText: loopDetection.repeatedText,
@@ -1180,10 +1857,57 @@ export async function createAgentStream(
 
     onStepFinish: async ({ usage, response, providerMetadata }) => {
       ctx.onModelStreamFinish?.();
+      state.agentStepCount += 1;
+      const responsePdfParserEngine = getResponseHeader(
+        response?.headers,
+        PDF_PARSER_ENGINE_HEADER,
+      );
+      if (responsePdfParserEngine === "cloudflare-ai") {
+        pdfParserEngine = "cloudflare-ai";
+      }
+      if (
+        getResponseHeader(response?.headers, PDF_PARSER_RECOVERY_HEADER) ===
+        "sandbox"
+      ) {
+        providerPdfAttachmentsDisabled = true;
+        streamHasPdfAttachments = false;
+      }
+      if (pendingDeliveryClaims.length > 0 && ctx.subagentCompletionGate) {
+        try {
+          await ctx.subagentCompletionGate.markConsumed(pendingDeliveryClaims);
+          pendingDeliveryClaims = [];
+        } catch (error) {
+          console.warn(
+            JSON.stringify({
+              timestamp: new Date().toISOString(),
+              level: "warn",
+              event: "subagent_result_consumption_ack_failed",
+              service: "agent-stream",
+              environment:
+                process.env.TRIGGER_ENV ?? process.env.NODE_ENV ?? "unknown",
+              request_id: ctx.chatId,
+              claim_count: pendingDeliveryClaims.length,
+              error_name: error instanceof Error ? error.name : "unknown",
+            }),
+          );
+        }
+      }
+      openRouterFileAnnotations =
+        getOpenRouterFileAnnotations(providerMetadata) ??
+        openRouterFileAnnotations;
       let stepUsageCostIndex: number | undefined;
       if (usage) {
+        const stepAccountingModel = resolveServedModelForCostAccounting({
+          modelName: activeStepModelName,
+          responseModel: response?.modelId,
+          mode: ctx.mode,
+          options: {
+            hasMultimodalToolResults: streamHasImageViewResults,
+          },
+        });
         stepUsageCostIndex = ctx.usageTracker.accumulateStep(
           usage as Parameters<typeof ctx.usageTracker.accumulateStep>[0],
+          stepAccountingModel,
         );
         state.lastStepInputTokens = usage.inputTokens || 0;
         if (usage.inputTokens) {
@@ -1199,20 +1923,35 @@ export async function createAgentStream(
         response,
         providerMetadata,
       });
+      state.openRouterMetadata = mergeOpenRouterMetadata(
+        stepOpenRouterMetadata,
+        state.openRouterMetadata,
+      );
+      ctx.chatLogger?.setModelResponse?.(
+        response?.modelId,
+        state.openRouterMetadata,
+      );
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndex,
         stepOpenRouterMetadata.openrouter_upstream_inference_cost,
       );
 
-      const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName);
+      const sandboxCostDollars = (await ctx.getSandboxCostDollars?.()) ?? 0;
+      const triggerRunCostDollars = ctx.getTriggerRunCostDollars?.() ?? 0;
+      const currentCostDollars =
+        ctx.usageTracker.computeCostDollars(activeStepModelName) +
+        sandboxCostDollars +
+        triggerRunCostDollars;
       const budgetDecision =
         ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
       await ctx.settleUsageAfterStep?.({
         currentCostDollars,
+        sandboxCostDollars,
+        triggerRunCostDollars,
         force:
           budgetDecision?.type === "abort" ||
           budgetDecision?.type === "abort-agent-run-spend-cap",
-        model: response?.modelId ?? modelName,
+        model: response?.modelId ?? activeStepModelName,
       });
       if (budgetDecision?.type === "abort-agent-run-spend-cap") {
         state.stoppedDueToAgentRunSpendCap = true;
@@ -1222,7 +1961,10 @@ export async function createAgentStream(
         state.budgetAbortDetails = budgetDecision.details;
         ctx.abortController.abort();
         try {
-          ctx.onBudgetAbort?.({ ...budgetDecision.details, model: modelName });
+          ctx.onBudgetAbort?.({
+            ...budgetDecision.details,
+            model: activeStepModelName,
+          });
         } catch (error) {
           console.error("[agent-stream] onBudgetAbort failed:", error);
         }
@@ -1248,8 +1990,8 @@ export async function createAgentStream(
           chatId: ctx.chatId,
           endpoint: ctx.endpoint,
           mode: ctx.mode,
-          modelName,
-          requestedModel: requestedSlug,
+          modelName: activeStepModelName,
+          requestedModel: lastRequestedSlug,
           textChars: state.postSummarizationText.length,
           toolCallCount: state.postSummarizationToolCallCount,
         });
@@ -1312,13 +2054,17 @@ export async function createAgentStream(
         finishOpenRouterMetadata,
         stepOpenRouterMetadatas.at(-1),
       );
+      state.openRouterMetadata = mergeOpenRouterMetadata(
+        openRouterMetadata,
+        state.openRouterMetadata,
+      );
 
       ctx.usageTracker.setAuthoritativeModelCostForStep(
         stepUsageCostIndexes.at(-1),
         openRouterMetadata.openrouter_upstream_inference_cost,
       );
 
-      const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
+      const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
         hasMultimodalToolResults: streamHasImageViewResults,
       });
       state.fallbackServed = resolveFallbackServedTelemetry({
@@ -1328,10 +2074,10 @@ export async function createAgentStream(
       });
       if (state.fallbackServed && state.responseModel) {
         ctx.chatLogger?.recordModelFallback({
-          requested: requestedSlug,
+          requested: lastRequestedSlug,
           served: state.responseModel,
           chain: fallbackSlugs,
-          model: modelName,
+          model: activeStepModelName,
         });
       }
       ctx.chatLogger?.setStreamResponse(
@@ -1339,6 +2085,11 @@ export async function createAgentStream(
         state.streamUsage,
         openRouterMetadata,
       );
+
+      await refundProviderContentBlockedIfSettled({
+        finishReason,
+        settled: true,
+      });
 
       await ptySessionManager
         .closeAll(ctx.chatId)
@@ -1349,6 +2100,16 @@ export async function createAgentStream(
 
     onError: async ({ error }) => {
       state.providerError = error;
+      const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
+      state.openRouterMetadata = mergeOpenRouterMetadata(
+        errorOpenRouterMetadata,
+        state.openRouterMetadata,
+      );
+      ctx.chatLogger?.setModelResponse?.(undefined, state.openRouterMetadata);
+      await refundProviderContentBlockedIfSettled({
+        error,
+        settled: false,
+      });
       if (
         streamHasImageViewResults &&
         isProviderMultimodalToolResultRejectionError(error)
@@ -1362,27 +2123,14 @@ export async function createAgentStream(
         console.warn("[agent-stream] provider overflow detected", {
           overflowKind,
           chatId: ctx.chatId,
-          model: modelName,
+          model: activeStepModelName,
           hadSummarization: ctx.summarizationTracker.hasSummarized,
         });
       }
-      if (!isXaiSafetyError(error)) {
-        const fallbackSlugs = getFallbackSlugs(modelName, ctx.mode, {
-          hasMultimodalToolResults: streamHasImageViewResults,
-        });
-        ctx.chatLogger?.recordProviderError(error, {
-          mode: ctx.mode,
-          model: modelName,
-          requestedModelSlug: requestedSlug,
-          fallbackModelSlugs:
-            fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
-          userId: ctx.userId,
-          subscription: ctx.subscription,
-          isTemporary: ctx.temporary,
-          providerRequest: latestProviderRequestDiagnostics,
-        });
-      }
-      if (!ctx.usageTracker.hasUsage) {
+      if (
+        !isProviderContentBlockedFinishReasonError(error) &&
+        !ctx.usageTracker.hasUsage
+      ) {
         await ctx.usageRefundTracker.refund();
       }
       await ptySessionManager
@@ -1390,10 +2138,50 @@ export async function createAgentStream(
         .catch((err) =>
           console.error("[agent-stream] PTY closeAll (onError) failed:", err),
         );
+
+      // The generation endpoint can lag the stream failure. Keep it out of the
+      // latency-sensitive /api/chat path and run it only after refunds/cleanup.
+      if (
+        ctx.endpoint !== "/api/chat" &&
+        errorOpenRouterMetadata.openrouter_generation_id &&
+        (!errorOpenRouterMetadata.openrouter_request_id ||
+          !errorOpenRouterMetadata.openrouter_upstream_id ||
+          !errorOpenRouterMetadata.provider_name)
+      ) {
+        const generationMetadata = await fetchOpenRouterGenerationMetadata(
+          errorOpenRouterMetadata.openrouter_generation_id,
+        );
+        state.openRouterMetadata = mergeOpenRouterMetadata(
+          errorOpenRouterMetadata,
+          mergeOpenRouterMetadata(generationMetadata, state.openRouterMetadata),
+        );
+      }
+
+      if (!isXaiSafetyError(error)) {
+        const fallbackSlugs = getFallbackSlugs(activeStepModelName, ctx.mode, {
+          hasMultimodalToolResults: streamHasImageViewResults,
+        });
+        ctx.chatLogger?.recordProviderError(error, {
+          mode: ctx.mode,
+          model: activeStepModelName,
+          requestedModelSlug: lastRequestedSlug,
+          fallbackModelSlugs:
+            fallbackSlugs.length > 0 ? fallbackSlugs : undefined,
+          userId: ctx.userId,
+          subscription: ctx.subscription,
+          providerRequest: latestProviderRequestDiagnostics,
+          openRouterMetadata: state.openRouterMetadata,
+        });
+      }
     },
 
     onAbort: async ({ steps }) => {
       recordAssistantContentLoopAbortState(steps);
+      await refundProviderContentBlockedIfSettled({
+        error: state.providerError,
+        finishReason: state.streamFinishReason,
+        settled: true,
+      });
       await ptySessionManager
         .closeAll(ctx.chatId)
         .catch((err) =>

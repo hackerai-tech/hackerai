@@ -30,6 +30,10 @@ cd /opt/centrifugo
 
 Upload `config.json` from this repo (`docker/centrifugo/config.json`):
 
+The config enables bidirectional HTTP streaming as a fallback for clients whose
+network or proxy blocks WebSocket upgrades. Deploy this config and restart
+Centrifugo before publishing a local client release that uses the fallback.
+
 > Run this from your **local machine** (not the EC2 instance):
 
 ```bash

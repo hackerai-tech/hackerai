@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type DragEvent } from "react";
+import { useState } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import {
   ChevronRight,
   Ellipsis,
@@ -39,9 +40,8 @@ import { ProjectDeleteDialog } from "./ProjectDeleteDialog";
 import { ProjectEditDialog } from "./ProjectEditDialog";
 import { SidebarProjectThreads } from "./SidebarProjectThreads";
 import {
-  hasSidebarChatDragData,
-  getSidebarChatDragProjectId,
-  SIDEBAR_CHAT_DRAG_TYPE,
+  type SidebarChatDragData,
+  type SidebarChatDropData,
 } from "./sidebar-chat-drag";
 
 interface SidebarProjectItemProps {
@@ -59,42 +59,21 @@ export function SidebarProjectItem({
   onNewThread,
   onDropChat,
 }: SidebarProjectItemProps) {
-  const [isDragOver, setIsDragOver] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
   const [isPinning, setIsPinning] = useState(false);
   const pinProject = usePinProject();
   const unpinProject = useUnpinProject();
-
-  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!hasSidebarChatDragData(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "move";
-    setIsDragOver(true);
+  const dropData: SidebarChatDropData = {
+    type: "sidebar-chat-drop",
+    onDrop: (chat: SidebarChatDragData) =>
+      onDropChat(chat.chatId, chat.projectId),
   };
-
-  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
-    const nextTarget = event.relatedTarget;
-    if (
-      nextTarget instanceof Node &&
-      event.currentTarget.contains(nextTarget)
-    ) {
-      return;
-    }
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
-    if (!hasSidebarChatDragData(event.dataTransfer)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDragOver(false);
-    const chatId = event.dataTransfer.getData(SIDEBAR_CHAT_DRAG_TYPE);
-    const previousProjectId = getSidebarChatDragProjectId(event.dataTransfer);
-    if (chatId) void onDropChat(chatId, previousProjectId);
-  };
+  const { isOver, setNodeRef } = useDroppable({
+    id: `sidebar-project-drop:${project._id}`,
+    data: dropData,
+  });
 
   const handleTogglePinned = async () => {
     if (isPinning) return;
@@ -151,17 +130,15 @@ export function SidebarProjectItem({
 
   return (
     <Collapsible
+      ref={setNodeRef}
       open={open}
       onOpenChange={onOpenChange}
-      className={`rounded-[10px] ${isDragOver ? "bg-sidebar-accent/40 ring-1 ring-sidebar-ring" : ""}`}
-      onDragEnter={handleDragOver}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      className={`rounded-[10px] ${isOver ? "bg-sidebar-accent/40 ring-1 ring-sidebar-ring" : ""}`}
       data-testid={`project-${project._id}-drop-target`}
+      data-drop-active={isOver ? "true" : undefined}
     >
       <div
-        className={`group/project sticky top-9 z-[1] flex h-9 items-center gap-3 bg-sidebar ps-2 pe-0.5 hover:rounded-[10px] hover:bg-sidebar-accent/50 ${isDragOver ? "rounded-[10px] bg-sidebar-accent ring-1 ring-sidebar-ring" : ""}`}
+        className={`group/project sticky top-9 z-[1] flex h-9 items-center gap-3 bg-sidebar ps-2 pe-0.5 hover:rounded-[10px] hover:bg-sidebar-accent/50 ${isOver ? "rounded-[10px] bg-sidebar-accent ring-1 ring-sidebar-ring" : ""}`}
       >
         <CollapsibleTrigger asChild>
           <button

@@ -1,6 +1,7 @@
 import type { RateLimitInfo } from "@/types";
 import {
   billableCostDollarsToPoints,
+  extraUsagePointsToIncludedPoints,
   type UsageDeductionFailureReason,
   type UsageDeductionResult,
 } from "./token-bucket";
@@ -39,7 +40,8 @@ export const getUsageSettlementInitialDeduction = (
 });
 
 export const getSettledUsagePoints = (state: UsageSettlementState): number =>
-  state.includedPointsDeducted + state.extraUsagePointsDeducted;
+  state.includedPointsDeducted +
+  extraUsagePointsToIncludedPoints(state.extraUsagePointsDeducted);
 
 export const getUnsettledUsagePoints = (
   state: UsageSettlementState,
@@ -47,8 +49,10 @@ export const getUnsettledUsagePoints = (
 ): number =>
   Math.max(
     0,
-    billableCostDollarsToPoints(currentCostDollars) -
-      getSettledUsagePoints(state),
+    Math.ceil(
+      billableCostDollarsToPoints(currentCostDollars) -
+        getSettledUsagePoints(state),
+    ),
   );
 
 // Settle every newly accrued model-step delta. A balance captured when the run

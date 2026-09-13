@@ -166,16 +166,12 @@ export const getNotesForBackend = query({
     try {
       // Get only "general" category notes for system prompt injection
       // Other categories must be retrieved via list_notes tool
-      const notes = await ctx.db
+      const notes = ctx.db
         .query("notes")
-        .withIndex("by_user_and_category", (q) =>
+        .withIndex("by_user_and_category_and_updated", (q) =>
           q.eq("user_id", args.userId).eq("category", "general"),
         )
-        .order("desc")
-        .collect();
-
-      // Sort by updated_at descending (newest first)
-      notes.sort((a, b) => b.updated_at - a.updated_at);
+        .order("desc");
 
       // Calculate total tokens and enforce token limit based on subscription
       // Default to free tier (5000) when subscription is not provided
@@ -184,13 +180,26 @@ export const getNotesForBackend = query({
       let totalTokens = 0;
       const validNotes = [];
 
-      for (const note of notes) {
+      // A prompt needs only a bounded prefix, not every note in the account.
+      for await (const note of notes) {
         const tokensValue = Number(note.tokens);
         const safeTokens =
-          Number.isFinite(tokensValue) && tokensValue > 0 ? tokensValue : 0;
+          Number.isFinite(tokensValue) && tokensValue > 0
+            ? tokensValue
+            : Math.max(
+                1,
+                estimateNoteTokens(
+                  note.title,
+                  note.content,
+                  note.category,
+                  note.tags,
+                ),
+              );
         if (totalTokens + safeTokens <= tokenLimit) {
           totalTokens += safeTokens;
           validNotes.push(note);
+          // Also bound legacy/tiny notes whose stored token counts are too low.
+          if (validNotes.length >= 100 || totalTokens >= tokenLimit) break;
         } else {
           // Token limit exceeded, stop adding notes
           break;

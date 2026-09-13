@@ -1,9 +1,10 @@
 import { tool } from "ai";
-import type { ToolContext } from "@/types";
+import type { AnySandbox, ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
 import {
   cleanPtyForUI,
   getSessionSnapshots,
+  type PtyParserLogContext,
 } from "./utils/pty-output-formatter";
 import {
   waitForOutput,
@@ -15,8 +16,14 @@ import { translateInput } from "./utils/pty-keys";
 import {
   INTERACT_TERMINAL_DEFAULT_WAIT_TIMEOUT_SECONDS,
   INTERACT_TERMINAL_MAX_WAIT_TIMEOUT_SECONDS,
+  createInteractTerminalSessionToolSchema,
   interactTerminalSessionTool,
 } from "./schemas";
+import {
+  getAgentApprovalSandboxIdentity,
+  getSandboxWithFallbackGuard,
+  resolveToolErrorMessage,
+} from "./utils/sandbox-fallback";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -31,16 +38,37 @@ const SEND_IMMEDIATE_OUTPUT_WINDOW_MS = 500;
 // as "process settled" — typically a redrawn prompt or completed command.
 // `timeout` remains the hard ceiling for processes that never settle.
 const WAIT_QUIET_WINDOW_MS = 500;
+const MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS = 6_000;
 
 export const createInteractTerminalSession = (context: ToolContext) => {
   const { writer, chatId, ptySessionManager } = context;
+  const ptyScopeId = context.ptyScopeId ?? chatId;
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
       : operation();
+  const buildPtyParserLogContext = (
+    sessionId: string,
+  ): PtyParserLogContext => ({
+    service: context.triggerRunId ? "agent-long" : "chat-handler",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
+    request_id: context.triggerRunId ?? process.env.VERCEL_REQUEST_ID ?? null,
+    trigger_run_id: context.triggerRunId ?? null,
+    chat_id: context.chatId,
+    user_id: context.userID,
+    session_id: sessionId,
+    log_budget: context.ptyParserLogBudget,
+  });
 
   return tool({
     ...interactTerminalSessionTool,
+    inputSchema: createInteractTerminalSessionToolSchema({
+      modelName: context.getCurrentModelName?.() ?? context.modelName,
+    }).inputSchema,
     execute: async (
       {
         session: sessionId,
@@ -109,7 +137,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
             error: errorResult(`action=${actionName} requires \`session\`.`),
           };
         }
-        const found = ptySessionManager.get(chatId, sid);
+        const found = ptySessionManager.get(ptyScopeId, sid);
         if (!found) {
           return {
             error: errorResult(
@@ -152,24 +180,140 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         },
       });
 
-      const requestTerminalInteractionApproval = async (
-        target: string,
-      ): Promise<ActionResult | null> => {
+      type TerminalReviewState = {
+        session: PtySession;
+        lastActivityAt: number;
+        snapshotByteLength: number;
+        bufferTruncated: boolean;
+        exited: { exitCode: number | null } | null;
+      };
+
+      const captureTerminalReviewState = (session: PtySession) => {
+        const snapshot = ptySessionManager.snapshot(session);
+        const cleanedOutput = stripAnsi(new TextDecoder().decode(snapshot));
+        const outputComplete =
+          !session.bufferTruncated &&
+          cleanedOutput.length <= MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS;
+        return {
+          state: {
+            session,
+            lastActivityAt: session.lastActivityAt,
+            snapshotByteLength: snapshot.byteLength,
+            bufferTruncated: session.bufferTruncated,
+            exited: peekSessionExit(session),
+          } satisfies TerminalReviewState,
+          recentOutput: cleanedOutput.slice(
+            -MAX_AUTO_REVIEW_TERMINAL_OUTPUT_CHARS,
+          ),
+          outputComplete,
+        };
+      };
+
+      const terminalStateChanged = (
+        sessionIdToCheck: string,
+        expected: TerminalReviewState,
+      ): boolean => {
+        const current = ptySessionManager.get(chatId, sessionIdToCheck);
+        if (!current || current !== expected.session) return true;
+        const currentExit = peekSessionExit(current);
+        return (
+          current.lastActivityAt !== expected.lastActivityAt ||
+          ptySessionManager.snapshot(current).byteLength !==
+            expected.snapshotByteLength ||
+          current.bufferTruncated !== expected.bufferTruncated ||
+          currentExit?.exitCode !== expected.exited?.exitCode
+        );
+      };
+
+      const requestTerminalInteractionApproval = async ({
+        target,
+        session,
+        action,
+        inputToSend,
+        translatedInput,
+        reviewState,
+      }: {
+        target: string;
+        session: PtySession;
+        action: "send" | "kill";
+        inputToSend?: string;
+        translatedInput?: string;
+        reviewState: ReturnType<typeof captureTerminalReviewState>;
+      }): Promise<{ denied: ActionResult } | { autoReviewed: boolean }> => {
         const approval = await context.requestToolApproval?.({
           toolCallId,
           toolName: "interact_terminal_session",
           operation: "terminal_interact",
           target,
           brief,
+          autoReviewContext: {
+            type: "terminal_interaction",
+            interaction: target,
+            action,
+            sessionId: session.sessionId,
+            ...(inputToSend === undefined ? {} : { input: inputToSend }),
+            ...(translatedInput === undefined ? {} : { translatedInput }),
+            originalCommand: session.originalCommand,
+            ...(session.workingDirectory
+              ? { workingDirectory: session.workingDirectory }
+              : {}),
+            recentOutput: reviewState.recentOutput,
+            outputComplete: reviewState.outputComplete,
+          },
         });
-        if (!approval || approval.approved) return null;
+        if (!approval || approval.approved) {
+          return {
+            autoReviewed:
+              approval?.approved === true &&
+              approval.approvalSource === "auto_review",
+          };
+        }
         return {
-          result: {
-            output: "",
-            error: approval.reason,
-            approvalDenied: true,
+          denied: {
+            result: {
+              output: "",
+              error: approval.reason,
+              approvalDenied: true,
+            },
           },
         };
+      };
+
+      const changedDuringAutoReviewError = (
+        sid: string,
+        attemptedAction: "send" | "kill",
+      ): ActionResult =>
+        errorResult(
+          `Session ${sid} changed while HackerAI was reviewing the action. ${attemptedAction === "send" ? "The input was not sent." : "The session was not killed."} Use action=view to refresh the terminal state, then retry the exact interaction.`,
+        );
+
+      const getMatchingSessionSandbox = async (
+        session: PtySession,
+      ): Promise<{ sandbox: AnySandbox } | { error: ActionResult }> => {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager: context.sandboxManager,
+          });
+          if (
+            getAgentApprovalSandboxIdentity(sandbox) !== session.sandboxIdentity
+          ) {
+            return {
+              error: errorResult(
+                "The selected sandbox no longer matches the sandbox that created this terminal session. The action was not run. Return to the original sandbox or start a new terminal session in the current sandbox.",
+              ),
+            };
+          }
+          return { sandbox: sandbox as AnySandbox };
+        } catch (error) {
+          return { error: errorResult(resolveToolErrorMessage(error)) };
+        }
+      };
+
+      const verifySessionSandboxIdentity = async (
+        session: PtySession,
+      ): Promise<ActionResult | null> => {
+        const result = await getMatchingSessionSandbox(session);
+        return "error" in result ? result.error : null;
       };
 
       // ─── Handler: send ─────────────────────────────────────────────────────
@@ -194,22 +338,43 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const priorExit = peekSessionExit(session);
         if (priorExit) return exitedSendError(sessionId, priorExit, false);
 
-        const approvalDenied = await requestTerminalInteractionApproval(
-          `send to ${sessionId}: ${input}`,
-        );
-        if (approvalDenied) return approvalDenied;
+        const sandboxMismatch = await verifySessionSandboxIdentity(session);
+        if (sandboxMismatch) return sandboxMismatch;
 
-        emitPriorContext(session);
-
-        // Translate tmux key names (C-c, Up, Enter, ...) to escape sequences;
-        // raw text passes through unchanged with trailing newline normalized
-        // to CR so "echo hi\n" submits the line as a real Enter.
+        // Translate and size-check before approval so the exact bounded action
+        // reaching the reviewer is the action that can subsequently execute.
         const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
           );
         }
+
+        const reviewState = captureTerminalReviewState(session);
+        const approvalResult = await requestTerminalInteractionApproval({
+          target: `send to ${sessionId}: ${input}`,
+          session,
+          action: "send",
+          inputToSend: input,
+          translatedInput: new TextDecoder().decode(bytes),
+          reviewState,
+        });
+        if ("denied" in approvalResult) return approvalResult.denied;
+
+        const postApprovalSandbox = await getMatchingSessionSandbox(session);
+        if ("error" in postApprovalSandbox) return postApprovalSandbox.error;
+
+        if (
+          approvalResult.autoReviewed &&
+          terminalStateChanged(sessionId, reviewState.state)
+        ) {
+          return changedDuringAutoReviewError(sessionId, "send");
+        }
+
+        emitPriorContext(session);
+
+        // Tmux key names (C-c, Up, Enter, ...) were translated before review;
+        // raw text has a trailing newline normalized to CR for submission.
         try {
           await session.handle.sendInput(bytes);
         } catch (err) {
@@ -235,7 +400,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           ),
         );
         await drainEmitQueue();
-        const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const snapshots = await getSessionSnapshots(
+          ptySessionManager,
+          session,
+          buildPtyParserLogContext(session.sessionId),
+        );
         return {
           result: {
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
@@ -266,7 +435,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           ),
         );
         await drainEmitQueue();
-        const snapshots = await getSessionSnapshots(ptySessionManager, session);
+        const snapshots = await getSessionSnapshots(
+          ptySessionManager,
+          session,
+          buildPtyParserLogContext(session.sessionId),
+        );
         const exited = alreadyExited ?? (await peekExited(session));
         const out: Record<string, unknown> = {
           output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
@@ -294,7 +467,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         return {
           result: {
             output: capOutput(stripAnsi(rawText)),
-            sessionSnapshot: await cleanPtyForUI(rawText),
+            sessionSnapshot: await cleanPtyForUI(
+              rawText,
+              buildPtyParserLogContext(session.sessionId),
+            ),
             rawSnapshot: rawText,
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             ...(internal.exitedNaturally
@@ -310,19 +486,36 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
-        const approvalDenied = await requestTerminalInteractionApproval(
-          `kill ${sessionId}`,
-        );
-        if (approvalDenied) return approvalDenied;
+        const sandboxMismatch = await verifySessionSandboxIdentity(session);
+        if (sandboxMismatch) return sandboxMismatch;
+
+        const reviewState = captureTerminalReviewState(session);
+        const approvalResult = await requestTerminalInteractionApproval({
+          target: `kill ${sessionId}`,
+          session,
+          action: "kill",
+          reviewState,
+        });
+        if ("denied" in approvalResult) return approvalResult.denied;
+
+        const postApprovalSandboxMismatch =
+          await verifySessionSandboxIdentity(session);
+        if (postApprovalSandboxMismatch) return postApprovalSandboxMismatch;
+        if (
+          approvalResult.autoReviewed &&
+          terminalStateChanged(sessionId, reviewState.state)
+        ) {
+          return changedDuringAutoReviewError(sessionId, "kill");
+        }
 
         // Skip the snapshot dump — the user already saw the final state via
         // prior view/wait/send blocks; a one-line confirmation reads cleaner
         // in both the agent transcript and the sidebar.
         const exitPromise = session.handle.exited;
         try {
-          await ptySessionManager.close(chatId, session.sessionId);
+          await ptySessionManager.close(ptyScopeId, session.sessionId);
         } catch (err) {
-          const retained = ptySessionManager.get(chatId, session.sessionId);
+          const retained = ptySessionManager.get(ptyScopeId, session.sessionId);
           return errorResult(
             `Failed to kill session ${sessionId}: ${err instanceof Error ? err.message : String(err)}. ${retained ? "The session was retained so cleanup can be retried." : "The bounded cleanup limit was reached, so local session tracking was removed."}`,
           );

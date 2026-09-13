@@ -45,8 +45,9 @@ const logExtraUsageConvexFailure = ({
     operation,
     component: "extra_usage",
     duration_ms: Date.now() - startedAt,
-    error_name: errorName(error),
-    error_message: stringifyRedactedError(error),
+    // phLogger reserves error_name/error_message for the captured summary.
+    convex_error_name: stringifyRedactedError(errorName(error)).slice(0, 128),
+    convex_error_message: stringifyRedactedError(error).slice(0, 2_000),
   });
 };
 

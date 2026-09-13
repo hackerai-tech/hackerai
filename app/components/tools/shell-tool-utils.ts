@@ -5,17 +5,43 @@
  * SharedMessagePartHandler (shared/read-only view).
  */
 
-import type { SidebarTerminal } from "@/types/chat";
 import {
   getSafeToolErrorText,
   isToolInputValidationError as isToolInputValidationErrorValue,
 } from "@/lib/chat/tool-error-display";
+import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type ShellAction = "exec" | "view" | "wait" | "send" | "kill";
+
+export type TerminalExecutionPhase = NonNullable<
+  SidebarTerminal["executionPhase"]
+>;
+
+export function getTerminalExecutionPhase({
+  toolState,
+  autoReviewStatus,
+}: {
+  toolState?: string;
+  autoReviewStatus?: AgentAutoReviewLifecycleStatus;
+}): TerminalExecutionPhase | undefined {
+  if (toolState === "output-error") return "failed";
+  if (toolState === "output-available") return "completed";
+  if (
+    toolState === "approval-requested" ||
+    autoReviewStatus === "needs_approval"
+  ) {
+    return "awaiting_approval";
+  }
+  if (autoReviewStatus === "reviewing") return "reviewing";
+  if (toolState === "input-available" || toolState === "running") {
+    return "executing";
+  }
+  return undefined;
+}
 
 export interface ShellToolInput {
   command?: string;
@@ -62,7 +88,7 @@ export function isInteractiveShellAction(action?: string): boolean {
 const LABELS: Record<ShellAction, [active: string, done: string]> = {
   exec: ["Executing", "Executed"],
   view: ["Viewing", "Viewed"],
-  wait: ["Waiting", "Waited"],
+  wait: ["Waiting for command output…", "Checked command output"],
   send: ["Sending input", "Sent input"],
   kill: ["Killing", "Killed"],
 };
@@ -118,7 +144,11 @@ export function isToolInputValidationError(errorText?: string): boolean {
   return isToolInputValidationErrorValue(errorText);
 }
 
-export function getTerminalFailureAction(errorText?: string): string {
+export function getTerminalFailureAction(
+  errorText?: string,
+  action?: string,
+): string {
+  if (action === "wait") return "Couldn’t check command output";
   return isToolInputValidationError(errorText)
     ? "Invalid command"
     : "Command failed";
@@ -360,6 +390,7 @@ export interface ComputeShellBlockArgs {
   legacyIsBackground?: boolean;
   /** Legacy run_terminal_cmd: input.command. */
   legacyCommand?: string;
+  executionPhase?: TerminalExecutionPhase;
 }
 
 export interface ShellBlockComputed {
@@ -386,6 +417,7 @@ export function computeShellTerminalBlock(
     legacyInteractive,
     legacyIsBackground,
     legacyCommand,
+    executionPhase,
   } = args;
 
   const shellAction = isShellTool ? shellInput?.action : undefined;
@@ -396,7 +428,11 @@ export function computeShellTerminalBlock(
 
   const displayCommand = isShellTool
     ? getShellDisplayCommand(shellInput) ||
-      (isInteractiveAction ? shellAction || "" : errorDisplayCommand)
+      (isInteractiveAction
+        ? shellAction === "wait"
+          ? ""
+          : shellAction || ""
+        : errorDisplayCommand)
     : legacyCommand || errorDisplayCommand;
   const displayTarget = isShellTool
     ? getShellDisplayTarget(shellInput) || displayCommand
@@ -414,7 +450,7 @@ export function computeShellTerminalBlock(
       (!isInteractiveAction && hasResult));
   const blockAction = (isActive: boolean) =>
     !isActive && errorText
-      ? getTerminalFailureAction(errorText)
+      ? getTerminalFailureAction(errorText, shellAction)
       : useBriefOnly
         ? briefText
         : getShellActionLabel({
@@ -460,6 +496,7 @@ export function computeShellTerminalBlock(
           command: isInteractiveAction ? displayTarget : displayCommand,
           output: stripAgentOnlyTerminalGuidance(finalOutput),
           isExecuting,
+          executionPhase,
           isBackground: !isShellTool ? legacyIsBackground : undefined,
           isInteractive: !isShellTool ? legacyInteractive : undefined,
           toolCallId,

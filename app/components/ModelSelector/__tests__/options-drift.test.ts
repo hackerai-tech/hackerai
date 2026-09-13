@@ -31,30 +31,30 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to DeepSeek in both modes", () => {
+  it("HackerAI Standard resolves to DeepSeek V4 Flash in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
-      "model-deepseek-v4-pro",
+      "model-deepseek-v4-flash-0731",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-deepseek-v4-pro",
+      "model-deepseek-v4-flash-0731",
     );
   });
 
-  it("HackerAI Pro resolves to its dedicated Grok route in both modes", () => {
+  it("HackerAI Pro keeps Ask on V4 Pro 0813 and uses V4.1 Flash in Agent", () => {
     expect(resolveTierToProviderKey("hackerai-pro", "ask")).toBe(
-      "model-grok-4.5-pro",
+      "model-deepseek-v4-pro-0813",
     );
     expect(resolveTierToProviderKey("hackerai-pro", "agent")).toBe(
-      "model-grok-4.5-pro",
+      "model-deepseek-v4-flash-vision-pro",
     );
   });
 
   it("HackerAI Max resolves to the same provider in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
-      "model-opus-4.6",
+      "model-grok-4.6",
     );
     expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
-      "model-opus-4.6",
+      "model-grok-4.6",
     );
   });
 
@@ -72,21 +72,32 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses the text and vision providers for Agent Standard", () => {
+  it("discloses DeepSeek V4 Flash for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro · MiniMax M3 for vision");
+    ).toBe("DeepSeek V4 Flash 0731");
   });
 
-  it("discloses Grok primary and GLM fallback for HackerAI Pro", () => {
+  it("discloses each mode's provider for HackerAI Pro", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.5 · Z.ai GLM 5.2 fallback");
+    ).toBe("DeepSeek V4 Pro 0813");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.5 · Z.ai GLM 5.2 fallback");
+    ).toBe("DeepSeek V4.1 Flash");
+  });
+
+  it("discloses Grok 4.6 for HackerAI Max", () => {
+    expect(
+      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
+        ?.poweredBy,
+    ).toBe("xAI Grok 4.6");
+    expect(
+      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
+        ?.poweredBy,
+    ).toBe("xAI Grok 4.6");
   });
 });

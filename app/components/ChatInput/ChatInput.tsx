@@ -1,13 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import {
+  useComposerActions,
+  useComposerInput,
+} from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
+import {
+  isTauriEnvironment,
+  readGeneratedTextAttachment,
+} from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
   removeDraft,
@@ -28,15 +37,26 @@ import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import type { UploadedFileState } from "@/types/file";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import {
   type ActiveAgentToolApprovalRequest,
   useAgentApproval,
 } from "@/app/contexts/AgentApprovalContext";
+import { PASTED_TEXT_INLINE_RESTORE_MAX_CHARS } from "@/lib/utils/pasted-text-attachments";
+import {
+  reconnectOnlineStatus,
+  useOnlineStatus,
+} from "@/app/hooks/useOnlineStatus";
+import { WifiOff } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
   onStop: () => void | boolean | Promise<void | boolean>;
-  onReconnect?: () => void;
+  onReconnect?: () => void | Promise<void>;
   onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
@@ -53,7 +73,46 @@ interface ChatInputProps {
   autoFocus?: boolean;
   restoreDraftAttachments?: boolean;
   storedApprovalRequest?: ActiveAgentToolApprovalRequest | null;
+  offlineProtection?: boolean;
+  sendDisabledReason?: string;
+  isResolvingInitialState?: boolean;
 }
+
+const COMPACT_AGENT_CONTROLS_BREAKPOINT_PX = 720;
+
+const shouldUseCompactAgentControls = (width: number): boolean =>
+  width > 0 && width < COMPACT_AGENT_CONTROLS_BREAKPOINT_PX;
+
+const ChatInputLoadingState = ({
+  showAgentControls,
+}: {
+  showAgentControls: boolean;
+}) => (
+  <div
+    aria-label="Loading task input"
+    aria-live="polite"
+    className="relative min-w-0 px-4 pb-3"
+    data-testid="chat-input-loading-state"
+    role="status"
+  >
+    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+      <div
+        className="chat-input-glass-surface relative z-10 flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
+        data-testid="chat-input-loading-surface"
+      >
+        <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
+        <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
+      </div>
+      {showAgentControls ? (
+        <div
+          aria-hidden="true"
+          className="chat-input-glass-context relative z-0 mx-6 -mt-2 h-10 rounded-b-[18px] border border-t-0 border-black/8 md:hidden dark:border-border/70"
+          data-testid="chat-input-loading-controls"
+        />
+      ) : null}
+    </div>
+  </div>
+);
 
 const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
   typeof globalThis.File !== "undefined" && file instanceof globalThis.File;
@@ -61,6 +120,12 @@ const isBrowserFile = (file: UploadedFileState["file"]): file is File =>
 const draftAttachmentToUploadedFile = (
   attachment: ConversationDraftAttachment,
 ): UploadedFileState => {
+  const isLocalDesktop = attachment.storage === "local-desktop";
+  const generatedTextAttachmentId =
+    attachment.generatedTextAttachmentId ||
+    (!isLocalDesktop && attachment.kind === "pasted-text"
+      ? attachment.fileId
+      : undefined);
   const uploadedFile: UploadedFileState = {
     file: {
       name: attachment.name,
@@ -70,16 +135,23 @@ const draftAttachmentToUploadedFile = (
     },
     uploading: false,
     uploaded: true,
-    storage: "s3",
-    fileId: attachment.fileId,
+    storage: isLocalDesktop ? "local-desktop" : "s3",
     tokens: attachment.tokens,
   };
+
+  if (attachment.fileId) {
+    uploadedFile.fileId = attachment.fileId;
+  }
 
   if (
     attachment.kind === "pasted-text" ||
     attachment.generatedSource === "pasted-text"
   ) {
     uploadedFile.generatedSource = "pasted-text";
+    uploadedFile.generatedTextAttachmentId = generatedTextAttachmentId;
+    if (isLocalDesktop && generatedTextAttachmentId) {
+      uploadedFile.localAttachmentId = generatedTextAttachmentId;
+    }
   }
 
   return uploadedFile;
@@ -88,19 +160,49 @@ const draftAttachmentToUploadedFile = (
 const uploadedFileToDraftAttachment = (
   uploadedFile: UploadedFileState,
 ): ConversationDraftAttachment | null => {
+  const generatedTextAttachment = uploadedFile.generatedTextAttachment;
+  const generatedTextAttachmentId =
+    generatedTextAttachment?.id || uploadedFile.generatedTextAttachmentId;
+  const isGeneratedPastedText =
+    uploadedFile.generatedSource === "pasted-text" ||
+    Boolean(generatedTextAttachmentId);
+  const hasCommittedGeneratedTextFile =
+    isGeneratedPastedText &&
+    (uploadedFile.storage === "local-desktop"
+      ? Boolean(generatedTextAttachmentId)
+      : Boolean(uploadedFile.fileId));
+
   if (
-    !uploadedFile.uploaded ||
-    uploadedFile.uploading ||
-    uploadedFile.error ||
-    !uploadedFile.fileId ||
-    uploadedFile.storage === "local-desktop"
+    (!uploadedFile.uploaded || uploadedFile.uploading || uploadedFile.error) &&
+    !hasCommittedGeneratedTextFile
   ) {
     return null;
   }
 
+  if (uploadedFile.storage === "local-desktop") {
+    if (!isGeneratedPastedText || !generatedTextAttachmentId) {
+      return null;
+    }
+
+    return {
+      kind: "pasted-text",
+      storage: "local-desktop",
+      name: uploadedFile.file.name,
+      mediaType: uploadedFile.file.type || "text/plain",
+      size: uploadedFile.file.size,
+      tokens: uploadedFile.tokens,
+      timestamp: uploadedFile.file.lastModified,
+      generatedSource: "pasted-text",
+      generatedTextAttachmentId,
+    };
+  }
+
+  if (!uploadedFile.fileId) {
+    return null;
+  }
+
   return {
-    kind:
-      uploadedFile.generatedSource === "pasted-text" ? "pasted-text" : "file",
+    kind: isGeneratedPastedText ? "pasted-text" : "file",
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     mediaType: uploadedFile.file.type || "application/octet-stream",
@@ -109,6 +211,16 @@ const uploadedFileToDraftAttachment = (
     timestamp: isBrowserFile(uploadedFile.file)
       ? Date.now()
       : uploadedFile.file.lastModified,
+    ...(isGeneratedPastedText
+      ? {
+          generatedSource: "pasted-text" as const,
+        }
+      : {}),
+    ...(generatedTextAttachmentId
+      ? {
+          generatedTextAttachmentId,
+        }
+      : {}),
   };
 };
 
@@ -132,10 +244,11 @@ export const ChatInput = ({
   autoFocus,
   restoreDraftAttachments = true,
   storedApprovalRequest,
+  offlineProtection = true,
+  sendDisabledReason,
+  isResolvingInitialState = false,
 }: ChatInputProps) => {
   const {
-    input,
-    setInput,
     chatMode,
     setChatMode,
     uploadedFiles,
@@ -153,29 +266,77 @@ export const ChatInput = ({
     setSelectedModel,
     subscription,
     isCheckingProPlan,
-    temporaryChatsEnabled,
     hasLocalSandbox,
+    localConnections,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeStatus,
     defaultLocalSandboxPreference,
   } = useGlobalState();
+  const { user } = useAuth();
+  const input = useComposerInput();
+  const { setInput } = useComposerActions();
+  const isOnline = useOnlineStatus();
+  const isOffline = offlineProtection && !isOnline;
   const {
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
   const { activeToolApprovalRequest } = useAgentApproval();
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
-  const approvalRequest = activeToolApprovalRequest ?? storedApprovalRequest;
+  const approvalRequest = useMemo(
+    () =>
+      activeToolApprovalRequest &&
+      storedApprovalRequest &&
+      activeToolApprovalRequest.approvalId ===
+        storedApprovalRequest.approvalId &&
+      activeToolApprovalRequest.toolCallId === storedApprovalRequest.toolCallId
+        ? {
+            ...storedApprovalRequest,
+            ...activeToolApprovalRequest,
+            ...(storedApprovalRequest.autoReview
+              ? { autoReview: storedApprovalRequest.autoReview }
+              : {}),
+          }
+        : (activeToolApprovalRequest ?? storedApprovalRequest),
+    [activeToolApprovalRequest, storedApprovalRequest],
+  );
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [compactAgentControls, setCompactAgentControls] = useState(false);
+  const chatInputContainerRef = useRef<HTMLDivElement>(null);
   const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
 
+  useLayoutEffect(() => {
+    const container = chatInputContainerRef.current;
+    if (!container) return;
+
+    const updateCompactLayout = (width: number) => {
+      const nextCompact = shouldUseCompactAgentControls(width);
+      setCompactAgentControls((current) =>
+        current === nextCompact ? current : nextCompact,
+      );
+    };
+
+    updateCompactLayout(container.getBoundingClientRect().width);
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) updateCompactLayout(entry.contentRect.width);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
-    if (!isGenerating && !approvalRequest) {
+    if (!isGenerating && !activeToolApprovalRequest && !storedApprovalRequest) {
       setIsStoppingAgent(false);
     }
-  }, [approvalRequest, isGenerating]);
+  }, [activeToolApprovalRequest, isGenerating, storedApprovalRequest]);
 
   const handleAgentStop = async () => {
     setIsStoppingAgent(true);
@@ -190,19 +351,215 @@ export const ChatInput = ({
   };
 
   const draftId =
-    isNewChat && (!hasMessages || temporaryChatsEnabled)
-      ? "new"
-      : chatId || NULL_THREAD_DRAFT_ID;
+    isNewChat && !hasMessages ? "new" : chatId || NULL_THREAD_DRAFT_ID;
   const skipNextAttachmentPersistRef = useRef(false);
   const hasPersistedDraftAttachmentsRef = useRef(false);
+  const isSubmittingAttachmentsRef = useRef(false);
   const uploadedFilesRef = useRef(uploadedFiles);
   const prevDraftIdRef = useRef(draftId);
+  const draftTextFileIds = useMemo(
+    () =>
+      restoreDraftAttachments
+        ? uploadedFiles.flatMap((uploadedFile) => {
+            if (
+              uploadedFile.uploaded &&
+              !uploadedFile.uploading &&
+              !uploadedFile.error &&
+              uploadedFile.storage !== "local-desktop" &&
+              uploadedFile.generatedSource === "pasted-text" &&
+              !uploadedFile.generatedTextAttachment &&
+              uploadedFile.fileId
+            ) {
+              return [uploadedFile.fileId as Id<"files">];
+            }
+
+            return [];
+          })
+        : [],
+    [restoreDraftAttachments, uploadedFiles],
+  );
+  const draftTextFileContents = useQuery(
+    api.fileStorage.getTextFileContentForCurrentUser,
+    draftTextFileIds.length > 0 ? { fileIds: draftTextFileIds } : "skip",
+  );
+  const localDraftTextFiles = useMemo(
+    () =>
+      restoreDraftAttachments
+        ? uploadedFiles.flatMap((uploadedFile, index) => {
+            if (
+              uploadedFile.uploaded &&
+              !uploadedFile.uploading &&
+              !uploadedFile.error &&
+              uploadedFile.storage === "local-desktop" &&
+              uploadedFile.generatedSource === "pasted-text" &&
+              !uploadedFile.generatedTextAttachment &&
+              !uploadedFile.unavailable &&
+              uploadedFile.generatedTextAttachmentId
+            ) {
+              return [
+                {
+                  index,
+                  attachmentId: uploadedFile.generatedTextAttachmentId,
+                  fileName: uploadedFile.file.name,
+                },
+              ];
+            }
+
+            return [];
+          })
+        : [],
+    [restoreDraftAttachments, uploadedFiles],
+  );
 
   useEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
   });
 
   useEffect(() => {
+    if (!draftTextFileContents || draftTextFileContents.length === 0) {
+      return;
+    }
+
+    const contentByFileId = new Map<
+      string,
+      { content: string; tokenSize: number }
+    >(
+      draftTextFileContents.flatMap((fileContent) => {
+        if (!fileContent || typeof fileContent.content !== "string") {
+          return [];
+        }
+
+        return [
+          [
+            fileContent.id as string,
+            {
+              content: fileContent.content,
+              tokenSize: fileContent.tokenSize,
+            },
+          ],
+        ];
+      }),
+    );
+
+    if (contentByFileId.size === 0) {
+      return;
+    }
+
+    let didHydrate = false;
+    const nextUploadedFiles = uploadedFilesRef.current.map((uploadedFile) => {
+      if (
+        uploadedFile.generatedTextAttachment ||
+        uploadedFile.generatedSource !== "pasted-text" ||
+        !uploadedFile.fileId ||
+        !uploadedFile.generatedTextAttachmentId
+      ) {
+        return uploadedFile;
+      }
+
+      const fileContent = contentByFileId.get(uploadedFile.fileId);
+      if (!fileContent) {
+        return uploadedFile;
+      }
+
+      didHydrate = true;
+      return {
+        ...uploadedFile,
+        tokens: fileContent.tokenSize,
+        generatedTextAttachment: {
+          id: uploadedFile.generatedTextAttachmentId,
+          content: fileContent.content,
+        },
+      };
+    });
+
+    if (didHydrate) {
+      setUploadedFiles(nextUploadedFiles);
+    }
+  }, [draftTextFileContents, setUploadedFiles]);
+
+  useEffect(() => {
+    if (localDraftTextFiles.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const hydrateLocalGeneratedTextFiles = async () => {
+      const hydratedFiles = await Promise.all(
+        localDraftTextFiles.map(async (file) => ({
+          ...file,
+          content: await readGeneratedTextAttachment(
+            file.attachmentId,
+            file.fileName,
+          ),
+        })),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      let didHydrate = false;
+      const hydratedByIndex = new Map(
+        hydratedFiles.map((file) => [file.index, file]),
+      );
+
+      const nextUploadedFiles = uploadedFilesRef.current.map(
+        (uploadedFile, index) => {
+          const hydratedFile = hydratedByIndex.get(index);
+          if (!hydratedFile) {
+            return uploadedFile;
+          }
+
+          if (
+            uploadedFile.generatedTextAttachment ||
+            uploadedFile.generatedTextAttachmentId !==
+              hydratedFile.attachmentId ||
+            uploadedFile.storage !== "local-desktop"
+          ) {
+            return uploadedFile;
+          }
+
+          didHydrate = true;
+          if (!hydratedFile.content) {
+            return {
+              ...uploadedFile,
+              unavailable: true,
+            };
+          }
+
+          return {
+            ...uploadedFile,
+            unavailable: false,
+            file: {
+              name: hydratedFile.content.name,
+              type: hydratedFile.content.mediaType || "text/plain",
+              size: hydratedFile.content.size,
+              lastModified: hydratedFile.content.lastModified || Date.now(),
+            },
+            localAttachmentId: hydratedFile.attachmentId,
+            localPath: hydratedFile.content.path,
+            generatedTextAttachment: {
+              id: hydratedFile.attachmentId,
+              content: hydratedFile.content.content,
+            },
+          };
+        },
+      );
+
+      if (didHydrate) {
+        setUploadedFiles(nextUploadedFiles);
+      }
+    };
+
+    void hydrateLocalGeneratedTextFiles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [localDraftTextFiles, setUploadedFiles]);
+
+  useLayoutEffect(() => {
     const prevDraftId = prevDraftIdRef.current;
     prevDraftIdRef.current = draftId;
 
@@ -214,6 +571,16 @@ export const ChatInput = ({
     }
 
     if (prevDraftId === "new" && draftId !== "new") {
+      if (isSubmittingAttachmentsRef.current) {
+        uploadedFilesRef.current = [];
+        removeDraft("new");
+        removeDraft(draftId);
+        hasPersistedDraftAttachmentsRef.current = false;
+        skipNextAttachmentPersistRef.current = true;
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+
       const draftAttachments = uploadedFilesRef.current
         .map(uploadedFileToDraftAttachment)
         .filter(
@@ -266,21 +633,50 @@ export const ChatInput = ({
   }, [draftId, restoreDraftAttachments, uploadedFiles]);
 
   // Free agent mode constraints:
-  // 1. Requires local sandbox — fall back to ask mode if disconnected
+  // 1. Requires a connected local sandbox — Desktop may use either its
+  //    built-in bridge or a separately connected local runner
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
-    !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
+    !isCheckingProPlan &&
+    subscription === "free" &&
+    isAgentMode(chatMode) &&
+    (!isTauriEnvironment() || freeDesktopAgentOnlyActive);
+  const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
+    ? isFreeDesktopSandboxAvailable({
+        sandboxPreference,
+        desktopBridgeActive: desktopBridgeStatus === "connected",
+        localConnections,
+      })
+    : hasLocalSandbox;
 
-  const prevHasLocalSandboxRef = useRef(hasLocalSandbox);
+  const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
   useEffect(() => {
-    const wasConnected = prevHasLocalSandboxRef.current;
-    prevHasLocalSandboxRef.current = hasLocalSandbox;
+    const wasConnected = prevFreeAgentSandboxAvailableRef.current;
+    prevFreeAgentSandboxAvailableRef.current = freeAgentSandboxAvailable;
 
     if (!isFreeAgent) return;
     // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where hasLocalSandbox starts as false.
-    if (!hasLocalSandbox) {
+    // initial mount or logout where sandbox availability starts as false.
+    if (!freeAgentSandboxAvailable) {
+      if (freeDesktopAgentOnlyActive) {
+        if (wasConnected) {
+          const selectedDesktop = sandboxPreference === "desktop";
+          toast.info(
+            selectedDesktop
+              ? "Desktop sandbox disconnected."
+              : "Local sandbox disconnected.",
+            {
+              description: selectedDesktop
+                ? "Reconnect the Desktop sandbox to keep using Agent."
+                : "Reconnect the selected local runner to keep using Agent.",
+              duration: 5000,
+            },
+          );
+        }
+        return;
+      }
+
       setChatMode("ask");
       if (wasConnected) {
         toast.info("Local sandbox disconnected. Switched to Ask mode.", {
@@ -289,8 +685,13 @@ export const ChatInput = ({
         });
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeAgent, hasLocalSandbox]);
+  }, [
+    freeAgentSandboxAvailable,
+    freeDesktopAgentOnlyActive,
+    isFreeAgent,
+    sandboxPreference,
+    setChatMode,
+  ]);
 
   useEffect(() => {
     if (!isFreeAgent) return;
@@ -306,32 +707,130 @@ export const ChatInput = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent]);
 
-  // Fallback to 'ask' mode when temporary chats are enabled (agent modes not allowed)
-  useEffect(() => {
-    if (temporaryChatsEnabled && isAgentMode(chatMode)) {
-      setChatMode("ask");
-    }
-  }, [temporaryChatsEnabled, chatMode, setChatMode]);
+  const freeDesktopSandboxUnavailableReason =
+    freeDesktopAgentOnlyActive && !freeAgentSandboxAvailable
+      ? sandboxPreference === "desktop"
+        ? desktopBridgeStatus === "connecting"
+          ? "Desktop sandbox is reconnecting"
+          : "Reconnect the Desktop sandbox to use Agent"
+        : sandboxPreference === "e2b"
+          ? "Select a local sandbox to use Agent"
+          : "Reconnect the selected local sandbox to use Agent"
+      : undefined;
+  const effectiveSendDisabledReason =
+    sendDisabledReason ?? freeDesktopSandboxUnavailableReason;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isOffline || effectiveSendDisabledReason) return;
+
     const canSubmit =
       (status === "ready" || status === "streaming") &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
+      isSubmittingAttachmentsRef.current =
+        clearDraftOnSubmit && uploadedFiles.length > 0;
       const accepted = await onSubmit(e);
-      if (clearDraftOnSubmit && accepted !== false) {
+      if (accepted === false) {
+        isSubmittingAttachmentsRef.current = false;
+        return;
+      }
+      if (clearDraftOnSubmit) {
+        uploadedFilesRef.current = [];
         removeDraft(draftId);
+        if (draftId === "new" && chatId) {
+          removeDraft(chatId);
+        }
+        if (draftId !== "new") {
+          isSubmittingAttachmentsRef.current = false;
+        }
         setTimeout(() => setInput(""), 0);
       }
     }
   };
 
+  const handleOfflineReconnect = async () => {
+    if (isReconnecting) return;
+
+    setIsReconnecting(true);
+    try {
+      const reconnected = await reconnectOnlineStatus();
+      if (!reconnected) {
+        toast.info("Still offline", {
+          description: "Check your connection, then try reconnecting again.",
+        });
+        return;
+      }
+      await onReconnect?.();
+    } catch {
+      toast.error("Could not reconnect the chat", {
+        description: "Your draft is still saved. Please try again.",
+      });
+    } finally {
+      setIsReconnecting(false);
+    }
+  };
+
+  const handleShowGeneratedTextInField = async (
+    index: number,
+    content: string,
+  ) => {
+    if (content.length > PASTED_TEXT_INLINE_RESTORE_MAX_CHARS) {
+      toast.error("Pasted text is too long to show in the text field", {
+        description: "Edit it below 25,000 characters and try again.",
+      });
+      return;
+    }
+
+    const separator =
+      input.length === 0 ? "" : input.endsWith("\n") ? "\n" : "\n\n";
+    setInput(`${input}${separator}${content}`);
+    await handleRemoveFile(index);
+  };
+
+  if (isResolvingInitialState) {
+    return <ChatInputLoadingState showAgentControls={!!user && isAgent} />;
+  }
+
   return (
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
-      <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+      <div
+        ref={chatInputContainerRef}
+        className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
+        data-testid="chat-input-container"
+      >
+        {isOffline && (
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="offline-status"
+            className="mb-2 flex flex-col gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground sm:flex-row sm:items-center"
+          >
+            <div className="flex min-w-0 flex-1 items-start gap-2">
+              <WifiOff
+                aria-hidden="true"
+                className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400"
+              />
+              <p>
+                You&apos;re offline. Keep typing—this draft will stay on this
+                device.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="w-full shrink-0 sm:w-auto"
+              disabled={isReconnecting}
+              onClick={() => void handleOfflineReconnect()}
+            >
+              {isReconnecting ? "Reconnecting..." : "Reconnect"}
+            </Button>
+          </div>
+        )}
+
         {rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
             data={rateLimitWarning}
@@ -360,13 +859,15 @@ export const ChatInput = ({
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
             onRemoveFile={handleRemoveFile}
+            onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
+            onShowGeneratedTextInField={handleShowGeneratedTextInField}
+            generatedTextAttachmentsAvailable={isAgent}
           />
         )}
 
         <input
           ref={fileInputRef}
           type="file"
-          accept="*"
           multiple
           className="hidden"
           aria-label="Upload files"
@@ -382,7 +883,8 @@ export const ChatInput = ({
           />
         ) : (
           <div
-            className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            className={`chat-input-glass-surface relative z-10 order-2 flex max-h-[300px] min-w-0 flex-col gap-3 overflow-hidden border border-black/8 py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] transition-colors sm:order-1 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+            data-testid="chat-input-surface"
           >
             <ChatInputTextarea
               draftId={draftId}
@@ -393,6 +895,7 @@ export const ChatInput = ({
               autoFocus={autoFocus}
             />
             <ChatInputToolbar
+              compactAgentControls={compactAgentControls}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
@@ -403,27 +906,33 @@ export const ChatInput = ({
               input={input}
               uploadedFiles={uploadedFiles}
               chatMode={chatMode}
+              isOnline={!isOffline}
+              sendDisabledReason={effectiveSendDisabledReason}
             />
           </div>
         )}
 
-        {/* Agent controls below input.
-            Desktop centered new chats (no messages yet): absolutely positioned to avoid
-            shifting the centered layout.
-            On mobile, permission approval sits beside the sandbox selector. */}
-        {isAgent && !showAgentApprovalPrompt && (
+        {/* Compact Agent controls below the input. The composer switches to
+            this strip whenever its own width is constrained, even on desktop. */}
+        {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`order-3 flex items-center gap-2 px-1 pt-2 min-w-0 ${
-              isNewChat && !hasMessages
-                ? "md:absolute md:left-4 md:right-4 md:top-full"
-                : ""
-            }`}
+            className={`chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
+            data-compact={compactAgentControls ? "true" : "false"}
+            data-testid="chat-input-agent-context"
           >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
-            <div className="min-w-0 md:hidden">
+            <div
+              className="min-w-0 flex-1"
+              data-testid="chat-input-mobile-sandbox"
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+            <div
+              className={`ml-auto min-w-0 max-w-[56%] shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              data-testid="chat-input-mobile-permission"
+            >
               <AgentPermissionSelector analyticsSurface="chat_input" />
             </div>
           </div>

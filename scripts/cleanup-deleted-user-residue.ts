@@ -12,6 +12,7 @@ type Options = {
   userIds: string[];
   execute: boolean;
   deleteOrphanChatSummaries: boolean;
+  orphanSubagentTable?: "subagent_events" | "subagent_work_items";
   orphanCursor?: string;
   orphanNumItems: number;
 };
@@ -25,13 +26,16 @@ Dry-run is the default. Pass --execute to apply the cleanup.
 Usage:
   pnpm exec tsx scripts/cleanup-deleted-user-residue.ts --user <workos_user_id>
   pnpm exec tsx scripts/cleanup-deleted-user-residue.ts --orphans
-  pnpm exec tsx scripts/cleanup-deleted-user-residue.ts --user <id> --orphans --execute
+  pnpm exec tsx scripts/cleanup-deleted-user-residue.ts --orphan-subagent-events
+  pnpm exec tsx scripts/cleanup-deleted-user-residue.ts --orphan-subagent-work-items
 
 Options:
   --user <id>       Deleted WorkOS user id to clean. Run once per user id.
   --orphans         Include orphan chat_summaries cleanup.
-  --cursor <cursor> Continue an orphan chat_summaries scan from a prior result.
-  --limit <number>  Orphan chat_summaries page size. Default 500, max 1000.
+  --orphan-subagent-events     Scan subagent_events whose parent run is gone.
+  --orphan-subagent-work-items Scan subagent_work_items whose parent run is gone.
+  --cursor <cursor> Continue the selected orphan scan from a prior result.
+  --limit <number>  Orphan page size. Default 500; subagent scans max at 100.
   --execute         Apply changes. Omit for dry-run.
   --help            Show this message.
 `);
@@ -59,6 +63,16 @@ function parseArgs(argv: string[]): Options {
 
     if (arg === "--orphans") {
       options.deleteOrphanChatSummaries = true;
+      continue;
+    }
+
+    if (arg === "--orphan-subagent-events") {
+      options.orphanSubagentTable = "subagent_events";
+      continue;
+    }
+
+    if (arg === "--orphan-subagent-work-items") {
+      options.orphanSubagentTable = "subagent_work_items";
       continue;
     }
 
@@ -109,9 +123,18 @@ function parseArgs(argv: string[]): Options {
     throw new Error("Run this script once per --user to keep cleanup bounded");
   }
 
+  if (
+    Number(options.deleteOrphanChatSummaries) +
+      Number(options.orphanSubagentTable !== undefined) >
+    1
+  ) {
+    throw new Error("Select only one orphan cleanup per run");
+  }
+
+  const maxOrphanNumItems = options.orphanSubagentTable ? 100 : 1000;
   options.orphanNumItems = Math.min(
     Math.max(Math.round(options.orphanNumItems), 1),
-    1000,
+    maxOrphanNumItems,
   );
 
   return options;
@@ -119,7 +142,11 @@ function parseArgs(argv: string[]): Options {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.userIds.length === 0 && !options.deleteOrphanChatSummaries) {
+  if (
+    options.userIds.length === 0 &&
+    !options.deleteOrphanChatSummaries &&
+    !options.orphanSubagentTable
+  ) {
     printUsage();
     process.exit(1);
   }
@@ -140,6 +167,7 @@ async function main() {
       userIds: options.userIds.length > 0 ? options.userIds : undefined,
       dryRun: !options.execute,
       deleteOrphanChatSummaries: options.deleteOrphanChatSummaries,
+      orphanSubagentTable: options.orphanSubagentTable,
       orphanCursor: options.orphanCursor,
       orphanNumItems: options.orphanNumItems,
     },
@@ -157,12 +185,14 @@ async function main() {
   );
 
   if (
-    options.deleteOrphanChatSummaries &&
-    result.orphanChatSummariesContinueCursor
+    (options.deleteOrphanChatSummaries &&
+      result.orphanChatSummariesContinueCursor) ||
+    (options.orphanSubagentTable && result.orphanSubagentRowsContinueCursor)
   ) {
-    console.log(
-      `Next orphan cursor: ${result.orphanChatSummariesContinueCursor}`,
-    );
+    const nextCursor = options.deleteOrphanChatSummaries
+      ? result.orphanChatSummariesContinueCursor
+      : result.orphanSubagentRowsContinueCursor;
+    console.log(`Next orphan cursor: ${nextCursor}`);
   }
 }
 

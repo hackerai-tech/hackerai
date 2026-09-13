@@ -23,6 +23,7 @@ interface MessageActionsProps {
   canRegenerate: boolean;
   onRegenerate: () => void | Promise<void>;
   onEdit: () => void;
+  canEdit: boolean;
   onBranch?: () => void;
   isHovered: boolean;
   isEditing: boolean;
@@ -32,7 +33,6 @@ interface MessageActionsProps {
   onFeedback?: (type: "positive" | "negative") => void;
   existingFeedback?: "positive" | "negative" | null;
   isAwaitingFeedbackDetails?: boolean;
-  isTemporaryChat?: boolean;
   sources?: Array<{
     title?: string;
     url: string;
@@ -129,6 +129,7 @@ export const MessageActions = ({
   canRegenerate,
   onRegenerate,
   onEdit,
+  canEdit,
   onBranch,
   isHovered,
   isEditing,
@@ -138,18 +139,25 @@ export const MessageActions = ({
   onFeedback,
   existingFeedback,
   isAwaitingFeedbackDetails = false,
-  isTemporaryChat = false,
   sources = [],
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const regenerateInFlightRef = useRef(false);
+  const copyResetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const mountedRef = useRef(true);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (copyResetTimeoutRef.current) {
+        clearTimeout(copyResetTimeoutRef.current);
+        copyResetTimeoutRef.current = null;
+      }
     };
   }, []);
 
@@ -157,7 +165,13 @@ export const MessageActions = ({
     try {
       await navigator.clipboard.writeText(messageText);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copyResetTimeoutRef.current) {
+        clearTimeout(copyResetTimeoutRef.current);
+      }
+      copyResetTimeoutRef.current = setTimeout(() => {
+        copyResetTimeoutRef.current = null;
+        if (mountedRef.current) setCopied(false);
+      }, 2000);
     } catch (error) {
       console.error("Failed to copy message:", error);
     }
@@ -249,8 +263,8 @@ export const MessageActions = ({
               delayDuration={300}
             />
 
-            {/* Show edit only for user messages */}
-            {isUser && (
+            {/* Only the latest user-authored message can be edited. */}
+            {isUser && canEdit && (
               <WithTooltip
                 display={"Edit message"}
                 trigger={
@@ -267,8 +281,8 @@ export const MessageActions = ({
               />
             )}
 
-            {/* Show feedback buttons only for assistant messages and not in temporary chats */}
-            {!isUser && onFeedback && !isTemporaryChat && (
+            {/* Show feedback buttons only for assistant messages. */}
+            {!isUser && onFeedback && (
               <>
                 {/* Hide positive feedback button when awaiting negative feedback details */}
                 {!isAwaitingFeedbackDetails && (
@@ -330,8 +344,8 @@ export const MessageActions = ({
               </>
             )}
 
-            {/* Show regenerate only for the last assistant message */}
-            {!isUser && isLastAssistantMessage && (
+            {/* Show regenerate only for eligible last assistant messages. */}
+            {!isUser && isLastAssistantMessage && canRegenerate && (
               <WithTooltip
                 display={"Regenerate response"}
                 trigger={
@@ -350,8 +364,8 @@ export const MessageActions = ({
               />
             )}
 
-            {/* Show branch only for assistant messages and not in temporary chats */}
-            {!isUser && onBranch && !isTemporaryChat && (
+            {/* Show branch only for assistant messages. */}
+            {!isUser && onBranch && (
               <WithTooltip
                 display={"Branch in new task"}
                 trigger={
@@ -361,7 +375,7 @@ export const MessageActions = ({
                     className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                     aria-label="Branch in new task"
                   >
-                    <Split size={16} />
+                    <Split className="rotate-90" size={16} />
                   </button>
                 }
                 side="bottom"

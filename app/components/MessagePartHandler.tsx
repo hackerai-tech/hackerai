@@ -18,6 +18,8 @@ import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
 import { isToolInputValidationError } from "@/lib/chat/tool-error-display";
+import { SubagentToolHandler } from "./tools/SubagentToolHandler";
+import { SubagentSkillToolHandler } from "./tools/SubagentSkillToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -26,12 +28,47 @@ interface MessagePartHandlerProps {
   status: ChatStatus;
   isLastMessage?: boolean;
   keepLatestReasoningOpenDuringStreaming?: boolean;
+  suppressReasoningAutoOpen?: boolean;
   deferReasoningCollapseUntilParent?: boolean;
   /** Pre-computed terminal output by toolCallId (from message level) to avoid per-handler filtering */
   terminalOutputByToolCallId?: Map<string, string>;
   /** File details from get_terminal_files tool (streamed progressively) */
   sharedFileDetails?: FileDetails[];
 }
+
+const SUBAGENT_TOOL_PART_TYPES = new Set([
+  "tool-delegate_task",
+  "tool-create_agent",
+  "tool-continue_agent",
+  "tool-list_agents",
+  "tool-send_message_to_agent",
+  "tool-wait_for_agents",
+  "tool-cancel_agent",
+]);
+
+const subagentLifecycleSignature = (
+  message: UIMessage,
+  toolCallId: unknown,
+): string => {
+  if (typeof toolCallId !== "string") return "";
+  return (message.parts as any[])
+    .filter(
+      (candidate) =>
+        candidate?.type === "data-subagent-lifecycle" &&
+        candidate?.data?.parent_tool_call_id === toolCallId,
+    )
+    .map((candidate) => {
+      const data = candidate.data ?? {};
+      return [
+        data.subagent_id,
+        data.parent_message_id,
+        data.agent_name,
+        data.event,
+        data.status,
+      ].join(":");
+    })
+    .join("|");
+};
 
 // Memoized user text component - avoids re-renders for unchanged text
 const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
@@ -83,6 +120,10 @@ export function areMessagePartHandlerPropsEqual(
   )
     return false;
   if (
+    prevProps.suppressReasoningAutoOpen !== nextProps.suppressReasoningAutoOpen
+  )
+    return false;
+  if (
     prevProps.deferReasoningCollapseUntilParent !==
     nextProps.deferReasoningCollapseUntilParent
   )
@@ -96,6 +137,26 @@ export function areMessagePartHandlerPropsEqual(
   if (
     prevProps.part?.type === "tool-get_terminal_files" &&
     prevProps.sharedFileDetails !== nextProps.sharedFileDetails
+  )
+    return false;
+
+  if (SUBAGENT_TOOL_PART_TYPES.has(prevProps.part?.type)) {
+    const previousLifecycle = subagentLifecycleSignature(
+      prevProps.message,
+      prevProps.part?.toolCallId,
+    );
+    const nextLifecycle = subagentLifecycleSignature(
+      nextProps.message,
+      nextProps.part?.toolCallId,
+    );
+    if (previousLifecycle !== nextLifecycle) return false;
+  }
+
+  // Auto review metadata arrives immediately before the approval request. Keep
+  // approval rows responsive if React commits between those two stream parts.
+  if (
+    nextProps.part?.state === "approval-requested" &&
+    prevProps.message.parts.length !== nextProps.message.parts.length
   )
     return false;
 
@@ -156,6 +217,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   status,
   isLastMessage,
   keepLatestReasoningOpenDuringStreaming,
+  suppressReasoningAutoOpen,
   deferReasoningCollapseUntilParent,
   terminalOutputByToolCallId,
   sharedFileDetails,
@@ -192,7 +254,12 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       }
 
       // For assistant messages, use memoized markdown rendering
-      return <MemoizedMarkdown content={text} />;
+      return (
+        <MemoizedMarkdown
+          content={text}
+          isAnimating={status === "streaming" && isLastMessage === true}
+        />
+      );
     }
 
     case "reasoning":
@@ -203,6 +270,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
           status={status}
           isLastMessage={isLastMessage}
           keepLatestOpenDuringStreaming={keepLatestReasoningOpenDuringStreaming}
+          suppressAutoOpenDuringStreaming={suppressReasoningAutoOpen}
           deferCollapseUntilParent={deferReasoningCollapseUntilParent}
         />
       );
@@ -225,7 +293,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <FileToolsHandler message={message} part={part} status={status} />;
 
     case "tool-file":
-      return <FileHandler part={part} status={status} />;
+      return <FileHandler message={message} part={part} status={status} />;
 
     case "tool-web_search":
     case "tool-open_url":
@@ -268,6 +336,35 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
+
+    case "tool-delegate_task":
+    case "tool-create_agent":
+    case "tool-continue_agent":
+    case "tool-list_agents":
+    case "tool-send_message_to_agent":
+    case "tool-wait_for_agents":
+    case "tool-cancel_agent":
+      return (
+        <SubagentToolHandler message={message} part={part} status={status} />
+      );
+
+    case "tool-search_skills":
+      return (
+        <SubagentSkillToolHandler
+          part={part}
+          status={status}
+          toolName="search_skills"
+        />
+      );
+
+    case "tool-load_skill":
+      return (
+        <SubagentSkillToolHandler
+          part={part}
+          status={status}
+          toolName="load_skill"
+        />
+      );
 
     case "tool-create_note":
       return (

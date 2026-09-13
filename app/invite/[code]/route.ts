@@ -5,6 +5,11 @@ import {
   getReferralRewardConfig,
   isValidReferralCode,
 } from "@/lib/referrals/config";
+import {
+  ANALYTICS_CONSENT_COOKIE_NAME,
+  countryCodeFromHeaders,
+  getAnalyticsConsentDecision,
+} from "@/lib/privacy/analytics-consent";
 
 export const runtime = "nodejs";
 
@@ -23,6 +28,15 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
   const config = getReferralRewardConfig();
   if (!config.enabled || !isValidReferralCode(referralCode)) {
+    return response;
+  }
+
+  const analyticsConsent = getAnalyticsConsentDecision({
+    cookieValue: request.cookies.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+    countryCode: countryCodeFromHeaders(request.headers),
+    failClosed: process.env.NODE_ENV === "production",
+  });
+  if (!analyticsConsent.analyticsAllowed) {
     return response;
   }
 

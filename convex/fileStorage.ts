@@ -7,12 +7,60 @@ import {
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
+import { scheduleFileDeletion } from "./lib/fileDeletion";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
+const MAX_AUXILIARY_VISION_DESCRIPTION_CHARS = 12_000;
+
+/** Cache an owned image description so later turns do not rebill vision. */
+export const saveAuxiliaryVisionDescription = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    fileId: v.id("files"),
+    description: v.string(),
+    model: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const file = await ctx.db.get(args.fileId);
+    if (!file || file.user_id !== args.userId) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "File does not belong to user",
+      });
+    }
+    if (!isSupportedImageMediaType(file.media_type)) {
+      throw new ConvexError({
+        code: "INVALID_FILE_TYPE",
+        message: "Auxiliary vision descriptions are only valid for images",
+      });
+    }
+
+    const description = args.description.trim();
+    if (
+      !description ||
+      description.length > MAX_AUXILIARY_VISION_DESCRIPTION_CHARS
+    ) {
+      throw new ConvexError({
+        code: "INVALID_DESCRIPTION",
+        message: "Auxiliary vision description has an invalid length",
+      });
+    }
+
+    await ctx.db.patch(file._id, {
+      auxiliary_vision_description: description,
+      auxiliary_vision_model: args.model,
+    });
+    return null;
+  },
+});
 
 /**
  * Delete file from storage by file ID
@@ -49,16 +97,11 @@ export const deleteFile = mutation({
       });
     }
 
-    // Delete from S3 storage when this row still has an object reference.
-    if (file.s3_key) {
-      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
-        s3Key: file.s3_key,
-      });
-    } else {
+    if (!file.s3_key)
       console.warn(
         `File ${args.fileId} has no s3_key, skipping storage deletion`,
       );
-    }
+    await scheduleFileDeletion(ctx, file);
 
     await fileCountAggregate.deleteIfExists(ctx, file);
 
@@ -188,7 +231,58 @@ export const getFileContentByFileIds = query({
         id: args.fileIds[index],
         name: file.name,
         mediaType: file.media_type,
-        content: isSupportedImage || isPdf ? null : file.content || null,
+        content: isSupportedImage || isPdf ? null : (file.content ?? null),
+        tokenSize: file.file_token_size,
+      };
+    });
+  },
+});
+
+/**
+ * Get file content for the authenticated user.
+ * Used by the client to hydrate editable draft text attachments after reload
+ * without persisting their content in browser storage.
+ */
+export const getTextFileContentForCurrentUser = query({
+  args: {
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(
+    v.union(
+      v.object({
+        id: v.id("files"),
+        name: v.string(),
+        mediaType: v.string(),
+        content: v.union(v.string(), v.null()),
+        tokenSize: v.number(),
+      }),
+      v.null(),
+    ),
+  ),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      return args.fileIds.map(() => null);
+    }
+
+    const files = await Promise.all(
+      args.fileIds.map((fileId) => ctx.db.get(fileId)),
+    );
+
+    return files.map((file, index) => {
+      if (!file || file.user_id !== user.subject) {
+        return null;
+      }
+
+      const isSupportedImage = isSupportedImageMediaType(file.media_type);
+      const isPdf = file.media_type === "application/pdf";
+
+      return {
+        id: args.fileIds[index],
+        name: file.name,
+        mediaType: file.media_type,
+        content: isSupportedImage || isPdf ? null : (file.content ?? null),
         tokenSize: file.file_token_size,
       };
     });
@@ -222,7 +316,11 @@ export const purgeExpiredUnattachedFiles = internalMutation({
           await ctx.scheduler.runAfter(
             0,
             internal.s3Cleanup.deleteS3ObjectAction,
-            { s3Key: file.s3_key },
+            {
+              s3Key: file.s3_key,
+              ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+              ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+            },
           );
         } else {
           console.warn(
@@ -246,19 +344,41 @@ export const purgeExpiredUnattachedFiles = internalMutation({
 
 const fileForStorageLookupValidator = v.union(
   v.object({
-    _id: v.id("files"),
     s3_key: v.optional(v.string()),
+    s3_region: v.optional(v.string()),
+    s3_bucket: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),
     size: v.number(),
-    file_token_size: v.number(),
-    content: v.optional(v.string()),
-    is_attached: v.boolean(),
-    _creationTime: v.number(),
+    auxiliary_vision_description: v.optional(v.string()),
+    auxiliary_vision_model: v.optional(v.string()),
   }),
   v.null(),
 );
+
+const toFileForStorageLookup = (file: Doc<"files"> | null) => {
+  if (!file) return null;
+
+  // Return only the metadata consumed by the URL actions. Returning the raw
+  // document lets future schema fields reach Convex return-validation errors,
+  // whose diagnostic values can include user-authored file content.
+  return {
+    ...(file.s3_key !== undefined ? { s3_key: file.s3_key } : {}),
+    ...(file.s3_region !== undefined ? { s3_region: file.s3_region } : {}),
+    ...(file.s3_bucket !== undefined ? { s3_bucket: file.s3_bucket } : {}),
+    user_id: file.user_id,
+    name: file.name,
+    media_type: file.media_type,
+    size: file.size,
+    ...(file.auxiliary_vision_description !== undefined
+      ? { auxiliary_vision_description: file.auxiliary_vision_description }
+      : {}),
+    ...(file.auxiliary_vision_model !== undefined
+      ? { auxiliary_vision_model: file.auxiliary_vision_model }
+      : {}),
+  };
+};
 
 /**
  * Internal query to get a file by ID
@@ -271,7 +391,7 @@ export const getFileById = internalQuery({
   returns: fileForStorageLookupValidator,
   handler: async (ctx, args) => {
     const file = await ctx.db.get(args.fileId);
-    return file;
+    return toFileForStorageLookup(file);
   },
 });
 
@@ -285,7 +405,25 @@ export const getFilesByIds = internalQuery({
   },
   returns: v.array(fileForStorageLookupValidator),
   handler: async (ctx, args) => {
-    return await Promise.all(args.fileIds.map((fileId) => ctx.db.get(fileId)));
+    const files = await Promise.all(
+      args.fileIds.map((fileId) => ctx.db.get(fileId)),
+    );
+    return files.map(toFileForStorageLookup);
+  },
+});
+
+/** Resolve an upload reservation by its opaque S3 key. */
+export const getFileByS3Key = internalQuery({
+  args: {
+    s3Key: v.string(),
+  },
+  returns: fileForStorageLookupValidator,
+  handler: async (ctx, args) => {
+    const file = await ctx.db
+      .query("files")
+      .withIndex("by_s3_key", (q) => q.eq("s3_key", args.s3Key))
+      .unique();
+    return toFileForStorageLookup(file);
   },
 });
 
@@ -296,6 +434,8 @@ export const createPendingS3File = internalMutation({
     name: v.string(),
     mediaType: v.string(),
     size: v.number(),
+    s3Region: v.optional(v.string()),
+    s3Bucket: v.optional(v.string()),
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
@@ -323,6 +463,8 @@ export const createPendingS3File = internalMutation({
 
     const fileId = await ctx.db.insert("files", {
       s3_key: args.s3Key,
+      s3_region: args.s3Region,
+      s3_bucket: args.s3Bucket,
       user_id: args.userId,
       name: args.name,
       media_type: args.mediaType,
@@ -354,6 +496,8 @@ export const saveFileToDb = internalMutation({
     fileTokenSize: v.number(),
     content: v.optional(v.string()),
     trustedServiceGenerated: v.optional(v.boolean()),
+    s3Region: v.optional(v.string()),
+    s3Bucket: v.optional(v.string()),
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
@@ -412,6 +556,8 @@ export const saveFileToDb = internalMutation({
 
     const fileId = await ctx.db.insert("files", {
       s3_key: args.s3Key,
+      s3_region: args.s3Region,
+      s3_bucket: args.s3Bucket,
       user_id: args.userId,
       name: args.name,
       media_type: args.mediaType,

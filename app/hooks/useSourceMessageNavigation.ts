@@ -12,8 +12,10 @@ export function useSourceMessageNavigation({
   loadedMessageCount,
   paginationStatus,
   loadMore,
+  revealMessage,
 }: {
   loadedMessageCount: number;
+  revealMessage?: (messageId: string) => boolean;
   paginationStatus?: MessagePaginationStatus;
   loadMore?: (numItems: number) => void;
 }) {
@@ -37,6 +39,8 @@ export function useSourceMessageNavigation({
       requestedPageAtMessageCountRef.current = null;
       return;
     }
+
+    if (scrolledMessageIdRef.current === sourceMessageId) return;
 
     const target = document.getElementById(
       getChatMessageElementId(sourceMessageId),
@@ -69,6 +73,24 @@ export function useSourceMessageNavigation({
       };
     }
 
+    if (revealMessage?.(sourceMessageId)) {
+      let frame = 0;
+      let attempts = 0;
+      const focusRevealed = () => {
+        const node = document.getElementById(
+          getChatMessageElementId(sourceMessageId),
+        );
+        if (node) {
+          node.focus({ preventScroll: true });
+          scrolledMessageIdRef.current = sourceMessageId;
+        } else if (++attempts < 60) {
+          frame = window.requestAnimationFrame(focusRevealed);
+        }
+      };
+      frame = window.requestAnimationFrame(focusRevealed);
+      return () => window.cancelAnimationFrame(frame);
+    }
+
     if (
       paginationStatus === "CanLoadMore" &&
       loadMore &&
@@ -77,7 +99,13 @@ export function useSourceMessageNavigation({
       requestedPageAtMessageCountRef.current = loadedMessageCount;
       loadMore(28);
     }
-  }, [loadMore, loadedMessageCount, paginationStatus, sourceMessageId]);
+  }, [
+    loadMore,
+    loadedMessageCount,
+    paginationStatus,
+    sourceMessageId,
+    revealMessage,
+  ]);
 
   return sourceMessageId;
 }

@@ -1,7 +1,15 @@
 import type {
+  BillingPortalFlow,
+  DowngradeSubscriptionInput,
+  DowngradeSubscriptionResult,
   CancelSubscriptionInput,
   CancelSubscriptionResult,
+  GetRetentionOffersInput,
   KeepSubscriptionResult,
+  PauseSubscriptionInput,
+  PauseSubscriptionResult,
+  ResumeSubscriptionResult,
+  RetentionOffers,
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
 
@@ -85,10 +93,15 @@ export async function getSubscriptionCancellationStatus(): Promise<SubscriptionC
   );
 }
 
-export async function redirectToBillingPortal(): Promise<string> {
+export async function redirectToBillingPortal(
+  flow?: BillingPortalFlow,
+): Promise<string> {
   const { url } = await billingFetchJson<{ url?: unknown }>(
     "/api/billing/portal",
-    { method: "POST" },
+    {
+      method: "POST",
+      ...(flow && { body: JSON.stringify({ flow }) }),
+    },
   );
 
   if (typeof url !== "string" || !url) {
@@ -110,5 +123,41 @@ export async function cancelSubscription(
   return billingFetchJson<CancelSubscriptionResult>("/api/billing/cancel", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export async function getRetentionOffers(
+  input: GetRetentionOffersInput,
+): Promise<RetentionOffers> {
+  return billingFetchJson<RetentionOffers>("/api/billing/retention-offers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function pauseSubscription(
+  input: PauseSubscriptionInput,
+): Promise<PauseSubscriptionResult> {
+  return billingFetchJson<PauseSubscriptionResult>("/api/billing/pause", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function downgradeSubscription(
+  input: DowngradeSubscriptionInput,
+): Promise<DowngradeSubscriptionResult> {
+  return billingFetchJson<DowngradeSubscriptionResult>(
+    "/api/billing/downgrade",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function resumeSubscription(): Promise<ResumeSubscriptionResult> {
+  return billingFetchJson<ResumeSubscriptionResult>("/api/billing/resume", {
+    method: "POST",
   });
 }

@@ -14,7 +14,10 @@ import {
   MAX_FILE_SIZE_BYTES,
   MAX_GENERATED_FILE_SIZE_BYTES,
 } from "@/lib/constants/s3";
-import { uploadSandboxFileToConvex } from "../sandbox-file-uploader";
+import {
+  getSandboxUploadedFileUrl,
+  uploadSandboxFileToConvex,
+} from "../sandbox-file-uploader";
 
 const mockGenerateS3UploadUrl = generateS3UploadUrl as jest.MockedFunction<
   typeof generateS3UploadUrl
@@ -65,6 +68,10 @@ describe("uploadSandboxFileToConvex", () => {
     mockGenerateS3UploadUrl.mockResolvedValue({
       uploadUrl: "https://s3.example/upload",
       s3Key: "users/u1/file.txt",
+      storageLocation: {
+        region: "us-west-2",
+        bucket: "test-west-bucket",
+      },
     });
     mockConvexAction = jest.fn(async () => ({
       url: "https://s3.example/download",
@@ -79,6 +86,36 @@ describe("uploadSandboxFileToConvex", () => {
   afterEach(() => {
     consoleWarnSpy.mockRestore();
     consoleErrorSpy.mockRestore();
+  });
+
+  test("mints a fresh user-scoped URL for an uploaded sandbox file", async () => {
+    mockConvexAction.mockResolvedValueOnce([
+      "https://s3.example/download?signature=fresh",
+    ]);
+
+    await expect(
+      getSandboxUploadedFileUrl({
+        fileId: "file_123" as never,
+        userId: "u1",
+      }),
+    ).resolves.toBe("https://s3.example/download?signature=fresh");
+
+    expect(mockConvexAction).toHaveBeenCalledWith(expect.anything(), {
+      serviceKey: "service-key",
+      userId: "u1",
+      fileIds: ["file_123"],
+    });
+  });
+
+  test("returns undefined when an uploaded sandbox file is unavailable", async () => {
+    mockConvexAction.mockResolvedValueOnce([null]);
+
+    await expect(
+      getSandboxUploadedFileUrl({
+        fileId: "missing_file" as never,
+        userId: "u1",
+      }),
+    ).resolves.toBeUndefined();
   });
 
   test("rejects oversized Centrifugo files before uploading to S3", async () => {
@@ -157,6 +194,8 @@ describe("uploadSandboxFileToConvex", () => {
         name: "report.txt",
         size: 1234,
         s3Key: "users/u1/file.txt",
+        s3Region: "us-west-2",
+        s3Bucket: "test-west-bucket",
       }),
     );
     expect(saved).toMatchObject({

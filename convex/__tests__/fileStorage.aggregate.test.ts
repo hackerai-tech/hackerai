@@ -17,6 +17,7 @@ jest.mock("convex/values", () => ({
     optional: jest.fn(() => "optional"),
     object: jest.fn(() => "object"),
     union: jest.fn(() => "union"),
+    literal: jest.fn(() => "literal"),
     array: jest.fn(() => "array"),
     boolean: jest.fn(() => "boolean"),
   },
@@ -175,6 +176,125 @@ describe("fileStorage - Aggregate Integration", () => {
 
       expect(result).toEqual([null]);
     });
+
+    it("should return text content for files owned by the current user", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      const mockIsSupportedImageMediaType =
+        isSupportedImageMediaType as jest.MockedFunction<
+          typeof isSupportedImageMediaType
+        >;
+      mockIsSupportedImageMediaType.mockReturnValue(false);
+
+      const { getTextFileContentForCurrentUser } =
+        await import("../fileStorage");
+      const ownedFileId = "owned-file-id" as Id<"files">;
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: ownedFileId,
+            user_id: testUserId,
+            name: "pasted_content.txt",
+            media_type: "text/plain",
+            content: "draft pasted content",
+            file_token_size: 321,
+          }),
+        },
+      };
+
+      const result = await getTextFileContentForCurrentUser.handler(mockCtx, {
+        fileIds: [ownedFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          id: ownedFileId,
+          name: "pasted_content.txt",
+          mediaType: "text/plain",
+          content: "draft pasted content",
+          tokenSize: 321,
+        },
+      ]);
+    });
+
+    it("should preserve empty text content for files owned by the current user", async () => {
+      const { isSupportedImageMediaType } =
+        await import("../../lib/utils/file-utils");
+      const mockIsSupportedImageMediaType =
+        isSupportedImageMediaType as jest.MockedFunction<
+          typeof isSupportedImageMediaType
+        >;
+      mockIsSupportedImageMediaType.mockReturnValue(false);
+
+      const { getTextFileContentForCurrentUser } =
+        await import("../fileStorage");
+      const ownedFileId = "owned-empty-file-id" as Id<"files">;
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: ownedFileId,
+            user_id: testUserId,
+            name: "pasted_content.txt",
+            media_type: "text/plain",
+            content: "",
+            file_token_size: 0,
+          }),
+        },
+      };
+
+      const result = await getTextFileContentForCurrentUser.handler(mockCtx, {
+        fileIds: [ownedFileId],
+      });
+
+      expect(result).toEqual([
+        {
+          id: ownedFileId,
+          name: "pasted_content.txt",
+          mediaType: "text/plain",
+          content: "",
+          tokenSize: 0,
+        },
+      ]);
+    });
+
+    it("should not return current-user text content for unowned files", async () => {
+      const { getTextFileContentForCurrentUser } =
+        await import("../fileStorage");
+      const victimFileId = "victim-file-id" as Id<"files">;
+      const mockCtx: any = {
+        auth: {
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
+        db: {
+          get: jest.fn<any>().mockResolvedValue({
+            _id: victimFileId,
+            user_id: "other-user",
+            name: "secret.txt",
+            media_type: "text/plain",
+            content: "private content",
+            file_token_size: 999,
+          }),
+        },
+      };
+
+      const result = await getTextFileContentForCurrentUser.handler(mockCtx, {
+        fileIds: [victimFileId],
+      });
+
+      expect(result).toEqual([null]);
+    });
   });
 
   describe("saveFileToDb", () => {
@@ -207,6 +327,8 @@ describe("fileStorage - Aggregate Integration", () => {
         name: "test.pdf",
         mediaType: "application/pdf",
         size: 1024,
+        s3Region: "us-west-2",
+        s3Bucket: "test-west-bucket",
         fileTokenSize: 100,
         trustedServiceGenerated: true,
       });
@@ -217,6 +339,8 @@ describe("fileStorage - Aggregate Integration", () => {
         expect.objectContaining({
           user_id: testUserId,
           s3_key: "users/test-user-123/test.pdf",
+          s3_region: "us-west-2",
+          s3_bucket: "test-west-bucket",
           name: "test.pdf",
           is_attached: false,
         }),
@@ -468,6 +592,8 @@ describe("fileStorage - Aggregate Integration", () => {
         name: "file.pdf",
         mediaType: "application/pdf",
         size: 1024,
+        s3Region: "us-west-2",
+        s3Bucket: "test-west-bucket",
       });
 
       expect(result).toBe(testFileId);
@@ -475,6 +601,8 @@ describe("fileStorage - Aggregate Integration", () => {
         "files",
         expect.objectContaining({
           s3_key: "users/test-user-123/file.pdf",
+          s3_region: "us-west-2",
+          s3_bucket: "test-west-bucket",
           user_id: testUserId,
           size: 1024,
           file_token_size: 0,

@@ -1,4 +1,4 @@
-import { RefObject, useEffect, useRef } from "react";
+import { RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -23,20 +23,24 @@ import { getInputTokenLimitStatus } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
+import { getOnlineStatusSnapshot } from "@/app/hooks/useOnlineStatus";
 import { AUTO_CONTINUE_PROMPT } from "@/app/hooks/useAutoContinue";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import {
   getAutoContinueChainAssistantIds,
   getMessagesUpToLastRealUser,
+  findLastUserMessageIndex,
 } from "@/lib/utils/message-utils";
 import {
   createFileMessagePartFromUploadedFile,
   getMaxFilesLimitForMode,
 } from "@/lib/utils/file-utils";
 import { hasRestageableLocalDesktopAttachments } from "@/lib/utils/local-attachment-messages";
+import { isPastedTextAttachmentAvailableInMode } from "@/lib/utils/pasted-text-attachments";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import { reconcileSidebarContentAfterRegeneration } from "@/lib/utils/sidebar-utils";
 import { v4 as uuidv4 } from "uuid";
+import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -55,12 +59,29 @@ interface UseChatHandlersProps {
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
+  resumeActiveRun?: () => void | Promise<void>;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
 
 export type RetryOptions = {
   limitRescue?: LimitRescueRequest;
+  /** Override the model for this retry, e.g. Auto for the daily allowance. */
+  selectedModel?: SelectedModel;
+};
+
+const getConvexErrorCode = (error: unknown): string | undefined => {
+  if (!error || typeof error !== "object" || !("data" in error)) {
+    return undefined;
+  }
+
+  const data = (error as { data?: unknown }).data;
+  if (!data || typeof data !== "object" || !("code" in data)) {
+    return undefined;
+  }
+
+  const code = (data as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
 };
 
 export const useChatHandlers = ({
@@ -75,12 +96,13 @@ export const useChatHandlers = ({
   isSendingNowRef,
   hasManuallyStoppedRef,
   activeTriggerRunRef,
+  resumeActiveRun,
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
   const {
-    input,
+    getInput,
     uploadedFiles,
     chatMode,
     clearInput,
@@ -89,7 +111,6 @@ export const useChatHandlers = ({
     setTodos,
     isUploadingFiles,
     subscription,
-    temporaryChatsEnabled,
     queueMessage,
     messageQueue,
     removeQueuedMessage,
@@ -109,12 +130,6 @@ export const useChatHandlers = ({
   // MessageItem intentionally ignores callback identity in its memo comparator,
   // so a rendered Regenerate button can retain an older handler closure.
   const requestSelectedModelRef = useLatestRef(requestSelectedModel);
-
-  // Avoid stale closure on temporary flag
-  const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
-  useEffect(() => {
-    temporaryChatsEnabledRef.current = temporaryChatsEnabled;
-  }, [temporaryChatsEnabled]);
 
   // Avoid stale closure on chatMode: on mobile, a tap on Regenerate can fire
   // before React commits the new chatMode after a mode toggle, sending the
@@ -158,9 +173,6 @@ export const useChatHandlers = ({
   const cancelStreamMutation = useMutation(
     api.chatStreams.cancelStreamFromClient,
   );
-  const cancelTempStreamMutation = useMutation(
-    api.tempStreams.cancelTempStreamFromClient,
-  );
   const getConvexSafeParts = (parts: ChatMessage["parts"]) =>
     sanitizeForConvexValue(parts) as ChatMessage["parts"];
 
@@ -168,24 +180,109 @@ export const useChatHandlers = ({
   // matters while restoring an approval before mode initialization completes.
   const shouldCancelTriggerRun = () =>
     Boolean(activeTriggerRunRef?.current) ||
-    (!temporaryChatsEnabledRef.current &&
-      shouldUseAgentLongForAgent({
-        mode: chatModeRef.current,
-        subscription: subscriptionRef.current,
-        isTauri: isTauriEnvironment(),
-      }));
+    shouldUseAgentLongForAgent({
+      mode: chatModeRef.current,
+      subscription: subscriptionRef.current,
+      isTauri: isTauriEnvironment(),
+    });
 
-  const cancelTriggerRun = async (): Promise<void> => {
-    if (!shouldCancelTriggerRun()) return;
+  type AgentCancellationResult =
+    | { outcome: "not_applicable" | "canceled" }
+    | {
+        outcome: "stale_run";
+        expectedTriggerRunId?: string;
+        activeTriggerRunId?: string | null;
+      };
+
+  const cancelTriggerRun = async (): Promise<AgentCancellationResult> => {
+    if (!shouldCancelTriggerRun()) return { outcome: "not_applicable" };
+    const expectedTriggerRunId = activeTriggerRunRef?.current;
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chatId }),
+      body: JSON.stringify({
+        chatId,
+        ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
+      }),
     });
+    if (response.status === 409) {
+      const payload = (await response.json().catch(() => null)) as {
+        reason?: unknown;
+        activeTriggerRunId?: unknown;
+      } | null;
+      if (payload?.reason === "stale_run") {
+        const hasActiveTriggerRunId = Object.prototype.hasOwnProperty.call(
+          payload,
+          "activeTriggerRunId",
+        );
+        return {
+          outcome: "stale_run",
+          expectedTriggerRunId,
+          ...(hasActiveTriggerRunId
+            ? {
+                activeTriggerRunId:
+                  typeof payload.activeTriggerRunId === "string"
+                    ? payload.activeTriggerRunId
+                    : null,
+              }
+            : {}),
+        };
+      }
+    }
     if (!response.ok) {
       throw new Error(
         `Agent cancellation failed with status ${response.status}`,
       );
+    }
+    return { outcome: "canceled" };
+  };
+
+  const recoverStaleAgentRun = async (
+    result: Extract<AgentCancellationResult, { outcome: "stale_run" }>,
+  ): Promise<void> => {
+    hasManuallyStoppedRef.current = false;
+    if (activeTriggerRunRef && result.activeTriggerRunId !== undefined) {
+      activeTriggerRunRef.current = result.activeTriggerRunId ?? undefined;
+    }
+
+    const hasNoActiveRun = result.activeTriggerRunId === null;
+
+    captureAuthenticatedEvent("agent_cancel_stale_recovery_started", {
+      chat_id: chatId,
+      expected_trigger_run_id: result.expectedTriggerRunId,
+      active_trigger_run_id: result.activeTriggerRunId,
+      recovery_action: hasNoActiveRun
+        ? "no_active_run"
+        : resumeActiveRun
+          ? "resume_stream"
+          : "persisted_state",
+      cancellation_applied: false,
+    });
+
+    if (hasNoActiveRun) {
+      setIsAutoResuming(false);
+      toast.info("Agent run already finished", {
+        description: "Nothing is running to cancel. Try the action again.",
+      });
+      return;
+    }
+
+    toast.info("Agent run changed", {
+      description: "Reconnecting to the current run instead of cancelling it.",
+    });
+
+    if (!resumeActiveRun) {
+      setIsAutoResuming(false);
+      return;
+    }
+
+    setIsAutoResuming(true);
+    try {
+      await resumeActiveRun();
+    } catch (error) {
+      setIsAutoResuming(false);
+      console.error("Failed to resume the current Agent run:", error);
+      toast.error("Could not reconnect to the current Agent run.");
     }
   };
 
@@ -242,51 +339,41 @@ export const useChatHandlers = ({
       setMessages(stoppedMessages);
     }
 
-    if (!temporaryChatsEnabledRef.current) {
-      // Run cancel and save in parallel - they're independent operations
-      const lastMessage = stoppedMessages[stoppedMessages.length - 1];
-      const savePromise =
-        !options?.skipSave && lastMessage?.role === "assistant"
-          ? saveAssistantMessage({
-              id: lastMessage.id,
-              chatId,
-              role: lastMessage.role,
-              parts: getConvexSafeParts(lastMessage.parts),
-              mode: lastMessage.metadata?.mode ?? chatModeRef.current,
-              generationStartedAt,
-              generationTimeMs,
-            }).catch((error) => {
-              console.error("Failed to save message on stop:", error);
-            })
-          : Promise.resolve();
+    // Run cancel and save in parallel - they're independent operations
+    const lastMessage = stoppedMessages[stoppedMessages.length - 1];
+    const savePromise =
+      !options?.skipSave && lastMessage?.role === "assistant"
+        ? saveAssistantMessage({
+            id: lastMessage.id,
+            chatId,
+            role: lastMessage.role,
+            parts: getConvexSafeParts(lastMessage.parts),
+            mode: lastMessage.metadata?.mode ?? chatModeRef.current,
+            generationStartedAt,
+            generationTimeMs,
+          }).catch((error) => {
+            console.error("Failed to save message on stop:", error);
+          })
+        : Promise.resolve();
 
-      const cancelPromise = cancelStreamMutation({
-        chatId,
-        skipSave: options?.skipSave || undefined,
-        todos,
-      });
-      await Promise.all([
-        options?.requireCancelSuccess
-          ? cancelPromise
-          : cancelPromise.catch((error) => {
-              console.error("Failed to cancel stream:", error);
-            }),
-        savePromise,
-      ]);
-    } else {
-      // Temporary chats: signal cancel via temp stream coordination
-      const cancelPromise = cancelTempStreamMutation({ chatId });
-      if (options?.requireCancelSuccess) {
-        await cancelPromise;
-      } else {
-        await cancelPromise.catch(() => {});
-      }
-    }
+    const cancelPromise = cancelStreamMutation({
+      chatId,
+      skipSave: options?.skipSave || undefined,
+      todos,
+    });
+    await Promise.all([
+      options?.requireCancelSuccess
+        ? cancelPromise
+        : cancelPromise.catch((error) => {
+            console.error("Failed to cancel stream:", error);
+          }),
+      savePromise,
+    ]);
 
     return normalizedMessages;
   };
 
-  const stopActiveRunForReplacement = async (): Promise<void> => {
+  const stopActiveRunForReplacement = async (): Promise<boolean> => {
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
       cancelTriggerRun(),
       stopActiveStream({ skipSave: true }),
@@ -303,13 +390,23 @@ export const useChatHandlers = ({
     if (streamStopResult.status === "rejected") {
       throw streamStopResult.reason;
     }
+    if (triggerCancelResult.value.outcome === "stale_run") {
+      await recoverStaleAgentRun(triggerCancelResult.value);
+      return false;
+    }
+    return true;
   };
 
-  const stopActiveRunForSteer = async (): Promise<void> => {
+  const stopActiveRunForSteer = async (): Promise<boolean> => {
     // Persist the latest message and todo snapshot before canceling the Trigger
-    // run. The next run reads persisted todos for non-temporary chats.
+    // run. The next run reads the persisted todo snapshot.
     await stopActiveStream({ requireCancelSuccess: true });
-    await cancelTriggerRun();
+    const cancelResult = await cancelTriggerRun();
+    if (cancelResult.outcome === "stale_run") {
+      await recoverStaleAgentRun(cancelResult);
+      return false;
+    }
+    return true;
   };
 
   const hasActiveRunToReplace = () =>
@@ -320,6 +417,19 @@ export const useChatHandlers = ({
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
 
+    // Read the prompt only when the user submits. Keeping the live composer
+    // value out of this hook prevents each keystroke from rerendering Chat.
+    const input = getInput();
+
+    // The visible composer normally blocks this path while offline. Check the
+    // browser snapshot again here so a connectivity race cannot clear a draft.
+    if (!getOnlineStatusSnapshot()) {
+      toast.info("You're offline", {
+        description: "Your draft is saved. Reconnect before sending.",
+      });
+      return false;
+    }
+
     setIsAutoResuming(false);
 
     // Reset manual stop flag when user submits a new message
@@ -328,6 +438,29 @@ export const useChatHandlers = ({
 
     // Prevent submission if files are still uploading
     if (isUploadingFiles) {
+      return false;
+    }
+    const currentChatMode = chatModeRef.current;
+    const hasUnavailableLocalFiles = uploadedFiles.some(
+      (file) =>
+        file.storage === "local-desktop" &&
+        (file.unavailable || !file.localAttachmentId || !file.localPath),
+    );
+    if (hasUnavailableLocalFiles) {
+      toast.error("Local attachment is unavailable", {
+        description:
+          "Open this draft on the Desktop device where the file was created, or remove the attachment before sending.",
+      });
+      return false;
+    }
+    const hasUnavailablePastedText = uploadedFiles.some(
+      (file) => !isPastedTextAttachmentAvailableInMode(file, currentChatMode),
+    );
+    if (hasUnavailablePastedText) {
+      toast.error("Pasted text is unavailable in Ask", {
+        description:
+          "Switch to Agent mode, show it in the text field, or remove the attachment.",
+      });
       return false;
     }
     // Allow submission if there's text input or uploaded files
@@ -344,7 +477,6 @@ export const useChatHandlers = ({
       return false;
     }
 
-    const currentChatMode = chatModeRef.current;
     const hasLocalDesktopFiles = uploadedFiles.some(
       (file) => file.storage === "local-desktop",
     );
@@ -360,8 +492,8 @@ export const useChatHandlers = ({
       return false;
     }
 
-    // If streaming in Agent mode, check queue behavior
-    if (status === "streaming") {
+    // While an Agent run is starting or streaming, honor the queue behavior.
+    if (status === "streaming" || status === "submitted") {
       const validFiles = uploadedFiles
         .filter(isSendableUploadedFile)
         .map(createFileMessagePartFromUploadedFile)
@@ -375,7 +507,7 @@ export const useChatHandlers = ({
         return true;
       } else if (queueBehavior === "stop-and-send") {
         try {
-          await stopActiveRunForSteer();
+          if (!(await stopActiveRunForSteer())) return false;
         } catch (error) {
           console.error(
             "Failed to stop the active run before steering:",
@@ -421,7 +553,7 @@ export const useChatHandlers = ({
       });
       return false;
     }
-    if (!isExistingChat && !temporaryChatsEnabledRef.current) {
+    if (!isExistingChat) {
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
 
@@ -443,7 +575,6 @@ export const useChatHandlers = ({
             body: {
               mode: currentChatMode,
               todos,
-              temporary: temporaryChatsEnabled,
               sandboxPreference,
               agentPermissionMode: agentPermissionModeRef.current,
 
@@ -462,7 +593,6 @@ export const useChatHandlers = ({
             body: {
               mode: currentChatMode,
               todos,
-              temporary: temporaryChatsEnabled,
               sandboxPreference,
               agentPermissionMode: agentPermissionModeRef.current,
 
@@ -479,6 +609,13 @@ export const useChatHandlers = ({
   };
 
   const handleStop = async () => {
+    captureAuthenticatedEvent("chat_response_stop_requested", {
+      chat_id: chatId,
+      message_id: messages.findLast((message) => message.role === "assistant")
+        ?.id,
+      mode: chatModeRef.current,
+      selected_model: requestSelectedModelRef.current ?? "auto",
+    });
     setIsAutoResuming(false);
 
     // Set manual stop flag to prevent auto-processing of queue
@@ -503,6 +640,14 @@ export const useChatHandlers = ({
       console.error("Error in handleStop:", streamStopResult.reason);
     }
 
+    if (
+      triggerCancelResult.status === "fulfilled" &&
+      triggerCancelResult.value.outcome === "stale_run"
+    ) {
+      await recoverStaleAgentRun(triggerCancelResult.value);
+      return false;
+    }
+
     return triggerCancelResult.status === "fulfilled";
   };
 
@@ -512,12 +657,19 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      await stopActiveRunForReplacement();
+      if (!(await stopActiveRunForReplacement())) return;
     }
     const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
+    captureAuthenticatedEvent("chat_response_regeneration_requested", {
+      chat_id: chatId,
+      message_id: messages.findLast((message) => message.role === "assistant")
+        ?.id,
+      mode: chatModeRef.current,
+      selected_model: requestSelectedModelRef.current ?? "auto",
+    });
     const cleanedTodos =
       chainAssistantIds.length > 0
         ? removeTodosBySourceMessages(todos, chainAssistantIds)
@@ -551,51 +703,30 @@ export const useChatHandlers = ({
       ? trimmedMessages
       : [];
 
-    if (!temporaryChatsEnabled) {
-      // Delete the trailing response chain and clear summaries that may include
-      // that deleted work, so regeneration starts from the original request.
-      if (chainAssistantIds.length > 0) {
-        await deleteLastAssistantMessage({
-          chatId,
-          resetSummary: true,
-          todos: cleanedTodos,
-        });
-      }
-      // For persisted chats, backend fetches from database - explicitly send no messages
-      runChatAction("regenerate response", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: persistentRegenerateMessages,
-            todos: cleanedTodos,
-            regenerate: true,
-            agentRunRequestId,
-            useClientMessagesForRegenerate:
-              shouldSendClientMessagesForRegenerate,
-            temporary: false,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: requestSelectedModelRef.current,
-          },
-        }),
-      );
-    } else {
-      runChatAction("regenerate response", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: trimmedMessages,
-            todos: cleanedTodos,
-            regenerate: true,
-            agentRunRequestId,
-            temporary: true,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: requestSelectedModelRef.current,
-          },
-        }),
-      );
+    // Delete the trailing response chain and clear summaries that may include
+    // that deleted work, so regeneration starts from the original request.
+    if (chainAssistantIds.length > 0) {
+      await deleteLastAssistantMessage({
+        chatId,
+        resetSummary: true,
+        todos: cleanedTodos,
+      });
     }
+    runChatAction("regenerate response", () =>
+      regenerate({
+        body: {
+          mode: chatModeRef.current,
+          messages: persistentRegenerateMessages,
+          todos: cleanedTodos,
+          regenerate: true,
+          agentRunRequestId,
+          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
+          sandboxPreference,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel: requestSelectedModelRef.current,
+        },
+      }),
+    );
   };
 
   const handleRetry = async (options: RetryOptions = {}) => {
@@ -604,10 +735,11 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      await stopActiveRunForReplacement();
+      if (!(await stopActiveRunForReplacement())) return;
     }
     const agentRunRequestId = uuidv4();
 
+    const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
     const cleanedTodos = removeTodosBySourceMessages(
       todos,
       todos
@@ -625,45 +757,33 @@ export const useChatHandlers = ({
       ? messagesToLastUser
       : [];
 
-    if (!temporaryChatsEnabled) {
-      // For persisted chats, backend fetches from database unless local desktop
-      // attachments must be restaged from the client.
-      runChatAction("retry response", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: persistentRegenerateMessages,
-            todos: cleanedTodos,
-            regenerate: true,
-            agentRunRequestId,
-            useClientMessagesForRegenerate:
-              shouldSendClientMessagesForRegenerate,
-            temporary: false,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: requestSelectedModel,
-            ...(options.limitRescue && { limitRescue: options.limitRescue }),
-          },
-        }),
-      );
-    } else {
-      runChatAction("retry response", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: messagesToLastUser,
-            todos: cleanedTodos,
-            regenerate: true,
-            agentRunRequestId,
-            temporary: true,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: requestSelectedModel,
-            ...(options.limitRescue && { limitRescue: options.limitRescue }),
-          },
-        }),
-      );
+    // Delete any persisted partial/error response before retrying. The backend
+    // otherwise fetches that stale trailing chain when client messages are not
+    // needed to restage local desktop attachments.
+    if (chainAssistantIds.length > 0) {
+      await deleteLastAssistantMessage({
+        chatId,
+        resetSummary: true,
+        todos: cleanedTodos,
+      });
     }
+
+    runChatAction("retry response", () =>
+      regenerate({
+        body: {
+          mode: chatModeRef.current,
+          messages: persistentRegenerateMessages,
+          todos: cleanedTodos,
+          regenerate: true,
+          agentRunRequestId,
+          useClientMessagesForRegenerate: shouldSendClientMessagesForRegenerate,
+          sandboxPreference,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel: options.selectedModel ?? requestSelectedModel,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
+        },
+      }),
+    );
   };
 
   const handleEditMessage = async (
@@ -671,47 +791,55 @@ export const useChatHandlers = ({
     newContent: string,
     remainingFileIds?: string[],
   ) => {
+    const lastUserMessageIndex = findLastUserMessageIndex(messages);
+    if (
+      lastUserMessageIndex === undefined ||
+      messages[lastUserMessageIndex]?.id !== messageId
+    ) {
+      toast.error("Only the latest user message can be edited.");
+      return;
+    }
+
     setIsAutoResuming(false);
+    resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (hasActiveRunToReplace()) {
-      await stopActiveRunForReplacement();
+      if (!(await stopActiveRunForReplacement())) return;
     }
     const agentRunRequestId = uuidv4();
 
-    // Find the edited message index to identify subsequent messages
+    // Compute the todo snapshot before the edit mutation. Stopping a run
+    // persists its latest todos, so the same mutation that removes the old
+    // response must also replace that snapshot to avoid a reactive chat update
+    // restoring todos from the discarded response.
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
+    const discardedMessageIds =
+      editedMessageIndex === -1
+        ? []
+        : messages.slice(editedMessageIndex + 1).map((message) => message.id);
+    const cleanedTodosForEdit = removeTodosBySourceMessages(
+      todos,
+      discardedMessageIds,
+    );
 
-    if (editedMessageIndex !== -1) {
-      // Get all subsequent messages (both user and assistant) that will be removed
-      const subsequentMessages = messages.slice(editedMessageIndex + 1);
-      const idsToClean = subsequentMessages.map((m) => m.id);
-
-      // Also clean todos from the edited message itself if it's an assistant message
-      const editedMessage = messages[editedMessageIndex];
-      if (editedMessage.role === "assistant") {
-        idsToClean.push(messageId);
+    try {
+      await regenerateWithNewContent({
+        messageId: messageId as Id<"messages">,
+        newContent,
+        fileIds: remainingFileIds,
+        todos: cleanedTodosForEdit,
+      });
+    } catch (error) {
+      if (getConvexErrorCode(error) === "MESSAGE_NOT_EDITABLE") {
+        toast.error("Only the latest user message can be edited.");
+        return;
       }
 
-      // Remove todos linked to the edited message and all subsequent messages
-      if (idsToClean.length > 0) {
-        const updatedTodos = removeTodosBySourceMessages(todos, idsToClean);
-        setTodos(updatedTodos);
-      }
+      throw error;
     }
 
-    if (!temporaryChatsEnabled) {
-      try {
-        await regenerateWithNewContent({
-          messageId: messageId as Id<"messages">,
-          newContent,
-          fileIds: remainingFileIds,
-        });
-      } catch (error) {
-        // Swallow benign errors (e.g., racing edits where the message was already removed)
-        // Avoid logging to keep console clean
-      }
-    }
+    setTodos(cleanedTodosForEdit);
 
     // Build updated parts: text + remaining file parts
     const buildUpdatedParts = (currentParts: any[]) => {
@@ -754,83 +882,26 @@ export const useChatHandlers = ({
       return updatedMessages;
     });
 
-    // Trigger regeneration of assistant response with cleaned todos
-    const cleanedTodosForEdit = (() => {
-      const editedIndex = messages.findIndex((m) => m.id === messageId);
-      if (editedIndex === -1) return todos;
-      const subsequentMessages = messages.slice(editedIndex + 1);
-      const idsToClean = subsequentMessages.map((m) => m.id);
-      const editedMessage = messages[editedIndex];
-      if (editedMessage.role === "assistant") idsToClean.push(messageId);
-      return removeTodosBySourceMessages(todos, idsToClean);
-    })();
-
-    // For persisted chats, backend fetches from database
-    // For temporary chats, send all messages up to and including the edited message
-    if (!temporaryChatsEnabled) {
-      runChatAction("regenerate edited message", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: [],
-            todos: cleanedTodosForEdit,
-            regenerate: true,
-            agentRunRequestId,
-            temporary: false,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-
-            selectedModel: requestSelectedModel,
-          },
-        }),
-      );
-    } else {
-      // For temporary chats, send messages up to and including the edited message
-      const messagesUpToEdit = messages.slice(0, editedMessageIndex + 1);
-      const editedMessage = messages[editedMessageIndex];
-
-      // Build updated parts for the edited message
-      const updatedParts: any[] = [];
-      if (newContent.trim()) {
-        updatedParts.push({ type: "text", text: newContent });
-      }
-      if (remainingFileIds && remainingFileIds.length > 0) {
-        const remainingFileParts = editedMessage.parts.filter(
-          (part: any) =>
-            part.type === "file" &&
-            part.fileId &&
-            remainingFileIds.includes(part.fileId),
-        );
-        updatedParts.push(...remainingFileParts);
-      }
-
-      messagesUpToEdit[editedMessageIndex] = {
-        ...editedMessage,
-        parts: updatedParts,
-      };
-
-      runChatAction("regenerate edited message", () =>
-        regenerate({
-          body: {
-            mode: chatModeRef.current,
-            messages: messagesUpToEdit,
-            todos: cleanedTodosForEdit,
-            regenerate: true,
-            agentRunRequestId,
-            temporary: true,
-            sandboxPreference,
-            agentPermissionMode: agentPermissionModeRef.current,
-
-            selectedModel: requestSelectedModel,
-          },
-        }),
-      );
-    }
+    runChatAction("regenerate edited message", () =>
+      regenerate({
+        body: {
+          mode: chatModeRef.current,
+          messages: [],
+          todos: cleanedTodosForEdit,
+          regenerate: true,
+          agentRunRequestId,
+          sandboxPreference,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel: requestSelectedModel,
+        },
+      }),
+    );
   };
 
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
-    if (status === "streaming") return;
+    if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
+    resetAutoContinueCount?.();
     const continuationSelectedModel =
       selectedModelOverride ?? requestSelectedModelRef.current;
     runChatAction("continue response", () =>
@@ -844,7 +915,6 @@ export const useChatHandlers = ({
             mode: chatModeRef.current,
             isAutoContinue: true,
             todos,
-            temporary: temporaryChatsEnabled,
             sandboxPreference,
             agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: continuationSelectedModel,
@@ -857,6 +927,7 @@ export const useChatHandlers = ({
   const handleSendNow = async (messageId: string) => {
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
+    resetAutoContinueCount?.();
 
     // Set flag to prevent auto-processing from interfering
     isSendingNowRef.current = true;
@@ -867,7 +938,7 @@ export const useChatHandlers = ({
     try {
       setIsAutoResuming(false);
       if (hasActiveRunToReplace()) {
-        await stopActiveRunForSteer();
+        if (!(await stopActiveRunForSteer())) return;
       }
 
       // Keep the queued message available if stopping fails.
@@ -894,7 +965,6 @@ export const useChatHandlers = ({
           body: {
             mode: chatModeRef.current,
             todos,
-            temporary: temporaryChatsEnabled,
             sandboxPreference,
             agentPermissionMode: agentPermissionModeRef.current,
 

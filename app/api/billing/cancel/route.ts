@@ -22,6 +22,7 @@ function parseCancelSubscriptionInput(
   return {
     cancellationReason: {
       reasonCategory: body.cancellationReason.reasonCategory,
+      reasonSubcategory: body.cancellationReason.reasonSubcategory,
       reasonDetails: body.cancellationReason.reasonDetails,
     },
   };

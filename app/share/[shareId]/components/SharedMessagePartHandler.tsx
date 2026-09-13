@@ -16,6 +16,7 @@ import {
   FileDown,
   ExternalLink,
   Globe,
+  Users,
 } from "lucide-react";
 import {
   getNotesIcon,
@@ -48,6 +49,7 @@ import {
   createToolInputErrorContent,
   isToolInputValidationError,
 } from "@/lib/chat/tool-error-display";
+import { formatSubagentCountSummary } from "@/lib/ai/subagents/status-summary";
 
 interface MessagePart {
   type: string;
@@ -188,6 +190,105 @@ export const SharedMessagePartHandler = ({
     return renderGetTerminalFilesTool(part, idx);
   }
 
+  if (
+    part.type === "tool-delegate_task" ||
+    part.type === "tool-create_agent" ||
+    part.type === "tool-list_agents" ||
+    part.type === "tool-send_message_to_agent" ||
+    part.type === "tool-wait_for_agents" ||
+    part.type === "tool-cancel_agent"
+  ) {
+    const agentName =
+      part.output?.name ??
+      part.output?.target_agent_name ??
+      part.output?.agent_name ??
+      part.input?.name ??
+      part.input?.profile_input?.candidate?.title ??
+      part.output?.target_agent_id ??
+      part.input?.target_agent_id ??
+      "Subagent";
+    const toolFailed =
+      Boolean(part.errorText) || part.output?.success === false;
+    if (part.type === "tool-create_agent") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={`${agentName} ${toolFailed ? "failed to start" : "started working"}`}
+        />
+      );
+    }
+    if (part.type === "tool-send_message_to_agent") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={`${agentName} ${toolFailed ? "update failed" : "updated"}`}
+        />
+      );
+    }
+    if (part.type === "tool-list_agents") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={
+            toolFailed
+              ? "Could not list subagents"
+              : formatSubagentCountSummary(part.output?.agents)
+          }
+        />
+      );
+    }
+    if (part.type === "tool-cancel_agent") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={`${agentName} ${toolFailed ? "cancel failed" : "canceled"}`}
+        />
+      );
+    }
+    if (part.type === "tool-wait_for_agents") {
+      return (
+        <ToolBlock
+          key={idx}
+          icon={<Users aria-hidden="true" />}
+          action={
+            part.output?.wait_outcome === "targets_not_found"
+              ? "Subagent targets not found"
+              : part.output?.wait_outcome === "agent_finished"
+                ? `${agentName} finished`
+                : "Waited for subagents"
+          }
+        />
+      );
+    }
+    const verdict = part.output?.verdict;
+    const validationFailed =
+      (typeof part.output?.status === "string" &&
+        part.output.status !== "completed") ||
+      Boolean(part.errorText);
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<Users aria-hidden="true" />}
+        action={
+          validationFailed
+            ? "Validation failed"
+            : verdict === "confirmed"
+              ? "Confirmed independently"
+              : verdict === "rejected"
+                ? "Rejected independently"
+                : verdict === "inconclusive"
+                  ? "Validation inconclusive"
+                  : "Independent validation"
+        }
+        target={part.input?.profile_input?.candidate?.title}
+      />
+    );
+  }
+
   // Todo operations
   if (part.type === "tool-todo_write") {
     return renderTodoTool(part, idx);
@@ -282,7 +383,7 @@ function renderTerminalTool(
         part.state === "output-error"
           ? isStoppedToolPart(part)
             ? "Stopped command"
-            : getTerminalFailureAction(part.errorText)
+            : getTerminalFailureAction(part.errorText, part.input?.action)
           : blockAction(false)
       }
       target={blockTarget}
@@ -589,7 +690,7 @@ function renderWebSearchTool(part: MessagePart, idx: number) {
   };
 
   let target: string | undefined;
-  if (webInput?.queries && webInput.queries.length > 0) {
+  if (Array.isArray(webInput?.queries) && webInput.queries.length > 0) {
     target = webInput.queries.join(", ");
   } else if (webInput?.query) {
     target = webInput.query;

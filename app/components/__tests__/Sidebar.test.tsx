@@ -3,6 +3,11 @@ import { describe, expect, it, jest } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
 
 let mockSidebarState: "expanded" | "collapsed" = "expanded";
+const mockUseProjects = jest.fn(() => ({
+  results: [],
+  status: "Exhausted" as const,
+  loadMore: jest.fn(),
+}));
 
 jest.mock("@/components/ui/sidebar", () => {
   const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -25,6 +30,7 @@ jest.mock("@/hooks/use-mobile", () => ({
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({ setChatSidebarOpen: jest.fn() }),
+  useGlobalStateActions: () => ({ setChatSidebarOpen: jest.fn() }),
 }));
 jest.mock("@/app/hooks/useChats", () => ({
   useChats: () => ({
@@ -34,23 +40,35 @@ jest.mock("@/app/hooks/useChats", () => ({
   }),
 }));
 jest.mock("@/app/hooks/useProjects", () => ({
-  useProjects: () => ({
-    results: [],
-    status: "Exhausted",
-    loadMore: jest.fn(),
-  }),
+  useProjects: mockUseProjects,
 }));
 jest.mock("../SidebarHeader", () => ({
   __esModule: true,
-  default: () => <div>Header</div>,
+  default: ({ isMobileOverlay }: { isMobileOverlay?: boolean }) => (
+    <div data-testid="sidebar-header" data-mobile={isMobileOverlay}>
+      Header
+    </div>
+  ),
 }));
 jest.mock("../SidebarUserNav", () => ({
   __esModule: true,
   default: () => <div>Footer</div>,
 }));
 jest.mock("../SidebarChatSections", () => ({
-  SidebarChatSections: () => (
-    <div data-testid="sidebar-chat-sections">Task sections</div>
+  SidebarChatSections: ({
+    projects,
+    loadMore,
+  }: {
+    projects?: unknown[];
+    loadMore?: unknown;
+  }) => (
+    <div
+      data-testid="sidebar-chat-sections"
+      data-project-count={projects?.length}
+      data-pagination-enabled={typeof loadMore === "function"}
+    >
+      Task sections
+    </div>
   ),
 }));
 
@@ -59,6 +77,11 @@ const MainSidebar = require("../Sidebar")
 
 const chatListData = {
   results: [{ _id: "chat-doc", id: "chat-1", title: "Target notes" }],
+  status: "Exhausted" as const,
+  loadMore: jest.fn(),
+};
+const projectListData = {
+  results: [],
   status: "Exhausted" as const,
   loadMore: jest.fn(),
 };
@@ -72,6 +95,10 @@ describe("MainSidebar", () => {
     expect(expandedContent).toHaveClass("visible", "opacity-100", "delay-200");
     expect(expandedContent).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByTestId("sidebar-chat-sections")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-pagination-enabled",
+      "true",
+    );
 
     mockSidebarState = "collapsed";
     rerender(<MainSidebar chatListData={chatListData} />);
@@ -85,5 +112,40 @@ describe("MainSidebar", () => {
     expect(collapsedContent).toHaveAttribute("aria-hidden", "true");
     expect(collapsedContent).toHaveAttribute("inert");
     expect(screen.getByTestId("sidebar-chat-sections")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-pagination-enabled",
+      "false",
+    );
+
+    mockSidebarState = "expanded";
+    rerender(<MainSidebar chatListData={chatListData} />);
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-pagination-enabled",
+      "true",
+    );
+  });
+
+  it("adds consistent side gutters to the mobile sidebar", () => {
+    mockUseProjects.mockClear();
+    render(
+      <MainSidebar
+        isMobileOverlay={true}
+        chatListData={chatListData}
+        projectListData={projectListData}
+      />,
+    );
+
+    expect(screen.getByTestId("sidebar-header")).toHaveAttribute(
+      "data-mobile",
+      "true",
+    );
+    expect(screen.getByTestId("mobile-sidebar-chat-content")).toHaveClass(
+      "px-2",
+    );
+    expect(mockUseProjects).toHaveBeenCalledWith(10, false);
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-project-count",
+      "0",
+    );
   });
 });

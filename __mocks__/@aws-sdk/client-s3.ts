@@ -8,6 +8,10 @@ export const PutObjectCommand = jest.fn().mockImplementation((params: any) => ({
   params,
 }));
 
+export const CopyObjectCommand = jest
+  .fn()
+  .mockImplementation((params: any) => ({ params }));
+
 export class GetObjectCommand {
   constructor(params: any) {}
 }

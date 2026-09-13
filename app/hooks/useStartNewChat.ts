@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useGlobalStateActions } from "@/app/contexts/GlobalState";
 
 type StartNewChatOptions = {
   projectId?: string;
@@ -19,8 +19,7 @@ export function useStartNewChat() {
     setActiveProjectId,
     setChatSidebarOpen,
     setSandboxPreference,
-    setTemporaryChatsEnabled,
-  } = useGlobalState();
+  } = useGlobalStateActions();
 
   return useCallback(
     ({ projectId, useDesktop = false }: StartNewChatOptions = {}) => {
@@ -29,7 +28,6 @@ export function useStartNewChat() {
 
       initializeNewChat();
       setActiveProjectId(projectId ?? null);
-      setTemporaryChatsEnabled(false);
       if (useDesktop) setSandboxPreference("desktop");
 
       router.push(
@@ -44,7 +42,6 @@ export function useStartNewChat() {
       setActiveProjectId,
       setChatSidebarOpen,
       setSandboxPreference,
-      setTemporaryChatsEnabled,
     ],
   );
 }

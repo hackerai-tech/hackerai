@@ -70,8 +70,8 @@ describe("open_url", () => {
       expect.objectContaining({
         chat_id: "chat-1",
         error_code: "ETIMEDOUT",
-        error_message: "fetch failed",
-        error_name: "TypeError",
+        tool_error_message: "fetch failed",
+        tool_error_name: "TypeError",
         event: "open_url_fetch_failed",
         provider: "jina",
         url_hostname: "example.com",
@@ -156,8 +156,8 @@ describe("open_url", () => {
     expect(mockPhLoggerError).toHaveBeenCalledWith(
       "Open URL tool error",
       expect.objectContaining({
-        error_message: "unexpected boom",
-        error_name: "Error",
+        tool_error_message: "unexpected boom",
+        tool_error_name: "Error",
         event: "open_url_tool_failed",
         provider: "jina",
         url_hostname: "invalid_url",

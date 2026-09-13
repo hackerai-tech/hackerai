@@ -5,27 +5,44 @@ import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import type { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { PtySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
+import type { PtyParserLogBudget } from "@/lib/ai/tools/utils/pty-output-formatter";
 import type { ChatMode, SubscriptionTier } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
+import type { MiosaSandbox } from "@/lib/ai/tools/utils/miosa-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
+import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+import type { S3StorageRegion } from "@/lib/constants/s3";
 
-// Union type for E2B Sandbox and local CentrifugoSandbox
-export type AnySandbox = Sandbox | CentrifugoSandbox;
+// Union type for cloud providers and local CentrifugoSandbox.
+export type AnySandbox = Sandbox | MiosaSandbox | CentrifugoSandbox;
 
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 
-export type SandboxType = "e2b" | "desktop" | "remote-connection";
+/** Execution environment category used in runtime logs and analytics. */
+export type SandboxType = "cloud" | "desktop" | "remote-connection";
 
 export interface SandboxInfo {
   type: SandboxType;
   name?: string;
+  /** Concrete cloud backend. Omitted for user-owned execution hosts. */
+  provider?: CloudSandboxProvider;
 }
 
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
   resetSandbox?(reason?: string): Promise<void>;
+  /** Quarantine an unresponsive local connection and keep retry acquisition bound to that explicit selection. */
+  quarantineLocalConnection?(
+    connectionId: string,
+    reason: "command_unresponsive",
+  ): Promise<void>;
+  /** Replace a stale relay connection with a live successor for the same machine. */
+  recoverLocalConnection?(
+    connectionId: string,
+    reason: "command_relay_unsubscribed",
+  ): Promise<{ sandbox: AnySandbox }>;
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this
@@ -53,11 +70,96 @@ export interface SandboxBootInfo {
     | "create_after_broken";
   duration_ms: number;
   create_attempts: number;
+  region?: string;
+  trigger_region?: string;
+  requested_region?: string;
+  placement_reason?: string;
+  release_id?: string;
+  image_version?: string;
+  failover_from_region?: string;
+  failover_error_name?: string;
+  failover_duration_ms?: number;
 }
+
+export interface SandboxResourceMetrics {
+  cpuPct: number;
+  memPct: number;
+  diskPct: number;
+}
+
+export type SandboxReadinessFailureReason =
+  | "sandbox_not_running"
+  | "sandbox_not_found"
+  | "permission_denied"
+  | "authentication"
+  | "template"
+  | "invalid_argument"
+  | "rate_limit"
+  | "disk_space"
+  | "command_exit"
+  | "operation_timeout"
+  | "connection_error"
+  | "placement_failure"
+  | "unknown";
+
+export type SandboxReadinessStage = "initial" | "reconnect";
+
+export type SandboxLifecycleState =
+  "running_not_ready" | "not_running" | "missing" | "unknown";
+
+export type TerminalTimeoutOutcome =
+  "command_terminated" | "session_resumable" | "wait_expired_untracked";
+
+export type TerminalTimeoutRecoveryOutcome =
+  "completed_success" | "completed_nonzero" | "execution_failed";
+
+export type SandboxRecoveryOutcome =
+  | "reconnected"
+  | "failed_retryable"
+  | "failed_unavailable"
+  | "skipped_unavailable";
+
+export type SandboxResourceObservation =
+  | {
+      kind: "health_sample";
+      source: "pre_command_health_check";
+      metrics: SandboxResourceMetrics;
+    }
+  | {
+      kind: "failure";
+      source: "readiness_check_failure" | "terminal_command_timeout";
+      failureType: "readiness_check_failed" | "terminal_command_timed_out";
+      metrics: SandboxResourceMetrics | null;
+      failureReason?: SandboxReadinessFailureReason;
+      readinessStage?: SandboxReadinessStage;
+      lifecycleState?: SandboxLifecycleState;
+      timeoutSeconds?: number;
+      terminalTimeoutOutcome?: TerminalTimeoutOutcome;
+      terminationAttempted?: boolean;
+      terminationSucceeded?: boolean;
+      sessionReturned?: boolean;
+      isBackground?: boolean;
+    }
+  | {
+      kind: "recovery";
+      source: "readiness_reconnect";
+      outcome: SandboxRecoveryOutcome;
+      initialFailureReason: SandboxReadinessFailureReason;
+      finalFailureReason?: SandboxReadinessFailureReason;
+    }
+  | {
+      kind: "timeout_recovery";
+      source: "terminal_command_timeout";
+      outcome: TerminalTimeoutRecoveryOutcome;
+    };
+
+export type SandboxResourceMetricsObserver = (
+  observation: SandboxResourceObservation,
+) => void;
 
 export interface SandboxContext {
   userID: string;
-  setSandbox: (sandbox: Sandbox) => void;
+  setSandbox: (sandbox: AnySandbox) => void;
   /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
   onBoot?: (info: SandboxBootInfo) => void;
 }
@@ -93,10 +195,13 @@ export type AgentToolApprovalGrant = "full_access" | "target_prefix";
 export type AgentToolApprovalGrantKind =
   "terminal_command" | "terminal_interaction" | "file_change";
 
-export type AgentApprovalSandboxIdentity = "e2b" | `connection:${string}`;
+export type AgentApprovalSandboxIdentity =
+  "e2b" | "miosa" | `connection:${string}`;
 
 const AGENT_APPROVAL_SANDBOX_SCOPE_VERSION =
   "agent-approval-sandbox-scope-v1" as const;
+const AGENT_APPROVAL_EXECUTION_SCOPE_VERSION =
+  "agent-approval-execution-scope-v2" as const;
 
 export const getAgentApprovalConnectionSandboxIdentity = (
   connectionId: string,
@@ -111,6 +216,7 @@ const isAgentApprovalSandboxIdentity = (
   value: unknown,
 ): value is AgentApprovalSandboxIdentity =>
   value === "e2b" ||
+  value === "miosa" ||
   (typeof value === "string" &&
     value.startsWith("connection:") &&
     value.length > "connection:".length &&
@@ -118,14 +224,17 @@ const isAgentApprovalSandboxIdentity = (
 
 export const serializeSandboxScopedAgentApprovalTargetPrefix = ({
   sandboxIdentity,
+  workingDirectory,
   targetPrefix,
 }: {
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
   targetPrefix: string;
 }): string =>
   JSON.stringify([
-    AGENT_APPROVAL_SANDBOX_SCOPE_VERSION,
+    AGENT_APPROVAL_EXECUTION_SCOPE_VERSION,
     sandboxIdentity,
+    workingDirectory ?? null,
     targetPrefix,
   ]);
 
@@ -133,22 +242,45 @@ export const parseSandboxScopedAgentApprovalTargetPrefix = (
   value: string,
 ): {
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
   targetPrefix: string;
+  version: 1 | 2;
 } | null => {
   try {
     const parsed: unknown = JSON.parse(value);
     if (
+      Array.isArray(parsed) &&
+      parsed.length === 3 &&
+      parsed[0] === AGENT_APPROVAL_SANDBOX_SCOPE_VERSION &&
+      isAgentApprovalSandboxIdentity(parsed[1]) &&
+      typeof parsed[2] === "string"
+    ) {
+      return {
+        sandboxIdentity: parsed[1],
+        targetPrefix: parsed[2],
+        version: 1,
+      };
+    }
+    if (
       !Array.isArray(parsed) ||
-      parsed.length !== 3 ||
-      parsed[0] !== AGENT_APPROVAL_SANDBOX_SCOPE_VERSION ||
+      parsed.length !== 4 ||
+      parsed[0] !== AGENT_APPROVAL_EXECUTION_SCOPE_VERSION ||
       !isAgentApprovalSandboxIdentity(parsed[1]) ||
-      typeof parsed[2] !== "string"
+      !(
+        parsed[2] === null ||
+        (typeof parsed[2] === "string" &&
+          parsed[2].length > 0 &&
+          !/[\u0000-\u001f]/.test(parsed[2]))
+      ) ||
+      typeof parsed[3] !== "string"
     ) {
       return null;
     }
     return {
       sandboxIdentity: parsed[1],
-      targetPrefix: parsed[2],
+      ...(parsed[2] === null ? {} : { workingDirectory: parsed[2] }),
+      targetPrefix: parsed[3],
+      version: 2,
     };
   } catch {
     return null;
@@ -158,19 +290,235 @@ export const parseSandboxScopedAgentApprovalTargetPrefix = (
 export const getAgentApprovalTargetPrefixForSandbox = ({
   persistedTargetPrefix,
   sandboxIdentity,
+  workingDirectory,
 }: {
   persistedTargetPrefix: string;
   sandboxIdentity: AgentApprovalSandboxIdentity;
+  workingDirectory?: string;
 }): string | null => {
   const scoped = parseSandboxScopedAgentApprovalTargetPrefix(
     persistedTargetPrefix,
   );
-  return scoped?.sandboxIdentity === sandboxIdentity
+  if (!scoped || scoped.sandboxIdentity !== sandboxIdentity) return null;
+
+  // Version 1 grants predate working-directory scoping. They remain safe for
+  // contexts without an active project folder, but must not cross into one.
+  if (scoped.version === 1) {
+    return workingDirectory === undefined ? scoped.targetPrefix : null;
+  }
+
+  return scoped.workingDirectory === workingDirectory
     ? scoped.targetPrefix
     : null;
 };
 
 export type AgentToolApprovalDecision = "approve" | "deny";
+
+export type AgentAutoReviewVerdict = "approve" | "ask_user" | "deny";
+export type AgentAutoReviewRiskCategory =
+  | "routine"
+  | "destructive"
+  | "credential_access"
+  | "data_egress"
+  | "security_weakening"
+  | "scope_expansion"
+  | "prompt_injection"
+  | "unknown";
+export type AgentAutoReviewFailureClass =
+  | "timeout"
+  | "provider_error"
+  | "parse_error"
+  | "missing_context"
+  | "context_truncated";
+export type AgentAutoReviewRolloutPhase = "shadow" | "enforce";
+
+export type AgentAutoReviewTerminalInspectionReason =
+  | "dynamic_command"
+  | "unsupported_platform"
+  | "missing_working_directory"
+  | "outside_scope"
+  | "sensitive_target"
+  | "too_broad"
+  | "too_large"
+  | "binary_content"
+  | "missing_target"
+  | "missing_package_task"
+  | "nested_indirection"
+  | "inspection_failed";
+
+export type AgentAutoReviewTerminalInspection = {
+  kind: "filesystem_delete" | "script" | "package_task";
+  status: "resolved" | "unresolved";
+  /** Stable digest used to detect action-context changes before execution. */
+  fingerprint?: string;
+  reason?: AgentAutoReviewTerminalInspectionReason;
+  workingDirectory?: string;
+  targets?: Array<{
+    path: string;
+    scope: "workspace" | "temporary" | "outside";
+    state: "missing" | "file" | "directory" | "symlink" | "other";
+    sizeBytes?: number;
+    entryCount?: number;
+  }>;
+  scripts?: Array<{
+    source: "file" | "package_script";
+    path?: string;
+    name?: string;
+    command?: string;
+    content?: string;
+  }>;
+};
+
+export type AgentAutoReviewActionContext =
+  | {
+      type: "terminal_command";
+      command: string;
+      /** Bounded, read-only, untrusted evidence for resolving indirection. */
+      inspection?: AgentAutoReviewTerminalInspection;
+    }
+  | {
+      type: "terminal_interaction";
+      interaction: string;
+      action: "send" | "kill";
+      sessionId: string;
+      input?: string;
+      translatedInput?: string;
+      originalCommand: string;
+      workingDirectory?: string;
+      recentOutput: string;
+      outputComplete: boolean;
+    }
+  | {
+      type: "file_change";
+      action: "write" | "append" | "edit";
+      path: string;
+      text?: string;
+      edits?: Array<{ find: string; replace: string; all?: boolean }>;
+      complete: boolean;
+    };
+
+export type AgentAutoReviewSummary = {
+  verdict: AgentAutoReviewVerdict;
+  riskCategory: AgentAutoReviewRiskCategory;
+  rationale: string;
+  rolloutPhase: AgentAutoReviewRolloutPhase;
+  failureClass?: AgentAutoReviewFailureClass;
+};
+
+export type AgentAutoReviewLifecycleStatus =
+  "reviewing" | "approved" | "needs_approval" | "dismissed";
+
+export type AgentAutoReviewLifecycle = {
+  approvalId: string;
+  toolCallId: string;
+  status: AgentAutoReviewLifecycleStatus;
+  startedAt: number;
+  completedAt?: number;
+};
+
+const AGENT_AUTO_REVIEW_LIFECYCLE_STATUSES = [
+  "reviewing",
+  "approved",
+  "needs_approval",
+  "dismissed",
+] as const satisfies readonly AgentAutoReviewLifecycleStatus[];
+
+export const parseAgentAutoReviewLifecycle = (
+  value: unknown,
+): AgentAutoReviewLifecycle | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const status = AGENT_AUTO_REVIEW_LIFECYCLE_STATUSES.find(
+    (candidate) => candidate === record.status,
+  );
+  if (
+    !status ||
+    typeof record.approvalId !== "string" ||
+    !record.approvalId ||
+    typeof record.toolCallId !== "string" ||
+    !record.toolCallId ||
+    typeof record.startedAt !== "number" ||
+    !Number.isFinite(record.startedAt) ||
+    (record.completedAt !== undefined &&
+      (typeof record.completedAt !== "number" ||
+        !Number.isFinite(record.completedAt)))
+  ) {
+    return undefined;
+  }
+  return {
+    approvalId: record.approvalId,
+    toolCallId: record.toolCallId,
+    status,
+    startedAt: record.startedAt,
+    ...(typeof record.completedAt === "number"
+      ? { completedAt: record.completedAt }
+      : {}),
+  };
+};
+
+const AGENT_AUTO_REVIEW_VERDICTS = [
+  "approve",
+  "ask_user",
+  "deny",
+] as const satisfies readonly AgentAutoReviewVerdict[];
+const AGENT_AUTO_REVIEW_RISK_CATEGORIES = [
+  "routine",
+  "destructive",
+  "credential_access",
+  "data_egress",
+  "security_weakening",
+  "scope_expansion",
+  "prompt_injection",
+  "unknown",
+] as const satisfies readonly AgentAutoReviewRiskCategory[];
+const AGENT_AUTO_REVIEW_FAILURE_CLASSES = [
+  "timeout",
+  "provider_error",
+  "parse_error",
+  "missing_context",
+  "context_truncated",
+] as const satisfies readonly AgentAutoReviewFailureClass[];
+const AGENT_AUTO_REVIEW_ROLLOUT_PHASES = [
+  "shadow",
+  "enforce",
+] as const satisfies readonly AgentAutoReviewRolloutPhase[];
+
+export const parseAgentAutoReviewSummary = (
+  value: unknown,
+): AgentAutoReviewSummary | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const verdict = AGENT_AUTO_REVIEW_VERDICTS.find(
+    (candidate) => candidate === record.verdict,
+  );
+  const riskCategory = AGENT_AUTO_REVIEW_RISK_CATEGORIES.find(
+    (candidate) => candidate === record.riskCategory,
+  );
+  const rolloutPhase = AGENT_AUTO_REVIEW_ROLLOUT_PHASES.find(
+    (candidate) => candidate === record.rolloutPhase,
+  );
+  if (
+    !verdict ||
+    !riskCategory ||
+    !rolloutPhase ||
+    typeof record.rationale !== "string" ||
+    !record.rationale.trim() ||
+    record.rationale.length > 240
+  ) {
+    return undefined;
+  }
+  const failureClass = AGENT_AUTO_REVIEW_FAILURE_CLASSES.find(
+    (candidate) => candidate === record.failureClass,
+  );
+  if (record.failureClass !== undefined && !failureClass) return undefined;
+  return {
+    verdict,
+    riskCategory,
+    rolloutPhase,
+    rationale: record.rationale,
+    ...(failureClass ? { failureClass } : {}),
+  };
+};
 
 export type AgentToolApprovalOperation =
   | "terminal_execute"
@@ -255,6 +603,8 @@ export type AgentToolApprovalRequest = {
   brief?: string;
   justification?: string;
   prefixRule?: string[];
+  /** Exact in-memory action context for the separate Auto review call. */
+  autoReviewContext?: AgentAutoReviewActionContext;
 };
 
 export type AgentToolApprovalPendingRequest = {
@@ -268,6 +618,7 @@ export type AgentToolApprovalPendingRequest = {
   detail?: string;
   kind?: AgentToolApprovalPromptKind;
   createdAt?: number;
+  autoReview?: AgentAutoReviewSummary;
 };
 
 export type AgentToolApprovalPromptRequest = AgentToolApprovalPendingRequest & {
@@ -279,6 +630,8 @@ export type AgentToolApprovalResult =
       approved: true;
       approvalId: string;
       sandboxIdentity: AgentApprovalSandboxIdentity;
+      /** Present only when a separate reviewer approved this exact action. */
+      approvalSource?: "auto_review";
     }
   | {
       approved: false;
@@ -339,11 +692,19 @@ export interface ToolContext {
   todoManager: TodoManager;
   userID: string;
   chatId: string;
+  /** Isolates child-agent PTYs without changing chat ownership/billing scope. */
+  ptyScopeId?: string;
   assistantMessageId?: string;
+  /** Trigger.dev run ID when tools execute inside a durable Agent task. */
+  triggerRunId?: string;
+  /** Trigger.dev placement region, reused for generated-file storage. */
+  triggerRegion?: S3StorageRegion;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
   /** Manages interactive PTY sessions for `run_terminal_cmd` interactive actions. */
   ptySessionManager: PtySessionManager;
+  /** Caps aggregated xterm diagnostics across this request or durable task run. */
+  ptyParserLogBudget?: PtyParserLogBudget;
   mode: ChatMode;
   /** Configured model key for this request, used for model-aware tool capabilities. */
   modelName?: string;
@@ -359,6 +720,23 @@ export interface ToolContext {
   onToolFailure?: ToolFailureLogger;
   /** Optional approval gate for mutating or command-executing agent tools. */
   requestToolApproval?: AgentToolApprovalRequester;
+  /** Collect bounded read-only evidence for the separate automatic reviewer. */
+  autoReviewEvidenceEnabled?: boolean;
   /** Aggregates active wall time for cost attribution in Trigger-hosted Agent runs. */
   measureAgentActiveTime?: AgentActiveTimeMeasurer;
+  /** Observes resource metrics already fetched by E2B health checks. */
+  onSandboxResourceMetrics?: SandboxResourceMetricsObserver;
+  /** Optional Hermes-style image descriptor for text-only active models. */
+  auxiliaryVision?: {
+    /** Returns false after the request has failed over to direct vision. */
+    isEnabled?: () => boolean;
+    /** Distinguishes a user stop from a descriptor timeout/provider failure. */
+    isAborted?: () => boolean;
+    describeImage: (args: {
+      image: string;
+      mediaType: string;
+      filename?: string;
+      source: "file_view";
+    }) => Promise<{ description: string }>;
+  };
 }

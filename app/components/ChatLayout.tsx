@@ -2,29 +2,25 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
+import { usePathname } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useCompactTaskSidebar } from "@/hooks/use-workspace-layout";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useChats } from "../hooks/useChats";
+import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import Loading from "@/components/ui/loading";
 import MainSidebar from "./Sidebar";
-import { onOpenSettingsDialog } from "@/lib/utils/settings-dialog";
+import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import {
+  loadSettingsDialog,
+  onOpenSettingsDialog,
+} from "@/lib/utils/settings-dialog";
 
 const SettingsDialog = dynamic(
-  () => import("./SettingsDialog").then((module) => module.SettingsDialog),
+  () => loadSettingsDialog().then((module) => module.SettingsDialog),
   {
     ssr: false,
-    loading: () => (
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-        role="status"
-        aria-label="Loading settings"
-      >
-        <div className="rounded-xl border bg-background p-6 shadow-lg">
-          <Loading size={6} />
-        </div>
-      </div>
-    ),
+    loading: () => null,
   },
 );
 
@@ -34,11 +30,24 @@ const SettingsDialog = dynamic(
  * Does NOT include the Computer Sidebar (right); that remains in ChatContent.
  */
 export function ChatLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <ConvexErrorBoundary>
+      <ChatLayoutContent>{children}</ChatLayoutContent>
+    </ConvexErrorBoundary>
+  );
+}
+
+function ChatLayoutContent({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile();
-  const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
+  const pathname = usePathname();
+  const compactTaskSidebar = useCompactTaskSidebar();
+  const { chatSidebarOpen, setChatSidebarOpen, sidebarOpen } = useGlobalState();
   const panelRef = useRef<HTMLDivElement>(null);
-  // Keep chat list subscription in layout so it doesn't refetch when sidebar opens/closes
+  const [compactSidebarOverlayOpen, setCompactSidebarOverlayOpen] =
+    useState(false);
+  // Keep list subscriptions in the layout so mobile overlay remounts do not refetch.
   const chatListData = useChats();
+  const projectListData = useProjects();
   const previousActiveElementRef = useRef<HTMLElement | null>(null);
 
   // Settings dialog — local state, opened via custom event from anywhere
@@ -63,9 +72,34 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
     [handleOpenSettings],
   );
 
-  // Escape key handler and focus trap for mobile overlay
+  const forceTaskSidebarRail = Boolean(
+    isMobile === false && sidebarOpen && compactTaskSidebar,
+  );
+  const taskSidebarOverlayOpen =
+    isMobile === true
+      ? chatSidebarOpen
+      : forceTaskSidebarRail && compactSidebarOverlayOpen;
+  const closeTaskSidebarOverlay = useCallback(() => {
+    if (isMobile) {
+      setChatSidebarOpen(false);
+      return;
+    }
+    setCompactSidebarOverlayOpen(false);
+  }, [isMobile, setChatSidebarOpen]);
+
   useEffect(() => {
-    if (!isMobile || !chatSidebarOpen) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setCompactSidebarOverlayOpen(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [forceTaskSidebarRail, pathname]);
+
+  // Escape key handler and focus trap for mobile and compact desktop overlays.
+  useEffect(() => {
+    if (!taskSidebarOverlayOpen) return;
 
     // Store the previously focused element
     previousActiveElementRef.current = document.activeElement as HTMLElement;
@@ -85,7 +119,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setChatSidebarOpen(false);
+        closeTaskSidebarOverlay();
         return;
       }
 
@@ -138,7 +172,20 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
         previousActiveElementRef.current.focus();
       }
     };
-  }, [isMobile, chatSidebarOpen, setChatSidebarOpen]);
+  }, [closeTaskSidebarOverlay, taskSidebarOverlayOpen]);
+
+  const handleDesktopSidebarOpenChange = useCallback(
+    (open: boolean) => {
+      if (forceTaskSidebarRail) {
+        setCompactSidebarOverlayOpen(open);
+        return;
+      }
+      setChatSidebarOpen(open);
+    },
+    [forceTaskSidebarRail, setChatSidebarOpen],
+  );
+
+  const desktopSidebarExpanded = chatSidebarOpen && !forceTaskSidebarRail;
 
   return (
     <div className="flex min-h-0 flex-1 w-full overflow-hidden">
@@ -146,30 +193,38 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
       {isMobile === false && (
         <div
           data-testid="sidebar"
+          data-layout={forceTaskSidebarRail ? "compact-rail" : "standard"}
           className={`relative z-10 min-w-0 shrink-0 overflow-hidden bg-sidebar transition-all duration-300 ${
-            chatSidebarOpen ? "w-[300px]" : "w-12"
+            desktopSidebarExpanded ? "w-[300px]" : "w-12"
           }`}
         >
           <SidebarProvider
-            open={chatSidebarOpen}
-            onOpenChange={setChatSidebarOpen}
+            open={desktopSidebarExpanded}
+            onOpenChange={handleDesktopSidebarOpenChange}
+            persistOpenState={!forceTaskSidebarRail}
             defaultOpen={true}
           >
-            <MainSidebar chatListData={chatListData} />
+            <MainSidebar
+              chatListData={chatListData}
+              projectListData={projectListData}
+            />
           </SidebarProvider>
         </div>
       )}
 
       {/* Main content slot - pages render here */}
       <div className="flex min-h-0 flex-1 min-w-0 flex-col relative">
+        {/* Billing status is checked on demand in Account settings. Keep the
+            global layout free of billing/Stripe status requests. */}
         {children}
       </div>
 
-      {/* Overlay Chat Sidebar - Mobile: only when resolved to mobile */}
-      {isMobile === true && chatSidebarOpen && (
+      {/* Overlay task sidebar for mobile and constrained desktop workspaces. */}
+      {taskSidebarOverlayOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 flex"
-          onClick={() => setChatSidebarOpen(false)}
+          className="fixed inset-0 z-[55] flex bg-black/50"
+          onClick={closeTaskSidebarOverlay}
+          data-testid="task-sidebar-overlay"
         >
           <div
             ref={panelRef}
@@ -177,10 +232,19 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             aria-modal="true"
             aria-label="Task sidebar"
             tabIndex={-1}
-            className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
+            className={`h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out ${
+              isMobile
+                ? "w-full max-w-80"
+                : "w-[300px] max-w-[calc(100vw-2rem)]"
+            }`}
             onClick={(e) => e.stopPropagation()}
           >
-            <MainSidebar isMobileOverlay={true} chatListData={chatListData} />
+            <MainSidebar
+              isMobileOverlay={true}
+              onClose={closeTaskSidebarOverlay}
+              chatListData={chatListData}
+              projectListData={projectListData}
+            />
           </div>
         </div>
       )}

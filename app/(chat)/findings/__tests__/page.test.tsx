@@ -280,7 +280,6 @@ describe("FindingsPage", () => {
 
     expect(mockCloseSidebar).toHaveBeenCalled();
     expect(mockInitializeNewChat).toHaveBeenCalled();
-    expect(mockSetTemporaryChatsEnabled).toHaveBeenCalledWith(false);
     expect(mockSetChatMode).toHaveBeenCalledWith("agent");
     expect(mockPush).toHaveBeenCalledWith("/");
   });

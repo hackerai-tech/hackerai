@@ -3,10 +3,27 @@ import {
   checkoutStartedInsertId,
   normalizePaidFunnelLabel,
   paidFunnelProperties,
+  subscriptionChurnHealthProperties,
   upgradeCtaImpressionInsertId,
 } from "@/lib/analytics/paid-funnel";
 
 describe("paid funnel analytics helpers", () => {
+  it.each([
+    ["cancellation_requested", "voluntary", true, false],
+    ["payment_failed", "involuntary", false, true],
+    ["payment_disputed", "dispute", false, false],
+    [null, "unknown", false, false],
+  ] as const)(
+    "classifies Stripe cancellation reason %p as %s",
+    (reason, churnType, voluntaryChurn, involuntaryChurn) => {
+      expect(subscriptionChurnHealthProperties(reason)).toEqual({
+        churn_type: churnType,
+        voluntary_churn: voluntaryChurn,
+        involuntary_churn: involuntaryChurn,
+      });
+    },
+  );
+
   it("keeps the paid funnel event version authoritative", () => {
     expect(
       paidFunnelProperties({

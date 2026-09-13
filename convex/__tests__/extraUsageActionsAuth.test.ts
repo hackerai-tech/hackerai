@@ -129,11 +129,15 @@ function makeCtx(userId = "user_member") {
   };
 }
 
-async function callCreatePurchaseSession(ctx: any) {
+async function callCreatePurchaseSession(
+  ctx: any,
+  overrides: Record<string, unknown> = {},
+) {
   const { createPurchaseSession } = await import("../extraUsageActions");
   return (createPurchaseSession as any).handler(ctx, {
     amountDollars: 15,
-    baseUrl: "https://hackerai.example/settings",
+    baseUrl: "https://hackerai.co/settings",
+    ...overrides,
   });
 }
 
@@ -237,6 +241,36 @@ describe("extraUsageActions billing authorization", () => {
     });
   });
 
+  it("rejects a return path that resolves outside the application origin", async () => {
+    const result = await callCreatePurchaseSession(makeCtx(), {
+      baseUrl: "https://hackerai.co",
+      returnPath: "/\\evil.example",
+    });
+
+    expect(result).toEqual({ url: null, error: "Invalid return path" });
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a caller-controlled external application origin", async () => {
+    const result = await callCreatePurchaseSession(makeCtx(), {
+      baseUrl: "https://evil.example",
+    });
+
+    expect(result).toEqual({ url: null, error: "Invalid base URL" });
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a similarly named Vercel project outside the exact allowlist", async () => {
+    const result = await callCreatePurchaseSession(makeCtx(), {
+      baseUrl: "https://attacker-hackerai.vercel.app",
+    });
+
+    expect(result).toEqual({ url: null, error: "Invalid base URL" });
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-admin active org member before creating a Billing Portal session", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [
@@ -310,6 +344,38 @@ describe("extraUsageActions billing authorization", () => {
       url: "https://checkout.stripe.test/session",
       checkoutSessionId: "cs_test",
     });
+  });
+
+  it("returns a resumable direct-purchase Checkout session to the stopped task", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          organizationId: "org_team",
+          status: "active",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+
+    await callCreatePurchaseSession(makeCtx("user_admin"), {
+      baseUrl: "https://hackerai.co",
+      returnPath: "/chat-123?view=task",
+      resumeAfterPurchase: true,
+      enableExtraUsageAfterPurchase: true,
+    });
+
+    expect(mockCheckoutSessionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success_url:
+          "https://hackerai.co/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url: "https://hackerai.co/chat-123?view=task",
+        metadata: expect.objectContaining({
+          returnPath: "/chat-123?view=task",
+          resumeAfterPurchase: "true",
+          enableExtraUsageAfterPurchase: "true",
+        }),
+      }),
+    );
   });
 
   it("still returns the Checkout session when purchase recording fails", async () => {

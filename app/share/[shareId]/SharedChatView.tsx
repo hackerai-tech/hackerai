@@ -13,6 +13,7 @@ import ChatHeader from "@/app/components/ChatHeader";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useComposerInput } from "@/app/contexts/ComposerState";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChatInput } from "@/app/components/ChatInput";
@@ -98,7 +99,8 @@ type SharedSnapshot = {
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
-  const { chatSidebarOpen, setChatSidebarOpen, input } = useGlobalState();
+  const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
+  const input = useComposerInput();
   const router = useRouter();
   const convex = useConvex();
   const forkSharedChatMutation = useMutation(api.sharedChats.forkSharedChat);
@@ -125,26 +127,22 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
 
     const loadSharedSnapshot = async () => {
       try {
-        const nextChat = await convex.query(api.sharedChats.getSharedChat, {
-          shareId,
-        });
+        const nextSnapshot = await convex.query(
+          api.sharedChats.getSharedSnapshot,
+          { shareId },
+        );
         if (cancelled || loadGenerationRef.current !== generation) return;
 
-        if (!nextChat) {
+        if (!nextSnapshot) {
           setSnapshot({ shareId, chat: null, messages: [] });
           return;
         }
 
-        setSnapshot({ shareId, chat: nextChat, messages: undefined });
-
-        const nextMessages = await convex.query(
-          api.messages.getSharedMessages,
-          {
-            chatId: nextChat.id,
-          },
-        );
-        if (cancelled || loadGenerationRef.current !== generation) return;
-        setSnapshot({ shareId, chat: nextChat, messages: nextMessages });
+        setSnapshot({
+          shareId,
+          chat: nextSnapshot.chat,
+          messages: nextSnapshot.messages,
+        });
       } catch (error) {
         console.error("Failed to load shared chat:", error);
         if (cancelled || loadGenerationRef.current !== generation) return;

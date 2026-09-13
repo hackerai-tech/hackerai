@@ -1,3 +1,4 @@
+import type { FreeLimitPolicy } from "./free-config";
 /**
  * Fixed Window Rate Limiting (Free Users)
  *
@@ -199,10 +200,11 @@ export const grantFreeReferralBonusUnits = async (
 export const checkFreeUserRateLimit = async (
   userId: string,
   requestCost = FREE_ASK_REQUEST_COST,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
-  const requestLimit = getFreeRequestLimit();
+  const requestLimit = getFreeRequestLimit(freeLimits);
   const cost = Math.max(1, Math.trunc(requestCost));
   const { bucket, reset, ttlMs } = getCurrentUtcDayWindow();
 
@@ -265,20 +267,22 @@ export const checkFreeUserRateLimit = async (
 /**
  * Check rate limit for free users in agent mode (local sandbox only).
  * Shares the free daily request-unit budget with ask mode. Agent requests cost
- * 2 units, so the default 10-unit budget still allows up to 5 agent requests.
+ * 1 unit, so the default 10-unit budget allows up to 10 agent requests.
  */
 export const checkFreeAgentRateLimit = async (
   userId: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
-  return checkFreeUserRateLimit(userId, FREE_AGENT_REQUEST_COST);
+  return checkFreeUserRateLimit(userId, FREE_AGENT_REQUEST_COST, freeLimits);
 };
 
 export const checkFreeUserRateLimitCapacity = async (
   userId: string,
   requestCost = FREE_ASK_REQUEST_COST,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
-  const requestLimit = getFreeRequestLimit();
+  const requestLimit = getFreeRequestLimit(freeLimits);
   const cost = Math.max(1, Math.trunc(requestCost));
   const { bucket, reset } = getCurrentUtcDayWindow();
 
@@ -343,5 +347,6 @@ export const checkFreeUserRateLimitCapacity = async (
 
 export const checkFreeAgentRateLimitCapacity = async (
   userId: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> =>
-  checkFreeUserRateLimitCapacity(userId, FREE_AGENT_REQUEST_COST);
+  checkFreeUserRateLimitCapacity(userId, FREE_AGENT_REQUEST_COST, freeLimits);

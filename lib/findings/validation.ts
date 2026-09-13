@@ -134,6 +134,7 @@ export const createVulnerabilityReportInputSchema = z
     poc_script_code: requiredCodeText("PoC script/code", 32_000),
     remediation_steps: requiredText("Remediation steps", 8_000),
     evidence: requiredText("Evidence", 16_000),
+    evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: requiredText("Assumptions", 4_000),
     fix_effort: z.enum(["trivial", "low", "medium", "high"]),
     cvss_breakdown: cvss31BreakdownSchema,

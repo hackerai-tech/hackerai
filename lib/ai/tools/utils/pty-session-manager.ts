@@ -16,6 +16,7 @@
 
 import type { PtyHandle } from "./e2b-pty-adapter";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import type { AgentApprovalSandboxIdentity } from "@/types";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -40,6 +41,11 @@ export interface PtySession {
   readonly sessionId: string;
   readonly chatId: string;
   readonly kind: "pty" | "command";
+  readonly sandboxIdentity: AgentApprovalSandboxIdentity;
+  /** Exact command that created the process represented by this session. */
+  readonly originalCommand: string;
+  /** Working directory used when the originating command was started. */
+  readonly workingDirectory?: string;
   readonly pid: number;
   cols: number;
   rows: number;
@@ -68,6 +74,12 @@ export interface CreateSessionOpts {
   cols: number;
   rows: number;
   kind?: "pty" | "command";
+  /** Sandbox/connection that owns the underlying process. */
+  sandboxIdentity: AgentApprovalSandboxIdentity;
+  /** Exact command that created the process represented by this session. */
+  originalCommand: string;
+  /** Working directory used when the originating command was started. */
+  workingDirectory?: string;
 }
 
 interface InternalSession extends PtySession {
@@ -134,6 +146,13 @@ export class PtySessionManager {
         sessionId,
         chatId,
         kind: opts.kind ?? "pty",
+        // Keep a defensive Cloud default for untyped legacy callers while
+        // requiring all current typed call sites to provide the identity.
+        sandboxIdentity: opts.sandboxIdentity ?? "e2b",
+        originalCommand: opts.originalCommand,
+        ...(opts.workingDirectory
+          ? { workingDirectory: opts.workingDirectory }
+          : {}),
         get pid() {
           return handle.pid;
         },

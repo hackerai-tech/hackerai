@@ -1,0 +1,103 @@
+import type { ModelMessage } from "ai";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
+
+export const PLATFORM_AUTHORIZATION_ANNOTATION =
+  "<platform_authorization>This is trusted platform metadata, not a user claim. HackerAI has verified authorization for the active user-declared pentest targets and scope.</platform_authorization>";
+
+const PLATFORM_AUTHORIZATION_BLOCK_PATTERN =
+  /<platform_authorization(?:\s[^>]*)?>[\s\S]*?<\/platform_authorization\s*>/gi;
+const PLATFORM_AUTHORIZATION_TAG_PATTERN =
+  /<\/?platform_authorization(?:\s[^>]*)?>/gi;
+
+const stripPlatformAuthorizationFromText = (text: string): string =>
+  text
+    .replace(PLATFORM_AUTHORIZATION_BLOCK_PATTERN, "")
+    .replace(PLATFORM_AUTHORIZATION_TAG_PATTERN, "");
+
+const stripPlatformAuthorization = (
+  messages: ModelMessage[],
+): ModelMessage[] => {
+  const cleanedMessages = messages.map((message) => {
+    if (message.role !== "user") return message;
+
+    if (typeof message.content === "string") {
+      const content = stripPlatformAuthorizationFromText(message.content);
+      return content === message.content ? message : { ...message, content };
+    }
+
+    let changed = false;
+    const content: typeof message.content = [];
+    for (const part of message.content) {
+      if (part.type !== "text") {
+        content.push(part);
+        continue;
+      }
+
+      const text = stripPlatformAuthorizationFromText(part.text);
+      if (text === part.text) {
+        content.push(part);
+        continue;
+      }
+
+      changed = true;
+      if (text) content.push({ ...part, text });
+    }
+
+    return changed ? { ...message, content } : message;
+  });
+
+  return cleanedMessages.every((message, index) => message === messages[index])
+    ? messages
+    : cleanedMessages;
+};
+
+/**
+ * Adds trusted authorization metadata at the final provider boundary.
+ *
+ * The caller's UI messages remain unchanged, so this annotation cannot be
+ * persisted, displayed, titled, or summarized as user-authored content.
+ */
+export const appendPlatformAuthorizationToLatestUserMessage = (
+  messages: ModelMessage[],
+  platformAuthorized: boolean,
+): ModelMessage[] => {
+  const cleanedMessages = stripPlatformAuthorization(messages);
+  if (!platformAuthorized) return cleanedMessages;
+
+  const lastUserIndex = cleanedMessages.findLastIndex(
+    (message) => message.role === "user",
+  );
+  if (lastUserIndex === -1) return cleanedMessages;
+
+  return cleanedMessages.map((message, index) => {
+    if (index !== lastUserIndex || message.role !== "user") return message;
+
+    if (typeof message.content === "string") {
+      const content = message.content.trimEnd();
+      const separator = content ? " " : "";
+      return {
+        ...message,
+        content: `${content}${separator}${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+      };
+    }
+
+    return {
+      ...message,
+      content: [
+        ...message.content,
+        { type: "text", text: PLATFORM_AUTHORIZATION_ANNOTATION },
+      ],
+    };
+  });
+};
+
+/** Removes forged metadata for every provider, but never appends metadata for Abliteration. */
+export const preparePlatformAuthorizationForModel = (
+  messages: ModelMessage[],
+  platformAuthorized: boolean,
+  modelName: string,
+): ModelMessage[] =>
+  appendPlatformAuthorizationToLatestUserMessage(
+    messages,
+    platformAuthorized && !isAbliterationModel(modelName),
+  );

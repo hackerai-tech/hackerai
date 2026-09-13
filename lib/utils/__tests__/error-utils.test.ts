@@ -1,6 +1,7 @@
 import { describe, it, expect } from "@jest/globals";
 import {
   classifyProviderOverflowError,
+  createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
   extractRetryAttempts,
   getUserFriendlyProviderError,
@@ -8,7 +9,10 @@ import {
   getProviderStatusCode,
   isInvalidImageInputError,
   isProviderContentBlockedError,
+  isProviderContentBlockedFinishReasonError,
+  isProviderContentFilterFinishReason,
   isProviderStreamTerminatedError,
+  isRetriableProviderStreamDisconnectError,
 } from "../error-utils";
 
 const apiCallError = (overrides: Record<string, unknown>) =>
@@ -276,9 +280,99 @@ describe("extractErrorDetails -> wrapped provider errors", () => {
     expect(getProviderErrorCategory(details)).toBe("provider_4xx");
     expect(JSON.stringify(details)).not.toContain("SECRET_PROMPT_TEXT");
   });
+
+  it("omits opaque provider payloads while retaining bounded diagnostics", () => {
+    const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+    const inlineImage = "data:image/png;base64,PRIVATE_INLINE_IMAGE";
+    const responseBody = JSON.stringify({
+      id: "gen-private-provider-payload",
+      error: {
+        code: 400,
+        message: "The document could not be downloaded from the provided URL.",
+        metadata: {
+          provider_name: "DeepSeek",
+          file_annotations: [
+            { parsed_content: privateAttachmentText, preview: inlineImage },
+          ],
+        },
+      },
+    });
+    const err = apiCallError({
+      statusCode: 400,
+      responseBody,
+      data: {
+        id: "gen-private-provider-payload",
+        error: {
+          code: 400,
+          message:
+            "The document could not be downloaded from the provided URL.",
+          metadata: {
+            provider_name: "DeepSeek",
+            file_annotations: [
+              { parsed_content: privateAttachmentText, preview: inlineImage },
+            ],
+          },
+        },
+      },
+    });
+
+    const details = extractErrorDetails(err);
+    const serialized = JSON.stringify(details);
+
+    expect(details).toMatchObject({
+      statusCode: 400,
+      responseBodyPresent: true,
+      responseBodyLength: responseBody.length,
+      providerDataPresent: true,
+      providerName: "DeepSeek",
+      providerErrorCode: 400,
+      providerErrorMessage:
+        "The document could not be downloaded from the provided URL.",
+      openrouterGenerationId: "gen-private-provider-payload",
+    });
+    expect(details).not.toHaveProperty("responseBody");
+    expect(details).not.toHaveProperty("providerData");
+    expect(serialized).not.toContain(privateAttachmentText);
+    expect(serialized).not.toContain(inlineImage);
+  });
+
+  it("omits malformed response bodies and circular provider data", () => {
+    const privateAttachmentText = "PRIVATE_ATTACHMENT_TEXT";
+    const responseBody = `<html>${privateAttachmentText}</html>`;
+    const providerData: Record<string, unknown> = {
+      annotation: privateAttachmentText,
+    };
+    providerData.circular = providerData;
+    const err = apiCallError({ responseBody, data: providerData });
+
+    const details = extractErrorDetails(err);
+    const serialized = JSON.stringify(details);
+
+    expect(details).toMatchObject({
+      responseBodyPresent: true,
+      responseBodyLength: responseBody.length,
+      providerDataPresent: true,
+    });
+    expect(details).not.toHaveProperty("responseBody");
+    expect(details).not.toHaveProperty("providerData");
+    expect(serialized).not.toContain(privateAttachmentText);
+  });
 });
 
 describe("provider error classification", () => {
+  it("maps content-filter finish reasons to the existing content-blocked classification and copy", () => {
+    const err = createProviderContentBlockedFinishReasonError();
+
+    expect(isProviderContentFilterFinishReason(err.finishReason)).toBe(true);
+    expect(isProviderContentBlockedFinishReasonError(err)).toBe(true);
+    expect(getProviderErrorCategory(extractErrorDetails(err))).toBe(
+      "content_blocked",
+    );
+    expect(getUserFriendlyProviderError(err)).toBe(
+      "The model provider blocked this request because the conversation content was flagged by its safety system. Edit your last message or remove sensitive or raw tool output, then try again.",
+    );
+  });
+
   it("classifies undici terminated errors as provider stream termination", () => {
     const cause = Object.assign(new Error("other side closed"), {
       code: "UND_ERR_SOCKET",
@@ -323,6 +417,39 @@ describe("provider error classification", () => {
     );
   });
 
+  it("redacts signed image URLs from every extracted telemetry field", () => {
+    const signedUrl =
+      "https://bucket.s3.amazonaws.com/user-files/user_123/private-image.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=access-key&X-Amz-Signature=signature-secret";
+    const err = Object.assign(
+      new Error(
+        `Failed to download the provided image at ${signedUrl} because the image host returned HTTP status 404.`,
+      ),
+      {
+        statusCode: 400,
+        url: signedUrl,
+        responseBody: JSON.stringify({
+          error: { message: `Image unavailable at ${signedUrl}` },
+        }),
+        cause: new Error(`Upstream rejected ${signedUrl}`),
+      },
+    );
+
+    const details = extractErrorDetails(err);
+    const attempts = extractRetryAttempts({ errors: [err] });
+    const serialized = JSON.stringify({ details, attempts });
+
+    expect(isInvalidImageInputError(err)).toBe(true);
+    expect(attempts).toHaveLength(1);
+    expect(details).toMatchObject({
+      statusCode: 400,
+      providerUrl: "[Redacted signed URL]",
+    });
+    expect(serialized).toContain("[Redacted signed URL]");
+    expect(serialized).not.toContain("user-files");
+    expect(serialized).not.toContain("access-key");
+    expect(serialized).not.toContain("signature-secret");
+  });
+
   it("classifies network-loss messages as provider stream termination", () => {
     const err = new Error("Network connection lost.");
 
@@ -330,6 +457,42 @@ describe("provider error classification", () => {
       "stream_terminated",
     );
     expect(isProviderStreamTerminatedError(err)).toBe(true);
+    expect(isRetriableProviderStreamDisconnectError(err)).toBe(true);
+  });
+
+  it("allows transient 5xx failures without requiring provider-specific wording", () => {
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 502, message: "Network connection lost." }),
+      ),
+    ).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({
+          statusCode: 502,
+          message: "Internal error during token generation",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        apiCallError({ statusCode: 400, message: "Invalid request" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("allows upstream idle timeouts to use replay-safe continuation", () => {
+    expect(
+      isRetriableProviderStreamDisconnectError({
+        message: "Upstream idle timeout exceeded",
+      }),
+    ).toBe(true);
+    expect(
+      isRetriableProviderStreamDisconnectError({
+        code: 502,
+        message: "Bad Gateway",
+      }),
+    ).toBe(true);
   });
 
   it("classifies provider status codes before message patterns", () => {
@@ -523,5 +686,47 @@ describe("provider error classification", () => {
 
     expect(classifyProviderOverflowError(err)).toBe("context");
     expect(getUserFriendlyProviderError(err)).toContain("context limit");
+  });
+});
+
+describe("SSE upstream abort recovery", () => {
+  it.each([502, 503, 504, "504"])(
+    "recovers code=%s even with aborted wording",
+    (code) => {
+      const error = { code, message: "The operation was aborted" };
+      expect(getProviderStatusCode(extractErrorDetails(error))).toBe(
+        Number(code),
+      );
+      expect(isRetriableProviderStreamDisconnectError(error)).toBe(true);
+    },
+  );
+  it("keeps bare cancellation and HTTP 400 terminal", () => {
+    expect(
+      isRetriableProviderStreamDisconnectError(
+        new DOMException("The operation was aborted", "AbortError"),
+      ),
+    ).toBe(false);
+    expect(
+      isRetriableProviderStreamDisconnectError({
+        code: 400,
+        message: "The operation was aborted",
+      }),
+    ).toBe(false);
+  });
+  it("normalizes allowlisted error parameter paths without logging arbitrary values", () => {
+    const error = (param: string) => ({
+      responseBody: JSON.stringify({
+        error: { code: "invalid_request", message: "Invalid request", param },
+      }),
+    });
+    expect(
+      extractErrorDetails(error("messages[123].tool_calls")),
+    ).toHaveProperty("providerErrorParam", "messages[].tool_calls");
+    expect(extractErrorDetails(error("private prompt"))).not.toHaveProperty(
+      "providerErrorParam",
+    );
+    expect(
+      extractErrorDetails(error("messages[1].private_payload")),
+    ).not.toHaveProperty("providerErrorParam");
   });
 });

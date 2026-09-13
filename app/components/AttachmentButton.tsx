@@ -6,7 +6,7 @@ import {
 } from "@/components/ui/popover";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { Paperclip } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useEffect, useRef, useState } from "react";
 import { redirectToPricing } from "../hooks/usePricingDialog";
@@ -67,12 +67,12 @@ export const AttachmentButton = ({
             onClick={onAttachClick}
             variant="ghost"
             size="sm"
-            className="rounded-full p-0 w-8 h-8 min-w-0"
+            className="h-8 w-8 min-w-0 rounded-md p-0 hover:bg-muted/30"
             aria-label="Attach files"
             data-testid="attach-files-button"
             disabled={disabled || isCheckingProPlan}
           >
-            <Paperclip className="w-[15px] h-[15px]" />
+            <Plus className="size-5" />
           </Button>
         </TooltipTrigger>
         <TooltipContent>
@@ -91,12 +91,12 @@ export const AttachmentButton = ({
           onClick={handleClick}
           variant="ghost"
           size="sm"
-          className="rounded-full p-0 w-8 h-8 min-w-0"
+          className="h-8 w-8 min-w-0 rounded-md p-0 hover:bg-muted/30"
           aria-label="Attach files"
           data-testid="attach-files-button"
           disabled={disabled}
         >
-          <Paperclip className="w-[15px] h-[15px]" />
+          <Plus className="size-5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent

@@ -1,5 +1,6 @@
 import {
   enrichFrontendExceptionEvent,
+  sanitizeFrontendExceptionUrlProperties,
   shouldDropExpectedFrontendException,
 } from "../expected-frontend-exceptions";
 
@@ -146,6 +147,45 @@ describe("shouldDropExpectedFrontendException", () => {
     ).toBe(true);
   });
 
+  it("drops transport failures with mixed Next 16.3 server action frames", () => {
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/next/src/client/components/router-reducer/reducers/server-action-reducer.ts",
+                    junk_drawer: {
+                      raw_frame: {
+                        filename:
+                          "/_next/static/immutable/chunks/0ro0tl16w8mcs.js",
+                      },
+                    },
+                  },
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/next/src/client/components/segment-cache/fetch.ts",
+                    junk_drawer: {
+                      raw_frame: {
+                        filename:
+                          "/_next/static/immutable/chunks/0ro0tl16w8mcs.js",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("keeps generic network failures when a server action failure has app frames", () => {
     expect(
       shouldDropExpectedFrontendException({
@@ -156,6 +196,30 @@ describe("shouldDropExpectedFrontendException", () => {
             {
               stacktrace: {
                 frames: [
+                  {
+                    source: "turbopack:///[project]/app/actions/example.ts",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_values: ["Failed to fetch"],
+          $exception_list: [
+            {
+              stacktrace: {
+                frames: [
+                  {
+                    source:
+                      "turbopack:///[project]/node_modules/next/src/client/components/segment-cache/fetch.ts",
+                  },
                   {
                     source: "turbopack:///[project]/app/actions/example.ts",
                   },
@@ -327,6 +391,7 @@ describe("shouldDropExpectedFrontendException", () => {
     for (const value of [
       "NotFoundError: Failed to execute 'insertBefore' on 'Node': The node before which the new node is to be inserted is not a child of this node.",
       "NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.",
+      "NotFoundError: Node.removeChild: The node to be removed is not a child of this node",
       "NotFoundError: The object can not be found here.",
     ]) {
       expect(
@@ -339,6 +404,18 @@ describe("shouldDropExpectedFrontendException", () => {
         }),
       ).toBe(true);
     }
+
+    expect(
+      shouldDropExpectedFrontendException({
+        event: "$exception",
+        properties: {
+          $exception_types: ["DOMException"],
+          $exception_values: [
+            "NotFoundError: Node.removeChild: Application state is unavailable",
+          ],
+        },
+      }),
+    ).toBe(false);
   });
 
   it("drops exact opaque synthetic browser exceptions", () => {
@@ -573,5 +650,41 @@ describe("shouldDropExpectedFrontendException", () => {
         hackerai_exception_category: "stack_overflow",
       });
     }
+  });
+
+  it("removes query strings and fragments from retained exception URLs", () => {
+    const event = sanitizeFrontendExceptionUrlProperties({
+      event: "$exception",
+      properties: {
+        $current_url:
+          "https://hackerai.co/auth-error?state=secret#client_redirect_key=secret",
+        $referrer: "https://idp.example/callback?code=secret&state=secret",
+        $exception_values: [
+          "Request failed for https://api.example/resource?diagnostic=keep",
+        ],
+      },
+    });
+
+    expect(event.properties).toEqual({
+      $current_url: "https://hackerai.co/auth-error",
+      $referrer: "https://idp.example/callback",
+      $exception_values: [
+        "Request failed for https://api.example/resource?diagnostic=keep",
+      ],
+    });
+  });
+
+  it("does not change URL properties on non-exception events", () => {
+    const event = {
+      event: "custom_event",
+      properties: {
+        $current_url: "https://hackerai.co/c/chat-123?tab=files",
+        $referrer: "https://hackerai.co/?source=home",
+      },
+    };
+
+    expect(sanitizeFrontendExceptionUrlProperties(event)).toBe(event);
+    expect(event.properties.$current_url).toContain("?tab=files");
+    expect(event.properties.$referrer).toContain("?source=home");
   });
 });

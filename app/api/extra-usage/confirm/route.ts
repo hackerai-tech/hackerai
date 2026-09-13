@@ -8,6 +8,7 @@ import {
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
 import { logExtraUsagePurchase } from "@/lib/billing/extra-usage-purchase-logging";
+import { getExtraUsageReturnUrl } from "@/lib/billing/extra-usage-return";
 
 const ROUTE = "/api/extra-usage/confirm" as const;
 
@@ -82,7 +83,10 @@ export async function GET(req: NextRequest) {
       result: "session_seen",
     });
 
-    const redirectUrl = new URL(origin);
+    const redirectUrl = getExtraUsageReturnUrl(
+      origin,
+      session.metadata.returnPath,
+    );
     redirectUrl.searchParams.set("extra-usage-purchased", "true");
     redirectUrl.searchParams.set("amount", String(amountDollars));
 
@@ -129,6 +133,8 @@ export async function GET(req: NextRequest) {
         stripePaymentIntentId,
         stripeInvoiceId,
         purchaseRoute: "confirm",
+        enableExtraUsage:
+          session.metadata.enableExtraUsageAfterPurchase === "true",
       });
     } catch (error) {
       try {
@@ -226,6 +232,10 @@ export async function GET(req: NextRequest) {
         result: result.alreadyProcessed ? "already_processed" : "credited",
         error: analyticsError,
       });
+    }
+
+    if (session.metadata.resumeAfterPurchase === "true") {
+      redirectUrl.searchParams.set("extra-usage-resume", "true");
     }
 
     return NextResponse.redirect(redirectUrl, { status: 303 });

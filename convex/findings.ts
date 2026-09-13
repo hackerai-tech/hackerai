@@ -1,3 +1,4 @@
+import { evidenceVerificationSchema } from "../lib/ai/subagents/contracts";
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { paginationOptsValidator } from "convex/server";
@@ -261,6 +262,10 @@ const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
   poc_script_code: finding.poc_script_code,
   remediation_steps: finding.remediation_steps,
   evidence: finding.evidence,
+  ...(finding.evidence_refs ? { evidence_refs: finding.evidence_refs } : {}),
+  ...(finding.evidence_verification
+    ? { evidence_verification: finding.evidence_verification }
+    : {}),
   assumptions: finding.assumptions,
   fix_effort: finding.fix_effort,
   cvss_breakdown: finding.cvss_breakdown,
@@ -286,6 +291,13 @@ export const createFindingForBackend = mutation({
     messageId: v.string(),
     toolCallId: v.string(),
     report: v.any(),
+    evidenceVerification: v.optional(
+      v.object({
+        checked_refs: v.array(v.string()),
+        unavailable_refs: v.array(v.string()),
+        warning: v.optional(v.string()),
+      }),
+    ),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -313,6 +325,10 @@ export const createFindingForBackend = mutation({
       };
     }
 
+    await assertUserCanAccessChatHistory(ctx, args.userId);
+    const evidenceVerification = args.evidenceVerification
+      ? evidenceVerificationSchema.parse(args.evidenceVerification)
+      : undefined;
     const input = parsed.data;
     const dedupeKey = createFindingDedupeKey(input);
     const duplicate = await ctx.db
@@ -357,6 +373,10 @@ export const createFindingForBackend = mutation({
       poc_script_code: input.poc_script_code,
       remediation_steps: input.remediation_steps,
       evidence: input.evidence,
+      ...(input.evidence_refs ? { evidence_refs: input.evidence_refs } : {}),
+      ...(evidenceVerification
+        ? { evidence_verification: evidenceVerification }
+        : {}),
       assumptions: input.assumptions,
       fix_effort: input.fix_effort,
       cvss_breakdown: input.cvss_breakdown,
@@ -398,6 +418,9 @@ export const createFindingForBackend = mutation({
 
     return {
       success: true as const,
+      ...(evidenceVerification?.warning
+        ? { warning: evidenceVerification.warning }
+        : {}),
       finding_id: findingId,
       title: input.title,
       target: input.target,

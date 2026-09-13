@@ -1,51 +1,88 @@
 import "server-only";
 
-import { isFeatureEnabled } from "@/lib/auth/feature-flags";
-import {
-  isPaidIndividualSubscription,
-  type ChatMode,
-  type SubscriptionTier,
+import type {
+  ChatMode,
+  LimitRescueRequest,
+  SelectedModel,
+  SubscriptionTier,
 } from "@/types";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
 import type { LimitCapReason } from "@/lib/limit-pressure";
 
-export const PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY =
-  "paid-daily-free-allowance";
-export const PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT = 1;
+/**
+ * Paid daily free allowance.
+ *
+ * One rule, no flags: any paid plan that has exhausted its included monthly
+ * usage may keep working on the low-cost model, up to this much provider
+ * cost per UTC day. There is no per-day request cap; the cost cap is the
+ * only limit and the mid-run budget monitor cuts a run off when it is hit.
+ * Ask and Agent share the same daily pool.
+ */
 export const PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT = 0.25;
-export const PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT = 10;
+const PAID_DAILY_FREE_ALLOWANCE_RESERVATION_TTL_MS =
+  (4 * 60 * 60 + 5 * 60) * 1000;
 
+/**
+ * Reserve the shared per-user allowance for one active rescue request. The
+ * tokenized lease serializes Ask and Agent spending until settlement, while a
+ * bounded TTL recovers a lease if the worker exits without cleanup.
+ */
 const RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT = `
 local requestKey = KEYS[1]
 local costKey = KEYS[2]
-local requestLimit = tonumber(ARGV[1])
-local costLimit = tonumber(ARGV[2])
-local ttlMs = tonumber(ARGV[3])
+local reservationKey = KEYS[3]
+local costLimit = tonumber(ARGV[1])
+local counterTtlMs = tonumber(ARGV[2])
+local reservationTtlMs = tonumber(ARGV[3])
+local reservationToken = ARGV[4]
 
 local currentRequests = tonumber(redis.call("GET", requestKey) or "0")
 local currentCost = tonumber(redis.call("GET", costKey) or "0")
-
-if currentRequests >= requestLimit then
-  return {0, "request_limit_reached", currentRequests, currentCost}
-end
 
 if currentCost >= costLimit then
   return {0, "cost_limit_reached", currentRequests, currentCost}
 end
 
-local nextRequests = redis.call("INCRBY", requestKey, 1)
-if nextRequests == 1 then
-  redis.call("PEXPIRE", requestKey, ttlMs)
+local acquired = redis.call(
+  "SET",
+  reservationKey,
+  reservationToken,
+  "PX",
+  reservationTtlMs,
+  "NX"
+)
+if not acquired then
+  return {0, "request_in_progress", currentRequests, currentCost}
 end
 
-if redis.call("EXISTS", costKey) == 0 then
-  redis.call("SET", costKey, currentCost, "PX", ttlMs)
-else
-  redis.call("PEXPIRE", costKey, ttlMs)
+local nextRequests = redis.call("INCRBY", requestKey, 1)
+if nextRequests == 1 then
+  redis.call("PEXPIRE", requestKey, counterTtlMs)
 end
 
 return {1, "ok", nextRequests, currentCost}
+`;
+
+const SETTLE_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT = `
+local costKey = KEYS[1]
+local reservationKey = KEYS[2]
+local costPoints = tonumber(ARGV[1])
+local ttlMs = tonumber(ARGV[2])
+local reservationToken = ARGV[3]
+
+if redis.call("GET", reservationKey) ~= reservationToken then
+  return {0, tonumber(redis.call("GET", costKey) or "0")}
+end
+
+local currentCost = tonumber(redis.call("GET", costKey) or "0")
+local nextCost = currentCost
+if costPoints > 0 then
+  nextCost = redis.call("INCRBY", costKey, costPoints)
+  redis.call("PEXPIRE", costKey, ttlMs)
+end
+redis.call("DEL", reservationKey)
+return {1, nextCost}
 `;
 
 const RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT = `
@@ -63,23 +100,19 @@ return nextCost
 `;
 
 export type PaidDailyFreeAllowanceUnavailableReason =
-  | "unsupported_mode"
+  | "unsupported_model"
   | "unsupported_subscription"
   | "not_monthly_exhausted"
   | "attachments_not_supported"
-  | "rollout_disabled"
   | "redis_unavailable"
-  | "request_limit_reached"
+  | "request_in_progress"
   | "cost_limit_reached";
 
 export interface PaidDailyFreeAllowanceStatus {
   type: "paid_daily_free_allowance";
   available: boolean;
-  enabledByRollout: boolean;
-  rolloutPercent: number;
-  requestLimit: number;
+  /** Rescue requests started today (analytics only, never a limit). */
   requestsUsed: number;
-  requestsRemaining: number;
   costLimitDollars: number;
   costUsedDollars: number;
   costRemainingDollars: number;
@@ -96,6 +129,11 @@ export interface PaidDailyFreeAllowanceReservation {
   allowed: boolean;
   status: PaidDailyFreeAllowanceStatus;
   blockReason?: PaidDailyFreeAllowanceUnavailableReason;
+  /** Server-only Redis lease identity, present for production reservations. */
+  redisReservation?: {
+    bucket: string;
+    token: string;
+  };
 }
 
 export type PaidDailyFreeAllowanceCostRecordResult =
@@ -110,17 +148,13 @@ export type PaidDailyFreeAllowanceCostRecordResult =
       recorded: false;
       costPoints: number;
       costDollars: number;
-      unavailableReason: "redis_unavailable";
+      unavailableReason: "redis_unavailable" | "reservation_unavailable";
     };
 
 export type PaidDailyFreeAllowanceMetadata = {
   type: "paid_daily_free_allowance";
   available: boolean;
-  enabledByRollout: boolean;
-  rolloutPercent: number;
-  requestLimit: number;
   requestsUsed: number;
-  requestsRemaining: number;
   costLimitDollars: number;
   costUsedDollars: number;
   costRemainingDollars: number;
@@ -135,6 +169,12 @@ type PaidDailyFreeAllowanceContext = {
   mode: ChatMode;
   capReason?: LimitCapReason;
   hasAttachments?: boolean;
+  /**
+   * The user's explicit model choice. The rescue always runs on the
+   * low-cost model, so it is only offered when the user is on Auto;
+   * `undefined`/`null` means no explicit choice, which is Auto.
+   */
+  selectedModel?: SelectedModel | null;
 };
 
 function envNumber({
@@ -156,26 +196,7 @@ function envNumber({
   return Math.min(max, Math.max(min, parsed));
 }
 
-export function getPaidDailyFreeAllowanceRolloutPercent(): number {
-  return envNumber({
-    name: "PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT",
-    defaultValue: PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT,
-    min: 0,
-    max: 100,
-  });
-}
-
-export function getPaidDailyFreeAllowanceRequestsPerDay(): number {
-  return Math.floor(
-    envNumber({
-      name: "PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY",
-      defaultValue: PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT,
-      min: 0,
-      max: 100,
-    }),
-  );
-}
-
+/** Daily cost cap. `PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD=0` disables it. */
 export function getPaidDailyFreeAllowanceCostLimitDollars(): number {
   return envNumber({
     name: "PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD",
@@ -225,32 +246,21 @@ export function getPaidDailyFreeAllowanceKeys(
   return {
     requestsKey: `${prefix}:requests`,
     costKey: `${prefix}:cost`,
+    reservationKey: `${prefix}:reservation`,
   };
 }
 
 function baseStatus(
-  ctx: PaidDailyFreeAllowanceContext,
   reason?: PaidDailyFreeAllowanceUnavailableReason,
 ): PaidDailyFreeAllowanceStatus {
-  const requestLimit = getPaidDailyFreeAllowanceRequestsPerDay();
   const costLimitDollars = getPaidDailyFreeAllowanceCostLimitDollars();
   const costLimitPoints = dollarsToPoints(costLimitDollars);
-  const rolloutPercent = getPaidDailyFreeAllowanceRolloutPercent();
-  const enabledByRollout = isFeatureEnabled(
-    ctx.userId,
-    PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
-    rolloutPercent,
-  );
   const { reset } = getCurrentUtcDayWindow();
 
   return {
     type: "paid_daily_free_allowance",
     available: false,
-    enabledByRollout,
-    rolloutPercent,
-    requestLimit,
     requestsUsed: 0,
-    requestsRemaining: requestLimit,
     costLimitDollars,
     costUsedDollars: 0,
     costRemainingDollars: costLimitDollars,
@@ -266,15 +276,19 @@ function baseStatus(
 function getStaticUnavailableReason(
   ctx: PaidDailyFreeAllowanceContext,
 ): PaidDailyFreeAllowanceUnavailableReason | null {
-  if (!isPaidIndividualSubscription(ctx.subscription)) {
-    return "unsupported_subscription";
-  }
+  if (ctx.subscription === "free") return "unsupported_subscription";
   if (ctx.capReason !== "monthly_exhausted") return "not_monthly_exhausted";
   // Ask attachments may require a more expensive multimodal route. Agent
   // attachments stay eligible because the allowance uses the cheap Agent
   // model and records the run's model, tool, and sandbox costs together.
   if (ctx.mode === "ask" && ctx.hasAttachments) {
     return "attachments_not_supported";
+  }
+  // The rescue is a low-cost-model fallback. A user who explicitly picked a
+  // premium model is asked to add credits instead of being silently
+  // downgraded.
+  if (ctx.selectedModel != null && ctx.selectedModel !== "auto") {
+    return "unsupported_model";
   }
   return null;
 }
@@ -283,74 +297,53 @@ export async function getPaidDailyFreeAllowanceStatus(
   ctx: PaidDailyFreeAllowanceContext,
 ): Promise<PaidDailyFreeAllowanceStatus> {
   const staticReason = getStaticUnavailableReason(ctx);
-  if (staticReason) return baseStatus(ctx, staticReason);
+  if (staticReason) return baseStatus(staticReason);
 
-  const requestLimit = getPaidDailyFreeAllowanceRequestsPerDay();
   const costLimitDollars = getPaidDailyFreeAllowanceCostLimitDollars();
   const costLimitPoints = dollarsToPoints(costLimitDollars);
-  const rolloutPercent = getPaidDailyFreeAllowanceRolloutPercent();
-  const enabledByRollout = isFeatureEnabled(
-    ctx.userId,
-    PAID_DAILY_FREE_ALLOWANCE_FEATURE_KEY,
-    rolloutPercent,
-  );
   const { bucket, reset } = getCurrentUtcDayWindow();
-
-  if (!enabledByRollout) return baseStatus(ctx, "rollout_disabled");
 
   const redis = getRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV !== "production") {
       return {
-        ...baseStatus(ctx),
-        available: requestLimit > 0 && costLimitPoints > 0,
-        requestLimit,
-        requestsRemaining: requestLimit,
-        costLimitDollars,
-        costRemainingDollars: costLimitDollars,
-        costLimitPoints,
-        costRemainingPoints: costLimitPoints,
+        ...baseStatus(),
+        available: costLimitPoints > 0,
         rateLimitSkipped: true,
       };
     }
 
-    return baseStatus(ctx, "redis_unavailable");
+    return baseStatus("redis_unavailable");
   }
 
-  const { requestsKey, costKey } = getPaidDailyFreeAllowanceKeys(
-    ctx.userId,
-    bucket,
-  );
+  const { requestsKey, costKey, reservationKey } =
+    getPaidDailyFreeAllowanceKeys(ctx.userId, bucket);
   let rawRequestsUsed: unknown;
   let rawCostUsed: unknown;
+  let rawReservation: unknown;
   try {
-    [rawRequestsUsed, rawCostUsed] = await Promise.all([
+    [rawRequestsUsed, rawCostUsed, rawReservation] = await Promise.all([
       redis.get(requestsKey),
       redis.get(costKey),
+      redis.get(reservationKey),
     ]);
   } catch {
-    return baseStatus(ctx, "redis_unavailable");
+    return baseStatus("redis_unavailable");
   }
 
   const requestsUsed = Math.max(0, Number(rawRequestsUsed ?? 0));
   const costUsedPoints = Math.max(0, Number(rawCostUsed ?? 0));
-  const requestsRemaining = Math.max(0, requestLimit - requestsUsed);
   const costRemainingPoints = Math.max(0, costLimitPoints - costUsedPoints);
-  const unavailableReason =
-    requestsRemaining <= 0
-      ? "request_limit_reached"
-      : costRemainingPoints <= 0
-        ? "cost_limit_reached"
-        : undefined;
+  const unavailableReason = rawReservation
+    ? "request_in_progress"
+    : costRemainingPoints <= 0
+      ? "cost_limit_reached"
+      : undefined;
 
   return {
     type: "paid_daily_free_allowance",
-    available: !unavailableReason && requestLimit > 0 && costLimitPoints > 0,
-    enabledByRollout,
-    rolloutPercent,
-    requestLimit,
+    available: !unavailableReason && costLimitPoints > 0,
     requestsUsed,
-    requestsRemaining,
     costLimitDollars,
     costUsedDollars: pointsToDollars(costUsedPoints),
     costRemainingDollars: pointsToDollars(costRemainingPoints),
@@ -361,6 +354,19 @@ export async function getPaidDailyFreeAllowanceStatus(
     resetTimestamp: reset,
     ...(unavailableReason && { unavailableReason }),
   };
+}
+
+/**
+ * A successful reservation records the user's opt-in for the current UTC day.
+ * Reuse it across subsequent requests and clients instead of requiring the CTA
+ * again. Callers must still reserve each request to enforce eligibility,
+ * concurrency, and the remaining daily budget.
+ */
+export function hasPaidDailyFreeAllowanceConsent(
+  status: PaidDailyFreeAllowanceStatus,
+  limitRescue?: LimitRescueRequest,
+): boolean {
+  return Boolean(limitRescue) || status.requestsUsed > 0;
 }
 
 export async function reservePaidDailyFreeAllowanceRequest(
@@ -379,7 +385,6 @@ export async function reservePaidDailyFreeAllowanceRequest(
         status: {
           ...status,
           requestsUsed: status.requestsUsed + 1,
-          requestsRemaining: Math.max(0, status.requestsRemaining - 1),
           rateLimitSkipped: true,
         },
       };
@@ -397,9 +402,12 @@ export async function reservePaidDailyFreeAllowanceRequest(
   }
 
   const { bucket, reset, ttlMs } = getCurrentUtcDayWindow();
-  const { requestsKey, costKey } = getPaidDailyFreeAllowanceKeys(
-    ctx.userId,
-    bucket,
+  const { requestsKey, costKey, reservationKey } =
+    getPaidDailyFreeAllowanceKeys(ctx.userId, bucket);
+  const reservationToken = crypto.randomUUID();
+  const reservationTtlMs = Math.min(
+    ttlMs,
+    PAID_DAILY_FREE_ALLOWANCE_RESERVATION_TTL_MS,
   );
   let result: [
     number,
@@ -410,8 +418,8 @@ export async function reservePaidDailyFreeAllowanceRequest(
   try {
     result = (await redis.eval(
       RESERVE_PAID_DAILY_FREE_ALLOWANCE_SCRIPT,
-      [requestsKey, costKey],
-      [status.requestLimit, status.costLimitPoints, ttlMs],
+      [requestsKey, costKey, reservationKey],
+      [status.costLimitPoints, ttlMs, reservationTtlMs, reservationToken],
     )) as [
       number,
       PaidDailyFreeAllowanceUnavailableReason | "ok",
@@ -434,7 +442,6 @@ export async function reservePaidDailyFreeAllowanceRequest(
   const allowed = allowedRaw === 1;
   const requestsUsed = Math.max(0, Number(requestsUsedRaw ?? 0));
   const costUsedPoints = Math.max(0, Number(costUsedRaw ?? 0));
-  const requestsRemaining = Math.max(0, status.requestLimit - requestsUsed);
   const costRemainingPoints = Math.max(
     0,
     status.costLimitPoints - costUsedPoints,
@@ -442,9 +449,8 @@ export async function reservePaidDailyFreeAllowanceRequest(
   const blockReason = allowed ? undefined : rawReason;
   const nextStatus: PaidDailyFreeAllowanceStatus = {
     ...status,
-    available: allowed && requestsRemaining > 0 && costRemainingPoints > 0,
+    available: allowed && costRemainingPoints > 0,
     requestsUsed,
-    requestsRemaining,
     costUsedPoints,
     costUsedDollars: pointsToDollars(costUsedPoints),
     costRemainingPoints,
@@ -461,15 +467,22 @@ export async function reservePaidDailyFreeAllowanceRequest(
     allowed,
     status: nextStatus,
     ...(blockReason && blockReason !== "ok" && { blockReason }),
+    ...(allowed && {
+      redisReservation: {
+        bucket,
+        token: reservationToken,
+      },
+    }),
   };
 }
 
 export async function recordPaidDailyFreeAllowanceCost(
   userId: string,
   costDollars: number,
+  reservation?: PaidDailyFreeAllowanceReservation,
 ): Promise<PaidDailyFreeAllowanceCostRecordResult> {
   const costPoints = dollarsToPoints(costDollars);
-  if (costPoints <= 0) {
+  if (costPoints <= 0 && !reservation?.redisReservation) {
     return {
       recorded: true,
       costPoints: 0,
@@ -498,15 +511,36 @@ export async function recordPaidDailyFreeAllowanceCost(
     };
   }
 
-  const { bucket, ttlMs } = getCurrentUtcDayWindow();
-  const { costKey } = getPaidDailyFreeAllowanceKeys(userId, bucket);
+  const { bucket: currentBucket, ttlMs } = getCurrentUtcDayWindow();
+  const bucket = reservation?.redisReservation?.bucket ?? currentBucket;
+  const { costKey, reservationKey } = getPaidDailyFreeAllowanceKeys(
+    userId,
+    bucket,
+  );
   let nextCost: unknown;
   try {
-    nextCost = await redis.eval(
-      RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT,
-      [costKey],
-      [costPoints, ttlMs],
-    );
+    if (reservation?.redisReservation) {
+      const [settledRaw, settledCostRaw] = (await redis.eval(
+        SETTLE_PAID_DAILY_FREE_ALLOWANCE_RESERVATION_SCRIPT,
+        [costKey, reservationKey],
+        [costPoints, ttlMs, reservation.redisReservation.token],
+      )) as [number, number];
+      if (settledRaw !== 1) {
+        return {
+          recorded: false,
+          costPoints,
+          costDollars: pointsToDollars(costPoints),
+          unavailableReason: "reservation_unavailable",
+        };
+      }
+      nextCost = settledCostRaw;
+    } else {
+      nextCost = await redis.eval(
+        RECORD_PAID_DAILY_FREE_ALLOWANCE_COST_SCRIPT,
+        [costKey],
+        [costPoints, ttlMs],
+      );
+    }
   } catch {
     return {
       recorded: false,
@@ -532,11 +566,7 @@ export function paidDailyFreeAllowanceStatusToMetadata(
   return {
     type: status.type,
     available: status.available,
-    enabledByRollout: status.enabledByRollout,
-    rolloutPercent: status.rolloutPercent,
-    requestLimit: status.requestLimit,
     requestsUsed: status.requestsUsed,
-    requestsRemaining: status.requestsRemaining,
     costLimitDollars: status.costLimitDollars,
     costUsedDollars: status.costUsedDollars,
     costRemainingDollars: status.costRemainingDollars,

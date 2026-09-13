@@ -218,6 +218,40 @@ const toolExecutionSources = [
   },
 ];
 
+describe("direct vision and summary recovery contracts", () => {
+  test.each([
+    ["agent-long", taskSrc],
+    ["chat handler", chatHandlerSrc],
+  ])(
+    "%s activates MiniMax summaries only after direct vision fails",
+    (_name, source) => {
+      expect(source).toContain("createVisionSummaryRecoveryController");
+      expect(source).toMatch(/available: directGlmVisionEnabled/);
+      expect(source).toMatch(
+        /const shouldRetryWithVisionSummary =[\s\S]*?directGlmVisionEnabled[\s\S]*?hasTerminalProviderStreamError/,
+      );
+      expect(source).toMatch(
+        /visionSummaryRecovery\.activate\(\{[\s\S]*?source: hasImageAttachmentForRecovery/,
+      );
+      expect(source).toMatch(
+        /describeImageAttachmentsWithAuxiliaryVision\(\{[\s\S]*?cacheDescription:\s*cacheAuxiliaryVisionDescription/,
+      );
+      expect(
+        source.match(
+          /omitImageViewToolResultsForProviderRetry\(\s*state\.finalMessages,?\s*\)\.messages/g,
+        ),
+      ).toHaveLength(2);
+      expect(source).toMatch(
+        /catch \(summaryError\) \{[^}]*?event:\s*"vision_summary_recovery_failed"/,
+      );
+      expect(source).toMatch(
+        /get auxiliaryVisionEnabled\(\) \{\s*return visionSummaryRecovery\.isEnabled\(\);\s*\}/,
+      );
+      expect(source).not.toContain("AUXILIARY_VISION_UNAVAILABLE_MESSAGE");
+    },
+  );
+});
+
 describe("agent tool schemas — Head Start bundle boundary", () => {
   test("schema-only tool catalog imports only ai and zod", () => {
     const importSources = Array.from(
@@ -261,14 +295,13 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
     }
   });
 
-  test("normal and durable Agent share one persistent-only finding tool factory", () => {
+  test("normal and durable Agent share one finding tool factory", () => {
     expect(chatHandlerSrc).toMatch(/createTools\(/);
     expect(taskSrc).toMatch(/createTools\(/);
     expect(toolIndexSrc).toMatch(
-      /create_vulnerability_report:\s*createCreateVulnerabilityReport\(context\)/,
+      /create_vulnerability_report:\s*createCreateVulnerabilityReport\(/,
     );
     expect(toolIndexSrc).toMatch(/return\s+mode\s*===\s*"ask"/);
-    expect(toolIndexSrc).toMatch(/\.\.\.\(!isTemporary\s*&&\s*\{/);
   });
 });
 
@@ -420,12 +453,16 @@ describe("agent stream runner — empty tool-input recovery", () => {
       "runSummarizationStep({",
     );
     const summarizedActiveToolsIdx = agentStreamRunnerSrc.indexOf(
-      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
+      "const activeTools = enforceParentGateTool(",
       summarizationIdx,
     );
+    const normalContinuationIdx = agentStreamRunnerSrc.indexOf(
+      "let currentMessages = rollingModelMessages",
+      summarizedActiveToolsIdx,
+    );
     const normalActiveToolsIdx = agentStreamRunnerSrc.indexOf(
-      "const activeTools = await getActiveToolsForRecovery(loopRecovery)",
-      summarizedActiveToolsIdx + 1,
+      "const activeTools = enforceParentGateTool(",
+      normalContinuationIdx,
     );
     const summarizedNudgeIdx = agentStreamRunnerSrc.indexOf(
       "loopRecovery.nudge",
@@ -435,23 +472,71 @@ describe("agent stream runner — empty tool-input recovery", () => {
     expect(recoveryIdx).toBeGreaterThan(-1);
     expect(summarizationIdx).toBeGreaterThan(recoveryIdx);
     expect(summarizedActiveToolsIdx).toBeGreaterThan(summarizationIdx);
-    expect(normalActiveToolsIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(normalContinuationIdx).toBeGreaterThan(summarizedActiveToolsIdx);
+    expect(normalActiveToolsIdx).toBeGreaterThan(normalContinuationIdx);
     expect(summarizedNudgeIdx).toBeGreaterThan(summarizationIdx);
     expect(agentStreamRunnerSrc).toMatch(
       /getActiveToolsWithExclusions\(recovery\.excludedTools\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /enforceParentGateTool\([\s\S]*?getActiveToolsForRecovery\(loopRecovery\)/,
     );
   });
 });
 
 describe("agent-long chat UI — completion reconciliation", () => {
-  test("polls the resume endpoint and clears useChat state after backend completion", () => {
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_POLL_DELAY_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_QUIET_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_LONG_COMPLETION_STOP_GRACE_MS/);
-    expect(chatComponentSrc).toMatch(/AGENT_RESUME_ENDPOINT/);
-    expect(chatComponentSrc).toMatch(/response\.status\s*===\s*204/);
-    expect(chatComponentSrc).toMatch(/scheduleFinishLocally\(\)/);
-    expect(chatComponentSrc).toMatch(/finishLocally\(\)/);
+  test("polls status without minting tokens and clears useChat state after backend completion", () => {
+    const reconciliationStart = chatComponentSrc.indexOf(
+      "// Trigger.dev can finish and persist an Agent answer",
+    );
+    const reconciliationEnd = chatComponentSrc.indexOf(
+      "// Ref bridge: StreamEffects exposes resetAutoContinueCount here",
+      reconciliationStart,
+    );
+    const reconciliationSrc = chatComponentSrc.slice(
+      reconciliationStart,
+      reconciliationEnd,
+    );
+
+    expect(reconciliationSrc).toMatch(
+      /AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_STOP_GRACE_MS\s*=\s*2_000/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_ACTIVE_COMPLETION_POLL_INTERVAL_MS\s*=\s*15_000/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /AGENT_LONG_COMPLETION_REQUEST_TIMEOUT_MS\s*=\s*8_000/,
+    );
+    expect(reconciliationSrc).toMatch(
+      /status\s*!==\s*"streaming"\s*&&\s*status\s*!==\s*"submitted"/,
+    );
+    expect(reconciliationSrc).toMatch(/agentLongRunId\s*\?\?/);
+    expect(reconciliationSrc).toMatch(/trackedAgentLongRunId/);
+    expect(reconciliationSrc).toMatch(
+      /!shouldUseAgentLongForCurrentChat\s*&&\s*!trackedAgentLongRunId/,
+    );
+    expect(reconciliationSrc).not.toMatch(/agentLongLastMessageChangeAtRef/);
+    expect(reconciliationSrc).toMatch(/AGENT_STATUS_ENDPOINT/);
+    expect(reconciliationSrc).toMatch(/method:\s*"POST"/);
+    expect(reconciliationSrc).toMatch(/isCompletionCheckInFlight/);
+    expect(reconciliationSrc).toMatch(/requestAbortController/);
+    expect(reconciliationSrc).toMatch(
+      /setTimeout\([\s\S]*AGENT_LONG_COMPLETION_REQUEST_TIMEOUT_MS/,
+    );
+    expect(reconciliationSrc).toMatch(/clearTimeout\(requestTimeout\)/);
+    expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
+    expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
+    expect(statusSrc).toMatch(/active_trigger_run_id\s*!==\s*runId/);
+    expect(statusSrc).toMatch(/status:\s*"DETACHED",\s*terminal:\s*true/);
+    expect(transportSrc).toMatch(
+      /status\s*===\s*"COMPLETED"\s*\|\|\s*status\s*===\s*"DETACHED"/,
+    );
+    expect(reconciliationSrc).not.toMatch(/AGENT_RESUME_ENDPOINT/);
+    expect(reconciliationSrc).toMatch(/scheduleFinishLocally\(\)/);
+    expect(reconciliationSrc).toMatch(/finishLocally\(\)/);
     expect(chatComponentSrc).toMatch(/AGENT_PARTIAL_SAVE_ENDPOINT/);
     expect(chatComponentSrc).toMatch(/saveAgentLongPartialSnapshot/);
     expect(chatComponentSrc).toMatch(
@@ -460,9 +545,60 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(
       /getLatestAgentLongAssistantMessageForPartialSave/,
     );
-    expect(chatComponentSrc).toMatch(/stop\(\)/);
-    expect(chatComponentSrc).toMatch(/window\.history\.replaceState/);
+    expect(reconciliationSrc).toMatch(/stopRef\.current\(\)/);
+    expect(reconciliationSrc).not.toMatch(/^\s+stop,$/m);
+    expect(reconciliationSrc).toMatch(
+      /agentLongRunFallbackAllowedRef\.current\s*\?\s*activeTriggerRunRef\.current\s*:\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongRunFallbackAllowedRef\.current\s*=\s*false;[\s\S]*return fetchAgentLongStream/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /submissionGeneration\s*=\s*\+\+agentLongSubmissionGenerationRef\.current/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /submissionGeneration\s*!==\s*agentLongSubmissionGenerationRef\.current/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /if \(init\?\.method !== "GET"\) \{[\s\S]*agentLongRunCorrelationRef\.current = null;[\s\S]*agentLongRunFallbackAllowedRef\.current = false;[\s\S]*setAgentLongRunId\(null\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongMessageFingerprintRef\.current\.chatId !== chatId/,
+    );
+    const submittedEffectStart = chatComponentSrc.indexOf(
+      'if (status === "submitted")',
+    );
+    const submittedEffectEnd = chatComponentSrc.indexOf(
+      "if (\n      shouldUseAgentLongForCurrentChat",
+      submittedEffectStart,
+    );
+    const submittedEffectSrc = chatComponentSrc.slice(
+      submittedEffectStart,
+      submittedEffectEnd,
+    );
+    expect(submittedEffectSrc).not.toMatch(/setAgentLongRunId\(null\)/);
+    expect(submittedEffectSrc).not.toMatch(
+      /agentLongRunCorrelationRef\.current\s*=\s*null/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /agentLongRunCorrelationRef\.current\s*=\s*null;[\s\S]*setAgentLongRunId\(null\);[\s\S]*return fetchAgentLongStream/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /const finishLocally = \(\) => \{[\s\S]*finalizeNewChatRoute/,
+    );
     expect(chatComponentSrc).toMatch(/setIsExistingChat\(true\)/);
+    expect(statusSrc).toMatch(
+      /NextResponse\.json\(\{ status: run\.status, terminal \}\)/,
+    );
+  });
+
+  test("captures the Trigger run before realtime data reaches useChat", () => {
+    expect(transportSrc).toMatch(
+      /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /fetchAgentLongStream\(init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
+    );
   });
 
   test("client partial-save endpoint is authenticated and assistant-only", () => {
@@ -483,6 +619,15 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(agentPartialSaveRouteSrc).toMatch(/hasVisibleAssistantContent/);
     expect(agentPartialSaveRouteSrc).toMatch(/saveMessage\(\{/);
     expect(agentPartialSaveRouteSrc).toMatch(
+      /verifyAgentRunCorrelationToken\(\{/,
+    );
+    expect(agentPartialSaveRouteSrc).toMatch(
+      /triggerRunId:\s*body\.triggerRunId/,
+    );
+    expect(chatComponentSrc).toMatch(/data-agent-run-correlation/);
+    expect(chatComponentSrc).toMatch(/runCorrelationToken/);
+    expect(convexMessagesSrc).toMatch(/trigger_run_id:\s*args\.triggerRunId/);
+    expect(agentPartialSaveRouteSrc).toMatch(
       /finishReason:\s*CLIENT_SAVED_FINISH_REASON/,
     );
     expect(agentPartialSaveRouteSrc).toMatch(/updateChat\(\{/);
@@ -492,7 +637,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(chatComponentSrc).toMatch(/const stopRef = useRef\(stop\)/);
     expect(chatComponentSrc).toMatch(/stopActiveBrowserStream/);
     expect(chatComponentSrc).toMatch(
-      /cancelAgentLongRealtimeStreams\(activeChatIdRef\.current\)/,
+      /const streamChatId = streamChatIdRef\.current;[\s\S]*cancelAgentLongRealtimeStreams\(streamChatId\)/,
     );
     expect(chatComponentSrc).toMatch(
       /statusRef\.current\s*===\s*"streaming"[\s\S]*statusRef\.current\s*===\s*"submitted"[\s\S]*stopRef\.current\(\)/,
@@ -502,12 +647,62 @@ describe("agent-long chat UI — completion reconciliation", () => {
     );
   });
 
-  test("sidebar navigation cancels stale agent-long realtime before route commit", () => {
-    expect(chatItemSrc).toMatch(/cancelAgentLongRealtimeStreams/);
+  test("new-task reset invalidates stale terminal callbacks before aborting", () => {
+    const stopHelperIdx = chatComponentSrc.indexOf(
+      "const stopActiveBrowserStream = useCallback(",
+    );
+    const cancelIdx = chatComponentSrc.indexOf(
+      "cancelAgentLongRealtimeStreams(streamChatId)",
+      stopHelperIdx,
+    );
+    const invalidateIdx = chatComponentSrc.indexOf(
+      "activeChatIdRef.current = nextChatId",
+      stopHelperIdx,
+    );
+    const abortIdx = chatComponentSrc.indexOf("stopRef.current()", cancelIdx);
+    const resetIdx = chatComponentSrc.indexOf("const reset = () => {");
+    const nextChatIdIdx = chatComponentSrc.indexOf(
+      "const nextChatId = uuidv4()",
+      resetIdx,
+    );
+    const guardedStopIdx = chatComponentSrc.indexOf(
+      "stopActiveBrowserStream(nextChatId)",
+      nextChatIdIdx,
+    );
+
+    expect(stopHelperIdx).toBeGreaterThan(-1);
+    expect(invalidateIdx).toBeGreaterThan(stopHelperIdx);
+    expect(cancelIdx).toBeGreaterThan(invalidateIdx);
+    expect(abortIdx).toBeGreaterThan(cancelIdx);
+    expect(nextChatIdIdx).toBeGreaterThan(resetIdx);
+    expect(guardedStopIdx).toBeGreaterThan(nextChatIdIdx);
+    expect(
+      chatComponentSrc.match(
+        /!isChatMountedRef\.current \|\| activeChatIdRef\.current !== chatId/g,
+      ),
+    ).toHaveLength(3);
+  });
+
+  test("sidebar navigation invalidates stale callbacks before canceling realtime", () => {
+    expect(chatItemSrc).not.toMatch(/cancelAgentLongRealtimeStreams/);
     expect(chatItemSrc).toMatch(/setOptimisticChatId\(id\)/);
     expect(chatItemSrc).toMatch(/optimisticChatId\s*\?\?\s*routeChatId/);
-    expect(chatItemSrc).toMatch(
-      /routeChatId\s*&&\s*routeChatId\s*!==\s*id[\s\S]*cancelAgentLongRealtimeStreams\(routeChatId\)/,
+    expect(chatItemSrc).toMatch(/initializeChat\(id\)/);
+    expect(
+      chatComponentSrc.match(/activeChatIdRef\.current = chatId;/g),
+    ).toHaveLength(1);
+    expect(chatComponentSrc).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*activeChatIdRef\.current = chatId;[\s\S]*streamChatIdRef\.current = chatId;[\s\S]*\}, \[chatId\]\)/,
+    );
+    expect(globalStateSrc).toMatch(/chatNavigationHandlerRef/);
+    expect(globalStateSrc).toMatch(
+      /chatNavigationHandlerRef\.current\?\.\(chatId\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /setChatNavigationHandler\(stopActiveBrowserStream\)/,
+    );
+    expect(chatComponentSrc).toMatch(
+      /if \(nextChatId\) \{[\s\S]*activeChatIdRef\.current = nextChatId;[\s\S]*\}[\s\S]*cancelAgentLongRealtimeStreams\(streamChatId\)/,
     );
     expect(globalStateSrc).toMatch(/optimisticChatId:\s*string\s*\|\s*null/);
     expect(globalStateSrc).toMatch(/setOptimisticChatId/);
@@ -554,11 +749,9 @@ describe("agent-long chat UI — completion reconciliation", () => {
 describe("agent-long cancel route — compare-and-clear idempotency", () => {
   test("uses the authorized chat snapshot for run and approval session IDs", () => {
     expect(cancelSrc).toMatch(
-      /const approvalSessionId\s*=\s*chat\s*\?\s*chat\.active_agent_approval_session_id\s*:\s*temporaryRefresh\?\.approvalSessionId;/,
+      /const approvalSessionId\s*=\s*chat\.active_agent_approval_session_id;/,
     );
-    expect(cancelSrc).toMatch(
-      /const runId\s*=\s*chat\s*\?\s*chat\.active_trigger_run_id\s*:\s*temporaryRefresh\?\.runId/,
-    );
+    expect(cancelSrc).toMatch(/const runId\s*=\s*chat\.active_trigger_run_id/);
     expect(cancelSrc).not.toMatch(/getActiveTriggerRun/);
     expect(cancelSrc).toMatch(/expectedApprovalSessionId:\s*approvalSessionId/);
   });
@@ -607,7 +800,7 @@ describe("agent-long resume route — 204 on terminal + self-heal on 404", () =>
 
   test("returns chat id with the public run handle", () => {
     expect(resumeSrc).toMatch(
-      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
+      /NextResponse\.json\(\{[\s\S]*runId,[\s\S]*runCorrelationToken:[\s\S]*publicAccessToken,[\s\S]*chatId,[\s\S]*approvalSessionPublicAccessToken/,
     );
   });
 });
@@ -639,12 +832,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentRouteErrorsSrc).toMatch(/handleAgentRouteError/);
   });
 
-  test("uses a paid two-hour task cap with a separate free-plan runtime cap", () => {
+  test("uses a four-hour task cap for every subscription tier", () => {
     expect(taskSrc).toMatch(
-      /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*60\s*\*\s*60/,
+      /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*4\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
-      /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*2\s*\*\s*60\s*\*\s*60/,
+      /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*4\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
       /AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS\s*=\s*AGENT_LONG_PAID_MAX_DURATION_SECONDS/,
@@ -658,24 +851,78 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/maxDurationMs:\s*agentLongMaxDurationMs/);
   });
 
+  test("attributes runtime-budget settlement stalls inside the cleanup grace", () => {
+    expect(taskSrc).toMatch(
+      /AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS\s*=\s*30\s*\*\s*1000/,
+    );
+
+    const budgetIdx = taskSrc.indexOf("createActiveRuntimeBudget({");
+    const armIdx = taskSrc.indexOf(
+      "runtimeSettlementWatchdog?.arm()",
+      budgetIdx,
+    );
+    const abortIdx = taskSrc.indexOf("userStopSignal.abort()", armIdx);
+    const stalledEventIdx = taskSrc.indexOf(
+      'event: "agent_long_runtime_settlement_stalled"',
+      abortIdx,
+    );
+    const finallyIdx = taskSrc.indexOf("} finally {", stalledEventIdx);
+    const disposeIdx = taskSrc.indexOf(
+      "runtimeSettlementWatchdog?.dispose()",
+      finallyIdx,
+    );
+
+    expect(budgetIdx).toBeGreaterThan(-1);
+    expect(armIdx).toBeGreaterThan(budgetIdx);
+    expect(abortIdx).toBeGreaterThan(armIdx);
+    expect(stalledEventIdx).toBeGreaterThan(abortIdx);
+    expect(finallyIdx).toBeGreaterThan(stalledEventIdx);
+    expect(disposeIdx).toBeGreaterThan(finallyIdx);
+
+    const eventBlock = taskSrc.slice(stalledEventIdx, finallyIdx);
+    expect(eventBlock).toMatch(/request_id:\s*ctx\.run\.id/);
+    expect(eventBlock).toMatch(/provider_error_category/);
+    expect(eventBlock).toMatch(/active_terminal_wait_duration_ms/);
+    expect(eventBlock).not.toMatch(/prompt|target|tool_output|command_output/);
+  });
+
   test("runs are triggered with filterable queued metadata and tags", () => {
     expect(routeSrc).toMatch(/tags:\s*triggerTags/);
     expect(routeSrc).toMatch(
-      /triggerTags\.push\(`permission_\$\{agentPermissionMode\}`\)/,
+      /tags:\s*getAgentApprovalTriggerTags\(triggerTags\)/,
     );
+    expect(routeSrc).toMatch(
+      /const permissionSnapshot\s*=\s*buildAgentPermissionRunSnapshot\(agentPermissionMode\)/,
+    );
+    expect(routeSrc).toMatch(
+      /triggerTags\.push\(permissionSnapshot\.triggerTag\)/,
+    );
+    expect(routeSrc).toMatch(/agentPermissionMode:\s*permissionSnapshot\.mode/);
     expect(routeSrc).toMatch(/const triggerMetadata\s*=\s*{/);
     expect(routeSrc).toMatch(/metadata:\s*triggerMetadata/);
     expect(routeSrc).toMatch(/status:\s*"queued"/);
     expect(routeSrc).toMatch(/loginRequired:\s*false/);
+    expect(taskSrc).toMatch(
+      /getMissingAgentLongTags\(\s*ctx\.run\.tags,\s*desiredTaskStartTags,?\s*\)/,
+    );
+    expect(taskSrc).toMatch(
+      /if\s*\(missingTaskStartTags\.length\s*>\s*0\)[\s\S]*addAgentLongTags\(missingTaskStartTags/,
+    );
   });
 
   test("captures Trigger usage and active-time attribution on Agent completion", () => {
     expect(taskSrc).toMatch(/triggerUsage\.getCurrent\(\)/);
     expect(taskSrc).toMatch(
-      /triggerUsageDurationMs:\s*currentUsage\.compute\.total\.durationMs/,
+      /triggerUsageDurationMs:\s*currentUsage\.durationMs/,
     );
     expect(taskSrc).toMatch(
-      /triggerTotalCostUsd:\s*currentUsage\.totalCostInCents\s*\/\s*100/,
+      /triggerTotalCostUsd:\s*currentUsage\.totalCostDollars/,
+    );
+    expect(taskSrc).toMatch(
+      /usageTracker\.nonModelCost\s*\+=\s*triggerRunCost/,
+    );
+    expect(taskSrc).toMatch(
+      /getTriggerRunCostDollars:\s*\(\)\s*=>\s*getTriggerRunUsage\(\)\.totalCostDollars/,
     );
     expect(taskSrc).toMatch(
       /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
@@ -720,6 +967,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(
       /selected_model:\s*selectedModel,\s*response_model:\s*state\.responseModel,/,
     );
+
+    const askSetupCleanup = chatHandlerSrc.indexOf(
+      "execute errors are consumed by createUIMessageStream",
+    );
+    expect(askSetupCleanup).toBeGreaterThan(-1);
+    expect(
+      chatHandlerSrc.slice(askSetupCleanup, askSetupCleanup + 1_000),
+    ).toContain("releasePaidDailyFreeAllowanceReservation");
+
+    const triggerCancelCleanup = taskSrc.slice(
+      taskSrc.indexOf("onCancel: async"),
+      taskSrc.indexOf("run: async"),
+    );
+    expect(triggerCancelCleanup).toContain(
+      "releasePaidDailyFreeAllowanceReservation",
+    );
+    expect(
+      taskSrc.match(/await releasePaidDailyFreeAllowanceReservation\(\)/g),
+    ).toHaveLength(3);
   });
 
   test("uses a turn-scoped Trigger idempotency key for agent runs", () => {
@@ -752,7 +1018,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
     expect(taskSrc).toMatch(
-      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*buildDeniedApprovalReason\(next\.output\.message\)/,
+      /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*humanDenialTrippedCircuitBreaker[\s\S]*buildDeniedApprovalReason\(next\.output\.message\)/,
     );
     expect(taskSrc).toMatch(/record\.message === undefined/);
     expect(taskSrc).toMatch(
@@ -777,6 +1043,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/persistTargetGrant/);
     expect(taskSrc).toMatch(/persistAgentApprovalGrant/);
     expect(taskSrc).toMatch(/agent_approval_grants/);
+    expect(taskSrc).toMatch(
+      /scopedGrant\.workingDirectory === workingDirectory/,
+    );
+    expect(taskSrc).toMatch(
+      /workingDirectory:\s*projectContext\.workingDirectory/,
+    );
     expect(taskSrc).toMatch(
       /approvedTargetGrant\.kind !== "terminal_interaction"/,
     );
@@ -829,13 +1101,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(transportSrc).toMatch(/resumeUrl:\s*getAgentResumeUrl\(chatId\)/);
   });
 
-  test("temporary approval refresh is signed, user-bound, and content-free", () => {
-    expect(agentApprovalSessionSrc).toMatch(/createHmac\("sha256"/);
-    expect(agentApprovalSessionSrc).toMatch(/httpOnly:\s*true/);
-    expect(agentApprovalSessionSrc).toMatch(/sameSite:\s*"strict"/);
-    expect(resumeSrc).toMatch(/getTemporaryAgentApprovalRefreshHandle/);
-    expect(routeSrc).toMatch(/setTemporaryAgentApprovalRefreshCookie/);
-    expect(agentApprovalSessionSrc).not.toMatch(/messages|prompt|content/);
+  test("approval refresh relies on the persisted task owner and active run", () => {
+    expect(resumeSrc).toMatch(/getChatById\(\{ id: chatId \}\)/);
+    expect(resumeSrc).toMatch(/chat\.user_id\s*!==\s*userId/);
+    expect(resumeSrc).toMatch(/chat\.active_trigger_run_id/);
+    expect(resumeSrc).toMatch(/chat\.active_agent_approval_session_id/);
+    expect(agentApprovalSessionSrc).not.toMatch(/cookie|createHmac/i);
   });
 
   test("approval protocol v2 is explicit and requires route-last deployment", () => {
@@ -854,13 +1125,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentApprovalClientSrc).not.toMatch(/sendTriggerSessionInput/);
     expect(agentApprovalRouteSrc).toMatch(/getUserIDAndPro\(req\)/);
     expect(agentApprovalRouteSrc).toMatch(/active_agent_approval_request/);
-    expect(agentApprovalRouteSrc).toMatch(
-      /getTemporaryAgentApprovalRefreshHandle/,
-    );
-    expect(agentApprovalRouteSrc).toMatch(
-      /metadata\.approvalStatus\s*!==\s*"pending"/,
-    );
-    expect(agentApprovalRouteSrc).toMatch(/metadata\.approvalToolCallId/);
+    expect(agentApprovalRouteSrc).toMatch(/chat\.user_id\s*!==\s*userId/);
+    expect(agentApprovalRouteSrc).toMatch(/pending\?\.approvalId/);
+    expect(agentApprovalRouteSrc).toMatch(/pending\?\.toolCallId/);
     expect(agentApprovalRouteSrc).not.toMatch(/streams\.read/);
     expect(taskSrc).toMatch(/\.set\("approvalToolCallId"/);
     expect(taskSrc).toContain('.set("userId", userId)');
@@ -940,7 +1207,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
     expect(taskSrc).toMatch(
-      /expectedRunId:\s*ctx\.run\.id,[\s\S]*clearApprovalPending:\s*true/,
+      /expectedRunId:\s*triggerRunId,[\s\S]*clearApprovalPending:\s*true/,
     );
     expect(resumeSrc).toMatch(
       /expectedRunId:\s*runId,[\s\S]*clearApprovalPending:\s*true/,
@@ -948,10 +1215,52 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(statusSrc).toMatch(/clearTerminalAgentRun/);
     expect(statusSrc).toMatch(/clearApprovalPending:\s*true/);
     expect(chatComponentSrc).toMatch(
-      /const storedAgentApprovalRequest\s*=\s*activeTriggerRunId\s*\?\s*getStoredAgentApprovalRequest\(chatDataForCurrentChat\)\s*:\s*null/,
+      /const storedAgentApprovalRequest\s*=\s*getStoredAgentApprovalRequest\(\s*chatDataForCurrentChat,?\s*\)/,
     );
     expect(chatComponentSrc).toMatch(
-      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
+      /if\s*\(\s*!hasLoadedCurrentChat\s*\|\|\s*activeTriggerRunId\s*\|\|\s*storedAgentApprovalRequest\s*\)\s*\{\s*return;\s*\}\s*clearAgentApprovalSession\(\)/,
+    );
+  });
+
+  test("every parent wind-down settles active subagents before teardown", () => {
+    expect(taskSrc).toMatch(
+      /if \(cleanup\.subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?ctx\.run\.id,[\s\S]*?"parent_canceled",[\s\S]*?cleanup\.userId,[\s\S]*?cleanup\.chatId,[\s\S]*?\)\.catch/,
+    );
+    expect(taskSrc).toMatch(
+      /finally \{[\s\S]*?if \(subagentsEnabled\) \{\s*await settleSubagentsForParentRun\([\s\S]*?"parent_run_ended",[\s\S]*?userId,[\s\S]*?chatId,[\s\S]*?\)\.catch[\s\S]*?triggerSessions\.close[\s\S]*?finishCloudSandboxLifecycle\(\)[\s\S]*?runCleanupMap\.delete\(ctx\.run\.id\)/,
+    );
+  });
+
+  test("full-access runs enable generic delegation without a rollout flag", () => {
+    expect(routeSrc).toMatch(
+      /const genericDelegationEnabled\s*=\s*agentPermissionMode === "full_access"/,
+    );
+    expect(routeSrc).not.toContain('"agent-generic-delegation-v1"');
+    expect(routeSrc).not.toContain("securityValidationSubagentsEnabled");
+    expect(routeSrc).not.toContain("securityTaskSubagentsEnabled");
+  });
+
+  test("parent delivery is acknowledged only after result injection and synthesis", () => {
+    expect(taskSrc).toMatch(
+      /subagentCompletionGate:[\s\S]*?markInjected:[\s\S]*?markSubagentResultInjectedForParent/,
+    );
+    expect(taskSrc).toMatch(
+      /markConsumed:[\s\S]*?markSubagentResultConsumedForParent/,
+    );
+    expect(taskSrc).toContain("retry.onThrow(transition");
+    expect(taskSrc).toMatch(/subagent_parent_finish_blocked/);
+    expect(taskSrc).toMatch(/subagent_result_consumed/);
+  });
+
+  test("parent completion clears the active run after terminal teardown", () => {
+    expect(taskSrc).toMatch(
+      /finishCloudSandboxLifecycleForParentRun[\s\S]*?setActiveTriggerRun\([\s\S]*?expectedRunId:\s*triggerRunId/,
+    );
+    expect(taskSrc).toMatch(
+      /await ptySessionManager\.closeAll\(cleanup\.chatId\)[\s\S]*?await cleanup\.finishCloudSandboxLifecycle\(\)/,
+    );
+    expect(taskSrc).toMatch(
+      /await ptySessionManager\.closeAll\(chatId\)[\s\S]*?await finishCloudSandboxLifecycle\(\)/,
     );
   });
 
@@ -972,11 +1281,29 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(/handled tool failure dashboard update failed/);
     expect(taskSrc).toMatch(
-      /onToolFailure,\s*requestToolApproval,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*\)/,
+      /onToolFailure,\s*requestToolApproval,\s*agentPermissionMode === "auto_review" &&\s*autoReviewAssignment\?\.phase !== undefined,\s*runTimingTracker\.measureActiveTime,\s*projectContext\.workingDirectory,\s*ctx\.run\.id,\s*auxiliaryVision,\s*{\s*cloudSandboxProvider,/,
     );
+    expect(taskSrc).toMatch(
+      /additionalTools:[\s\S]*delegate_task:[\s\S]*continue_agent:[\s\S]*send_message_to_agent:[\s\S]*wait_for_agents:/,
+    );
+    expect(taskSrc).not.toContain("vulnerability_report");
   });
 
-  test("direct runs use small subscription-aware Trigger.dev priority offsets", () => {
+  test("direct runs use fixed subscription machines and priority offsets", () => {
+    expect(routeSrc).toMatch(
+      /AGENT_TRIGGER_MACHINE_BY_SUBSCRIPTION:\s*Record<[\s\S]*SubscriptionTier,[\s\S]*AgentTriggerMachinePreset/,
+    );
+    expect(routeSrc).toMatch(/free:\s*"small-1x"/);
+    expect(routeSrc).toMatch(/pro:\s*"small-2x"/);
+    expect(routeSrc).toMatch(/"pro-plus":\s*"small-2x"/);
+    expect(routeSrc).toMatch(/ultra:\s*"small-2x"/);
+    expect(routeSrc).toMatch(/team:\s*"small-2x"/);
+    expect(routeSrc).toMatch(
+      /const triggerMachine = getAgentTriggerMachine\(subscription\)/,
+    );
+    expect(routeSrc).not.toMatch(
+      /machineRouting|agent_machine_routing_exposed/,
+    );
     expect(routeSrc).toMatch(
       /AGENT_TRIGGER_PRIORITY_BY_SUBSCRIPTION:\s*Record<\s*SubscriptionTier,\s*number\s*>/,
     );
@@ -993,6 +1320,10 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(routeSrc).toMatch(/process\.env\.TRIGGER_VERSION/);
     expect(routeSrc).not.toMatch(/AGENT_APPROVAL_TRIGGER_VERSION/);
     expect(routeSrc).toMatch(/lockToVersion:\s*approvalWorkerVersion/);
+    expect(routeSrc).toMatch(/machine:\s*triggerMachine/);
+    expect(routeSrc).toMatch(
+      /const approvalTriggerConfig\s*=\s*{[\s\S]*?machine:\s*triggerMachine/,
+    );
     expect(routeSrc).toMatch(
       /shouldRequireAgentApprovalWorkerVersion\(\)[\s\S]*!approvalWorkerVersion[\s\S]*temporarily unavailable/,
     );
@@ -1000,7 +1331,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("persisted chats send a trimmed Trigger payload and retain attachment exceptions", () => {
     expect(routeSrc).toMatch(
-      /const messagesForPayload\s*=\s*temporary\s*\|\|\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
+      /const messagesForPayload\s*=\s*localDesktopAttachmentsPrepared\s*\?\s*messagesForTrigger\s*:\s*\[\]/s,
     );
     expect(routeSrc).toMatch(/messages:\s*messagesForPayload/);
   });
@@ -1073,7 +1404,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       wrapperIdx,
     );
     const mergeIdx = taskSrc.indexOf(
-      "writer.merge(\n              withAgentLongStreamHeartbeat(",
+      "mergePrimaryStream(\n              withAgentLongStreamHeartbeat(",
       sanitizerIdx,
     );
     const finalPipeIdx = taskSrc.indexOf(
@@ -1091,8 +1422,65 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     for (const source of [chatHandlerSrc, taskSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/finishReason:\s*state\.streamFinishReason/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/writeAutoContinue\(writer\)/);
+      expect(source).toMatch(/agent_auto_continue_suppressed/);
     }
+  });
+
+  test("both Agent backends require an explicit continuation after elapsed timeout", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      const autoContinueIdx = source.lastIndexOf(
+        "const autoContinueStopSource =",
+      );
+      const autoContinueEndIdx = source.indexOf("});", autoContinueIdx);
+
+      expect(autoContinueIdx).toBeGreaterThan(-1);
+      expect(autoContinueEndIdx).toBeGreaterThan(autoContinueIdx);
+      expect(source.slice(autoContinueIdx, autoContinueEndIdx)).not.toContain(
+        "stoppedDueToElapsedTimeout",
+      );
+    }
+  });
+
+  test("incomplete Agent turns persist and bill observed work before offering continuation", () => {
+    for (const source of [chatHandlerSrc, taskSrc]) {
+      const autoContinueIdx = source.lastIndexOf(
+        "const autoContinueStopSource =",
+      );
+      const persistenceIdx = source.lastIndexOf(
+        "sendFileMetadataToStream(accumulatedFiles)",
+        autoContinueIdx,
+      );
+      const deductionIdx = source.lastIndexOf(
+        "await deductAccumulatedUsage",
+        autoContinueIdx,
+      );
+
+      expect(autoContinueIdx).toBeGreaterThan(-1);
+      expect(persistenceIdx).toBeGreaterThan(-1);
+      expect(deductionIdx).toBeGreaterThan(-1);
+      expect(persistenceIdx).toBeLessThan(autoContinueIdx);
+      expect(deductionIdx).toBeLessThan(autoContinueIdx);
+      expect(source.slice(deductionIdx, autoContinueIdx)).not.toContain(
+        "usageRefundTracker.refund",
+      );
+    }
+  });
+
+  test("the direct chat boundary strictly normalizes automatic continuation flags", () => {
+    expect(chatHandlerSrc).toMatch(/isAutoContinue:\s*rawIsAutoContinue/);
+    expect(chatHandlerSrc).toMatch(
+      /isAutomaticContinuation:\s*rawIsAutomaticContinuation/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /const isAutoContinue = rawIsAutoContinue === true/,
+    );
+    expect(chatHandlerSrc).toMatch(
+      /isAutoContinue && rawIsAutomaticContinuation === true/,
+    );
   });
 
   test("handled user rate limits are returned after the UI error chunk is flushed", () => {
@@ -1112,19 +1500,56 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(returnIdx).toBeGreaterThan(handledRateLimitIdx);
   });
 
-  test("non-rate-limit stream errors are still rethrown after the handled branch", () => {
+  test("handled setup rate limits do not fail the Trigger run", () => {
+    expect(taskSrc).toMatch(
+      /const recordAgentLongCaughtErrorForDashboard[\s\S]*isHandledUserRateLimitError\(error\)[\s\S]*recordAgentLongHandledRateLimitForDashboard/,
+    );
+
+    const handledRateLimitIdx = taskSrc.indexOf(
+      "const caughtHandledUserRateLimit = isHandledUserRateLimitError(error)",
+    );
+    const recordedFailureIdx = taskSrc.indexOf(
+      "recordAgentLongCaughtErrorForDashboard",
+      handledRateLimitIdx,
+    );
+    const syntheticFlushIdx = taskSrc.indexOf(
+      "await waitForErrorStream()",
+      recordedFailureIdx,
+    );
+    const handledReturnGuardIdx = taskSrc.indexOf(
+      "recordedFailure.userCorrectable === true",
+      syntheticFlushIdx,
+    );
+
+    expect(handledRateLimitIdx).toBeGreaterThan(-1);
+    expect(recordedFailureIdx).toBeGreaterThan(handledRateLimitIdx);
+    expect(syntheticFlushIdx).toBeGreaterThan(recordedFailureIdx);
+    expect(handledReturnGuardIdx).toBeGreaterThan(syntheticFlushIdx);
+  });
+
+  test("ChatSDK stream errors preserve their user-correctable classification before provider wrapping", () => {
     const streamErrorIdx = taskSrc.indexOf("if (terminalStreamError)");
     const handledRateLimitIdx = taskSrc.indexOf(
       "isHandledUserRateLimitError(terminalStreamError)",
       streamErrorIdx,
     );
+    const chatSdkErrorIdx = taskSrc.indexOf(
+      "terminalStreamError instanceof ChatSDKError",
+      handledRateLimitIdx,
+    );
+    const directThrowIdx = taskSrc.indexOf(
+      "throw terminalStreamError;",
+      chatSdkErrorIdx,
+    );
     const throwIdx = taskSrc.indexOf(
-      "throw terminalStreamError",
+      "throw wrapProviderTerminalError(terminalStreamError",
       handledRateLimitIdx,
     );
     expect(streamErrorIdx).toBeGreaterThan(-1);
     expect(handledRateLimitIdx).toBeGreaterThan(streamErrorIdx);
-    expect(throwIdx).toBeGreaterThan(streamErrorIdx);
+    expect(chatSdkErrorIdx).toBeGreaterThan(handledRateLimitIdx);
+    expect(directThrowIdx).toBeGreaterThan(chatSdkErrorIdx);
+    expect(throwIdx).toBeGreaterThan(directThrowIdx);
   });
 
   test("provider finishReason error fails the task after the UI stream drains", () => {
@@ -1134,7 +1559,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
-      "throw terminalStreamError",
+      "throw wrapProviderTerminalError(terminalStreamError",
       terminalErrorIdx,
     );
 
@@ -1143,10 +1568,142 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(throwIdx).toBeGreaterThan(terminalErrorIdx);
   });
 
+  test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
+    expect(agentStreamRunnerSrc).toMatch(
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*languageModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? languageModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /isProviderContentBlockedFinishReasonError\(error\)/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /refundProviderContentBlockedIfSettled\(\{[\s\S]*finishReason,[\s\S]*settled: true/,
+    );
+    expect(agentStreamRunnerSrc).toMatch(
+      /const requestedModelSlug =[\s\S]{0,150}ctx\.trackedProvider\.languageModel\(effectiveModelName\)\.modelId;[\s\S]{0,300}requestedModelSlug,/,
+    );
+
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/const providerContentBlocked\s*=/);
+      expect(source).toMatch(/providerContentBlocked,/);
+      expect(source).toMatch(/providerContentBlocked \|\|/);
+      expect(source).toMatch(/\? "content_filter"/);
+      expect(source).toMatch(/!isRetryWithFallback/);
+      expect(source).toMatch(
+        /const blockedProviderModel = providerContentBlocked[\s\S]{0,100}state\.responseModel/,
+      );
+      expect(source).toMatch(
+        /getContentFilterRetryModel\([\s\S]{0,150}blockedProviderModel/,
+      );
+      expect(source).toMatch(
+        /createStream\([\s\S]{0,150}\[blockedProviderModel\]/,
+      );
+    }
+    expect([
+      ...chatHandlerSrc.matchAll(
+        /state\.providerError \?\?[\s\S]{0,100}createProviderContentBlockedFinishReasonError\(\)/g,
+      ),
+    ]).toHaveLength(2);
+
+    const terminalHelperIdx = taskSrc.indexOf(
+      "const getTerminalProviderStreamError",
+    );
+    const contentFilterIdx = taskSrc.indexOf(
+      "isProviderContentFilterFinishReason(state.streamFinishReason)",
+      terminalHelperIdx,
+    );
+    const terminalCheckIdx = taskSrc.indexOf(
+      "getTerminalProviderStreamError(terminalAgentState)",
+      contentFilterIdx,
+    );
+    expect(terminalHelperIdx).toBeGreaterThan(-1);
+    expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
+    expect(terminalCheckIdx).toBeGreaterThan(contentFilterIdx);
+  });
+
+  test("mid-stream disconnect continuation is bounded and preserves a replay-safe transcript", () => {
+    expect(taskSrc).toMatch(
+      /prepareProviderDisconnectContinuation\(\s*normalizedFinishedMessages/,
+    );
+    expect(taskSrc).toMatch(
+      /hasTerminalProviderStreamError\s*&&\s*\(shouldRecoverAbliterationStreamError \|\|\s*isRetriableProviderStreamDisconnectError\(\s*state\.providerError/,
+    );
+    expect(taskSrc).toMatch(
+      /decideProviderRecovery\(\{[\s\S]{0,400}alreadyRetried: isRetryWithFallback/,
+    );
+    expect(taskSrc).toMatch(
+      /state\.finalMessages\s*=\s*\[\s*\.\.\.state\.finalMessages,\s*\.\.\.providerDisconnectContinuation\.messages/,
+    );
+    expect(taskSrc).toContain("PROVIDER_DISCONNECT_CONTINUATION_PROMPT");
+    expect(taskSrc).toMatch(
+      /getNextDeepSeekProDisconnectRetryModel\(\{[\s\S]{0,250}failedModel: retryModel,[\s\S]{0,250}completedRetryCount:[\s\S]{0,100}providerRecoveryAttempts/,
+    );
+    expect(taskSrc).toMatch(
+      /const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
+    );
+    expect(
+      taskSrc.match(/getNextDeepSeekProDisconnectRetryModel\(\{/g),
+    ).toHaveLength(1);
+    const finalRetryCacheBaselineIdx = taskSrc.indexOf(
+      "preFallbackCacheRead =",
+      taskSrc.indexOf("const finalRetryStartTime = Date.now()"),
+    );
+    const finalRetryStreamIdx = taskSrc.indexOf(
+      "await createStream(finalRetryModel)",
+      finalRetryCacheBaselineIdx,
+    );
+    expect(finalRetryCacheBaselineIdx).toBeGreaterThan(-1);
+    expect(finalRetryStreamIdx).toBeGreaterThan(finalRetryCacheBaselineIdx);
+  });
+
+  test("persists replay-safe output before fallback stream creation can fail", () => {
+    const recoveryIdx = taskSrc.indexOf(
+      "if (providerDisconnectContinuation) {",
+      taskSrc.indexOf("state.finalMessages ="),
+    );
+    const persistenceIdx = taskSrc.indexOf("await saveMessage({", recoveryIdx);
+    const fallbackCreationIdx = taskSrc.indexOf(
+      "const retryResult = await createStream(",
+      persistenceIdx,
+    );
+
+    expect(recoveryIdx).toBeGreaterThan(-1);
+    expect(persistenceIdx).toBeGreaterThan(recoveryIdx);
+    expect(fallbackCreationIdx).toBeGreaterThan(persistenceIdx);
+  });
+
+  test("looks up generation attribution only after failure cleanup and outside interactive chat", () => {
+    const onErrorIdx = agentStreamRunnerSrc.indexOf("onError: async");
+    const refundIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageRefundTracker.refund()",
+      onErrorIdx,
+    );
+    const closeIdx = agentStreamRunnerSrc.indexOf(
+      ".closeAll(ctx.chatId)",
+      refundIdx,
+    );
+    const lookupGuardIdx = agentStreamRunnerSrc.indexOf(
+      'ctx.endpoint !== "/api/chat"',
+      closeIdx,
+    );
+    const lookupIdx = agentStreamRunnerSrc.indexOf(
+      "await fetchOpenRouterGenerationMetadata(",
+      lookupGuardIdx,
+    );
+
+    expect(onErrorIdx).toBeGreaterThan(-1);
+    expect(refundIdx).toBeGreaterThan(onErrorIdx);
+    expect(closeIdx).toBeGreaterThan(refundIdx);
+    expect(lookupGuardIdx).toBeGreaterThan(closeIdx);
+    expect(lookupIdx).toBeGreaterThan(lookupGuardIdx);
+  });
+
   test("direct context-limit finish reasons trigger auto-continue in both agent paths", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
       expect(source).toMatch(/getAgentAutoContinueStopSource\(\{/);
       expect(source).toMatch(/autoContinueStopSource/);
+      expect(source).toMatch(
+        /if \(\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,
+      );
       expect(source).toMatch(/agent_auto_continue_signaled/);
     }
   });
@@ -1166,11 +1723,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = taskSrc.indexOf(
-      "const retryModel = shouldRetryWithoutImageToolResults",
+      "const retryModel = shouldRecoverAbliterationStreamError",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = taskSrc.indexOf(
-      "const retryResult = await createStream(retryModel)",
+      "const retryResult = await createStream(",
       terminalProviderErrorIdx,
     );
 
@@ -1199,11 +1756,11 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       retryDecisionIdx,
     );
     const retryModelIdx = chatHandlerSrc.indexOf(
-      "const retryModel = shouldRetryWithoutImageToolResults",
+      "const retryModel = shouldRecoverAbliterationStreamError",
       terminalProviderErrorIdx,
     );
     const fallbackIdx = chatHandlerSrc.indexOf(
-      "const retryResult = await createStream(retryModel)",
+      "const retryResult = await createStream(",
       terminalProviderErrorIdx,
     );
 
@@ -1215,21 +1772,56 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(fallbackIdx).toBeGreaterThan(retryModelIdx);
   });
 
-  test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
+  test("explicit DeepSeek Pro retries only terminal reasoning-only provider failures", () => {
     for (const source of [taskSrc, chatHandlerSrc]) {
-      expect(
-        source.match(/resetServedModelTelemetryForRetry\(state\)/g),
-      ).toHaveLength(2);
+      expect(source).toMatch(
+        /shouldRetryProviderStreamAfterReasoningOnlyOutput\(\s*lastAssistantMessageParts,/,
+      );
+      expect(source).toMatch(
+        /shouldRetryReasoningOnlyProviderError\s*&&\s*isExplicitDeepSeekProSelectionForRetry\(\{/,
+      );
+      expect(source).toMatch(
+        /shouldRetryInterruptedToolInput\s*\|\|\s*shouldRetryExplicitDeepSeekProReasoning/,
+      );
+    }
+
+    expect(taskSrc).toMatch(/state\?\.providerError != null\s*\|\|/);
+    expect(chatHandlerSrc).toMatch(/state\.providerError != null/);
+  });
+
+  test("/api/chat attributes fallback usage to the persisted retry message", () => {
+    expect(chatHandlerSrc).toMatch(
+      /const deductAccumulatedUsage = async \(\s*assistantMessageIdForUsage = assistantMessageId,\s*\)/,
+    );
+    expect(
+      chatHandlerSrc.match(/assistantMessageId: assistantMessageIdForUsage/g),
+    ).toHaveLength(2);
+
+    const retryMessageIdIdx = chatHandlerSrc.indexOf(
+      "const retryMessageId = generateId()",
+    );
+    const retryUsageIdx = chatHandlerSrc.indexOf(
+      "await deductAccumulatedUsage(retryMessageId)",
+      retryMessageIdIdx,
+    );
+
+    expect(retryMessageIdIdx).toBeGreaterThan(-1);
+    expect(retryUsageIdx).toBeGreaterThan(retryMessageIdIdx);
+  });
+
+  test("retry streams reset served-model telemetry and distinguish same-model recovery", () => {
+    for (const [source, resetCall, expectedResetCount] of [
+      [taskSrc, "resetAgentStreamStateForRetry(state)", 3],
+      [chatHandlerSrc, "resetServedModelTelemetryForRetry(state)", 2],
+    ] as const) {
+      expect(source.split(resetCall)).toHaveLength(expectedResetCount + 1);
 
       const catchModelSwitchIdx = source.indexOf(
         "retryUsedFallbackModel = retryUsesDifferentModel(",
       );
-      const catchResetIdx = source.indexOf(
-        "resetServedModelTelemetryForRetry(state)",
-        catchModelSwitchIdx,
-      );
+      const catchResetIdx = source.indexOf(resetCall, catchModelSwitchIdx);
       const catchRetryStreamIdx = source.indexOf(
-        "createStream(fallbackModel)",
+        "createStream(apiRetryModel)",
         catchResetIdx,
       );
 
@@ -1238,20 +1830,14 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(catchRetryStreamIdx).toBeGreaterThan(catchResetIdx);
 
       const retryModelIdx = source.indexOf(
-        "const retryModel = shouldRetryWithoutImageToolResults",
+        "const retryModel = shouldRecoverAbliterationStreamError",
       );
       const modelSwitchIdx = source.indexOf(
-        "retryUsedFallbackModel = retryUsesDifferentModel(",
+        "retryUsedFallbackModel =",
         retryModelIdx,
       );
-      const resetIdx = source.indexOf(
-        "resetServedModelTelemetryForRetry(state)",
-        modelSwitchIdx,
-      );
-      const retryStreamIdx = source.indexOf(
-        "createStream(retryModel)",
-        resetIdx,
-      );
+      const resetIdx = source.indexOf(resetCall, modelSwitchIdx);
+      const retryStreamIdx = source.indexOf("createStream(", resetIdx);
 
       expect(modelSwitchIdx).toBeGreaterThan(retryModelIdx);
       expect(resetIdx).toBeGreaterThan(modelSwitchIdx);
@@ -1301,9 +1887,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "stepOpenRouterMetadata.openrouter_upstream_inference_cost",
       stepIndexArgIdx,
     );
-    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
-      "const currentCostDollars = ctx.usageTracker.computeCostDollars(modelName)",
+    const sandboxCostIdx = agentStreamRunnerSrc.indexOf(
+      "await ctx.getSandboxCostDollars?.()",
       upstreamCostArgIdx,
+    );
+    const triggerRunCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.getTriggerRunCostDollars?.() ?? 0",
+      sandboxCostIdx,
+    );
+    const budgetCostIdx = agentStreamRunnerSrc.indexOf(
+      "ctx.usageTracker.computeCostDollars(activeStepModelName) +",
+      triggerRunCostIdx,
     );
 
     expect(onStepFinishIdx).toBeGreaterThan(-1);
@@ -1312,7 +1906,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(setCostIdx).toBeGreaterThan(extractIdx);
     expect(stepIndexArgIdx).toBeGreaterThan(setCostIdx);
     expect(upstreamCostArgIdx).toBeGreaterThan(stepIndexArgIdx);
-    expect(budgetCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+    expect(sandboxCostIdx).toBeGreaterThan(upstreamCostArgIdx);
+    expect(triggerRunCostIdx).toBeGreaterThan(sandboxCostIdx);
+    expect(budgetCostIdx).toBeGreaterThan(triggerRunCostIdx);
   });
 
   test("agent stream uses finish-step raw usage as OpenRouter metadata cost fallback", () => {
@@ -1451,7 +2047,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(/caughtErrorUserCorrectable/);
 
     const recordedFailureIdx = taskSrc.indexOf(
-      "const recordedFailure = await recordAgentLongFailureForDashboard",
+      "const recordedFailure = await recordAgentLongCaughtErrorForDashboard",
     );
     const syntheticFlushIdx = taskSrc.indexOf(
       "await waitForErrorStream()",
@@ -1485,6 +2081,112 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
+  test("Abliteration API fallback requires the assignment to remain active", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /shouldRetryAbliterationError\(\s*activeAbliteratedExperiment,\s*activeModelName,\s*userStopSignal.signal,?\s*\)/,
+      );
+      expect(source).not.toMatch(
+        /shouldRetryAbliterationError\(\s*abliteratedExperiment,\s*activeModelName,\s*userStopSignal.signal,?\s*\)/,
+      );
+    }
+  });
+
+  test("OCR preprocessing failures recover only for active Abliteration treatment", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(/!\(error instanceof AbliterationVisionError\)/);
+      if (source === taskSrc) {
+        expect(source).toMatch(
+          /unrecoverableVision:\s*!shouldRecoverAbliterationStreamError &&\s*state\.providerError instanceof\s*AbliterationVisionError/,
+        );
+        expect(source).toMatch(
+          /const shouldAttemptProviderRetry\s*=\s*providerRecoveryDecision\.attempt/,
+        );
+      } else {
+        expect(source).toMatch(
+          /const shouldAttemptProviderRetry\s*=\s*\(shouldRecoverAbliterationStreamError \|\|\s*!\(\s*state\.providerError instanceof\s*AbliterationVisionError\s*\)\)\s*&&/,
+        );
+      }
+    }
+  });
+
+  test("both recovery paths recheck cancellation after awaiting vision recovery", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      const recoveryCalls = Array.from(
+        source.matchAll(/await describeImageAttachmentsWithAuxiliaryVision\(/g),
+      );
+      expect(recoveryCalls).toHaveLength(2);
+      for (const call of recoveryCalls) {
+        const nextStreamIdx = source.indexOf("await createStream(", call.index);
+        expect(nextStreamIdx).toBeGreaterThan(call.index!);
+        const recoveryBlock = source.slice(call.index, nextStreamIdx);
+        if (
+          source.startsWith("await createStream(apiRetryModel)", nextStreamIdx)
+        ) {
+          expect(recoveryBlock).toMatch(
+            /userStopSignal\.signal\.throwIfAborted\(\);\s*result = $/,
+          );
+        } else {
+          const surveyIdx = recoveryBlock.lastIndexOf(
+            "await taskOutcomeSurvey?.linkMessage(",
+          );
+          expect(surveyIdx).toBeGreaterThan(-1);
+          const afterSurvey = recoveryBlock.slice(surveyIdx);
+          expect(afterSurvey).toMatch(
+            /if \(\s*shouldAttemptProviderRetry &&\s*!visionSummaryRecoveryFailure &&\s*!userStopSignal\.signal\.aborted\s*\) \{/,
+          );
+          if (source === taskSrc) {
+            // Trigger also persists completed work inside the recovery block.
+            expect(afterSurvey).toMatch(
+              /if \(userStopSignal\.signal\.aborted\) \{\s*isAborted = true;\s*break primaryProviderRecovery;\s*\}\s*const retryResult = $/,
+            );
+          } else {
+            // No later async work may open a cancellation race after this guard.
+            expect(afterSurvey.slice(afterSurvey.indexOf(") {"))).not.toMatch(
+              /\bawait\b/,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  test("the final Trigger recovery finalizes cancellation after linking its message", () => {
+    expect(taskSrc).toMatch(
+      /await taskOutcomeSurvey\?\.linkMessage\(\s*finalRetryMessageId,?\s*\);\s*if \(userStopSignal\.signal\.aborted\) \{\s*await finalizeRetryStream\(\{\s*retryMessages,\s*retryAborted: true,\s*retryMessageId,\s*retryStartTime: fallbackStartTime,?\s*\}\);\s*return;\s*\}\s*const finalRetryResult =\s*await createStream\(finalRetryModel\)/,
+    );
+  });
+
+  test("Abliteration routing switches to OpenRouter after the first generation step", () => {
+    for (const source of [taskSrc, chatHandlerSrc]) {
+      expect(source).toMatch(
+        /abliteratedStepRouting:[\s\S]{0,150}baselineModel/,
+      );
+      expect(source).toMatch(
+        /if \(modelName !== selectedModel\) \{\s*streamCtx\.abliteratedStepRouting = undefined;/,
+      );
+      expect(source).not.toMatch(
+        /conversationTurn|getConversationTurnCountByChatId/,
+      );
+    }
+    expect(agentStreamRunnerSrc).toMatch(
+      /resolveAbliterationModelForGenerationStep\(\{[\s\S]{0,250}stepIndex/,
+    );
+    expect(routeSrc).not.toMatch(/conversationTurn/);
+  });
+
+  test("provider content blocks preserve their classification and complete after the error stream", () => {
+    expect(taskSrc).toMatch(
+      /USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES[\s\S]*"content_blocked"/,
+    );
+    expect(taskSrc).toMatch(
+      /if \(category === "content_blocked"\) return category/,
+    );
+    expect(taskSrc).toMatch(
+      /recordedFailure\.userCorrectable === true[\s\S]*return \{ chatId, assistantMessageId \}/,
+    );
+  });
+
   test("recognizes every observed Trigger S2 terminal signature", () => {
     expect(taskSrc).toMatch(/Connection timeout after \\d\+ms/);
     expect(taskSrc).toMatch(/cs:\[a-z0-9\]\+/);
@@ -1513,6 +2215,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(saveMessageIdx).toBeGreaterThan(guardedFailureIdx);
     }
     expect(taskSrc).toMatch(/chatFinalizationStatus/);
+  });
+
+  test("generated titles update reactive sidebar data before finalization", () => {
+    expect(dbActionsSrc).toMatch(/export async function updateChatTitle/);
+    expect(dbActionsSrc).toMatch(/api\.chats\.updateChatTitle/);
+    expect(chatHandlerSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\(\s*fetched\.truncatedMessages,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
+    expect(taskSrc).toMatch(
+      /generateTitleFromUserMessageWithWriter\(\s*messagesForProcessing,[\s\S]*?\(title\) => updateChatTitle\(\{ chatId, title \}\)/,
+    );
   });
 
   test("empty rehydrated history is classified separately from oversized input", () => {
@@ -1591,20 +2304,25 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(chatHandlerSrc).toMatch(
       /retryWithFreshSandboxOnTransientFailure:\s*true/,
     );
+    expect(taskSrc).toMatch(/service:\s*"agent-long"/);
+    expect(chatHandlerSrc).toMatch(/service:\s*"chat-handler"/);
     expect(taskSrc).toMatch(/"bad_request:sandbox"/);
     expect(chatHandlerSrc).toMatch(/"bad_request:sandbox"/);
     expect(taskSrc).toMatch(/"sandbox_upload_failure"/);
     expect(taskSrc).toMatch(/upload_failure_kind/);
+    expect(taskSrc).toMatch(/upload_failure_reason/);
+    expect(taskSrc).toMatch(/error_sandbox_upload_/);
+    expect(taskSrc).toMatch(/upload_failure_sandbox_readiness_reason/);
     expect(taskSrc).toMatch(/isSandboxUploadError/);
     expect(taskSrc).toMatch(/alreadyEmittedFromStream/);
   });
 
-  test("agent-long only passes explicit Trigger.dev region when mapped", () => {
+  test("agent-long always pins the mapped Trigger.dev region", () => {
     const userLocationIdx = routeSrc.indexOf(
       "const userLocation = geolocation(req)",
     );
     const routingIdx = routeSrc.indexOf(
-      "getTriggerRegionForVercelRequest(req, userLocation)",
+      "getRegionalExecutionContextForVercelRequest",
       userLocationIdx,
     );
     const triggerOptionsIdx = routeSrc.indexOf(
@@ -1612,7 +2330,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       routingIdx,
     );
     const triggerOptionsRegionIdx = routeSrc.indexOf(
-      "...(triggerRegion ? { region: triggerRegion } : {})",
+      "region: triggerRegion",
       triggerOptionsIdx,
     );
     const approvalTriggerConfigIdx = routeSrc.indexOf(
@@ -1620,7 +2338,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       triggerOptionsRegionIdx,
     );
     const sessionRegionIdx = routeSrc.indexOf(
-      "...(triggerRegion ? { region: triggerRegion } : {})",
+      "region: triggerRegion",
       approvalTriggerConfigIdx,
     );
     const sessionStartIdx = routeSrc.indexOf(
@@ -1644,9 +2362,24 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(triggerIdx).toBeGreaterThan(sessionRegionIdx);
     expect(routeSrc).not.toMatch(/vercelIpContinent|vercelIpCountry/);
     expect(routeSrc).not.toMatch(/trigger region routing/);
+    expect(routeSrc).toContain("requestRegionClass");
   });
 
   test("agent-long carries free quota subject into Trigger.dev enforcement", () => {
+    const lockIndex = taskSrc.indexOf(
+      "const lock = await acquireFreeRunConcurrencyLock(",
+    );
+    const monthlyIndex = taskSrc.indexOf(
+      "await checkFreeMonthlyCostLimit(",
+      lockIndex,
+    );
+    const consumeIndex = taskSrc.indexOf(
+      "rateLimitInfo = await checkRateLimit(",
+      lockIndex,
+    );
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(monthlyIndex).toBeGreaterThan(lockIndex);
+    expect(consumeIndex).toBeGreaterThan(monthlyIndex);
     expect(routeSrc).toMatch(/freeQuotaSubject/);
     expect(routeSrc).toMatch(
       /const agentPayload\s*=\s*{[\s\S]*freeQuotaSubject/,
@@ -1659,7 +2392,136 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc).toMatch(
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
-    expect(taskSrc).toMatch(/checkFreeMonthlyCostLimit\(freeUsageSubject\)/);
+    expect(taskSrc).toMatch(
+      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*regionalFreeLimits,?\s*\)/,
+    );
+    expect(
+      taskSrc.match(
+        /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*regionalFreeLimits,?\s*\)/g,
+      ),
+    ).toHaveLength(4);
+    expect(taskSrc).not.toMatch(
+      /checkFreeMonthlyCostLimit\(freeUsageSubject,\s*userId/,
+    );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
+  });
+
+  test("agent-long uses the selected cloud provider for tools and prompt", () => {
+    const providerIdx = taskSrc.indexOf("const cloudSandboxSelection =");
+    const toolsIdx = taskSrc.indexOf("createTools(", providerIdx);
+    const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
+
+    expect(providerIdx).toBeGreaterThan(-1);
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "selectCloudSandboxProvider({",
+    );
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "environment: ctx.environment.type",
+    );
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain("triggerRegion");
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
+      "requestRegionClass",
+    );
+    expect(toolsIdx).toBeGreaterThan(providerIdx);
+    expect(promptIdx).toBeGreaterThan(toolsIdx);
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "cloudSandboxProvider",
+    );
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "cloudSandboxSelectionReason: cloudSandboxSelection.reason",
+    );
+    expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
+      "cloudSandboxProvider",
+    );
+  });
+
+  test("agent-long validates European Trigger placement before processing payload data", () => {
+    const runIdx = taskSrc.indexOf(
+      "run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal })",
+    );
+    const regionAssertionIdx = taskSrc.indexOf(
+      "assertTriggerRunRegion({",
+      runIdx,
+    );
+    const convexSelectionIdx = taskSrc.indexOf(
+      "if (payload.convexUrl)",
+      runIdx,
+    );
+
+    expect(runIdx).toBeGreaterThan(-1);
+    expect(regionAssertionIdx).toBeGreaterThan(runIdx);
+    expect(convexSelectionIdx).toBeGreaterThan(regionAssertionIdx);
+    expect(taskSrc.slice(regionAssertionIdx, convexSelectionIdx)).toContain(
+      "actualRegion: ctx.run.region",
+    );
+  });
+
+  test("direct chat carries its ingress execution region into sandbox routing", () => {
+    const regionIdx = chatHandlerSrc.indexOf(
+      "getRegionalExecutionContextForVercelRequest",
+    );
+    const providerIdx = chatHandlerSrc.indexOf(
+      "const cloudSandboxSelection =",
+      regionIdx,
+    );
+    const toolsIdx = chatHandlerSrc.indexOf("createTools(", providerIdx);
+
+    expect(regionIdx).toBeGreaterThan(-1);
+    expect(providerIdx).toBeGreaterThan(regionIdx);
+    expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
+      "triggerRegion: executionRegion",
+    );
+    expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
+      "requestRegionClass",
+    );
+    expect(chatHandlerSrc.slice(toolsIdx, toolsIdx + 1_500)).toContain(
+      "triggerRegion: executionRegion",
+    );
+  });
+
+  test("agent-long releases the E2B idle lease only after active work settles", () => {
+    expect(taskSrc).toContain("keepE2BLeaseAliveForRun: true");
+    expect(taskSrc).toMatch(
+      /finishE2BIdleLeaseRelease = async \(\) => \{[\s\S]*await stopE2BSandboxRunLeaseHeartbeat\(\);[\s\S]*await releaseE2BSandboxIdleLease\(\);/,
+    );
+
+    const finalCleanupIdx = taskSrc.lastIndexOf(
+      "await ptySessionManager.closeAll(chatId)",
+    );
+    const lifecycleFinishIdx = taskSrc.indexOf(
+      "await finishCloudSandboxLifecycle()",
+      finalCleanupIdx,
+    );
+    const idleLeaseReleaseIdx = taskSrc.indexOf(
+      "await finishE2BIdleLeaseRelease?.()",
+      finalCleanupIdx,
+    );
+    expect(finalCleanupIdx).toBeGreaterThan(-1);
+    expect(idleLeaseReleaseIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(finalCleanupIdx);
+    expect(lifecycleFinishIdx).toBeGreaterThan(idleLeaseReleaseIdx);
+
+    const onCancelIdx = taskSrc.indexOf("onCancel: async");
+    const runIdx = taskSrc.indexOf("run: async", onCancelIdx);
+    expect(onCancelIdx).toBeGreaterThan(-1);
+    expect(runIdx).toBeGreaterThan(onCancelIdx);
+    expect(taskSrc.slice(onCancelIdx, runIdx)).not.toContain(
+      "finishE2BIdleLeaseRelease",
+    );
+  });
+
+  test("agent-long disables whole-task retries for its shared UI stream", () => {
+    expect(taskSrc).toMatch(
+      /Streaming tasks must not retry:[\s\S]*retry:\s*\{\s*maxAttempts:\s*1\s*\}/,
+    );
+  });
+
+  test("agent-long groups provider transport alerts by failure category", () => {
+    expect(taskSrc).toMatch(
+      /GROUPED_PROVIDER_ALERT_CATEGORIES[\s\S]*provider_timeout[\s\S]*provider_stream_terminated/,
+    );
+    expect(taskSrc).toMatch(
+      /recordGroupedSpikeAlert\(\{[\s\S]*spikeKey:\s*`agent_long:\$\{summary\.category\}`[\s\S]*sourceEvent:\s*"agent_long_provider_transport_failed"/,
+    );
   });
 });

@@ -1,5 +1,6 @@
 import type { UIToolInvocation } from "ai";
 import { ChatMessage } from "@/types/chat";
+import { ABORTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
 
 /**
  * Checks if a part is a completed reasoning block with redacted text.
@@ -39,6 +40,7 @@ interface BaseToolPart {
   input?: any;
   output?: any;
   result?: any; // legacy
+  errorText?: string;
 }
 
 // Specific interface for terminal tools that have special data handling
@@ -221,27 +223,26 @@ const transformTerminalToolPart = (
     return {
       type: "tool-shell",
       toolCallId: terminalPart.toolCallId,
-      state: "output-available",
+      state: "output-error",
       input: terminalPart.input,
+      errorText: ABORTED_TOOL_ERROR_TEXT,
       output: {
-        output:
-          stdout ||
-          (stdout.length === 0 ? "Command was stopped/aborted by user" : ""),
+        output: stdout,
       },
     };
   }
 
   return {
-    type: "tool-run_terminal_cmd",
+    type: terminalPart.type,
     toolCallId: terminalPart.toolCallId,
-    state: "output-available",
+    state: "output-error",
     input: terminalPart.input,
+    errorText: ABORTED_TOOL_ERROR_TEXT,
     output: {
       result: {
         exitCode: 130, // Standard exit code for SIGINT (interrupted)
         stdout: stdout,
-        stderr:
-          stdout.length === 0 ? "Command was stopped/aborted by user" : "",
+        stderr: "",
       },
     },
   };

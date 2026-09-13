@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 import {
   mergeTodos,
   applyTodoWriteUpdate,
+  dedupeNewAssistantTodosByContent,
   TodoUpdateError,
   hasPartialTodos,
   shouldTreatAsMerge,
@@ -18,6 +19,57 @@ import {
 import type { Todo } from "@/types";
 
 describe("todo-utils", () => {
+  describe("dedupeNewAssistantTodosByContent", () => {
+    it("skips only exact normalized new duplicates and preserves manual content", () => {
+      const result = dedupeNewAssistantTodosByContent(
+        [
+          { id: "manual-copy", content: "Manual task", status: "pending" },
+          { id: "first", content: "Review auth flow", status: "pending" },
+          {
+            id: "duplicate",
+            content: "  review   AUTH flow  ",
+            status: "in_progress",
+          },
+          {
+            id: "distinct",
+            content: "Review auth flow on mobile",
+            status: "pending",
+          },
+        ],
+        {
+          manualTodos: [
+            { id: "manual", content: "manual task", status: "pending" },
+          ],
+        },
+      );
+
+      expect(result).toEqual({
+        todos: [
+          { id: "first", content: "Review auth flow", status: "pending" },
+          {
+            id: "distinct",
+            content: "Review auth flow on mobile",
+            status: "pending",
+          },
+        ],
+        skippedTodoIds: ["manual-copy", "duplicate"],
+      });
+    });
+
+    it("does not suppress updates to existing todo ids", () => {
+      const result = dedupeNewAssistantTodosByContent(
+        [
+          { id: "existing-a", content: "Same task", status: "completed" },
+          { id: "existing-b", content: "same task", status: "cancelled" },
+        ],
+        { existingTodoIds: new Set(["existing-a", "existing-b"]) },
+      );
+
+      expect(result.todos).toHaveLength(2);
+      expect(result.skippedTodoIds).toEqual([]);
+    });
+  });
+
   describe("mergeTodos", () => {
     it("should merge new todos with existing ones", () => {
       const currentTodos: Todo[] = [
@@ -243,22 +295,7 @@ describe("todo-utils", () => {
   });
 
   describe("getBaseTodosForRequest", () => {
-    it("should return incoming todos for temporary chats", () => {
-      const existing: Todo[] = [
-        { id: "1", content: "Existing", status: "pending" },
-      ];
-      const incoming: Todo[] = [
-        { id: "2", content: "Incoming", status: "pending" },
-      ];
-
-      const result = getBaseTodosForRequest(existing, incoming, {
-        isTemporary: true,
-      });
-
-      expect(result).toBe(incoming);
-    });
-
-    it("should return only manual todos on regenerate for non-temporary", () => {
+    it("should return only manual todos on regenerate", () => {
       const existing: Todo[] = [
         { id: "1", content: "Manual", status: "pending" },
         {
@@ -269,8 +306,7 @@ describe("todo-utils", () => {
         },
       ];
 
-      const result = getBaseTodosForRequest(existing, [], {
-        isTemporary: false,
+      const result = getBaseTodosForRequest(existing, {
         regenerate: true,
       });
 
@@ -278,14 +314,12 @@ describe("todo-utils", () => {
       expect(result[0].id).toBe("1");
     });
 
-    it("should return existing todos for non-temporary non-regenerate", () => {
+    it("should return existing todos for non-regenerate", () => {
       const existing: Todo[] = [
         { id: "1", content: "Task", status: "pending" },
       ];
 
-      const result = getBaseTodosForRequest(existing, [], {
-        isTemporary: false,
-      });
+      const result = getBaseTodosForRequest(existing, {});
 
       expect(result).toBe(existing);
     });

@@ -20,7 +20,11 @@ import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
-import { generateS3DownloadUrl, getS3ObjectSizeBytes } from "./s3Utils";
+import {
+  generateS3DownloadUrl,
+  getS3ObjectSizeBytes,
+  getStoredS3Location,
+} from "./s3Utils";
 import { convexLogger } from "./lib/logger";
 import type {
   FileItemChunk,
@@ -746,6 +750,25 @@ export const saveFile = action({
       });
     }
 
+    const reservation = (await ctx.runQuery(
+      internal.fileStorage.getFileByS3Key,
+      { s3Key },
+    )) as {
+      user_id: string;
+      s3_region?: string;
+      s3_bucket?: string;
+    } | null;
+    if (!reservation || reservation.user_id !== actingUserId) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED_UPLOAD_RESERVATION",
+        message: `Failed to upload ${args.name}: Upload reservation was not found`,
+      });
+    }
+    const storageLocation = getStoredS3Location(
+      reservation.s3_region,
+      reservation.s3_bucket,
+    );
+
     const cleanupUploadedObject = async (stage: string) => {
       try {
         await ctx.scheduler.runAfter(
@@ -753,6 +776,8 @@ export const saveFile = action({
           internal.s3Cleanup.deleteS3ObjectAction,
           {
             s3Key,
+            ...(storageLocation ? { s3Region: storageLocation.region } : {}),
+            ...(storageLocation ? { s3Bucket: storageLocation.bucket } : {}),
           },
         );
       } catch (cleanupError) {
@@ -771,7 +796,7 @@ export const saveFile = action({
 
     let verifiedSize = args.size;
     try {
-      verifiedSize = await getS3ObjectSizeBytes(s3Key);
+      verifiedSize = await getS3ObjectSizeBytes(s3Key, storageLocation);
     } catch (error) {
       convexLogger.error("file_upload_s3_metadata_fetch_failed", {
         userId: actingUserId,
@@ -824,7 +849,7 @@ export const saveFile = action({
       });
     }
 
-    const fileUrl = await generateS3DownloadUrl(s3Key);
+    const fileUrl = await generateS3DownloadUrl(s3Key, storageLocation);
 
     if (!fileUrl) {
       throw new ConvexError({
@@ -1025,6 +1050,8 @@ export const saveSandboxGeneratedFile = action({
     size: v.number(),
     serviceKey: v.string(),
     userId: v.string(),
+    s3Region: v.optional(v.string()),
+    s3Bucket: v.optional(v.string()),
   },
   returns: v.object({
     url: v.string(),
@@ -1033,6 +1060,8 @@ export const saveSandboxGeneratedFile = action({
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    const storageLocation = getStoredS3Location(args.s3Region, args.s3Bucket);
 
     await checkFileUploadRateLimit(args.userId, false);
 
@@ -1043,6 +1072,8 @@ export const saveSandboxGeneratedFile = action({
           internal.s3Cleanup.deleteS3ObjectAction,
           {
             s3Key: args.s3Key,
+            ...(storageLocation ? { s3Region: storageLocation.region } : {}),
+            ...(storageLocation ? { s3Bucket: storageLocation.bucket } : {}),
           },
         );
       } catch (deleteError) {
@@ -1077,7 +1108,7 @@ export const saveSandboxGeneratedFile = action({
     }
 
     try {
-      const fileUrl = await generateS3DownloadUrl(args.s3Key);
+      const fileUrl = await generateS3DownloadUrl(args.s3Key, storageLocation);
       const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
         s3Key: args.s3Key,
         userId: args.userId,
@@ -1086,6 +1117,8 @@ export const saveSandboxGeneratedFile = action({
         size: args.size,
         fileTokenSize: 0,
         trustedServiceGenerated: true,
+        s3Region: storageLocation?.region,
+        s3Bucket: storageLocation?.bucket,
       })) as Id<"files">;
 
       return {

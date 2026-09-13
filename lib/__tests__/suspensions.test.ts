@@ -9,7 +9,7 @@ jest.mock("@/convex/_generated/api", () => ({
   api: {
     userSuspensions: {
       getActiveByUser: "getActiveByUser",
-      getActiveFraudDisputeByUser: "getActiveFraudDisputeByUser",
+      getActiveChatAccessBlockByUser: "getActiveChatAccessBlockByUser",
     },
   },
 }));
@@ -90,7 +90,7 @@ describe("suspensions", () => {
     }
   });
 
-  it("blocks chat-history access only for fraudulent disputes", async () => {
+  it("blocks chat-history access for fraudulent disputes", async () => {
     const { assertUserCanAccessChatHistory } = await import("../suspensions");
 
     mockQuery.mockResolvedValueOnce(null as never);
@@ -116,9 +116,36 @@ describe("suspensions", () => {
         suspensionSource: "stripe",
       },
     });
-    expect(mockQuery).toHaveBeenLastCalledWith("getActiveFraudDisputeByUser", {
-      serviceKey: "test-service-key",
-      userId: "user_123",
+    expect(mockQuery).toHaveBeenLastCalledWith(
+      "getActiveChatAccessBlockByUser",
+      {
+        serviceKey: "test-service-key",
+        userId: "user_123",
+      },
+    );
+  });
+
+  it("blocks chat-history access for support-confirmed fraud", async () => {
+    const { assertUserCanAccessChatHistory } = await import("../suspensions");
+
+    mockQuery.mockResolvedValueOnce({
+      user_id: "user_123",
+      status: "active",
+      category: "support_confirmed_fraud",
+      source: "support",
+      source_id: "support_case:intercom_456",
+    } as never);
+
+    await expect(
+      assertUserCanAccessChatHistory("user_123"),
+    ).rejects.toMatchObject({
+      type: "forbidden",
+      surface: "chat",
+      cause: expect.stringContaining("confirmed fraudulent payment"),
+      metadata: {
+        suspensionCategory: "support_confirmed_fraud",
+        suspensionSource: "support",
+      },
     });
   });
 });

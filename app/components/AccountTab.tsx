@@ -14,13 +14,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
 import {
+  ArrowDownCircle,
   CalendarClock,
   X,
   ChevronDown,
   Loader2,
+  PauseCircle,
+  Play,
   Sparkle,
   Undo2,
 } from "lucide-react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import {
   proFeatures,
   proPlusFeatures,
@@ -33,9 +38,17 @@ import {
   getSubscriptionCancellationStatus,
   keepSubscription,
   redirectToBillingPortal as openBillingPortal,
+  resumeSubscription,
 } from "@/lib/billing/client";
-import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
+import type {
+  BillingPortalFlow,
+  DowngradeSubscriptionResult,
+  PauseSubscriptionResult,
+  SubscriptionCancellationStatus,
+} from "@/lib/billing/api-types";
 import type { SubscriptionTier } from "@/types";
+import { PastDueBillingBanner } from "./PastDueBillingBanner";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 type AccountCancellationStatus = SubscriptionCancellationStatus & {
   subscription: SubscriptionTier;
@@ -51,11 +64,59 @@ function formatCancellationDate(currentPeriodEnd?: number) {
   }).format(new Date(currentPeriodEnd));
 }
 
+function getPlanDisplayName(tier: SubscriptionTier | undefined) {
+  switch (tier) {
+    case "ultra":
+      return "Ultra";
+    case "team":
+      return "Team";
+    case "pro-plus":
+      return "Pro+";
+    case "pro":
+      return "Pro";
+    default:
+      return "paid";
+  }
+}
+
+function formatRenewalPrice(status: AccountCancellationStatus | null) {
+  if (
+    status?.cancelAtPeriodEnd ||
+    status?.renewalAmountDollars === undefined ||
+    !status.renewalCurrency ||
+    !status.renewalInterval
+  ) {
+    return null;
+  }
+
+  const amount = new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: status.renewalCurrency.toUpperCase(),
+    maximumFractionDigits: Number.isInteger(status.renewalAmountDollars)
+      ? 0
+      : 2,
+  }).format(status.renewalAmountDollars);
+  const intervalCount = status.renewalIntervalCount ?? 1;
+  const interval =
+    intervalCount === 1
+      ? status.renewalInterval
+      : `${intervalCount} ${status.renewalInterval}s`;
+  return `${amount} every ${interval}`;
+}
+
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [isKeepingPlan, setIsKeepingPlan] = useState(false);
+  const [isResumingPlan, setIsResumingPlan] = useState(false);
+  const [isOpeningBillingPortal, setIsOpeningBillingPortal] = useState(false);
+  // Paused plans drop to the free tier, so the pause record is the only
+  // signal that a "Resume now" action applies.
+  const activePause = useQuery(
+    api.subscriptionPauses.getMyActivePause,
+    subscription === "free" ? {} : "skip",
+  );
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
   const [cancellationStatus, setCancellationStatus] =
     useState<AccountCancellationStatus | null>(null);
@@ -93,10 +154,37 @@ const AccountTab = () => {
   const cancellationEndDate = formatCancellationDate(
     currentCancellationStatus?.currentPeriodEnd,
   );
+  const renewalPrice = formatRenewalPrice(currentCancellationStatus);
   const noActiveSubscription =
     currentCancellationStatus?.hasActiveSubscription === false;
   const cancellationScheduled =
     currentCancellationStatus?.cancelAtPeriodEnd === true;
+  const scheduledPause = cancellationScheduled
+    ? (currentCancellationStatus?.pause ?? null)
+    : null;
+  const pauseResumeDate = formatCancellationDate(scheduledPause?.resumeAt);
+  const pendingPlanChange =
+    !cancellationScheduled && currentCancellationStatus?.pendingPlanChange
+      ? currentCancellationStatus.pendingPlanChange
+      : null;
+  const pendingPlanChangeDate = formatCancellationDate(
+    pendingPlanChange?.effectiveAt,
+  );
+  const pendingPlanChangeName = getPlanDisplayName(
+    pendingPlanChange?.targetTier,
+  );
+  const pausedPlan =
+    subscription === "free" &&
+    activePause &&
+    activePause.status !== "scheduled" &&
+    activePause.status !== "canceled"
+      ? activePause
+      : null;
+  const pausedPlanResumeDate = formatCancellationDate(pausedPlan?.resumeAt);
+  const pastDueStatus =
+    currentCancellationStatus?.subscriptionStatus === "past_due"
+      ? "past_due"
+      : null;
   const isCheckingCancellationStatus =
     canManageBilling && !hasCurrentCancellationStatus;
 
@@ -128,18 +216,19 @@ const AccountTab = () => {
     };
   }, [canManageBilling, hasCurrentCancellationStatus, subscription]);
 
-  const redirectToBillingPortal = async () => {
+  const redirectToBillingPortal = async (flow?: BillingPortalFlow) => {
+    if (isOpeningBillingPortal) return;
+    setIsOpeningBillingPortal(true);
     try {
-      const url = await openBillingPortal();
-      if (url) {
-        window.location.href = url;
-      }
+      const url = await openBillingPortal(flow);
+      window.location.href = url;
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to open billing portal",
       );
+      setIsOpeningBillingPortal(false);
     }
   };
 
@@ -162,25 +251,89 @@ const AccountTab = () => {
     });
   };
 
+  const handlePauseScheduled = (result: PauseSubscriptionResult) => {
+    setCancellationStatus({
+      ...(currentCancellationStatus ?? {}),
+      subscription,
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: result.pauseEffectiveAt,
+      pause: {
+        months: result.months,
+        pauseEffectiveAt: result.pauseEffectiveAt,
+        resumeAt: result.resumeAt,
+      },
+    });
+  };
+
+  const handleDowngradeScheduled = (result: DowngradeSubscriptionResult) => {
+    setCancellationStatus({
+      ...(currentCancellationStatus ?? {}),
+      subscription,
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      pendingPlanChange: {
+        targetTier: result.toTier,
+        targetPlan: result.toPlan,
+        targetAmountDollars: result.targetAmountDollars,
+        currency: result.currency,
+        effectiveAt: result.effectiveAt,
+      },
+    });
+  };
+
   const handleKeepPlan = async () => {
     if (isKeepingPlan) return;
 
+    const wasPause = Boolean(scheduledPause);
+    const wasPlanChange = Boolean(pendingPlanChange);
     setIsKeepingPlan(true);
     try {
       const result = await keepSubscription();
       setCancellationStatus({
+        ...(currentCancellationStatus ?? {}),
         subscription,
         hasActiveSubscription: true,
         cancelAtPeriodEnd: result.cancelAtPeriodEnd,
         currentPeriodEnd: result.currentPeriodEnd,
+        pause: undefined,
+        pendingPlanChange: undefined,
       });
-      toast.success("Cancellation removed. Your plan will renew as usual.");
+      toast.success(
+        wasPause
+          ? "Pause canceled. Your plan will renew as usual."
+          : wasPlanChange
+            ? "Plan change canceled. Your current plan will renew as usual."
+            : "Cancellation removed. Your plan will renew as usual.",
+      );
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to keep plan active",
       );
     } finally {
       setIsKeepingPlan(false);
+    }
+  };
+
+  const handleResumePlan = async () => {
+    if (isResumingPlan) return;
+
+    setIsResumingPlan(true);
+    try {
+      const result = await resumeSubscription();
+      toast.success(
+        result.alreadyActive
+          ? "Your plan is already active. Refreshing your account..."
+          : "Plan resumed. Refreshing your account...",
+      );
+      // Entitlements come from the WorkOS session, so reload with the same
+      // refresh hint the PentestGPT migration uses.
+      reloadWithEntitlementRefresh();
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to resume plan",
+      );
+      setIsResumingPlan(false);
     }
   };
 
@@ -205,6 +358,11 @@ const AccountTab = () => {
                       ? "HackerAI Pro"
                       : "Get HackerAI Pro"}
             </div>
+            {renewalPrice && (
+              <div className="mt-0.5 text-sm text-muted-foreground">
+                Renews at {renewalPrice}
+              </div>
+            )}
           </div>
           {subscription !== "free" ? (
             canManageBilling ? (
@@ -251,8 +409,16 @@ const AccountTab = () => {
                   {cancellationScheduled ? (
                     <>
                       <DropdownMenuItem disabled>
-                        <CalendarClock className="h-4 w-4" />
-                        <span>Cancellation scheduled</span>
+                        {scheduledPause ? (
+                          <PauseCircle className="h-4 w-4" />
+                        ) : (
+                          <CalendarClock className="h-4 w-4" />
+                        )}
+                        <span>
+                          {scheduledPause
+                            ? "Pause scheduled"
+                            : "Cancellation scheduled"}
+                        </span>
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
@@ -264,7 +430,35 @@ const AccountTab = () => {
                         ) : (
                           <Undo2 className="h-4 w-4" />
                         )}
-                        <span>Keep plan</span>
+                        <span>
+                          {scheduledPause ? "Cancel pause" : "Keep plan"}
+                        </span>
+                      </DropdownMenuItem>
+                    </>
+                  ) : pendingPlanChange ? (
+                    <>
+                      <DropdownMenuItem disabled>
+                        <ArrowDownCircle className="h-4 w-4" />
+                        <span>{`Switching to ${pendingPlanChangeName}`}</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={handleKeepPlan}
+                        disabled={isKeepingPlan}
+                      >
+                        {isKeepingPlan ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Undo2 className="h-4 w-4" />
+                        )}
+                        <span>Keep current plan</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onClick={handleCancelSubscription}
+                      >
+                        <X className="h-4 w-4" />
+                        <span>Cancel subscription</span>
                       </DropdownMenuItem>
                     </>
                   ) : noActiveSubscription ? (
@@ -308,7 +502,32 @@ const AccountTab = () => {
           )}
         </div>
 
-        {cancellationScheduled && (
+        {cancellationScheduled && scheduledPause && (
+          <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">
+              Pause scheduled.
+            </span>{" "}
+            {cancellationEndDate
+              ? `Your plan stays active until ${cancellationEndDate}.`
+              : "Your plan stays active until the end of the current billing period."}{" "}
+            {pauseResumeDate
+              ? `Billing pauses after that and resumes automatically on ${pauseResumeDate}.`
+              : `Billing pauses after that for ${scheduledPause.months} month${scheduledPause.months === 1 ? "" : "s"}.`}
+          </div>
+        )}
+
+        {pendingPlanChange && (
+          <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {`Switching to ${pendingPlanChangeName}.`}
+            </span>{" "}
+            {pendingPlanChangeDate
+              ? `Your current plan stays active until ${pendingPlanChangeDate}, then renews as ${pendingPlanChangeName}.`
+              : `Your current plan stays active until your renewal, then switches to ${pendingPlanChangeName}.`}
+          </div>
+        )}
+
+        {cancellationScheduled && !scheduledPause && (
           <div className="mt-3 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
             <span className="font-medium text-foreground">
               Cancellation scheduled.
@@ -316,6 +535,68 @@ const AccountTab = () => {
             {cancellationEndDate
               ? `Your plan stays active until ${cancellationEndDate}.`
               : "Your plan stays active until the end of the current billing period."}
+          </div>
+        )}
+
+        {pausedPlan && (
+          <div
+            role="status"
+            className="mt-3 flex flex-col gap-3 rounded-md border border-border bg-muted/40 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex min-w-0 items-start gap-3">
+              <PauseCircle
+                aria-hidden="true"
+                className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"
+              />
+              <div className="text-muted-foreground">
+                <span className="font-medium text-foreground">
+                  {`Your ${getPlanDisplayName(pausedPlan.subscriptionTier)} plan is paused.`}
+                </span>{" "}
+                {pausedPlan.status === "resume_failed"
+                  ? "We couldn't resume it automatically with your saved card. Update your payment method, then resume."
+                  : pausedPlanResumeDate
+                    ? `It resumes automatically on ${pausedPlanResumeDate}. Resume sooner anytime.`
+                    : "It resumes automatically on the scheduled date. Resume sooner anytime."}
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={isResumingPlan}
+              onClick={() => void handleResumePlan()}
+            >
+              {isResumingPlan ? (
+                <>
+                  <Loader2
+                    aria-hidden="true"
+                    className="h-4 w-4 animate-spin"
+                  />
+                  Resuming...
+                </>
+              ) : (
+                <>
+                  <Play aria-hidden="true" className="h-4 w-4" />
+                  Resume now
+                </>
+              )}
+            </Button>
+          </div>
+        )}
+
+        {pastDueStatus && subscription !== "free" && (
+          <div className="mt-3">
+            <PastDueBillingBanner
+              surface="account_settings"
+              subscription={subscription}
+              subscriptionStatus={pastDueStatus}
+              latestInvoiceId={currentCancellationStatus?.latestInvoiceId}
+              isOpening={isOpeningBillingPortal}
+              onUpdatePayment={() =>
+                void redirectToBillingPortal("payment_method")
+              }
+            />
           </div>
         )}
 
@@ -380,9 +661,16 @@ const AccountTab = () => {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={redirectToBillingPortal}
+                disabled={
+                  isOpeningBillingPortal || isCheckingCancellationStatus
+                }
+                onClick={() =>
+                  void redirectToBillingPortal(
+                    pastDueStatus ? "payment_method" : undefined,
+                  )
+                }
               >
-                Manage
+                {pastDueStatus ? "Update payment" : "Manage"}
               </Button>
             </div>
           </div>
@@ -417,6 +705,8 @@ const AccountTab = () => {
         open={showCancelDialog}
         onOpenChange={setShowCancelDialog}
         onCancellationCompleted={handleCancellationCompleted}
+        onPauseScheduled={handlePauseScheduled}
+        onDowngradeApplied={handleDowngradeScheduled}
       />
     </div>
   );

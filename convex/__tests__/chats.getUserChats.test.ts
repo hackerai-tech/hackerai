@@ -57,7 +57,8 @@ const { ConvexError } =
 const { assertUserCanAccessChatHistory } = jest.requireMock<
   typeof import("../lib/suspensionGuards")
 >("../lib/suspensionGuards");
-const { getUserChats } = require("../chats") as typeof import("../chats");
+const { getChatByIdFromClient, getUserChats, unpinChat } =
+  require("../chats") as typeof import("../chats");
 
 const emptyPage = {
   page: [],
@@ -139,6 +140,37 @@ describe("getUserChats", () => {
     ).rejects.toThrow("unexpected");
   });
 
+  it.each(["sidebar", "task"])(
+    "surfaces %s database failures instead of claiming history is missing",
+    async (surface) => {
+      const error = new Error("database unavailable");
+      const ctx = {
+        auth: {
+          getUserIdentity: jest
+            .fn<any>()
+            .mockResolvedValue({ subject: "user-123" }),
+        },
+        db: {
+          query: jest.fn(() => {
+            throw error;
+          }),
+        },
+      };
+      const log = jest.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(
+          surface === "sidebar"
+            ? getUserChats.handler(ctx as any, {
+                paginationOpts: { numItems: 28, cursor: null },
+              })
+            : getChatByIdFromClient.handler(ctx as any, { id: "task-1" }),
+        ).rejects.toThrow(error);
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   it("returns pinned project tasks in the global pinned results", async () => {
     const pinnedProjectTask = {
       _id: "pinned-doc",
@@ -206,5 +238,151 @@ describe("getUserChats", () => {
     expect(gt).toHaveBeenCalledWith("pinned_at", 0);
     expect(regularEq).toHaveBeenCalledWith("user_id", "user-123");
     expect(regularEq).toHaveBeenCalledWith("project_id", undefined);
+  });
+
+  it("uses a safe legacy fork title after another user's share is revoked", async () => {
+    const legacyFork = {
+      _id: "fork-doc",
+      id: "fork-1",
+      title: "My legacy fork",
+      user_id: "user-123",
+      branched_from_chat_id: "source-1",
+      update_time: 1,
+    };
+    const page = {
+      page: [legacyFork],
+      isDone: true,
+      continueCursor: "",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue(page);
+    const regularOrder = jest.fn<any>().mockReturnValue({ paginate });
+    const regularWithIndex = jest.fn<any>().mockReturnValue({
+      order: regularOrder,
+    });
+    const sourceFirst = jest.fn<any>().mockResolvedValue({
+      _id: "source-doc",
+      id: "source-1",
+      title: "Private renamed source",
+      user_id: "source-owner",
+      update_time: 2,
+    });
+    const sourceWithIndex = jest.fn<any>().mockReturnValue({
+      first: sourceFirst,
+    });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-123" }),
+      },
+      db: {
+        query: jest
+          .fn<any>()
+          .mockReturnValueOnce({ withIndex: regularWithIndex })
+          .mockReturnValueOnce({ withIndex: sourceWithIndex }),
+      },
+    };
+
+    await expect(
+      getUserChats.handler(ctx as any, {
+        paginationOpts: { numItems: 20, cursor: "next-page" },
+      }),
+    ).resolves.toEqual({
+      ...page,
+      page: [
+        expect.objectContaining({
+          branched_from_title: "My legacy fork",
+        }),
+      ],
+    });
+  });
+
+  it("uses the fork-time title in the single-chat query after revocation", async () => {
+    const fork = {
+      _id: "fork-doc",
+      _creationTime: 1,
+      id: "fork-1",
+      title: "My fork",
+      user_id: "user-123",
+      branched_from_chat_id: "source-1",
+      branched_from_title: "Title when forked",
+      update_time: 1,
+    };
+    const source = {
+      _id: "source-doc",
+      _creationTime: 1,
+      id: "source-1",
+      title: "Private renamed source",
+      user_id: "source-owner",
+      update_time: 2,
+    };
+    const first = jest
+      .fn<any>()
+      .mockResolvedValueOnce(fork)
+      .mockResolvedValueOnce(source);
+    const withIndex = jest.fn<any>().mockReturnValue({ first });
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-123" }),
+      },
+      db: {
+        query: jest.fn<any>().mockReturnValue({ withIndex }),
+      },
+    };
+
+    await expect(
+      getChatByIdFromClient.handler(ctx as any, { id: "fork-1" }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        branched_from_title: "Title when forked",
+      }),
+    );
+  });
+});
+
+describe("unpinChat", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("preserves the chat activity time when unpinning", async () => {
+    const chat = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      title: "Older pinned task",
+      user_id: "user-123",
+      pinned_at: 200,
+      update_time: 100,
+    };
+    const first = jest.fn<any>().mockResolvedValue(chat);
+    const eq = jest.fn<any>().mockReturnValue({ first });
+    const withIndex = jest.fn<any>((indexName, applyIndex) => {
+      expect(indexName).toBe("by_chat_id");
+      applyIndex({ eq });
+      return { first };
+    });
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      auth: {
+        getUserIdentity: jest
+          .fn<any>()
+          .mockResolvedValue({ subject: "user-123" }),
+      },
+      db: {
+        query: jest.fn<any>().mockReturnValue({ withIndex }),
+        patch,
+      },
+    };
+
+    await expect(
+      unpinChat.handler(ctx as any, { chatId: "chat-1" }),
+    ).resolves.toBeNull();
+
+    expect(eq).toHaveBeenCalledWith("id", "chat-1");
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      pinned_at: undefined,
+    });
   });
 });

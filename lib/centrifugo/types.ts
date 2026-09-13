@@ -7,6 +7,8 @@ export interface CommandMessage {
   timeout?: number;
   background?: boolean;
   displayName?: string;
+  chatId?: string;
+  triggerRunId?: string;
   targetConnectionId: string;
 }
 
@@ -26,12 +28,14 @@ export interface StdoutMessage {
   type: "stdout";
   commandId: string;
   data: string;
+  sequence?: number;
 }
 
 export interface StderrMessage {
   type: "stderr";
   commandId: string;
   data: string;
+  sequence?: number;
 }
 
 export interface ExitMessage {
@@ -39,12 +43,14 @@ export interface ExitMessage {
   commandId: string;
   exitCode: number;
   pid?: number;
+  sequence?: number;
 }
 
 export interface ErrorMessage {
   type: "error";
   commandId: string;
   message: string;
+  sequence?: number;
 }
 
 // -- Native desktop file relay messages (server -> desktop bridge) ----------
@@ -72,6 +78,7 @@ export interface FileWriteMessage {
   path: string;
   content: string;
   isBase64?: boolean;
+  allowedRoot?: string;
   targetConnectionId: string;
 }
 
@@ -81,6 +88,7 @@ export interface FileAppendMessage {
   path: string;
   content: string;
   isBase64?: boolean;
+  allowedRoot?: string;
   targetConnectionId: string;
 }
 

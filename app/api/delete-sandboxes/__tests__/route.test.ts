@@ -1,35 +1,45 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
+import { getActiveTriggerRunsForUser } from "@/lib/db/actions";
+import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
+import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { POST } from "../route";
-
-jest.mock("@e2b/code-interpreter", () => ({
-  Sandbox: {
-    list: jest.fn(),
-    kill: jest.fn(),
-  },
-}));
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: jest.fn(),
 }));
+jest.mock("@/lib/ai/tools/utils/cloud-sandbox", () => ({
+  terminateCloudSandboxesForUser: jest.fn(),
+}));
+jest.mock("@/lib/db/actions", () => ({
+  getActiveTriggerRunsForUser: jest.fn(),
+}));
+jest.mock("@/lib/db/subagents", () => ({
+  cancelSubagentsForUserDeletion: jest.fn(),
+}));
+jest.mock("@/lib/api/agent-deletion-cleanup", () => ({
+  closeAndCancelAgentResources: jest.fn(),
+}));
 
-const mockSandboxList = Sandbox.list as jest.MockedFunction<
-  typeof Sandbox.list
->;
-const mockSandboxKill = Sandbox.kill as jest.MockedFunction<
-  typeof Sandbox.kill
->;
 const mockGetUserIDAndPro = getUserIDAndPro as jest.MockedFunction<
   typeof getUserIDAndPro
 >;
-
-const mockSandboxes = (sandboxIds: string[]) => {
-  mockSandboxList.mockReturnValue({
-    nextItems: jest
-      .fn()
-      .mockResolvedValue(sandboxIds.map((sandboxId) => ({ sandboxId }))),
-  } as never);
-};
+const mockTerminateCloudSandboxesForUser =
+  terminateCloudSandboxesForUser as jest.MockedFunction<
+    typeof terminateCloudSandboxesForUser
+  >;
+const mockGetActiveTriggerRunsForUser =
+  getActiveTriggerRunsForUser as jest.MockedFunction<
+    typeof getActiveTriggerRunsForUser
+  >;
+const mockCancelSubagentsForUserDeletion =
+  cancelSubagentsForUserDeletion as jest.MockedFunction<
+    typeof cancelSubagentsForUserDeletion
+  >;
+const mockCloseAndCancelAgentResources =
+  closeAndCancelAgentResources as jest.MockedFunction<
+    typeof closeAndCancelAgentResources
+  >;
 
 describe("POST /api/delete-sandboxes", () => {
   let debugSpy: jest.SpyInstance;
@@ -38,15 +48,19 @@ describe("POST /api/delete-sandboxes", () => {
   beforeAll(() => {
     global.Response = class TestResponse {
       status: number;
-      private body: string;
+      private body: string | null;
 
-      constructor(body: string, init?: ResponseInit) {
+      constructor(body: string | null, init?: ResponseInit) {
         this.body = body;
         this.status = init?.status ?? 200;
       }
 
       async json() {
-        return JSON.parse(this.body);
+        return JSON.parse(this.body ?? "");
+      }
+
+      async text() {
+        return this.body ?? "";
       }
     } as unknown as typeof Response;
   });
@@ -59,6 +73,24 @@ describe("POST /api/delete-sandboxes", () => {
       userId: "user_123",
       subscription: "pro",
     } as never);
+    mockGetActiveTriggerRunsForUser.mockResolvedValue({
+      runs: [
+        {
+          chatId: "chat_123",
+          triggerRunId: "run_parent",
+          approvalSessionId: "approval_123",
+        },
+      ],
+      hasMore: false,
+    });
+    mockCancelSubagentsForUserDeletion.mockResolvedValue({
+      triggerRunIds: ["run_child"],
+      hasMore: false,
+    });
+    mockCloseAndCancelAgentResources.mockResolvedValue({
+      canceledTriggerRuns: 2,
+      closedApprovalSessions: 1,
+    });
   });
 
   afterEach(() => {
@@ -66,35 +98,93 @@ describe("POST /api/delete-sandboxes", () => {
     errorSpy.mockRestore();
   });
 
-  it("treats already-gone sandbox kills as successful delete progress", async () => {
-    mockSandboxes(["sbx_live", "sbx_missing"]);
-    mockSandboxKill
-      .mockResolvedValueOnce(undefined as never)
-      .mockRejectedValueOnce(
-        Object.assign(new Error("sandbox not_found"), { status: 404 }),
-      );
-
-    const response = await POST({} as any);
-    const body = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(body).toEqual({
-      success: true,
+  it("returns no operational details after successful deletion", async () => {
+    mockTerminateCloudSandboxesForUser.mockResolvedValue({
       total: 2,
       killed: 1,
       alreadyGone: 1,
     });
-    expect(mockSandboxKill).toHaveBeenCalledWith("sbx_live");
-    expect(mockSandboxKill).toHaveBeenCalledWith("sbx_missing");
-    expect(errorSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining("Failed to kill sandbox"),
-      expect.anything(),
+
+    const response = await POST({} as any);
+    expect(response.status).toBe(204);
+    await expect(response.text()).resolves.toBe("");
+    expect(mockGetActiveTriggerRunsForUser).toHaveBeenCalledWith({
+      userId: "user_123",
+    });
+    expect(mockCancelSubagentsForUserDeletion).toHaveBeenCalledWith(
+      "user_123",
+      "terminal-sandbox-deleted",
+    );
+    expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
+      [
+        {
+          chatId: "chat_123",
+          triggerRunId: "run_parent",
+          approvalSessionId: "approval_123",
+        },
+        { chatId: "subagent", triggerRunId: "run_child" },
+      ],
+      "terminal-sandbox-deleted",
+    );
+    expect(mockTerminateCloudSandboxesForUser).toHaveBeenCalledWith("user_123");
+    expect(
+      mockCloseAndCancelAgentResources.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockTerminateCloudSandboxesForUser.mock.invocationCallOrder[0],
     );
   });
 
+  it("stops before termination when active Agent cleanup is not bounded", async () => {
+    mockGetActiveTriggerRunsForUser.mockResolvedValueOnce({
+      runs: [],
+      hasMore: true,
+    });
+
+    const response = await POST({} as any);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Too many active Agent runs to stop safely. Please retry deletion.",
+    });
+    expect(mockCancelSubagentsForUserDeletion).not.toHaveBeenCalled();
+    expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
+  });
+
+  it("stops before termination when validation cleanup is not bounded", async () => {
+    mockCancelSubagentsForUserDeletion.mockResolvedValueOnce({
+      triggerRunIds: [],
+      hasMore: true,
+    });
+
+    const response = await POST({} as any);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error:
+        "Too many active validation runs to stop safely. Please retry deletion.",
+    });
+    expect(mockCloseAndCancelAgentResources).not.toHaveBeenCalled();
+    expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
+  });
+
+  it("does not query or terminate sandboxes for free users", async () => {
+    mockGetUserIDAndPro.mockResolvedValueOnce({
+      userId: "user_free",
+      subscription: "free",
+    } as never);
+
+    const response = await POST({} as any);
+
+    expect(response.status).toBe(403);
+    expect(mockGetActiveTriggerRunsForUser).not.toHaveBeenCalled();
+    expect(mockTerminateCloudSandboxesForUser).not.toHaveBeenCalled();
+  });
+
   it("still fails on unexpected kill errors", async () => {
-    mockSandboxes(["sbx_denied"]);
-    mockSandboxKill.mockRejectedValueOnce(new Error("permission denied"));
+    mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
+      new Error("permission denied"),
+    );
 
     const response = await POST({} as any);
     const body = await response.json();
@@ -102,14 +192,13 @@ describe("POST /api/delete-sandboxes", () => {
     expect(response.status).toBe(500);
     expect(body).toEqual({ error: "Failed to delete sandboxes" });
     expect(errorSpy).toHaveBeenCalledWith(
-      "Failed to kill sandbox sbx_denied:",
+      "Error deleting sandboxes:",
       expect.any(Error),
     );
   });
 
   it("does not count transport-closure failures as deleted sandboxes", async () => {
-    mockSandboxes(["sbx_unknown"]);
-    mockSandboxKill.mockRejectedValueOnce(
+    mockTerminateCloudSandboxesForUser.mockRejectedValueOnce(
       new Error("kill transport channel already closed"),
     );
 
@@ -119,7 +208,7 @@ describe("POST /api/delete-sandboxes", () => {
     expect(response.status).toBe(500);
     expect(body).toEqual({ error: "Failed to delete sandboxes" });
     expect(errorSpy).toHaveBeenCalledWith(
-      "Failed to kill sandbox sbx_unknown:",
+      "Error deleting sandboxes:",
       expect.any(Error),
     );
   });

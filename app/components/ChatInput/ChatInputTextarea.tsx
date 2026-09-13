@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import {
+  useComposerActions,
+  useComposerInput,
+} from "@/app/contexts/ComposerState";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
 import {
   getDraftContentById,
@@ -17,6 +21,7 @@ import {
 } from "@/lib/utils/client-token-validation";
 import { toast } from "sonner";
 import type { ChatMode } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputTextareaProps {
   draftId: string;
@@ -37,7 +42,9 @@ export function ChatInputTextarea({
   placeholder,
   autoFocus = true,
 }: ChatInputTextareaProps) {
-  const { input, setInput, subscription } = useGlobalState();
+  const input = useComposerInput();
+  const { setInput } = useComposerActions();
+  const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
     useFileUpload(chatMode);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -48,7 +55,7 @@ export function ChatInputTextarea({
   });
 
   // Load draft when draftId changes (chat switch or mount)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prevDraftId = prevDraftIdRef.current;
     prevDraftIdRef.current = draftId;
 
@@ -90,17 +97,13 @@ export function ChatInputTextarea({
         return;
       }
 
-      const hasClipboardFiles = Array.from(clipboardData.items ?? []).some(
-        (item) => item.kind === "file",
-      );
-      if (hasClipboardFiles) {
-        await handlePasteEvent(e);
+      const handledAsFile = await handlePasteEvent(e);
+      if (handledAsFile) {
         return;
       }
 
       const pastedText = clipboardData.getData("text");
       if (!pastedText) {
-        await handlePasteEvent(e);
         return;
       }
 
@@ -122,7 +125,7 @@ export function ChatInputTextarea({
         maxTokens,
       );
       if (tokenLimitStatus.exceedsLimit) {
-        if (subscription !== "free") {
+        if (subscription !== "free" && isAgentMode(chatMode)) {
           await handlePastedTextAttachment(pastedText);
           return;
         }
@@ -170,7 +173,7 @@ export function ChatInputTextarea({
           placeholder !== undefined
             ? placeholder
             : chatMode === "agent"
-              ? "Hack, test, secure anything"
+              ? "Do anything"
               : "Ask, learn, brainstorm"
         }
         className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"

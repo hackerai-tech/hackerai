@@ -1,5 +1,12 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  afterAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 import {
   fireEvent,
   render,
@@ -24,6 +31,8 @@ const mockStop = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
 let mockRouteParams: Record<string, string> = {};
+let mockComputerOverlayMedia = false;
+const originalMatchMedia = window.matchMedia;
 
 jest.mock("@ai-sdk/react", () => ({
   useChat: jest.fn(() => ({
@@ -40,6 +49,7 @@ jest.mock("@ai-sdk/react", () => ({
 
 jest.mock("next/navigation", () => ({
   useParams: jest.fn(() => mockRouteParams),
+  usePathname: jest.fn(() => "/"),
   useRouter: jest.fn(() => ({
     push: jest.fn(),
     replace: jest.fn(),
@@ -153,7 +163,13 @@ jest.mock("../ChatInput", () => ({
 }));
 
 jest.mock("../ComputerSidebar", () => ({
-  ComputerSidebar: () => <div data-testid="computer-sidebar">Sidebar</div>,
+  ComputerSidebar: () => (
+    <div data-testid="computer-sidebar">
+      Sidebar
+      <button type="button">First computer action</button>
+      <button type="button">Last computer action</button>
+    </div>
+  ),
 }));
 
 jest.mock("../ChatHeader", () => ({
@@ -189,6 +205,7 @@ import {
   Chat,
   getExistingChatLoadState,
   getStoredAgentApprovalRequest,
+  useStreamedChatTitle,
   useServerMessages,
 } from "../chat";
 import { ChatLayout } from "../ChatLayout";
@@ -233,8 +250,54 @@ const QueueEditingHarness = () => {
   );
 };
 
+const ChatTitleHandoffHarness = ({
+  persistedTitle,
+}: {
+  persistedTitle: string;
+}) => {
+  const [chatTitle, setStreamedTitle] = useStreamedChatTitle(persistedTitle);
+
+  return (
+    <>
+      <div data-testid="chat-title">{chatTitle}</div>
+      <button type="button" onClick={() => setStreamedTitle("Generated title")}>
+        Stream generated title
+      </button>
+    </>
+  );
+};
+
+const OpenComputerSidebarHarness = () => {
+  const { openSidebar, sidebarOpen } = useGlobalState();
+
+  return (
+    <>
+      <span data-testid="computer-open-state">
+        {sidebarOpen ? "open" : "closed"}
+      </span>
+      <button
+        type="button"
+        onClick={() =>
+          openSidebar({
+            command: "echo ready",
+            output: "ready",
+            isExecuting: false,
+            toolCallId: "responsive-layout-test",
+          })
+        }
+      >
+        Open Computer
+      </button>
+    </>
+  );
+};
+
 describe("Chat Component Integration", () => {
   let mockUseChat: jest.Mock;
+
+  afterAll(() => {
+    window.matchMedia = originalMatchMedia;
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -242,6 +305,22 @@ describe("Chat Component Integration", () => {
     convexReact.resetMockConvexAuth?.();
     convexReact.resetMockConvexQueries?.();
     mockRouteParams = {};
+    mockComputerOverlayMedia = false;
+    window.matchMedia = jest.fn(
+      (query: string) =>
+        ({
+          get matches() {
+            return query === "(max-width: 949px)" && mockComputerOverlayMedia;
+          },
+          media: query,
+          onchange: null,
+          addEventListener: jest.fn(),
+          removeEventListener: jest.fn(),
+          addListener: jest.fn(),
+          removeListener: jest.fn(),
+          dispatchEvent: jest.fn(),
+        }) as MediaQueryList,
+    );
     const { useChat } = require("@ai-sdk/react");
     mockUseChat = useChat as jest.Mock;
 
@@ -258,6 +337,29 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Basic Rendering", () => {
+    it("releases a persisted streamed title so later manual renames stay visible", () => {
+      const { rerender } = render(
+        <ChatTitleHandoffHarness persistedTitle="Original prompt" />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stream generated title" }),
+      );
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      rerender(<ChatTitleHandoffHarness persistedTitle="Generated title" />);
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Generated title",
+      );
+
+      rerender(<ChatTitleHandoffHarness persistedTitle="Renamed title" />);
+      expect(screen.getByTestId("chat-title")).toHaveTextContent(
+        "Renamed title",
+      );
+    });
+
     it("should render new chat with welcome message", () => {
       render(
         <TestWrapper>
@@ -382,6 +484,12 @@ describe("Chat Component Integration", () => {
             justification: "Check whether the target host is reachable.",
             prefixRule: ["ping", "-c", "4"],
             createdAt: 123,
+            autoReview: {
+              verdict: "ask_user",
+              riskCategory: "scope_expansion",
+              rationale: "The referenced script contents are not visible.",
+              rolloutPhase: "enforce",
+            },
           },
         }),
       ).toEqual({
@@ -395,7 +503,32 @@ describe("Chat Component Integration", () => {
         detail: "Approve to continue, or deny to stop this command.",
         kind: "terminal",
         createdAt: 123,
+        autoReview: {
+          verdict: "ask_user",
+          riskCategory: "scope_expansion",
+          rationale: "The referenced script contents are not visible.",
+          rolloutPhase: "enforce",
+        },
       });
+    });
+
+    it("drops a malformed stored Auto review summary", () => {
+      expect(
+        getStoredAgentApprovalRequest({
+          active_agent_approval_pending: true,
+          active_agent_approval_request: {
+            approvalId: "approval-1",
+            toolCallId: "tool-1",
+            operation: "terminal_execute",
+            autoReview: {
+              verdict: "approve_everything",
+              riskCategory: "routine",
+              rationale: "Invalid verdict.",
+              rolloutPhase: "enforce",
+            },
+          },
+        })?.autoReview,
+      ).toBeUndefined();
     });
   });
 
@@ -515,7 +648,74 @@ describe("Chat Component Integration", () => {
       expect(screen.getByTestId("sidebar")).toBeInTheDocument();
     });
 
-    // Mobile layout (sidebar hidden in main layout, shown as overlay) is covered by
-    // ChatLayout structure and useIsMobile; full behavior can be asserted in e2e or ChatLayout unit tests.
+    it("uses a bounded split pane for Computer on wide workspaces", async () => {
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Computer" }));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("computer-sidebar")).toBeInTheDocument();
+      });
+      expect(screen.getByTestId("computer-sidebar-container")).toHaveAttribute(
+        "data-layout",
+        "split",
+      );
+      expect(screen.getByTestId("computer-sidebar-container")).toHaveClass(
+        "w-1/2",
+      );
+    });
+
+    it("uses an accessible Computer overlay on narrow workspaces", async () => {
+      mockComputerOverlayMedia = true;
+
+      render(
+        <TestWrapper>
+          <OpenComputerSidebarHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+
+      const trigger = screen.getByRole("button", { name: "Open Computer" });
+      trigger.focus();
+      fireEvent.click(trigger);
+
+      expect(screen.getByTestId("computer-open-state")).toHaveTextContent(
+        "open",
+      );
+      expect(
+        await screen.findByTestId("computer-sidebar-container"),
+      ).toHaveAttribute("data-layout", "overlay");
+      expect(
+        screen.getByRole("dialog", { name: "HackerAI’s Computer" }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("computer-sidebar")).toBeInTheDocument();
+
+      const firstAction = screen.getByRole("button", {
+        name: "First computer action",
+      });
+      const lastAction = screen.getByRole("button", {
+        name: "Last computer action",
+      });
+      await waitFor(() => expect(firstAction).toHaveFocus());
+
+      lastAction.focus();
+      fireEvent.keyDown(document, { key: "Tab" });
+      expect(firstAction).toHaveFocus();
+
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("dialog", { name: "HackerAI’s Computer" }),
+        ).not.toBeInTheDocument();
+      });
+      expect(trigger).toHaveFocus();
+    });
+
+    // Mobile task navigation is covered by ChatLayout accessibility tests.
   });
 });

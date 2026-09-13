@@ -15,6 +15,7 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 jest.mock("sonner", () => ({
   toast: {
     error: jest.fn(),
+    info: jest.fn(),
   },
 }));
 
@@ -37,6 +38,7 @@ const mockGetPostHogRequestHeaders =
     typeof getPostHogRequestHeaders
   >;
 const mockToastError = toast.error as jest.MockedFunction<typeof toast.error>;
+const mockToastInfo = toast.info as jest.MockedFunction<typeof toast.info>;
 
 function response({
   ok,
@@ -72,6 +74,7 @@ describe("useUpgrade checkout attempts", () => {
 
   afterEach(() => {
     window.history.replaceState(null, "", "/");
+    window.sessionStorage.clear();
   });
 
   it("coalesces duplicate clicks before React commits the loading state", async () => {
@@ -134,6 +137,82 @@ describe("useUpgrade checkout attempts", () => {
     });
   });
 
+  it("blocks duplicate sidebar checkout across pricing dialog remounts", async () => {
+    let resolveFetch: ((value: Response) => void) | undefined;
+    global.fetch = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveFetch = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(
+        response({ ok: true, status: 200, body: { error: "cancelled" } }),
+      );
+    mockNewCheckoutAttemptId
+      .mockReturnValueOnce("ca_sidebar_123")
+      .mockReturnValueOnce("ca_sidebar_retry_456");
+    const firstDialog = renderHook(() => useUpgrade());
+
+    let firstRequest!: Promise<void>;
+    act(() => {
+      firstRequest = firstDialog.result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+    firstDialog.unmount();
+
+    const remountedDialog = renderHook(() => useUpgrade());
+    await act(async () => {
+      await remountedDialog.result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFetch?.(
+        response({
+          ok: false,
+          status: 503,
+          body: { error: "Checkout temporarily unavailable" },
+        }),
+      );
+      await firstRequest;
+    });
+
+    await act(async () => {
+      await remountedDialog.result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(2);
+    const requestBodies = (global.fetch as jest.Mock).mock.calls.map(
+      ([, init]) => JSON.parse(String(init?.body)),
+    );
+    expect(requestBodies.map((body) => body.checkoutAttemptId)).toEqual([
+      "ca_sidebar_123",
+      "ca_sidebar_retry_456",
+    ]);
+  });
+
   it("creates a distinct attempt ID for a valid retry after failure", async () => {
     global.fetch = jest
       .fn()
@@ -172,15 +251,22 @@ describe("useUpgrade checkout attempts", () => {
     );
   });
 
-  it("keeps the submit lock held once checkout navigation starts", async () => {
-    global.fetch = jest.fn().mockResolvedValue(
-      response({
-        ok: true,
-        status: 200,
-        body: { url: `${window.location.origin}/#checkout` },
-      }),
-    );
-    mockNewCheckoutAttemptId.mockReturnValue("ca_redirect_123");
+  it("allows an immediate retry when checkout navigation fails", async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          ok: true,
+          status: 200,
+          body: { url: "https://[" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({ ok: true, status: 200, body: { error: "cancelled" } }),
+      );
+    mockNewCheckoutAttemptId
+      .mockReturnValueOnce("ca_redirect_failed_123")
+      .mockReturnValueOnce("ca_redirect_retry_456");
     const { result } = renderHook(() => useUpgrade());
 
     await act(async () => {
@@ -190,9 +276,107 @@ describe("useUpgrade checkout attempts", () => {
       await result.current.handleUpgrade("pro-monthly-plan");
     });
 
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(
+      window.sessionStorage.getItem("hackerai:billing:checkout-navigation:v1"),
+    ).toBeNull();
+  });
+
+  it("suppresses a recent checkout redirect after a page reload", async () => {
+    window.sessionStorage.setItem(
+      "hackerai:billing:checkout-navigation:v1",
+      JSON.stringify({
+        attemptId: "ca_recent_redirect_123",
+        plan: "pro-monthly-plan",
+        startedAt: Date.now(),
+      }),
+    );
+    global.fetch = jest.fn();
+    const { result } = renderHook(() => useUpgrade());
+
+    await act(async () => {
+      await result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        { source: "sidebar", surface: "pricing_dialog" },
+      );
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockNewCheckoutAttemptId).not.toHaveBeenCalled();
+    expect(mockToastInfo).toHaveBeenCalledWith("Checkout is already opening", {
+      description: "Wait a moment before trying again.",
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_redirect_suppressed",
+      expect.objectContaining({
+        checkout_attempt_id: "ca_recent_redirect_123",
+        plan: "pro-monthly-plan",
+        source: "sidebar",
+        suppression_reason: "recent_navigation",
+        guard_window_ms: 30_000,
+      }),
+    );
+  });
+
+  it("keeps the submit lock held once checkout navigation starts", async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      response({
+        ok: true,
+        status: 200,
+        body: {
+          url: `${window.location.origin}/#checkout`,
+          pricingExperiment: {
+            key: "hac46-pro-monthly-29-pricing",
+            variant: "test",
+            priceLookupKey: "pro-monthly-plan-29-experiment",
+            displayedAmountDollars: 29,
+            currency: "usd",
+            billingInterval: "month",
+            stripePriceId: "price_pro_29",
+          },
+        },
+      }),
+    );
+    mockNewCheckoutAttemptId.mockReturnValue("ca_redirect_123");
+    const { result } = renderHook(() => useUpgrade());
+
+    await act(async () => {
+      await result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+        {
+          pricing_experiment: {
+            key: "hac46-pro-monthly-29-pricing",
+            variant: "test",
+            priceLookupKey: "pro-monthly-plan-29-experiment",
+            displayedAmountDollars: 29,
+            currency: "usd",
+            billingInterval: "month",
+            stripePriceId: "price_pro_29",
+          },
+        },
+      );
+    });
+    await act(async () => {
+      await result.current.handleUpgrade("pro-monthly-plan");
+    });
+
     expect(window.location.hash).toBe("#checkout");
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(mockNewCheckoutAttemptId).toHaveBeenCalledTimes(1);
     expect(result.current.upgradeLoading).toBe(true);
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_intent_clicked",
+      expect.objectContaining({ stripe_price_id: "price_pro_29" }),
+    );
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "checkout_redirected",
+      expect.objectContaining({ stripe_price_id: "price_pro_29" }),
+    );
   });
 });

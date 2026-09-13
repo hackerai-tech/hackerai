@@ -10,6 +10,7 @@ interface ToolBlockProps {
   onClick?: () => void;
   onKeyDown?: (e: React.KeyboardEvent) => void;
   ariaLabel?: string;
+  accessibleLabel?: string;
 }
 
 const ToolBlock: React.FC<ToolBlockProps> = ({
@@ -21,6 +22,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
   onClick,
   onKeyDown,
   ariaLabel,
+  accessibleLabel,
 }) => {
   const baseClasses =
     "rounded-[15px] px-[10px] py-[6px] border border-border bg-muted/20 inline-flex max-w-full gap-[4px] items-center relative h-[36px] overflow-hidden";
@@ -55,13 +57,21 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
           onClick={onClick}
           onKeyDown={onKeyDown}
           aria-label={
-            ariaLabel || (target ? `Open ${target} in sidebar` : undefined)
+            accessibleLabel ??
+            ariaLabel ??
+            (target ? `Open ${target} in sidebar` : undefined)
           }
         >
           {content}
         </button>
       ) : (
-        <div className={baseClasses}>{content}</div>
+        <div
+          className={baseClasses}
+          role={accessibleLabel ? "group" : undefined}
+          aria-label={accessibleLabel}
+        >
+          {content}
+        </div>
       )}
     </div>
   );

@@ -8,7 +8,7 @@ config({ path: resolve(__dirname, "../.env.local") });
 async function main() {
   await Template.build(template, "terminal-agent-sandbox-dev", {
     cpuCount: 4,
-    memoryMB: 2048,
+    memoryMB: 4096,
     onBuildLogs: defaultBuildLogger(),
   });
 }

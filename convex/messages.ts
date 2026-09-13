@@ -1,3 +1,7 @@
+import {
+  getAbliterationHistoryEntry,
+  stripClientAbliterationRouting,
+} from "../lib/experiments/abliteration-history";
 import { query, mutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
@@ -6,17 +10,19 @@ import type { DataModel, Doc, Id } from "./_generated/dataModel";
 import {
   paginationOptsValidator,
   type GenericDatabaseReader,
+  type PaginationOptions,
 } from "convex/server";
 import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
 import type { RetainedTailDoc } from "./lib/retainedTail";
+import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import {
-  assertUserCanAccessChatHistory,
-  isUserBlockedByActiveFraudDispute,
-} from "./lib/suspensionGuards";
+  getVisibleSharedChatByShareId,
+  listVisibleSharedMessages,
+  sharedMessageValidator,
+} from "./lib/sharedChatSnapshot";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
-import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
   MIN_MESSAGE_SEARCH_QUERY_LENGTH,
@@ -44,13 +50,30 @@ const extractFileIdsFromParts = (parts: any[]): Id<"files">[] =>
     )
     .map((part) => part.fileId as Id<"files">);
 
-const getOwnedFileIdSet = async (
+const MESSAGE_PAGE_MAX_BYTES = 4 * 1024 * 1024;
+
+const withMessagePageReadLimit = (
+  paginationOpts: PaginationOptions,
+): PaginationOptions => ({
+  ...paginationOpts,
+  maximumBytesRead: Math.min(
+    paginationOpts.maximumBytesRead ?? MESSAGE_PAGE_MAX_BYTES,
+    MESSAGE_PAGE_MAX_BYTES,
+  ),
+});
+
+const getOwnedFileInfo = async (
   ctx: { db: GenericDatabaseReader<DataModel> },
   fileIds: Id<"files">[],
   userId: string,
-): Promise<Set<string>> => {
+): Promise<{
+  ownedFileIds: Set<string>;
+  fileTokens: Array<{ fileId: Id<"files">; tokenSize: number }>;
+}> => {
   const uniqueFileIds = Array.from(new Set(fileIds));
-  if (uniqueFileIds.length === 0) return new Set();
+  if (uniqueFileIds.length === 0) {
+    return { ownedFileIds: new Set(), fileTokens: [] };
+  }
 
   const files = await Promise.all(
     uniqueFileIds.map((fileId) =>
@@ -65,11 +88,19 @@ const getOwnedFileIdSet = async (
     ),
   );
 
-  return new Set(
-    files
-      .filter((file) => file && file.user_id === userId)
-      .map((file) => file!._id),
+  const ownedFiles = files.flatMap((file, index) =>
+    file && file.user_id === userId
+      ? [{ file, fileId: uniqueFileIds[index] }]
+      : [],
   );
+
+  return {
+    ownedFileIds: new Set(ownedFiles.map(({ fileId }) => fileId)),
+    fileTokens: ownedFiles.map(({ file, fileId }) => ({
+      fileId,
+      tokenSize: file.file_token_size,
+    })),
+  };
 };
 
 const stripUnownedFileParts = (
@@ -467,7 +498,7 @@ async function ensureChatWritableForMessageInsert(
   chatId: string,
   userId: string,
   role: "user" | "assistant" | "system",
-): Promise<void> {
+): Promise<Doc<"chats">> {
   const chat = await loadOwnedChat(ctx, chatId, userId);
 
   if (chat.canceled_at !== undefined) {
@@ -475,7 +506,7 @@ async function ensureChatWritableForMessageInsert(
       await ctx.db.patch(chat._id, {
         canceled_at: undefined,
       });
-      return;
+      return chat;
     }
 
     throw new ConvexError({
@@ -483,6 +514,8 @@ async function ensureChatWritableForMessageInsert(
       message: "This chat is no longer accepting new messages",
     });
   }
+
+  return chat;
 }
 
 /**
@@ -506,6 +539,7 @@ export const saveMessage = mutation({
     generationStartedAt: v.optional(v.number()),
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
+    triggerRunId: v.optional(v.string()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
     isHidden: v.optional(v.boolean()),
@@ -514,6 +548,7 @@ export const saveMessage = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     let failureStage = "start";
+    let chatForInsert: Doc<"chats"> | null = null;
 
     try {
       const ensureOwnedFiles = async (
@@ -609,6 +644,13 @@ export const saveMessage = mutation({
         // Update usage if provided and not already set (e.g., on abort)
         if (args.usage && !existingMessage.usage) {
           patch.usage = args.usage;
+        } else if (args.usage?.abliterationRouting) {
+          // A client stop-save may precede server completion. Only this
+          // service-key mutation can add or replace routing provenance.
+          patch.usage = {
+            ...existingMessage.usage,
+            abliterationRouting: args.usage.abliterationRouting,
+          };
         }
 
         // Update metrics if provided and not already set
@@ -633,6 +675,20 @@ export const saveMessage = mutation({
         if (args.finishReason && !existingMessage.finish_reason) {
           patch.finish_reason = args.finishReason;
         }
+        if (
+          args.triggerRunId &&
+          existingMessage.trigger_run_id &&
+          existingMessage.trigger_run_id !== args.triggerRunId
+        ) {
+          failureStage = "verify_existing_message_trigger_run";
+          throw new ConvexError({
+            code: "MESSAGE_TRIGGER_RUN_MISMATCH",
+            message: "Message is already associated with another Agent run",
+          });
+        }
+        if (args.triggerRunId && !existingMessage.trigger_run_id) {
+          patch.trigger_run_id = args.triggerRunId;
+        }
         if (args.isHidden !== undefined) {
           patch.is_hidden = args.isHidden;
         }
@@ -653,7 +709,7 @@ export const saveMessage = mutation({
         }
 
         failureStage = "verify_chat_writable_for_insert";
-        await ensureChatWritableForMessageInsert(
+        chatForInsert = await ensureChatWritableForMessageInsert(
           ctx,
           args.chatId,
           args.userId,
@@ -670,6 +726,7 @@ export const saveMessage = mutation({
       failureStage = "extract_content";
       const content = extractTextFromParts(partsForSave);
 
+      const now = Date.now();
       const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
@@ -677,12 +734,13 @@ export const saveMessage = mutation({
         role: args.role,
         parts: partsForSave,
         file_ids: fileIdsForSave,
-        update_time: Date.now(),
+        update_time: now,
         model: args.model,
         mode: args.mode,
         generation_started_at: args.generationStartedAt,
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
+        trigger_run_id: args.triggerRunId,
         usage: args.usage,
         is_hidden: args.isHidden,
       };
@@ -757,6 +815,15 @@ export const saveMessage = mutation({
         ...messageDocumentBase,
         content: indexedContent?.content,
       });
+
+      // Move the chat to the top of the sidebar as soon as the user submits a
+      // visible message. Existing-message retries return above, so they do not
+      // create artificial activity. Hidden user messages are automatic Agent
+      // continuations rather than new user activity.
+      if (args.role === "user" && args.isHidden !== true && chatForInsert) {
+        failureStage = "update_chat_activity";
+        await ctx.db.patch(chatForInsert._id, { update_time: now });
+      }
 
       // Mark attached files as linked so purge won't remove them.
       // Batch-read in parallel, skip no-op patches when already attached.
@@ -946,7 +1013,7 @@ export const getMessagesByChatId = query({
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
         .order("desc")
-        .paginate(args.paginationOpts);
+        .paginate(withMessagePageReadLimit(args.paginationOpts));
 
       // Filter hidden messages (e.g. auto-continue rows) from the page.
       // This is applied post-pagination; hidden messages are rare so page
@@ -958,16 +1025,34 @@ export const getMessagesByChatId = query({
       // Step 1: Collect all unique file IDs from all messages
       const allFileIds = new Set<Id<"files">>();
       for (const message of visiblePage) {
-        if (message.file_ids && message.file_ids.length > 0) {
+        if (
+          message.role !== "user" &&
+          message.file_ids &&
+          message.file_ids.length > 0
+        ) {
           message.file_ids.forEach((id) => allFileIds.add(id));
         }
       }
 
-      // Step 2: Batch fetch all files in parallel
+      const allFeedbackIds = new Set<Id<"feedback">>();
+      for (const message of visiblePage) {
+        if (message.role === "assistant" && message.feedback_id) {
+          allFeedbackIds.add(message.feedback_id);
+        }
+      }
+
+      // Step 2: Batch fetch assistant-generated file metadata and feedback in
+      // parallel. User attachment metadata already lives in the persisted
+      // file part and the UI intentionally ignores message.fileDetails for
+      // user messages, so reading those potentially large file rows is waste.
       const fileIdArray = Array.from(allFileIds);
-      const files = await Promise.all(
-        fileIdArray.map((fileId) => ctx.db.get(fileId)),
-      );
+      const feedbackIdArray = Array.from(allFeedbackIds);
+      const [files, feedbackDocs] = await Promise.all([
+        Promise.all(fileIdArray.map((fileId) => ctx.db.get(fileId))),
+        Promise.all(
+          feedbackIdArray.map((feedbackId) => ctx.db.get(feedbackId)),
+        ),
+      ]);
 
       // Step 3: Build file details lookup map for O(1) access
       // DON'T generate URLs here - they expire and get cached with the query!
@@ -987,25 +1072,32 @@ export const getMessagesByChatId = query({
           });
         }
       });
+      const feedbackDetailsMap = new Map<
+        Id<"feedback">,
+        { feedbackType: "positive" | "negative" }
+      >();
+      feedbackDocs.forEach((feedbackDoc, index) => {
+        if (feedbackDoc) {
+          feedbackDetailsMap.set(feedbackIdArray[index], {
+            feedbackType: feedbackDoc.feedback_type,
+          });
+        }
+      });
 
       // Step 5: Build enhanced messages using the lookup map
       const enhancedMessages = [];
       for (const message of visiblePage) {
-        // Get feedback if exists
-        let feedback = null;
-        if (message.role === "assistant" && message.feedback_id) {
-          const feedbackDoc = await ctx.db.get(message.feedback_id);
-          if (feedbackDoc) {
-            feedback = {
-              feedbackType: feedbackDoc.feedback_type as
-                "positive" | "negative",
-            };
-          }
-        }
+        const feedback = message.feedback_id
+          ? (feedbackDetailsMap.get(message.feedback_id) ?? null)
+          : null;
 
         // Get file details using O(1) lookup
         let fileDetails = undefined;
-        if (message.file_ids && message.file_ids.length > 0) {
+        if (
+          message.role !== "user" &&
+          message.file_ids &&
+          message.file_ids.length > 0
+        ) {
           fileDetails = message.file_ids
             .map((fileId) => fileDetailsMap.get(fileId))
             .filter((detail) => detail !== undefined);
@@ -1130,7 +1222,7 @@ export const saveAssistantMessage = mutation({
         generation_started_at: args.generationStartedAt,
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
-        usage: args.usage,
+        usage: stripClientAbliterationRouting(args.usage),
       });
 
       return null;
@@ -1177,14 +1269,14 @@ export const deleteLastAssistantMessage = mutation({
       // Walk backwards from newest message and collect the entire trailing chain:
       // assistant messages + hidden (auto-continue) user messages.
       // Stop at the first non-hidden user message so regenerate targets the original request.
-      const trailingMessages = await ctx.db
+      const trailingMessages = ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("desc")
-        .collect();
+        .order("desc");
 
-      const messagesToDelete: typeof trailingMessages = [];
-      for (const msg of trailingMessages) {
+      // Do not load the rest of a long conversation just to regenerate its tail.
+      const messagesToDelete: Doc<"messages">[] = [];
+      for await (const msg of trailingMessages) {
         if (msg.role === "assistant") {
           messagesToDelete.push(msg);
         } else if (msg.role === "user" && msg.is_hidden) {
@@ -1240,7 +1332,11 @@ export const deleteLastAssistantMessage = mutation({
                     await ctx.scheduler.runAfter(
                       0,
                       internal.s3Cleanup.deleteS3ObjectAction,
-                      { s3Key: file.s3_key },
+                      {
+                        s3Key: file.s3_key,
+                        ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                        ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                      },
                     );
                   }
                   await fileCountAggregate.deleteIfExists(ctx, file);
@@ -1380,6 +1476,19 @@ export const getMessagesPageForBackend = query({
         parts: v.array(v.any()),
       }),
     ),
+    abliterationHistory: v.array(
+      v.object({
+        id: v.string(),
+        completed: v.boolean(),
+        independent: v.boolean(),
+      }),
+    ),
+    fileTokens: v.array(
+      v.object({
+        fileId: v.id("files"),
+        tokenSize: v.number(),
+      }),
+    ),
     isDone: v.boolean(),
     continueCursor: v.union(v.string(), v.null()),
   }),
@@ -1396,14 +1505,20 @@ export const getMessagesPageForBackend = query({
     );
 
     if (!chatExists) {
-      return { page: [], isDone: true, continueCursor: "" };
+      return {
+        page: [],
+        abliterationHistory: [],
+        fileTokens: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
 
     const result = await ctx.db
       .query("messages")
       .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
       .order("desc")
-      .paginate(args.paginationOpts);
+      .paginate(withMessagePageReadLimit(args.paginationOpts));
 
     const visiblePage = result.page.filter(
       (message) => message.is_hidden !== true,
@@ -1414,7 +1529,7 @@ export const getMessagesPageForBackend = query({
         fileIds.add(fileId),
       );
     }
-    const ownedFileIds = await getOwnedFileIdSet(
+    const { ownedFileIds, fileTokens } = await getOwnedFileInfo(
       ctx,
       Array.from(fileIds),
       args.userId,
@@ -1426,6 +1541,10 @@ export const getMessagesPageForBackend = query({
         role: message.role,
         parts: stripUnownedFileParts(message.parts, ownedFileIds),
       })),
+      abliterationHistory: visiblePage
+        .filter((message) => message.role === "assistant")
+        .map(getAbliterationHistoryEntry),
+      fileTokens,
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };
@@ -1826,6 +1945,7 @@ export const branchChat = mutation({
           generation_started_at: msg.generation_started_at,
           generation_time_ms: msg.generation_time_ms,
           finish_reason: msg.finish_reason,
+          trigger_run_id: msg.trigger_run_id,
           usage: msg.usage,
         });
       }
@@ -1857,6 +1977,21 @@ export const regenerateWithNewContent = mutation({
     messageId: v.string(),
     newContent: v.string(),
     fileIds: v.optional(v.array(v.string())),
+    todos: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          content: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("in_progress"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+          ),
+          sourceMessageId: v.optional(v.string()),
+        }),
+      ),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1896,6 +2031,28 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) =>
+          q
+            .eq("chat_id", message.chat_id)
+            .gt("_creationTime", message._creationTime),
+        )
+        .collect();
+
+      if (
+        message.role !== "user" ||
+        message.is_hidden ||
+        messages.some((laterMessage) => {
+          return laterMessage.role === "user" && !laterMessage.is_hidden;
+        })
+      ) {
+        throw new ConvexError({
+          code: "MESSAGE_NOT_EDITABLE",
+          message: "Only the latest user message can be edited",
+        });
+      }
+
       // Determine which files to keep
       const currentFileIds = message.file_ids || [];
       let newFileIds: Id<"files">[] | undefined = undefined;
@@ -1922,7 +2079,11 @@ export const regenerateWithNewContent = mutation({
               await ctx.scheduler.runAfter(
                 0,
                 internal.s3Cleanup.deleteS3ObjectAction,
-                { s3Key: file.s3_key },
+                {
+                  s3Key: file.s3_key,
+                  ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                  ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                },
               );
             }
             // Delete from aggregate
@@ -1961,15 +2122,6 @@ export const regenerateWithNewContent = mutation({
         update_time: Date.now(),
       });
 
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) =>
-          q
-            .eq("chat_id", message.chat_id)
-            .gt("_creationTime", message._creationTime),
-        )
-        .collect();
-
       // Check summary invalidation before deleting messages
       await checkAndInvalidateSummary(ctx, message.chat_id, [
         { id: message.id, creationTime: message._creationTime },
@@ -1986,7 +2138,11 @@ export const regenerateWithNewContent = mutation({
                   await ctx.scheduler.runAfter(
                     0,
                     internal.s3Cleanup.deleteS3ObjectAction,
-                    { s3Key: file.s3_key },
+                    {
+                      s3Key: file.s3_key,
+                      ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+                      ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+                    },
                   );
                 }
                 // Delete from aggregate
@@ -2013,6 +2169,24 @@ export const regenerateWithNewContent = mutation({
         await ctx.db.delete(msg._id);
       }
 
+      // Keep the persisted todo snapshot consistent with the messages removed
+      // above. In particular, stopping an Agent run persists its todos before
+      // an edit discards that response; without this write, the reactive chat
+      // query can restore those stale todos in the UI.
+      if (args.todos !== undefined) {
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+          .first();
+
+        if (chat && chat.user_id === user.subject) {
+          await ctx.db.patch(chat._id, {
+            todos: args.todos,
+            update_time: Date.now(),
+          });
+        }
+      }
+
       return null;
     } catch (error) {
       // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
@@ -2020,7 +2194,8 @@ export const regenerateWithNewContent = mutation({
         error instanceof Error &&
         (error.message.includes("Message not found") ||
           error.message.includes("CHAT_NOT_FOUND") ||
-          error.message.includes("CHAT_UNAUTHORIZED"))
+          error.message.includes("CHAT_UNAUTHORIZED") ||
+          error.message.includes("Only the latest user message can be edited"))
       )) {
         console.error("Failed to regenerate with new content:", error);
       }
@@ -2050,91 +2225,16 @@ export const regenerateWithNewContent = mutation({
  * the shared link only shows messages that existed at share time.
  * New messages added after sharing are NOT visible until user updates the share.
  *
- * @param chatId - The ID of the chat to get messages for
+ * @param shareId - The active public share ID
  * @returns Array of messages (up to share_date) with files/images as placeholders
  */
 export const getSharedMessages = query({
-  args: { chatId: v.string() },
-  returns: v.array(
-    v.object({
-      id: v.string(),
-      role: v.union(
-        v.literal("user"),
-        v.literal("assistant"),
-        v.literal("system"),
-      ),
-      parts: v.array(v.any()),
-      content: v.optional(v.string()),
-      update_time: v.number(),
-    }),
-  ),
+  args: { shareId: v.string() },
+  returns: v.array(sharedMessageValidator),
   handler: async (ctx, args) => {
     try {
-      // Validate UUID format
-      const UUID_REGEX =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!UUID_REGEX.test(args.chatId)) {
-        return [];
-      }
-
-      // CRITICAL SECURITY CHECK: Verify the chat is actually shared
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-        .first();
-
-      // Return empty array if chat doesn't exist or isn't shared
-      if (!chat || !chat.share_id || !chat.share_date) {
-        return [];
-      }
-      if (await isUserBlockedByActiveFraudDispute(ctx, chat.user_id)) {
-        return [];
-      }
-
-      // Read the chat's messages via the existing per-chat index, then apply
-      // the frozen-share cutoff locally to avoid a production-wide backfill.
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("asc")
-        .collect();
-
-      // FROZEN CONTENT: Exclude hidden messages (e.g. auto-continue rows).
-      const frozenMessages = messages
-        .filter(
-          (msg) =>
-            msg.update_time <= chat.share_date! && msg.is_hidden !== true,
-        )
-        .sort(
-          (a, b) =>
-            a.update_time - b.update_time || a._creationTime - b._creationTime,
-        );
-
-      // Strip sensitive data and replace files with placeholders
-      return frozenMessages.map((msg) => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        update_time: msg.update_time,
-        // Process parts to replace files/images with placeholders
-        parts: sanitizeFindingPartsForShare(
-          stripOpenRouterReasoningMetadataFromParts(msg.parts),
-        ).map((part: any) => {
-          // Replace file references with placeholder
-          if (part.type === "file") {
-            // Determine if it's an image based on mediaType
-            const isImage = part.mediaType?.startsWith("image/");
-            return {
-              type: isImage ? "image" : "file",
-              placeholder: true,
-              // SECURITY: Do NOT include url, file_id, name, or mediaType
-            };
-          }
-          // Keep text parts as-is
-          return part;
-        }),
-        // SECURITY: user_id is NOT included in response (anonymity)
-      }));
+      const chat = await getVisibleSharedChatByShareId(ctx, args.shareId);
+      return chat ? await listVisibleSharedMessages(ctx, chat) : [];
     } catch (error) {
       console.error("Failed to get shared messages:", error);
       // Return empty array on error (fail secure)

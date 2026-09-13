@@ -1,14 +1,28 @@
 import "@testing-library/jest-dom";
-import { describe, expect, it, jest, beforeEach } from "@jest/globals";
-import { fireEvent, render, screen } from "@testing-library/react";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import { getPaidDailyFreeAllowanceCtaText } from "@/lib/limit-pressure";
+import { resetExtraUsageResumeRetryGuardForTests } from "@/lib/chat/extra-usage-resume-retry";
+
+let mockSubscription: "free" | "pro" = "pro";
+const mockSetSelectedModel = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   GlobalStateProvider: ({ children }: { children: ReactNode }) => children,
-  useGlobalState: () => ({ subscription: "pro" }),
+  useGlobalState: () => ({
+    subscription: mockSubscription,
+    setSelectedModel: mockSetSelectedModel,
+  }),
 }));
 
 jest.mock("@/lib/utils/settings-dialog", () => ({
@@ -22,21 +36,44 @@ jest.mock("@/app/hooks/usePricingDialog", () => ({
 jest.mock("@/lib/analytics/client", () => ({
   captureAddCreditCtaClick: jest.fn(),
   captureAddCreditCtaImpression: jest.fn(),
+  captureAuthenticatedEvent: jest.fn(),
+  newCheckoutAttemptId: jest.fn(() => "ca_test"),
   capturePaidDailyFreeAllowanceClick: jest.fn(),
   capturePaidDailyFreeAllowanceImpression: jest.fn(),
   captureUpgradeCtaImpression: jest.fn(),
 }));
 
+const mockConvexAction = jest.fn();
+jest.mock("convex/react", () => ({
+  useAction: () => mockConvexAction,
+  useQuery: () => ({ monthlySpentDollars: 66 }),
+}));
+
 const { TestWrapper } = require("../testUtils");
 const { MessageErrorState } = require("../MessageErrorState");
 const {
+  captureAuthenticatedEvent,
   capturePaidDailyFreeAllowanceClick,
   capturePaidDailyFreeAllowanceImpression,
 } = require("@/lib/analytics/client");
+const { openSettingsDialog } = require("@/lib/utils/settings-dialog");
 
 describe("MessageErrorState", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    window.sessionStorage.clear();
+    resetExtraUsageResumeRetryGuardForTests();
+    mockSubscription = "pro";
+    mockConvexAction.mockResolvedValue({
+      hasPaymentMethod: true,
+      paymentMethodLast4: "4242",
+      paymentMethodBrand: "visa",
+      url: null,
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it("does not offer same-payload retry for provider content blocks", () => {
@@ -88,6 +125,34 @@ describe("MessageErrorState", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("shows a concurrency retry without usage or upgrade actions", () => {
+    mockSubscription = "free";
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You already have a free request running. Please wait for it to finish before starting another one.",
+      {
+        subscription: "free",
+        capReason: "free_concurrency",
+        limitType: "concurrency",
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} />
+      </TestWrapper>,
+    );
+
+    expect(
+      screen.getByText(/already have a free request running/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Try Again" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
+  });
+
   it("shows a focused Add Credits plus free Ask CTA when allowance is available", async () => {
     const user = userEvent.setup();
     const onRetry = jest.fn();
@@ -99,7 +164,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
           costRemainingDollars: 0.25,
         },
       },
@@ -111,7 +176,9 @@ describe("MessageErrorState", () => {
       </TestWrapper>,
     );
 
-    expect(screen.getByRole("button", { name: "Add Credits" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    ).toBeVisible();
     expect(screen.queryByRole("button", { name: "Try Again" })).toBeNull();
     expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
@@ -124,7 +191,7 @@ describe("MessageErrorState", () => {
       expect.objectContaining({
         surface: "message_error_state",
         cta_text: getPaidDailyFreeAllowanceCtaText("ask"),
-        allowance_requests_remaining: 1,
+        allowance_requests_today: 0,
         allowance_cost_remaining_dollars: 0.25,
       }),
     );
@@ -142,6 +209,171 @@ describe("MessageErrorState", () => {
     });
   });
 
+  it("opens Checkout directly and marks the stopped task for resume", async () => {
+    jest.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 7, 22));
+    const user = userEvent.setup();
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You've hit your monthly usage limit.",
+      { capReason: "monthly_exhausted" },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} />
+      </TestWrapper>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    );
+    expect(screen.getByRole("dialog")).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: /^\$30(?: Recommended)?$/ }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Purchase" }));
+
+    await waitFor(() =>
+      expect(mockConvexAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          amountDollars: 30,
+          returnPath: expect.stringMatching(/^\//),
+          resumeAfterPurchase: true,
+          enableExtraUsageAfterPurchase: true,
+        }),
+      ),
+    );
+    expect(openSettingsDialog).not.toHaveBeenCalled();
+  });
+
+  it("opens payment-method recovery directly for auto-reload failures", async () => {
+    const user = userEvent.setup();
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "Your automatic reload failed.",
+      { capReason: "auto_reload_failed" },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={jest.fn()} />
+      </TestWrapper>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Update card and retry" }),
+    );
+
+    await waitFor(() =>
+      expect(mockConvexAction).toHaveBeenCalledWith({
+        flow: "payment_method",
+        baseUrl: expect.stringContaining("extra-usage-payment-retry=true"),
+      }),
+    );
+    expect(openSettingsDialog).not.toHaveBeenCalled();
+  });
+
+  it("uses a bounded return path when the current pathname is too long", async () => {
+    const user = userEvent.setup();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `/${"a".repeat(401)}`,
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={
+            new ChatSDKError("rate_limit:chat", "Limit reached", {
+              capReason: "monthly_exhausted",
+            })
+          }
+          onRetry={jest.fn()}
+        />
+      </TestWrapper>,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Purchase" }));
+
+    await waitFor(() =>
+      expect(mockConvexAction).toHaveBeenCalledWith(
+        expect.objectContaining({ returnPath: "/" }),
+      ),
+    );
+    window.history.replaceState(window.history.state, "", "/");
+  });
+
+  it("retries once after a successful purchase returns to the task", () => {
+    const onRetry = jest.fn();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      "/?extra-usage-resume=true",
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={
+            new ChatSDKError("rate_limit:chat", "Limit reached", {
+              capReason: "monthly_exhausted",
+            })
+          }
+          onRetry={onRetry}
+        />
+      </TestWrapper>,
+    );
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(window.location.search).not.toContain("extra-usage-resume");
+    expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+      "extra_usage_resume_retry",
+      expect.objectContaining({ source: "extra-usage-resume", retried: true }),
+    );
+  });
+
+  it("does not retry again when the resume flag reappears after a failed retry", () => {
+    const onRetry = jest.fn();
+    const renderWithFlag = () => {
+      window.history.replaceState(
+        window.history.state,
+        "",
+        "/c/chat_1?extra-usage-resume=true",
+      );
+      return render(
+        <TestWrapper>
+          <MessageErrorState
+            error={
+              new ChatSDKError("rate_limit:chat", "Limit reached", {
+                capReason: "monthly_exhausted",
+              })
+            }
+            onRetry={onRetry}
+          />
+        </TestWrapper>,
+      );
+    };
+
+    renderWithFlag().unmount();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+
+    renderWithFlag();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(window.location.search).not.toContain("extra-usage-resume");
+    expect(captureAuthenticatedEvent).toHaveBeenLastCalledWith(
+      "extra_usage_resume_retry",
+      expect.objectContaining({
+        retried: false,
+        skipped_reason: "already_retried",
+      }),
+    );
+  });
+
   it("offers the daily allowance for a structured Agent stream error", () => {
     const error = new ChatSDKError(
       "rate_limit:chat",
@@ -151,7 +383,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
           costRemainingDollars: 0.25,
         },
       },
@@ -188,7 +420,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: true,
-          requestsRemaining: 1,
+          requestsUsed: 0,
         },
       },
     );
@@ -211,7 +443,7 @@ describe("MessageErrorState", () => {
         paidDailyFreeAllowance: {
           type: "paid_daily_free_allowance",
           available: false,
-          unavailableReason: "request_limit_reached",
+          unavailableReason: "cost_limit_reached",
         },
       },
     );
@@ -227,5 +459,63 @@ describe("MessageErrorState", () => {
         name: getPaidDailyFreeAllowanceCtaText("ask"),
       }),
     ).toBeNull();
+  });
+
+  it("tells the user to switch to Auto when a specific model blocks the allowance, without an amount", async () => {
+    const user = userEvent.setup();
+    const onRetry = jest.fn();
+    const error = new ChatSDKError(
+      "rate_limit:chat",
+      "You've hit your monthly usage limit.",
+      {
+        capReason: "monthly_exhausted",
+        paidDailyFreeAllowance: {
+          type: "paid_daily_free_allowance",
+          available: false,
+          unavailableReason: "unsupported_model",
+          costRemainingDollars: 0.25,
+        },
+      },
+    );
+
+    render(
+      <TestWrapper>
+        <MessageErrorState error={error} onRetry={onRetry} mode="agent" />
+      </TestWrapper>,
+    );
+
+    const hint = screen.getByText(/still get some free usage today on Auto/i);
+    expect(hint).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Try Again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "View Usage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade Plan" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Add $15 and continue" }),
+    ).toBeVisible();
+    expect(hint.textContent).not.toContain("$");
+    expect(
+      screen.queryByRole("button", {
+        name: getPaidDailyFreeAllowanceCtaText("agent"),
+      }),
+    ).toBeNull();
+    expect(capturePaidDailyFreeAllowanceImpression).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cta_text: "Switch to Auto and continue",
+        allowance_unavailable_reason: "unsupported_model",
+      }),
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Switch to Auto and continue" }),
+    );
+
+    expect(mockSetSelectedModel).toHaveBeenCalledWith("auto");
+    expect(capturePaidDailyFreeAllowanceClick).toHaveBeenCalledWith(
+      expect.objectContaining({ cta_text: "Switch to Auto and continue" }),
+    );
+    expect(onRetry).toHaveBeenCalledWith({
+      limitRescue: { type: "paid_daily_free_allowance" },
+      selectedModel: "auto",
+    });
   });
 });

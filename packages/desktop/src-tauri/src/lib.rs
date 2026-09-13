@@ -1,10 +1,14 @@
 mod platform;
 mod pty;
 
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
@@ -107,6 +111,17 @@ struct LocalFileData {
     base64: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalTextFileData {
+    path: String,
+    name: String,
+    media_type: String,
+    size: u64,
+    last_modified: u64,
+    content: String,
+}
+
 fn json_error_body(message: &str) -> String {
     serde_json::to_string(&serde_json::json!({ "error": message }))
         .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
@@ -177,6 +192,94 @@ fn get_local_file_metadata(path: String) -> Result<LocalFileMetadata, String> {
         size: metadata.len(),
         last_modified,
     })
+}
+
+fn sanitize_generated_text_segment(value: &str, fallback: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('.');
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn generated_text_attachment_path(
+    app: &tauri::AppHandle,
+    attachment_id: &str,
+    file_name: &str,
+    create_dir: bool,
+) -> Result<PathBuf, String> {
+    let base_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("App data dir error: {}", e))?
+        .join("generated-text-attachments")
+        .join(sanitize_generated_text_segment(attachment_id, "attachment"));
+
+    if create_dir {
+        fs::create_dir_all(&base_dir).map_err(|e| format!("Directory error: {}", e))?;
+    }
+
+    Ok(base_dir.join(sanitize_generated_text_segment(
+        file_name,
+        "pasted_content.txt",
+    )))
+}
+
+#[tauri::command]
+fn write_generated_text_attachment(
+    app: tauri::AppHandle,
+    attachment_id: String,
+    file_name: String,
+    content: String,
+) -> Result<LocalFileMetadata, String> {
+    let path = generated_text_attachment_path(&app, &attachment_id, &file_name, true)?;
+    fs::write(&path, content.as_bytes()).map_err(|e| format!("Write error: {}", e))?;
+    get_local_file_metadata(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn read_generated_text_attachment(
+    app: tauri::AppHandle,
+    attachment_id: String,
+    file_name: String,
+) -> Result<LocalTextFileData, String> {
+    let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
+    let metadata = get_local_file_metadata(path.to_string_lossy().to_string())?;
+    let content = fs::read_to_string(&metadata.path).map_err(|e| format!("Read error: {}", e))?;
+
+    Ok(LocalTextFileData {
+        path: metadata.path,
+        name: metadata.name,
+        media_type: metadata.media_type,
+        size: metadata.size,
+        last_modified: metadata.last_modified,
+        content,
+    })
+}
+
+#[tauri::command]
+fn remove_generated_text_attachment(
+    app: tauri::AppHandle,
+    attachment_id: String,
+    file_name: String,
+) -> Result<(), String> {
+    let path = generated_text_attachment_path(&app, &attachment_id, &file_name, false)?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Remove error: {}", error)),
+    }
 }
 
 #[tauri::command]
@@ -314,6 +417,7 @@ struct FileReadRequest {
 struct FileWriteRequest {
     path: String,
     content: String,
+    allowed_root: Option<String>,
     #[serde(default)]
     is_base64: bool,
 }
@@ -327,6 +431,7 @@ struct FileRemoveRequest {
 struct FileAppendRequest {
     path: String,
     content: String,
+    allowed_root: Option<String>,
     #[serde(default)]
     is_base64: bool,
 }
@@ -763,6 +868,110 @@ async fn count_file_lines(path: &std::path::Path, file_size: u64) -> Result<u64,
     Ok(lines)
 }
 
+fn scoped_mutation_target(path: &Path, allowed_root: &str) -> Result<(Dir, PathBuf), String> {
+    let root = Path::new(allowed_root);
+    if !root.is_absolute() || !path.is_absolute() {
+        return Err("Desktop project file mutations require absolute paths".to_string());
+    }
+
+    let relative_path = path.strip_prefix(root).map_err(|_| {
+        format!(
+            "Path is outside the allowed project folder: {}",
+            path.display()
+        )
+    })?;
+    if relative_path.as_os_str().is_empty()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "Path is outside the allowed project folder: {}",
+            path.display()
+        ));
+    }
+
+    let dir = Dir::open_ambient_dir(root, ambient_authority()).map_err(|error| {
+        format!(
+            "Allowed root error: could not open project folder '{}': {}",
+            root.display(),
+            error
+        )
+    })?;
+    Ok((dir, relative_path.to_path_buf()))
+}
+
+fn open_scoped_mutation_file(
+    path: &Path,
+    allowed_root: &str,
+    append: bool,
+) -> Result<cap_std::fs::File, String> {
+    let (dir, relative_path) = scoped_mutation_target(path, allowed_root)?;
+    if let Some(parent) = relative_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        dir.create_dir_all(parent)
+            .map_err(|error| format!("Mkdir error: {}", error))?;
+    }
+
+    let mut options = CapOpenOptions::new();
+    options.create(true).follow(FollowSymlinks::No);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+
+    dir.open_with(&relative_path, &options)
+        .map_err(|error| format!("Open error: {}", error))
+}
+
+fn open_unscoped_mutation_file(path: &Path, append: bool) -> Result<fs::File, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("Mkdir error: {}", error))?;
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
+    options
+        .open(path)
+        .map_err(|error| format!("Open error: {}", error))
+}
+
+fn write_desktop_file(
+    path: &Path,
+    allowed_root: Option<&str>,
+    bytes: &[u8],
+    append: bool,
+) -> Result<(), String> {
+    let allowed_root = allowed_root.filter(|root| !root.trim().is_empty());
+    if let Some(allowed_root) = allowed_root {
+        let mut file = open_scoped_mutation_file(path, allowed_root, append)?;
+        file.write_all(bytes)
+            .map_err(|error| format!("Write error: {}", error))?;
+        file.flush()
+            .map_err(|error| format!("Flush error: {}", error))?;
+    } else {
+        let mut file = open_unscoped_mutation_file(path, append)?;
+        file.write_all(bytes)
+            .map_err(|error| format!("Write error: {}", error))?;
+        file.flush()
+            .map_err(|error| format!("Flush error: {}", error))?;
+    }
+    Ok(())
+}
+
 async fn handle_file_stat(body: &str) -> Result<String, String> {
     let req: FileStatRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -898,26 +1107,21 @@ async fn handle_file_read(body: &str) -> Result<String, String> {
 async fn handle_file_write(body: &str) -> Result<String, String> {
     let req: FileWriteRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
-
-    // Ensure parent directory exists
-    if let Some(parent) = std::path::Path::new(&req.path).parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Mkdir error: {}", e))?;
-    }
+    let path = std::path::Path::new(&req.path);
 
     if req.is_base64 {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&req.content)
             .map_err(|e| format!("Base64 decode error: {}", e))?;
-        tokio::fs::write(&req.path, bytes)
-            .await
-            .map_err(|e| format!("Write error: {}", e))?;
+        write_desktop_file(path, req.allowed_root.as_deref(), &bytes, false)?;
     } else {
-        tokio::fs::write(&req.path, &req.content)
-            .await
-            .map_err(|e| format!("Write error: {}", e))?;
+        write_desktop_file(
+            path,
+            req.allowed_root.as_deref(),
+            req.content.as_bytes(),
+            false,
+        )?;
     }
 
     Ok(r#"{"ok":true}"#.to_string())
@@ -926,35 +1130,22 @@ async fn handle_file_write(body: &str) -> Result<String, String> {
 async fn handle_file_append(body: &str) -> Result<String, String> {
     let req: FileAppendRequest =
         serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let path = std::path::Path::new(&req.path);
 
-    if let Some(parent) = std::path::Path::new(&req.path).parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| format!("Mkdir error: {}", e))?;
-    }
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&req.path)
-        .await
-        .map_err(|e| format!("Open error: {}", e))?;
     if req.is_base64 {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(&req.content)
             .map_err(|e| format!("Base64 decode error: {}", e))?;
-        file.write_all(&bytes)
-            .await
-            .map_err(|e| format!("Append error: {}", e))?;
+        write_desktop_file(path, req.allowed_root.as_deref(), &bytes, true)?;
     } else {
-        file.write_all(req.content.as_bytes())
-            .await
-            .map_err(|e| format!("Append error: {}", e))?;
+        write_desktop_file(
+            path,
+            req.allowed_root.as_deref(),
+            req.content.as_bytes(),
+            true,
+        )?;
     }
-    file.flush()
-        .await
-        .map_err(|e| format!("Flush error: {}", e))?;
 
     Ok(r#"{"ok":true}"#.to_string())
 }
@@ -998,6 +1189,41 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
 }
 
 // ── Tauri IPC Commands ────────────────────────────────────────────────
+
+async fn dispatch_desktop_file_request(
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request_type = request
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Desktop file request is missing a type".to_string())?;
+    let body = serde_json::to_string(&request)
+        .map_err(|error| format!("Failed to serialize desktop file request: {}", error))?;
+
+    let response = match request_type {
+        "file_stat" => handle_file_stat(&body).await,
+        "file_read" => handle_file_read(&body).await,
+        "file_write" => handle_file_write(&body).await,
+        "file_append" => handle_file_append(&body).await,
+        "file_remove" => handle_file_remove(&body).await,
+        "file_list" => handle_file_list(&body).await,
+        _ => Err(format!(
+            "Unsupported desktop file request type: {}",
+            request_type
+        )),
+    }?;
+
+    serde_json::from_str(&response)
+        .map_err(|error| format!("Failed to parse desktop file response: {}", error))
+}
+
+/// Executes desktop file operations through Tauri IPC so the HTTPS webview
+/// never needs to fetch an insecure loopback HTTP endpoint. The existing HTTP
+/// handlers remain available for rolling compatibility with older web bundles.
+#[tauri::command]
+async fn desktop_file_request(request: serde_json::Value) -> Result<serde_json::Value, String> {
+    dispatch_desktop_file_request(request).await
+}
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
@@ -1157,7 +1383,9 @@ async fn cancel_stream_command(
     if let Some(pid) = pid {
         Ok(platform::cancel_process_tree(pid).await)
     } else {
-        Ok(false)
+        // Cancellation is idempotent. The command may have exited and removed
+        // itself from the map while the cancellation request was in flight.
+        Ok(true)
     }
 }
 
@@ -1270,10 +1498,7 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
                         origin, encoded_token, encoded_state
                     );
 
-                    log::info!(
-                        "Dev auth: navigating to callback (token: {}...)",
-                        &t[..8.min(t.len())]
-                    );
+                    log::info!("Dev auth: navigating to callback");
 
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.set_focus();
@@ -1354,6 +1579,16 @@ fn get_allowed_hosts() -> Vec<String> {
 
 fn is_valid_token_format(token: &str) -> bool {
     token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn deep_link_log_label(url: &url::Url) -> String {
+    let mut label = format!("{}:", url.scheme());
+    if let Some(host) = url.host_str() {
+        label.push_str("//");
+        label.push_str(host);
+    }
+    label.push_str(url.path());
+    label
 }
 
 fn validate_origin(origin: &str) -> bool {
@@ -1445,15 +1680,12 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                         "{}/desktop-callback?token={}&desktop_state={}",
                         origin, encoded_token, encoded_state
                     );
-                    log::info!(
-                        "Navigating to desktop callback (token: {}...)",
-                        &token[..8.min(token.len())]
-                    );
+                    log::info!("Navigating to desktop callback");
 
                     match callback_url.parse() {
                         Ok(parsed_url) => {
-                            if let Err(e) = window.navigate(parsed_url) {
-                                log::error!("Failed to navigate to callback URL: {}", e);
+                            if window.navigate(parsed_url).is_err() {
+                                log::error!("Failed to navigate to callback URL");
                                 // Try to navigate to error page
                                 let error_url = format!("{}/login?error=navigation_failed", origin);
                                 if let Ok(error_parsed) = error_url.parse() {
@@ -1461,17 +1693,20 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                                 }
                             }
                         }
-                        Err(e) => {
-                            log::error!("Invalid callback URL format: {}", e);
+                        Err(_) => {
+                            log::error!("Invalid callback URL format");
                         }
                     }
                 }
             }
             None => {
-                if let Some((_, error)) = url.query_pairs().find(|(k, _)| k == "error") {
-                    log::error!("Auth deep link received with error: {}", error);
+                if url.query_pairs().any(|(k, _)| k == "error") {
+                    log::error!("Auth deep link received with an error");
                 } else {
-                    log::warn!("Auth deep link received without token: {:?}", url);
+                    log::warn!(
+                        "Auth deep link received without token: {}",
+                        deep_link_log_label(url)
+                    );
                 }
             }
         }
@@ -1621,6 +1856,227 @@ async fn execute_pty_kill(
     manager.kill(&session_id)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hackerai-desktop-{}-{}",
+            label,
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    #[test]
+    fn deep_link_log_label_omits_authentication_query_values() {
+        let token = "a".repeat(64);
+        let desktop_state = "b".repeat(64);
+        let url = url::Url::parse(&format!(
+            "hackerai://auth?token={token}&origin=https%3A%2F%2Fhackerai.co&desktop_state={desktop_state}"
+        ))
+        .expect("valid deep link");
+
+        let label = deep_link_log_label(&url);
+
+        assert_eq!(label, "hackerai://auth");
+        assert!(!label.contains(&token));
+        assert!(!label.contains(&desktop_state));
+        assert!(!label.contains("origin"));
+    }
+
+    #[tokio::test]
+    async fn file_write_allows_nested_paths_inside_allowed_root() {
+        let root = unique_test_dir("allowed-root");
+        fs::create_dir_all(&root).expect("create allowed root");
+        let target = root.join("src").join("app.ts");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": "updated",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        let content = fs::read_to_string(&target).expect("written file should exist");
+        assert_eq!(content, "updated");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_dispatches_write_and_read_over_ipc() {
+        let root = unique_test_dir("ipc-round-trip");
+        fs::create_dir_all(&root).expect("create root");
+        let target = root.join("notes.txt");
+
+        let write_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_write",
+            "path": target.to_string_lossy().to_string(),
+            "content": "written over ipc",
+            "allowed_root": root.to_string_lossy().to_string(),
+        }))
+        .await;
+        assert_eq!(
+            write_result.expect("IPC write should succeed"),
+            serde_json::json!({ "ok": true })
+        );
+
+        let read_result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_read",
+            "path": target.to_string_lossy().to_string(),
+            "max_full_bytes": 1024,
+            "max_result_bytes": 1024,
+        }))
+        .await
+        .expect("IPC read should succeed");
+        assert_eq!(read_result["content"], "written over ipc");
+        assert_eq!(read_result["path"], target.to_string_lossy().as_ref());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn desktop_file_request_rejects_unknown_operations() {
+        let result = dispatch_desktop_file_request(serde_json::json!({
+            "type": "file_execute",
+            "path": "/tmp/not-used",
+        }))
+        .await;
+
+        assert_eq!(
+            result.expect_err("unknown operation should fail"),
+            "Unsupported desktop file request type: file_execute"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_write_preserves_unscoped_desktop_compatibility() {
+        let root = unique_test_dir("unscoped");
+        let target = root.join("notes.txt");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": "updated",
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(&target).expect("written file should exist"),
+            "updated"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_append_allows_existing_files_inside_allowed_root() {
+        let root = unique_test_dir("allowed-append-root");
+        fs::create_dir_all(&root).expect("create allowed root");
+        let target = root.join("notes.txt");
+        fs::write(&target, "first").expect("seed target");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": " second",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_append(&body).await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(&target).expect("appended file should exist"),
+            "first second"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn file_write_rejects_parent_traversal_from_allowed_root() {
+        let root = unique_test_dir("traversal-root");
+        let external = unique_test_dir("traversal-external");
+        fs::create_dir_all(&root).expect("create root");
+        let external_target = root
+            .join("..")
+            .join(external.file_name().expect("external basename"))
+            .join("outside.txt");
+        let body = serde_json::json!({
+            "path": external_target.to_string_lossy().to_string(),
+            "content": "overwritten",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(!external_target.exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&external);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_write_rejects_symlink_escape_from_allowed_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("symlink-root");
+        let external = unique_test_dir("symlink-external");
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&external).expect("create external");
+        let external_target = external.join("secret.txt");
+        fs::write(&external_target, "secret").expect("seed external target");
+        let project_link = root.join("linked-secret.txt");
+        symlink(&external_target, &project_link).expect("create symlink");
+        let body = serde_json::json!({
+            "path": project_link.to_string_lossy().to_string(),
+            "content": "overwritten",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            fs::read_to_string(&external_target).expect("external target should remain"),
+            "secret"
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&external);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_write_rejects_parent_symlink_escape_from_allowed_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = unique_test_dir("parent-symlink-root");
+        let external = unique_test_dir("parent-symlink-external");
+        fs::create_dir_all(&root).expect("create root");
+        fs::create_dir_all(&external).expect("create external");
+        let project_link = root.join("linked-directory");
+        symlink(&external, &project_link).expect("create directory symlink");
+        let target = project_link.join("secret.txt");
+        let body = serde_json::json!({
+            "path": target.to_string_lossy().to_string(),
+            "content": "overwritten",
+            "allowed_root": root.to_string_lossy().to_string(),
+        })
+        .to_string();
+
+        let result = handle_file_write(&body).await;
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(!external.join("secret.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&external);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1628,7 +2084,11 @@ pub fn run() {
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            desktop_file_request,
             get_local_file_metadata,
+            write_generated_text_attachment,
+            read_generated_text_attachment,
+            remove_generated_text_attachment,
             read_local_file,
             execute_command,
             execute_stream_command,
@@ -1647,11 +2107,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             // Handle deep links passed as CLI args (Linux/Windows)
-            log::info!("Single instance callback with args: {:?}", args);
+            log::info!(
+                "Single instance callback with {} argument(s)",
+                args.len()
+            );
             for arg in args.iter().skip(1) {
                 if let Ok(url) = url::Url::parse(arg) {
                     if url.scheme() == "hackerai" {
-                        log::info!("Processing deep link from CLI arg: {}", arg);
+                        log::info!(
+                            "Processing deep link from CLI arg: {}",
+                            deep_link_log_label(&url)
+                        );
                         handle_auth_deep_link(app, &url);
                     }
                 }
@@ -1688,9 +2154,16 @@ pub fn run() {
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
                     let urls = event.urls();
-                    log::info!("Deep link received: {:?}", urls);
+                    log::info!(
+                        "Deep link callback received with {} URL(s)",
+                        urls.len()
+                    );
 
                     for url in urls {
+                        log::info!(
+                            "Processing deep link: {}",
+                            deep_link_log_label(&url)
+                        );
                         handle_auth_deep_link(&handle, &url);
                     }
                 });

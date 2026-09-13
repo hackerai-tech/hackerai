@@ -34,7 +34,7 @@ jest.mock("../lib/utils", () => ({
 jest.mock("../lib/suspensionGuards", () => ({
   CHAT_ACCESS_SUSPENDED_CODE: "CHAT_ACCESS_SUSPENDED",
   assertUserCanAccessChatHistory: jest.fn<any>().mockResolvedValue(undefined),
-  isUserBlockedByActiveFraudDispute: jest.fn<any>().mockResolvedValue(false),
+  isUserBlockedFromChatHistory: jest.fn<any>().mockResolvedValue(false),
 }));
 
 jest.mock("../fileAggregate", () => ({
@@ -152,7 +152,9 @@ describe("shared finding security boundary", () => {
     const { getSharedMessages } = await import("../messages");
     const { ctx } = createSharedCtx();
 
-    const result = await getSharedMessages.handler(ctx, { chatId: CHAT_ID });
+    const result = await getSharedMessages.handler(ctx, {
+      shareId: sourceChat.share_id,
+    });
 
     expect(result).toHaveLength(1);
     expect(result[0].parts).toEqual([safeFindingPart]);

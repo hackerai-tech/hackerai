@@ -9,6 +9,7 @@ import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
 export interface ProviderRequestDiagnostics {
   model: string;
@@ -37,6 +38,20 @@ export interface ProviderRequestDiagnostics {
   fallback_model_slugs?: string[];
   has_user_attribution: boolean;
   has_multimodal_tool_results: boolean;
+  max_tool_calls_per_assistant?: number;
+  unmatched_tool_call_count?: number;
+  unmatched_tool_result_count?: number;
+  duplicate_tool_call_count?: number;
+  tool_call_batches_split?: number;
+}
+
+export interface ProviderRequestRetentionDiagnostics {
+  raw_message_count: number;
+  rolling_message_count: number;
+  final_ui_message_count: number;
+  transcript_source_message_count: number;
+  summarization_count: number;
+  compaction_attempt_count: number;
 }
 
 /**
@@ -51,13 +66,13 @@ export interface ChatWideEvent {
 
   // Service context
   service: "chat-handler";
+  environment: string;
   endpoint: ChatApiEndpoint;
   version: string;
   region?: string;
 
   // Request details
   mode: ChatMode;
-  is_temporary: boolean;
   is_regenerate: boolean;
 
   // User context
@@ -125,9 +140,19 @@ export interface ChatWideEvent {
     };
   };
 
+  // Time from wide-event creation (request parsed) to the first provider
+  // call. Everything before the stream — auth, Convex reads, rate limits,
+  // tokenizer passes — lands here, so a slow first token can be attributed
+  // to preflight versus the provider.
+  preflight?: {
+    duration_ms: number;
+  };
+
   // Stream execution
   stream?: {
     duration_ms: number;
+    // Stream start to the first model chunk. Absent when no chunk arrived.
+    first_chunk_ms?: number;
     finish_reason?: string;
     was_aborted: boolean;
     was_preemptive_timeout: boolean;
@@ -148,8 +173,9 @@ export interface ChatWideEvent {
 
   // Sandbox execution
   sandbox?: {
-    type: "e2b" | "desktop" | "remote-connection";
+    type: "cloud" | "desktop" | "remote-connection";
     name?: string;
+    provider?: "miosa" | "e2b";
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done
@@ -205,6 +231,8 @@ export interface ChatWideEvent {
     requested_model_slug?: string;
     model_provider_slug?: string;
     openrouter_generation_id?: string;
+    openrouter_request_id?: string;
+    openrouter_upstream_id?: string;
     provider_error_fingerprint?: string;
     // Per-attempt breakdown when the SDK retried internally. Each entry is one
     // upstream call. Lets you tell consistent-500 from a mixed cascade and
@@ -219,13 +247,35 @@ export interface ChatWideEvent {
   };
 }
 
+export interface ChatDiagnosticContext {
+  request_id: string;
+  service: "chat-handler";
+  environment: string;
+  user_id?: string;
+  mode?: ChatMode;
+  subscription?: string;
+  selected_model?: string;
+  requested_model_slug?: string;
+  model_provider_slug?: string;
+  response_model?: string;
+  provider_name?: string;
+  provider_name_source?:
+    "openrouter_response_metadata" | "openrouter_error_metadata";
+  provider_attribution_available: boolean;
+  openrouter_generation_id?: string;
+  openrouter_request_id?: string;
+  openrouter_upstream_id?: string;
+}
+
 /**
  * Builder for constructing wide events throughout the request lifecycle
  */
 export class WideEventBuilder {
   private event: Partial<ChatWideEvent>;
   private toolCalls: Array<{ name: string; sandbox_type?: string }> = [];
+  private readonly createdAtMs = Date.now();
   private streamStartTime?: number;
+  private firstChunkTime?: number;
   private anthropicPromptRepairCount = 0;
 
   constructor(requestId: string, chatId: string, endpoint: ChatApiEndpoint) {
@@ -234,6 +284,7 @@ export class WideEventBuilder {
       request_id: requestId,
       chat_id: chatId,
       service: "chat-handler",
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
       endpoint,
       version: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || "dev",
       region: process.env.VERCEL_REGION,
@@ -243,13 +294,8 @@ export class WideEventBuilder {
   /**
    * Set request details
    */
-  setRequestDetails(details: {
-    mode: ChatMode;
-    isTemporary: boolean;
-    isRegenerate: boolean;
-  }): this {
+  setRequestDetails(details: { mode: ChatMode; isRegenerate: boolean }): this {
     this.event.mode = details.mode;
-    this.event.is_temporary = details.isTemporary;
     this.event.is_regenerate = details.isRegenerate;
     return this;
   }
@@ -367,6 +413,55 @@ export class WideEventBuilder {
   }
 
   /**
+   * Return compact, content-free request/model context for correlated lifecycle
+   * logs that are emitted before the final wide event.
+   */
+  getDiagnosticContext(): ChatDiagnosticContext {
+    const model = this.event.model;
+    const providerError = this.event.provider_error;
+    const requestedModelSlug =
+      this.event.provider_request?.requested_model_slug ??
+      providerError?.requested_model_slug;
+    const providerName = model?.provider_name ?? providerError?.provider_name;
+    const providerNameSource = model?.provider_name
+      ? "openrouter_response_metadata"
+      : providerError?.provider_name_source === "openrouter_error_metadata"
+        ? "openrouter_error_metadata"
+        : undefined;
+
+    return {
+      request_id: this.event.request_id ?? "unknown",
+      service: "chat-handler",
+      environment:
+        this.event.environment ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      user_id: this.event.user?.id,
+      mode: this.event.mode,
+      subscription: this.event.user?.subscription,
+      selected_model: model?.configured,
+      requested_model_slug: requestedModelSlug,
+      model_provider_slug:
+        providerError?.model_provider_slug ??
+        (requestedModelSlug?.includes("/")
+          ? requestedModelSlug.split("/", 1)[0]
+          : undefined),
+      response_model: model?.actual ?? model?.openrouter_selected_model,
+      provider_name: providerName,
+      provider_name_source: providerNameSource,
+      provider_attribution_available: providerName !== undefined,
+      openrouter_generation_id:
+        model?.openrouter_generation_id ??
+        providerError?.openrouter_generation_id,
+      openrouter_request_id:
+        model?.openrouter_request_id ?? providerError?.openrouter_request_id,
+      openrouter_upstream_id:
+        model?.openrouter_upstream_id ?? providerError?.openrouter_upstream_id,
+    };
+  }
+
+  /**
    * Record that OpenRouter served a configured fallback model.
    */
   recordModelFallback(fallback: { served: string; chain: string[] }): this {
@@ -414,6 +509,20 @@ export class WideEventBuilder {
    */
   startStream(): this {
     this.streamStartTime = Date.now();
+    this.event.preflight = {
+      duration_ms: this.streamStartTime - this.createdAtMs,
+    };
+    return this;
+  }
+
+  /**
+   * Record the first model chunk. First call wins so provider retries and
+   * fallbacks do not move the measurement.
+   */
+  markFirstChunk(): this {
+    if (this.firstChunkTime === undefined) {
+      this.firstChunkTime = Date.now();
+    }
     return this;
   }
 
@@ -462,6 +571,10 @@ export class WideEventBuilder {
   }): this {
     this.event.stream = {
       duration_ms: this.streamStartTime ? Date.now() - this.streamStartTime : 0,
+      ...(this.streamStartTime !== undefined &&
+        this.firstChunkTime !== undefined && {
+          first_chunk_ms: this.firstChunkTime - this.streamStartTime,
+        }),
       finish_reason: result.finishReason,
       was_aborted: result.wasAborted,
       was_preemptive_timeout: result.wasPreemptiveTimeout,
@@ -584,6 +697,8 @@ export class WideEventBuilder {
     requestedModelSlug?: string;
     modelProviderSlug?: string;
     openrouterGenerationId?: string;
+    openrouterRequestId?: string;
+    openrouterUpstreamId?: string;
     providerErrorFingerprint?: string;
     attempts?: NonNullable<ChatWideEvent["provider_error"]>["attempts"];
   }): this {
@@ -601,6 +716,8 @@ export class WideEventBuilder {
       requested_model_slug: details.requestedModelSlug,
       model_provider_slug: details.modelProviderSlug,
       openrouter_generation_id: details.openrouterGenerationId,
+      openrouter_request_id: details.openrouterRequestId,
+      openrouter_upstream_id: details.openrouterUpstreamId,
       provider_error_fingerprint: details.providerErrorFingerprint,
       attempts: details.attempts,
     };
@@ -655,11 +772,6 @@ export class WideEventBuilder {
     if (this.additionalToolCost > 0 && this.event.usage) {
       this.event.usage.total_cost =
         (this.event.usage.total_cost || 0) + this.additionalToolCost;
-    }
-
-    // Don't include assistant_id for temporary chats
-    if (this.event.is_temporary) {
-      delete this.event.assistant_id;
     }
 
     // Strip zero/undefined values from usage to reduce noise
@@ -719,17 +831,20 @@ export const logger = {
   ): void {
     console.error(
       JSON.stringify({
+        ...context,
         level: "error",
-        message,
+        message: redactSensitiveErrorMessage(message),
         timestamp: new Date().toISOString(),
         error: error
           ? {
               name: error.name,
-              message: error.message,
-              stack: error.stack,
+              message: redactSensitiveErrorMessage(error.message),
+              stack:
+                typeof error.stack === "string"
+                  ? redactSensitiveErrorMessage(error.stack)
+                  : error.stack,
             }
           : undefined,
-        ...context,
       }),
     );
   },
@@ -741,7 +856,10 @@ export const logger = {
 export function createWideEventBuilder(
   chatId: string,
   endpoint: ChatApiEndpoint,
+  requestId?: string,
 ): WideEventBuilder {
-  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  return new WideEventBuilder(requestId, chatId, endpoint);
+  const resolvedRequestId =
+    requestId ??
+    `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return new WideEventBuilder(resolvedRequestId, chatId, endpoint);
 }

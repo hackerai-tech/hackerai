@@ -437,10 +437,9 @@ const compactReasoningParts = (
 };
 
 const stripStorageOnlyParts = (parts: UIMessage["parts"]): UIMessage["parts"] =>
-  parts.filter(
-    (part) =>
-      part?.type !== "step-start" && part?.type !== "data-summarization",
-  );
+  // step-start is a provider serialization boundary, not just UI metadata.
+  // Removing it merges every tool call in a saved turn into one request batch.
+  parts.filter((part) => part?.type !== "data-summarization");
 
 const compactToolPartsToByteLimit = (
   parts: UIMessage["parts"],
@@ -1280,8 +1279,8 @@ const hasUsefulAssistantContent = (content: unknown): boolean => {
 
 /**
  * Anthropic treats a final assistant message in the prompt as an assistant
- * prefill. Claude Opus 4.6 / Sonnet 4.6 reject prefill, so before calling an
- * Anthropic model we ensure the prompt does not end with assistant content.
+ * prefill. Claude Opus 4.6 rejects prefill, so before calling an Anthropic model
+ * we ensure the prompt does not end with assistant content.
  *
  * When the trailing assistant message has useful non-tool context, preserve it
  * and append a provider-only user continuation. If it is empty/reasoning-only

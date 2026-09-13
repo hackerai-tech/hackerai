@@ -5,16 +5,12 @@ const mockGetChatById = jest.fn();
 const mockSetActiveTriggerRun = jest.fn();
 const mockRunsRetrieve = jest.fn();
 const mockCreatePublicToken = jest.fn();
-const mockGetTemporaryRefreshHandle = jest.fn();
-const mockSetTemporaryRefreshCookie = jest.fn();
-const mockClearTemporaryRefreshCookie = jest.fn();
 const mockCloseAgentApprovalSession = jest.fn();
 
 jest.mock("next/server", () => ({
   NextResponse: class MockNextResponse {
     status: number;
     private body: unknown;
-    cookies = { set: jest.fn() };
 
     constructor(body?: unknown, init?: ResponseInit) {
       this.body = body;
@@ -27,12 +23,6 @@ jest.mock("next/server", () => ({
 
     async json() {
       return this.body;
-    }
-
-    async text() {
-      return typeof this.body === "string"
-        ? this.body
-        : JSON.stringify(this.body ?? "");
     }
   },
 }));
@@ -57,16 +47,17 @@ jest.mock("@/lib/db/actions", () => ({
 jest.mock("@/lib/api/agent-approval-session", () => ({
   AGENT_APPROVAL_PROTOCOL_VERSION: 2,
   AGENT_APPROVAL_TOKEN_EXPIRATION: "1m",
-  clearTemporaryAgentApprovalRefreshCookie: mockClearTemporaryRefreshCookie,
   closeAgentApprovalSession: mockCloseAgentApprovalSession,
-  getTemporaryAgentApprovalRefreshHandle: mockGetTemporaryRefreshHandle,
-  setTemporaryAgentApprovalRefreshCookie: mockSetTemporaryRefreshCookie,
 }));
 
 jest.mock("@/lib/api/agent-route-errors", () => ({
   handleAgentRouteError: jest.fn(() => {
     throw new Error("unexpected route error");
   }),
+}));
+
+jest.mock("@/lib/api/agent-run-correlation", () => ({
+  createAgentRunCorrelationToken: jest.fn(() => "signed-correlation"),
 }));
 
 const requestFor = (chatId: string) =>
@@ -79,81 +70,71 @@ describe("agent resume route", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetUserIDAndPro.mockResolvedValue({ userId: "user-1" } as never);
-    mockGetChatById.mockResolvedValue(null as never);
-    mockGetTemporaryRefreshHandle.mockReturnValue({
-      userId: "user-1",
-      chatId: "temporary-chat-1",
-      runId: "run-1",
-      approvalSessionId: "approval-session-1",
-    });
-    mockRunsRetrieve.mockResolvedValue({ status: "EXECUTING" } as never);
-    mockCreatePublicToken
-      .mockResolvedValueOnce("fresh-run-token" as never)
-      .mockResolvedValueOnce("fresh-approval-token" as never);
   });
 
-  it("refreshes temporary approval tokens from the signed mapping", async () => {
+  it("closes and clears an orphaned approval session when no run remains", async () => {
     const { createAgentResumeGet } = await import("../agent-resume-route");
-    const req = requestFor("temporary-chat-1");
-    const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
-      req,
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      runId: "run-1",
-      publicAccessToken: "fresh-run-token",
-      chatId: "temporary-chat-1",
-      approvalProtocolVersion: 2,
-      approvalSessionId: "approval-session-1",
-      approvalSessionPublicAccessToken: "fresh-approval-token",
-    });
-    expect(mockCreatePublicToken).toHaveBeenNthCalledWith(2, {
-      scopes: { write: { sessions: "approval-session-1" } },
-      expirationTime: "1m",
-    });
-    expect(mockSetTemporaryRefreshCookie).toHaveBeenCalledWith(response, {
-      req,
-      userId: "user-1",
-      chatId: "temporary-chat-1",
-      runId: "run-1",
-      approvalSessionId: "approval-session-1",
-    });
-    expect(mockSetActiveTriggerRun).not.toHaveBeenCalled();
-  });
-
-  it("rejects a temporary refresh without a valid mapping", async () => {
-    const { createAgentResumeGet } = await import("../agent-resume-route");
-    mockGetTemporaryRefreshHandle.mockReturnValue(null);
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: undefined,
+      active_agent_approval_session_id: "approval-session-1",
+    } as never);
 
     const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
-      requestFor("temporary-chat-1"),
-    );
-
-    expect(response.status).toBe(403);
-    expect(mockRunsRetrieve).not.toHaveBeenCalled();
-    expect(mockCreatePublicToken).not.toHaveBeenCalled();
-  });
-
-  it("clears the temporary mapping when the run is terminal", async () => {
-    const { createAgentResumeGet } = await import("../agent-resume-route");
-    mockRunsRetrieve.mockResolvedValue({ status: "COMPLETED" } as never);
-
-    const req = requestFor("temporary-chat-1");
-    const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
-      req,
+      requestFor("chat-1"),
     );
 
     expect(response.status).toBe(204);
     expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
       "approval-session-1",
-      "agent-run-terminal",
+      "agent-run-missing",
     );
-    expect(mockClearTemporaryRefreshCookie).toHaveBeenCalledWith(response, {
-      req,
-      userId: "user-1",
-      chatId: "temporary-chat-1",
+    expect(mockSetActiveTriggerRun).toHaveBeenCalledWith({
+      chatId: "chat-1",
+      triggerRunId: null,
+      approvalSessionId: null,
+      expectedApprovalSessionId: "approval-session-1",
+      clearApprovalPending: true,
     });
+    expect(mockRunsRetrieve).not.toHaveBeenCalled();
     expect(mockCreatePublicToken).not.toHaveBeenCalled();
+  });
+
+  it("resumes the stored run and approval session without reselecting a permission mode", async () => {
+    const { createAgentResumeGet } = await import("../agent-resume-route");
+    mockGetChatById.mockResolvedValue({
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "run-auto-review-1",
+      active_agent_approval_session_id: "approval-session-auto-review-1",
+    } as never);
+    mockRunsRetrieve.mockResolvedValue({ status: "EXECUTING" } as never);
+    mockCreatePublicToken
+      .mockResolvedValueOnce("run-token")
+      .mockResolvedValueOnce("approval-session-token");
+
+    const response = await createAgentResumeGet({ endpoint: "/api/agent" })(
+      requestFor("chat-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      runId: "run-auto-review-1",
+      approvalSessionId: "approval-session-auto-review-1",
+      publicAccessToken: "run-token",
+      approvalSessionPublicAccessToken: "approval-session-token",
+    });
+    expect(mockRunsRetrieve).toHaveBeenCalledWith("run-auto-review-1");
+    expect(mockCreatePublicToken).toHaveBeenNthCalledWith(1, {
+      scopes: { read: { runs: ["run-auto-review-1"] } },
+      expirationTime: "6h",
+    });
+    expect(mockCreatePublicToken).toHaveBeenNthCalledWith(2, {
+      scopes: {
+        write: { sessions: "approval-session-auto-review-1" },
+      },
+      expirationTime: "1m",
+    });
   });
 });

@@ -1,7 +1,15 @@
 import "@testing-library/jest-dom";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import type { SubscriptionTier } from "@/types";
+
+let mockSubscription: SubscriptionTier = "free";
+let mockChatModeAccessResolved = true;
+let mockPaidAgentOnlyActive = false;
+let mockFreeDesktopAgentOnlyActive = false;
+let mockHasLocalSandbox = false;
+const mockSetSandboxPreference = jest.fn();
 
 jest.mock("@/app/components/AttachmentButton", () => ({
   AttachmentButton: () => <button type="button">Attach</button>,
@@ -9,6 +17,12 @@ jest.mock("@/app/components/AttachmentButton", () => ({
 
 jest.mock("../ChatModeSelector", () => ({
   ChatModeSelector: () => <div data-testid="chat-mode-selector" />,
+}));
+
+jest.mock("../FreeAskComputerActivation", () => ({
+  FreeAskComputerActivation: () => (
+    <div data-testid="free-ask-computer-activation" />
+  ),
 }));
 
 jest.mock("@/app/components/ModelSelector", () => ({
@@ -21,14 +35,55 @@ jest.mock("@/app/components/AgentPermissionSelector", () => ({
   ),
 }));
 
+jest.mock("@/app/components/SandboxSelector", () => ({
+  SandboxSelector: ({
+    size,
+    value,
+    onChange,
+  }: {
+    size?: string;
+    value?: string;
+    onChange?: (value: string) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="sandbox-selector"
+      data-size={size}
+      data-value={value}
+      onClick={() => onChange?.("local")}
+    />
+  ),
+}));
+
 jest.mock("../SubmitStopButton", () => ({
-  SubmitStopButton: () => <button type="button">Send</button>,
+  SubmitStopButton: ({
+    isPaid,
+    useNeutralAgentStyle,
+  }: {
+    isPaid?: boolean;
+    useNeutralAgentStyle?: boolean;
+  }) => (
+    <button
+      type="button"
+      data-is-paid={String(isPaid)}
+      data-neutral-agent-style={String(useNeutralAgentStyle)}
+    >
+      Send
+    </button>
+  ),
 }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     selectedModel: "auto",
     setSelectedModel: jest.fn(),
+    subscription: mockSubscription,
+    chatModeAccessResolved: mockChatModeAccessResolved,
+    hasLocalSandbox: mockHasLocalSandbox,
+    paidAgentOnlyActive: mockPaidAgentOnlyActive,
+    freeDesktopAgentOnlyActive: mockFreeDesktopAgentOnlyActive,
+    sandboxPreference: "e2b",
+    setSandboxPreference: mockSetSandboxPreference,
   }),
 }));
 
@@ -61,15 +116,30 @@ const mockAuthUser = (user: unknown) => {
 
 describe("ChatInputToolbar", () => {
   beforeEach(() => {
+    mockSubscription = "free";
+    mockChatModeAccessResolved = true;
+    mockPaidAgentOnlyActive = false;
+    mockFreeDesktopAgentOnlyActive = false;
+    mockHasLocalSandbox = false;
+    mockSetSandboxPreference.mockClear();
     mockAuthUser(null);
   });
 
-  it("hides the model selector for logged-out users", () => {
-    render(<ChatInputToolbar {...defaultProps} />);
+  it.each(["ask", "agent"] as const)(
+    "hides all selectors for logged-out users in %s mode",
+    (chatMode) => {
+      render(<ChatInputToolbar {...defaultProps} chatMode={chatMode} />);
 
-    expect(screen.getByTestId("chat-mode-selector")).toBeInTheDocument();
-    expect(screen.queryByTestId("model-selector")).not.toBeInTheDocument();
-  });
+      expect(
+        screen.queryByTestId("chat-mode-selector"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("model-selector")).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-permission-selector"),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
+    },
+  );
 
   it("shows the model selector for logged-in users", () => {
     mockAuthUser({ id: "user_123" });
@@ -79,7 +149,48 @@ describe("ChatInputToolbar", () => {
     expect(screen.getByTestId("model-selector")).toBeInTheDocument();
   });
 
-  it("shows the permission selector only in agent mode", () => {
+  it("shows computer activation only for logged-in free Ask users without a local sandbox", () => {
+    mockAuthUser({ id: "user_123" });
+
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.getByTestId("free-ask-computer-activation"),
+    ).toBeInTheDocument();
+
+    mockHasLocalSandbox = true;
+    rerender(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+
+    mockHasLocalSandbox = false;
+    rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+
+    mockSubscription = "pro";
+    rerender(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides computer activation for logged-out users and while access resolves", () => {
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+
+    mockAuthUser({ id: "user_123" });
+    mockChatModeAccessResolved = false;
+    rerender(<ChatInputToolbar {...defaultProps} />);
+    expect(
+      screen.queryByTestId("free-ask-computer-activation"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows desktop permission and sandbox selectors only in agent mode", () => {
     mockAuthUser({ id: "user_123" });
 
     const { rerender } = render(
@@ -88,8 +199,142 @@ describe("ChatInputToolbar", () => {
     expect(
       screen.queryByTestId("agent-permission-selector"),
     ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("sandbox-selector")).not.toBeInTheDocument();
 
     rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
     expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
+      "data-size",
+      "toolbar",
+    );
+    expect(screen.getByTestId("sandbox-selector")).toHaveAttribute(
+      "data-value",
+      "e2b",
+    );
+    fireEvent.click(screen.getByTestId("sandbox-selector"));
+    expect(mockSetSandboxPreference).toHaveBeenCalledWith("local");
+    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
+      "hidden",
+      "md:block",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+      "hidden",
+      "min-w-0",
+      "md:block",
+    );
+  });
+
+  it("keeps model and send actions outside the flexible toolbar controls", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.getByTestId("chat-input-toolbar-controls")).toHaveClass(
+      "min-w-0",
+      "flex-1",
+      "overflow-hidden",
+    );
+    expect(screen.getByTestId("chat-input-primary-actions")).toHaveClass(
+      "shrink-0",
+    );
+    expect(screen.getByTestId("chat-input-primary-actions")).toContainElement(
+      screen.getByTestId("model-selector"),
+    );
+    expect(screen.getByTestId("chat-input-primary-actions")).toContainElement(
+      screen.getByRole("button", { name: "Send" }),
+    );
+  });
+
+  it("moves Agent controls out of the toolbar in compact layout", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(
+      <ChatInputToolbar
+        {...defaultProps}
+        chatMode="agent"
+        compactAgentControls
+      />,
+    );
+
+    expect(screen.getByTestId("chat-input-desktop-permission")).toHaveClass(
+      "hidden",
+    );
+    expect(screen.getByTestId("chat-input-desktop-permission")).not.toHaveClass(
+      "md:block",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).toHaveClass(
+      "hidden",
+    );
+    expect(screen.getByTestId("chat-input-desktop-sandbox")).not.toHaveClass(
+      "md:block",
+    );
+  });
+
+  it("removes only the mode selector for paid Agent-only mode", () => {
+    mockAuthUser({ id: "user_123" });
+    mockSubscription = "pro";
+    mockPaidAgentOnlyActive = true;
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+  });
+
+  it("removes only the mode selector for free Desktop Agent-only mode", () => {
+    mockAuthUser({ id: "user_123" });
+    mockFreeDesktopAgentOnlyActive = true;
+
+    render(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-permission-selector")).toBeInTheDocument();
+    expect(screen.getByTestId("model-selector")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-neutral-agent-style",
+      "true",
+    );
+  });
+
+  it("never flashes the mode selector while paid access resolves", () => {
+    mockAuthUser({ id: "user_123" });
+    mockChatModeAccessResolved = false;
+
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+
+    mockSubscription = "pro";
+    mockChatModeAccessResolved = true;
+    mockPaidAgentOnlyActive = true;
+    rerender(<ChatInputToolbar {...defaultProps} chatMode="agent" />);
+
+    expect(screen.queryByTestId("chat-mode-selector")).not.toBeInTheDocument();
+  });
+
+  it("shows the mode selector after access resolves for eligible users", () => {
+    mockAuthUser({ id: "user_123" });
+
+    render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByTestId("chat-mode-selector")).toBeInTheDocument();
+  });
+
+  it("enables the paid visual treatment only for paid subscriptions", () => {
+    const { rerender } = render(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-is-paid",
+      "false",
+    );
+
+    mockSubscription = "pro";
+    rerender(<ChatInputToolbar {...defaultProps} />);
+
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "data-is-paid",
+      "true",
+    );
   });
 });

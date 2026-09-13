@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { ChatSDKError } from "@/lib/errors";
+import { AGENT_API_ENDPOINT } from "@/lib/api/agent-endpoints";
 
 const CHAT_MESSAGE_ROLES = new Set(["user", "assistant", "system"]);
 
@@ -8,6 +9,52 @@ const getValueKind = (value: unknown): string =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+export const requireRetiredTemporaryFieldAbsent = (
+  requestBody: unknown,
+): void => {
+  if (
+    isRecord(requestBody) &&
+    Object.prototype.hasOwnProperty.call(requestBody, "temporary")
+  ) {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Invalid chat request: temporary is no longer supported.",
+      {
+        invalid_request_field: "temporary",
+        invalid_request_field_reason: "retired_field",
+      },
+    );
+  }
+};
+
+export const requireVercelChatMode = (mode: unknown): "ask" => {
+  if (mode === "agent") {
+    throw new ChatSDKError(
+      "bad_request:api",
+      `Agent requests must use the Trigger.dev-backed ${AGENT_API_ENDPOINT} endpoint.`,
+      {
+        invalid_request_field: "mode",
+        invalid_request_field_reason: "agent_requires_trigger_route",
+        required_endpoint: AGENT_API_ENDPOINT,
+      },
+    );
+  }
+
+  if (mode !== "ask") {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Invalid chat request: mode must be ask.",
+      {
+        invalid_request_field: "mode",
+        invalid_request_field_type: getValueKind(mode),
+        invalid_request_field_reason: "invalid_mode",
+      },
+    );
+  }
+
+  return mode;
+};
 
 const invalidMessagesError = (
   field: string,
@@ -24,21 +71,6 @@ const invalidMessagesError = (
       new_messages_count: 0,
     },
   );
-
-export const requireBooleanFlag = (field: string, value: unknown): boolean => {
-  if (value === undefined) return false;
-  if (typeof value === "boolean") return value;
-
-  throw new ChatSDKError(
-    "bad_request:api",
-    `Invalid chat request: ${field} must be a boolean.`,
-    {
-      invalid_request_field: field,
-      invalid_request_field_type: getValueKind(value),
-      invalid_request_field_reason: "not_boolean",
-    },
-  );
-};
 
 export const requireOptionalIdentifier = (
   field: string,

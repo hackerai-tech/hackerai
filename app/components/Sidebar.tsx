@@ -1,7 +1,7 @@
 "use client";
 
-import { FC, useRef } from "react";
-import { useGlobalState } from "../contexts/GlobalState";
+import { FC, useEffect, useRef } from "react";
+import { useGlobalStateActions } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useChats } from "../hooks/useChats";
 import {
@@ -18,32 +18,64 @@ import SidebarUserNav from "./SidebarUserNav";
 import SidebarHeaderContent from "./SidebarHeader";
 import { SidebarChatSections } from "./SidebarChatSections";
 import { useProjects } from "../hooks/useProjects";
+import { SidebarProjectListProvider } from "../contexts/SidebarProjectList";
 
 /** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
 export type ChatListData = ReturnType<typeof useChats>;
+/** Project list data lifted for the same reason, including an already-resolved empty list. */
+export type ProjectListData = ReturnType<typeof useProjects>;
 
-// ChatList component content - receives data from parent to avoid refetch on open/close
-const ChatListContent: FC<{ chatListData: ChatListData }> = ({
-  chatListData,
-}) => {
+// List content receives live data from its owner so mobile overlay remounts do not refetch.
+const ChatListContent: FC<{
+  chatListData: ChatListData;
+  projectListData: ProjectListData;
+  isVisible?: boolean;
+}> = ({ chatListData, projectListData, isVisible = true }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const projectListData = useProjects();
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    let idleTimeout: ReturnType<typeof setTimeout> | undefined;
+    const handleScroll = () => {
+      // Keep transient scrollbar activity out of the chat list's render cycle.
+      container.dataset.scrolling = "true";
+      clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        delete container.dataset.scrolling;
+      }, 800);
+    };
+
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      clearTimeout(idleTimeout);
+      delete container.dataset.scrolling;
+    };
+  }, []);
 
   return (
     <div
-      className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
+      className="sidebar-chat-scroll h-full min-w-0 overflow-y-auto overflow-x-hidden"
       ref={scrollContainerRef}
       data-testid="sidebar-chat-list-scroll-container"
     >
-      <SidebarChatSections
-        chats={chatListData.results || []}
+      <SidebarProjectListProvider
         projects={projectListData.results}
-        projectPaginationStatus={projectListData.status}
+        paginationStatus={projectListData.status}
         loadMoreProjects={projectListData.loadMore}
-        paginationStatus={chatListData.status}
-        loadMore={chatListData.loadMore}
-        containerRef={scrollContainerRef}
-      />
+      >
+        <SidebarChatSections
+          chats={chatListData.results || []}
+          projects={projectListData.results}
+          projectPaginationStatus={projectListData.status}
+          loadMoreProjects={projectListData.loadMore}
+          paginationStatus={chatListData.status}
+          loadMore={isVisible ? chatListData.loadMore : undefined}
+          containerRef={scrollContainerRef}
+        />
+      </SidebarProjectListProvider>
     </div>
   );
 };
@@ -53,7 +85,8 @@ const DesktopSidebarContent: FC<{
   isMobile: boolean;
   handleCloseSidebar: () => void;
   chatListData: ChatListData;
-}> = ({ isMobile, handleCloseSidebar, chatListData }) => {
+  projectListData: ProjectListData;
+}> = ({ isMobile, handleCloseSidebar, chatListData, projectListData }) => {
   const { state } = useSidebar();
   const isCollapsed = state === "collapsed";
 
@@ -70,9 +103,10 @@ const DesktopSidebarContent: FC<{
         />
       </SidebarHeader>
 
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent>
+      {/* Keep the observer root bounded and make it the only scrolling element. */}
+      <SidebarContent className="overflow-hidden">
+        <SidebarGroup className="min-h-0 flex-1">
+          <SidebarGroupContent className="min-h-0 flex-1">
             <div
               className={`h-full transition-opacity duration-100 ease-out motion-reduce:transition-none ${
                 isCollapsed
@@ -84,7 +118,11 @@ const DesktopSidebarContent: FC<{
               data-testid="sidebar-chat-list-visibility"
             >
               {/* Keep project subscriptions and section state alive across collapse. */}
-              <ChatListContent chatListData={chatListData} />
+              <ChatListContent
+                chatListData={chatListData}
+                projectListData={projectListData}
+                isVisible={!isCollapsed}
+              />
             </div>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -100,16 +138,33 @@ const DesktopSidebarContent: FC<{
 
 const MainSidebar: FC<{
   isMobileOverlay?: boolean;
+  onClose?: () => void;
   /** When provided (e.g. from ChatLayout), avoids refetching when sidebar opens/closes */
   chatListData?: ChatListData;
-}> = ({ isMobileOverlay = false, chatListData: chatListDataProp }) => {
+  /** Keeps the resolved project list alive too, especially the empty state on mobile. */
+  projectListData?: ProjectListData;
+}> = ({
+  isMobileOverlay = false,
+  onClose,
+  chatListData: chatListDataProp,
+  projectListData: projectListDataProp,
+}) => {
   const isMobile = useIsMobile();
-  const { setChatSidebarOpen } = useGlobalState();
+  const { setChatSidebarOpen } = useGlobalStateActions();
   // Use lifted data when provided; otherwise subscribe here (e.g. SharedChatView)
   const chatListDataFromHook = useChats(chatListDataProp === undefined);
   const chatListData = chatListDataProp ?? chatListDataFromHook;
+  const projectListDataFromHook = useProjects(
+    10,
+    projectListDataProp === undefined,
+  );
+  const projectListData = projectListDataProp ?? projectListDataFromHook;
 
   const handleCloseSidebar = () => {
+    if (onClose) {
+      onClose();
+      return;
+    }
     setChatSidebarOpen(false);
   };
 
@@ -126,8 +181,14 @@ const MainSidebar: FC<{
           />
 
           {/* Chat List */}
-          <div className="flex-1 overflow-hidden">
-            <ChatListContent chatListData={chatListData} />
+          <div
+            className="flex-1 overflow-hidden px-2"
+            data-testid="mobile-sidebar-chat-content"
+          >
+            <ChatListContent
+              chatListData={chatListData}
+              projectListData={projectListData}
+            />
           </div>
 
           {/* Footer */}
@@ -144,6 +205,7 @@ const MainSidebar: FC<{
       isMobile={isMobile ?? false}
       handleCloseSidebar={handleCloseSidebar}
       chatListData={chatListData}
+      projectListData={projectListData}
     />
   );
 };

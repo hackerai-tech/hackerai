@@ -29,6 +29,43 @@ const chat = (overrides: Record<string, unknown>) => ({
 });
 
 describe("SidebarHistory", () => {
+  it("uses the sidebar scroll root and requests a page only once before the status update", () => {
+    let callback!: IntersectionObserverCallback;
+    const observer = jest.fn((cb: IntersectionObserverCallback) => {
+      callback = cb;
+      return { observe: jest.fn(), disconnect: jest.fn() };
+    });
+    const previous = global.IntersectionObserver;
+    global.IntersectionObserver = observer as any;
+    try {
+      const root = document.createElement("div");
+      const loadMore = jest.fn();
+      render(
+        <SidebarHistory
+          chats={[]}
+          paginationStatus="CanLoadMore"
+          loadMore={loadMore}
+          containerRef={{ current: root }}
+        />,
+      );
+      expect(observer).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({ root }),
+      );
+      callback(
+        [{ isIntersecting: false }] as IntersectionObserverEntry[],
+        {} as IntersectionObserver,
+      );
+      expect(loadMore).not.toHaveBeenCalled();
+      const entries = [{ isIntersecting: true }] as IntersectionObserverEntry[];
+      callback(entries, {} as IntersectionObserver);
+      callback(entries, {} as IntersectionObserver);
+      expect(loadMore).toHaveBeenCalledTimes(1);
+    } finally {
+      global.IntersectionObserver = previous;
+    }
+  });
+
   it("marks chats with active ask streams as streaming", () => {
     render(
       <SidebarHistory
@@ -67,7 +104,7 @@ describe("SidebarHistory", () => {
     expect(screen.queryByTestId("streaming-idle-chat")).not.toBeInTheDocument();
   });
 
-  it("marks chats with pending agent approval", () => {
+  it("shows pending approval without a streaming indicator", () => {
     render(
       <SidebarHistory
         chats={[
@@ -84,10 +121,12 @@ describe("SidebarHistory", () => {
     expect(
       screen.getByTestId("awaiting-approval-approval-chat"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("streaming-approval-chat")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("streaming-approval-chat"),
+    ).not.toBeInTheDocument();
   });
 
-  it("keeps pending approval chats marked as streaming without an active run", () => {
+  it("shows stored pending approval without a streaming indicator", () => {
     render(
       <SidebarHistory
         chats={[
@@ -104,8 +143,8 @@ describe("SidebarHistory", () => {
       screen.getByTestId("awaiting-approval-stored-approval-chat"),
     ).toBeInTheDocument();
     expect(
-      screen.getByTestId("streaming-stored-approval-chat"),
-    ).toBeInTheDocument();
+      screen.queryByTestId("streaming-stored-approval-chat"),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the pagination sentinel when the loaded page has no unpinned chats", () => {

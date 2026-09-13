@@ -9,7 +9,7 @@ import {
 } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
 
-export const MAX_AUTO_CONTINUES = 5;
+export const MAX_AUTO_CONTINUES = 1;
 export const AUTO_CONTINUE_PROMPT =
   "Continue from the latest saved progress. Do not restart the original task or repeat completed work.";
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
@@ -24,7 +24,6 @@ export interface UseAutoContinueParams {
   ) => void;
   hasManuallyStoppedRef: React.RefObject<boolean>;
   todos: Todo[];
-  temporaryChatsEnabled: boolean;
   sandboxPreference: string;
   agentPermissionMode: string;
   selectedModel: string;
@@ -37,7 +36,6 @@ export function useAutoContinue({
   sendMessage,
   hasManuallyStoppedRef,
   todos,
-  temporaryChatsEnabled,
   sandboxPreference,
   agentPermissionMode,
   selectedModel,
@@ -49,29 +47,47 @@ export function useAutoContinue({
   const pendingAutoContinueRef = useRef(false);
   const autoContinueRunScheduledRef = useRef(false);
   const autoContinueRunStartedRef = useRef(false);
+  const autoContinueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const lastProcessedIndexRef = useRef(0);
 
   const todosRef = useLatestRef(todos);
   const sendMessageRef = useLatestRef(sendMessage);
-  const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const selectedModelRef = useLatestRef(selectedModel);
   const isPartForCurrentChat = (part: ScopedDataUIPart) =>
     part.__chatId === undefined || part.__chatId === chatId;
 
+  const clearScheduledAutoContinue = useCallback(() => {
+    if (autoContinueTimerRef.current !== null) {
+      clearTimeout(autoContinueTimerRef.current);
+      autoContinueTimerRef.current = null;
+    }
+  }, []);
+
   const clearAutoContinueLifecycle = useCallback(() => {
+    clearScheduledAutoContinue();
     pendingAutoContinueRef.current = false;
     autoContinueRunScheduledRef.current = false;
     autoContinueRunStartedRef.current = false;
     setIsAutoContinuing(false);
-  }, [setIsAutoContinuing]);
+  }, [clearScheduledAutoContinue, setIsAutoContinuing]);
 
   useEffect(() => {
+    autoContinueCountRef.current = 0;
     pendingAutoContinueRef.current = false;
     lastProcessedIndexRef.current = 0;
     clearAutoContinueLifecycle();
-  }, [chatId, clearAutoContinueLifecycle]);
+    setIsAutoResuming(false);
+    setAutoContinueCount(0);
+  }, [
+    chatId,
+    clearAutoContinueLifecycle,
+    setAutoContinueCount,
+    setIsAutoResuming,
+  ]);
 
   // Detect data-auto-continue signal and immediately mark pending
   useEffect(() => {
@@ -112,7 +128,10 @@ export function useAutoContinue({
     autoContinueCountRef.current += 1;
     setAutoContinueCount(autoContinueCountRef.current);
 
-    const timeout = setTimeout(() => {
+    clearScheduledAutoContinue();
+    autoContinueTimerRef.current = setTimeout(() => {
+      autoContinueTimerRef.current = null;
+      if (!autoContinueRunScheduledRef.current) return;
       sendMessageRef.current(
         {
           text: AUTO_CONTINUE_PROMPT,
@@ -122,8 +141,8 @@ export function useAutoContinue({
           body: {
             mode: chatMode,
             isAutoContinue: true,
+            isAutomaticContinuation: true,
             todos: todosRef.current,
-            temporary: temporaryChatsEnabledRef.current,
             sandboxPreference: sandboxPreferenceRef.current,
             agentPermissionMode: agentPermissionModeRef.current,
             selectedModel: selectedModelRef.current,
@@ -132,7 +151,7 @@ export function useAutoContinue({
       );
     }, 500);
 
-    return () => clearTimeout(timeout);
+    return clearScheduledAutoContinue;
   }, [
     status,
     dataStream,
@@ -144,10 +163,10 @@ export function useAutoContinue({
     setIsAutoResuming,
     sendMessageRef,
     todosRef,
-    temporaryChatsEnabledRef,
     sandboxPreferenceRef,
     agentPermissionModeRef,
     selectedModelRef,
+    clearScheduledAutoContinue,
   ]);
 
   useEffect(() => {

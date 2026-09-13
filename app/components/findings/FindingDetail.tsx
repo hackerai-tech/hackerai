@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Clock3,
   Copy,
+  Download,
   LockKeyhole,
   MessageSquareText,
   ShieldAlert,
@@ -46,6 +47,8 @@ import type {
   FindingDetailRecord,
 } from "@/types/finding";
 import { cn } from "@/lib/utils";
+import { downloadFile } from "@/lib/utils/file-download";
+import { renderFindingMarkdown } from "@/lib/findings/markdown";
 import { getSourceMessageHref } from "@/lib/findings/source-message";
 import {
   getFindingSeverityClasses,
@@ -378,6 +381,23 @@ export function FindingDetail({
             ) : null}
           </div>
 
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void downloadFile({
+                  filename: `finding-${finding.finding_id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`,
+                  content: renderFindingMarkdown(finding),
+                  mimeType: "text/markdown;charset=utf-8",
+                })
+              }
+            >
+              <Download className="size-4" aria-hidden="true" />
+              Download report
+            </Button>
+          </div>
+
           <dl className="grid gap-x-8 gap-y-6 border-t border-border pt-6 @min-[520px]:grid-cols-2 @min-[880px]:grid-cols-4">
             <div className="min-w-0">
               <dt className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -565,6 +585,46 @@ export function FindingDetail({
                   used to confirm this vulnerability.
                 </p>
               </div>
+
+              {finding.evidence_verification?.warning && (
+                <div
+                  role="note"
+                  className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-4 text-sm"
+                >
+                  <p className="font-medium">
+                    Evidence verification incomplete
+                  </p>
+                  <p className="mt-2">
+                    {finding.evidence_verification.warning}
+                  </p>
+                  <ul className="mt-2 space-y-1">
+                    {finding.evidence_verification.unavailable_refs.map(
+                      (ref) => (
+                        <li key={ref} className="break-all font-mono text-xs">
+                          {ref}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                </div>
+              )}
+              {(finding.evidence_refs?.length ?? 0) > 0 && (
+                <div className="text-sm">
+                  <p className="font-medium">Evidence references</p>
+                  <ul className="mt-2 space-y-1">
+                    {finding.evidence_refs!.map((ref) => (
+                      <li key={ref} className="break-all font-mono text-xs">
+                        {ref}
+                        {finding.evidence_verification?.checked_refs.includes(
+                          ref,
+                        )
+                          ? " — file available at submission"
+                          : " — not checked"}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               <section
                 className="border-l-2 border-emerald-500/60 pl-4"

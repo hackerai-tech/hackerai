@@ -19,6 +19,7 @@
   ],
   "uni_sse": true,
   "uni_http_stream": true,
+  "http_stream": true,
   "client_connection_limit": 5000,
   "internal_port": 9000
 }

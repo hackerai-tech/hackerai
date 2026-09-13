@@ -13,12 +13,7 @@ import {
 } from "@/types";
 import type { AgentApiEndpoint } from "@/lib/api/agent-endpoints";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
-import {
-  AGENT_APPROVAL_PROTOCOL_VERSION,
-  clearTemporaryAgentApprovalRefreshCookie,
-  getTemporaryAgentApprovalRefreshHandle,
-  setTemporaryAgentApprovalRefreshCookie,
-} from "@/lib/api/agent-approval-session";
+import { AGENT_APPROVAL_PROTOCOL_VERSION } from "@/lib/api/agent-approval-session";
 
 type ApprovalDecisionValue = {
   type: "agent-tool-approval";
@@ -175,33 +170,21 @@ export const createAgentApprovalPost =
 
       stage = "authorize_chat";
       const chat = await getChatById({ id: chatId });
-      const temporaryRefresh = chat
-        ? null
-        : getTemporaryAgentApprovalRefreshHandle({ req, userId, chatId });
-      let isTemporary = false;
-      if (chat) {
-        const pending = chat.active_agent_approval_request;
-        if (
-          chat.user_id !== userId ||
-          chat.active_agent_approval_session_id !== approvalSessionId ||
-          !chat.active_trigger_run_id ||
-          pending?.approvalId !== decision.approvalId ||
-          pending?.toolCallId !== decision.toolCallId
-        ) {
-          return new NextResponse("Agent approval no longer active", {
-            status: 409,
-          });
-        }
-        runId = chat.active_trigger_run_id;
-      } else if (
-        temporaryRefresh &&
-        temporaryRefresh.approvalSessionId === approvalSessionId
-      ) {
-        runId = temporaryRefresh.runId;
-        isTemporary = true;
-      } else {
+      if (!chat || chat.user_id !== userId) {
         return new NextResponse("Forbidden", { status: 403 });
       }
+      const pending = chat.active_agent_approval_request;
+      if (
+        chat.active_agent_approval_session_id !== approvalSessionId ||
+        !chat.active_trigger_run_id ||
+        pending?.approvalId !== decision.approvalId ||
+        pending?.toolCallId !== decision.toolCallId
+      ) {
+        return new NextResponse("Agent approval no longer active", {
+          status: 409,
+        });
+      }
+      runId = chat.active_trigger_run_id;
 
       stage = "verify_trigger_state";
       const [run, session] = (await Promise.all([
@@ -218,33 +201,9 @@ export const createAgentApprovalPost =
         metadata.approvalSessionId !== approvalSessionId ||
         metadata.approvalProtocolVersion !== AGENT_APPROVAL_PROTOCOL_VERSION
       ) {
-        const response = new NextResponse("Agent approval no longer active", {
+        return new NextResponse("Agent approval no longer active", {
           status: 409,
         });
-        if (isTemporary) {
-          clearTemporaryAgentApprovalRefreshCookie(response, {
-            req,
-            userId,
-            chatId,
-          });
-        }
-        return response;
-      }
-      if (
-        isTemporary &&
-        (metadata.approvalStatus !== "pending" ||
-          metadata.approvalId !== decision.approvalId ||
-          metadata.approvalToolCallId !== decision.toolCallId)
-      ) {
-        const response = new NextResponse("Agent approval no longer active", {
-          status: 409,
-        });
-        clearTemporaryAgentApprovalRefreshCookie(response, {
-          req,
-          userId,
-          chatId,
-        });
-        return response;
       }
 
       stage = "sign_and_append";
@@ -269,17 +228,7 @@ export const createAgentApprovalPost =
         additionalHeaders: { "X-Part-Id": partId },
       });
 
-      const response = NextResponse.json({ accepted: true });
-      if (isTemporary) {
-        setTemporaryAgentApprovalRefreshCookie(response, {
-          req,
-          userId,
-          chatId,
-          runId,
-          approvalSessionId,
-        });
-      }
-      return response;
+      return NextResponse.json({ accepted: true });
     } catch (error) {
       if (error instanceof ChatSDKError) return error.toResponse();
       return handleAgentRouteError({

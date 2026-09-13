@@ -50,6 +50,7 @@ const loadSaveMessageWithMocks = async () => {
     saveMessage,
     setActiveTriggerRun,
     updateChat,
+    updateChatTitle,
   } = await import("../actions");
   return {
     deleteAllChatsForBackend,
@@ -65,6 +66,7 @@ const loadSaveMessageWithMocks = async () => {
     saveMessage,
     setActiveTriggerRun,
     updateChat,
+    updateChatTitle,
   };
 };
 
@@ -73,6 +75,10 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
     const { fenceAndGetActiveAgentResourcesForUser, mockMutation, mockQuery } =
       await loadSaveMessageWithMocks();
     const calls: string[] = [];
+    mockQuery.mockResolvedValue({
+      runs: [{ chat_id: "chat-1", trigger_run_id: "child-validation-run-1" }],
+      hasMore: false,
+    });
     mockMutation
       .mockImplementationOnce(async () => {
         calls.push("fence-1");
@@ -101,6 +107,7 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
       resources: [
         { chatId: "chat-1", triggerRunId: "run-1" },
         { chatId: "chat-2", approvalSessionId: "approval-session-2" },
+        { chatId: "chat-1", triggerRunId: "child-validation-run-1" },
       ],
       hasMore: false,
     });
@@ -115,7 +122,12 @@ describe("fenceAndGetActiveAgentResourcesForUser", () => {
       expect.anything(),
       expect.objectContaining({ cursor: "cursor-1" }),
     );
-    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery.mock.calls[0]?.[1]).toEqual({
+      serviceKey: undefined,
+      userId: "user-1",
+      limit: 100,
+    });
   });
 });
 
@@ -501,6 +513,31 @@ describe("updateChat", () => {
   });
 });
 
+describe("updateChatTitle", () => {
+  it("sends only title fields through the title-specific mutation", async () => {
+    const { mockMutation, updateChatTitle } = await loadSaveMessageWithMocks();
+
+    await expect(
+      updateChatTitle({ chatId: "chat-1", title: "Generated Title" }),
+    ).resolves.toEqual({ id: "message-1" });
+
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    const mutationArgs = mockMutation.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(mutationArgs).toMatchObject({
+      chatId: "chat-1",
+      title: "Generated Title",
+    });
+    expect(Object.keys(mutationArgs).sort()).toEqual([
+      "chatId",
+      "serviceKey",
+      "title",
+    ]);
+  });
+});
+
 describe("setActiveTriggerRun", () => {
   it("returns the explicit Convex association result", async () => {
     const { mockMutation, setActiveTriggerRun } =
@@ -547,6 +584,30 @@ describe("setActiveTriggerRun", () => {
 });
 
 describe("saveMessage", () => {
+  it("forwards the durable Trigger run ID to Convex", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+
+    await saveMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      message: {
+        id: "message-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "partial output" }],
+      },
+      finishReason: "trigger_crashed_client_saved",
+      triggerRunId: "run-1",
+    });
+
+    expect(mockMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        finishReason: "trigger_crashed_client_saved",
+        triggerRunId: "run-1",
+      }),
+    );
+  });
+
   it("sanitizes assistant parts before storage compaction", async () => {
     const { saveMessage, mockCompactMessageForStorage } =
       await loadSaveMessageWithMocks();
@@ -753,6 +814,76 @@ describe("saveMessage", () => {
     }
   });
 
+  it("retries and classifies exhausted Convex write-rate limits as unavailable", async () => {
+    const { saveMessage, mockMutation, mockPhEvent } =
+      await loadSaveMessageWithMocks();
+    const writeRateError = new Error(
+      "[Request ID: abc] Server Error",
+    ) as Error & {
+      data?: unknown;
+    };
+    writeRateError.name = "ConvexError";
+    writeRateError.data = {
+      code: "MESSAGE_SAVE_FAILED",
+      message: "Failed to save message",
+      failureStage: "insert_message",
+      causeName: "TooManyWrites",
+      causeMessage:
+        "Too many writes per second. Your deployment is limited to 8 MiB bytes written per 1 second.",
+    };
+    mockMutation.mockRejectedValue(writeRateError as never);
+
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const thrown = await saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        },
+      }).catch((error) => error);
+
+      expect(thrown).toMatchObject({
+        type: "offline",
+        surface: "database",
+        statusCode: 503,
+        metadata: expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_retry_reason: "convex_write_rate_limited",
+        }),
+      });
+      expect(mockMutation).toHaveBeenCalledTimes(3);
+
+      const retryEvents = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter((payload) => payload.event === "message_save_retry_scheduled");
+      expect(retryEvents).toHaveLength(2);
+      expect(retryEvents[0]).toMatchObject({
+        retry_reason: "convex_write_rate_limited",
+        attempt: 1,
+        next_attempt: 2,
+        retry_delay_ms: 0,
+        chat_id: "chat-1",
+        message_id: "message-1",
+      });
+      expect(mockPhEvent).toHaveBeenCalledWith(
+        "database_operation_failed",
+        expect.objectContaining({
+          db_operation: "messages.saveMessage",
+          db_retry_reason: "convex_write_rate_limited",
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it("maps Convex message-size rejections to a user-facing bad request", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
     const convexError = new Error("[Request ID: abc] Server Error") as Error & {
@@ -945,6 +1076,70 @@ describe("saveMessage", () => {
 });
 
 describe("getMessagesByChatId", () => {
+  it.each([false, true])(
+    "uses only backend provenance and disables inheritance on regenerate=%s",
+    async (regenerate) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const message = {
+        id: "u",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "continue" }],
+      };
+      const evidence = [
+        { id: "a", completed: true, independent: true },
+        { id: "b", completed: true, independent: true },
+      ];
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [message],
+          abliterationHistory: evidence,
+          isDone: true,
+          continueCursor: null,
+        });
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "pro",
+        newMessages: [],
+        regenerate,
+        mode: "agent",
+      });
+      expect(result.independentAbliterationResponses).toBe(regenerate ? 0 : 2);
+      expect(result.truncatedMessages).toEqual([message]);
+      expect(JSON.stringify(result.truncatedMessages)).not.toContain(
+        "independent",
+      );
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("ignores routing claims in client message metadata", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    mockQuery.mockResolvedValueOnce(null);
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [
+        {
+          id: "a",
+          role: "assistant",
+          parts: [{ type: "text", text: "answer" }],
+          metadata: {
+            abliterationRouting: {
+              version: 1,
+              source: "moderation",
+              completed: true,
+            },
+          },
+        },
+      ],
+      mode: "agent",
+    });
+    expect(result.independentAbliterationResponses).toBe(0);
+  });
+
   it("logs empty prompts as warnings instead of errors", async () => {
     const { getMessagesByChatId } = await loadSaveMessageWithMocks();
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -958,7 +1153,6 @@ describe("getMessagesByChatId", () => {
           subscription: "free",
           newMessages: [],
           regenerate: true,
-          isTemporary: true,
           mode: "ask",
         }),
       ).rejects.toMatchObject({
@@ -1018,7 +1212,6 @@ describe("getMessagesByChatId", () => {
           subscription: "free",
           newMessages: [],
           regenerate: true,
-          isTemporary: false,
           mode: "ask",
         }),
       ).rejects.toMatchObject({
@@ -1078,7 +1271,6 @@ describe("getMessagesByChatId", () => {
         userId: "user-1",
         subscription: "free",
         newMessages: [newMessage],
-        isTemporary: false,
         mode: "ask",
       });
 
@@ -1108,6 +1300,68 @@ describe("getMessagesByChatId", () => {
     }
   });
 
+  it("reuses file token metadata returned with existing history pages", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const fileId = "file-existing";
+    const existingMessage = {
+      id: "existing-message-with-file",
+      role: "user" as const,
+      parts: [{ type: "file" as const, fileId }],
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [existingMessage],
+        fileTokens: [{ fileId, tokenSize: 321 }],
+        isDone: true,
+        continueCursor: null,
+      });
+
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      mode: "ask",
+    });
+
+    expect(result.truncatedMessages).toEqual([existingMessage]);
+    expect(result.fileTokens).toEqual({ [fileId]: 321 });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores returned file token metadata in agent mode", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const fileId = "file-from-ask-mode";
+    const existingMessage = {
+      id: "existing-message-with-file",
+      role: "user" as const,
+      parts: [{ type: "file" as const, fileId }],
+    };
+
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockResolvedValueOnce({
+        page: [existingMessage],
+        fileTokens: [{ fileId, tokenSize: 200_001 }],
+        isDone: true,
+        continueCursor: null,
+      });
+
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      mode: "agent",
+    });
+
+    expect(result.truncatedMessages).toEqual([existingMessage]);
+    expect(result.fileTokens).toEqual({});
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
   it("does not inject a stored summary while regenerating", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     const lastUserMessage = {
@@ -1134,7 +1388,6 @@ describe("getMessagesByChatId", () => {
       subscription: "pro",
       newMessages: [],
       regenerate: true,
-      isTemporary: false,
       mode: "agent",
     });
 
@@ -1317,4 +1570,27 @@ describe("deleteAllChatsForBackend", () => {
       errorSpy.mockRestore();
     }
   });
+});
+
+it("persists server routing markers alongside usage only for assistant messages", async () => {
+  const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+  const marker = {
+    version: 1 as const,
+    source: "moderation" as const,
+    completed: true,
+  };
+  for (const role of ["assistant", "user"] as const) {
+    await saveMessage({
+      chatId: "chat",
+      userId: "user",
+      message: { id: role, role, parts: [{ type: "text", text: "ok" }] },
+      usage: { inputTokens: 12 },
+      abliterationRouting: marker,
+    });
+  }
+  expect(mockMutation.mock.calls[0][1].usage).toEqual({
+    inputTokens: 12,
+    abliterationRouting: marker,
+  });
+  expect(mockMutation.mock.calls[1][1].usage).toEqual({ inputTokens: 12 });
 });

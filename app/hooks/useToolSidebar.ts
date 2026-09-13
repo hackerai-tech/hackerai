@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { SidebarContent } from "@/types/chat";
+import { useToolSidebarOrigin } from "@/app/contexts/ToolSidebarOriginContext";
 
 interface UseToolSidebarOptions {
   /** The toolCallId for this tool invocation */
@@ -37,6 +38,7 @@ export function useToolSidebar({
   typeGuard,
   disabled = false,
 }: UseToolSidebarOptions): UseToolSidebarResult {
+  const origin = useToolSidebarOrigin();
   const {
     openSidebar,
     closeSidebar,
@@ -55,8 +57,8 @@ export function useToolSidebar({
 
   const handleOpenInSidebar = useCallback(() => {
     if (disabled || !content) return;
-    openSidebar(content);
-  }, [disabled, content, openSidebar]);
+    openSidebar(origin ? { ...content, origin } : content);
+  }, [disabled, content, openSidebar, origin]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

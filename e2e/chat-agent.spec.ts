@@ -24,6 +24,15 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
   test.describe("Pro Tier", () => {
     test.use({ storageState: AUTH_STORAGE_PATHS.pro });
 
+    test("should default paid users to Agent-only controls", async ({
+      page,
+    }) => {
+      const chat = await setupChat(page);
+
+      await chat.expectPaidAgentOnlyControls();
+      await chat.expectMode("agent");
+    });
+
     test("should generate markdown from image in Agent mode", async ({
       page,
     }) => {

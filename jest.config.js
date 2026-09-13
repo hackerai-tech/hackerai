@@ -8,8 +8,16 @@ const createJestConfig = nextJest({
 // Add any custom config to be passed to Jest
 const customJestConfig = {
   setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],
+  // The default spawns one jsdom worker per core minus one. On a busy machine
+  // (dev server, Playwright, or an editor running alongside the pre-commit
+  // hook) that oversubscribes memory and a worker can die mid-suite, which
+  // Jest reports as a suite FAIL with every test passing. Half the cores plus
+  // a per-worker memory ceiling keeps the run stable; CI already pins workers.
+  maxWorkers: "50%",
+  workerIdleMemoryLimit: "1GB",
   testEnvironment: "jest-environment-jsdom",
   moduleNameMapper: {
+    "^@miosa/sdk$": "<rootDir>/node_modules/@miosa/sdk/dist/index.js",
     "^jose$": "<rootDir>/__mocks__/jose.ts",
     "^@workos-inc/node$": "<rootDir>/__mocks__/workos-node.ts",
     "^@workos-inc/authkit-nextjs$": "<rootDir>/__mocks__/workos-authkit.ts",
@@ -25,16 +33,16 @@ const customJestConfig = {
     "^shiki/langs$": "<rootDir>/__mocks__/shiki.ts",
     "^shiki$": "<rootDir>/__mocks__/shiki.ts",
     "^use-stick-to-bottom$": "<rootDir>/__mocks__/use-stick-to-bottom.ts",
+    "^@legendapp/list/react$": "<rootDir>/__mocks__/@legendapp/list-react.tsx",
     "^@aws-sdk/client-s3$": "<rootDir>/__mocks__/@aws-sdk/client-s3.ts",
     "^@aws-sdk/s3-request-presigner$":
       "<rootDir>/__mocks__/@aws-sdk/s3-request-presigner.ts",
     "^@upstash/redis$": "<rootDir>/__mocks__/@upstash/redis.ts",
     "^@upstash/ratelimit$": "<rootDir>/__mocks__/@upstash/ratelimit.ts",
     "^convex/browser$": "<rootDir>/__mocks__/convex/browser.ts",
-    "^franc-min$": "<rootDir>/__mocks__/franc-min.ts",
   },
   transformIgnorePatterns: [
-    "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop|superjson)/)",
+    "node_modules/(?!(uuid|@miosa/sdk|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop|superjson)/)",
   ],
   testMatch: ["**/__tests__/**/*.[jt]s?(x)", "**/?(*.)+(spec|test).[jt]s?(x)"],
   testPathIgnorePatterns: ["/node_modules/", "/.next/", "/e2e/", "/dist/"],

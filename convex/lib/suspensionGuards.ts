@@ -1,43 +1,22 @@
-import type { GenericDatabaseReader } from "convex/server";
 import { ConvexError } from "convex/values";
 
-import type { DataModel, Doc } from "../_generated/dataModel";
 import { getSuspensionMessage } from "../../lib/suspensionMessage";
+import { getActiveChatAccessBlockingSuspension } from "./chatAccessSuspensions";
 
 export const CHAT_ACCESS_SUSPENDED_CODE = "CHAT_ACCESS_SUSPENDED";
 
-type SuspensionReaderCtx = {
-  db: GenericDatabaseReader<DataModel>;
-};
-
-async function getActiveFraudDisputeSuspension(
-  ctx: SuspensionReaderCtx,
-  userId: string,
-): Promise<Doc<"user_suspensions"> | null> {
-  return await ctx.db
-    .query("user_suspensions")
-    .withIndex("by_user_status_category_source_created", (q) =>
-      q
-        .eq("user_id", userId)
-        .eq("status", "active")
-        .eq("category", "dispute_fraudulent"),
-    )
-    .order("desc")
-    .first();
-}
-
-export async function isUserBlockedByActiveFraudDispute(
-  ctx: SuspensionReaderCtx,
+export async function isUserBlockedFromChatHistory(
+  ctx: Parameters<typeof getActiveChatAccessBlockingSuspension>[0],
   userId: string,
 ): Promise<boolean> {
-  return (await getActiveFraudDisputeSuspension(ctx, userId)) !== null;
+  return (await getActiveChatAccessBlockingSuspension(ctx, userId)) !== null;
 }
 
 export async function assertUserCanAccessChatHistory(
-  ctx: SuspensionReaderCtx,
+  ctx: Parameters<typeof getActiveChatAccessBlockingSuspension>[0],
   userId: string,
 ): Promise<void> {
-  const suspension = await getActiveFraudDisputeSuspension(ctx, userId);
+  const suspension = await getActiveChatAccessBlockingSuspension(ctx, userId);
   if (!suspension) return;
 
   throw new ConvexError({

@@ -1,12 +1,15 @@
+import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { mutation, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
-import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
 import { validateServiceKey } from "./lib/utils";
+import { DELETION_COORDINATED_RESUME_CLAIM_VERSION } from "./lib/subscriptionPauseResume";
 
 export const DELETED_USER_ID = "__deleted_user__";
 
+// pendingFileDeletions receipts remain until storage confirms cleanup; the
+// account API checks them before removing the external identity.
 export const USER_DELETION_TABLE_POLICY = {
   delete: [
     "projects",
@@ -17,18 +20,28 @@ export const USER_DELETION_TABLE_POLICY = {
     "feedback",
     "findings",
     "finding_sources",
+    "task_outcome_surveys",
     "notes",
     "user_customization",
     "extra_usage",
     "team_member_usage",
-    "temp_streams",
+    // Shared-organization rows are anonymized in place so the organization's
+    // automatic resume remains intact; all other pause rows are deleted.
+    "subscription_pauses",
     "local_sandbox_tokens",
     "local_sandbox_connections",
     "cancellation_reason_details",
+    "research_run_members",
+    "research_user_profiles",
+    "subagent_messages",
+    "subagent_events",
+    "subagent_work_items",
+    "subagent_runs",
   ],
   anonymize: [
     "usage_logs",
     "cancellation_reasons",
+    "involuntary_churn_events",
     "referral_codes",
     "referral_attributions",
     "referral_rewards",
@@ -39,21 +52,30 @@ export const USER_DELETION_TABLE_POLICY = {
     "user_suspensions",
   ],
   retain: [
+    // Operational tombstone that prevents stale authenticated requests from
+    // recreating execution resources after account deletion begins.
+    "user_deletion_fences",
     "team_extra_usage",
     "paid_start_mix_daily",
     "processed_webhooks",
     "processed_checkout_sessions",
+    // Reports contain only cohort-level patterns from runs with at least three
+    // users. Per-user profiles and their direct user IDs are deleted above.
+    "research_runs",
+    "research_reports",
   ],
 } as const;
 
 type AnyDoc = { _id: Id<any>; [key: string]: any };
 type CleanupMode = "execute" | "dryRun";
+type OrphanSubagentTable = "subagent_events" | "subagent_work_items";
 
 // Convex counts full document payloads toward a mutation's 16 MiB read limit.
 // Share one document budget across the entire cleanup pass; the account
 // deletion route already repeats the mutation while `hasMore` is true.
 const MAX_CLEANUP_DOCS_PER_MUTATION = 100;
 const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
+const MAX_RESUME_CLAIMS_PER_DELETION_START = 20;
 
 type ReadBudget = {
   remaining: number;
@@ -68,6 +90,11 @@ type CleanupStats = {
   orphanChatSummariesScanned: number;
   orphanChatSummariesIsDone: boolean;
   orphanChatSummariesContinueCursor?: string;
+  orphanSubagentRowsTable?: OrphanSubagentTable;
+  orphanSubagentRowsDeleted: number;
+  orphanSubagentRowsScanned: number;
+  orphanSubagentRowsIsDone: boolean;
+  orphanSubagentRowsContinueCursor?: string;
   s3ObjectsQueued: number;
 };
 
@@ -85,6 +112,13 @@ const cleanupStatsValidator = v.object({
   orphanChatSummariesScanned: v.number(),
   orphanChatSummariesIsDone: v.boolean(),
   orphanChatSummariesContinueCursor: v.optional(v.string()),
+  orphanSubagentRowsTable: v.optional(
+    v.union(v.literal("subagent_events"), v.literal("subagent_work_items")),
+  ),
+  orphanSubagentRowsDeleted: v.number(),
+  orphanSubagentRowsScanned: v.number(),
+  orphanSubagentRowsIsDone: v.boolean(),
+  orphanSubagentRowsContinueCursor: v.optional(v.string()),
   s3ObjectsQueued: v.number(),
 });
 
@@ -99,6 +133,9 @@ function createStats(): CleanupStats {
     orphanChatSummariesDeleted: 0,
     orphanChatSummariesScanned: 0,
     orphanChatSummariesIsDone: true,
+    orphanSubagentRowsDeleted: 0,
+    orphanSubagentRowsScanned: 0,
+    orphanSubagentRowsIsDone: true,
     s3ObjectsQueued: 0,
   };
 }
@@ -126,6 +163,12 @@ function mergeStats(target: CleanupStats, source: CleanupStats) {
   target.orphanChatSummariesIsDone = source.orphanChatSummariesIsDone;
   target.orphanChatSummariesContinueCursor =
     source.orphanChatSummariesContinueCursor;
+  target.orphanSubagentRowsTable = source.orphanSubagentRowsTable;
+  target.orphanSubagentRowsDeleted += source.orphanSubagentRowsDeleted;
+  target.orphanSubagentRowsScanned += source.orphanSubagentRowsScanned;
+  target.orphanSubagentRowsIsDone = source.orphanSubagentRowsIsDone;
+  target.orphanSubagentRowsContinueCursor =
+    source.orphanSubagentRowsContinueCursor;
 }
 
 function uniqueDocs<T extends AnyDoc>(docs: Array<T | null | undefined>): T[] {
@@ -276,27 +319,25 @@ async function deleteFiles(
   const unique = uniqueDocs(files);
   increment(stats.deleted, "files", unique.length);
 
-  const s3Keys = unique
-    .map((file) => file.s3_key)
-    .filter((key): key is string => typeof key === "string" && key.length > 0);
-  stats.s3ObjectsQueued += s3Keys.length;
+  const s3Objects = unique.flatMap((file) =>
+    file.s3_key
+      ? [
+          {
+            s3Key: file.s3_key,
+            ...(file.s3_region ? { s3Region: file.s3_region } : {}),
+            ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
+          },
+        ]
+      : [],
+  );
+  stats.s3ObjectsQueued += s3Objects.length;
 
   if (mode === "dryRun") return;
 
   for (const file of unique) {
+    await scheduleFileDeletion(ctx, file);
     await fileCountAggregate.deleteIfExists(ctx, file);
     await ctx.db.delete(file._id);
-  }
-
-  if (s3Keys.length > 0) {
-    await ctx.scheduler.runAfter(
-      0,
-      internal.s3Cleanup.deleteS3ObjectsBatchAction,
-      { s3Keys },
-    );
-    console.log(
-      `Scheduled deletion of ${s3Keys.length} S3 objects for deleted user data cleanup`,
-    );
   }
 }
 
@@ -304,6 +345,7 @@ async function cleanupUserDataForUser(
   ctx: MutationCtx,
   userId: string,
   mode: CleanupMode,
+  options: { preservedOrganizationIds?: string[] } = {},
 ) {
   const stats = createStats();
   const now = Date.now();
@@ -365,6 +407,11 @@ async function cleanupUserDataForUser(
     "by_user_id",
     (q) => q.eq("user_id", userId),
   );
+  const taskOutcomeSurveysBatch = await collectByIndexBatch<
+    Doc<"task_outcome_surveys">
+  >(ctx, budget, "task_outcome_surveys", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const notesBatch = await collectByIndexBatch<Doc<"notes">>(
     ctx,
     budget,
@@ -391,13 +438,6 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
-  const tempStreamsBatch = await collectByIndexBatch<Doc<"temp_streams">>(
-    ctx,
-    budget,
-    "temp_streams",
-    "by_user_id",
-    (q) => q.eq("user_id", userId),
-  );
   const localSandboxTokensBatch = await collectByIndexBatch<
     Doc<"local_sandbox_tokens">
   >(ctx, budget, "local_sandbox_tokens", "by_user_id", (q) =>
@@ -420,6 +460,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "team_member_usage", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const subscriptionPausesBatch = await collectByIndexBatch<
+    Doc<"subscription_pauses">
+  >(ctx, budget, "subscription_pauses", "by_user_requested", (q) =>
+    q.eq("user_id", userId),
+  );
   const cancellationReasonDetailsBatch = await collectByIndexBatch<
     Doc<"cancellation_reason_details">
   >(
@@ -429,7 +474,40 @@ async function cleanupUserDataForUser(
     "by_user_id_and_created_at",
     (q) => q.eq("user_id", userId),
   );
-
+  const researchUserProfilesBatch = await collectByIndexBatch<
+    Doc<"research_user_profiles">
+  >(ctx, budget, "research_user_profiles", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const researchRunMembersBatch = await collectByIndexBatch<
+    Doc<"research_run_members">
+  >(ctx, budget, "research_run_members", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const subagentMessagesBatch = await collectByIndexBatch<
+    Doc<"subagent_messages">
+  >(ctx, budget, "subagent_messages", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const subagentEventsBatch = await collectByIndexBatch<Doc<"subagent_events">>(
+    ctx,
+    budget,
+    "subagent_events",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
+  const subagentWorkItemsBatch = await collectByIndexBatch<
+    Doc<"subagent_work_items">
+  >(ctx, budget, "subagent_work_items", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
+  const subagentRunsBatch = await collectByIndexBatch<Doc<"subagent_runs">>(
+    ctx,
+    budget,
+    "subagent_runs",
+    "by_user_id",
+    (q) => q.eq("user_id", userId),
+  );
   const deletionBatches = [
     projectsBatch,
     chatsBatch,
@@ -437,14 +515,21 @@ async function cleanupUserDataForUser(
     findingsBatch,
     findingSourcesBatch,
     notesBatch,
+    taskOutcomeSurveysBatch,
     customizationBatch,
     messagesBatch,
-    tempStreamsBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
     extraUsageBatch,
     teamMemberUsageBatch,
+    subscriptionPausesBatch,
     cancellationReasonDetailsBatch,
+    researchRunMembersBatch,
+    researchUserProfilesBatch,
+    subagentMessagesBatch,
+    subagentEventsBatch,
+    subagentWorkItemsBatch,
+    subagentRunsBatch,
   ];
   stats.hasMore ||= deletionBatches.some((batch) => batch.hasMore);
 
@@ -454,23 +539,69 @@ async function cleanupUserDataForUser(
   const findingSources = findingSourcesBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
-  const tempStreams = tempStreamsBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
   const localSandboxConnections = localSandboxConnectionsBatch.docs;
   const extraUsage = extraUsageBatch.docs;
   const teamMemberUsage = teamMemberUsageBatch.docs;
+  const subscriptionPauses = subscriptionPausesBatch.docs;
   const cancellationReasonDetails = cancellationReasonDetailsBatch.docs;
+  const researchRunMembers = researchRunMembersBatch.docs;
+  const researchUserProfiles = researchUserProfilesBatch.docs;
+  const subagentMessages = subagentMessagesBatch.docs;
+  const subagentEvents = subagentEventsBatch.docs;
+  const subagentWorkItems = subagentWorkItemsBatch.docs;
+  const subagentRuns = subagentRunsBatch.docs;
 
-  const chatsReadyToDelete = messagesBatch.hasMore
-    ? []
-    : chats.filter((chat) => !incompleteChatIds.has(chat.id));
+  const chatsReadyToDelete =
+    messagesBatch.hasMore ||
+    subagentMessagesBatch.hasMore ||
+    subagentEventsBatch.hasMore ||
+    subagentWorkItemsBatch.hasMore ||
+    subagentRunsBatch.hasMore
+      ? []
+      : chats.filter((chat) => !incompleteChatIds.has(chat.id));
   if (chatsReadyToDelete.length < chats.length) {
     stats.hasMore = true;
   }
 
+  const preservedOrganizationIds = new Set(
+    options.preservedOrganizationIds ?? [],
+  );
+  const subscriptionPausesToAnonymize = subscriptionPauses.filter(
+    (pause) =>
+      pause.organization_id !== undefined &&
+      preservedOrganizationIds.has(pause.organization_id),
+  );
+  const subscriptionPausesReadyToDelete = subscriptionPauses.filter(
+    (pause) =>
+      !subscriptionPausesToAnonymize.includes(pause) &&
+      pause.status !== "resuming",
+  );
+  const heldSubscriptionPauses =
+    subscriptionPauses.length -
+    subscriptionPausesToAnonymize.length -
+    subscriptionPausesReadyToDelete.length;
+  // A resume worker may already be creating a new Stripe subscription. Keep
+  // the deletion fence and this row until that worker settles, then a later
+  // cleanup pass can safely remove the terminal row.
+  if (heldSubscriptionPauses > 0) {
+    stats.hasMore = true;
+  }
+
+  await deleteDocs(
+    ctx,
+    stats,
+    "task_outcome_surveys",
+    taskOutcomeSurveysBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
+  await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);
+  await deleteDocs(ctx, stats, "subagent_events", subagentEvents, mode);
+  await deleteDocs(ctx, stats, "subagent_work_items", subagentWorkItems, mode);
+  await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
@@ -478,7 +609,6 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
-  await deleteDocs(ctx, stats, "temp_streams", tempStreams, mode);
   await deleteDocs(
     ctx,
     stats,
@@ -498,8 +628,37 @@ async function cleanupUserDataForUser(
   await deleteDocs(
     ctx,
     stats,
+    "subscription_pauses",
+    subscriptionPausesReadyToDelete,
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "subscription_pauses",
+    subscriptionPausesToAnonymize,
+    () => ({ user_id: DELETED_USER_ID, updated_at: now }),
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
     "cancellation_reason_details",
     cancellationReasonDetails,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "research_run_members",
+    researchRunMembers,
+    mode,
+  );
+  await deleteDocs(
+    ctx,
+    stats,
+    "research_user_profiles",
+    researchUserProfiles,
     mode,
   );
 
@@ -514,6 +673,11 @@ async function cleanupUserDataForUser(
     "usage_logs",
     "by_user",
     (q) => q.eq("user_id", userId),
+  );
+  const involuntaryChurnEventsBatch = await collectByIndexBatch<
+    Doc<"involuntary_churn_events">
+  >(ctx, budget, "involuntary_churn_events", "by_user_and_occurred", (q) =>
+    q.eq("user_id", userId),
   );
   const referralCodesBatch = await collectByIndexBatch<Doc<"referral_codes">>(
     ctx,
@@ -595,6 +759,7 @@ async function cleanupUserDataForUser(
   const anonymizeBatches = [
     cancellationReasonsBatch,
     usageLogsBatch,
+    involuntaryChurnEventsBatch,
     referralCodesBatch,
     referredAttributionsBatch,
     referrerAttributionsBatch,
@@ -614,6 +779,7 @@ async function cleanupUserDataForUser(
 
   const cancellationReasons = cancellationReasonsBatch.docs;
   const usageLogs = usageLogsBatch.docs;
+  const involuntaryChurnEvents = involuntaryChurnEventsBatch.docs;
   const referralCodes = referralCodesBatch.docs;
   const referredAttributions = referredAttributionsBatch.docs;
   const referrerAttributions = referrerAttributionsBatch.docs;
@@ -646,7 +812,22 @@ async function cleanupUserDataForUser(
     stats,
     "usage_logs",
     usageLogs,
-    () => ({ user_id: DELETED_USER_ID, chat_id: undefined }),
+    () => ({
+      user_id: DELETED_USER_ID,
+      chat_id: undefined,
+      assistant_message_id: undefined,
+    }),
+    mode,
+  );
+  await anonymizeDocs(
+    ctx,
+    stats,
+    "involuntary_churn_events",
+    involuntaryChurnEvents,
+    (event) => ({
+      user_id: DELETED_USER_ID,
+      idempotency_key: `${event.stripe_event_id}:${DELETED_USER_ID}:${event._id}`,
+    }),
     mode,
   );
   await anonymizeDocs(
@@ -789,9 +970,47 @@ async function cleanupOrphanChatSummaries(
   return stats;
 }
 
+async function cleanupOrphanSubagentRows(
+  ctx: MutationCtx,
+  mode: CleanupMode,
+  table: OrphanSubagentTable,
+  opts: { cursor?: string | null; numItems: number },
+) {
+  const stats = createStats();
+  const page = await (ctx.db.query(table) as any).paginate({
+    cursor: opts.cursor ?? null,
+    numItems: opts.numItems,
+  });
+
+  stats.orphanSubagentRowsTable = table;
+  stats.orphanSubagentRowsScanned = page.page.length;
+  stats.orphanSubagentRowsIsDone = page.isDone;
+  stats.orphanSubagentRowsContinueCursor = page.continueCursor ?? undefined;
+  stats.hasMore = !page.isDone;
+
+  const orphanRows: Array<Doc<"subagent_events"> | Doc<"subagent_work_items">> =
+    [];
+  for (const row of page.page as Array<
+    Doc<"subagent_events"> | Doc<"subagent_work_items">
+  >) {
+    const run = await firstByIndex<Doc<"subagent_runs">>(
+      ctx,
+      "subagent_runs",
+      "by_subagent_id",
+      (q) => q.eq("subagent_id", row.subagent_id),
+    );
+    if (!run) orphanRows.push(row);
+  }
+
+  stats.orphanSubagentRowsDeleted = orphanRows.length;
+  await deleteDocs(ctx, stats, table, orphanRows, mode);
+  return stats;
+}
+
 /**
- * Delete all data for the authenticated user in the same policy path used by
- * the server-side account deletion route.
+ * Preserve the legacy public function as a fail-closed compatibility shim.
+ * Account deletion must run through the server route so Trigger runs and
+ * provider resources are terminated before their durable identifiers vanish.
  */
 export const deleteAllUserData = mutation({
   args: {},
@@ -802,7 +1021,64 @@ export const deleteAllUserData = mutation({
       throw new Error("Unauthorized: User not authenticated");
     }
 
-    return await cleanupUserDataForUser(ctx, user.subject, "execute");
+    throw new Error(
+      "Direct user data deletion is disabled; use the secure account deletion endpoint",
+    );
+  },
+});
+
+export const beginUserDataDeletionByService = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const existing = await ctx.db
+      .query("user_deletion_fences")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .unique();
+    if (!existing) {
+      const resumingPauses = await ctx.db
+        .query("subscription_pauses")
+        .withIndex("by_user_status", (q) =>
+          q.eq("user_id", args.userId).eq("status", "resuming"),
+        )
+        .take(MAX_RESUME_CLAIMS_PER_DELETION_START + 1);
+
+      if (
+        resumingPauses.length > MAX_RESUME_CLAIMS_PER_DELETION_START ||
+        resumingPauses.some(
+          (pause) =>
+            pause.resume_claim_version !==
+              DELETION_COORDINATED_RESUME_CLAIM_VERSION ||
+            pause.resume_side_effect_authorized_at !== undefined,
+        )
+      ) {
+        return false;
+      }
+
+      // These versioned claims have not crossed the Stripe side-effect
+      // barrier, so canceling them and inserting the fence in this same
+      // transaction safely gives deletion ownership of the user.
+      const canceledAt = Date.now();
+      for (const pause of resumingPauses) {
+        await ctx.db.patch(pause._id, {
+          status: "canceled",
+          canceled_at: canceledAt,
+          resume_claimed_at: undefined,
+          resume_claim_version: undefined,
+          resume_side_effect_authorized_at: undefined,
+          updated_at: canceledAt,
+        });
+      }
+      await ctx.db.insert("user_deletion_fences", {
+        user_id: args.userId,
+        started_at: canceledAt,
+      });
+    }
+    return true;
   },
 });
 
@@ -810,11 +1086,14 @@ export const deleteAllUserDataByService = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
+    preservedOrganizationIds: v.optional(v.array(v.string())),
   },
   returns: cleanupStatsValidator,
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
-    return await cleanupUserDataForUser(ctx, args.userId, "execute");
+    return await cleanupUserDataForUser(ctx, args.userId, "execute", {
+      preservedOrganizationIds: args.preservedOrganizationIds,
+    });
   },
 });
 
@@ -824,6 +1103,9 @@ export const cleanupDeletedUserResidue = mutation({
     userIds: v.optional(v.array(v.string())),
     dryRun: v.optional(v.boolean()),
     deleteOrphanChatSummaries: v.optional(v.boolean()),
+    orphanSubagentTable: v.optional(
+      v.union(v.literal("subagent_events"), v.literal("subagent_work_items")),
+    ),
     orphanCursor: v.optional(v.union(v.string(), v.null())),
     orphanNumItems: v.optional(v.number()),
   },
@@ -834,16 +1116,23 @@ export const cleanupDeletedUserResidue = mutation({
     const mode: CleanupMode = args.dryRun === false ? "execute" : "dryRun";
     const stats = createStats();
     const userIds = args.userIds ?? [];
+    const orphanOperations =
+      Number(args.deleteOrphanChatSummaries === true) +
+      Number(args.orphanSubagentTable !== undefined);
 
-    if (userIds.length === 0 && !args.deleteOrphanChatSummaries) {
+    if (userIds.length === 0 && orphanOperations === 0) {
+      throw new Error("Pass at least one userId or select one orphan cleanup");
+    }
+
+    if (userIds.length > 0 && orphanOperations > 0) {
       throw new Error(
-        "Pass at least one userId or enable deleteOrphanChatSummaries",
+        "Run user data cleanup and orphan cleanup in separate mutations to keep Convex transactions bounded",
       );
     }
 
-    if (userIds.length > 0 && args.deleteOrphanChatSummaries) {
+    if (orphanOperations > 1) {
       throw new Error(
-        "Run user data cleanup and orphan chat summary cleanup in separate mutations to keep Convex transactions bounded",
+        "Run each orphan cleanup in a separate mutation to keep Convex transactions bounded",
       );
     }
 
@@ -863,6 +1152,16 @@ export const cleanupDeletedUserResidue = mutation({
         await cleanupOrphanChatSummaries(ctx, mode, {
           cursor: args.orphanCursor,
           numItems: Math.min(Math.max(args.orphanNumItems ?? 500, 1), 1000),
+        }),
+      );
+    }
+
+    if (args.orphanSubagentTable) {
+      mergeStats(
+        stats,
+        await cleanupOrphanSubagentRows(ctx, mode, args.orphanSubagentTable, {
+          cursor: args.orphanCursor,
+          numItems: Math.min(Math.max(args.orphanNumItems ?? 100, 1), 100),
         }),
       );
     }

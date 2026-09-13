@@ -1,4 +1,9 @@
 import "server-only";
+import {
+  countIndependentAbliterationResponses,
+  type AbliterationHistoryEntry,
+  type AbliterationRoutingMarker,
+} from "@/lib/experiments/abliteration-history";
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
@@ -354,7 +359,27 @@ const getRetryableDatabaseErrorReason = (
   return undefined;
 };
 
-const getRetryableSaveMessageErrorReason = getRetryableDatabaseErrorReason;
+const getRetryableSaveMessageErrorReason = (
+  error: unknown,
+): string | undefined => {
+  const retryReason = getRetryableDatabaseErrorReason(error);
+  if (retryReason) return retryReason;
+
+  const dbErrorData = getErrorData(error);
+  const errorText = [
+    stringifyError(error),
+    getObjectString(dbErrorData, "causeName"),
+    getObjectString(dbErrorData, "causeMessage"),
+    getObjectString(dbErrorData, "message"),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (/Too many writes per second/i.test(errorText)) {
+    return "convex_write_rate_limited";
+  }
+
+  return undefined;
+};
 const getRetryableGetChatErrorReason = getRetryableDatabaseErrorReason;
 
 const getRetryableChatDeletionErrorReason = (
@@ -389,6 +414,9 @@ const getRetryableReasonForDatabaseOperation = (
   operation: string,
   error: unknown,
 ): string | undefined => {
+  if (operation === "messages.saveMessage") {
+    return getRetryableSaveMessageErrorReason(error);
+  }
   if (operation === "chats.saveChat") {
     return getRetryableSaveChatErrorReason(error);
   }
@@ -587,6 +615,8 @@ const databaseError = (
 
 type MessagesPageForBackendResult = {
   page: UIMessage[];
+  abliterationHistory?: AbliterationHistoryEntry[];
+  fileTokens?: Array<{ fileId: Id<"files">; tokenSize: number }>;
   isDone: boolean;
   continueCursor: string | null;
 };
@@ -596,7 +626,6 @@ const getMessagesPageForBackendWithRetry = async ({
   userId,
   paginationOpts,
   mode,
-  isTemporary,
   regenerate,
   newMessagesCount,
 }: {
@@ -604,7 +633,6 @@ const getMessagesPageForBackendWithRetry = async ({
   userId: string;
   paginationOpts: { numItems: number; cursor: string | null };
   mode?: ChatMode;
-  isTemporary: boolean;
   regenerate: boolean;
   newMessagesCount: number;
 }): Promise<MessagesPageForBackendResult> => {
@@ -642,7 +670,6 @@ const getMessagesPageForBackendWithRetry = async ({
           chat_id: chatId,
           user_id: userId,
           mode,
-          is_temporary: isTemporary,
           regenerate,
           new_messages_count: newMessagesCount,
           page_size: paginationOpts.numItems,
@@ -690,6 +717,31 @@ export async function getChatById({ id }: { id: string }) {
     }
   } catch (error) {
     throw databaseError("chats.getChatById", error, { chat_id: id });
+  }
+}
+
+export async function getCurrentAgentEntitlementContext({
+  userId,
+  organizationId,
+}: {
+  userId: string;
+  organizationId?: string;
+}) {
+  try {
+    return await getConvexClient().action(
+      api.agentAutoReviewActions.getCurrentEntitlementContext,
+      {
+        serviceKey,
+        userId,
+        ...(organizationId ? { organizationId } : {}),
+      },
+    );
+  } catch (error) {
+    throw databaseError(
+      "agentAutoReviewActions.getCurrentEntitlementContext",
+      error,
+      { user_id: userId, organization_id: organizationId },
+    );
   }
 }
 
@@ -795,10 +847,33 @@ export async function fenceAndGetActiveAgentResourcesForUser({
       }
 
       if (result.isDone) {
-        const resources = [...resourcesByChatId.values()];
+        const activeSubagents = await getConvexClient().query(
+          api.subagents.listActiveForUserBackend,
+          {
+            serviceKey,
+            userId,
+            limit: MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
+          },
+        );
+        const resources = [
+          ...resourcesByChatId.values(),
+          ...activeSubagents.runs.flatMap(
+            (child: { chat_id: string; trigger_run_id?: string }) =>
+              child.trigger_run_id
+                ? [
+                    {
+                      chatId: child.chat_id,
+                      triggerRunId: child.trigger_run_id,
+                    },
+                  ]
+                : [],
+          ),
+        ];
         return {
           resources: resources.slice(0, MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN),
-          hasMore: resources.length > MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
+          hasMore:
+            activeSubagents.hasMore ||
+            resources.length > MAX_ACTIVE_AGENT_RESOURCES_TO_RETURN,
         };
       }
 
@@ -903,11 +978,13 @@ export async function saveMessage({
   generationStartedAt,
   generationTimeMs,
   finishReason,
+  triggerRunId,
   usage,
   updateOnly,
   isHidden,
   wasAborted,
   wasPreemptiveTimeout,
+  abliterationRouting,
 }: {
   chatId: string;
   userId: string;
@@ -922,11 +999,13 @@ export async function saveMessage({
   generationStartedAt?: number;
   generationTimeMs?: number;
   finishReason?: string;
+  triggerRunId?: string;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
   isHidden?: boolean;
   wasAborted?: boolean;
   wasPreemptiveTimeout?: boolean;
+  abliterationRouting?: AbliterationRoutingMarker;
 }) {
   let fixedParts = message.parts;
   let partsForSave = message.parts;
@@ -1006,8 +1085,11 @@ export async function saveMessage({
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
     ];
-    const usageForSave = sanitizeForConvexValue(usage) as
-      Record<string, unknown> | undefined;
+    const usageForSave = sanitizeForConvexValue(
+      message.role === "assistant" && abliterationRouting
+        ? { ...usage, abliterationRouting }
+        : usage,
+    ) as Record<string, unknown> | undefined;
 
     const mutationArgs = {
       serviceKey,
@@ -1022,6 +1104,7 @@ export async function saveMessage({
       generationStartedAt,
       generationTimeMs,
       finishReason,
+      triggerRunId,
       usage: usageForSave,
       updateOnly,
       isHidden,
@@ -1224,13 +1307,63 @@ export async function updateChat({
   }
 }
 
+export async function updateChatTitle({
+  chatId,
+  title,
+}: {
+  chatId: string;
+  title: string;
+}) {
+  const mutationArgs = {
+    serviceKey,
+    chatId,
+    title,
+  };
+
+  for (let attemptIndex = 0; ; attemptIndex++) {
+    try {
+      return await getConvexClient().mutation(
+        api.chats.updateChatTitle,
+        mutationArgs,
+      );
+    } catch (error) {
+      const retryReason = getRetryableDatabaseErrorReason(error);
+      const retryDelayMs = UPDATE_CHAT_RETRY_DELAYS_MS[attemptIndex];
+      if (!retryReason || retryDelayMs === undefined) {
+        throw databaseError("chats.updateChatTitle", error, {
+          chat_id: chatId,
+          title_length: title.length,
+        });
+      }
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "chat_title_update_retry_scheduled",
+          service: "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          timestamp: new Date().toISOString(),
+          db_operation: "chats.updateChatTitle",
+          retry_reason: retryReason,
+          attempt: attemptIndex + 1,
+          next_attempt: attemptIndex + 2,
+          retry_delay_ms: retryDelayMs,
+          chat_id: chatId,
+          title_length: title.length,
+        }),
+      );
+      await waitForRetryDelay(retryDelayMs);
+    }
+  }
+}
+
 export async function getMessagesByChatId({
   chatId,
   userId,
   newMessages,
   regenerate,
   subscription,
-  isTemporary,
   mode,
   useClientMessagesForRegenerate,
 }: {
@@ -1239,16 +1372,15 @@ export async function getMessagesByChatId({
   subscription: SubscriptionTier;
   newMessages: UIMessage[];
   regenerate?: boolean;
-  isTemporary?: boolean;
   mode?: import("@/types").ChatMode;
   useClientMessagesForRegenerate?: boolean;
 }) {
-  // For temporary chats, skip database operations
   let chat = undefined;
   let isNewChat = true;
   let existingMessages: UIMessage[] = [];
+  const abliterationHistory: AbliterationHistoryEntry[] = [];
 
-  if (!isTemporary) {
+  {
     // Check if chat exists first to avoid unnecessary Convex query
     chat = await getChatById({ id: chatId });
     isNewChat = !chat;
@@ -1290,6 +1422,11 @@ export async function getMessagesByChatId({
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
             page: UIMessage[];
+            abliterationHistory?: AbliterationHistoryEntry[];
+            fileTokens?: Array<{
+              fileId: Id<"files">;
+              tokenSize: number;
+            }>;
             isDone: boolean;
             continueCursor: string | null;
           } = await getMessagesPageForBackendWithRetry({
@@ -1297,20 +1434,33 @@ export async function getMessagesByChatId({
             userId,
             paginationOpts: { numItems: PAGE_SIZE, cursor },
             mode,
-            isTemporary: !!isTemporary,
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
           });
-          const { page, isDone, continueCursor: nextCursor } = pageResult;
+          const {
+            page,
+            fileTokens: pageFileTokens = [],
+            isDone,
+            continueCursor: nextCursor,
+          } = pageResult;
 
+          // Keep provenance outside model messages and token/summary projection.
+          // Regeneration may replace an answer, so it never inherits history.
+          if (!regenerate)
+            abliterationHistory.push(...(pageResult.abliterationHistory ?? []));
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
 
+          if (!skipFileTokens) {
+            for (const { fileId, tokenSize } of pageFileTokens) {
+              fileTokensFromLoop[fileId] = tokenSize;
+            }
+          }
+
           const existingChrono = [...fetchedDesc].reverse();
-          const candidate =
-            regenerate && !isTemporary
-              ? existingChrono
-              : [...existingChrono, ...newMessages];
+          const candidate = regenerate
+            ? existingChrono
+            : [...existingChrono, ...newMessages];
 
           // Incrementally fetch file tokens only for new file IDs not yet cached
           if (!skipFileTokens) {
@@ -1354,7 +1504,7 @@ export async function getMessagesByChatId({
         // calling regenerate, but if that hasn't propagated yet we must
         // strip it here so all return paths below (summary early-return,
         // no-summary early-return, and the fallthrough) stay consistent.
-        if (regenerate && !isTemporary && truncatedFromLoop) {
+        if (regenerate && truncatedFromLoop) {
           while (
             truncatedFromLoop.length > 0 &&
             truncatedFromLoop[truncatedFromLoop.length - 1].role === "assistant"
@@ -1457,6 +1607,8 @@ export async function getMessagesByChatId({
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,
+              independentAbliterationResponses:
+                countIndependentAbliterationResponses(abliterationHistory),
             };
           }
 
@@ -1466,6 +1618,8 @@ export async function getMessagesByChatId({
             chat,
             isNewChat,
             fileTokens: fileTokensFromLoop,
+            independentAbliterationResponses:
+              countIndependentAbliterationResponses(abliterationHistory),
           };
         }
       } catch (error) {
@@ -1473,7 +1627,6 @@ export async function getMessagesByChatId({
           chat_id: chatId,
           user_id: userId,
           mode,
-          is_temporary: !!isTemporary,
           regenerate: !!regenerate,
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
@@ -1487,7 +1640,6 @@ export async function getMessagesByChatId({
             chat_id: chatId,
             user_id: userId,
             mode,
-            is_temporary: !!isTemporary,
             regenerate: !!regenerate,
             new_messages_count: newMessages.length,
           });
@@ -1499,7 +1651,7 @@ export async function getMessagesByChatId({
   // Handle message merging based on regeneration flag
   let allMessages: UIMessage[];
 
-  if (regenerate && !isTemporary) {
+  if (regenerate) {
     // Don't append new messages — use existing history up to the last user message
     allMessages = existingMessages;
     // Defensively strip trailing assistant messages.
@@ -1542,7 +1694,6 @@ export async function getMessagesByChatId({
       emptyPromptMetadata = {
         chat_id: chatId,
         user_id: userId,
-        is_temporary: !!isTemporary,
         regenerate: !!regenerate,
         subscription,
         mode,
@@ -1587,7 +1738,13 @@ export async function getMessagesByChatId({
     );
   }
 
-  return { truncatedMessages, chat, isNewChat, fileTokens };
+  return {
+    truncatedMessages,
+    chat,
+    isNewChat,
+    fileTokens,
+    independentAbliterationResponses: 0,
+  };
 }
 
 export async function getUserCustomization({ userId }: { userId: string }) {
@@ -1752,61 +1909,6 @@ export async function getCancellationStatus({ chatId }: { chatId: string }) {
   }
 }
 
-// Temporary chat stream coordination
-export async function startTempStream({
-  chatId,
-  userId,
-}: {
-  chatId: string;
-  userId: string;
-}) {
-  try {
-    await getConvexClient().mutation(api.tempStreams.startTempStream, {
-      serviceKey,
-      chatId,
-      userId,
-    });
-  } catch (error) {
-    // Do not throw; temp coordination best-effort
-  }
-}
-
-export async function getTempCancellationStatus({
-  chatId,
-}: {
-  chatId: string;
-}) {
-  try {
-    return await getConvexClient().query(
-      api.tempStreams.getTempCancellationStatus,
-      {
-        serviceKey,
-        chatId,
-      },
-    );
-  } catch (error) {
-    return null;
-  }
-}
-
-export async function deleteTempStreamForBackend({
-  chatId,
-}: {
-  chatId: string;
-}) {
-  try {
-    await getConvexClient().mutation(
-      api.tempStreams.deleteTempStreamForBackend,
-      {
-        serviceKey,
-        chatId,
-      },
-    );
-  } catch (error) {
-    // Best-effort cleanup
-  }
-}
-
 export async function saveChatSummary({
   chatId,
   summaryText,
@@ -1861,6 +1963,26 @@ export async function saveChatSummary({
   }
 }
 
+export async function attachChatSummaryTranscript({
+  chatId,
+  summaryText,
+  summaryUpToMessageId,
+  transcriptPath,
+}: {
+  chatId: string;
+  summaryText: string;
+  summaryUpToMessageId: string;
+  transcriptPath: string;
+}): Promise<boolean> {
+  return getConvexClient().mutation(api.chats.attachLatestSummaryTranscript, {
+    serviceKey,
+    chatId,
+    summaryText,
+    summaryUpToMessageId,
+    transcriptPath,
+  });
+}
+
 export async function getLatestSummary({ chatId }: { chatId: string }) {
   try {
     const summary = await getConvexClient().query(
@@ -1887,12 +2009,14 @@ export async function createFinding({
   messageId,
   toolCallId,
   report,
+  evidenceVerification,
 }: {
   userId: string;
   chatId: string;
   messageId: string;
   toolCallId: string;
   report: CreateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
 }) {
   try {
     return await getConvexClient().mutation(
@@ -1904,6 +2028,7 @@ export async function createFinding({
         messageId,
         toolCallId,
         report,
+        ...(evidenceVerification ? { evidenceVerification } : {}),
       },
     );
   } catch (error) {
@@ -2069,6 +2194,7 @@ export async function logUsageRecord({
   userId,
   organizationId,
   chatId,
+  assistantMessageId,
   endpoint,
   mode,
   subscription,
@@ -2080,11 +2206,9 @@ export async function logUsageRecord({
   includedPointsDeducted,
   extraUsagePointsDeducted,
   uncoveredPoints,
-  usageDeductionFailed,
   usageDeductionFailureReason,
   inputTokens,
   outputTokens,
-  totalTokens,
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
@@ -2096,6 +2220,7 @@ export async function logUsageRecord({
   userId: string;
   organizationId?: string;
   chatId?: string;
+  assistantMessageId?: string;
   endpoint?: ChatApiEndpoint;
   mode?: ChatMode;
   subscription?: SubscriptionTier;
@@ -2107,17 +2232,15 @@ export async function logUsageRecord({
   includedPointsDeducted?: number;
   extraUsagePointsDeducted?: number;
   uncoveredPoints?: number;
-  usageDeductionFailed?: boolean;
   usageDeductionFailureReason?: UsageDeductionFailureReason;
   inputTokens: number;
   outputTokens: number;
-  totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
   modelCostDollars?: number;
   nonModelCostDollars?: number;
-  costSource?: "provider" | "token_estimate" | "raw_token_estimate";
+  costSource?: "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
 }) {
   try {
     await getConvexClient().mutation(api.usageLogs.logUsage, {
@@ -2126,6 +2249,7 @@ export async function logUsageRecord({
       user_id: userId,
       organization_id: organizationId,
       chat_id: chatId,
+      assistant_message_id: assistantMessageId,
       endpoint,
       mode,
       subscription,
@@ -2137,13 +2261,11 @@ export async function logUsageRecord({
       included_points_deducted: includedPointsDeducted,
       extra_usage_points_deducted: extraUsagePointsDeducted,
       uncovered_points: uncoveredPoints,
-      usage_deduction_failed: usageDeductionFailed,
       usage_deduction_failure_reason: usageDeductionFailureReason,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,
       cache_write_tokens: cacheWriteTokens,
-      total_tokens: totalTokens,
       cost_dollars: costDollars,
       model_cost_dollars: modelCostDollars,
       non_model_cost_dollars: nonModelCostDollars,

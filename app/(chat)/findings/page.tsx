@@ -121,13 +121,8 @@ function FindingsPageContent() {
   const convex = useConvex();
   const searchParams = useSearchParams();
   const { isLoading, isAuthenticated } = useConvexAuth();
-  const {
-    setChatSidebarOpen,
-    closeSidebar,
-    initializeNewChat,
-    setChatMode,
-    setTemporaryChatsEnabled,
-  } = useGlobalState();
+  const { setChatSidebarOpen, closeSidebar, initializeNewChat, setChatMode } =
+    useGlobalState();
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const deferredSearch = useDeferredValue(search.trim());
   const [severity, setSeverity] = useState<"all" | FindingSeverity>(() =>
@@ -265,7 +260,6 @@ function FindingsPageContent() {
   const startNewScan = () => {
     closeSidebar();
     initializeNewChat();
-    setTemporaryChatsEnabled(false);
     setChatMode("agent");
     router.push("/");
   };

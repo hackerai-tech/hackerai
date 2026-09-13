@@ -164,4 +164,30 @@ describe("useSourceMessageNavigation", () => {
       expect(target).toHaveFocus();
     });
   });
+  it("reveals a loaded virtual row without fetching unnecessary history", async () => {
+    window.history.replaceState(null, "", "/c/chat-1#message=virtual-1");
+    const loadMore = jest.fn();
+    const target = document.createElement("div");
+    target.id = getChatMessageElementId("virtual-1");
+    target.tabIndex = -1;
+    const revealMessage = jest.fn(() => {
+      document.body.appendChild(target);
+      return true;
+    });
+    const { rerender } = renderHook(
+      ({ count }) =>
+        useSourceMessageNavigation({
+          loadedMessageCount: count,
+          paginationStatus: "CanLoadMore",
+          loadMore,
+          revealMessage,
+        }),
+      { initialProps: { count: 28 } },
+    );
+    await waitFor(() => expect(target).toHaveFocus());
+    expect(loadMore).not.toHaveBeenCalled();
+    target.remove();
+    rerender({ count: 29 });
+    expect(revealMessage).toHaveBeenCalledTimes(1);
+  });
 });

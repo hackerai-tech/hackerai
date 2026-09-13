@@ -1,5 +1,4 @@
 import { UIMessage } from "ai";
-import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails, FilePart } from "./file";
 
@@ -11,11 +10,13 @@ export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
 }
 
-export type AgentPermissionMode = "full_access" | "ask_approval";
+export type AgentPermissionMode =
+  "full_access" | "auto_review" | "ask_approval";
 
 export const AGENT_PERMISSION_MODES: readonly AgentPermissionMode[] = [
-  "full_access",
   "ask_approval",
+  "auto_review",
+  "full_access",
 ];
 
 export const DEFAULT_AGENT_PERMISSION_MODE: AgentPermissionMode = "full_access";
@@ -52,6 +53,8 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
  * Used by `coerceSelectedModel` to migrate values on read.
  */
 export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
+  // Migration only: the Sonnet provider is retired, so old browser state now
+  // resolves to HackerAI Pro's current provider route.
   "sonnet-4.6": "hackerai-pro",
   "opus-4.6": "hackerai-max",
   "gemini-3-flash": "hackerai-standard",
@@ -180,6 +183,25 @@ export function canUseMaxModel(
   );
 }
 
+export function withExtraUsageBillingForModel(
+  extraUsageConfig: ExtraUsageConfig | undefined,
+  model: SelectedModel | null | undefined,
+  subscription: SubscriptionTier,
+): ExtraUsageConfig | undefined {
+  if (
+    !extraUsageConfig ||
+    model !== "hackerai-max" ||
+    subscription === "ultra"
+  ) {
+    return extraUsageConfig;
+  }
+
+  return {
+    ...extraUsageConfig,
+    chargeAllUsage: true,
+  };
+}
+
 export const normalizeMaxModelForSubscription = (
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
@@ -258,6 +280,9 @@ export interface SidebarTerminal {
   command: string;
   output: string;
   isExecuting: boolean;
+  /** Distinguishes approval review from actual process execution. */
+  executionPhase?:
+    "reviewing" | "awaiting_approval" | "executing" | "completed" | "failed";
   isBackground?: boolean;
   /** Legacy run_terminal_cmd: input.interactive — true if PTY-backed session. */
   isInteractive?: boolean;
@@ -382,7 +407,20 @@ export interface SidebarToolError {
   toolCallId: string;
 }
 
-export type SidebarContent =
+export interface SidebarSubagents {
+  kind: "subagents";
+  parentMessageId: string;
+  toolCallId: string;
+  selectedSubagentId?: string;
+}
+
+export interface SidebarSubagentOrigin {
+  kind: "subagent";
+  subagentId: string;
+  returnContent: SidebarSubagents;
+}
+
+type SidebarContentValue =
   | SidebarFile
   | SidebarTerminal
   | SidebarProxy
@@ -390,7 +428,17 @@ export type SidebarContent =
   | SidebarNotes
   | SidebarFinding
   | SidebarToolError
-  | SidebarSharedFiles;
+  | SidebarSharedFiles
+  | SidebarSubagents;
+
+export type SidebarContent = SidebarContentValue & {
+  origin?: SidebarSubagentOrigin;
+};
+
+export const isSidebarSubagents = (
+  content: SidebarContent,
+): content is SidebarSubagents =>
+  "kind" in content && content.kind === "subagents";
 
 export const isSidebarFile = (
   content: SidebarContent,
@@ -475,16 +523,14 @@ export interface TodoWriteInput {
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
-export const messageMetadataSchema = z.object({
-  feedbackType: z.enum(["positive", "negative"]).optional(),
-  isAutoContinue: z.boolean().optional(),
-  mode: z.enum(["agent", "ask"]).optional(),
-  createdAt: z.number().optional(),
-  generationStartedAt: z.number().optional(),
-  generationTimeMs: z.number().optional(),
-});
-
-export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
+export type MessageMetadata = {
+  feedbackType?: "positive" | "negative";
+  isAutoContinue?: boolean;
+  mode?: "agent" | "ask";
+  createdAt?: number;
+  generationStartedAt?: number;
+  generationTimeMs?: number;
+};
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
   createdAt?: number;
@@ -520,6 +566,8 @@ export interface ExtraUsageConfig {
   monthlyRemainingDollars?: number;
   /** Whether auto-reload is enabled (can use extra usage even with $0 balance) */
   autoReloadEnabled?: boolean;
+  /** Bypass included plan credits and bill the full request as Extra Usage */
+  chargeAllUsage?: boolean;
 }
 
 export interface QueuedMessage {
@@ -531,8 +579,11 @@ export interface QueuedMessage {
 
 export type QueueBehavior = "queue" | "stop-and-send";
 
-// "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
-// Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
+/**
+ * Persisted sandbox selection: legacy `e2b` means any managed cloud sandbox,
+ * `desktop` means the Tauri app, and other strings are connection IDs. Runtime
+ * telemetry identifies the concrete cloud provider separately.
+ */
 export type SandboxPreference = "e2b" | "desktop" | (string & {});
 
 /**

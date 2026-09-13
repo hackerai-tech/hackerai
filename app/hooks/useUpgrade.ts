@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import {
@@ -7,15 +7,28 @@ import {
   newCheckoutAttemptId,
 } from "@/lib/analytics/client";
 import {
+  PAID_FUNNEL_EVENTS,
   planLookupKeyToBillingInterval,
   planLookupKeyToTier,
   type PaidFunnelPlan,
 } from "@/lib/analytics/paid-funnel";
+import {
+  CHECKOUT_NAVIGATION_GUARD_WINDOW_MS,
+  getRecentCheckoutNavigation,
+  rememberCheckoutNavigation,
+} from "@/lib/billing/checkout-navigation-guard";
+import {
+  proMonthlyPricingExperimentProperties,
+  type ProMonthlyPricingExperimentPresentation,
+} from "@/lib/experiments/pro-monthly-pricing";
+
+// Keep a tab's upgrade ownership across pricing dialog remounts. Server routes
+// remain authoritative across page loads and tabs, including open-session reuse.
+let upgradeInFlight = false;
 
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
-  const upgradeInFlightRef = useRef(false);
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -27,12 +40,13 @@ export const useUpgrade = () => {
       surface?: string;
       reason?: string;
       limit_type?: string;
+      pricing_experiment?: ProMonthlyPricingExperimentPresentation;
     } = {},
   ) => {
     e?.preventDefault();
 
     // Prevent duplicate submits
-    if (upgradeInFlightRef.current) {
+    if (upgradeInFlight) {
       return;
     }
 
@@ -41,13 +55,44 @@ export const useUpgrade = () => {
       return;
     }
 
-    upgradeInFlightRef.current = true;
+    const selectedPlan = planKey || "pro-monthly-plan";
+    if (!currentSubscription || currentSubscription === "free") {
+      const recentNavigation = getRecentCheckoutNavigation({
+        plan: selectedPlan,
+      });
+      if (recentNavigation) {
+        captureAuthenticatedEvent(
+          PAID_FUNNEL_EVENTS.checkoutRedirectSuppressed,
+          {
+            checkout_attempt_id: recentNavigation.attemptId,
+            plan: selectedPlan,
+            from_tier: currentSubscription ?? "free",
+            to_tier: planLookupKeyToTier(selectedPlan),
+            billing_interval: planLookupKeyToBillingInterval(selectedPlan),
+            surface: analyticsContext.surface,
+            source: analyticsContext.source,
+            reason: analyticsContext.reason,
+            limit_type: analyticsContext.limit_type,
+            suppression_reason: "recent_navigation",
+            guard_window_ms: CHECKOUT_NAVIGATION_GUARD_WINDOW_MS,
+            ...proMonthlyPricingExperimentProperties(
+              analyticsContext.pricing_experiment,
+            ),
+          },
+        );
+        toast.info("Checkout is already opening", {
+          description: "Wait a moment before trying again.",
+        });
+        return;
+      }
+    }
+
+    upgradeInFlight = true;
     setUpgradeLoading(true);
 
     let navigationStarted = false;
 
     try {
-      const selectedPlan = planKey || "pro-monthly-plan";
       const checkoutAttemptId = newCheckoutAttemptId();
       const toTier = planLookupKeyToTier(selectedPlan);
       const billingInterval = planLookupKeyToBillingInterval(selectedPlan);
@@ -89,6 +134,9 @@ export const useUpgrade = () => {
           reason: analyticsContext.reason,
           limit_type: analyticsContext.limit_type,
           checkout_type: "new_subscription",
+          ...proMonthlyPricingExperimentProperties(
+            analyticsContext.pricing_experiment,
+          ),
         });
 
         const res = await fetch("/api/subscribe", {
@@ -109,23 +157,31 @@ export const useUpgrade = () => {
           return;
         }
 
-        const { error, url } = data;
+        const { error, url, pricingExperiment } = data;
 
         if (url) {
+          window.location.href = url;
+          rememberCheckoutNavigation({
+            attemptId: checkoutAttemptId,
+            plan: selectedPlan,
+            startedAt: Date.now(),
+          });
           captureAuthenticatedEvent("checkout_redirected", {
             checkout_attempt_id: checkoutAttemptId,
             plan: selectedPlan,
             quantity,
             from_tier: currentSubscription ?? "free",
             to_tier: toTier,
-            billing_interval: billingInterval,
             surface: analyticsContext.surface,
             source: analyticsContext.source,
             reason: analyticsContext.reason,
             limit_type: analyticsContext.limit_type,
             checkout_type: "new_subscription",
+            ...proMonthlyPricingExperimentProperties(
+              pricingExperiment ?? analyticsContext.pricing_experiment,
+            ),
+            billing_interval: billingInterval,
           });
-          window.location.href = url;
           navigationStarted = true;
           return;
         }
@@ -206,7 +262,7 @@ export const useUpgrade = () => {
       }
     } finally {
       if (!navigationStarted) {
-        upgradeInFlightRef.current = false;
+        upgradeInFlight = false;
         setUpgradeLoading(false);
       }
     }

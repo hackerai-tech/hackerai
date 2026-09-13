@@ -1,11 +1,36 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+class MockResponse {
+  readonly status: number;
+  private readonly body: unknown;
+
+  constructor(body: unknown, init?: { status?: number }) {
+    this.body = body;
+    this.status = init?.status ?? 200;
+  }
+
+  static json(body: unknown, init?: { status?: number }) {
+    return new MockResponse(body, init);
+  }
+
+  async json() {
+    return this.body;
+  }
+}
+
+Object.defineProperty(globalThis, "Response", {
+  configurable: true,
+  value: MockResponse,
+});
+
 const mockCreatePublicToken = jest.fn<any>();
 const mockSetActiveTriggerRun = jest.fn<any>();
+const mockHandleInitialChatAndUserMessage = jest.fn<any>();
 const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
 
 jest.mock("next/server", () => ({
+  after: jest.fn(),
   NextRequest: class NextRequest {},
   NextResponse: class NextResponse {},
 }));
@@ -20,7 +45,7 @@ jest.mock("@trigger.dev/sdk", () => ({
 jest.mock("@/lib/db/actions", () => ({
   getChatById: jest.fn(),
   getUserCustomization: jest.fn(),
-  handleInitialChatAndUserMessage: jest.fn(),
+  handleInitialChatAndUserMessage: mockHandleInitialChatAndUserMessage,
   setActiveTriggerRun: mockSetActiveTriggerRun,
 }));
 
@@ -51,9 +76,20 @@ jest.mock("@/lib/utils/sandbox-file-utils", () => ({
 }));
 
 const {
+  AGENT_APPROVAL_TRIGGER_TAG_LIMIT,
+  AGENT_TRIGGER_PAYLOAD_MAX_BYTES,
   buildAgentApprovalSessionId,
+  buildAgentPermissionRunSnapshot,
   buildAgentRunDedupeKeyParts,
+  createAgentTriggerPayloadTooLargeResponse,
+  createAgentTriggerPost,
   finalizeStartedAgentRun,
+  getAgentApprovalTriggerTags,
+  getAgentTriggerPayloadSizeBytes,
+  getAgentTriggerMachine,
+  isAgentTriggerPayloadSizeTooLarge,
+  isAgentTriggerRequestSizeTooLarge,
+  isTriggerRequestBodyTooLargeError,
   shouldRequireAgentApprovalWorkerVersion,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
@@ -68,6 +104,100 @@ describe("Agent trigger route lifecycle", () => {
     mockCloseAgentApprovalSession.mockResolvedValue(true);
   });
 
+  it("measures the aggregate serialized trigger payload in UTF-8 bytes", () => {
+    const payload = { messages: [{ text: "security évidence" }] };
+
+    expect(getAgentTriggerPayloadSizeBytes(payload)).toBe(
+      Buffer.byteLength(JSON.stringify(payload), "utf8"),
+    );
+    expect(AGENT_TRIGGER_PAYLOAD_MAX_BYTES).toBe(3 * 1024 * 1024);
+    expect(
+      isAgentTriggerPayloadSizeTooLarge(AGENT_TRIGGER_PAYLOAD_MAX_BYTES),
+    ).toBe(false);
+    expect(
+      isAgentTriggerPayloadSizeTooLarge(AGENT_TRIGGER_PAYLOAD_MAX_BYTES + 1),
+    ).toBe(true);
+  });
+
+  it("rejects an oversized approval request when its base payload fits", () => {
+    const basePayloadBytes = AGENT_TRIGGER_PAYLOAD_MAX_BYTES;
+    const approvalRequestBodyBytes = AGENT_TRIGGER_PAYLOAD_MAX_BYTES + 1;
+
+    expect(isAgentTriggerPayloadSizeTooLarge(basePayloadBytes)).toBe(false);
+    expect(
+      isAgentTriggerRequestSizeTooLarge({
+        payloadBytes: basePayloadBytes,
+        requestBodyBytes: approvalRequestBodyBytes,
+      }),
+    ).toBe(true);
+  });
+
+  it("recognizes only Trigger's exact request-body 413", () => {
+    const bodyTooLarge = Object.assign(new Error("Request body too large"), {
+      name: "TriggerApiError",
+      status: 413,
+    });
+
+    expect(isTriggerRequestBodyTooLargeError(bodyTooLarge)).toBe(true);
+    expect(
+      isTriggerRequestBodyTooLargeError(
+        Object.assign(new Error("Request body too large"), {
+          name: "TriggerApiError",
+          status: 500,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isTriggerRequestBodyTooLargeError(
+        Object.assign(new Error("Provider media is too large"), {
+          name: "TriggerApiError",
+          statusCode: 413,
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isTriggerRequestBodyTooLargeError(
+        Object.assign(new Error("Request body too large"), { status: 413 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns a user-correctable 413 for oversized Agent starts", async () => {
+    const response = createAgentTriggerPayloadTooLargeResponse();
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "bad_request:api",
+      cause: expect.stringContaining("too large to start"),
+    });
+  });
+
+  it.each([true, false])(
+    "rejects retired temporary=%s before persistence",
+    async (temporary) => {
+      const post = createAgentTriggerPost({ endpoint: "/api/agent" });
+      const response = await post({
+        headers: new Headers(),
+        json: jest.fn().mockResolvedValue({
+          chatId: "chat-1",
+          messages: [],
+          temporary,
+        }),
+      } as any);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        code: "bad_request:api",
+        cause: "Invalid chat request: temporary is no longer supported.",
+        metadata: {
+          invalid_request_field: "temporary",
+          invalid_request_field_reason: "retired_field",
+        },
+      });
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("closes and cancels a run that cannot be associated after deletion", async () => {
     mockSetActiveTriggerRun.mockResolvedValue("deleting");
 
@@ -76,7 +206,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).rejects.toMatchObject({
       type: "not_found",
@@ -102,7 +231,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).rejects.toBe(associationError);
 
@@ -118,7 +246,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).resolves.toEqual({
       publicAccessToken: "run-token",
@@ -141,7 +268,6 @@ describe("Agent trigger route lifecycle", () => {
         chatId: "chat-1",
         runId: "run-1",
         approvalSessionId: "approval-session-1",
-        temporary: false,
       }),
     ).rejects.toThrow("Token service unavailable");
 
@@ -232,5 +358,54 @@ describe("Agent trigger route lifecycle", () => {
 
     expect(retryOfFirstAttempt).toEqual(firstAttempt);
     expect(secondAttempt).not.toEqual(firstAttempt);
+  });
+
+  it("snapshots each permission-mode transition for the next run", () => {
+    const autoReviewRun = buildAgentPermissionRunSnapshot("auto_review");
+    const askRun = buildAgentPermissionRunSnapshot("ask_approval");
+    const fullAccessRun = buildAgentPermissionRunSnapshot("full_access");
+
+    expect(autoReviewRun).toEqual({
+      mode: "auto_review",
+      triggerTag: "permission_auto_review",
+      requiresApprovalSession: true,
+    });
+    expect(askRun).toEqual({
+      mode: "ask_approval",
+      triggerTag: "permission_ask_approval",
+      requiresApprovalSession: true,
+    });
+    expect(fullAccessRun).toEqual({
+      mode: "full_access",
+      triggerTag: "permission_full_access",
+      requiresApprovalSession: false,
+    });
+    expect(autoReviewRun.mode).toBe("auto_review");
+  });
+
+  it("caps approval trigger tags while preserving ordered run identifiers", () => {
+    const triggerTags = [
+      "user_user-1",
+      "chat_chat-1",
+      "sub_pro",
+      "permission_auto_review",
+      "future_tag_1",
+      "future_tag_2",
+    ];
+
+    expect(getAgentApprovalTriggerTags(triggerTags)).toEqual(
+      triggerTags.slice(0, AGENT_APPROVAL_TRIGGER_TAG_LIMIT),
+    );
+    expect(getAgentApprovalTriggerTags(triggerTags)).toHaveLength(5);
+  });
+
+  it.each([
+    ["free", "small-1x"],
+    ["pro", "small-2x"],
+    ["pro-plus", "small-2x"],
+    ["ultra", "small-2x"],
+    ["team", "small-2x"],
+  ] as const)("uses %s Agent runs on %s", (subscription, machine) => {
+    expect(getAgentTriggerMachine(subscription)).toBe(machine);
   });
 });

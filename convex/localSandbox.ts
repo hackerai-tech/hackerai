@@ -44,7 +44,6 @@ function generateToken(): string {
   return `hsb_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-// ============================================================================
 // CENTRIFUGO JWT GENERATION
 // ============================================================================
 
@@ -83,6 +82,27 @@ async function validateToken(
   }
 
   return { valid: true, userId: tokenRecord.user_id };
+}
+
+const LOCAL_CONNECTION_MODES = ["docker", "dangerous"] as const;
+
+async function collectConnectedLocalConnections(
+  db: DatabaseReader,
+  userId: string,
+) {
+  const groups = await Promise.all(
+    LOCAL_CONNECTION_MODES.map((mode) =>
+      db
+        .query("local_sandbox_connections")
+        .withIndex("by_user_and_status_and_mode", (q) =>
+          q.eq("user_id", userId).eq("status", "connected").eq("mode", mode),
+        )
+        .collect(),
+    ),
+  );
+  return groups
+    .flat()
+    .sort((left, right) => left._creationTime - right._creationTime);
 }
 
 export const getToken = mutation({
@@ -163,12 +183,7 @@ export const regenerateToken = mutation({
     // Disconnect existing *connected* rows. Skip already-disconnected rows so
     // we don't clobber their original disconnect_reason/disconnected_at —
     // those are the diagnostic signal we're trying to preserve.
-    const connections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_user_and_status", (q) =>
-        q.eq("user_id", userId).eq("status", "connected"),
-      )
-      .collect();
+    const connections = await collectConnectedLocalConnections(ctx.db, userId);
 
     const now = Date.now();
     for (const connection of connections) {
@@ -289,6 +304,7 @@ const refreshCentrifugoTokenReturns = v.union(
       v.literal("desktop_kicked_by_new_session"),
       v.literal("token_regenerated"),
       v.literal("presence_sweep"),
+      v.literal("command_unresponsive"),
       v.null(),
     ),
     msSinceDisconnected: v.union(v.number(), v.null()),
@@ -306,7 +322,8 @@ type ConnectionRow = {
     | "desktop_disconnect"
     | "desktop_kicked_by_new_session"
     | "token_regenerated"
-    | "presence_sweep";
+    | "presence_sweep"
+    | "command_unresponsive";
   disconnected_at?: number;
   last_heartbeat: number;
   created_at: number;
@@ -413,6 +430,7 @@ export const disconnect = mutation({
   },
 });
 
+// ============================================================================
 export const connectDesktop = mutation({
   args: {
     connectionName: v.string(),
@@ -536,6 +554,41 @@ export const refreshCentrifugoTokenDesktop = mutation({
   },
 });
 
+export const heartbeatDesktop = mutation({
+  args: {
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, { connectionId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (
+      !connection ||
+      connection.user_id !== identity.subject ||
+      connection.client_version !== "desktop" ||
+      connection.status !== "connected"
+    ) {
+      return { success: false };
+    }
+
+    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    return { success: true };
+  },
+});
+
 export const disconnectDesktop = mutation({
   args: {
     connectionId: v.string(),
@@ -579,11 +632,14 @@ export const disconnectByBackend = mutation({
   args: {
     serviceKey: v.string(),
     connectionId: v.string(),
+    reason: v.optional(
+      v.union(v.literal("presence_sweep"), v.literal("command_unresponsive")),
+    ),
   },
   returns: v.object({
     success: v.boolean(),
   }),
-  handler: async (ctx, { serviceKey, connectionId }) => {
+  handler: async (ctx, { serviceKey, connectionId, reason }) => {
     validateServiceKey(serviceKey);
 
     const connection = await ctx.db
@@ -595,7 +651,7 @@ export const disconnectByBackend = mutation({
       await ctx.db.patch(connection._id, {
         status: "disconnected",
         disconnected_at: Date.now(),
-        disconnect_reason: "presence_sweep",
+        disconnect_reason: reason ?? "presence_sweep",
       });
     }
 
@@ -634,12 +690,7 @@ export const listConnections = query({
 
     const userId = identity.subject;
 
-    const connections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_user_and_status", (q) =>
-        q.eq("user_id", userId).eq("status", "connected"),
-      )
-      .collect();
+    const connections = await collectConnectedLocalConnections(ctx.db, userId);
 
     return connections.map((conn) => ({
       connectionId: conn.connection_id,
@@ -681,12 +732,10 @@ export const listConnectionsForBackend = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const connections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_user_and_status", (q) =>
-        q.eq("user_id", args.userId).eq("status", "connected"),
-      )
-      .collect();
+    const connections = await collectConnectedLocalConnections(
+      ctx.db,
+      args.userId,
+    );
 
     return connections.map((conn) => ({
       connectionId: conn.connection_id,

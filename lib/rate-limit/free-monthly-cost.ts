@@ -1,5 +1,8 @@
 import { ChatSDKError } from "@/lib/errors";
-import { getFreeMonthlyCostLimitDollars } from "./free-config";
+import {
+  type FreeLimitPolicy,
+  getFreeMonthlyCostLimitDollars,
+} from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
 import { getLimitPressureContext } from "@/lib/limit-pressure";
@@ -61,10 +64,14 @@ const getLimitMessage = (reset: number) =>
     timeZone: "UTC",
   })}. Upgrade for higher limits and more features.`;
 
+/** Enforce the configured monthly cost cap for a free quota subject. */
 export async function checkFreeMonthlyCostLimit(
-  userId: string,
+  quotaSubject: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<FreeMonthlyCostSnapshot> {
-  const limitPoints = dollarsToPoints(getFreeMonthlyCostLimitDollars());
+  const limitPoints = dollarsToPoints(
+    getFreeMonthlyCostLimitDollars(freeLimits),
+  );
   const { bucket, reset } = getCurrentUtcMonthWindow();
   const redis = createRedisClient();
 
@@ -89,7 +96,7 @@ export async function checkFreeMonthlyCostLimit(
 
   const usedPoints = Math.max(
     0,
-    Number((await redis.get(freeMonthlyCostKey(userId, bucket))) ?? 0),
+    Number((await redis.get(freeMonthlyCostKey(quotaSubject, bucket))) ?? 0),
   );
   const remainingPoints = Math.max(0, limitPoints - usedPoints);
 

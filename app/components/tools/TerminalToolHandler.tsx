@@ -7,6 +7,7 @@ import { isSidebarTerminal } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import {
   computeShellTerminalBlock,
+  getTerminalExecutionPhase,
   getTerminalFailureAction,
   getShellDisplayCommand,
   getStreamingTerminalOutput,
@@ -15,8 +16,13 @@ import {
 } from "./shell-tool-utils";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
+  getAgentAutoReviewDisplayState,
+  getStreamedAgentAutoReviewLifecycle,
+  getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
+  getToolApprovalDisplayTarget,
   ToolApprovalControls,
+  useAgentAutoReviewLifecycleDisplay,
 } from "./ToolApprovalControls";
 
 interface TerminalToolHandlerProps {
@@ -78,8 +84,36 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       return precomputedStreamingOutput;
     return getStreamingTerminalOutput(message.parts, effectiveToolCallId);
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
+  const autoReview = useMemo(
+    () =>
+      getStreamedAgentAutoReviewSummary({
+        parts: message.parts,
+        approvalId: part.approval?.id,
+        toolCallId,
+      }),
+    [message.parts, part.approval?.id, toolCallId],
+  );
+  const streamedAutoReviewLifecycle = useMemo(
+    () =>
+      getStreamedAgentAutoReviewLifecycle({
+        parts: message.parts,
+        toolCallId,
+      }),
+    [message.parts, toolCallId],
+  );
+  const autoReviewLifecycleDisplay = useAgentAutoReviewLifecycleDisplay({
+    parts: message.parts,
+    toolCallId,
+  });
+  const autoReviewDisplay = getAgentAutoReviewDisplayState(
+    autoReviewLifecycleDisplay,
+  );
 
-  const isExecuting = state === "input-available" && status === "streaming";
+  const executionPhase = getTerminalExecutionPhase({
+    toolState: state,
+    autoReviewStatus: streamedAutoReviewLifecycle?.status,
+  });
+  const isExecuting = executionPhase === "executing";
   const hasResult = state === "output-available";
 
   const { blockAction, blockTarget, sidebarContent } = useMemo(
@@ -100,6 +134,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           ? terminalInput?.is_background
           : undefined,
         legacyCommand: !isShellTool ? terminalInput?.command : undefined,
+        executionPhase,
       }),
     [
       isShellTool,
@@ -113,6 +148,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       terminalInput?.interactive,
       terminalInput?.is_background,
       terminalInput?.command,
+      executionPhase,
     ],
   );
 
@@ -155,9 +191,11 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={blockAction(status === "streaming")}
+          action={
+            autoReviewDisplay?.action ?? blockAction(status === "streaming")
+          }
           target={blockTarget}
-          isShimmer={status === "streaming"}
+          isShimmer={autoReviewDisplay?.isShimmer ?? status === "streaming"}
           isClickable
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
@@ -176,6 +214,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           detail="Approve to continue, or deny to stop this command."
           kind="terminal"
           operation="terminal_execute"
+          autoReview={autoReview}
         >
           {(sendState) => {
             const display = getToolApprovalDisplayState({
@@ -188,7 +227,10 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
               <ToolBlock
                 icon={<Terminal />}
                 action={display.action}
-                target={blockTarget}
+                target={getToolApprovalDisplayTarget({
+                  sendState,
+                  target: blockTarget,
+                })}
                 isShimmer={display.isShimmer}
                 isClickable={!!sidebarContent}
                 onClick={handleOpenInSidebar}
@@ -218,7 +260,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           action={
             isStoppedByUser
               ? "Stopped command"
-              : getTerminalFailureAction(errorText)
+              : getTerminalFailureAction(errorText, shellAction)
           }
           target={blockTarget}
           isClickable={!!sidebarContent}

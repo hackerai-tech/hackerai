@@ -34,10 +34,17 @@ import { createContentSequenceGuard } from "./agent-long-content-sequence-guard"
  */
 type RunHandle = {
   runId: string;
+  runCorrelationToken?: string;
   publicAccessToken: string;
   chatId?: string;
   approvalSessionId?: string;
   approvalSessionPublicAccessToken?: string;
+};
+
+export type AgentLongRunStarted = {
+  chatId?: string;
+  runId: string;
+  runCorrelationToken?: string;
 };
 
 const getAgentResumeUrl = (chatId: string | undefined): string | undefined =>
@@ -163,8 +170,11 @@ const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 const STREAM_IDLE_TIMEOUT_SECONDS = STREAM_TIMEOUT_MS / 1000;
 const POST_FINISH_DRAIN_TIMEOUT_MS = 2_000;
 const COMPLETED_RUN_DRAIN_TIMEOUT_MS = 5_000;
-const QUIET_STREAM_STATUS_POLL_INTERVAL_MS = 2_000;
-const QUIET_STREAM_STATUS_POLL_AFTER_MS = 5_000;
+// The task emits a hidden heartbeat every 25 seconds. Poll at most once during
+// that quiet window so fallback status checks cannot exhaust Trigger's shared
+// API token bucket when many Agent runs are active at the same time.
+const QUIET_STREAM_STATUS_POLL_INTERVAL_MS = 10_000;
+const QUIET_STREAM_STATUS_POLL_AFTER_MS = 15_000;
 
 const getChatIdFromRequestInit = (
   init: RequestInit | undefined,
@@ -261,6 +271,26 @@ const buildSSEResponseFromRun = (
         );
       };
 
+      const enqueueAgentRunCorrelationPart = () => {
+        if (!handle.runCorrelationToken || closed) {
+          return;
+        }
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              type: "data-agent-run-correlation",
+              id: `agent-run-correlation-${runId}`,
+              transient: true,
+              data: {
+                chatId,
+                runId,
+                token: handle.runCorrelationToken,
+              },
+            })}\n\n`,
+          ),
+        );
+      };
+
       cancelRealtimeSubscriptions = async () => {
         readAbortController?.abort();
         if (statusMonitorInterval !== undefined) {
@@ -335,6 +365,7 @@ const buildSSEResponseFromRun = (
           return;
         }
 
+        enqueueAgentRunCorrelationPart();
         enqueueAgentApprovalSessionPart();
 
         const completedRunDrainTimeout = Symbol("completed-run-drain-timeout");
@@ -388,7 +419,7 @@ const buildSSEResponseFromRun = (
         };
 
         const handleRunStatus = (status: string | undefined) => {
-          if (status === "COMPLETED") {
+          if (status === "COMPLETED" || status === "DETACHED") {
             startCompletedRunDrainTimer();
             return;
           }
@@ -718,6 +749,7 @@ const buildSSEResponseFromRun = (
 
 export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
+  onRunStarted?: (run: AgentLongRunStarted) => void,
 ): Promise<Response> => {
   const chatId = getChatIdFromRequestInit(init);
   const linkedAbort = createLinkedAbortController(init?.signal ?? undefined);
@@ -733,6 +765,11 @@ export const fetchAgentLongStream = async (
     if (!startResponse.ok) return startResponse;
 
     const handle: RunHandle = await startResponse.json();
+    onRunStarted?.({
+      chatId: handle.chatId ?? chatId,
+      runId: handle.runId,
+      runCorrelationToken: handle.runCorrelationToken,
+    });
     return buildSSEResponseFromRun(handle, init?.signal ?? undefined, {
       chatId,
       resumeUrl: getAgentResumeUrl(chatId),

@@ -12,6 +12,17 @@ import {
 import type { SidebarContent } from "@/types/chat";
 import { createToolInputErrorContent } from "@/lib/chat/tool-error-display";
 
+const mockUseQuery = jest.fn<any>();
+const mockOpenSidebar = jest.fn();
+const mockCloseSidebar = jest.fn();
+const mockRetrySubagentRealtime = jest.fn();
+let mockSubagentRealtime = {
+  message: null,
+  state: "idle",
+  retry: mockRetrySubagentRealtime,
+};
+let mockSidebarContent: SidebarContent | null = null;
+
 jest.mock("next/dynamic", () => ({
   __esModule: true,
   default: () => {
@@ -30,6 +41,29 @@ jest.mock("next/image", () => ({
 
 jest.mock("convex/react", () => ({
   useAction: () => jest.fn(),
+  useQuery: (...args: unknown[]) => mockUseQuery(...args),
+}));
+
+jest.mock("@/convex/_generated/api", () => ({
+  api: {
+    subagents: {
+      getOwned: "getOwned",
+      getMessagesOwned: "getMessagesOwned",
+    },
+  },
+}));
+
+jest.mock("@/app/hooks/useSubagentRealtime", () => ({
+  useSubagentRealtime: () => mockSubagentRealtime,
+}));
+
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({
+    sidebarOpen: mockSidebarContent !== null,
+    sidebarContent: mockSidebarContent,
+    closeSidebar: mockCloseSidebar,
+    openSidebar: mockOpenSidebar,
+  }),
 }));
 
 jest.mock("@/components/ui/tooltip", () => ({
@@ -62,7 +96,7 @@ jest.mock("../TodoPanel", () => ({
   TodoPanel: () => <div data-testid="todo-panel" />,
 }));
 
-const { ComputerSidebarBase } =
+const { ComputerSidebar, ComputerSidebarBase } =
   require("../ComputerSidebar") as typeof import("../ComputerSidebar");
 
 const activeSidebarContent: SidebarContent = {
@@ -89,6 +123,15 @@ const otherToolMessage = {
 describe("ComputerSidebar reconnect behavior", () => {
   beforeEach(() => {
     jest.useFakeTimers();
+    jest.clearAllMocks();
+    mockUseQuery.mockReset();
+    mockUseQuery.mockReturnValue(undefined);
+    mockSubagentRealtime = {
+      message: null,
+      state: "idle",
+      retry: mockRetrySubagentRealtime,
+    };
+    mockSidebarContent = null;
   });
 
   afterEach(() => {
@@ -155,6 +198,179 @@ describe("ComputerSidebar reconnect behavior", () => {
     );
   });
 
+  it("returns to the subagent and navigates the supplied child-tool timeline", () => {
+    const closeSidebar = jest.fn();
+    const onNavigate = jest.fn();
+    const onBack = jest.fn();
+    const childToolMessages = [
+      {
+        id: "subagent-assistant",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "child-tool-1",
+            state: "output-available",
+            input: { command: "pwd" },
+            output: { result: { output: "/tmp\n" } },
+          },
+          {
+            type: "tool-run_terminal_cmd",
+            toolCallId: "child-tool-2",
+            state: "output-available",
+            input: { command: "npm test" },
+            output: { result: { output: "passed\n" } },
+          },
+        ],
+      },
+    ];
+
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={{
+          command: "npm test",
+          output: "passed\n",
+          isExecuting: false,
+          toolCallId: "child-tool-2",
+        }}
+        closeSidebar={closeSidebar}
+        messages={childToolMessages}
+        onNavigate={onNavigate}
+        status="ready"
+        backNavigation={{ label: "Back to subagent", onBack }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("slider", { name: "Tool execution 2 of 2" }),
+    ).toHaveAttribute("aria-valuenow", "1");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Previous tool execution" }),
+    );
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "child-tool-1" }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to subagent" }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the owned subagent transcript for wrapper navigation", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "npm test",
+      output: "passed\n",
+      isExecuting: false,
+      toolCallId: "child-tool-2",
+      origin,
+    };
+    mockUseQuery.mockImplementation((query) => {
+      if (query === "getOwned") {
+        return {
+          subagent_id: "sa_child",
+          status: "completed",
+          trigger_run_id: "run-child",
+        };
+      }
+      return [
+        {
+          message_id: "child-message",
+          sequence: 1,
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "child-tool-1",
+              state: "output-available",
+              input: { command: "pwd" },
+              output: { result: { output: "/tmp\n" } },
+            },
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "child-tool-2",
+              state: "output-available",
+              input: { command: "npm test" },
+              output: { result: { output: "passed\n" } },
+            },
+          ],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+    });
+
+    render(<ComputerSidebar messages={[otherToolMessage]} status="ready" />);
+
+    expect(
+      screen.getByRole("slider", { name: "Tool execution 2 of 2" }),
+    ).toBeVisible();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Previous tool execution" }),
+    );
+    expect(mockOpenSidebar).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "child-tool-1",
+        origin,
+      }),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to subagent" }));
+    expect(mockOpenSidebar).toHaveBeenCalledWith(origin.returnContent);
+  });
+
+  it("offers reconnect when an active child stream fails before persistence", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "npm test",
+      output: "",
+      isExecuting: true,
+      toolCallId: "child-tool-1",
+      origin,
+    };
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? {
+            subagent_id: "sa_child",
+            status: "running",
+            trigger_run_id: "run-child",
+          }
+        : [],
+    );
+    mockSubagentRealtime = {
+      message: null,
+      state: "error",
+      retry: mockRetrySubagentRealtime,
+    };
+
+    render(<ComputerSidebar messages={[]} status="streaming" />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Live updates disconnected.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    expect(mockRetrySubagentRealtime).toHaveBeenCalledTimes(1);
+  });
   it("shows safe tool failure details and provides a clear close action", () => {
     const closeSidebar = jest.fn();
     const rawError =

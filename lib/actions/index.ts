@@ -1,11 +1,19 @@
 import { generateText, Output, UIMessage, UIMessageStreamWriter } from "ai";
-import { myProvider } from "@/lib/ai/providers";
+import {
+  DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+  getOpenRouterProviderRoutingForModel,
+  myProvider,
+} from "@/lib/ai/providers";
 import { z } from "zod";
 import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
+import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 const MAX_GENERATED_TITLE_LENGTH = 100;
 const TITLE_GENERATION_MAX_OUTPUT_TOKENS = 64;
 const FALLBACK_TITLE_WORD_LIMIT = 5;
+const IMAGE_ONLY_CHAT_TITLE = "New chat";
+const AUXILIARY_IMAGE_DESCRIPTION_PATTERN =
+  /^<image_description\b(?=[^>]*\btrust="untrusted")[^>]*>[\s\S]*<\/image_description>$/;
 
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
@@ -53,21 +61,44 @@ ${truncateMiddle(message, 8000)}`;
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
+  onCost?: (costDollars: number) => void,
 ): Promise<string | undefined> => {
   const firstMessage = truncatedMessages[0];
-  const textContent = (firstMessage?.parts ?? [])
-    .filter((part: { type: string; text?: string }) => part.type === "text")
+  const firstMessageParts = firstMessage?.parts ?? [];
+  const isAuxiliaryImageDescription = (part: {
+    type: string;
+    text?: string;
+  }): boolean =>
+    part.type === "text" &&
+    AUXILIARY_IMAGE_DESCRIPTION_PATTERN.test((part.text ?? "").trim());
+  const textContent = firstMessageParts
+    .filter(
+      (part: { type: string; text?: string }) =>
+        part.type === "text" && !isAuxiliaryImageDescription(part),
+    )
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
+  const hasImage = firstMessageParts.some(
+    (part) =>
+      (part.type === "file" && part.mediaType.startsWith("image/")) ||
+      isAuxiliaryImageDescription(part),
+  );
+
+  if (!textContent.trim() && hasImage) {
+    return IMAGE_ONLY_CHAT_TITLE;
+  }
+
   const fallbackTitle = fallbackTitleFromMessage(textContent);
 
   try {
-    const { output } = await generateText({
+    const result = await generateText({
       model: myProvider.languageModel("title-generator-model"),
       providerOptions: {
-        xai: {
-          // Disable storing the conversation in XAI's database
-          store: false,
+        openrouter: {
+          reasoning: { enabled: false },
+          provider: getOpenRouterProviderRoutingForModel(
+            DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
+          ),
         },
       },
       output: Output.object({
@@ -93,7 +124,12 @@ export const generateTitleFromUserMessage = async (
       ],
     });
 
-    return normalizeTitle(output?.title) ?? fallbackTitle;
+    const costDollars = getProviderUsageRawModelCost(result.usage?.raw);
+    if (costDollars !== undefined) {
+      onCost?.(costDollars);
+    }
+
+    return normalizeTitle(result.output?.title) ?? fallbackTitle;
   } catch {
     return fallbackTitle;
   }
@@ -102,15 +138,28 @@ export const generateTitleFromUserMessage = async (
 export const generateTitleFromUserMessageWithWriter = async (
   truncatedMessages: UIMessage[],
   writer: UIMessageStreamWriter,
+  onTitleGenerated?: (title: string) => Promise<unknown>,
+  onCost?: (costDollars: number) => void,
 ): Promise<string | undefined> => {
   try {
-    const chatTitle = await generateTitleFromUserMessage(truncatedMessages);
+    const chatTitle = await generateTitleFromUserMessage(
+      truncatedMessages,
+      onCost,
+    );
 
     writer.write({
       type: "data-title",
       data: { chatTitle },
       transient: true,
     });
+
+    if (chatTitle && onTitleGenerated) {
+      try {
+        await onTitleGenerated(chatTitle);
+      } catch (error) {
+        console.error("Failed to persist generated chat title:", error);
+      }
+    }
 
     return chatTitle;
   } catch (error) {

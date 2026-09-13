@@ -26,7 +26,7 @@ interface SandboxSelectorProps {
   value: string;
   onChange?: (value: string) => void;
   disabled?: boolean;
-  size?: "sm" | "md";
+  size?: "sm" | "toolbar" | "md";
 }
 
 interface ConnectionOption {
@@ -34,6 +34,7 @@ interface ConnectionOption {
   label: string;
   shortLabel: string;
   icon: typeof Cloud;
+  disabled?: boolean;
 }
 
 export function SandboxSelector({
@@ -45,7 +46,11 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
   const { isTauri } = useTauri();
-  const { subscription, localConnections: connections } = useGlobalState();
+  const {
+    subscription,
+    localConnections: connections,
+    desktopBridgeStatus,
+  } = useGlobalState();
   const isFreeUser = subscription === "free";
 
   const detectedPlatform = useMemo(() => {
@@ -59,25 +64,113 @@ export function SandboxSelector({
     shortLabel: "Cloud",
     icon: Cloud,
   };
-  const desktopOptions: ConnectionOption[] =
-    connections
-      ?.filter((conn) => conn.isDesktop)
-      .map(() => ({
-        id: "desktop" as string,
-        label: "Local",
-        shortLabel: "Local",
-        icon: Monitor,
-      })) || [];
-  const remoteOptions: ConnectionOption[] =
-    connections
-      ?.filter((conn) => !conn.isDesktop)
-      .map((conn) => ({
-        id: conn.connectionId,
-        label: conn.osInfo?.hostname || conn.name,
-        shortLabel: conn.osInfo?.hostname || conn.name,
-        icon: Laptop,
-      })) || [];
+  const desktopLabel =
+    isTauri && desktopBridgeStatus !== "connected"
+      ? desktopBridgeStatus === "connecting"
+        ? "Local reconnecting"
+        : "Local unavailable"
+      : "Local";
+  const desktopConnection = connections?.find((conn) => conn.isDesktop);
+  const desktopIsSelectable = !isTauri || desktopBridgeStatus === "connected";
+  const desktopOptions: ConnectionOption[] = desktopConnection
+    ? [
+        {
+          id: "desktop",
+          label: desktopLabel,
+          shortLabel: desktopLabel,
+          icon: Monitor,
+          disabled: !desktopIsSelectable,
+        },
+      ]
+    : [];
+  const remoteConnections = useMemo(
+    () => connections?.filter((conn) => !conn.isDesktop) ?? [],
+    [connections],
+  );
+  const remoteConnectionIds = useMemo(
+    () =>
+      remoteConnections
+        .map((connection) => connection.connectionId)
+        .sort()
+        .join(","),
+    [remoteConnections],
+  );
+  const shouldVerifyRemotePresence =
+    isTauri &&
+    desktopBridgeStatus !== "connected" &&
+    remoteConnections.length > 0;
+  const remotePresenceRequest = useMemo(
+    () => ({
+      enabled: shouldVerifyRemotePresence,
+      connectionIds: remoteConnectionIds,
+    }),
+    [remoteConnectionIds, shouldVerifyRemotePresence],
+  );
+  const [remotePresence, setRemotePresence] = useState<{
+    request: typeof remotePresenceRequest;
+    onlineConnectionIds: Set<string>;
+  } | null>(null);
+  const onlineRemoteConnectionIds =
+    remotePresence?.request === remotePresenceRequest
+      ? remotePresence.onlineConnectionIds
+      : null;
+  const liveRemoteConnections = useMemo(
+    () =>
+      shouldVerifyRemotePresence && onlineRemoteConnectionIds
+        ? remoteConnections.filter((connection) =>
+            onlineRemoteConnectionIds.has(connection.connectionId),
+          )
+        : remoteConnections,
+    [onlineRemoteConnectionIds, remoteConnections, shouldVerifyRemotePresence],
+  );
+  const remoteOptions: ConnectionOption[] = liveRemoteConnections.map(
+    (conn) => ({
+      id: conn.connectionId,
+      label: conn.osInfo?.hostname || conn.name,
+      shortLabel: conn.osInfo?.hostname || conn.name,
+      icon: Laptop,
+    }),
+  );
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
+
+  // A connected Convex row can briefly exist before the command relay has
+  // subscribed. Confirm live Centrifugo presence before automatically choosing
+  // a remote runner over a reconnecting embedded bridge.
+  useEffect(() => {
+    if (!remotePresenceRequest.enabled) return;
+
+    let cancelled = false;
+    fetch("/api/sandbox/presence")
+      .then((response) => {
+        if (!response.ok) throw new Error("Presence check failed");
+        return response.json() as Promise<{
+          connections?: Array<{ connectionId?: string; online?: boolean }>;
+        }>;
+      })
+      .then((presence) => {
+        if (cancelled) return;
+        setRemotePresence({
+          request: remotePresenceRequest,
+          onlineConnectionIds: new Set(
+            (presence.connections ?? [])
+              .filter(
+                (connection) =>
+                  connection.online &&
+                  typeof connection.connectionId === "string",
+              )
+              .map((connection) => connection.connectionId as string),
+          ),
+        });
+      })
+      .catch(() => {
+        // Keep the remote options visible for manual selection, but do not
+        // auto-select one without authoritative presence.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [remotePresenceRequest]);
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
@@ -105,21 +198,71 @@ export function SandboxSelector({
     }
   }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
 
-  // Auto-select first local option for free users who default to Cloud
+  // Keep free users on a usable local connection. A stale Desktop presence can
+  // outlive the embedded bridge, so prefer a healthy remote runner while the
+  // bridge reconnects instead of repeatedly selecting the unavailable bridge.
   useEffect(() => {
-    if (!isFreeUser || value !== "e2b" || !connections?.length) return;
-    const desktop = connections.find((c) => c.isDesktop);
-    onChange?.(desktop ? "desktop" : connections[0].connectionId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isFreeUser, value, connections]);
+    if (!isFreeUser || !connections?.length) return;
 
-  const selectedOption = options.find((opt) => opt.id === value) || options[0];
+    const firstRemote = shouldVerifyRemotePresence
+      ? onlineRemoteConnectionIds
+        ? liveRemoteConnections[0]
+        : undefined
+      : remoteConnections[0];
+    const preferredLocal =
+      desktopConnection && desktopIsSelectable
+        ? "desktop"
+        : firstRemote?.connectionId;
+    if (!preferredLocal) return;
+
+    const desktopUnavailable =
+      isTauri && value === "desktop" && !desktopIsSelectable;
+    if (value === "e2b" || desktopUnavailable) {
+      onChange?.(preferredLocal);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    isFreeUser,
+    value,
+    connections,
+    desktopConnection,
+    desktopIsSelectable,
+    isTauri,
+    shouldVerifyRemotePresence,
+    onlineRemoteConnectionIds,
+    liveRemoteConnections,
+    remoteConnections,
+  ]);
+
+  const unavailableLocalOption: ConnectionOption | null =
+    value !== "e2b" && !valueMatchesOption
+      ? {
+          id: value,
+          label:
+            value === "desktop" && desktopBridgeStatus === "connecting"
+              ? "Local reconnecting"
+              : "Local unavailable",
+          shortLabel:
+            value === "desktop" && desktopBridgeStatus === "connecting"
+              ? "Local reconnecting"
+              : value === "desktop" && desktopBridgeStatus === "connected"
+                ? "Local"
+                : "Local unavailable",
+          icon: value === "desktop" ? Monitor : Laptop,
+        }
+      : null;
+  const selectedOption =
+    options.find((option) => option.id === value) ??
+    unavailableLocalOption ??
+    cloudOption;
   const Icon = selectedOption?.icon || Cloud;
 
   const buttonClassName =
     size === "md"
-      ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-      : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : size === "toolbar"
+        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-44"
+        : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
 
@@ -131,9 +274,12 @@ export function SandboxSelector({
           size={size === "md" ? "default" : "sm"}
           disabled={disabled}
           className={buttonClassName}
+          title={selectedOption?.label}
         >
           <Icon className={iconClassName} />
-          <span className="truncate">{selectedOption?.shortLabel}</span>
+          <span className="min-w-0 flex-1 truncate text-left">
+            {selectedOption?.shortLabel}
+          </span>
           <ChevronDown
             className={
               size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
@@ -184,14 +330,18 @@ export function SandboxSelector({
             return (
               <button
                 key={option.id}
+                disabled={option.disabled}
                 onClick={() => {
+                  if (option.disabled) return;
                   onChange?.(option.id);
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
-                  value === option.id
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-muted"
+                  option.disabled
+                    ? "opacity-60 cursor-not-allowed"
+                    : value === option.id
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-muted"
                 }`}
               >
                 <OptionIcon className="h-4 w-4 shrink-0" />

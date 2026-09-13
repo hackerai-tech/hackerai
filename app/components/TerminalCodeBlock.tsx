@@ -7,6 +7,7 @@ import { codeToHtml } from "shiki";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
 import { isWebAssemblyAvailable } from "@/lib/utils/shiki";
+import type { SidebarTerminal } from "@/types/chat";
 
 const XtermRenderer = dynamic(
   () => import("./XtermRenderer").then((m) => m.XtermRenderer),
@@ -23,6 +24,7 @@ interface TerminalCodeBlockProps {
   wrap?: boolean;
   shellAction?: string;
   rawBytes?: string; // Raw PTY bytes for xterm rendering
+  executionPhase?: SidebarTerminal["executionPhase"];
 }
 
 interface AnsiCodeBlockProps {
@@ -226,6 +228,7 @@ export const TerminalCodeBlock = ({
   wrap = false,
   shellAction,
   rawBytes,
+  executionPhase,
 }: TerminalCodeBlockProps) => {
   const [isWrapped, setIsWrapped] = useState(wrap);
 
@@ -304,6 +307,12 @@ export const TerminalCodeBlock = ({
   // actions or run_terminal_cmd interactive=true) where cursor-movement / TUI rendering
   // matters. Non-interactive exec falls through to AnsiCodeBlock (shiki).
   const useXterm = rawBytes !== undefined;
+  const preExecutionLabel =
+    executionPhase === "reviewing"
+      ? "Reviewing before execution…"
+      : executionPhase === "awaiting_approval"
+        ? "Awaiting approval…"
+        : undefined;
 
   return (
     <div className="shiki not-prose relative h-full w-full bg-transparent overflow-hidden">
@@ -312,7 +321,22 @@ export const TerminalCodeBlock = ({
       <div
         className={`h-full w-full bg-background ${useXterm ? "overflow-hidden" : "overflow-auto"}`}
       >
-        {isExecuting && !output && status === "streaming" ? (
+        {preExecutionLabel ? (
+          <div className="h-full w-full overflow-auto px-[1em] py-[1em] text-sm font-[450] text-card-foreground">
+            <pre
+              className={`m-0 font-mono ${
+                isWrapped
+                  ? "whitespace-pre-wrap break-words"
+                  : "whitespace-pre overflow-x-auto"
+              }`}
+            >
+              <code>{`${commandPrefix} ${command}`}</code>
+            </pre>
+            <div className="mt-3 text-muted-foreground">
+              {preExecutionLabel}
+            </div>
+          </div>
+        ) : isExecuting && !output && status === "streaming" ? (
           isInteractiveAction ? (
             <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
               <Shimmer>Waiting for output</Shimmer>

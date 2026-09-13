@@ -2,9 +2,10 @@ import React from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import { createPortal } from "react-dom";
-import { useAction } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
+  ArrowLeft,
   Eye,
   FileText,
   Maximize2,
@@ -15,7 +16,8 @@ import {
   SkipForward,
   X,
 } from "lucide-react";
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import type { UIMessage } from "ai";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
@@ -35,7 +37,9 @@ import {
   isSidebarFinding,
   isSidebarToolError,
   isSidebarSharedFiles,
+  isSidebarSubagents,
   type SidebarContent,
+  type SidebarSubagentOrigin,
   type ChatStatus,
   type NoteCategory,
 } from "@/types/chat";
@@ -55,6 +59,13 @@ import {
   getToolName,
   getDisplayTarget,
 } from "./computer-sidebar-utils";
+import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
+import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
+
+const SubagentsSidebar = dynamic(
+  () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
+  { ssr: false },
+);
 
 interface ComputerSidebarProps {
   sidebarOpen: boolean;
@@ -63,6 +74,13 @@ interface ComputerSidebarProps {
   messages?: any[];
   onNavigate?: (content: SidebarContent) => void;
   status?: ChatStatus;
+  backNavigation?: {
+    label: string;
+    onBack: () => void;
+  };
+  realtimeRecovery?: {
+    onRetry: () => void;
+  };
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -295,6 +313,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   messages = [],
   onNavigate,
   status,
+  backNavigation,
+  realtimeRecovery,
 }) => {
   const [isWrapped, setIsWrapped] = useState(true);
   const previousToolCountRef = useRef<number>(0);
@@ -490,6 +510,21 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
           <div className="flex-1 min-w-0 p-4 flex flex-col h-full">
             {/* Header */}
             <div className="flex items-center gap-2 w-full">
+              {backNavigation && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={backNavigation.onBack}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={backNavigation.label}
+                    >
+                      <ArrowLeft className="h-5 w-5" aria-hidden />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{backNavigation.label}</TooltipContent>
+                </Tooltip>
+              )}
               <div className="text-foreground text-lg font-semibold flex-1">
                 {headerTitle}
               </div>
@@ -554,6 +589,22 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
               </div>
             </div>
+
+            {realtimeRecovery && (
+              <div
+                role="alert"
+                className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+              >
+                <span>Live updates disconnected.</span>
+                <button
+                  type="button"
+                  onClick={realtimeRecovery.onRetry}
+                  className="shrink-0 font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Reconnect
+                </button>
+              </div>
+            )}
 
             {/* Content Container */}
             <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
@@ -714,6 +765,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           wrap={isWrapped}
                           shellAction={resolvedTerminal.shellAction}
                           rawBytes={resolvedTerminal.rawBytes}
+                          executionPhase={resolvedTerminal.executionPhase}
                         />
                       )}
                       {isProxy && resolvedProxy && (
@@ -1031,7 +1083,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                         aria-valuemin={0}
                         aria-valuemax={maxIndex}
                         aria-valuenow={currentIndex}
-                        aria-label={`Tool execution ${currentIndex + 1}`}
+                        aria-label={`Tool execution ${currentIndex + 1} of ${toolExecutions.length}`}
                         className="relative block h-[14px] w-[14px] rounded-full bg-blue-500 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 border-2 border-background drop-shadow-[0px_1px_4px_rgba(0,0,0,0.06)]"
                       ></span>
                     </span>
@@ -1079,6 +1131,83 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   );
 };
 
+const SubagentComputerSidebar = ({
+  closeSidebar,
+  openSidebar,
+  origin,
+  sidebarContent,
+}: {
+  closeSidebar: () => void;
+  openSidebar: (content: SidebarContent) => void;
+  origin: SidebarSubagentOrigin;
+  sidebarContent: SidebarContent;
+}) => {
+  const run = useQuery(api.subagents.getOwned, {
+    subagentId: origin.subagentId,
+  });
+  const persisted = useQuery(api.subagents.getMessagesOwned, {
+    subagentId: origin.subagentId,
+  });
+  const active = !!run && SUBAGENT_ACTIVE_STATUSES.has(run.status);
+  const hasPersistedAssistant = persisted?.some(
+    (message) => message.role === "assistant",
+  );
+  const {
+    message: liveMessage,
+    state: realtimeState,
+    retry: retryRealtime,
+  } = useSubagentRealtime({
+    subagentId: origin.subagentId,
+    enabled:
+      !!run?.trigger_run_id &&
+      (active || (persisted !== undefined && !hasPersistedAssistant)),
+  });
+
+  const messages = useMemo(() => {
+    const saved = (persisted ?? []).map((message): UIMessage => ({
+      id: `${origin.subagentId}-${message.sequence}`,
+      role: message.role,
+      parts: message.parts as UIMessage["parts"],
+    }));
+    return liveMessage && !hasPersistedAssistant
+      ? [...saved, liveMessage]
+      : saved;
+  }, [hasPersistedAssistant, liveMessage, origin.subagentId, persisted]);
+
+  const navigateWithinSubagent = useCallback(
+    (content: SidebarContent) => openSidebar({ ...content, origin }),
+    [openSidebar, origin],
+  );
+  const returnToSubagent = useCallback(
+    () => openSidebar(origin.returnContent),
+    [openSidebar, origin.returnContent],
+  );
+  const timelineStatus: ChatStatus =
+    run === undefined || persisted === undefined || active
+      ? "streaming"
+      : "ready";
+
+  return (
+    <ComputerSidebarBase
+      sidebarOpen
+      sidebarContent={sidebarContent}
+      closeSidebar={closeSidebar}
+      messages={messages}
+      onNavigate={navigateWithinSubagent}
+      status={timelineStatus}
+      backNavigation={{
+        label: "Back to subagent",
+        onBack: returnToSubagent,
+      }}
+      realtimeRecovery={
+        realtimeState === "error" && active && !hasPersistedAssistant
+          ? { onRetry: retryRealtime }
+          : undefined
+      }
+    />
+  );
+};
+
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
   messages?: any[];
@@ -1086,6 +1215,27 @@ export const ComputerSidebar: React.FC<{
 }> = ({ messages, status }) => {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useGlobalState();
+
+  if (sidebarOpen && sidebarContent && isSidebarSubagents(sidebarContent)) {
+    return (
+      <SubagentsSidebar
+        key={sidebarContent.toolCallId}
+        content={sidebarContent}
+        closeSidebar={closeSidebar}
+      />
+    );
+  }
+
+  if (sidebarOpen && sidebarContent?.origin?.kind === "subagent") {
+    return (
+      <SubagentComputerSidebar
+        closeSidebar={closeSidebar}
+        openSidebar={openSidebar}
+        origin={sidebarContent.origin}
+        sidebarContent={sidebarContent}
+      />
+    );
+  }
 
   return (
     <ComputerSidebarBase

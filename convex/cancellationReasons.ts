@@ -35,6 +35,18 @@ const reasonCategoryValidator = v.union(
   v.literal("other"),
 );
 
+const reasonSubcategoryValidator = v.union(
+  v.literal("too_expensive_low_frequency"),
+  v.literal("insufficient_included_usage"),
+  v.literal("failed_or_incomplete_task"),
+  v.literal("slow_or_disconnected_agent"),
+  v.literal("wrong_execution_environment"),
+  v.literal("model_quality"),
+  v.literal("billing_or_renewal"),
+  v.literal("missing_capability"),
+  v.literal("other"),
+);
+
 const usageSegmentValidator = v.union(
   v.literal("none"),
   v.literal("light"),
@@ -57,6 +69,16 @@ type CancellationReasonCategory =
   | "hit_usage_limits"
   | "switched_tool"
   | "temporary_pause"
+  | "other";
+type CancellationReasonSubcategory =
+  | "too_expensive_low_frequency"
+  | "insufficient_included_usage"
+  | "failed_or_incomplete_task"
+  | "slow_or_disconnected_agent"
+  | "wrong_execution_environment"
+  | "model_quality"
+  | "billing_or_renewal"
+  | "missing_capability"
   | "other";
 
 function usageSegment(requestCount: number): RecentUsageSegment {
@@ -94,7 +116,7 @@ async function recentUsageSummary(
     0,
   );
   const totalTokens = logs.reduce(
-    (sum, log) => sum + (log.total_tokens ?? 0),
+    (sum, log) => sum + log.input_tokens + log.output_tokens,
     0,
   );
 
@@ -117,6 +139,9 @@ export const recordCancellationStarted = mutation({
     plan: v.optional(v.string()),
     subscriptionTier: v.optional(subscriptionTierValidator),
     reasonCategory: reasonCategoryValidator,
+    // Optional during rollout so an older app server can still record the
+    // broad reason while the new survey deploy propagates.
+    reasonSubcategory: v.optional(reasonSubcategoryValidator),
     reasonDetails: v.string(),
     accountCreatedAt: v.optional(v.number()),
     accountAgeDays: v.optional(v.number()),
@@ -140,6 +165,7 @@ export const recordCancellationStarted = mutation({
       plan: args.plan,
       subscription_tier: args.subscriptionTier,
       reason_category: args.reasonCategory,
+      reason_subcategory: args.reasonSubcategory,
       status: "started",
       source: args.source ?? "in_app",
       started_at: now,
@@ -167,6 +193,59 @@ export const recordCancellationStarted = mutation({
     });
 
     return cancellationReasonId;
+  },
+});
+
+/**
+ * Record that the user accepted a retention offer for a started cancellation.
+ * A downgrade keeps the subscription, so the row becomes "retained". A pause
+ * still ends the subscription later, so the row stays "started" until the
+ * Stripe webhook completes it.
+ */
+export const recordRetentionOfferAccepted = mutation({
+  args: {
+    serviceKey: v.string(),
+    cancellationReasonId: v.id("cancellation_reasons"),
+    retentionOffer: v.union(v.literal("pause"), v.literal("downgrade")),
+    acceptedAt: v.optional(v.number()),
+  },
+  returns: v.object({
+    recorded: v.boolean(),
+    reason: v.optional(
+      v.union(
+        v.literal("not_found"),
+        v.literal("already_decided"),
+        v.literal("different_offer_accepted"),
+      ),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const row = await ctx.db.get(args.cancellationReasonId);
+    if (!row) return { recorded: false, reason: "not_found" as const };
+    // Repeating the same offer is idempotent; a different offer on a row that
+    // already accepted one, or a row that already completed, is rejected so
+    // the stored state cannot disagree with Stripe.
+    if (row.retention_offer_accepted === args.retentionOffer) {
+      return { recorded: true };
+    }
+    if (row.retention_offer_accepted) {
+      return { recorded: false, reason: "different_offer_accepted" as const };
+    }
+    if (row.status !== "started") {
+      return { recorded: false, reason: "already_decided" as const };
+    }
+
+    const acceptedAt = args.acceptedAt ?? Date.now();
+    await ctx.db.patch(row._id, {
+      retention_offer_accepted: args.retentionOffer,
+      ...(args.retentionOffer === "downgrade" && {
+        status: "retained" as const,
+      }),
+      updated_at: acceptedAt,
+    });
+    return { recorded: true };
   },
 });
 
@@ -238,8 +317,11 @@ export const getCancellationReasonReport = query({
       subscriptionTier: v.string(),
       recentUsageSegment: usageSegmentValidator,
       reasonCategory: reasonCategoryValidator,
+      reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       startedCount: v.number(),
       completedCount: v.number(),
+      retainedCount: v.number(),
+      pausedCount: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -271,8 +353,11 @@ export const getCancellationReasonReport = query({
         subscriptionTier: string;
         recentUsageSegment: RecentUsageSegment;
         reasonCategory: CancellationReasonCategory;
+        reasonSubcategory: CancellationReasonSubcategory | null;
         startedCount: number;
         completedCount: number;
+        retainedCount: number;
+        pausedCount: number;
       }
     >();
 
@@ -297,19 +382,29 @@ export const getCancellationReasonReport = query({
         tier,
         row.recent_usage_segment,
         row.reason_category,
+        row.reason_subcategory ?? "unknown",
       ].join("|");
       const group = groups.get(key) ?? {
         plan,
         subscriptionTier: tier,
         recentUsageSegment: row.recent_usage_segment,
         reasonCategory: row.reason_category,
+        reasonSubcategory: row.reason_subcategory ?? null,
         startedCount: 0,
         completedCount: 0,
+        retainedCount: 0,
+        pausedCount: 0,
       };
 
       group.startedCount += 1;
       if (row.status === "completed") {
         group.completedCount += 1;
+      }
+      if (row.status === "retained") {
+        group.retainedCount += 1;
+      }
+      if (row.retention_offer_accepted === "pause") {
+        group.pausedCount += 1;
       }
       groups.set(key, group);
     }
@@ -336,9 +431,20 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
     v.object({
       createdAt: v.string(),
       reasonCategory: v.union(reasonCategoryValidator, v.null()),
+      reasonSubcategory: v.union(reasonSubcategoryValidator, v.null()),
       subscriptionTier: v.union(subscriptionTierValidator, v.null()),
       plan: v.union(v.string(), v.null()),
-      status: v.union(v.literal("started"), v.literal("completed"), v.null()),
+      status: v.union(
+        v.literal("started"),
+        v.literal("completed"),
+        v.literal("retained"),
+        v.null(),
+      ),
+      retentionOfferAccepted: v.union(
+        v.literal("pause"),
+        v.literal("downgrade"),
+        v.null(),
+      ),
       source: v.union(sourceValidator, v.null()),
       recentUsageSegment: v.union(usageSegmentValidator, v.null()),
       recentUsageRequestCount: v.union(v.number(), v.null()),
@@ -381,9 +487,11 @@ export const getCancellationFeedbackForAnalysis = internalQuery({
         return {
           createdAt: new Date(detail.created_at).toISOString(),
           reasonCategory: reason?.reason_category ?? null,
+          reasonSubcategory: reason?.reason_subcategory ?? null,
           subscriptionTier: reason?.subscription_tier ?? null,
           plan: reason?.plan ?? null,
           status: reason?.status ?? null,
+          retentionOfferAccepted: reason?.retention_offer_accepted ?? null,
           source: reason?.source ?? null,
           recentUsageSegment: reason?.recent_usage_segment ?? null,
           recentUsageRequestCount: reason?.recent_usage_request_count ?? null,

@@ -2,12 +2,15 @@
 
 import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
+import {
+  generateS3UploadUrl,
+  generateS3DownloadUrl,
+  getStoredS3Location,
+} from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
-import { Doc } from "./_generated/dataModel";
 import { validateUploadPolicy } from "../lib/utils/upload-policy";
 import { hasPaidEntitlement } from "../lib/auth/entitlements";
 
@@ -18,13 +21,54 @@ type StorageUsage = {
 } | null;
 
 /** File record returned by internal.fileStorage.getFileById */
-type FileRecord = Doc<"files"> | null;
+type FileRecord = {
+  s3_key?: string;
+  s3_region?: string;
+  s3_bucket?: string;
+  user_id: string;
+  name: string;
+  media_type: string;
+  size: number;
+  auxiliary_vision_description?: string;
+  auxiliary_vision_model?: string;
+} | null;
+
+const s3StorageRegionValidator = v.union(
+  v.literal("eu-central-1"),
+  v.literal("us-east-1"),
+  v.literal("us-west-2"),
+);
+
+const getFileStorageLocation = (file: NonNullable<FileRecord>) =>
+  getStoredS3Location(file.s3_region, file.s3_bucket);
+
+const generateFileDownloadUrl = (file: NonNullable<FileRecord>) => {
+  if (!file.s3_key) throw new Error("File has no S3 object reference");
+  const storageLocation = getFileStorageLocation(file);
+  return storageLocation
+    ? generateS3DownloadUrl(file.s3_key, storageLocation)
+    : generateS3DownloadUrl(file.s3_key);
+};
+
+const getFileLookupErrorFields = (error: unknown) => {
+  const errorMessage = error instanceof Error ? error.message : "";
+  const reason =
+    (error instanceof Error && error.name === "ReturnsValidationError") ||
+    errorMessage.includes("ReturnsValidationError") ||
+    errorMessage.includes("Value does not match validator")
+      ? "returns_validation"
+      : "unknown";
+
+  return { reason };
+};
 
 const serviceFileUrlInfoValidator = v.object({
   url: v.string(),
   sizeBytes: v.number(),
   mediaType: v.string(),
   name: v.string(),
+  auxiliaryVisionDescription: v.optional(v.string()),
+  auxiliaryVisionModel: v.optional(v.string()),
 });
 
 type ServiceFileUrlInfo = {
@@ -32,6 +76,8 @@ type ServiceFileUrlInfo = {
   sizeBytes: number;
   mediaType: string;
   name: string;
+  auxiliaryVisionDescription?: string;
+  auxiliaryVisionModel?: string;
 };
 
 const MAX_SERVICE_FILE_URL_BATCH_SIZE = 50;
@@ -69,6 +115,7 @@ export const generateS3UploadUrlAction = action({
     contentType: v.string(),
     size: v.optional(v.number()),
     mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+    storageRegion: v.optional(s3StorageRegionValidator),
   },
   returns: v.object({
     uploadUrl: v.string(),
@@ -164,12 +211,20 @@ export const generateS3UploadUrlAction = action({
 
     try {
       // Generate presigned upload URL with user-scoped S3 key
-      const { uploadUrl, s3Key } = await generateS3UploadUrl(
-        args.fileName,
-        args.contentType,
-        userId,
-        args.size,
-      );
+      const { uploadUrl, s3Key, storageLocation } = args.storageRegion
+        ? await generateS3UploadUrl(
+            args.fileName,
+            args.contentType,
+            userId,
+            args.size,
+            args.storageRegion,
+          )
+        : await generateS3UploadUrl(
+            args.fileName,
+            args.contentType,
+            userId,
+            args.size,
+          );
 
       await ctx.runMutation(internal.fileStorage.createPendingS3File, {
         s3Key,
@@ -177,6 +232,8 @@ export const generateS3UploadUrlAction = action({
         name: args.fileName,
         mediaType: args.contentType,
         size: args.size,
+        s3Region: storageLocation.region,
+        s3Bucket: storageLocation.bucket,
       });
 
       return {
@@ -259,20 +316,14 @@ export const getFileUrlAction = action({
       }
 
       // S3 file: Generate presigned download URL (valid for 1 hour)
-      return await generateS3DownloadUrl(file.s3_key);
+      return await generateFileDownloadUrl(file);
     } catch (error) {
       convexLogger.error("file_get_url_failed", {
         userId: identity.subject,
         fileId: args.fileId,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message, stack: error.stack }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
-      throw new Error(
-        "Failed to get file URL: " +
-          (error instanceof Error ? error.message : "Unknown error"),
-      );
+      throw new Error("Failed to get file URL");
     }
   },
 });
@@ -324,10 +375,7 @@ export const getFileUrlsByFileIdsAction = action({
       convexLogger.error("file_batch_lookup_failed", {
         caller: "service",
         fileCount: args.fileIds.length,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
       return args.fileIds.map(() => null);
     }
@@ -343,7 +391,7 @@ export const getFileUrlsByFileIdsAction = action({
           }
 
           if (file.s3_key) {
-            return await generateS3DownloadUrl(file.s3_key);
+            return await generateFileDownloadUrl(file);
           }
 
           return null;
@@ -400,10 +448,7 @@ export const getFileUrlInfosByFileIdsAction = action({
       convexLogger.error("file_batch_lookup_failed", {
         caller: "service-info",
         fileCount: args.fileIds.length,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
       return args.fileIds.map(() => null);
     }
@@ -420,10 +465,12 @@ export const getFileUrlInfosByFileIdsAction = action({
 
             if (file.s3_key) {
               return {
-                url: await generateS3DownloadUrl(file.s3_key),
+                url: await generateFileDownloadUrl(file),
                 sizeBytes: file.size,
                 mediaType: file.media_type,
                 name: file.name,
+                auxiliaryVisionDescription: file.auxiliary_vision_description,
+                auxiliaryVisionModel: file.auxiliary_vision_model,
               };
             }
 
@@ -496,10 +543,7 @@ export const getFileUrlsBatchAction = action({
         userId: identity.subject,
         caller: "user",
         fileCount: args.fileIds.length,
-        error:
-          error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+        ...getFileLookupErrorFields(error),
       });
       return urlMap;
     }
@@ -525,7 +569,7 @@ export const getFileUrlsBatchAction = action({
           continue;
         }
 
-        const url = await generateS3DownloadUrl(file.s3_key);
+        const url = await generateFileDownloadUrl(file);
         urlMap[fileId] = url;
       } catch (error) {
         // Log error but continue processing other files (partial failure handling)

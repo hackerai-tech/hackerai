@@ -759,4 +759,36 @@ describe("findings Convex lifecycle", () => {
     });
     expect(deleteDoc).not.toHaveBeenCalled();
   });
+  it("retains verification gaps in the owned report after reload", async () => {
+    const { createFindingForBackend, getFinding } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const evidenceVerification = {
+      checked_refs: ["/tmp/control.http"],
+      unavailable_refs: ["/tmp/exploit.http"],
+      warning: "Evidence service unavailable; reference not verified.",
+    };
+    const result = await createFindingForBackend.handler(
+      ctx,
+      createArgs({
+        report: report({ evidence_refs: ["/tmp/control.http"] }),
+        evidenceVerification,
+      }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      warning: evidenceVerification.warning,
+    });
+    const restored = await getFinding.handler(ctx, {
+      findingId: result.finding_id,
+    });
+    expect(restored).toMatchObject({
+      evidence_refs: ["/tmp/control.http"],
+      evidence_verification: evidenceVerification,
+    });
+    const other = createMockCtx(tables, "other-user");
+    expect(
+      await getFinding.handler(other.ctx, { findingId: result.finding_id }),
+    ).toBeNull();
+  });
 });

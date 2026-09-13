@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import { getSafeErrorEventCause } from "@/lib/utils/error-event";
+
 const CHUNK_LOAD_RELOAD_STORAGE_KEY = "hackerai:chunk-load-reload-at";
 const CHUNK_LOAD_RELOAD_COOLDOWN_MS = 5 * 60 * 1_000;
 
@@ -128,7 +130,7 @@ export function ChunkLoadRecovery() {
       });
 
     const onError = (event: ErrorEvent) => {
-      if (recover(event.error ?? event.message)) {
+      if (recover(getSafeErrorEventCause(event))) {
         event.preventDefault();
       }
     };

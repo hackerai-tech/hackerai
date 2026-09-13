@@ -3,7 +3,7 @@ import {
   getProviderUsageRawModelCost,
   isPositiveFiniteNumber,
 } from "@/lib/provider-usage-cost";
-import { calculateRawTokenCost, POINTS_PER_DOLLAR } from "@/lib/rate-limit";
+import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit";
 import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
@@ -33,9 +33,16 @@ interface StepUsage {
 type ModelStepCost = {
   rawCost: number;
   authoritativeCost?: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  modelName?: string;
 };
 
 export type UsageBillingType = "included" | "extra" | "mixed";
+export type UsageCostSource =
+  "provider" | "hybrid" | "token_estimate" | "raw_token_estimate";
 
 export interface UsageBillingBreakdown {
   includedPointsDeducted: number;
@@ -72,7 +79,7 @@ export interface UsageCostRecord {
   costDollars: number;
   modelCostDollars: number;
   nonModelCostDollars: number;
-  costSource: "provider" | "token_estimate" | "raw_token_estimate";
+  costSource: UsageCostSource;
 }
 
 /**
@@ -88,12 +95,13 @@ export class UsageTracker {
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
-  /** Model-only cost from usage.raw.cost, OpenRouter upstream cost details, or
-   * authoritative provider metadata (excludes tool/sandbox spend). Used to
-   * decide whether the provider reported an authoritative model cost; if zero,
-   * fall back to token-based model cost calculation. */
+  /**
+   * Provider cost for the streamed model leg only. Summarization is tracked
+   * separately because it survives resetModelLeg() during a fallback retry.
+   */
   modelProviderCost = 0;
   private modelStepCosts: ModelStepCost[] = [];
+  private summarizationStepCosts: ModelStepCost[] = [];
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
@@ -123,7 +131,7 @@ export class UsageTracker {
     this.modelStepCosts = [];
   }
 
-  accumulateStep(usage: StepUsage): number {
+  accumulateStep(usage: StepUsage, modelName?: string): number {
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
     this.totalTokens += usage.totalTokens || 0;
@@ -132,12 +140,58 @@ export class UsageTracker {
     this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
     const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
-    const stepCostIndex = this.modelStepCosts.push({ rawCost }) - 1;
+    const stepCostIndex =
+      this.modelStepCosts.push({
+        rawCost,
+        inputTokens: usage.inputTokens || 0,
+        outputTokens: usage.outputTokens || 0,
+        cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens || 0,
+        cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens || 0,
+        modelName,
+      }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
       this.providerCost += stepCost;
       this.modelProviderCost += stepCost;
     }
     return stepCostIndex;
+  }
+
+  accumulateSummarization(usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    cost?: number;
+    model?: string;
+  }): void {
+    const inputTokens = usage.inputTokens || 0;
+    const outputTokens = usage.outputTokens || 0;
+    const cacheReadTokens = usage.cacheReadTokens || 0;
+    const cacheWriteTokens = usage.cacheWriteTokens || 0;
+    const rawCost = isPositiveFiniteNumber(usage.cost) ? usage.cost : 0;
+
+    this.inputTokens += inputTokens;
+    this.summarizationInputTokens += inputTokens;
+    this.outputTokens += outputTokens;
+    this.summarizationOutputTokens += outputTokens;
+    this.totalTokens += inputTokens + outputTokens;
+    this.cacheReadTokens += cacheReadTokens;
+    this.summarizationCacheReadTokens += cacheReadTokens;
+    this.cacheWriteTokens += cacheWriteTokens;
+    this.summarizationCacheWriteTokens += cacheWriteTokens;
+    this.summarizationStepCosts.push({
+      rawCost,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens,
+      modelName: usage.model,
+    });
+    if (rawCost > 0) {
+      // Summarization survives resetModelLeg(), so do not include it in
+      // modelProviderCost (the amount removed for a streamed-model retry).
+      this.providerCost += rawCost;
+    }
   }
 
   setAuthoritativeModelCostForStep(
@@ -157,12 +211,23 @@ export class UsageTracker {
     this.modelProviderCost += costDollars - previousCost;
   }
 
+  private get allModelSteps(): ModelStepCost[] {
+    return [...this.modelStepCosts, ...this.summarizationStepCosts];
+  }
+
   get hasAuthoritativeModelCost(): boolean {
+    const modelSteps = this.allModelSteps;
     return (
-      this.modelStepCosts.length > 0 &&
-      this.modelStepCosts.every((stepCost) =>
+      modelSteps.length > 0 &&
+      modelSteps.every((stepCost) =>
         isPositiveFiniteNumber(stepCost.authoritativeCost ?? stepCost.rawCost),
       )
+    );
+  }
+
+  get hasAnyAuthoritativeModelCost(): boolean {
+    return this.allModelSteps.some((stepCost) =>
+      isPositiveFiniteNumber(stepCost.authoritativeCost ?? stepCost.rawCost),
     );
   }
 
@@ -193,29 +258,36 @@ export class UsageTracker {
     selectedModel: string,
     accountingModel?: string,
   ): number {
-    // Use authoritative provider cost only when the model itself reported one
-    // via raw.cost, OpenRouter upstream cost details, or OpenRouter metadata
-    // (tracked in modelProviderCost).
-    // providerCost also includes sandbox/tool spend and summarization cost, so
-    // subtract nonModelCost to isolate the model portion.
-    if (this.hasAuthoritativeModelCost) {
-      return this.providerCost - this.nonModelCost;
+    const modelSteps = this.allModelSteps;
+    if (modelSteps.length === 0) {
+      return calculateRawModelUsageCostDollars({
+        inputTokens: this.inputTokens,
+        outputTokens: this.outputTokens,
+        cacheReadTokens: this.cacheReadTokens,
+        cacheWriteTokens: this.cacheWriteTokens,
+        modelName: accountingModel ?? selectedModel,
+      });
     }
-    const modelForEstimate = accountingModel ?? selectedModel;
-    return (
-      (calculateRawTokenCost(this.inputTokens, "input", modelForEstimate) +
-        calculateRawTokenCost(this.outputTokens, "output", modelForEstimate)) /
-      POINTS_PER_DOLLAR
-    );
+
+    return modelSteps.reduce((totalCost, stepCost) => {
+      const authoritativeCost = stepCost.authoritativeCost ?? stepCost.rawCost;
+      if (isPositiveFiniteNumber(authoritativeCost)) {
+        return totalCost + authoritativeCost;
+      }
+      return (
+        totalCost +
+        calculateRawModelUsageCostDollars({
+          inputTokens: stepCost.inputTokens,
+          outputTokens: stepCost.outputTokens,
+          cacheReadTokens: stepCost.cacheReadTokens,
+          cacheWriteTokens: stepCost.cacheWriteTokens,
+          modelName: stepCost.modelName ?? accountingModel ?? selectedModel,
+        })
+      );
+    }, 0);
   }
 
   computeCostDollars(selectedModel: string, accountingModel?: string): number {
-    // Mirror deductUsage's gate: providerCost is only authoritative for the
-    // total when every model step has authoritative cost. After resetModelLeg()
-    // (fallback retry), providerCost can be positive from nonModelCost alone,
-    // which would underreport the fallback's model tokens if we used it
-    // directly.
-    if (this.hasAuthoritativeModelCost) return this.providerCost;
     return (
       this.computeModelCostDollars(selectedModel, accountingModel) +
       this.nonModelCost
@@ -388,7 +460,9 @@ export class UsageTracker {
       nonModelCostDollars: this.nonModelCost,
       costSource: this.hasAuthoritativeModelCost
         ? "provider"
-        : "raw_token_estimate",
+        : this.hasAnyAuthoritativeModelCost
+          ? "hybrid"
+          : "raw_token_estimate",
     };
   }
 
@@ -396,6 +470,7 @@ export class UsageTracker {
     userId: string;
     organizationId?: string;
     chatId?: string;
+    assistantMessageId?: string;
     endpoint?: ChatApiEndpoint;
     mode?: ChatMode;
     subscription?: SubscriptionTier;
@@ -413,6 +488,7 @@ export class UsageTracker {
       userId: args.userId,
       organizationId: args.organizationId,
       chatId: args.chatId,
+      assistantMessageId: args.assistantMessageId,
       endpoint: args.endpoint,
       mode: args.mode,
       subscription: args.subscription,
@@ -424,11 +500,9 @@ export class UsageTracker {
       extraUsagePointsDeducted: usage.extraUsagePointsDeducted,
       uncoveredCostDollars: usage.uncoveredCostDollars,
       uncoveredPoints: usage.uncoveredPoints,
-      usageDeductionFailed: usage.usageDeductionFailed,
       usageDeductionFailureReason: usage.usageDeductionFailureReason,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
-      totalTokens: usage.totalTokens,
       cacheReadTokens: usage.cacheReadTokens,
       cacheWriteTokens: usage.cacheWriteTokens,
       costDollars: usage.costDollars,

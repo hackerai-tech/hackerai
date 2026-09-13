@@ -25,6 +25,22 @@ export interface RetainedTailSelection {
   cutoffMessageId: string | null;
 }
 
+/** Marks in-memory tail projections; this is not persisted summary metadata. */
+const markRetainedTailProjection = (message: UIMessage): UIMessage =>
+  message.role === "user"
+    ? {
+        ...message,
+        metadata: {
+          ...(message.metadata as Record<string, unknown> | undefined),
+          hackeraiRetainedTailProjection: true,
+        },
+      }
+    : message;
+
+export const isRetainedTailProjection = (message: UIMessage): boolean =>
+  (message.metadata as Record<string, unknown> | undefined)
+    ?.hackeraiRetainedTailProjection === true;
+
 type FileTokens = Record<Id<"files">, number>;
 
 type ProjectedPart = {
@@ -208,7 +224,9 @@ const projectNewestTail = (
     }
 
     if (retainedParts.length > 0 && partialStartPartIndex !== null) {
-      reversedTail.push({ ...message, parts: retainedParts });
+      reversedTail.push(
+        markRetainedTailProjection({ ...message, parts: retainedParts }),
+      );
       startMessageIndex = messageIndex;
       startPartIndex = partialStartPartIndex;
     }
@@ -348,8 +366,14 @@ export const projectRetainedTailFromMessages = (
     0,
     Math.min(retainedTail.start_part_index, firstMessage.parts.length),
   );
+  const retainedFirstMessage = {
+    ...firstMessage,
+    parts: firstMessage.parts.slice(startPartIndex),
+  };
   const candidates = [
-    { ...firstMessage, parts: firstMessage.parts.slice(startPartIndex) },
+    startPartIndex > 0
+      ? markRetainedTailProjection(retainedFirstMessage)
+      : retainedFirstMessage,
     ...messages.slice(startIndex + 1),
   ].filter((message) => message.parts.length > 0);
 

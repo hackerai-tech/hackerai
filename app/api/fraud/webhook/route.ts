@@ -8,7 +8,7 @@ import {
   logStripeWebhookMissingSignature,
   logStripeWebhookSignatureVerificationFailed,
 } from "@/lib/billing/stripe-webhook-logging";
-import { getRemainingRefundAmountCents } from "@/lib/billing/fraud-refund";
+import { refundChargeForEFW } from "@/lib/billing/fraud-refund";
 import {
   isTerminalPaymentMethodDetachError,
   isTerminalStripeResourceError,
@@ -38,11 +38,22 @@ async function cancelAllSubscriptions(
   customerId: string,
   asOfUnix: number,
 ): Promise<void> {
-  const subs = await stripe.subscriptions.list({
-    customer: customerId,
-    status: "all",
-    limit: 100,
-  });
+  let subs: Stripe.ApiList<Stripe.Subscription>;
+  try {
+    subs = await stripe.subscriptions.list({
+      customer: customerId,
+      status: "all",
+      limit: 100,
+    });
+  } catch (err) {
+    if (isTerminalStripeResourceError(err)) {
+      console.log(
+        `[Fraud Webhook] Subscription cleanup skipped for customer ${customerId}: resource_missing`,
+      );
+      return;
+    }
+    throw err;
+  }
 
   for (const sub of subs.data) {
     if (sub.created > asOfUnix) {
@@ -78,10 +89,21 @@ async function detachAllPaymentMethods(
   customerId: string,
   asOfUnix: number,
 ): Promise<void> {
-  const paymentMethods = await stripe.paymentMethods.list({
-    customer: customerId,
-    limit: 100,
-  });
+  let paymentMethods: Stripe.ApiList<Stripe.PaymentMethod>;
+  try {
+    paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      limit: 100,
+    });
+  } catch (err) {
+    if (isTerminalStripeResourceError(err)) {
+      console.log(
+        `[Fraud Webhook] Payment method cleanup skipped for customer ${customerId}: resource_missing`,
+      );
+      return;
+    }
+    throw err;
+  }
 
   for (const pm of paymentMethods.data) {
     if (pm.created > asOfUnix) {
@@ -113,13 +135,23 @@ async function markCustomerBlocked(
   customerId: string,
   reason: string,
 ): Promise<void> {
-  await stripe.customers.update(customerId, {
-    metadata: {
-      blocked: "true",
-      blocked_at: new Date().toISOString(),
-      blocked_reason: reason,
-    },
-  });
+  try {
+    await stripe.customers.update(customerId, {
+      metadata: {
+        blocked: "true",
+        blocked_at: new Date().toISOString(),
+        blocked_reason: reason,
+      },
+    });
+  } catch (err) {
+    if (isTerminalStripeResourceError(err)) {
+      console.log(
+        `[Fraud Webhook] Block metadata skipped for customer ${customerId}: resource_missing`,
+      );
+      return;
+    }
+    throw err;
+  }
 }
 
 /** Report a charge as fraudulent — feeds Stripe Radar's ML models. */
@@ -133,67 +165,6 @@ async function reportChargeFraudulent(chargeId: string): Promise<void> {
       `[Fraud Webhook] Failed to report charge ${chargeId} as fraudulent:`,
       err,
     );
-  }
-}
-
-/**
- * Refund a charge for an early fraud warning.
- *
- * Uses an idempotency key derived from the EFW ID so that webhook retries
- * (or TOCTOU duplicate deliveries) collapse onto a single refund instead
- * of erroring with `charge_already_refunded`.
- *
- * Terminal failures (`charge_already_refunded`, `charge_disputed`,
- * `charge_pending`) are logged and treated as success: there is nothing
- * to retry. All other errors bubble so the webhook returns 500 and Stripe
- * retries the delivery — silently swallowing transient errors here would
- * defeat the entire point of the EFW path (refund proactively to avoid
- * the dispute fee + ratio impact).
- */
-async function refundChargeForEFW(
-  charge: Stripe.Charge,
-  efwId: string,
-): Promise<void> {
-  const remainingAmount = getRemainingRefundAmountCents(charge);
-  if (remainingAmount === 0) {
-    console.log(
-      `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): charge has no refundable balance`,
-    );
-    return;
-  }
-
-  try {
-    await stripe.refunds.create(
-      {
-        charge: charge.id,
-        reason: "fraudulent",
-        amount: remainingAmount,
-      },
-      { idempotencyKey: `efw-refund:${efwId}` },
-    );
-    console.log(
-      `[Fraud Webhook] Refunded ${remainingAmount} cents from charge ${charge.id} (early fraud warning ${efwId})`,
-    );
-  } catch (err) {
-    if (err instanceof Stripe.errors.StripeError) {
-      const code = err.code;
-      if (
-        code === "charge_already_refunded" ||
-        code === "charge_disputed" ||
-        code === "charge_pending"
-      ) {
-        console.log(
-          `[Fraud Webhook] Refund skipped for ${charge.id} (EFW ${efwId}): ${code}`,
-        );
-        return;
-      }
-    }
-    // Transient or unexpected — bubble so Stripe retries the webhook.
-    console.error(
-      `[Fraud Webhook] Refund failed for ${charge.id} (EFW ${efwId}):`,
-      err,
-    );
-    throw err;
   }
 }
 
@@ -242,6 +213,7 @@ async function suspendCustomerUsers({
 /**
  * Block a fraudulent user without deleting anything.
  *
+ * - Suspend cost-incurring app usage
  * - Cancel all subscriptions (stops billing)
  * - Detach all payment methods (prevents future charges)
  * - Mark customer as blocked (metadata flag)
@@ -263,12 +235,8 @@ async function blockFraudulentUser(
   },
   asOfUnix: number,
 ): Promise<void> {
-  await cancelAllSubscriptions(customerId, asOfUnix);
-  await detachAllPaymentMethods(customerId, asOfUnix);
-  await markCustomerBlocked(customerId, metadataReason);
-  if (chargeId) {
-    await reportChargeFraudulent(chargeId);
-  }
+  // Suspend first so a customer deleted during Stripe cleanup cannot prevent
+  // the local safety control from being applied. The upsert is replay-safe.
   await suspendCustomerUsers({
     customerId,
     category: suspension.category,
@@ -277,9 +245,15 @@ async function blockFraudulentUser(
     chargeId,
     sourceCreatedUnix: asOfUnix,
   });
+  await cancelAllSubscriptions(customerId, asOfUnix);
+  await detachAllPaymentMethods(customerId, asOfUnix);
+  await markCustomerBlocked(customerId, metadataReason);
+  if (chargeId) {
+    await reportChargeFraudulent(chargeId);
+  }
 
   console.log(
-    `[Fraud Webhook] Blocked customer ${customerId}: subscriptions cancelled, payment methods detached, marked as blocked (${metadataReason})`,
+    `[Fraud Webhook] Processed fraud block for customer ${customerId} (${metadataReason})`,
   );
 }
 
@@ -316,7 +290,7 @@ async function handleEarlyFraudWarning(
   const customerId = getCustomerIdFromCharge(charge);
 
   // Refund first. Throws on transient errors so Stripe retries the webhook.
-  await refundChargeForEFW(charge, warning.id);
+  await refundChargeForEFW(stripe, charge, warning.id);
 
   // Block the user
   if (customerId) {
@@ -390,8 +364,6 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // AND detach payment methods. Don't mark blocked — the customer can
     // still re-subscribe with a different card, while app usage remains paused
     // until support resolves the suspension.
-    await cancelAllSubscriptions(customerId, dispute.created);
-    await detachAllPaymentMethods(customerId, dispute.created);
     await suspendCustomerUsers({
       customerId,
       category: "dispute_billing_hold",
@@ -400,8 +372,10 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       chargeId,
       sourceCreatedUnix: dispute.created,
     });
+    await cancelAllSubscriptions(customerId, dispute.created);
+    await detachAllPaymentMethods(customerId, dispute.created);
     console.log(
-      `[Fraud Webhook] Cancelled subscriptions and detached payment methods for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
+      `[Fraud Webhook] Processed billing hold for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );
   }
 }

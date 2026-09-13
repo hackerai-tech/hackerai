@@ -1,22 +1,19 @@
 import OpenAI from "openai";
 import { decode } from "gpt-tokenizer";
 import { safeEncode } from "@/lib/token-utils";
-import { detectLang, type SupportedLang } from "@/lib/chat/auth-disclaimer";
 
 const MODERATION_TOKEN_LIMIT = 512;
 
 export type ModerationResult = {
   shouldUncensorResponse: boolean;
+  allowsAbliterationContinuation: boolean;
   moderationText: string;
-  language: SupportedLang;
 };
 
-const emptyModerationResult = (
-  language: SupportedLang = "en",
-): ModerationResult => ({
+const emptyModerationResult = (): ModerationResult => ({
   shouldUncensorResponse: false,
+  allowsAbliterationContinuation: false,
   moderationText: "",
-  language,
 });
 
 export async function getModerationResult(
@@ -31,7 +28,8 @@ export async function getModerationResult(
 
   const openai = new OpenAI({ apiKey: openaiApiKey });
 
-  // Find the last user message that exceeds the minimum length
+  // Include recent user context so short follow-ups and authorization
+  // restatements are moderated as continuations of the active request.
   const targetMessage = findTargetMessage(messages, 30);
 
   if (!targetMessage) {
@@ -39,7 +37,6 @@ export async function getModerationResult(
   }
 
   const input = prepareInput(targetMessage);
-  const language = detectLang(input);
 
   try {
     const moderation = await openai.moderations.create({
@@ -50,7 +47,7 @@ export async function getModerationResult(
     // Check if moderation results exist and are not empty
     if (!moderation?.results || moderation.results.length === 0) {
       console.error("Moderation API returned no results");
-      return { shouldUncensorResponse: false, moderationText: input, language };
+      return { ...emptyModerationResult(), moderationText: input };
     }
 
     const result = moderation.results[0];
@@ -65,14 +62,25 @@ export async function getModerationResult(
       isPaidUser,
     );
 
-    return { shouldUncensorResponse, moderationText: input, language };
+    const allowsAbliterationContinuation = determineShouldUncensorResponse(
+      moderationLevel,
+      hazardCategories,
+      isPaidUser,
+      0,
+    );
+    return {
+      shouldUncensorResponse,
+      allowsAbliterationContinuation,
+      moderationText: input,
+    };
   } catch (_error: any) {
-    return emptyModerationResult(language);
+    return emptyModerationResult();
   }
 }
 
 function findTargetMessage(messages: any[], minLength: number): any | null {
   const MIN_FALLBACK_LENGTH = 5;
+  const MAX_CONTEXT_USER_MESSAGES = 3;
   let combinedContent = "";
   let userMessagesChecked = 0;
   const messagesToCombine: any[] = [];
@@ -93,18 +101,20 @@ function findTargetMessage(messages: any[], minLength: number): any | null {
         combinedContent = textContent + " " + combinedContent;
       }
 
-      // Check if we've reached the minimum length
-      if (combinedContent.trim().length >= minLength) {
-        return createCombinedMessage(messagesToCombine);
-      }
-
-      if (userMessagesChecked >= 3) {
-        break; // Stop after checking three user messages
+      if (userMessagesChecked >= MAX_CONTEXT_USER_MESSAGES) {
+        break;
       }
     }
   }
 
-  // If we have some content but it's less than minLength, check if it's at least MIN_FALLBACK_LENGTH
+  if (
+    combinedContent.trim().length >= minLength &&
+    messagesToCombine.length > 0
+  ) {
+    return createCombinedMessage(messagesToCombine);
+  }
+
+  // If the combined context is still short, retain the existing fallback.
   if (
     combinedContent.trim().length >= MIN_FALLBACK_LENGTH &&
     messagesToCombine.length > 0
@@ -169,18 +179,26 @@ function truncateByTokens(content: string): string {
 function calculateModerationLevel(
   categoryScores: OpenAI.Moderations.Moderation.CategoryScores,
 ): number {
-  const maxScore = Math.max(
-    ...Object.values(categoryScores).filter(
-      (score): score is number => typeof score === "number",
-    ),
-  );
-  return Math.min(Math.max(maxScore, 0), 1);
+  const scores = Object.values(categoryScores);
+  if (
+    !scores.length ||
+    scores.some(
+      (score) =>
+        typeof score !== "number" ||
+        !Number.isFinite(score) ||
+        score < 0 ||
+        score > 1,
+    )
+  )
+    return NaN;
+  return Math.max(...scores);
 }
 
 function determineShouldUncensorResponse(
   moderationLevel: number,
   hazardCategories: string[],
   isPaidUser: boolean,
+  minModerationLevel = 0.1,
 ): boolean {
   const forbiddenCategories = [
     "sexual",
@@ -200,8 +218,7 @@ function determineShouldUncensorResponse(
   );
 
   // 0.1 is the minimum moderation level for the model to be used
-  const minModerationLevel = 0.1;
-  const maxModerationLevel = isPaidUser ? 0.98 : 0.9;
+  const maxModerationLevel = 0.98;
   return (
     moderationLevel >= minModerationLevel &&
     moderationLevel <= maxModerationLevel &&

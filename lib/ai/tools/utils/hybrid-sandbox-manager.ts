@@ -1,7 +1,8 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { Centrifuge, type Subscription } from "centrifuge";
 import type {
+  AnySandbox,
   SandboxBootInfo,
+  SandboxInfo,
   SandboxManager,
   SandboxType,
   SubscriptionTier,
@@ -11,18 +12,32 @@ import {
   serializePromptText,
   type CentrifugoConfig,
 } from "./centrifugo-sandbox";
-import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
-import { ensureSandboxConnection } from "./sandbox";
+import {
+  getCloudSandboxProviderForInstance,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+  type ConnectionInfo,
+} from "./sandbox-types";
+import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
-import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
+import {
+  LOCAL_SANDBOX_PRESENCE_GRACE_MS,
+  presenceHasConnectionId,
+} from "@/lib/centrifugo/presence";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import {
+  ensureCloudSandboxConnection,
+  type CloudSandboxAcquisitionContext,
+} from "./cloud-sandbox";
+import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
+import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 
-type SandboxInstance = Sandbox | CentrifugoSandbox;
+type SandboxInstance = AnySandbox;
 
 // "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
 // Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
@@ -47,8 +62,11 @@ export interface SandboxFallbackInfo {
  * - Automatic fallback to E2B when local unavailable
  * - Dangerous mode (no Docker) with OS context for AI
  */
-const MAX_SANDBOX_HEALTH_FAILURES = 5;
-export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 30_000;
+// Match DefaultSandboxManager: stop retries in this Agent run after the
+// initial readiness check and one reconnect both fail. E2B reset remains
+// connection-only and never kills the shared per-user sandbox.
+const MAX_SANDBOX_HEALTH_FAILURES = 2;
+export { LOCAL_SANDBOX_PRESENCE_GRACE_MS };
 const LOCAL_SANDBOX_PRESENCE_TIMEOUT_MS = 2_000;
 
 interface PresenceProbeResult {
@@ -63,6 +81,23 @@ interface PresenceFilterResult {
   staleConnections: ConnectionInfo[];
 }
 
+/** Requires a full local host identity match before changing connection IDs. */
+export function isSameLocalMachine(
+  current: ConnectionInfo,
+  candidate: ConnectionInfo,
+): boolean {
+  if (!current.osInfo || !candidate.osInfo) return false;
+
+  return (
+    current.name === candidate.name &&
+    current.isDesktop === candidate.isDesktop &&
+    current.osInfo.platform === candidate.osInfo.platform &&
+    current.osInfo.arch === candidate.osInfo.arch &&
+    current.osInfo.release === candidate.osInfo.release &&
+    current.osInfo.hostname === candidate.osInfo.hostname
+  );
+}
+
 const logStructured = (
   level: "warn" | "error",
   event: string,
@@ -73,7 +108,11 @@ const logStructured = (
     level,
     event,
     service: "chat-handler",
-    environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+    environment:
+      process.env.TRIGGER_ENV ??
+      process.env.VERCEL_ENV ??
+      process.env.NODE_ENV ??
+      "unknown",
     request_id: process.env.VERCEL_REQUEST_ID ?? null,
     ...fields,
   };
@@ -221,20 +260,32 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionName: string | null = null;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private reportedFallbackKeys = new Set<string>();
+  private quarantinedConnectionIds = new Set<string>();
+  private persistedQuarantinedConnectionIds = new Set<string>();
+  private requiredConnectionIdAfterQuarantine: string | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
+  private activeCloudProvider: CloudSandboxProvider;
+  private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
 
   constructor(
     private userID: string,
     private setSandboxCallback: (sandbox: SandboxInstance) => void,
     private sandboxPreference: SandboxPreference = "e2b",
     private serviceKey: string,
-    initialSandbox?: Sandbox | null,
+    initialSandbox?: AnySandbox | null,
     private subscription?: SubscriptionTier,
     private onBoot?: (info: SandboxBootInfo) => void,
     private workingDirectory?: string,
+    private requestId?: string,
+    private chatId?: string,
+    private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    this.activeCloudProvider =
+      getCloudSandboxProviderForInstance(this.sandbox) ??
+      cloudSandboxContext?.provider ??
+      getCloudSandboxProvider();
   }
 
   recordHealthFailure(): boolean {
@@ -261,6 +312,130 @@ export class HybridSandboxManager implements SandboxManager {
 
   isSandboxUnavailable(): boolean {
     return this.sandboxUnavailable;
+  }
+
+  async quarantineLocalConnection(
+    connectionId: string,
+    reason: "command_unresponsive",
+  ): Promise<void> {
+    // Upload recovery must remain bound to the computer the user selected.
+    // Keep this requirement across resetSandbox() so reacquisition fails before
+    // another local connection or E2B can be instantiated.
+    this.requiredConnectionIdAfterQuarantine = connectionId;
+    if (this.persistedQuarantinedConnectionIds.has(connectionId)) return;
+
+    if (!this.quarantinedConnectionIds.has(connectionId)) {
+      this.quarantinedConnectionIds.add(connectionId);
+      logStructured("warn", "local_sandbox_connection_quarantined", {
+        service: this.requestId ? "agent-long" : "chat-handler",
+        request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+        user_id: this.userID,
+        connection_id: connectionId,
+        reason,
+      });
+    }
+
+    const maxAttempts = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await getConvexClient().mutation(api.localSandbox.disconnectByBackend, {
+          serviceKey: this.serviceKey,
+          connectionId,
+          reason,
+        });
+        this.persistedQuarantinedConnectionIds.add(connectionId);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts) {
+          const retryDelayMs = attempt * 500;
+          logStructured("warn", "local_sandbox_connection_quarantine_retry", {
+            service: this.requestId ? "agent-long" : "chat-handler",
+            request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+            user_id: this.userID,
+            connection_id: connectionId,
+            reason,
+            attempt,
+            max_attempts: maxAttempts,
+            retry_delay_ms: retryDelayMs,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
+      }
+    }
+
+    logStructured("error", "local_sandbox_connection_quarantine_failed", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      connection_id: connectionId,
+      reason,
+      attempts: maxAttempts,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
+    throw lastError;
+  }
+
+  /** Recovers a pre-publish relay failure without switching physical hosts. */
+  async recoverLocalConnection(
+    connectionId: string,
+    reason: "command_relay_unsubscribed",
+  ): Promise<{ sandbox: SandboxInstance }> {
+    if (
+      !this.sandbox ||
+      !isCentrifugoSandbox(this.sandbox) ||
+      this.sandbox.getConnectionId() !== connectionId
+    ) {
+      throw new Error(
+        "The selected local sandbox changed before it could be reconnected. Try the command again.",
+      );
+    }
+
+    const previousConnection = this.sandbox.getConnectionInfo();
+    await this.quarantineLocalConnection(connectionId, "command_unresponsive");
+    await this.resetSandbox(reason);
+
+    const replacement = (await this.listConnections())
+      .filter(
+        (connection) =>
+          connection.connectionId !== connectionId &&
+          connection.capabilities?.commands !== false &&
+          isSameLocalMachine(previousConnection, connection),
+      )
+      .sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0))[0];
+
+    if (!replacement) {
+      logStructured("warn", "local_sandbox_same_machine_recovery_unavailable", {
+        service: this.requestId ? "agent-long" : "chat-handler",
+        request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+        user_id: this.userID,
+        connection_id: connectionId,
+        reason,
+      });
+      throw new Error(
+        "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
+      );
+    }
+
+    await this.useCentrifugoConnection(replacement);
+    this.requiredConnectionIdAfterQuarantine = null;
+    if (this.sandboxPreference !== "desktop") {
+      this.sandboxPreference = replacement.connectionId;
+    }
+    this.resetHealthFailures();
+
+    logStructured("warn", "local_sandbox_same_machine_recovered", {
+      service: this.requestId ? "agent-long" : "chat-handler",
+      request_id: this.requestId ?? process.env.VERCEL_REQUEST_ID ?? null,
+      user_id: this.userID,
+      stale_connection_id: connectionId,
+      replacement_connection_id: replacement.connectionId,
+      reason,
+    });
+
+    return { sandbox: this.sandbox! };
   }
 
   /**
@@ -362,9 +537,12 @@ export class HybridSandboxManager implements SandboxManager {
     this.pendingFallbackInfo = info;
   }
 
-  getSandboxInfo(): { type: SandboxType; name?: string } | null {
+  getSandboxInfo(): SandboxInfo | null {
     if (!this.isLocal) {
-      return { type: "e2b" };
+      return {
+        type: "cloud",
+        provider: this.activeCloudProvider,
+      };
     }
     const type: SandboxType =
       this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
@@ -376,7 +554,7 @@ export class HybridSandboxManager implements SandboxManager {
       return undefined;
     }
     if (!this.isLocal) {
-      return "e2b";
+      return "cloud";
     }
     return this.sandboxPreference === "desktop"
       ? "desktop"
@@ -384,7 +562,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async supportsInteractivePty(): Promise<boolean> {
-    if (this.sandboxPreference === "e2b") {
+    if (!this.isLocal) {
       return true;
     }
 
@@ -401,12 +579,16 @@ export class HybridSandboxManager implements SandboxManager {
    */
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
-      const connections = await getConvexClient().query(
+      const storedConnections = await getConvexClient().query(
         api.localSandbox.listConnectionsForBackend,
         {
           serviceKey: this.serviceKey,
           userId: this.userID,
         },
+      );
+      const connections = storedConnections.filter(
+        (connection) =>
+          !this.quarantinedConnectionIds.has(connection.connectionId),
       );
       if (connections.length === 0) {
         return connections;
@@ -483,12 +665,26 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
+    if (this.requiredConnectionIdAfterQuarantine) {
+      throw new Error(
+        "The selected local sandbox stopped responding. Reconnect it in Remote Control, then try again.",
+      );
+    }
+
+    // Once this Agent run has fallen back to Cloud, keep using that same
+    // filesystem for the rest of the run. A local connection may reappear
+    // while the model is streaming; switching at that point would split
+    // commands and transcript files across two unrelated sandboxes.
+    if (!this.isLocal && this.sandbox) {
+      return this.getCloudSandbox();
+    }
+
     // If preference is E2B, always use E2B (but block for free users)
     if (this.sandboxPreference === "e2b") {
       if (this.subscription === "free") {
         throw new Error("Cloud sandbox requires a paid plan.");
       }
-      return this.getE2BSandbox();
+      return this.getCloudSandbox();
     }
 
     // Check if the preferred connection is available
@@ -546,7 +742,7 @@ export class HybridSandboxManager implements SandboxManager {
       actualSandboxName: "Cloud",
     });
 
-    return this.getE2BSandbox();
+    return this.getCloudSandbox();
   }
 
   private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
@@ -582,6 +778,8 @@ export class HybridSandboxManager implements SandboxManager {
       connection,
       centrifugoConfig,
       this.workingDirectory,
+      this.requestId,
+      this.chatId,
     );
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
@@ -589,39 +787,52 @@ export class HybridSandboxManager implements SandboxManager {
     this.setSandboxCallback(this.sandbox);
   }
 
-  private async getE2BSandbox(): Promise<{ sandbox: Sandbox }> {
-    if (!this.isLocal && this.sandbox && this.sandbox instanceof Sandbox) {
+  private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
+    if (this.cloudAcquisition) return this.cloudAcquisition;
+    if (!this.isLocal && this.sandbox) {
+      if (isE2BSandbox(this.sandbox)) {
+        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+          source: "hybrid_manager_cache",
+        });
+      }
       return { sandbox: this.sandbox };
     }
 
+    this.cloudAcquisition = this.acquireCloudSandbox().finally(() => {
+      this.cloudAcquisition = null;
+    });
+    return this.cloudAcquisition;
+  }
+
+  private async acquireCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     await this.closeCurrentSandbox();
-    const result = await ensureSandboxConnection(
-      {
-        userID: this.userID,
-        setSandbox: (sandbox) => {
-          this.sandbox = sandbox;
-          this.setSandboxCallback(sandbox);
-        },
-        onBoot: this.onBoot,
+    const result = await ensureCloudSandboxConnection({
+      userId: this.userID,
+      setSandbox: this.setSandboxCallback,
+      onBoot: this.onBoot,
+      initialSandbox: this.isLocal ? null : this.sandbox,
+      // A reconnect must retain the provider that supplied this run's files.
+      context: {
+        ...this.cloudSandboxContext,
+        provider: this.activeCloudProvider,
       },
-      {
-        initialSandbox: this.isLocal ? null : (this.sandbox as Sandbox | null),
-      },
-    );
+    });
 
     this.sandbox = result.sandbox;
+    this.activeCloudProvider = result.provider;
     this.isLocal = false;
     this.currentConnectionId = null;
     this.currentConnectionName = null;
-    this.setSandboxCallback(result.sandbox);
 
     return { sandbox: result.sandbox };
   }
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
+    this.activeCloudProvider =
+      getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
     this.isLocal = isCentrifugoSandbox(sandbox);
-    if (isCentrifugoSandbox(sandbox)) {
+    if (this.isLocal && isCentrifugoSandbox(sandbox)) {
       this.currentConnectionId = sandbox.getConnectionId();
       this.currentConnectionName = sandbox.getConnectionName();
     } else {
@@ -632,6 +843,8 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async resetSandbox(reason?: string): Promise<void> {
+    // Settle acquisition before clearing its result; never destroy the VM.
+    await this.cloudAcquisition?.catch(() => undefined);
     const sandbox = this.sandbox;
     this.sandbox = null;
     this.isLocal = false;
@@ -651,17 +864,9 @@ export class HybridSandboxManager implements SandboxManager {
       });
       return;
     }
-
-    try {
-      await sandbox.kill();
-    } catch (error) {
-      const message = `[${this.userID}] Failed to kill E2B sandbox during reset${reason ? ` (${reason})` : ""}:`;
-      if (isExpectedAlreadyGoneCleanupError(error)) {
-        console.debug(message, error);
-      } else {
-        console.warn(message, error);
-      }
-    }
+    // E2B sandboxes are shared per user. Forget this worker's SDK connection
+    // and let the next acquisition reconnect without terminating commands
+    // owned by another Agent run.
   }
 
   /**

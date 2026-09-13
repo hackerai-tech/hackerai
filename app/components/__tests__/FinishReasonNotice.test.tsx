@@ -134,7 +134,7 @@ describe("FinishReasonNotice", () => {
       },
       {
         finishReason: "budget-exhausted",
-        expectedText: "Stopped at a usage guardrail for this run",
+        expectedText: "You've reached your usage limit, so this run stopped",
       },
       {
         finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
@@ -162,6 +162,12 @@ describe("FinishReasonNotice", () => {
           /The response reached its output limit before finishing.*Continue to resume where it stopped/i,
         ),
       ).toBeInTheDocument();
+    });
+
+    it("confirms that completed work was preserved at the step limit", () => {
+      renderNotice({ finishReason: "tool-calls", mode: "agent" });
+
+      expect(screen.getByText(/Completed work was saved/i)).toBeInTheDocument();
     });
 
     it.each([
@@ -302,7 +308,7 @@ describe("FinishReasonNotice", () => {
       expect(onContinue).toHaveBeenCalledWith(undefined);
     });
 
-    it("renders a usage guardrail notice without a Continue button for budget exhaustion", () => {
+    it("renders a usage limit notice without a Continue button for budget exhaustion", () => {
       const onContinue = jest.fn();
       renderNotice(
         {
@@ -314,7 +320,9 @@ describe("FinishReasonNotice", () => {
       );
 
       expect(
-        screen.getByText(/Stopped at a usage guardrail for this run/i),
+        screen.getByText(
+          /You've reached your usage limit, so this run stopped/i,
+        ),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: /continue/i }),

@@ -8,6 +8,12 @@ type PresenceResultLike = {
   presence?: Record<string, unknown>;
 };
 
+// Clients refresh this timestamp independently from Centrifugo token refreshes
+// so a brief relay outage remains recoverable. The grace window tolerates four
+// missed heartbeats before backend cleanup can make the connection terminal.
+export const LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS = 30_000;
+export const LOCAL_SANDBOX_PRESENCE_GRACE_MS = 120_000;
+
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)

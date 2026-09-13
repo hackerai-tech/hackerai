@@ -1,5 +1,6 @@
 import PostHogClient from "@/app/posthog";
 import { emitPostHogLog, flushPostHogLogs } from "@/lib/posthog/logs";
+import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 import type { PostHog } from "posthog-node";
 
 let cachedClient: PostHog | null | undefined;
@@ -9,6 +10,73 @@ function getClient(): PostHog | null {
     cachedClient = PostHogClient();
   }
   return cachedClient;
+}
+
+export async function getPostHogFeatureFlagForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean> {
+  const client = getClient();
+  if (!client) return false;
+  try {
+    const flags = await client.evaluateFlags(userId, {
+      flagKeys: [flagKey],
+    });
+    return flags.getFlag(flagKey) === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function getPostHogFeatureFlagValueForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean | null> {
+  const client = getClient();
+  if (!client) return null;
+  try {
+    const value = await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Raw flag value: `true`/`false` for boolean flags, the variant key for
+ * multivariate flags, `null` when the client is missing or the lookup fails.
+ */
+export async function getPostHogFeatureFlagRawValueForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean | string | null> {
+  const client = getClient();
+  if (!client) return null;
+  try {
+    const value = await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "boolean" || typeof value === "string"
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getPostHogFeatureFlagVariantForUser(
+  flagKey: string,
+  userId: string,
+  options?: { sendFeatureFlagEvents?: boolean },
+): Promise<string | undefined> {
+  const client = getClient();
+  if (!client) return undefined;
+  try {
+    const value = options
+      ? await client.getFeatureFlag(flagKey, userId, options)
+      : await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 type LogFields = Record<string, unknown> & {
@@ -67,14 +135,24 @@ function serializeError(error: unknown): Record<string, unknown> {
   if (error instanceof Error) {
     return {
       error_name: error.name,
-      error_message: truncate(error.message),
-      ...(error.stack && { error_stack: truncate(error.stack, 4_000) }),
+      error_message: truncate(redactSensitiveErrorMessage(error.message)),
+      ...(error.stack && {
+        error_stack: truncate(redactSensitiveErrorMessage(error.stack), 4_000),
+      }),
       ...("cause" in error &&
         (error as { cause?: unknown }).cause !== undefined && {
           error_cause:
             (error as { cause?: unknown }).cause instanceof Error
-              ? truncate((error as { cause: Error }).cause.message)
-              : truncate(String((error as { cause?: unknown }).cause)),
+              ? truncate(
+                  redactSensitiveErrorMessage(
+                    (error as { cause: Error }).cause.message,
+                  ),
+                )
+              : truncate(
+                  redactSensitiveErrorMessage(
+                    String((error as { cause?: unknown }).cause),
+                  ),
+                ),
         }),
     };
   }
@@ -83,8 +161,52 @@ function serializeError(error: unknown): Record<string, unknown> {
 
   return {
     error_name: "UnknownError",
-    error_message: truncate(stringifyUnknown(error)),
+    error_message: truncate(
+      redactSensitiveErrorMessage(stringifyUnknown(error)),
+    ),
   };
+}
+
+function sanitizeExceptionForCapture(error: Error): Error {
+  const serialized = serializeError(error);
+  const message =
+    typeof serialized.error_message === "string"
+      ? serialized.error_message
+      : "Unknown error";
+  const sanitized = new Error(message);
+  sanitized.name =
+    typeof serialized.error_name === "string"
+      ? serialized.error_name
+      : error.name;
+  if (typeof serialized.error_stack === "string") {
+    sanitized.stack = serialized.error_stack;
+  }
+  // PostHog traverses Error.cause. Keep the diagnostic fields above, but do
+  // not retain a raw cause that could reintroduce a presigned URL or object key.
+  return sanitized;
+}
+
+function sanitizeErrorForConsole(error: unknown): unknown {
+  if (error instanceof Error) {
+    // Always clone Error instances so enumerable provider-specific fields such
+    // as responseBody, data, and cause cannot reach console/Trigger telemetry.
+    return sanitizeExceptionForCapture(error);
+  }
+  if (error === undefined) return undefined;
+  return redactSensitiveErrorMessage(stringifyUnknown(error));
+}
+
+function sanitizeFieldsForConsole(fields: LogFields): LogFields {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      key,
+      key === "error"
+        ? sanitizeErrorForConsole(value)
+        : typeof value === "string"
+          ? redactSensitiveErrorMessage(value)
+          : value,
+    ]),
+  );
 }
 
 function commonLogFields({
@@ -126,8 +248,8 @@ function emitStructuredLog(
       event,
       body: message,
       attributes: {
-        ...commonLogFields({ level, event, message, userId }),
         ...rest,
+        ...commonLogFields({ level, event, message, userId }),
         ...serializeError(error),
       },
     });
@@ -138,27 +260,39 @@ function emitStructuredLog(
 
 export const phLogger = {
   error(message: string, fields: LogFields = {}) {
-    const wroteLog = emitStructuredLog("error", message, fields);
+    const redactedMessage = redactSensitiveErrorMessage(message);
+    const wroteLog = emitStructuredLog("error", redactedMessage, fields);
+    const safeFields = sanitizeFieldsForConsole(fields);
     const client = getClient();
     if (!client) {
-      if (!wroteLog) console.error(message, fields);
+      if (!wroteLog) console.error(redactedMessage, safeFields);
       return;
     }
     try {
       const { userId, error, ...rest } = fields;
-      const exception = error instanceof Error ? error : new Error(message);
+      const exception = sanitizeExceptionForCapture(
+        error instanceof Error ? error : new Error(redactedMessage),
+      );
       const event =
         typeof fields.event === "string" && fields.event.length > 0
           ? fields.event
-          : eventNameFor(message);
+          : eventNameFor(redactedMessage);
       client.captureException(exception, distinctIdFor(userId), {
-        ...commonLogFields({ level: "error", event, message, userId }),
-        ...serializeError(exception),
-        message,
         ...rest,
+        ...commonLogFields({
+          level: "error",
+          event,
+          message: redactedMessage,
+          userId,
+        }),
+        ...serializeError(exception),
+        message: redactedMessage,
       });
     } catch (telemetryError) {
-      console.error(message, { ...fields, telemetryError });
+      console.error(redactedMessage, {
+        ...safeFields,
+        telemetryError: sanitizeErrorForConsole(telemetryError),
+      });
     }
   },
 

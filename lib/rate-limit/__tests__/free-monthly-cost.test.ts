@@ -59,6 +59,22 @@ describe("free monthly cost limit", () => {
     expect(snapshot.extraUsageAutoReload).toBe(false);
   });
 
+  it("enforces the treatment cap against existing spend and restores control without clearing it", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockGet.mockResolvedValue(1000);
+    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
+    await expect(
+      checkFreeMonthlyCostLimit("quota", {
+        dailyRequests: 3,
+        monthlyCostDollars: 0.1,
+      }),
+    ).rejects.toMatchObject({ type: "rate_limit" });
+    const control = await checkFreeMonthlyCostLimit("quota");
+    expect(control.monthlyRemainingAtStart).toBe(1500);
+    expect(mockGet.mock.calls[0]).toEqual(mockGet.mock.calls[1]);
+    expect(mockEval).not.toHaveBeenCalled();
+  });
+
   it("throws a rate-limit error when the monthly free cost cap is exhausted", async () => {
     process.env.FREE_MONTHLY_COST_LIMIT_USD = "0.01";
     mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });

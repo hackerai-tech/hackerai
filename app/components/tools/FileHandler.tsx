@@ -1,4 +1,5 @@
 import { memo, useMemo, type ReactNode } from "react";
+import type { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Eye, FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import type { ChatStatus } from "@/types";
@@ -8,9 +9,14 @@ import type { FilePart } from "@/types/file";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
 import {
+  getAgentAutoReviewDisplayState,
+  getStreamedAgentAutoReviewSummary,
   getToolApprovalDisplayState,
+  getToolApprovalDisplayTarget,
   ToolApprovalControls,
+  useAgentAutoReviewLifecycleDisplay,
 } from "./ToolApprovalControls";
+import { getFileToolDisplayTarget } from "./file-tool-display";
 
 interface FileInput {
   action: "view" | "read" | "write" | "append" | "edit";
@@ -22,6 +28,7 @@ interface FileInput {
 }
 
 interface FileHandlerProps {
+  message: UIMessage;
   part: any;
   status: ChatStatus;
 }
@@ -60,6 +67,7 @@ function areFilePropsEqual(
   next: FileHandlerProps,
 ): boolean {
   if (prev.status !== next.status) return false;
+  if (prev.message.parts.length !== next.message.parts.length) return false;
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
@@ -70,6 +78,7 @@ function areFilePropsEqual(
 }
 
 export const FileHandler = memo(function FileHandler({
+  message,
   part,
   status,
 }: FileHandlerProps) {
@@ -108,7 +117,7 @@ export const FileHandler = memo(function FileHandler({
   const briefLabel = (fallback: string) =>
     useBriefOnly ? briefText : fallback;
   const briefTarget = (fallback: string | undefined) =>
-    useBriefOnly ? undefined : fallback;
+    useBriefOnly ? undefined : getFileToolDisplayTarget(fallback);
   const errorLabel = (failed: string, stopped: string) =>
     isStoppedByUser ? stopped : failed;
 
@@ -286,6 +295,20 @@ export const FileHandler = memo(function FileHandler({
   });
 
   const isClickable = !!sidebarContent;
+  const autoReview = useMemo(
+    () =>
+      getStreamedAgentAutoReviewSummary({
+        parts: message.parts,
+        approvalId: part.approval?.id,
+        toolCallId: part.toolCallId,
+      }),
+    [message.parts, part.approval?.id, part.toolCallId],
+  );
+  const autoReviewLifecycle = useAgentAutoReviewLifecycleDisplay({
+    parts: message.parts,
+    toolCallId: part.toolCallId,
+  });
+  const autoReviewDisplay = getAgentAutoReviewDisplayState(autoReviewLifecycle);
   const renderApprovalRequest = ({
     icon,
     target,
@@ -303,9 +326,10 @@ export const FileHandler = memo(function FileHandler({
         FILE_APPROVAL_TITLES[action ?? "write"] ??
         "Allow HackerAI to change this file?"
       }
-      target={target}
+      target={getFileToolDisplayTarget(target)}
       detail="Approve to continue, or deny to stop this file change."
       kind="file"
+      autoReview={autoReview}
       operation={
         action === "write" || action === "append" || action === "edit"
           ? FILE_APPROVAL_OPERATIONS[action]
@@ -323,7 +347,10 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             icon={icon}
             action={display.action}
-            target={target}
+            target={getToolApprovalDisplayTarget({
+              sendState,
+              target: getFileToolDisplayTarget(target),
+            })}
             isShimmer={display.isShimmer}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
@@ -391,7 +418,9 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileText />}
               action="Stopped reading"
-              target={`${input.path}${getFileRange()}`}
+              target={getFileToolDisplayTarget(
+                `${input.path}${getFileRange()}`,
+              )}
             />
           );
         }
@@ -410,7 +439,9 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileText />}
               action="Stopped reading"
-              target={`${input.path}${getFileRange()}`}
+              target={getFileToolDisplayTarget(
+                `${input.path}${getFileRange()}`,
+              )}
             />
           );
         }
@@ -465,7 +496,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePlus />}
               action="Stopped writing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -494,7 +525,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePlus />}
               action="Stopped writing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -505,9 +536,9 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
-            action={briefLabel("Writing to")}
+            action={autoReviewDisplay?.action ?? briefLabel("Writing to")}
             target={briefTarget(input?.path)}
-            isShimmer={true}
+            isShimmer={autoReviewDisplay?.isShimmer ?? true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
             onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -559,7 +590,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileOutput />}
               action="Stopped appending to"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -588,7 +619,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FileOutput />}
               action="Stopped appending to"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
               isClickable={isClickable}
               onClick={isClickable ? handleOpenInSidebar : undefined}
               onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -599,9 +630,9 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FileOutput />}
-            action={briefLabel("Appending to")}
+            action={autoReviewDisplay?.action ?? briefLabel("Appending to")}
             target={briefTarget(input?.path)}
-            isShimmer={true}
+            isShimmer={autoReviewDisplay?.isShimmer ?? true}
             isClickable={isClickable}
             onClick={isClickable ? handleOpenInSidebar : undefined}
             onKeyDown={isClickable ? handleKeyDown : undefined}
@@ -649,7 +680,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePen />}
               action="Stopped editing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
             />
           );
         }
@@ -668,7 +699,7 @@ export const FileHandler = memo(function FileHandler({
               key={toolCallId}
               icon={<FilePen />}
               action="Stopped editing"
-              target={input.path}
+              target={getFileToolDisplayTarget(input.path)}
             />
           );
         }
@@ -676,13 +707,16 @@ export const FileHandler = memo(function FileHandler({
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={briefLabel(
-              input?.edits
-                ? `Making ${input.edits.length} edit${input.edits.length > 1 ? "s" : ""} to`
-                : "Editing",
-            )}
+            action={
+              autoReviewDisplay?.action ??
+              briefLabel(
+                input?.edits
+                  ? `Making ${input.edits.length} edit${input.edits.length > 1 ? "s" : ""} to`
+                  : "Editing",
+              )
+            }
             target={briefTarget(input?.path)}
-            isShimmer={true}
+            isShimmer={autoReviewDisplay?.isShimmer ?? true}
           />
         ) : null;
       case "approval-requested":

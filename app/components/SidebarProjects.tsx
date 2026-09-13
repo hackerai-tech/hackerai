@@ -25,6 +25,9 @@ import { SidebarProjectItem } from "./SidebarProjectItem";
 
 interface SidebarProjectsProps {
   projects: Doc<"projects">[] | undefined;
+  openProjectIds: ReadonlySet<string>;
+  onProjectOpenChange: (projectId: string, open: boolean) => void;
+  onCollapseProjects: (projectIds: readonly string[]) => void;
   variant?: "section" | "pinned-list";
   paginationStatus?:
     "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
@@ -33,6 +36,9 @@ interface SidebarProjectsProps {
 
 export function SidebarProjects({
   projects,
+  openProjectIds,
+  onProjectOpenChange,
+  onCollapseProjects,
   variant = "section",
   paginationStatus,
   loadMore,
@@ -42,9 +48,6 @@ export function SidebarProjects({
   const startNewChat = useStartNewChat();
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSectionOpen, setIsSectionOpen] = useState(true);
-  const [openProjectIds, setOpenProjectIds] = useState<Set<string>>(
-    () => new Set(),
-  );
 
   const projectIds = projects?.map((project) => project._id) ?? [];
   const hasOpenProjects = projectIds.some((projectId) =>
@@ -52,12 +55,7 @@ export function SidebarProjects({
   );
 
   const setProjectOpen = (projectId: string, open: boolean) => {
-    setOpenProjectIds((current) => {
-      const next = new Set(current);
-      if (open) next.add(projectId);
-      else next.delete(projectId);
-      return next;
-    });
+    onProjectOpenChange(projectId, open);
   };
 
   const handleCreated = (projectId: Id<"projects">) => {
@@ -66,7 +64,7 @@ export function SidebarProjects({
   };
 
   const collapseAllProjects = () => {
-    setOpenProjectIds(new Set());
+    onCollapseProjects(projectIds);
   };
 
   const isPinnedList = variant === "pinned-list";

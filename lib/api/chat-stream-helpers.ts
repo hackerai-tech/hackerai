@@ -1,3 +1,8 @@
+import {
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+  ABLITERATION_MODEL_KEY,
+  isAbliterationModel,
+} from "@/lib/ai/abliteration";
 /**
  * Chat Stream Helpers
  *
@@ -22,8 +27,18 @@ import type {
   Todo,
   UserCustomization,
 } from "@/types";
-import { isAnthropicModel, myProvider } from "@/lib/ai/providers";
+import {
+  DEEPSEEK_V4_FLASH_VISION_SLUG,
+  GLM_5_3_FLASH_SLUG,
+  GLM_5_3_SLUG,
+  GROK_4_5_SLUG,
+  GROK_4_6_SLUG,
+  getOpenRouterProviderRoutingForModel,
+  isAnthropicModel,
+  myProvider,
+} from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
+import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
 import {
@@ -51,6 +66,10 @@ import {
 } from "@/lib/extra-usage";
 import { systemPrompt } from "@/lib/system-prompt";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import {
+  extractErrorDetails,
+  getProviderStatusCode,
+} from "@/lib/utils/error-utils";
 
 /**
  * Check if messages contain file attachments
@@ -293,12 +312,44 @@ export function isXaiSafetyError(error: unknown): boolean {
   );
 }
 
-/**
- * Check if an error is a provider API error that should trigger fallback
- * Specifically targets provider-side invalid argument errors before streaming.
- */
+const PROVIDER_CAPACITY_ERROR_PATTERN =
+  /\bprovider_unavailable\b|\bcurrently at capacity\b|\bhigh demand\b/i;
+
+const stringifyErrorField = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+};
+
+/** Check if a pre-stream provider API error should trigger model fallback. */
 export function isProviderApiError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
+
+  const details = extractErrorDetails(error);
+  const statusCode = getProviderStatusCode(details);
+  const providerErrorText = [
+    details.errorMessage,
+    details.providerErrorMessage,
+    details.providerRawError,
+    details.responseBody,
+    details.providerData,
+  ]
+    .map(stringifyErrorField)
+    .join(" ");
+
+  // xAI returns this when Grok is temporarily saturated. It is safe to retry
+  // with the configured fallback because the request never produced output.
+  if (
+    statusCode != null &&
+    statusCode >= 500 &&
+    PROVIDER_CAPACITY_ERROR_PATTERN.test(providerErrorText)
+  ) {
+    return true;
+  }
 
   const err = error as {
     statusCode?: number;
@@ -376,8 +427,12 @@ export async function runSummarizationStep(options: {
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
   modelMessages?: ModelMessage[];
+  sourceUiMessages?: UIMessage[];
   transcriptMessages?: UIMessage[];
   providerPromptPressure?: ProviderPromptPressure | null;
+  onPhaseDuration?: import("@/lib/chat/summarization").ContextCompactionPhaseReporter;
+  startupCompaction?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionContext;
+  registerBackgroundWork?: import("@/lib/chat/summarization").BackgroundWorkRegistrar;
 }): Promise<SummarizationStepResult> {
   const {
     summarizationAttempted,
@@ -386,6 +441,7 @@ export async function runSummarizationStep(options: {
     summarizationUsage,
   } = await checkAndSummarizeIfNeeded({
     uiMessages: options.messages,
+    sourceUiMessages: options.sourceUiMessages,
     subscription: options.subscription,
     languageModel: options.languageModel,
     mode: options.mode,
@@ -404,6 +460,9 @@ export async function runSummarizationStep(options: {
     transcriptMessages: options.transcriptMessages,
     maxTokensOverride: options.ctxMaxTokens,
     providerPromptPressure: options.providerPromptPressure,
+    onPhaseDuration: options.onPhaseDuration,
+    startupCompaction: options.startupCompaction,
+    registerBackgroundWork: options.registerBackgroundWork,
   });
 
   if (!needsSummarization) {
@@ -471,20 +530,7 @@ export class SummarizationTracker {
     usageTracker: UsageTracker,
   ): void {
     if (usage) {
-      usageTracker.inputTokens += usage.inputTokens;
-      usageTracker.summarizationInputTokens += usage.inputTokens;
-      usageTracker.outputTokens += usage.outputTokens;
-      usageTracker.summarizationOutputTokens += usage.outputTokens;
-      usageTracker.totalTokens += usage.inputTokens + usage.outputTokens;
-      const cacheReadTokens = usage.cacheReadTokens || 0;
-      const cacheWriteTokens = usage.cacheWriteTokens || 0;
-      usageTracker.cacheReadTokens += cacheReadTokens;
-      usageTracker.summarizationCacheReadTokens += cacheReadTokens;
-      usageTracker.cacheWriteTokens += cacheWriteTokens;
-      usageTracker.summarizationCacheWriteTokens += cacheWriteTokens;
-      if (usage.cost) {
-        usageTracker.providerCost += usage.cost;
-      }
+      usageTracker.accumulateSummarization(usage);
     }
   }
 
@@ -528,63 +574,103 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Claude chats are repaired for Anthropic-compatible message shapes before
- * this fallback can fire. Claude agent calls use the cheaper MiniMax and Kimi
- * fallback chain while the run is text-only, then switch to multimodal-capable
- * fallbacks once image tool results enter the context.
+ * Standard uses DeepSeek V4 Flash 0731. Pro uses V4 Pro 0813 in Ask and
+ * V4.1 Flash in Agent. Max uses Grok 4.6. Image turns use DeepSeek vision. Both DeepSeek
+ * Flash routes try GLM 5.3 Flash before the established recovery models.
+ * Historical aliases remain recognized for in-flight requests and accounting.
  *
  * Keys and values are registry names (see lib/ai/providers.ts) — the actual
  * OpenRouter slugs are resolved at request-build time so this stays in sync
  * with the registry.
  */
-const MINIMAX_M3_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
-  "fallback-grok-4.5",
+const KIMI_K3_THEN_GROK_FALLBACK_CHAIN = [
+  "model-kimi-k3",
+  "model-grok-4.6",
 ] as const satisfies readonly ModelName[];
 
-const AGENT_TEXT_FALLBACK_CHAIN = [
-  "model-minimax-m3",
-  ...MINIMAX_M3_FALLBACK_CHAIN,
+const GROK_4_6_FALLBACK_CHAIN = [
+  "model-glm-5.3",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
-// HackerAI Pro uses Grok 4.5 for every request. GLM 5.2 remains its first
-// fallback, followed by Kimi so media requests still have a multimodal final
-// recovery path if both primary providers are unavailable.
+const PRO_TEXT_FALLBACK_CHAIN = [
+  "model-glm-5.3",
+  "model-kimi-k3",
+] as const satisfies readonly ModelName[];
+
+// OpenRouter rejects requests whose `models` fallback array has more than
+// three entries. Longer logical routes can still be used by app-side retries.
+const OPENROUTER_MAX_FALLBACK_MODELS = 3;
+
+const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
+  "model-glm-5.3-flash",
+  "model-deepseek-v4-pro-0813",
+  "model-glm-5.3",
+] as const satisfies readonly ModelName[];
+
+const LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN = [
+  "model-deepseek-v4-flash-0731",
+  "model-deepseek-v4-pro-0813",
+  "model-glm-5.3",
+] as const satisfies readonly ModelName[];
+
+const GLM_FLASH_RECOVERY_FALLBACK_CHAIN = [
+  "model-deepseek-v4-pro-0813",
+  "model-glm-5.3",
+  "model-kimi-k3",
+] as const satisfies readonly ModelName[];
+
+const DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN = [
+  ...PRO_TEXT_FALLBACK_CHAIN,
+] as const satisfies readonly ModelName[];
+
+// Preserve the historical Grok 4.6 Pro alias for in-flight requests. GLM 5.3
+// remains its first fallback, followed by Kimi K3.
 const HACKERAI_PRO_FALLBACK_CHAIN = [
-  "model-glm-5.2",
-  "model-kimi-k2.7-code",
-] as const satisfies readonly ModelName[];
-
-// Agent Pro promotes vision steps to Grok 4.5. Keep Kimi as its direct
-// multimodal fallback for legacy in-flight routes that still use the generic
-// Grok key rather than the dedicated HackerAI Pro alias.
-const AGENT_PRO_VISION_FALLBACK_CHAIN = [
-  "model-kimi-k2.7-code",
+  "model-glm-5.3",
+  "model-kimi-k3",
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "agent-model-free": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-deepseek-v4-pro": AGENT_TEXT_FALLBACK_CHAIN,
-  "ask-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-grok-4.5": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-grok-4.5-pro": HACKERAI_PRO_FALLBACK_CHAIN,
-  "model-gemini-3-flash": AGENT_TEXT_FALLBACK_CHAIN,
-  "model-glm-5.2": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-minimax-m3": MINIMAX_M3_FALLBACK_CHAIN,
-  "fallback-agent-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "fallback-ask-model": MINIMAX_M3_FALLBACK_CHAIN,
-  "model-kimi-k2.7-code": ["fallback-grok-4.5"],
-  "model-kimi-k2.6": ["fallback-grok-4.5"],
+  "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
+  "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
+  "ask-model": GROK_4_6_FALLBACK_CHAIN,
+  "agent-model": GROK_4_6_FALLBACK_CHAIN,
+  "model-grok-4.6": GROK_4_6_FALLBACK_CHAIN,
+  "model-grok-4.5": ["model-kimi-k3"],
+  "model-grok-4.5-pro": ["model-kimi-k3"],
+  "model-grok-4.6-pro": HACKERAI_PRO_FALLBACK_CHAIN,
+  "model-opus-4.6": ["model-grok-4.6"],
+  "model-glm-5.2": KIMI_K3_THEN_GROK_FALLBACK_CHAIN,
+  "model-glm-5.3": ["model-kimi-k3"],
+  "model-glm-5.3-flash": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-pro": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
+  "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
+  "model-kimi-k3": ["model-grok-4.6"],
 };
 
 const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model",
   "ask-model-free",
+  "ask-model-free-glm",
   "agent-model",
   "agent-model-free",
+]);
+const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
+  "model-grok-4.6",
+  "model-grok-4.6-pro",
+]);
+const EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS = new Set<string>([
+  "model-deepseek-v4-pro",
+  "model-deepseek-v4-pro-0813",
 ]);
 
 export function isAutoModelSelectionForRetry({
@@ -597,43 +683,38 @@ export function isAutoModelSelectionForRetry({
   return (
     !selectedModelOverride ||
     selectedModelOverride === "auto" ||
-    AUTO_MODEL_KEYS.has(selectedModel)
+    AUTO_MODEL_KEYS.has(selectedModel) ||
+    EXPLICIT_RETRY_MODEL_KEYS.has(selectedModel)
   );
 }
 
-const ANTHROPIC_FALLBACK_CHAIN_BY_MODE: Record<ChatMode, readonly ModelName[]> =
-  {
-    agent: AGENT_TEXT_FALLBACK_CHAIN,
-    ask: ["model-grok-4.5"],
-  };
-
-const ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN = MINIMAX_M3_FALLBACK_CHAIN;
-
-// Standard Ask can route text-only prompts to DeepSeek, image prompts to
-// MiniMax, and PDF prompts to Grok. Keep those route keys and their persisted
-// Grok aliases, including the app-side retry key, on one effort level so they
-// do not drift. Grok 4.5 rejects requests that explicitly disable reasoning.
-const ASK_STANDARD_REASONING_MODELS = [
-  "model-deepseek-v4-pro",
-  "ask-model",
-  "model-minimax-m3",
-  "model-grok-4.5",
-  "model-gemini-3-flash",
-  "fallback-grok-4.5",
-] as const satisfies readonly ModelName[];
-
-const ASK_MEDIUM_REASONING_MODELS = [
-  ...ASK_STANDARD_REASONING_MODELS,
-] as const satisfies readonly ModelName[];
-
-const isAskMediumReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_MEDIUM_REASONING_MODELS as readonly string[]).includes(modelName);
+export function isExplicitDeepSeekProSelectionForRetry({
+  selectedModel,
+  selectedModelOverride,
+  mode,
+}: {
+  selectedModel: string;
+  selectedModelOverride?: SelectedModel | null;
+  mode?: ChatMode;
+}): boolean {
+  return (
+    selectedModelOverride === "hackerai-pro" &&
+    (EXPLICIT_DEEPSEEK_PRO_RETRY_MODEL_KEYS.has(selectedModel) ||
+      (mode === "agent" &&
+        selectedModel === "model-deepseek-v4-flash-vision-pro"))
+  );
+}
 
 const HIGH_REASONING_MODELS = [
   "model-grok-4.5-pro",
+  "model-grok-4.6",
+  "model-grok-4.6-pro",
+  "model-deepseek-v4-flash-0731",
+  "model-deepseek-v4-pro-0813",
   "model-glm-5.2",
-  "model-sonnet-4.6",
+  "model-glm-5.3",
+  "model-glm-5.3-flash-pro",
+  "model-deepseek-v4-flash-vision-pro",
   "model-opus-4.6",
 ] as const satisfies readonly ModelName[];
 
@@ -641,18 +722,15 @@ const isHighReasoningModel = (modelName?: string): boolean =>
   typeof modelName === "string" &&
   (HIGH_REASONING_MODELS as readonly string[]).includes(modelName);
 
-const ASK_KIMI_REASONING_MODELS = [
-  "model-kimi-k2.7-code",
-  "model-kimi-k2.6",
-] as const satisfies readonly ModelName[];
-
-const isAskKimiReasoningModel = (modelName?: string): boolean =>
-  typeof modelName === "string" &&
-  (ASK_KIMI_REASONING_MODELS as readonly string[]).includes(modelName);
-
 type FallbackOptions = {
+  /** Preserve the authenticated free Ask policy across model retries. */
+  isFreeAskRequest?: boolean;
   hasMultimodalToolResults?: boolean;
+  hasPdfAttachments?: boolean;
+  pdfParserEngine?: "mistral-ocr" | "cloudflare-ai";
   reasoningOverride?: ProviderReasoningOverride;
+  excludedModelSlugs?: readonly string[];
+  requestedModelSlug?: string;
 };
 
 export type ProviderReasoningOverride = {
@@ -661,45 +739,144 @@ export type ProviderReasoningOverride = {
   exclude?: boolean;
 };
 
+const HIGH_OR_GREATER_REASONING_EFFORTS = new Set(["high", "xhigh", "max"]);
+
+const isHighOrGreaterReasoningOverride = (
+  reasoningOverride: ProviderReasoningOverride | undefined,
+): reasoningOverride is ProviderReasoningOverride & { effort: string } =>
+  reasoningOverride?.enabled === true &&
+  reasoningOverride.exclude !== true &&
+  typeof reasoningOverride.effort === "string" &&
+  HIGH_OR_GREATER_REASONING_EFFORTS.has(reasoningOverride.effort);
+
 const getFallbackKeys = (
   modelName?: string,
-  mode?: ChatMode,
-  options: FallbackOptions = {},
 ): readonly ModelName[] | undefined => {
   if (!modelName) return undefined;
-  if (modelName === "model-grok-4.5" && mode === "agent") {
-    return AGENT_PRO_VISION_FALLBACK_CHAIN;
-  }
-  if (modelName === "model-opus-4.6" || modelName === "model-sonnet-4.6") {
-    if (mode === "agent" && options.hasMultimodalToolResults) {
-      return ANTHROPIC_MULTIMODAL_AGENT_FALLBACK_CHAIN;
-    }
-    return ANTHROPIC_FALLBACK_CHAIN_BY_MODE[mode ?? "agent"];
-  }
   return MODEL_FALLBACK_CHAIN[modelName as ModelName];
 };
 
+/** Returns the first app-side retry model for a failed provider route. */
 export function getRetryFallbackModel(
   modelName: ModelName,
-  mode: ChatMode,
+  _mode: ChatMode,
 ): ModelName {
-  if (modelName === "model-grok-4.5-pro") {
-    return "model-glm-5.2";
+  if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
+    return "model-deepseek-v4-pro-0813";
   }
-  if (modelName === "model-grok-4.5" && mode === "agent") {
-    return "model-kimi-k2.7-code";
+  if (
+    modelName === ABLITERATION_MODEL_KEY ||
+    modelName === "model-glm-5.3-flash-agent" ||
+    modelName === "ask-model-free-glm"
+  ) {
+    return "model-deepseek-v4-flash-0731";
   }
   if (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "model-deepseek-v4-flash" ||
-    modelName === "model-deepseek-v4-pro" ||
-    modelName === "model-grok-4.5" ||
-    modelName === "model-gemini-3-flash"
+    modelName === "model-deepseek-v4-flash-0731" ||
+    modelName === "model-deepseek-v4-flash-vision" ||
+    modelName === "model-deepseek-v4-flash-vision-pro"
   ) {
-    return "model-minimax-m3";
+    return "model-glm-5.3-flash";
   }
-  return "fallback-grok-4.5";
+  if (modelName === "model-deepseek-v4-pro-0813") {
+    return "model-glm-5.3";
+  }
+  if (modelName === "model-grok-4.6-pro") {
+    return "model-glm-5.3";
+  }
+  if (modelName === "model-grok-4.5" || modelName === "model-grok-4.5-pro") {
+    return "model-kimi-k3";
+  }
+  if (modelName === "model-opus-4.6") {
+    return "model-grok-4.6";
+  }
+  if (modelName === "model-deepseek-v4-pro") {
+    return "model-glm-5.3";
+  }
+  if (
+    modelName === "ask-model" ||
+    modelName === "agent-model" ||
+    modelName === "model-grok-4.6" ||
+    modelName === "model-grok-4.5" ||
+    modelName === "fallback-agent-model" ||
+    modelName === "fallback-ask-model"
+  ) {
+    return "model-glm-5.3";
+  }
+  if (modelName === "model-glm-5.3") {
+    return "model-kimi-k3";
+  }
+  if (
+    modelName === "model-glm-5.3-flash" ||
+    modelName === "model-glm-5.3-flash-pro"
+  ) {
+    return "model-deepseek-v4-pro-0813";
+  }
+  return "model-grok-4.6";
+}
+
+/** Any failure of the active treatment route gets one baseline attempt. */
+export function shouldRetryAbliterationError(
+  assignment: Pick<AbliteratedAssignment, "variant"> | undefined,
+  failedModel: string,
+  abortSignal: AbortSignal,
+): boolean {
+  return (
+    assignment?.variant === "test" &&
+    isAbliterationModel(failedModel) &&
+    !abortSignal.aborted
+  );
+}
+
+const CONTENT_FILTER_RETRY_CANDIDATES = [
+  "model-glm-5.3",
+  "model-kimi-k3",
+  "model-grok-4.6",
+] as const satisfies readonly ModelName[];
+
+/**
+ * Pick a retry model that differs from the model OpenRouter actually served.
+ * The served model can itself be an internal fallback, so the configured
+ * primary model is not sufficient for this decision.
+ */
+export function getContentFilterRetryModel(
+  modelName: ModelName,
+  mode: ChatMode,
+  servedModel?: string,
+  preferredFallbackOverride?: ModelName,
+): ModelName {
+  const preferredFallback =
+    preferredFallbackOverride ?? getRetryFallbackModel(modelName, mode);
+  if (!servedModel) return preferredFallback;
+
+  const route = [modelName, ...(getFallbackKeys(modelName) ?? [])];
+  const servedIndex = route.findIndex((candidate) => {
+    const candidateSlug = resolveSlug(candidate);
+    return (
+      candidateSlug !== undefined &&
+      areEquivalentProviderModelIds(candidateSlug, servedModel)
+    );
+  });
+  const candidates = [
+    ...(servedIndex >= 0 ? route.slice(servedIndex + 1) : []),
+    preferredFallback,
+    ...CONTENT_FILTER_RETRY_CANDIDATES,
+  ];
+  const retryModel = candidates.find((candidate) => {
+    const candidateSlug = resolveSlug(candidate);
+    return (
+      candidateSlug !== undefined &&
+      !areEquivalentProviderModelIds(candidateSlug, servedModel)
+    );
+  });
+  if (!retryModel) {
+    throw new Error(
+      `No content-filter retry model differs from served model ${servedModel}`,
+    );
+  }
+  return retryModel;
 }
 
 const resolveSlug = (modelName: string): string | undefined => {
@@ -718,53 +895,77 @@ const resolveSlug = (modelName: string): string | undefined => {
 
 /**
  * Resolve a model's fallback chain to OpenRouter slugs.
- * Returns an empty array if the model has no chain or all entries are stale.
+ * Returns at most the number of fallback models accepted by OpenRouter, or an
+ * empty array if the model has no chain or all entries are stale.
  */
 export function getFallbackSlugs(
   modelName?: string,
-  mode?: ChatMode,
+  _mode?: ChatMode,
   options: FallbackOptions = {},
 ): string[] {
-  const fallbackKeys = getFallbackKeys(modelName, mode, options);
+  const fallbackKeys = getFallbackKeys(modelName);
+  const excludedModelSlugs = options.excludedModelSlugs ?? [];
   return (
     fallbackKeys
       ?.map((key) => resolveSlug(key))
-      .filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
-  );
+      .filter((s): s is string => typeof s === "string" && s.length > 0)
+      .filter(
+        (slug) =>
+          !excludedModelSlugs.some((excludedSlug) =>
+            areEquivalentProviderModelIds(slug, excludedSlug),
+          ),
+      ) ?? []
+  ).slice(0, OPENROUTER_MAX_FALLBACK_MODELS);
 }
 
-const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, ModelName> = {
+const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
-  "anthropic/claude-sonnet-4-6": "model-sonnet-4.6",
-  "anthropic/claude-sonnet-4.6": "model-sonnet-4.6",
+  "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
+  "deepseek/deepseek-v4-flash-0731": "model-deepseek-v4-flash-0731",
+  "deepseek/deepseek-v4-flash-20260731": "model-deepseek-v4-flash-0731",
+  "deepseek/deepseek-v4-pro-0813": "model-deepseek-v4-pro-0813",
+  "deepseek/deepseek-v4-pro-20260813": "model-deepseek-v4-pro-0813",
   "x-ai/grok-4.5": "model-grok-4.5",
+  "x-ai/grok-4.5-20260708": "model-grok-4.5",
+  "x-ai/grok-4.6": "model-grok-4.6",
   "z-ai/glm-5.2": "model-glm-5.2",
   "z-ai/glm-5.2-20260616": "model-glm-5.2",
-  "moonshotai/kimi-k2.7-code": "model-kimi-k2.7-code",
-  "moonshotai/kimi-k2.7-code:exacto": "model-kimi-k2.7-code",
+  "z-ai/glm-5.3": "model-glm-5.3",
+  "z-ai/glm-5.3-20260816": "model-glm-5.3",
+  [GLM_5_3_FLASH_SLUG]: "model-glm-5.3-flash",
+  [DEEPSEEK_V4_FLASH_VISION_SLUG]: "model-deepseek-v4-flash-vision",
+  "deepseek/deepseek-v4.1-flash-20260910": "model-deepseek-v4-flash-vision",
+  "moonshotai/kimi-k3": "model-kimi-k3",
+  "moonshotai/kimi-k3-20260715": "model-kimi-k3",
 };
 
 function resolveOpenRouterResponseModelCostKey(
   responseModel: string,
-): ModelName | undefined {
+): string | undefined {
   const exactKey = OPENROUTER_RESPONSE_MODEL_COST_KEYS[responseModel];
   if (exactKey) return exactKey;
-  // Scope Claude response aliases to the priced generation. Families like
-  // Opus, Sonnet, and Haiku do not share one stable rate across versions.
+  // Scope Opus response aliases to the priced generation rather than matching
+  // every Claude family or version.
   if (/^anthropic\/claude-4\.6-opus-\d{8}$/.test(responseModel)) {
     return "model-opus-4.6";
   }
-  if (/^anthropic\/claude-4\.6-sonnet-\d{8}$/.test(responseModel)) {
-    return "model-sonnet-4.6";
-  }
   return undefined;
+}
+
+function areEquivalentProviderModelIds(
+  firstModelId: string,
+  secondModelId: string,
+): boolean {
+  if (firstModelId === secondModelId) return true;
+  const firstKey = resolveOpenRouterResponseModelCostKey(firstModelId);
+  const secondKey = resolveOpenRouterResponseModelCostKey(secondModelId);
+  return firstKey !== undefined && firstKey === secondKey;
 }
 
 export function resolveServedModelForCostAccounting({
   modelName,
   responseModel,
-  mode,
-  options = {},
 }: {
   modelName: string;
   responseModel?: string;
@@ -775,7 +976,7 @@ export function resolveServedModelForCostAccounting({
 
   const candidateKeys = [
     modelName as ModelName,
-    ...(getFallbackKeys(modelName, mode, options) ?? []),
+    ...(getFallbackKeys(modelName) ?? []),
   ];
   const matchedKey = candidateKeys.find(
     (key) => resolveSlug(key) === responseModel,
@@ -798,39 +999,95 @@ export function buildProviderOptions(
   mode?: ChatMode,
   options: FallbackOptions = {},
 ) {
-  const modelId = modelName ? resolveSlug(modelName) : undefined;
+  // Direct provider: never send OpenRouter routing, plugins, or user IDs.
+  if (isAbliterationModel(modelName)) return {} as Record<string, never>;
+  const modelId =
+    options.requestedModelSlug ??
+    (modelName ? resolveSlug(modelName) : undefined);
   const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
+  // Free Ask keeps mandatory reasoning low even when a caller supplies a
+  // different reasoning override.
+  const isFreeAsk =
+    mode === "ask" &&
+    (options.isFreeAskRequest === true ||
+      modelName === "ask-model-free" ||
+      modelName === "ask-model-free-glm");
+  const isGrok45 = modelId === GROK_4_5_SLUG;
+  const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
-  // mode-scoped so the corresponding Ask routes retain their existing effort.
+  // mode-scoped for any future route that does not also include Grok.
   const isAgentDeepSeekV4 = mode === "agent" && isDeepSeekV4;
   const fallbackSlugs = getFallbackSlugs(modelName, mode, options);
-  const reasoning =
-    options.reasoningOverride ??
-    (isHighReasoningModel(modelName) || isAgentDeepSeekV4
+  const reasoningFallbackSlugs = options.excludedModelSlugs?.length
+    ? getFallbackSlugs(modelName, mode, {
+        ...options,
+        excludedModelSlugs: undefined,
+      })
+    : fallbackSlugs;
+  // OpenRouter applies one reasoning configuration to both the primary model
+  // and every provider fallback. Ask GLM vision uses high, legacy Standard Grok
+  // vision uses medium, and Pro/full reasoning routes remain high. Agent GLM
+  // Flash routes omit this option so each provider model uses its default.
+  const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
+  const isStandardGlmFlashVision = modelName === "model-glm-5.3-flash";
+  const usesDefaultGlmFlashAgentReasoning =
+    mode === "agent" && modelId === GLM_5_3_FLASH_SLUG;
+  const routesThroughHighReasoningModel =
+    isGrok45 ||
+    isGrok46 ||
+    reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
+    reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
+    reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
+  const providerRouting = modelId
+    ? getOpenRouterProviderRoutingForModel(modelId)
+    : undefined;
+  const reasoning = isStandardGlmFlashVision
+    ? {
+        enabled: true,
+        effort: "high",
+      }
+    : isMediumGrok45Vision
       ? {
           enabled: true,
-          effort: "high",
+          effort: "medium",
         }
-      : isReasoningModel
-        ? {
-            enabled: true,
-            ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
-          }
-        : mode === "ask" && isAskKimiReasoningModel(modelName)
-          ? {
+      : routesThroughHighReasoningModel
+        ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+          ? options.reasoningOverride
+          : {
               enabled: true,
+              effort: "high",
             }
-          : mode === "ask" && isAskMediumReasoningModel(modelName)
+        : (options.reasoningOverride ??
+          (isHighReasoningModel(modelName) || isAgentDeepSeekV4
             ? {
                 enabled: true,
-                effort: "medium",
+                effort: "high",
               }
-            : { enabled: false });
+            : isReasoningModel
+              ? {
+                  enabled: true,
+                  ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                }
+              : { enabled: false }));
 
   return {
     openrouter: {
-      reasoning,
+      ...(!usesDefaultGlmFlashAgentReasoning && {
+        reasoning: isFreeAsk ? { enabled: true, effort: "low" } : reasoning,
+      }),
+      ...(options.hasPdfAttachments && isDeepSeekV4
+        ? {
+            plugins: [
+              {
+                id: "file-parser" as const,
+                pdf: { engine: options.pdfParserEngine ?? "mistral-ocr" },
+              },
+            ],
+          }
+        : {}),
       ...(userId && { user: userId }),
+      ...(providerRouting && { provider: providerRouting }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
   } as const;
@@ -925,16 +1182,22 @@ export async function injectNotesIntoMessages(
     userId: string;
     subscription: SubscriptionTier;
     shouldIncludeNotes: boolean;
-    isTemporary?: boolean;
+    /**
+     * Notes fetch started earlier in the request so it overlaps other
+     * preflight work instead of adding a round-trip right before the model
+     * call. Falls back to fetching here when absent.
+     */
+    preloadedNotes?: Promise<Awaited<ReturnType<typeof getNotes>>>;
   },
 ): Promise<UIMessage[]> {
-  if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
+  if (!opts.shouldIncludeNotes) return messages;
 
   try {
-    const notes = await getNotes({
-      userId: opts.userId,
-      subscription: opts.subscription,
-    });
+    const notes = await (opts.preloadedNotes ??
+      getNotes({
+        userId: opts.userId,
+        subscription: opts.subscription,
+      }));
     const notesContent = generateNotesSection(notes);
     if (!notesContent) return messages;
 
@@ -994,10 +1257,9 @@ export async function refreshNotesInModelMessages(
     userId: string;
     subscription: SubscriptionTier;
     shouldIncludeNotes: boolean;
-    isTemporary?: boolean;
   },
 ): Promise<Array<Record<string, unknown>>> {
-  if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
+  if (!opts.shouldIncludeNotes) return messages;
 
   try {
     const notes = await getNotes({
@@ -1101,7 +1363,6 @@ export async function applyPrepareStepReminders(
       userId: string;
       subscription: SubscriptionTier;
       shouldIncludeNotes: boolean;
-      isTemporary?: boolean;
     };
   },
 ): Promise<Array<Record<string, unknown>>> {
@@ -1147,18 +1408,22 @@ export function assertFreeAgentGates(args: {
 }
 
 /**
- * Temporary chats are a paid-plan feature. Enforce this at the API boundary so
- * free users cannot bypass the client-side entitlement check.
+ * Paid plans are Agent-only. Enforce this at the API boundary so stale clients
+ * and direct requests cannot restore the removed paid Ask path.
  */
-export function assertTemporaryChatAccess(args: {
-  isTemporary: boolean;
+export function assertChatModeAccess(args: {
+  mode: unknown;
   subscription: SubscriptionTier;
 }): void {
-  if (!args.isTemporary || args.subscription !== "free") return;
+  if (args.mode !== "ask" && args.mode !== "agent") {
+    throw new ChatSDKError("bad_request:api", "Invalid chat mode.");
+  }
+
+  if (args.mode !== "ask" || args.subscription === "free") return;
 
   throw new ChatSDKError(
     "forbidden:chat",
-    "Temporary chats are available on paid plans. Upgrade to Pro to use this feature.",
+    "Paid plans use Agent mode. Ask mode is only available on the free plan.",
   );
 }
 
@@ -1266,7 +1531,6 @@ export async function estimatePreflightInputTokens(args: {
   userId: string;
   selectedModel: ModelName;
   userCustomization: UserCustomization | null | undefined;
-  temporary: boolean | undefined;
   truncatedMessages: UIMessage[];
 }): Promise<number> {
   const {
@@ -1275,7 +1539,6 @@ export async function estimatePreflightInputTokens(args: {
     userId,
     selectedModel,
     userCustomization,
-    temporary,
     truncatedMessages,
   } = args;
   if (!isAgentMode(mode) && subscription === "free") return 0;
@@ -1287,7 +1550,6 @@ export async function estimatePreflightInputTokens(args: {
     subscription,
     selectedModel,
     userCustomization,
-    temporary,
     null,
   );
   const systemTokens = safeCountTokens(estimatedSystemPrompt);

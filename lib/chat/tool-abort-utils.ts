@@ -1,6 +1,16 @@
 export const ABORTED_TOOL_ERROR_TEXT =
   "Stopped by user before the tool completed.";
 
+export const OUTPUT_LIMIT_TOOL_ERROR_TEXT =
+  "The response reached its output limit before the tool completed.";
+
+export const getIncompleteToolErrorText = (
+  finishReason: string | undefined,
+): string =>
+  finishReason === "length"
+    ? OUTPUT_LIMIT_TOOL_ERROR_TEXT
+    : ABORTED_TOOL_ERROR_TEXT;
+
 export const isUserStoppedToolError = (errorText: unknown): boolean =>
   typeof errorText === "string" && /stopped|aborted/i.test(errorText);
 

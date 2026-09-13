@@ -31,7 +31,7 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 // Load environment variables
 dotenv.config({ path: ".env.local" });
 
-interface ValidationResult {
+export interface ValidationResult {
   name: string;
   passed: boolean;
   message: string;
@@ -455,7 +455,7 @@ function validateIamPermissions(): ValidationResult {
     message:
       "Please manually verify IAM permissions follow least privilege principle:",
     warning:
-      'Required permissions: s3:PutObject, s3:GetObject, s3:DeleteObject on "arn:aws:s3:::YOUR_BUCKET/*". No wildcard permissions.',
+      'Attachments require s3:PutObject, s3:GetObject, and s3:DeleteObject on "arn:aws:s3:::YOUR_BUCKET/*". No wildcard permissions.',
   };
 }
 
@@ -557,8 +557,10 @@ async function main() {
   }
 }
 
-// Run validation
-main().catch((error) => {
-  console.error("Fatal error during validation:", error);
-  process.exit(1);
-});
+// Run validation only when invoked as a script; tests import the focused checks.
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("Fatal error during validation:", error);
+    process.exit(1);
+  });
+}

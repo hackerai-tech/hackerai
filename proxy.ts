@@ -8,10 +8,27 @@ import {
   getReferralRewardConfig,
   isValidReferralCode,
 } from "@/lib/referrals/config";
+import {
+  FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME,
+  FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS,
+  createFirstTouchAttribution,
+} from "@/lib/analytics/acquisition";
+import { serializeSignedFirstTouchAttribution } from "@/lib/analytics/acquisition-cookie";
+import {
+  ANALYTICS_CONSENT_COOKIE_NAME,
+  countryCodeFromHeaders,
+  getAnalyticsConsentDecision,
+} from "@/lib/privacy/analytics-consent";
 
 const AUTHKIT_BYPASS_PATHS = new Set([
+  "/api/analytics-consent",
+  "/api/health/connectivity",
   "/api/health/core",
   "/api/health/trigger-agent-mode",
+  "/api/cron/platform-costs/convex",
+  "/api/cron/platform-costs/vercel",
+  "/api/cron/subscription-pauses",
+  "/api/internal/user-research",
   "/robots.txt",
   "/sitemap.xml",
 ]);
@@ -39,6 +56,8 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/terms-of-service",
   "/trust",
   "/download",
+  "/product",
+  "/pricing",
   "/manifest.json",
 ]);
 
@@ -85,17 +104,98 @@ function isNextActionRequest(request: NextRequest): boolean {
   return request.method === "POST" && request.headers.has(NEXT_ACTION_HEADER);
 }
 
+function isOriginParsedServerActionRequest(request: NextRequest): boolean {
+  if (request.method !== "POST") return false;
+  if (request.headers.has(NEXT_ACTION_HEADER)) return true;
+
+  return (
+    request.headers.get("content-type")?.startsWith("multipart/form-data") ??
+    false
+  );
+}
+
+function hasMalformedNextActionOrigin(request: NextRequest): boolean {
+  if (!isOriginParsedServerActionRequest(request)) return false;
+
+  const origin = request.headers.get("origin");
+  if (!origin || origin === "null") return false;
+
+  try {
+    new URL(origin);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 function isBrowserRequest(request: NextRequest): boolean {
   const accept = request.headers.get("accept") ?? "";
   return accept.includes("text/html");
 }
 
+function isLikelyBot(request: NextRequest): boolean {
+  const userAgent = request.headers.get("user-agent") ?? "";
+  return /bot|crawler|spider|slurp|headless|facebookexternalhit|preview|uptime|betterstack/i.test(
+    userAgent,
+  );
+}
+
 const SESSION_HEADER = "x-workos-session";
 
-function withReferralCookie(
+function withAttributionCookies(
   request: NextRequest,
   response: NextResponse,
 ): NextResponse {
+  const analyticsConsent = getAnalyticsConsentDecision({
+    cookieValue: request.cookies.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+    countryCode: countryCodeFromHeaders(request.headers),
+    failClosed: process.env.NODE_ENV === "production",
+  });
+  if (!analyticsConsent.analyticsAllowed) {
+    response.cookies.delete(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME);
+    response.cookies.delete(REFERRAL_COOKIE_NAME);
+    response.cookies.delete(REFERRAL_COOKIE_CREATED_AT_NAME);
+    const postHogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY?.trim();
+    if (postHogKey) {
+      response.cookies.delete(`ph_${postHogKey}_posthog`);
+    }
+    return response;
+  }
+
+  const pathname = request.nextUrl.pathname;
+  const shouldCaptureFirstTouch =
+    (request.method === "GET" || request.method === "HEAD") &&
+    isBrowserRequest(request) &&
+    !pathname.startsWith("/api/") &&
+    ![
+      "/callback",
+      "/logout",
+      "/auth-error",
+      "/desktop-callback",
+      "/desktop-login",
+    ].includes(pathname) &&
+    !isLikelyBot(request) &&
+    !request.cookies.has("wos-session") &&
+    !request.cookies.has(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME);
+
+  if (shouldCaptureFirstTouch) {
+    const value = serializeSignedFirstTouchAttribution(
+      createFirstTouchAttribution({
+        url: request.nextUrl,
+        referer: request.headers.get("referer"),
+      }),
+    );
+    if (value) {
+      response.cookies.set(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME, value, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: FIRST_TOUCH_ATTRIBUTION_MAX_AGE_SECONDS,
+        path: "/",
+      });
+    }
+  }
+
   const referralCode =
     request.nextUrl.searchParams.get("referral_code") ??
     request.nextUrl.searchParams.get("ref");
@@ -150,13 +250,13 @@ function buildEndedSessionResponse(
 
   if (isUnauthenticatedPath(pathname)) {
     return withSessionCookieCleared(
-      withReferralCookie(request, NextResponse.next()),
+      withAttributionCookies(request, NextResponse.next()),
     );
   }
 
   if (!isBrowserRequest(request)) {
     return withSessionCookieCleared(
-      withReferralCookie(
+      withAttributionCookies(
         request,
         NextResponse.json(
           {
@@ -175,7 +275,7 @@ function buildEndedSessionResponse(
     : new URL("/login", request.url);
 
   return withSessionCookieCleared(
-    withReferralCookie(request, NextResponse.redirect(redirectUrl)),
+    withAttributionCookies(request, NextResponse.redirect(redirectUrl)),
   );
 }
 
@@ -197,6 +297,34 @@ export default async function proxy(request: NextRequest) {
     );
   }
 
+  // Next parses the Origin header before its Server Action CSRF comparison.
+  // Reject malformed values here so an invalid client header cannot turn into
+  // an unhandled URL-construction error. Well-formed cross-origin requests are
+  // still left to Next's existing CSRF validation.
+  if (hasMalformedNextActionOrigin(request)) {
+    const requestId = request.headers.get("x-vercel-id");
+    console.warn(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "warn",
+        event: "server_action_request_rejected",
+        service: "hackerai-web",
+        environment:
+          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        request_id: requestId?.slice(0, 128),
+        pathname,
+        reason: "malformed_origin",
+      }),
+    );
+    return NextResponse.json(
+      {
+        code: "bad_request:request",
+        message: "The request origin is invalid.",
+      },
+      { status: 400 },
+    );
+  }
+
   if (shouldBypassAuthkit(pathname)) {
     return NextResponse.next();
   }
@@ -206,7 +334,7 @@ export default async function proxy(request: NextRequest) {
     const hasSession = request.cookies.has("wos-session");
 
     if (!hasSession && !isUnauthenticatedPath(pathname)) {
-      return withReferralCookie(
+      return withAttributionCookies(
         request,
         NextResponse.redirect(
           new URL("/desktop-callback?error=unauthenticated", request.url),
@@ -285,10 +413,12 @@ export default async function proxy(request: NextRequest) {
   }
 
   const requestHeaders = buildRequestHeaders(request, headers);
-  const responseHeaders = buildResponseHeaders(headers);
+  const responseHeaders = buildResponseHeaders(headers, {
+    preserveSessionCookies: hadSessionCookie && refreshHitRateLimit,
+  });
 
   if (session.user || isUnauthenticatedPath(pathname)) {
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.next({
         request: { headers: requestHeaders },
@@ -302,7 +432,7 @@ export default async function proxy(request: NextRequest) {
     if (!isBrowserRequest(request)) {
       const rateLimitHeaders = new Headers(responseHeaders);
       rateLimitHeaders.set("Retry-After", "5");
-      return withReferralCookie(
+      return withAttributionCookies(
         request,
         NextResponse.json(
           { code: "rate_limited", message: "Please retry shortly." },
@@ -311,7 +441,7 @@ export default async function proxy(request: NextRequest) {
       );
     }
     // For browser requests, let through rather than forcing a confusing login redirect
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.next({
         request: { headers: requestHeaders },
@@ -321,7 +451,7 @@ export default async function proxy(request: NextRequest) {
   }
 
   if (!isBrowserRequest(request)) {
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.json(
         {
@@ -341,13 +471,13 @@ export default async function proxy(request: NextRequest) {
     });
     const errorUrl = new URL("/auth-error", request.url);
     errorUrl.searchParams.set("code", "503");
-    return withReferralCookie(
+    return withAttributionCookies(
       request,
       NextResponse.redirect(errorUrl, { headers: responseHeaders }),
     );
   }
 
-  return withReferralCookie(
+  return withAttributionCookies(
     request,
     NextResponse.redirect(authorizationUrl, { headers: responseHeaders }),
   );
@@ -366,9 +496,20 @@ function buildRequestHeaders(
   return merged;
 }
 
-function buildResponseHeaders(authkitHeaders: Headers): Headers {
+function buildResponseHeaders(
+  authkitHeaders: Headers,
+  { preserveSessionCookies = false } = {},
+): Headers {
   const responseHeaders = new Headers(authkitHeaders);
   responseHeaders.delete(SESSION_HEADER);
+
+  // AuthKit clears session cookies for every refresh exception. A provider
+  // rate limit is transient, so forwarding those deletions would turn a
+  // recoverable retry into a logged-out session.
+  if (preserveSessionCookies) {
+    responseHeaders.delete("set-cookie");
+  }
+
   return responseHeaders;
 }
 

@@ -51,6 +51,11 @@ describe("s3Actions", () => {
       reset: Date.now() + 5 * 60 * 60 * 1000,
     });
 
+    const { getStoredS3Location } = await import("../s3Utils");
+    (
+      getStoredS3Location as jest.MockedFunction<typeof getStoredS3Location>
+    ).mockReturnValue(undefined);
+
     // Setup environment variables
     process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
     process.env.AWS_S3_SECRET_ACCESS_KEY = "test-secret-key";
@@ -67,6 +72,7 @@ describe("s3Actions", () => {
       mockGenerateS3UploadUrl.mockResolvedValue({
         uploadUrl: "https://s3.amazonaws.com/test-upload-url",
         s3Key: "users/user123/123-uuid-test.pdf",
+        storageLocation: { region: "us-east-1", bucket: "test-bucket" },
       });
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
@@ -119,6 +125,8 @@ describe("s3Actions", () => {
           name: "test.pdf",
           mediaType: "application/pdf",
           size: 1024,
+          s3Region: "us-east-1",
+          s3Bucket: "test-bucket",
         },
       );
 
@@ -209,6 +217,50 @@ describe("s3Actions", () => {
           contentType: "application/pdf",
         }),
       ).rejects.toThrow("Unauthenticated");
+    });
+
+    it("uses the persisted bucket and region for regional files", async () => {
+      const { generateS3DownloadUrl, getStoredS3Location } =
+        await import("../s3Utils");
+      const storageLocation = {
+        region: "eu-central-1" as const,
+        bucket: "test-eu-bucket",
+      };
+      (
+        getStoredS3Location as jest.MockedFunction<typeof getStoredS3Location>
+      ).mockReturnValue(storageLocation);
+      (
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >
+      ).mockResolvedValue("https://s3.example/regional-download");
+      const { getFileUrlAction } = await import("../s3Actions");
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({ subject: "user123" }),
+        },
+        runQuery: jest.fn().mockResolvedValue({
+          s3_key: "users/user123/regional.pdf",
+          s3_region: "eu-central-1",
+          s3_bucket: "test-eu-bucket",
+          user_id: "user123",
+          name: "regional.pdf",
+          media_type: "application/pdf",
+          size: 1024,
+        }),
+      } as any;
+
+      await expect(
+        getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
+      ).resolves.toBe("https://s3.example/regional-download");
+      expect(getStoredS3Location).toHaveBeenCalledWith(
+        "eu-central-1",
+        "test-eu-bucket",
+      );
+      expect(generateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user123/regional.pdf",
+        storageLocation,
+      );
     });
 
     it("should throw error for empty fileName", async () => {
@@ -370,6 +422,7 @@ describe("s3Actions", () => {
         mockGenerateS3UploadUrl.mockResolvedValue({
           uploadUrl: "https://s3.amazonaws.com/test-upload-url",
           s3Key: `users/user123/123-uuid-${testCase.fileName}`,
+          storageLocation: { region: "us-east-1", bucket: "test-bucket" },
         });
 
         // Create mock context with runQuery for storage check
@@ -447,6 +500,7 @@ describe("s3Actions", () => {
       mockGenerateS3UploadUrl.mockResolvedValue({
         uploadUrl: "https://s3.amazonaws.com/test-upload-url",
         s3Key: "users/user123/123-uuid-test.pdf",
+        storageLocation: { region: "us-east-1", bucket: "test-bucket" },
       });
 
       // Mock rate limit to return null (Redis not configured)
@@ -671,6 +725,41 @@ describe("s3Actions", () => {
       await expect(
         getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("Failed to get file URL");
+    });
+
+    it("does not expose return-validation values to logs or callers", async () => {
+      const privateValue = "private auxiliary description";
+      const validationError = new Error(
+        `ReturnsValidationError: Value does not match validator: ${privateValue}`,
+      );
+      const consoleError = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const { getFileUrlAction } = await import("../s3Actions");
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: "user123",
+          }),
+        },
+        runQuery: jest.fn().mockRejectedValue(validationError),
+      } as any;
+
+      try {
+        await expect(
+          getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
+        ).rejects.toThrow(/^Failed to get file URL$/);
+
+        const serializedLog = consoleError.mock.calls
+          .flat()
+          .map(String)
+          .join("\n");
+        expect(serializedLog).toContain('"reason":"returns_validation"');
+        expect(serializedLog).not.toContain(privateValue);
+        expect(serializedLog).not.toContain("Value does not match validator");
+      } finally {
+        consoleError.mockRestore();
+      }
     });
   });
 
@@ -1147,12 +1236,20 @@ describe("s3Actions", () => {
   describe("getFileUrlsByFileIdsAction", () => {
     const serviceUrlInfo = (
       url: string,
-      file: { size: number; media_type: string; name: string },
+      file: {
+        size: number;
+        media_type: string;
+        name: string;
+        auxiliary_vision_description?: string;
+        auxiliary_vision_model?: string;
+      },
     ) => ({
       url,
       sizeBytes: file.size,
       mediaType: file.media_type,
       name: file.name,
+      auxiliaryVisionDescription: file.auxiliary_vision_description,
+      auxiliaryVisionModel: file.auxiliary_vision_model,
     });
 
     it("should generate URLs for multiple S3 files using service key", async () => {
@@ -1184,6 +1281,8 @@ describe("s3Actions", () => {
         size: 1024,
         file_token_size: 100,
         is_attached: true,
+        auxiliary_vision_description: "Cached screenshot description",
+        auxiliary_vision_model: "google/gemini-3.6-flash",
         _creationTime: Date.now(),
       };
 

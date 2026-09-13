@@ -4,6 +4,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useMutation } from "convex/react";
 import type { FindingDetailRecord } from "@/types/finding";
 
+jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
+const { downloadFile } =
+  require("@/lib/utils/file-download") as typeof import("@/lib/utils/file-download");
+import { renderFindingMarkdown } from "@/lib/findings/markdown";
+
 Object.defineProperty(global, "ResizeObserver", {
   configurable: true,
   value: class ResizeObserver {
@@ -206,4 +211,55 @@ describe("FindingDetail", () => {
     rerender(<FindingDetail finding={null} />);
     expect(screen.getByText("Finding deleted")).toBeVisible();
   });
+});
+
+it("downloads the saved report in the sidebar without another investigation", () => {
+  render(<FindingDetail finding={finding} surface="computer_sidebar" />);
+  fireEvent.click(screen.getByRole("button", { name: "Download report" }));
+  expect(downloadFile).toHaveBeenCalledWith({
+    filename: "finding-finding-1.md",
+    content: renderFindingMarkdown(finding),
+    mimeType: "text/markdown;charset=utf-8",
+  });
+});
+it("preserves evidence, patches and closure in Markdown, including embedded code fences", () => {
+  const poc = "print('example')\n```\n# embedded text\n````";
+  const report = renderFindingMarkdown({
+    ...finding,
+    poc_script_code: poc,
+    status: "closed",
+    closure_reason: "already_fixed",
+    closure_context: "Retested the owner predicate",
+    closed_at: 2,
+  });
+  for (const text of [
+    finding.title,
+    finding.evidence,
+    finding.impact,
+    finding.remediation_steps,
+    finding.code_locations![0].fix_before!,
+    finding.code_locations![0].fix_after!,
+    "Retested the owner predicate",
+  ])
+    expect(report).toContain(text);
+  expect(report).toContain("`````\n" + poc + "\n`````");
+  expect(report).not.toContain(finding.message_id);
+});
+
+it("shows and exports saved verification gaps without calling them checked", () => {
+  const warning = "The evidence service was unavailable.";
+  const saved = {
+    ...finding,
+    evidence_refs: ["/tmp/control.http"],
+    evidence_verification: {
+      checked_refs: ["/tmp/control.http"],
+      unavailable_refs: ["/tmp/exploit.http"],
+      warning,
+    },
+  };
+  render(<FindingDetail finding={saved} />);
+  expect(screen.getByText("Evidence verification incomplete")).toBeVisible();
+  expect(screen.getByText(warning)).toBeVisible();
+  expect(renderFindingMarkdown(saved)).toContain(warning);
+  expect(renderFindingMarkdown(saved)).toContain("/tmp/exploit.http");
 });
