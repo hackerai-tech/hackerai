@@ -143,6 +143,7 @@ export default defineSchema({
     last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    objective_checkpoint: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),
     active_agent_approval_pending: v.optional(v.boolean()),
     active_agent_approval_request: v.optional(
@@ -1447,6 +1448,7 @@ export default defineSchema({
     ]),
 
   subagent_work_items: defineTable({
+    objective_checkpoint: v.optional(v.string()),
     subagent_id: v.string(),
     user_id: v.string(),
     parent_trigger_run_id: v.string(),
