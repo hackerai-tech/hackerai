@@ -1,3 +1,4 @@
+import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -10,7 +11,13 @@ interface BudgetExhaustedNoticeProps {
 }
 
 /** Mounted only for a stopped run, including when its saved chat is reopened. */
-export const BudgetExhaustedNotice = ({
+export const BudgetExhaustedNotice = (props: BudgetExhaustedNoticeProps) => (
+  <BlockedChatBillingRecovery onRetry={props.onContinue}>
+    <UsageBudgetExhaustedNotice {...props} />
+  </BlockedChatBillingRecovery>
+);
+
+const UsageBudgetExhaustedNotice = ({
   onContinue,
 }: BudgetExhaustedNoticeProps) => {
   const { subscription, isCheckingProPlan } = useGlobalState();

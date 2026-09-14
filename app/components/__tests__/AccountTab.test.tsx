@@ -485,3 +485,23 @@ describe("AccountTab", () => {
     });
   });
 });
+
+it("shows billing review instead of choosing a subscription when status is ambiguous", async () => {
+  jest.clearAllMocks();
+  mockGetSubscriptionCancellationStatus.mockRejectedValue(
+    new Error("Unable to determine a single current subscription") as never,
+  );
+  render(<AccountTab />);
+  expect(
+    await screen.findByText(/We couldn't determine your current subscription/),
+  ).toBeVisible();
+  const user = userEvent.setup();
+  await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+  expect(screen.getByText("Subscription status unavailable")).toBeVisible();
+  expect(screen.queryByText("Upgrade plan")).not.toBeInTheDocument();
+  expect(screen.queryByText("No active subscription")).not.toBeInTheDocument();
+  expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Update payment" }),
+  ).not.toBeInTheDocument();
+});

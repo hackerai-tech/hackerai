@@ -1,3 +1,10 @@
+jest.mock("../BlockedChatBillingRecovery", () => ({
+  BlockedChatBillingRecovery: ({
+    children,
+  }: {
+    children: import("react").ReactNode;
+  }) => children,
+}));
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen } from "@testing-library/react";

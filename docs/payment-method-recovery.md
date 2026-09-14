@@ -28,6 +28,26 @@ scan is bounded to 1,000 events and skips collection if history is incomplete or
 the customer event is older than Stripe's 30-day retention. API lookup failures
 retry webhook delivery. Restricted Stripe keys need Events read permission.
 
+## Blocked-chat recovery
+
+Blocked Ask/Agent errors, saved budget stops, and exhausted composer warnings
+check the authenticated billing status before rendering usage-purchase actions.
+Normal chat traffic and near-limit warnings do not make this Stripe lookup.
+Concurrent notices deduplicate by user and organization; focus and reconnect
+revalidate without interval polling. Billing failures remain unknown rather than
+being interpreted as exhausted usage. Multiple current subscriptions or a truncated
+subscription list require billing review; neither surface chooses the first
+subscription as a recovery target. Non-admins are directed to their billing
+administrator; portal creation keeps the existing server authorization checks.
+
+Only a current delinquent subscription with an open automatic renewal invoice
+qualifies for the direct Update payment action. Scheduled cancellations and
+paused collection remain outside automatic recovery. The portal returns to the
+same chat with an entitlement refresh request. Neither opening the portal nor
+returning from it starts a chat or grants access; users refresh after payment and
+retry through the normal server admission checks. A declined or
+authentication-required replacement remains pending until payment succeeds.
+
 ## Payments received after cancellation
 
 Paying an old invoice cannot reactivate a canceled Stripe subscription. A renewal

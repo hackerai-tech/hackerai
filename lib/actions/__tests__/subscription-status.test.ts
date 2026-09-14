@@ -79,7 +79,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
       customer: "cus_123",
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule"],
+      expand: ["data.items.data.price", "data.schedule", "data.latest_invoice"],
     });
   });
 
@@ -304,8 +304,126 @@ describe("getSubscriptionCancellationStatusAction", () => {
     expect(mockRetrievePrice).toHaveBeenCalledWith("price_pro");
     expect(mockListSubscriptions).toHaveBeenCalledWith(
       expect.objectContaining({
-        expand: ["data.items.data.price", "data.schedule"],
+        expand: [
+          "data.items.data.price",
+          "data.schedule",
+          "data.latest_invoice",
+        ],
       }),
+    );
+  });
+});
+
+describe("blocked-chat renewal recovery eligibility", () => {
+  const subscription = {
+    id: "sub_recovery",
+    status: "past_due",
+    collection_method: "charge_automatically",
+    latest_invoice: {
+      id: "in_renewal",
+      status: "open",
+      billing_reason: "subscription_cycle",
+      collection_method: "charge_automatically",
+      amount_remaining: 2900,
+    },
+  };
+  beforeEach(() => {
+    mockGetBillingActionContext.mockResolvedValue({
+      organizationId: "org_test",
+      user: { id: "user_test" },
+      stripeCustomerId: "cus_test",
+    } as never);
+  });
+  it.each(["past_due", "unpaid"])(
+    "identifies an open automatic renewal for %s",
+    async (status) => {
+      mockListSubscriptions.mockResolvedValue({
+        data: [{ ...subscription, status }],
+      } as never);
+      const { default: getStatus } = await import("../subscription-status");
+      expect(await getStatus()).toMatchObject({
+        renewalPaymentRequired: true,
+        latestInvoiceId: "in_renewal",
+      });
+    },
+  );
+  it.each([
+    { status: "active" },
+    { status: "canceled" },
+    { cancel_at_period_end: true },
+    { cancel_at: 1789361999 },
+    { pause_collection: { behavior: "void" } },
+    { collection_method: "send_invoice" },
+    { latest_invoice: { ...subscription.latest_invoice, status: "paid" } },
+    {
+      latest_invoice: {
+        ...subscription.latest_invoice,
+        billing_reason: "subscription_create",
+      },
+    },
+    {
+      latest_invoice: {
+        ...subscription.latest_invoice,
+        billing_reason: "subscription_update",
+      },
+    },
+    { latest_invoice: { ...subscription.latest_invoice, amount_remaining: 0 } },
+    {
+      latest_invoice: {
+        ...subscription.latest_invoice,
+        collection_method: "send_invoice",
+      },
+    },
+    { latest_invoice: null },
+  ])(
+    "does not recommend automatic recovery for ineligible state %j",
+    async (override) => {
+      mockListSubscriptions.mockResolvedValue({
+        data: [{ ...subscription, ...override }],
+      } as never);
+      const { default: getStatus } = await import("../subscription-status");
+      expect((await getStatus()).renewalPaymentRequired).not.toBe(true);
+    },
+  );
+});
+
+describe("ambiguous subscription history", () => {
+  beforeEach(() => {
+    mockGetBillingActionContext.mockResolvedValue({
+      organizationId: "org_test",
+      user: { id: "user_test" },
+      stripeCustomerId: "cus_test",
+    } as never);
+  });
+  it.each([
+    {
+      data: [
+        { id: "sub_a", status: "active" },
+        { id: "sub_b", status: "past_due" },
+      ],
+      has_more: false,
+    },
+    {
+      data: [
+        { id: "sub_b", status: "past_due" },
+        { id: "sub_a", status: "active" },
+      ],
+      has_more: false,
+    },
+    {
+      data: [
+        { id: "sub_a", status: "unpaid" },
+        { id: "sub_b", status: "past_due" },
+      ],
+      has_more: false,
+    },
+    { data: [{ id: "sub_a", status: "active" }], has_more: true },
+    { data: [{ id: "sub_a", status: "canceled" }], has_more: true },
+  ])("does not choose a recovery target from %j", async (page) => {
+    mockListSubscriptions.mockResolvedValue(page as never);
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).rejects.toThrow(
+      "Unable to determine a single current subscription",
     );
   });
 });

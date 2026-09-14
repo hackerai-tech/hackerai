@@ -12,9 +12,9 @@ import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { SubscriptionTier } from "@/types";
 
 type PastDueBillingBannerProps = {
-  surface: "account_settings";
-  subscription: Exclude<SubscriptionTier, "free">;
-  subscriptionStatus: "past_due";
+  surface: "account_settings" | "blocked_chat";
+  subscription: SubscriptionTier;
+  subscriptionStatus: "past_due" | "unpaid";
   latestInvoiceId?: string;
   isOpening: boolean;
   onUpdatePayment: () => void;
@@ -64,8 +64,9 @@ export function PastDueBillingBanner({
           className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
         />
         <p className="text-foreground">
-          Your renewal payment failed—update your payment method to keep your
-          plan.
+          {surface === "blocked_chat"
+            ? "Your renewal payment failed. Update your payment method to restore your paid usage. Access returns only after payment succeeds."
+            : "Your renewal payment failed—update your payment method to keep your plan."}
         </p>
       </div>
       <Button

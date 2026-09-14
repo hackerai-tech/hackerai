@@ -4,7 +4,11 @@ import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingActionContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
-import type { BillingPortalFlow } from "@/lib/billing/api-types";
+import { getExtraUsageReturnUrl } from "@/lib/billing/extra-usage-return";
+import type {
+  BillingPortalFlow,
+  BillingPortalOptions,
+} from "@/lib/billing/api-types";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
@@ -12,6 +16,7 @@ import {
 
 export default async function redirectToBillingPortal(
   flow?: BillingPortalFlow,
+  options?: BillingPortalOptions,
 ) {
   const startedAt = Date.now();
   const context = await getBillingActionContext().catch((error) => {
@@ -35,13 +40,19 @@ export default async function redirectToBillingPortal(
   };
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+  const returnUrl = options?.returnPath
+    ? getExtraUsageReturnUrl(baseUrl!, options.returnPath)
+    : null;
+  if (returnUrl && options?.surface === "blocked_chat") {
+    returnUrl.searchParams.set("refresh", "entitlements");
+  }
   let billingPortalSession:
     | Awaited<ReturnType<typeof stripe.billingPortal.sessions.create>>
     | undefined;
   try {
     billingPortalSession = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
-      return_url: `${baseUrl}`,
+      return_url: returnUrl?.toString() ?? `${baseUrl}`,
       ...(flow === "payment_method" && {
         flow_data: { type: "payment_method_update" },
       }),
@@ -74,7 +85,7 @@ export default async function redirectToBillingPortal(
       PAID_FUNNEL_EVENTS.paymentUpdateOpened,
       paidFunnelProperties({
         ...billingFields,
-        surface: "account_settings",
+        surface: options?.surface ?? "account_settings",
         stripe_billing_portal_session_id: billingPortalSession.id,
         $insert_id: `${PAID_FUNNEL_EVENTS.paymentUpdateOpened}:${billingPortalSession.id}:${context.user.id}`,
       }),
