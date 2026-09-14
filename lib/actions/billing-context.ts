@@ -11,6 +11,19 @@ export type BillingActionContext = {
 };
 
 export async function getBillingActionContext(): Promise<BillingActionContext> {
+  const context = await resolveBillingContext(false);
+  if (!context) throw new Error("No organization found");
+  return context;
+}
+
+/** Read-only status can distinguish a new free user from an unscoped paid user. */
+export async function getBillingStatusContext(): Promise<BillingActionContext | null> {
+  return resolveBillingContext(true);
+}
+
+async function resolveBillingContext(
+  allowUnscopedStatus: boolean,
+): Promise<BillingActionContext | null> {
   let authResult: Awaited<ReturnType<typeof withAuth>>;
   try {
     authResult = await withAuth();
@@ -21,23 +34,37 @@ export async function getBillingActionContext(): Promise<BillingActionContext> {
     throw error;
   }
 
-  const { organizationId, user } = authResult;
+  const { user } = authResult;
+  let { organizationId } = authResult;
 
   if (!user?.id) {
     throw new Error("User not authenticated");
   }
 
-  if (!organizationId) {
+  if (!organizationId && !allowUnscopedStatus) {
     throw new Error("No organization found");
   }
 
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId: user.id,
-    organizationId,
+    ...(organizationId && { organizationId }),
     statuses: ["active"],
   });
 
-  const userMembership = memberships.data[0];
+  const activeMemberships = organizationId
+    ? memberships.data
+    : await memberships.autoPagination();
+  if (!organizationId) {
+    // No memberships is normal before first checkout. Never mistake an
+    // unselected existing organization (possibly past due) for a free account.
+    if (activeMemberships.length === 0) return null;
+    if (activeMemberships.length !== 1) {
+      throw new Error("No organization found");
+    }
+    organizationId = activeMemberships[0].organizationId;
+  }
+
+  const userMembership = activeMemberships[0];
   if (!userMembership) {
     throw new Error("User is not a member of this organization");
   }
@@ -64,6 +91,7 @@ export async function getBillingActionContext(): Promise<BillingActionContext> {
   const workosOrg = await response.json();
 
   if (!workosOrg?.stripe_customer_id) {
+    if (allowUnscopedStatus) return null;
     throw new Error("No billing account found for this organization");
   }
 

@@ -12,7 +12,7 @@ import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 
 let mockAuth = {
   user: { id: "user_test" },
-  organizationId: "org_test",
+  organizationId: "org_test" as string | undefined,
   loading: false,
 };
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
@@ -135,6 +135,27 @@ it("allows a free account without a billing account to use its normal limit acti
   );
   setup();
   expect(await screen.findByText("Add credits or upgrade")).toBeVisible();
+});
+it("keeps upgrade usable when the server confirms an unscoped user has no memberships", async () => {
+  mockAuth = { ...mockAuth, organizationId: undefined };
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+  });
+  setup();
+  expect(
+    await screen.findByRole("button", { name: "Add credits or upgrade" }),
+  ).toBeEnabled();
+  expect(screen.queryByText("Account settings")).not.toBeInTheDocument();
+  expect(portalMock).not.toHaveBeenCalled();
+});
+it("still shows recovery for an unscoped user's resolved past-due membership", async () => {
+  mockAuth = { ...mockAuth, organizationId: undefined };
+  setup();
+  expect(
+    await screen.findByRole("button", { name: "Update payment" }),
+  ).toBeEnabled();
+  expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
 });
 it("does not mistake a billing outage for exhausted usage and allows rechecking", async () => {
   statusMock

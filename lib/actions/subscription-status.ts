@@ -2,7 +2,7 @@
 
 import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
-import { getBillingActionContext } from "@/lib/actions/billing-context";
+import { getBillingStatusContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
@@ -29,7 +29,7 @@ function hasCurrentSubscriptionStatus<T extends { status: string }>(
 
 export default async function getSubscriptionCancellationStatusAction(): Promise<SubscriptionCancellationStatus> {
   const startedAt = Date.now();
-  const context = await getBillingActionContext().catch((error) => {
+  const context = await getBillingStatusContext().catch((error) => {
     if (isExpectedBillingContextError(error)) {
       throw error;
     }
@@ -42,6 +42,9 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     });
     throw error;
   });
+  if (!context) {
+    return { hasActiveSubscription: false, cancelAtPeriodEnd: false };
+  }
   const stripeCustomerId = context.stripeCustomerId;
   const billingFields = {
     userId: context.user.id,

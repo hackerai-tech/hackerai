@@ -2,7 +2,7 @@ import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockListSubscriptions = jest.fn();
 const mockRetrievePrice = jest.fn();
-const mockGetBillingActionContext = jest.fn();
+const mockGetBillingStatusContext = jest.fn();
 const mockPostHogError = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
@@ -15,7 +15,7 @@ jest.mock("@/app/api/stripe", () => ({
 }));
 
 jest.mock("@/lib/actions/billing-context", () => ({
-  getBillingActionContext: mockGetBillingActionContext,
+  getBillingStatusContext: mockGetBillingStatusContext,
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -27,11 +27,21 @@ jest.mock("@/lib/posthog/server", () => ({
 describe("getSubscriptionCancellationStatusAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetBillingActionContext.mockResolvedValue({
+    mockGetBillingStatusContext.mockResolvedValue({
       organizationId: "org_123",
       user: { id: "user_123" },
       stripeCustomerId: "cus_123",
     } as never);
+  });
+
+  it("returns ordinary free status without calling Stripe when the user has no billing context", async () => {
+    mockGetBillingStatusContext.mockResolvedValue(null as never);
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).resolves.toEqual({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+    });
+    expect(mockListSubscriptions).not.toHaveBeenCalled();
   });
 
   it("returns scheduled cancellation status for active subscriptions", async () => {
@@ -154,7 +164,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
   it("does not log expected billing context failures", async () => {
     const error = new Error("No billing account found for this organization");
-    mockGetBillingActionContext.mockRejectedValue(error as never);
+    mockGetBillingStatusContext.mockRejectedValue(error as never);
 
     const { default: getSubscriptionCancellationStatusAction } =
       await import("../subscription-status");
@@ -169,7 +179,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
   it("logs unexpected billing context failures", async () => {
     const error = new Error("Failed to fetch organization details");
-    mockGetBillingActionContext.mockRejectedValue(error as never);
+    mockGetBillingStatusContext.mockRejectedValue(error as never);
 
     const { default: getSubscriptionCancellationStatusAction } =
       await import("../subscription-status");
@@ -328,7 +338,7 @@ describe("blocked-chat renewal recovery eligibility", () => {
     },
   };
   beforeEach(() => {
-    mockGetBillingActionContext.mockResolvedValue({
+    mockGetBillingStatusContext.mockResolvedValue({
       organizationId: "org_test",
       user: { id: "user_test" },
       stripeCustomerId: "cus_test",
@@ -389,7 +399,7 @@ describe("blocked-chat renewal recovery eligibility", () => {
 
 describe("ambiguous subscription history", () => {
   beforeEach(() => {
-    mockGetBillingActionContext.mockResolvedValue({
+    mockGetBillingStatusContext.mockResolvedValue({
       organizationId: "org_test",
       user: { id: "user_test" },
       stripeCustomerId: "cus_test",
