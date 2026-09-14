@@ -101,7 +101,7 @@ def scan(archive=None):
             metadata.append(target)
             if in_home:
                 resolved = os.path.normpath(os.path.join('/' + os.path.dirname(name), target))
-                if not resolved.startswith('/' + home + '/'): raise ValueError('external_symlink')
+                if resolved != '/' + home and not resolved.startswith('/' + home + '/'): raise ValueError('external_symlink')
         elif stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
             metadata.append(info.st_rdev)
         elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISFIFO(info.st_mode)):
@@ -161,7 +161,7 @@ def restore():
                     shutil.copyfileobj(source, destination, 1024 * 1024)
             elif member.issym():
                 resolved = os.path.normpath(os.path.join('/' + os.path.dirname(name), member.linkname))
-                if not resolved.startswith('/' + home + '/'): raise ValueError('external_symlink')
+                if resolved != '/' + home and not resolved.startswith('/' + home + '/'): raise ValueError('external_symlink')
                 os.symlink(member.linkname, path)
             elif member.islnk():
                 if member.linkname != os.path.normpath(member.linkname) or not member.linkname.startswith(home + '/'):

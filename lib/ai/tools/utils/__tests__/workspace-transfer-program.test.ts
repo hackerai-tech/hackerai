@@ -100,11 +100,15 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         join(source, "home/user/hard"),
       );
       symlinkSync(".secret", join(source, "home/user/link"));
+      symlinkSync(".", join(source, "home/user/self"));
       transfer();
       expect(statSync(join(target, "home/user/.secret")).ino).toBe(
         statSync(join(target, "home/user/hard")).ino,
       );
       expect(readFileSync(join(target, "home/user/link"))).toEqual(
+        readFileSync(join(source, "home/user/.secret")),
+      );
+      expect(readFileSync(join(target, "home/user/self/.secret"))).toEqual(
         readFileSync(join(source, "home/user/.secret")),
       );
     });
