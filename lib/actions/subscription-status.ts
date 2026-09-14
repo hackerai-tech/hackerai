@@ -67,9 +67,16 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     });
     throw error;
   }
-  const currentSubscription = subscriptions.data.find(
+  const currentSubscriptions = subscriptions.data.filter(
     hasCurrentSubscriptionStatus,
   );
+  // A customer can temporarily retain overlapping subscriptions after checkout
+  // or migration. Never choose a card-recovery target from ambiguous or partial
+  // history; both Account settings and blocked chat must request billing review.
+  if (subscriptions.has_more || currentSubscriptions.length > 1) {
+    throw new Error("Unable to determine a single current subscription");
+  }
+  const currentSubscription = currentSubscriptions[0];
 
   if (!currentSubscription) {
     return {

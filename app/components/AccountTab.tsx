@@ -52,6 +52,7 @@ import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-nav
 
 type AccountCancellationStatus = SubscriptionCancellationStatus & {
   subscription: SubscriptionTier;
+  statusUnavailable?: boolean;
 };
 
 function formatCancellationDate(currentPeriodEnd?: number) {
@@ -207,6 +208,7 @@ const AccountTab = () => {
             subscription,
             hasActiveSubscription: false,
             cancelAtPeriodEnd: false,
+            statusUnavailable: true,
           });
         }
       });
@@ -388,24 +390,25 @@ const AccountTab = () => {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  {(subscription === "pro" || subscription === "pro-plus") && (
-                    <>
-                      <DropdownMenuItem
-                        onClick={() =>
-                          redirectToPricing({
-                            surface: "account_tab_manage_menu",
-                            source: "account_settings",
-                            from_tier: subscription,
-                            cta_text: "Upgrade plan",
-                          })
-                        }
-                      >
-                        <Sparkle className="h-4 w-4" />
-                        <span>Upgrade plan</span>
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                    </>
-                  )}
+                  {!currentCancellationStatus?.statusUnavailable &&
+                    (subscription === "pro" || subscription === "pro-plus") && (
+                      <>
+                        <DropdownMenuItem
+                          onClick={() =>
+                            redirectToPricing({
+                              surface: "account_tab_manage_menu",
+                              source: "account_settings",
+                              from_tier: subscription,
+                              cta_text: "Upgrade plan",
+                            })
+                          }
+                        >
+                          <Sparkle className="h-4 w-4" />
+                          <span>Upgrade plan</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                      </>
+                    )}
                   {cancellationScheduled ? (
                     <>
                       <DropdownMenuItem disabled>
@@ -461,6 +464,11 @@ const AccountTab = () => {
                         <span>Cancel subscription</span>
                       </DropdownMenuItem>
                     </>
+                  ) : currentCancellationStatus?.statusUnavailable ? (
+                    <DropdownMenuItem disabled>
+                      <CalendarClock className="h-4 w-4" />
+                      <span>Subscription status unavailable</span>
+                    </DropdownMenuItem>
                   ) : noActiveSubscription ? (
                     <DropdownMenuItem disabled>
                       <CalendarClock className="h-4 w-4" />
@@ -583,6 +591,13 @@ const AccountTab = () => {
               )}
             </Button>
           </div>
+        )}
+
+        {currentCancellationStatus?.statusUnavailable && (
+          <p role="status" className="mt-3 text-sm text-muted-foreground">
+            We couldn&apos;t determine your current subscription. Use Payment →
+            Manage to review billing, or contact support.
+          </p>
         )}
 
         {pastDueStatus && subscription !== "free" && (

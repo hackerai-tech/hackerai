@@ -386,3 +386,44 @@ describe("blocked-chat renewal recovery eligibility", () => {
     },
   );
 });
+
+describe("ambiguous subscription history", () => {
+  beforeEach(() => {
+    mockGetBillingActionContext.mockResolvedValue({
+      organizationId: "org_test",
+      user: { id: "user_test" },
+      stripeCustomerId: "cus_test",
+    } as never);
+  });
+  it.each([
+    {
+      data: [
+        { id: "sub_a", status: "active" },
+        { id: "sub_b", status: "past_due" },
+      ],
+      has_more: false,
+    },
+    {
+      data: [
+        { id: "sub_b", status: "past_due" },
+        { id: "sub_a", status: "active" },
+      ],
+      has_more: false,
+    },
+    {
+      data: [
+        { id: "sub_a", status: "unpaid" },
+        { id: "sub_b", status: "past_due" },
+      ],
+      has_more: false,
+    },
+    { data: [{ id: "sub_a", status: "active" }], has_more: true },
+    { data: [{ id: "sub_a", status: "canceled" }], has_more: true },
+  ])("does not choose a recovery target from %j", async (page) => {
+    mockListSubscriptions.mockResolvedValue(page as never);
+    const { default: getStatus } = await import("../subscription-status");
+    await expect(getStatus()).rejects.toThrow(
+      "Unable to determine a single current subscription",
+    );
+  });
+});

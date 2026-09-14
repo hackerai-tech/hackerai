@@ -35,7 +35,9 @@ check the authenticated billing status before rendering usage-purchase actions.
 Normal chat traffic and near-limit warnings do not make this Stripe lookup.
 Concurrent notices deduplicate by user and organization; focus and reconnect
 revalidate without interval polling. Billing failures remain unknown rather than
-being interpreted as exhausted usage. Non-admins are directed to their billing
+being interpreted as exhausted usage. Multiple current subscriptions or a truncated
+subscription list require billing review; neither surface chooses the first
+subscription as a recovery target. Non-admins are directed to their billing
 administrator; portal creation keeps the existing server authorization checks.
 
 Only a current delinquent subscription with an open automatic renewal invoice

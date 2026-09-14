@@ -11,6 +11,7 @@ import {
   getSubscriptionCancellationStatus,
   redirectToBillingPortal,
 } from "@/lib/billing/client";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { PastDueBillingBanner } from "./PastDueBillingBanner";
 
@@ -138,13 +139,8 @@ export function BlockedChatBillingRecovery({
         <Button
           size="sm"
           variant="outline"
-          onClick={() => {
-            const url = new URL(window.location.href);
-            url.searchParams.set("refresh", "entitlements");
-            // Refresh the actual entitlement session; never infer access from
-            // opening the portal, changing a card, or returning to the app.
-            window.location.href = url.toString();
-          }}
+          // This re-reads the actual entitlement session without resuming a run.
+          onClick={reloadWithEntitlementRefresh}
         >
           Refresh chat after payment
         </Button>
