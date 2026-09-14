@@ -34,8 +34,10 @@ async function getRecoveryStatus() {
 /** Only mount on blocked chat: no Stripe requests on normal chat traffic. */
 export function BlockedChatBillingRecovery({
   children,
+  onRetry,
 }: {
   children: ReactNode;
+  onRetry?: () => void;
 }) {
   const { user, organizationId, loading } = useAuth();
   const { subscription } = useGlobalState();
@@ -98,6 +100,11 @@ export function BlockedChatBillingRecovery({
           >
             Account settings
           </Button>
+          {onRetry && (
+            <Button size="sm" variant="outline" onClick={onRetry}>
+              Try again
+            </Button>
+          )}
           {!forbidden && (
             <Button
               size="sm"

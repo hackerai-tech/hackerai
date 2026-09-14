@@ -219,3 +219,20 @@ it("does not recommend credits for delinquency outside automatic recovery", asyn
     screen.queryByRole("button", { name: "Update payment" }),
   ).not.toBeInTheDocument();
 });
+
+it("keeps a manual server-admitted retry available during billing lookup outages", async () => {
+  statusMock.mockRejectedValue(new Error("Unavailable"));
+  const onRetry = jest.fn();
+  render(
+    <SWRConfig value={{ provider: () => new Map() }}>
+      <BlockedChatBillingRecovery onRetry={onRetry}>
+        <button>Upgrade</button>
+      </BlockedChatBillingRecovery>
+    </SWRConfig>,
+  );
+  fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+  expect(onRetry).toHaveBeenCalledTimes(1);
+  expect(
+    screen.queryByRole("button", { name: "Upgrade" }),
+  ).not.toBeInTheDocument();
+});

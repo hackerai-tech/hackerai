@@ -12,7 +12,7 @@ interface BudgetExhaustedNoticeProps {
 
 /** Mounted only for a stopped run, including when its saved chat is reopened. */
 export const BudgetExhaustedNotice = (props: BudgetExhaustedNoticeProps) => (
-  <BlockedChatBillingRecovery>
+  <BlockedChatBillingRecovery onRetry={props.onContinue}>
     <UsageBudgetExhaustedNotice {...props} />
   </BlockedChatBillingRecovery>
 );

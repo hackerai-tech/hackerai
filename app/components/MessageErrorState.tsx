@@ -79,7 +79,7 @@ export const MessageErrorState = (props: MessageErrorStateProps) => {
     error.type === "rate_limit" &&
     error.metadata?.capReason !== "free_concurrency";
   return isUsageBlock ? (
-    <BlockedChatBillingRecovery>
+    <BlockedChatBillingRecovery onRetry={() => props.onRetry()}>
       <MessageErrorContent {...props} />
     </BlockedChatBillingRecovery>
   ) : (
