@@ -72,6 +72,68 @@ TTL because old durable payloads must always charge the canonical subject. Accou
 deletion must not remove these pointers or shared counters. The pause has no TTL
 and requires an explicit resume; monitor it during the maintenance window.
 
+## Hosted migration runner
+
+When Vercel holds a non-readable sensitive quota HMAC, use
+`POST /api/internal/quota-migration` inside that environment. The HMAC and WorkOS
+key are consumed there; the response contains only aggregate progress. This is
+an operator endpoint, independent of user sessions, and is disabled by default.
+Do not add a credential-export endpoint or generate a replacement quota HMAC.
+
+After independently verifying the environment mapping, configure these temporary
+variables separately in the authorized Vercel environment. For Preview, scope
+them to the migration PR branch. Keep each operator token in protected storage;
+only its SHA-256 digest is deployed. Use different tokens in each environment.
+
+- `FREE_QUOTA_MIGRATION_OPERATOR_SHA256`: digest of a random 32-byte token encoded
+  as 64 lowercase hex characters. Authentication is `Authorization: Bearer TOKEN`;
+  supply it from protected storage in memory, never a command argument or log.
+- `FREE_QUOTA_MIGRATION_OPERATOR_EXPIRES_AT`: ISO timestamp within the next
+  24 hours. The route rejects expired access even on an older deployment.
+- `FREE_QUOTA_MIGRATION_ENVIRONMENT`: `preview` or `production`, matching Vercel.
+- `FREE_QUOTA_MIGRATION_REDIS_HOST`, `FREE_QUOTA_MIGRATION_CONVEX_URL`, and
+  `FREE_QUOTA_MIGRATION_WORKOS_CLIENT_ID`: independently verified runtime targets.
+
+Deploy and verify the actual Preview URL/custom production domain. All requests
+are JSON commands with an `action` field. No request accepts scripts, email
+inventories, quota subjects, credentials or alternate provider URLs.
+
+1. Call `inventory` repeatedly until `inventoryComplete`; each request fetches
+   one WorkOS page and stores only legacy/canonical quota-subject mappings in the
+   same Redis database. Cursors stay server-side. `status` returns progress.
+2. Call `audit` until `auditComplete`. This scans every quota-key page and reports
+   `unknownQuotaKeys`. Any unknown key blocks `pause` and `apply`. Current WorkOS
+   users may not cover historical/deleted addresses; the hosted runner cannot
+   manufacture those. Resolve missing inventory through the offline runbook or
+   wait for unknown keys to expire. Never delete counters to pass coverage.
+   `restart-audit` clears the prior audit on its next page; `restart-inventory`
+   starts a fresh WorkOS traversal while retaining previously known mappings.
+3. With zero unknown keys, follow the cutover/drain procedure above and call
+   `pause`. This invalidates the preflight inventory/audit. Deploy and verify
+   canonical Vercel and Trigger runtimes, drain all free work, then repeat the
+   complete inventory and audit while paused. `auditHasLocks` must be false;
+   even then, independently verify queued, retrying and approval-waiting runs.
+4. Call `apply` with `allFreeRunsDrained: true` and
+   `canonicalRuntimesReady: true` only after recording that evidence. Repeat
+   until `applied` and state `migrated`. Each page uses the existing atomic alias
+   transfer, preserves expiry and usage, and can be retried after a lost response.
+   Apply errors leave admissions paused. Fix forward; never toggle off
+   canonicalization or reset migration state to escape a failure.
+5. Verify canonical runtimes again, then `resume` with
+   `canonicalRuntimesReady: true`. Confirm state `complete`, an actual Ask reply
+   and a new Agent run. `cleanup` removes only the runner's inventory/progress;
+   it preserves all usage, forwarding pointers and the completed migration state.
+6. Remove the temporary operator configuration, redeploy, verify the route returns
+   404, and remove the endpoint/proxy exemption after both environments finish.
+   Expiry remains a backstop for old deployments. HAC-115 owns this cleanup.
+
+The runner uses a lease with guarded writes so concurrent/expired requests cannot
+overwrite later progress. Each call handles one page; do not execute calls in
+parallel. A changed HMAC during an inventory is rejected. Intermediate Redis
+inventory has no TTL to avoid losing recovery data during a paused cutover;
+explicit cleanup is required. This route does not itself prove runtime drainage,
+perform deployment changes, or enable the monthly budget experiment.
+
 ## Conversion reporting
 
 `free_response_completed` v1 is emitted by the shared Ask/Agent completion logger
