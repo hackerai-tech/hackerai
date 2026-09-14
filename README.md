@@ -119,3 +119,26 @@ To use the agent locally:
    branch name with
    `TRIGGER_DEV_BRANCH=my-local-agent pnpm dev:trigger`. Only use that override
    when the request path is configured to target the same Trigger.dev branch.
+
+### Agent runtime health
+
+`GET /api/health/trigger-agent-mode` reads Trigger.dev's project health report
+for the last hour using the server's `TRIGGER_SECRET_KEY` (or the SDK's
+`TRIGGER_ACCESS_TOKEN` fallback). Restricted credentials need `read:query` access
+to every table used by the health report. API URL and branch selection follow
+the Agent SDK environment variables, so configure Preview and Production
+independently with their own credentials; the endpoint never chooses Production
+as a fallback.
+
+The response exposes only health statuses and timestamps, not project metrics
+or report details. `healthy` and `degraded` return HTTP 200; `failing` and
+`unknown` return 503. Monitors should inspect `status` to distinguish warnings
+and missing evidence from confirmed failures. Missing credentials, inaccessible
+reports, absent/untrustworthy telemetry, and invalid or stale reports cannot
+produce a healthy result. Each warm server instance caches results (including
+errors) for up to 60 seconds; requests time out after eight seconds.
+
+This checks the environment's recent task activity, not an end-to-end Agent
+conversation or browser streaming. After deployment, check the endpoint on the
+actual Preview URL and production custom domain separately, and confirm that
+each report corresponds to the environment used by that site's Agent runs.
