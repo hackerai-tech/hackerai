@@ -1,4 +1,5 @@
 import { createRedisClient } from "@/lib/rate-limit/redis";
+import { refreshE2BSandboxLease } from "../e2b-lease";
 import {
   assertCloudWorkspaceAvailable,
   claimCloudMigration,
@@ -122,5 +123,16 @@ describe("persistent cloud migration fence", () => {
     expect(
       await claimCloudMigration("user-1", "source", "us-east-1"),
     ).toBeNull();
+  });
+
+  it("never extends a provider lease for an unregistered SDK object", async () => {
+    const setTimeout = jest.fn();
+    const sandbox = { setTimeout } as unknown as Parameters<
+      typeof refreshE2BSandboxLease
+    >[0];
+    await expect(refreshE2BSandboxLease(sandbox)).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+    expect(setTimeout).not.toHaveBeenCalled();
   });
 });

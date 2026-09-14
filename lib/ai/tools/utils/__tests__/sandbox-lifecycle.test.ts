@@ -19,6 +19,13 @@ jest.mock("@e2b/code-interpreter", () => {
   };
 });
 
+// This suite tests E2B's provider lease timing. Registration/fencing and the
+// refusal to extend unregistered clients are exercised in cloud-migration-state.
+jest.mock("../cloud-migration-state", () => ({
+  ...jest.requireActual("../cloud-migration-state"),
+  refreshE2BMigrationLease: jest.fn(async () => {}),
+}));
+
 import { Sandbox } from "@e2b/code-interpreter";
 import {
   BASH_SANDBOX_AUTOPAUSE_TIMEOUT,

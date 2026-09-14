@@ -33,7 +33,8 @@ export function registerE2BMigrationLease(sandbox: Sandbox, userId: string) {
 
 export async function refreshE2BMigrationLease(sandbox: Sandbox) {
   const userId = e2bUsers.get(sandbox);
-  if (userId) await assertCloudWorkspaceAvailable(userId, "e2b");
+  if (!userId) throw new CloudMigrationUnavailableError();
+  await assertCloudWorkspaceAvailable(userId, "e2b");
 }
 
 export async function readCloudMigrationState(

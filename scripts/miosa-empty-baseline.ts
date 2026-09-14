@@ -22,6 +22,12 @@ async function main() {
   }
   const config = parse(readFileSync(values["env-file"]));
   if (!config.E2B_API_KEY?.trim()) throw new Error("credentials");
+  // The SDK otherwise inherits E2B_API_URL / E2B_SANDBOX_URL / E2B_DEBUG
+  // even with an explicit API key and domain. Isolate this short-lived CLI
+  // process so the selected credential cannot reach an ambient endpoint.
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith("E2B_")) delete process.env[name];
+  }
   const connection = {
     apiKey: config.E2B_API_KEY.trim(),
     domain: "e2b.app",

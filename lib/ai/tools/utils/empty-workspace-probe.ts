@@ -108,6 +108,7 @@ export function parseEmptyWorkspaceFingerprint(
     const parsed = JSON.parse(value);
     if (
       parsed.version !== EMPTY_WORKSPACE_PROBE_VERSION ||
+      typeof parsed.digest !== "string" ||
       !/^[a-f0-9]{64}$/.test(parsed.digest) ||
       !Number.isSafeInteger(parsed.entries) ||
       parsed.entries < 1 ||

@@ -104,6 +104,9 @@ describe("empty E2B migration", () => {
     "{}",
     "[]",
     JSON.stringify([{ version: 1, templateId: "other", digest }]),
+    JSON.stringify([
+      { version: 1, templateId: "template-1", digest: [digest] },
+    ]),
   ])("skips missing/invalid/unrecognized baselines %s", async (value) => {
     if (value === undefined) delete process.env.MIOSA_EMPTY_E2B_BASELINES_JSON;
     else process.env.MIOSA_EMPTY_E2B_BASELINES_JSON = value;

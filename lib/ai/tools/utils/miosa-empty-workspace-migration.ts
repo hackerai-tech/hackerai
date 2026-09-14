@@ -35,6 +35,7 @@ function getBaseline(templateId: string): string | null {
           value &&
           value.version === 1 &&
           typeof value.templateId === "string" &&
+          typeof value.digest === "string" &&
           /^[a-f0-9]{64}$/.test(value.digest) &&
           Object.keys(value).sort().join(",") === "digest,templateId,version",
       )

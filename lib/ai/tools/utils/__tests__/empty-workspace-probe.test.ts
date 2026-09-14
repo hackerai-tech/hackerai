@@ -20,14 +20,18 @@ import {
   "empty workspace filesystem proof",
   () => {
     let root: string;
-    const scan = () =>
-      parseEmptyWorkspaceFingerprint(
+    const scan = () => {
+      const result = parseEmptyWorkspaceFingerprint(
         execFileSync(
           "python3",
           ["-I", "-B", "-c", EMPTY_WORKSPACE_PROBE, root],
           { encoding: "utf8" },
         ),
       );
+      expect(result).not.toBeNull();
+      if (!result) throw new Error("Expected a successful fingerprint scan");
+      return result;
+    };
     beforeEach(() => {
       root = mkdtempSync(join(tmpdir(), "hackerai-empty-test-"));
       for (const path of [
@@ -46,7 +50,7 @@ import {
 
     it("recognizes an unchanged template, including its default dotfiles", () => {
       expect(scan()).toEqual(scan());
-      expect(scan()?.entries).toBeGreaterThan(1);
+      expect(scan().entries).toBeGreaterThan(1);
     });
 
     it.each([
@@ -61,22 +65,22 @@ import {
     ])("detects even an empty user file at %s", (path) => {
       const baseline = scan();
       writeFileSync(join(root, path), "");
-      expect(scan()?.digest).not.toBe(baseline?.digest);
+      expect(scan().digest).not.toBe(baseline.digest);
     });
 
     it("detects modified template defaults and permissions", () => {
       const baseline = scan();
       writeFileSync(join(root, "home/user/.bashrc"), "# user customizations\n");
-      expect(scan()?.digest).not.toBe(baseline?.digest);
+      expect(scan().digest).not.toBe(baseline.digest);
       const changed = scan();
       chmodSync(join(root, "home/user/.bashrc"), 0o600);
-      expect(scan()?.digest).not.toBe(changed?.digest);
+      expect(scan().digest).not.toBe(changed.digest);
     });
 
     it("records links without following them outside the tree", () => {
       const baseline = scan();
       symlinkSync("/nonexistent-private-path", join(root, "root/link"));
-      expect(scan()?.digest).not.toBe(baseline?.digest);
+      expect(scan().digest).not.toBe(baseline.digest);
     });
 
     it("detects rewiring identical hard-linked files even when link counts do not change", () => {
@@ -89,7 +93,7 @@ import {
       rmSync(join(root, "d"));
       linkSync(join(root, "c"), join(root, "b"));
       linkSync(join(root, "a"), join(root, "d"));
-      expect(scan()?.digest).not.toBe(baseline?.digest);
+      expect(scan().digest).not.toBe(baseline.digest);
     });
 
     it("fails closed for special files without leaking paths or blocking on a FIFO", () => {
@@ -110,6 +114,7 @@ import {
       "[]",
       '{"version":1,"unknown":true}',
       JSON.stringify({ version: 1, digest: "a".repeat(64), entries: 0 }),
+      JSON.stringify({ version: 1, digest: ["a".repeat(64)], entries: 2 }),
       JSON.stringify({
         version: 1,
         digest: "a".repeat(64),

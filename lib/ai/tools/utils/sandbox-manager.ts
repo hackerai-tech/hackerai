@@ -6,7 +6,10 @@ import type {
   SandboxType,
 } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
-import { assertCloudWorkspaceAvailable } from "./cloud-migration-state";
+import {
+  assertCloudWorkspaceAvailable,
+  registerE2BMigrationLease,
+} from "./cloud-migration-state";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import {
@@ -41,6 +44,8 @@ export class DefaultSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    if (this.sandbox && isE2BSandbox(this.sandbox))
+      registerE2BMigrationLease(this.sandbox, userID);
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(this.sandbox) ??
       cloudSandboxContext?.provider ??
@@ -125,6 +130,7 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: AnySandbox): void {
+    if (isE2BSandbox(sandbox)) registerE2BMigrationLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
