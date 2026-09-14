@@ -131,5 +131,35 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
       ]);
       expect(() => run("restore", destinationStage, target)).toThrow();
     });
+    it("checks destination home mounts without requiring E2B system mounts", () => {
+      const checkMount = (mount: string) => {
+        // Inject mount metadata while retaining a real isolated filesystem.
+        const harness = `import builtins,io,os,sys
+original_open=builtins.open
+original_abspath=os.path.abspath
+def fixture_open(path,*args,**kwargs):
+    if path == '/proc/self/mountinfo': return io.StringIO(${JSON.stringify("1 0 0:1 / " + mount + " rw - ext4 none rw\n")})
+    return original_open(path,*args,**kwargs)
+builtins.open=fixture_open
+os.path.abspath=lambda path: '/' if path == sys.argv[3] else original_abspath(path)
+`;
+        return spawnSync(
+          "python3",
+          [
+            "-I",
+            "-B",
+            "-c",
+            harness + WORKSPACE_TRANSFER_PROGRAM,
+            "verify-home",
+            stage,
+            source,
+          ],
+          { encoding: "utf8" },
+        );
+      };
+      expect(checkMount("/etc/hosts").status).toBe(0);
+      expect(checkMount("/home/user").status).toBe(1);
+      expect(checkMount("/home/user/mounted").status).toBe(1);
+    });
   },
 );

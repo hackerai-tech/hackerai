@@ -121,10 +121,13 @@ const initializeMiosaRuntime = async (
   }
 };
 
-export const createMiosaClient = async (): Promise<MiosaClient> => {
+export const createMiosaClient = async (
+  timeoutMs?: number,
+): Promise<MiosaClient> => {
   const { Miosa } = await import("@miosa/sdk");
   return new Miosa({
     apiKey: process.env.MIOSA_API_KEY,
+    ...(timeoutMs && { timeout: timeoutMs }),
     ...(process.env.MIOSA_BASE_URL && {
       baseUrl: process.env.MIOSA_BASE_URL,
     }),
@@ -379,7 +382,13 @@ export async function ensureMiosaSandboxConnection(
     workspaceName,
     onDiagnostic: options.onDiagnostic,
   });
-  const client = await step("client_init", createMiosaClient);
+  // Migration destinations can wait for a snapshot restore beyond the SDK's
+  // 30-second HTTP default, including later resumes of a committed destination.
+  const client = await step("client_init", () =>
+    createMiosaClient(
+      options.migrationName || options.destinationId ? 180_000 : undefined,
+    ),
+  );
   const externalUserId = miosaExternalUserId(context.userID);
   const identity = miosaIdentityMetadata(context.userID);
   if (options.beforeCreate && !options.destinationId) {

@@ -46,11 +46,17 @@ def paths():
             for line in mounts:
                 fields = line.split()
                 mount = fields[4]
+                # Destination verification scans only the installed home. Its
+                # OS has different runtime mounts from the E2B source image.
+                if operation == 'verify-home':
+                    if mount == '/home' or mount == '/' + home or mount.startswith('/' + home + '/'):
+                        raise ValueError('workspace_mount')
+                    continue
                 if mount in ('/proc', '/sys'):
                     virtual_types[mount] = fields[fields.index('-') + 1]
                 if mount not in allowed and not any(mount == p or mount.startswith(p + '/') for p in ('/proc', '/sys', '/dev')):
                     raise ValueError('mount')
-            if virtual_types != {'/proc': 'proc', '/sys': 'sysfs'}:
+            if operation != 'verify-home' and virtual_types != {'/proc': 'proc', '/sys': 'sysfs'}:
                 raise ValueError('virtual_mount')
     def walk(path, name):
         check()
