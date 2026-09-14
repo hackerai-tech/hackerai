@@ -8,6 +8,10 @@ import { createClient } from "redis";
 import { Redis } from "@upstash/redis";
 import { createServer } from "node:http";
 import {
+  runQuotaMigration,
+  type MigrationCommand,
+} from "../lib/rate-limit/quota-migration-runner";
+import {
   FREE_QUOTA_MIGRATION_STATE,
   freeQuotaRedirectKey,
   MIGRATE_FREE_QUOTA_ALIAS_SCRIPT,
@@ -345,6 +349,84 @@ async function main() {
     assert.equal(await cli("resume", ["--canonical-runtimes-ready"]), 0);
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "complete");
     assert.equal(await client.get(destination[0]), "3");
+    // Exercise the hosted runner against real Redis and its actual Lua scripts.
+    await client.flushDb(); // This process owns the disposable database.
+    const runner = (command: MigrationCommand, canonicalReady = false) =>
+      runQuotaMigration(command, {
+        redis,
+        hmacSecret: "test",
+        canonical: canonicalReady,
+        listUsers: async () => ({
+          emails: ["a.b+one@gmail.com", "ab@gmail.com"],
+          after: null,
+        }),
+      });
+    const runnerSource = legacy("a.b+one@gmail.com", "test")!;
+    const runnerTarget = canonical("ab@gmail.com", "test")!;
+    const sourceCounter = `free_monthly_cost:${runnerSource}:2026-09`;
+    const targetCounter = `free_monthly_cost:${runnerTarget}:2026-09`;
+    await client.set(sourceCounter, "15", { PX: 60000 });
+    await client.set(targetCounter, "25", { PX: 90000 });
+    await runner({ action: "inventory" });
+    await client.set("free_limit:unmapped:free:today", "1");
+    while (!(await runner({ action: "audit" })).auditComplete) {}
+    assert.equal((await runner({ action: "status" })).unknownQuotaKeys, 1);
+    await assert.rejects(runner({ action: "pause" }));
+    assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), null);
+    await client.del("free_limit:unmapped:free:today");
+    await runner({ action: "restart-audit" });
+    while (!(await runner({ action: "audit" })).auditComplete) {}
+    await runner({ action: "pause" });
+    await assert.rejects(runner({ action: "inventory" }));
+    await runner({ action: "inventory" }, true);
+    await client.set(`free_run_lock:${runnerSource}`, "running");
+    while (!(await runner({ action: "audit" }, true)).auditComplete) {}
+    const apply: MigrationCommand = {
+      action: "apply",
+      allFreeRunsDrained: true,
+      canonicalRuntimesReady: true,
+    };
+    await assert.rejects(runner(apply, true));
+    await client.del(`free_run_lock:${runnerSource}`);
+    await runner({ action: "restart-audit" }, true);
+    while (!(await runner({ action: "audit" }, true)).auditComplete) {}
+    await assert.rejects(runner({ action: "apply" }, true));
+    // Simulate losing the response after transfers but before committing the
+    // completed page. Retrying must not add the source usage a second time.
+    const realEval = redis.eval.bind(redis);
+    let failCommit = true;
+    redis.eval = (async (script: string, keys: string[], args: unknown[]) => {
+      if (
+        failCommit &&
+        keys[1] === "free_quota_runtime_migration:v1:meta" &&
+        args[2] === "migrated"
+      ) {
+        failCommit = false;
+        throw new Error("Synthetic connection loss before page commit");
+      }
+      return realEval(script, keys, args);
+    }) as typeof redis.eval;
+    await assert.rejects(runner(apply, true));
+    await assert.rejects(runner({ action: "restart-inventory" }, true));
+    redis.eval = realEval;
+    while (!(await runner(apply, true)).applied) {}
+    assert.equal(await client.get(sourceCounter), null);
+    assert.equal(await client.get(targetCounter), "40");
+    assert.ok((await client.pTTL(targetCounter)) > 60000);
+    assert.equal(
+      await client.get(freeQuotaRedirectKey(runnerSource)),
+      runnerTarget,
+    );
+    await assert.rejects(runner({ action: "restart-inventory" }, true));
+    await assert.rejects(runner({ action: "resume" }, true));
+    await runner({ action: "resume", canonicalRuntimesReady: true }, true);
+    assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "complete");
+    await runner({ action: "cleanup" }, true);
+    assert.equal(await client.get(targetCounter), "40");
+    assert.equal(
+      await client.get(freeQuotaRedirectKey(runnerSource)),
+      runnerTarget,
+    );
     console.log(
       "PASS: real Redis migration, retry, TTL, old-payload settlement, Ask/Agent budget, referral idempotency, concurrency, fail-closed gate and corrupt-state rejection",
     );
