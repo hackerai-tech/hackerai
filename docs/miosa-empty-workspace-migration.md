@@ -59,12 +59,18 @@ Production project **144137** starts with an explicit internal allowlist only
 after acceptance and a reviewed rollout decision. Retain environment targeting
 and stable user-ID assignment. Verify the actual Trigger workers' project keys,
 read back both flag definitions and do not copy Preview's percentage to
-Production. Changing only the flag affects new acquisition without redeploying.
+Production. Deploy both acquisition runtimes and wait for pre-fence workers/runs
+in the target cohort to finish before enabling the flag. Changing only the flag
+then affects new acquisition without redeploying.
 
 ## Cutover, retention and recovery
 
 A non-expiring per-user Redis record fences inspection across acquisitions and
-cached E2B manager access. The source is rechecked after claiming the fence,
+cached E2B manager access. E2B acquisitions and worker heartbeats atomically renew
+a separate 15-minute activity lease; migration cannot claim the user while that
+lease exists. This closes the gap between an E2B permission check and SDK use.
+Consequently, even a paused workspace waits for a full idle lease interval.
+The source is rechecked after claiming the fence,
 resumed for inspection and scanned twice. A failed inspection releases only its
 own fence, leaves all files intact and continues with E2B. Inspection requires
 Linux Python/xattr support and can take up to two 50-second command windows.

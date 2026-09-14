@@ -34,6 +34,7 @@ async function main() {
     metadata: { purpose: "hackerai-empty-workspace-baseline" },
   });
   let baseline;
+  let cleanupFailed = false;
   try {
     const info = await sandbox.getInfo();
     const capture = async () => {
@@ -62,9 +63,10 @@ async function main() {
       process.stderr.write(
         `Disposable baseline sandbox cleanup failed: ${sandbox.sandboxId}\n`,
       );
-      throw new Error("cleanup");
+      cleanupFailed = true;
     }
   }
+  if (cleanupFailed) throw new Error("cleanup");
   process.stdout.write(JSON.stringify([baseline]) + "\n");
 }
 

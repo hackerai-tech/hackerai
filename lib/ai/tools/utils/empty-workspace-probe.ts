@@ -15,7 +15,10 @@ def fingerprint(root):
     digest = hashlib.sha256()
     count = 0
     total = 0
+    link_groups = {}
     device = os.lstat(root).st_dev
+    def walk_error(error):
+        raise error
     def visit(path, relative):
         nonlocal count, total
         if time.monotonic() > deadline or count >= 250000:
@@ -25,7 +28,7 @@ def fingerprint(root):
             raise ValueError('mount')
         count += 1
         mode = stat.S_IFMT(info.st_mode)
-        entry = [relative, info.st_mode, info.st_uid, info.st_gid]
+        entry = [relative, info.st_mode, info.st_uid, info.st_gid, info.st_nlink]
         if stat.S_ISREG(mode):
             total += info.st_size
             if total > 16 * 1024 * 1024 * 1024:
@@ -42,6 +45,9 @@ def fingerprint(root):
             if (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
                 raise ValueError('changed')
             entry.extend([info.st_size, file_hash.hexdigest()])
+            # Stable path anchors preserve topology without comparing inode
+            # numbers across different pristine template instances.
+            entry.append(link_groups.setdefault((info.st_dev, info.st_ino), relative))
         elif stat.S_ISLNK(mode):
             entry.append(os.readlink(path))
         elif not stat.S_ISDIR(mode):
@@ -62,7 +68,7 @@ def fingerprint(root):
                         # E2B preserves memory too. Shared-memory/user files in
                         # /dev are not permission to discard state just because
                         # they are absent from the persistent disk fingerprint.
-                        for current, dirs, files in os.walk(virtual, followlinks=False):
+                        for current, dirs, files in os.walk(virtual, followlinks=False, onerror=walk_error):
                             if time.monotonic() > deadline:
                                 raise ValueError('limit')
                             for item in files:

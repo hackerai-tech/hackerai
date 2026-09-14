@@ -92,6 +92,13 @@ describe("empty E2B migration", () => {
     expect(Sandbox.connect).not.toHaveBeenCalled();
   });
 
+  it("defers recent E2B activity without connecting or scanning", async () => {
+    (claimCloudMigration as jest.Mock).mockResolvedValue(null);
+    await expect(migrate()).resolves.toBe(false);
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it.each([
     undefined,
     "{}",

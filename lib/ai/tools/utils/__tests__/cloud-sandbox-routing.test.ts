@@ -10,6 +10,7 @@ jest.mock("../cloud-migration-state", () => ({
   assertCloudWorkspaceAvailable: (...args: unknown[]) =>
     mockMigrationAssert(...args),
   CloudMigrationUnavailableError: class extends Error {},
+  registerE2BMigrationLease: jest.fn(),
 }));
 
 jest.mock("@e2b/code-interpreter", () => ({

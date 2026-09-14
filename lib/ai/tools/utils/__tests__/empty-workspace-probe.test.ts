@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -75,6 +76,19 @@ import {
     it("records links without following them outside the tree", () => {
       const baseline = scan();
       symlinkSync("/nonexistent-private-path", join(root, "root/link"));
+      expect(scan()?.digest).not.toBe(baseline?.digest);
+    });
+
+    it("detects rewiring identical hard-linked files even when link counts do not change", () => {
+      for (const name of ["a", "c"])
+        writeFileSync(join(root, name), "same contents");
+      linkSync(join(root, "a"), join(root, "b"));
+      linkSync(join(root, "c"), join(root, "d"));
+      const baseline = scan();
+      rmSync(join(root, "b"));
+      rmSync(join(root, "d"));
+      linkSync(join(root, "c"), join(root, "b"));
+      linkSync(join(root, "a"), join(root, "d"));
       expect(scan()?.digest).not.toBe(baseline?.digest);
     });
 

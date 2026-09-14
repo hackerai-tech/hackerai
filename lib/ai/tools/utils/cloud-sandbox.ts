@@ -23,6 +23,7 @@ import {
   assertCloudWorkspaceAvailable,
   CloudMigrationUnavailableError,
   clearCloudMigrationAfterReset,
+  registerE2BMigrationLease,
 } from "./cloud-migration-state";
 
 export type CloudSandboxAcquisitionContext = {
@@ -343,6 +344,7 @@ export async function ensureCloudSandboxConnection(options: {
       setSandbox: () => {},
     });
     await assertCloudWorkspaceAvailable(options.userId, "e2b");
+    registerE2BMigrationLease(result.sandbox, options.userId);
     options.setSandbox(result.sandbox);
     recordOutcome("e2b", "success");
     return { ...result, provider: "e2b" };

@@ -101,6 +101,10 @@ export async function tryMigrateEmptyE2BWorkspace(options: {
     info.sandboxId,
     triggerRegion,
   );
+  if (!claim) {
+    report("workspace_in_use");
+    return false;
+  }
   let commitStarted = false;
   try {
     const current = await Sandbox.getInfo(info.sandboxId, {
