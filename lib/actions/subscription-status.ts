@@ -55,7 +55,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule"],
+      expand: ["data.items.data.price", "data.schedule", "data.latest_invoice"],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
@@ -78,6 +78,19 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     };
   }
 
+  const invoice = currentSubscription.latest_invoice;
+  const renewalPaymentRequired =
+    ["past_due", "unpaid"].includes(currentSubscription.status) &&
+    currentSubscription.collection_method === "charge_automatically" &&
+    !currentSubscription.cancel_at_period_end &&
+    !currentSubscription.cancel_at &&
+    !currentSubscription.pause_collection &&
+    typeof invoice === "object" &&
+    invoice !== null &&
+    invoice.status === "open" &&
+    invoice.collection_method === "charge_automatically" &&
+    invoice.billing_reason === "subscription_cycle" &&
+    invoice.amount_remaining > 0;
   const latestInvoiceId = stripeObjectId(currentSubscription.latest_invoice);
   const item = currentSubscription.items?.data[0];
   const price = item?.price;
@@ -121,6 +134,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       },
     }),
     ...(latestInvoiceId && { latestInvoiceId }),
+    ...(renewalPaymentRequired && { renewalPaymentRequired: true }),
     ...(price?.id && { stripePriceId: price.id }),
     ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
     ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),

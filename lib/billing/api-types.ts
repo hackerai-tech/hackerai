@@ -23,6 +23,8 @@ export type SubscriptionCancellationStatus = {
   currentPeriodEnd?: number;
   subscriptionStatus?: "active" | "trialing" | "past_due" | "unpaid";
   latestInvoiceId?: string;
+  /** Current automatic renewal is still open and unpaid. Never grants access. */
+  renewalPaymentRequired?: boolean;
   stripePriceId?: string;
   stripePriceLookupKey?: string;
   renewalAmountDollars?: number;
@@ -36,6 +38,11 @@ export type SubscriptionCancellationStatus = {
 };
 
 export type BillingPortalFlow = "payment_method";
+export type BillingRecoverySurface = "account_settings" | "blocked_chat";
+export type BillingPortalOptions = {
+  surface?: BillingRecoverySurface;
+  returnPath?: string;
+};
 
 export type KeepSubscriptionResult = {
   kept: true;

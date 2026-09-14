@@ -1,3 +1,4 @@
+import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useQuery } from "convex/react";
@@ -174,7 +175,20 @@ const getUpgradeCtaText = (
 
 const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 
-export const RateLimitWarning = ({
+export const RateLimitWarning = (props: RateLimitWarningProps) => {
+  const isBlocked =
+    props.data.warningType === "token-bucket" &&
+    props.data.remainingPercent === 0;
+  return isBlocked ? (
+    <BlockedChatBillingRecovery>
+      <RateLimitWarningContent {...props} />
+    </BlockedChatBillingRecovery>
+  ) : (
+    <RateLimitWarningContent {...props} />
+  );
+};
+
+const RateLimitWarningContent = ({
   data,
   onDismiss,
 }: RateLimitWarningProps) => {

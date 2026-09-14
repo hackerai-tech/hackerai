@@ -1,5 +1,6 @@
 import type {
   BillingPortalFlow,
+  BillingPortalOptions,
   DowngradeSubscriptionInput,
   DowngradeSubscriptionResult,
   CancelSubscriptionInput,
@@ -12,6 +13,16 @@ import type {
   RetentionOffers,
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
+
+export class BillingRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "BillingRequestError";
+  }
+}
 
 const BILLING_REQUEST_TIMEOUT_MS = 15_000;
 const BILLING_REQUEST_TIMEOUT_MESSAGE =
@@ -81,7 +92,10 @@ async function billingFetchJson<T>(
   }
 
   if (!response.ok) {
-    throw new Error(await readBillingError(response));
+    throw new BillingRequestError(
+      await readBillingError(response),
+      response.status,
+    );
   }
 
   return (await response.json()) as T;
@@ -95,12 +109,13 @@ export async function getSubscriptionCancellationStatus(): Promise<SubscriptionC
 
 export async function redirectToBillingPortal(
   flow?: BillingPortalFlow,
+  options?: BillingPortalOptions,
 ): Promise<string> {
   const { url } = await billingFetchJson<{ url?: unknown }>(
     "/api/billing/portal",
     {
       method: "POST",
-      ...(flow && { body: JSON.stringify({ flow }) }),
+      ...((flow || options) && { body: JSON.stringify({ flow, ...options }) }),
     },
   );
 
