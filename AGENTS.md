@@ -132,6 +132,9 @@ PostHog readout before expanding the rollout, removing the flag, or calling the
 experiment complete. Every flag needs an owner and cleanup plan so stale flags
 do not accumulate.
 
+For churn, retention, renewal, or a change's effect on subscribers, follow
+the [hackerai-retention-analysis skill](.agents/skills/hackerai-retention-analysis/SKILL.md).
+
 ## Pull Request Review Workflow
 
 When a PR has been pushed and is ready for review, do not send the final
