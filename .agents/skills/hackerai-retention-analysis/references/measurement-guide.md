@@ -7,7 +7,7 @@ Keep dated results in the owning Linear issue or a task artifact, not here.
 
 ## Before a rollout
 
-Follow the experiment-planning requirements in `AGENTS.md`. In the owning issue,
+Follow the experiment-planning requirements in [AGENTS.md](../../../../AGENTS.md). In the owning issue,
 define the eligible population, assignment unit, primary outcome, minimum
 business-relevant effect, sample-size rationale, guardrails, rollback rule,
 owner, readout dates, and cleanup plan.
@@ -45,7 +45,7 @@ Inspect billing source identity, availability, and freshness read-only before
 proposing a repair. Catalog presence alone does not prove a table is queryable
 or current. An inaccessible or empty source is not permission to reconnect,
 seed, or copy credentials. Follow the repository's environment boundaries.
-Use [payment recovery verification](../payment-method-recovery.md) for the
+Use [payment recovery verification](../../../../docs/payment-method-recovery.md) for the
 card-update, payment, and restored-access journey.
 
 Keep analytics content-free. Never add prompts, targets, findings, payloads,
