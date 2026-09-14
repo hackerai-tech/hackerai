@@ -6,19 +6,16 @@ export const revalidate = 0;
 export const maxDuration = 10;
 
 export async function GET() {
-  const { probe, report, reportAttemptAt, reportRefreshError } =
+  const { report, reportAttemptAt, reportRefreshError } =
     await readTriggerHealth();
-  const ok = probe.status === "healthy";
+  const ok = report.status === "healthy" || report.status === "degraded";
   return NextResponse.json(
     {
       ok,
-      source: "trigger_probe",
-      ...probe,
-      report: {
-        ...report,
-        attemptedAt: reportAttemptAt,
-        refreshError: reportRefreshError,
-      },
+      source: "trigger_report",
+      ...report,
+      attemptedAt: reportAttemptAt,
+      refreshError: reportRefreshError,
     },
     { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },
   );

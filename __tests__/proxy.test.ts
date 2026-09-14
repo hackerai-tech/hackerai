@@ -113,9 +113,11 @@ describe("proxy", () => {
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
+    "/api/health/trigger-reports",
     "/api/cron/platform-costs/convex",
     "/api/cron/platform-costs/vercel",
     "/api/cron/subscription-pauses",
+    "/api/cron/trigger-health",
   ])(
     "bypasses AuthKit for the public or independently authenticated endpoint %s",
     async (pathname) => {
