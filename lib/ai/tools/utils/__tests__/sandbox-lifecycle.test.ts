@@ -642,14 +642,13 @@ describe("E2B sandbox lease lifecycle", () => {
     }
   });
 
-  it("replaces a mismatched sandbox only after it is paused", async () => {
-    const createdSandbox = { sandboxId: "sandbox-2" } as unknown as Sandbox;
+  it("preserves a paused old-version workspace and its files", async () => {
+    const existingSandbox = { sandboxId: "sandbox-1" } as unknown as Sandbox;
     listSandbox({
       state: "paused",
       metadata: { sandboxVersion: "v10" },
     });
-    sandboxApi.kill.mockResolvedValue(true);
-    sandboxApi.create.mockResolvedValue(createdSandbox);
+    sandboxApi.connect.mockResolvedValue(existingSandbox);
     const setSandbox = jest.fn();
 
     const result = await ensureSandboxConnection({
@@ -657,11 +656,43 @@ describe("E2B sandbox lease lifecycle", () => {
       setSandbox,
     });
 
-    expect(result.sandbox).toBe(createdSandbox);
-    expect(sandboxApi.kill).toHaveBeenCalledWith("sandbox-1");
-    expect(sandboxApi.connect).not.toHaveBeenCalled();
-    expect(sandboxApi.create).toHaveBeenCalled();
-    expect(setSandbox).toHaveBeenCalledWith(createdSandbox);
+    expect(result.sandbox).toBe(existingSandbox);
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+    expect(sandboxApi.connect).toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(setSandbox).toHaveBeenCalledWith(existingSandbox);
+  });
+
+  it("finds and preserves an old-template workspace on a later inventory page", async () => {
+    let page = 0;
+    const existing = { sandboxId: "old-source" } as unknown as Sandbox;
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () =>
+        ++page === 1
+          ? []
+          : [
+              {
+                sandboxId: "old-source",
+                state: "paused",
+                metadata: { sandboxVersion: "v10", template: "old-alias" },
+              },
+            ],
+      ),
+      get hasNext() {
+        return page < 2;
+      },
+    });
+    sandboxApi.connect.mockResolvedValue(existing);
+    await expect(
+      ensureSandboxConnection({ userID: "user-1", setSandbox: jest.fn() }),
+    ).resolves.toEqual({ sandbox: existing });
+    expect(sandboxApi.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: { metadata: { userID: "user-1" }, state: ["running", "paused"] },
+      }),
+    );
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
   });
 
   it("does not kill or replace a shared sandbox after a transient connect error", async () => {

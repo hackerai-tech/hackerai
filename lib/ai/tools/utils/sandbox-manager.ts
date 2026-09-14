@@ -6,6 +6,7 @@ import type {
   SandboxType,
 } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
+import { assertCloudWorkspaceAvailable } from "./cloud-migration-state";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import {
@@ -87,6 +88,7 @@ export class DefaultSandboxManager implements SandboxManager {
     if (this.acquisition) return this.acquisition;
     if (this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
+        await assertCloudWorkspaceAvailable(this.userID, "e2b");
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
           source: "default_manager_cache",
         });

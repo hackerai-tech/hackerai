@@ -19,6 +19,7 @@ import {
   type ConnectionInfo,
 } from "./sandbox-types";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
+import { assertCloudWorkspaceAvailable } from "./cloud-migration-state";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -791,6 +792,7 @@ export class HybridSandboxManager implements SandboxManager {
     if (this.cloudAcquisition) return this.cloudAcquisition;
     if (!this.isLocal && this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
+        await assertCloudWorkspaceAvailable(this.userID, "e2b");
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
           source: "hybrid_manager_cache",
         });
