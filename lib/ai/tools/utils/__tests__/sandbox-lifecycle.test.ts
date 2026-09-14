@@ -23,6 +23,7 @@ jest.mock("@e2b/code-interpreter", () => {
 // refusal to extend unregistered clients are exercised in cloud-migration-state.
 jest.mock("../cloud-migration-state", () => ({
   ...jest.requireActual("../cloud-migration-state"),
+  assertCloudWorkspaceAvailable: jest.fn(async () => {}),
   refreshE2BMigrationLease: jest.fn(async () => {}),
 }));
 
