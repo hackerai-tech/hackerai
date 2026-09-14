@@ -1,6 +1,7 @@
 const mockGetOrCreate = jest.fn();
 const mockGetByName = jest.fn();
 const mockList = jest.fn();
+const mockGet = jest.fn();
 import { execFile } from "node:child_process";
 import { mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ jest.mock("@miosa/sdk", () => ({
       getOrCreate: (...args: unknown[]) => mockGetOrCreate(...args),
       getByName: (...args: unknown[]) => mockGetByName(...args),
       list: (...args: unknown[]) => mockList(...args),
+      get: (...args: unknown[]) => mockGet(...args),
     },
   })),
 }));
@@ -64,6 +66,41 @@ describe("MIOSA sandbox adapter", () => {
 
   afterAll(() => {
     process.env = originalEnv;
+  });
+
+  it("never recreates a missing committed destination", async () => {
+    mockGet.mockRejectedValue(new NotFoundError("missing"));
+    await expect(
+      ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { destinationId: "verified-id" },
+      ),
+    ).rejects.toThrow();
+    expect(mockGetOrCreate).not.toHaveBeenCalled();
+  });
+
+  it("resumes the exact committed destination instead of the canonical workspace", async () => {
+    const sdkSandbox = {
+      ...createSdkSandbox(),
+      state: "paused",
+      resume: jest.fn(),
+    };
+    sdkSandbox.data = {
+      ...sdkSandbox.data,
+      external_user_id: "hackerai-c6c289e49e9c05b214586038",
+    } as typeof sdkSandbox.data;
+    sdkSandbox.resume.mockImplementation(async () => {
+      sdkSandbox.state = "running";
+    });
+    mockGet.mockResolvedValue(sdkSandbox);
+    const result = await ensureMiosaSandboxConnection(
+      { userID: "user-1", setSandbox: jest.fn() },
+      { destinationId: "miosa-1" },
+    );
+    expect(result.sandbox.sandboxId).toBe("miosa-1");
+    expect(sdkSandbox.resume).toHaveBeenCalled();
+    expect(mockGetOrCreate).not.toHaveBeenCalled();
+    expect(mockGetByName).not.toHaveBeenCalled();
   });
 
   it("creates or resumes a stable persistent per-user workspace", async () => {

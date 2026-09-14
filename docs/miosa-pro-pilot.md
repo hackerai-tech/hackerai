@@ -17,8 +17,8 @@ enrolling Production users.
 - No activity event, an idle sandbox, or an old template is **not** proof that
   a workspace has terminated. Read E2B state directly, including all templates.
 - Do not delete, pause, migrate, or reset a workspace to make a user eligible.
-- The separately controlled [empty-workspace migration](miosa-empty-workspace-migration.md)
-  may enroll an existing workspace only after complete pristine-filesystem proof.
+- The separately controlled [file-preserving migration](miosa-workspace-migration.md)
+  may enroll an existing workspace only after verified transfer and cutover.
   Its retained source, routing fence and rollback rules override fresh enrollment
   for that cohort; workspaces with files remain on E2B.
 - Retain E2B fallback and existing region, authorization, and paid-plan gates.

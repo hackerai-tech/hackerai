@@ -17,7 +17,7 @@ import {
   MiosaEnrollmentError,
 } from "./miosa-enrollment";
 import { miosaErrorDiagnostics } from "./miosa-acquisition-diagnostics";
-import { tryMigrateEmptyE2BWorkspace } from "./miosa-empty-workspace-migration";
+import { queueE2BFileMigration } from "./miosa-workspace-migration-queue";
 import {
   readCloudMigrationState,
   assertCloudWorkspaceAvailable,
@@ -65,73 +65,77 @@ const ensureMiosaCloudSandboxConnection = (options: {
   onBoot?: (info: SandboxBootInfo) => void;
   context?: CloudSandboxAcquisitionContext;
 }) =>
-  ensureMiosaSandboxConnection(
-    {
-      userID: options.userId,
-      setSandbox: options.setSandbox,
-      onBoot: options.onBoot,
-    },
-    {
-      initialSandbox:
-        options.initialSandbox && isMiosaSandbox(options.initialSandbox)
-          ? options.initialSandbox
-          : null,
-      beforeCreate: async () => {
-        const migration = await readCloudMigrationState(options.userId);
-        if (migration) {
-          if (
-            migration.phase !== "miosa" ||
-            migration.region !== options.context?.triggerRegion
-          ) {
-            throw new CloudMigrationUnavailableError();
+  readCloudMigrationState(options.userId).then((migration) =>
+    ensureMiosaSandboxConnection(
+      {
+        userID: options.userId,
+        setSandbox: options.setSandbox,
+        onBoot: options.onBoot,
+      },
+      {
+        destinationId: migration?.destinationId,
+        initialSandbox:
+          options.initialSandbox && isMiosaSandbox(options.initialSandbox)
+            ? options.initialSandbox
+            : null,
+        beforeCreate: async () => {
+          const migration = await readCloudMigrationState(options.userId);
+          if (migration) {
+            if (
+              migration.phase !== "miosa" ||
+              migration.region !== options.context?.triggerRegion
+            ) {
+              throw new CloudMigrationUnavailableError();
+            }
+            // A committed migration can retry a failed create despite its retained
+            // E2B source. Re-running fresh enrollment would permanently strand it.
+            return;
           }
-          // A committed migration can retry a failed create despite its retained
-          // E2B source. Re-running fresh enrollment would permanently strand it.
-          return;
-        }
-        await assertFreshMiosaEnrollment({
-          userId: options.userId,
-          subscription: options.context?.subscription,
-          onExisting: (workspaces) =>
-            tryMigrateEmptyE2BWorkspace({
-              userId: options.userId,
-              workspaces,
-              triggerRegion: options.context?.triggerRegion,
-            }),
-        });
+          await assertFreshMiosaEnrollment({
+            userId: options.userId,
+            subscription: options.context?.subscription,
+            onExisting: (workspaces) =>
+              queueE2BFileMigration({
+                userId: options.userId,
+                subscription: options.context?.subscription,
+                workspaces,
+                triggerRegion: options.context?.triggerRegion,
+              }),
+          });
+        },
+        onDiagnostic: (diagnostic) => {
+          const fields = {
+            ...diagnostic,
+            chat_id: options.context?.chatId,
+            trigger_run_id: options.context?.triggerRunId,
+            agent_run_kind: options.context?.runKind ?? "parent",
+            trigger_region: options.context?.triggerRegion,
+            sandbox_provider: "miosa",
+            sandbox_type: "cloud",
+            miosa_sandbox_acquisition_step_event_version: 1,
+          };
+          const logFields = {
+            ...fields,
+            timestamp: new Date().toISOString(),
+          };
+          // Keep failures visible without flooding production traces with every
+          // successful lookup/readiness/initialization step. PostHog retains all
+          // step events independently of this troubleshooting switch.
+          if (diagnostic.outcome === "failure") {
+            console.warn("MIOSA sandbox acquisition step", logFields);
+          } else if (
+            process.env.MIOSA_DEBUG_LOGS === "true" ||
+            (process.env.VERCEL_ENV ?? process.env.NODE_ENV) !== "production"
+          ) {
+            console.debug("MIOSA sandbox acquisition step", logFields);
+          }
+          phLogger.event("miosa_sandbox_acquisition_step", {
+            ...fields,
+            userId: options.userId,
+          });
+        },
       },
-      onDiagnostic: (diagnostic) => {
-        const fields = {
-          ...diagnostic,
-          chat_id: options.context?.chatId,
-          trigger_run_id: options.context?.triggerRunId,
-          agent_run_kind: options.context?.runKind ?? "parent",
-          trigger_region: options.context?.triggerRegion,
-          sandbox_provider: "miosa",
-          sandbox_type: "cloud",
-          miosa_sandbox_acquisition_step_event_version: 1,
-        };
-        const logFields = {
-          ...fields,
-          timestamp: new Date().toISOString(),
-        };
-        // Keep failures visible without flooding production traces with every
-        // successful lookup/readiness/initialization step. PostHog retains all
-        // step events independently of this troubleshooting switch.
-        if (diagnostic.outcome === "failure") {
-          console.warn("MIOSA sandbox acquisition step", logFields);
-        } else if (
-          process.env.MIOSA_DEBUG_LOGS === "true" ||
-          (process.env.VERCEL_ENV ?? process.env.NODE_ENV) !== "production"
-        ) {
-          console.debug("MIOSA sandbox acquisition step", logFields);
-        }
-        phLogger.event("miosa_sandbox_acquisition_step", {
-          ...fields,
-          userId: options.userId,
-        });
-      },
-    },
+    ),
   );
 
 const recordAcquisitionFailure = (options: {
@@ -214,7 +218,9 @@ export async function ensureCloudSandboxConnection(options: {
       context: {
         ...options.context,
         provider: "miosa",
-        selectionReason: "miosa_empty_workspace_migration",
+        selectionReason: migrationState.destinationId
+          ? "miosa_file_workspace_migration"
+          : "miosa_empty_workspace_migration",
       },
     };
   }
@@ -275,15 +281,20 @@ export async function ensureCloudSandboxConnection(options: {
       const result = await ensureMiosaCloudSandboxConnection(options);
       const migrated = await readCloudMigrationState(options.userId);
       if (migrated?.phase === "miosa") {
-        phLogger.event("miosa_empty_e2b_migration_exposed", {
-          userId: options.userId,
-          trigger_run_id: options.context?.triggerRunId,
-          ...(options.context?.triggerRunId && {
-            eventUuid: `${options.context.triggerRunId}:miosa-empty-e2b-migration-v1`,
-          }),
-          sandbox_provider: "miosa",
-          miosa_empty_e2b_migration_event_version: 1,
-        });
+        phLogger.event(
+          migrated.destinationId
+            ? "miosa_e2b_file_migration_exposed"
+            : "miosa_empty_e2b_migration_exposed",
+          {
+            userId: options.userId,
+            trigger_run_id: options.context?.triggerRunId,
+            ...(options.context?.triggerRunId && {
+              eventUuid: `${options.context.triggerRunId}:${migrated.destinationId ? "miosa-e2b-file-migration-v1" : "miosa-empty-e2b-migration-v1"}`,
+            }),
+            sandbox_provider: "miosa",
+            miosa_empty_e2b_migration_event_version: 1,
+          },
+        );
       }
       recordRolloutExposure(options);
       recordOutcome("miosa", "success");
