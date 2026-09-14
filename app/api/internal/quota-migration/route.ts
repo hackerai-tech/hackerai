@@ -70,21 +70,26 @@ export async function POST(request: Request) {
   } catch {
     return reply({ error: "migration_environment_mismatch" }, 503);
   }
-  if (
-    env.VERCEL !== "1" ||
-    !["preview", "production"].includes(env.VERCEL_ENV ?? "") ||
-    env.VERCEL_ENV !== env.FREE_QUOTA_MIGRATION_ENVIRONMENT ||
-    redisURL.protocol !== "https:" ||
-    redisURL.hostname !== env.FREE_QUOTA_MIGRATION_REDIS_HOST ||
-    !env.FREE_QUOTA_MIGRATION_CONVEX_URL ||
-    env.NEXT_PUBLIC_CONVEX_URL !== env.FREE_QUOTA_MIGRATION_CONVEX_URL ||
-    !env.FREE_QUOTA_MIGRATION_WORKOS_CLIENT_ID ||
-    env.WORKOS_CLIENT_ID !== env.FREE_QUOTA_MIGRATION_WORKOS_CLIENT_ID ||
-    !env.UPSTASH_REDIS_REST_TOKEN ||
-    !env.ACCOUNT_IDENTITY_HMAC_SECRET ||
-    !env.WORKOS_API_KEY
-  ) {
-    return reply({ error: "migration_environment_mismatch" }, 503);
+  const checks = {
+    vercelRuntime: env.VERCEL === "1",
+    environment:
+      ["preview", "production"].includes(env.VERCEL_ENV ?? "") &&
+      env.VERCEL_ENV === env.FREE_QUOTA_MIGRATION_ENVIRONMENT,
+    redisHost:
+      redisURL.protocol === "https:" &&
+      redisURL.hostname === env.FREE_QUOTA_MIGRATION_REDIS_HOST,
+    convexURL:
+      !!env.FREE_QUOTA_MIGRATION_CONVEX_URL &&
+      env.NEXT_PUBLIC_CONVEX_URL === env.FREE_QUOTA_MIGRATION_CONVEX_URL,
+    workosClient:
+      !!env.FREE_QUOTA_MIGRATION_WORKOS_CLIENT_ID &&
+      env.WORKOS_CLIENT_ID === env.FREE_QUOTA_MIGRATION_WORKOS_CLIENT_ID,
+    redisCredentialPresent: !!env.UPSTASH_REDIS_REST_TOKEN,
+    quotaSecretPresent: !!env.ACCOUNT_IDENTITY_HMAC_SECRET,
+    workosCredentialPresent: !!env.WORKOS_API_KEY,
+  };
+  if (Object.values(checks).some((passed) => !passed)) {
+    return reply({ error: "migration_environment_mismatch", checks }, 503);
   }
   let input: unknown;
   try {
@@ -122,7 +127,7 @@ export async function POST(request: Request) {
         token: env.UPSTASH_REDIS_REST_TOKEN,
         retry: false,
       }),
-      hmacSecret: env.ACCOUNT_IDENTITY_HMAC_SECRET,
+      hmacSecret: env.ACCOUNT_IDENTITY_HMAC_SECRET!,
       canonical: env.FREE_QUOTA_GMAIL_CANONICALIZATION === "true",
       listUsers: async (after) => {
         const page = await workos.userManagement.listUsers({
