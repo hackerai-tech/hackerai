@@ -29,7 +29,12 @@ async function main() {
   const client = createClient({
     socket: { path: socket, reconnectStrategy: false },
   });
+  const childClosed = new Promise<void>((resolve) =>
+    child.once("close", () => resolve()),
+  );
   client.on("error", () => {});
+  let pauseBeforeNextAdmission = false;
+  let staleRedirectReads = false;
   const bridge = createServer(async (req, res) => {
     try {
       const chunks: Buffer[] = [];
@@ -44,9 +49,29 @@ async function main() {
               req.headers["upstash-encoding"] === "base64"
             ? Buffer.from(value).toString("base64")
             : value;
-      const run = async (parts: unknown[]) => ({
-        result: encode(await client.sendCommand(parts.map(String))),
-      });
+      const run = async (parts: unknown[]) => {
+        if (
+          staleRedirectReads &&
+          String(parts[0]).toLowerCase() === "get" &&
+          String(parts[1]).startsWith("free_quota_gmail_migration:v1:redirect:")
+        )
+          return { result: null };
+        if (
+          pauseBeforeNextAdmission &&
+          String(parts[0]).toLowerCase() === "eval" &&
+          String(parts[1]).includes("local migrationState")
+        ) {
+          pauseBeforeNextAdmission = false;
+          await client.set(FREE_QUOTA_MIGRATION_STATE, "paused");
+        }
+        try {
+          return {
+            result: encode(await client.sendCommand(parts.map(String))),
+          };
+        } catch (error) {
+          return { error: String(error) };
+        }
+      };
       res.end(
         JSON.stringify(
           Array.isArray(command[0])
@@ -68,6 +93,10 @@ async function main() {
       child.once("error", (error) => {
         clearTimeout(timer);
         reject(error);
+      });
+      child.once("exit", () => {
+        clearTimeout(timer);
+        reject(new Error("Redis exited before verification completed"));
       });
       child.stdout.on("data", (chunk) => {
         if (
@@ -131,6 +160,9 @@ async function main() {
       target,
     );
     await client.set(FREE_QUOTA_MIGRATION_STATE, "complete");
+    // Simulate callers that resolved their subject before cutover. Every
+    // transaction must still use the canonical key with stale outer reads.
+    staleRedirectReads = true;
     // Exercise actual runtime consumers using the local REST bridge.
     const {
       checkFreeUserRateLimit,
@@ -168,6 +200,24 @@ async function main() {
     await assert.rejects(acquireFreeRunConcurrencyLock(source));
     await lock.release();
     await (await acquireFreeRunConcurrencyLock(target)).release();
+    for (const admit of [
+      () => checkFreeUserRateLimit(target),
+      () => grantFreeReferralBonusUnits(target, 20, "race-test"),
+      () => acquireFreeRunConcurrencyLock(target),
+    ]) {
+      await client.set(FREE_QUOTA_MIGRATION_STATE, "complete");
+      pauseBeforeNextAdmission = true;
+      await assert.rejects(admit(), (error: unknown) =>
+        `${String(error)} ${String((error as { cause?: unknown }).cause)}`.includes(
+          "Free quota migration paused",
+        ),
+      );
+      assert.equal(await client.get(`free_run_lock:${target}`), null);
+      assert.equal(
+        await client.get(`free_referral_bonus_grant:race-test`),
+        null,
+      );
+    }
     await client.set(FREE_QUOTA_MIGRATION_STATE, "paused");
     await client.set(counters(source)[0], "3");
     await client.set(counters(source)[1], "corrupt");
@@ -216,19 +266,43 @@ async function main() {
         run.once("exit", resolve);
       });
     await client.set(counters(source)[0], "3", { PX: 60000 });
-    assert.equal(await cli("apply", ["--all-free-runs-drained"]), 1);
+    assert.equal(
+      await cli("apply", [
+        "--all-free-runs-drained",
+        "--canonical-runtimes-ready",
+      ]),
+      1,
+    );
     assert.equal(await cli("pause"), 0);
     await client.set("free_run_lock:old-worker", "active", { PX: 60000 });
-    assert.equal(await cli("apply", ["--all-free-runs-drained"]), 1);
+    assert.equal(
+      await cli("apply", [
+        "--all-free-runs-drained",
+        "--canonical-runtimes-ready",
+      ]),
+      1,
+    );
     await client.del("free_run_lock:old-worker");
     await client.set(
       `free_limit:free_quota:v1:${"f".repeat(64)}:free:${day}`,
       "1",
       { PX: 60000 },
     );
-    assert.equal(await cli("apply", ["--all-free-runs-drained"]), 1);
+    assert.equal(
+      await cli("apply", [
+        "--all-free-runs-drained",
+        "--canonical-runtimes-ready",
+      ]),
+      1,
+    );
     await client.del(`free_limit:free_quota:v1:${"f".repeat(64)}:free:${day}`);
-    assert.equal(await cli("apply", ["--all-free-runs-drained"]), 0);
+    assert.equal(
+      await cli("apply", [
+        "--all-free-runs-drained",
+        "--canonical-runtimes-ready",
+      ]),
+      0,
+    );
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "migrated");
     assert.equal(await client.get(destination[0]), "3");
     assert.equal(await cli("resume"), 1);
@@ -241,9 +315,7 @@ async function main() {
     await new Promise<void>((resolve) => bridge.close(() => resolve()));
     if (client.isOpen) await client.quit();
     child.kill("SIGTERM");
-    await new Promise<void>((resolve) =>
-      child.exitCode !== null ? resolve() : child.once("exit", () => resolve()),
-    );
+    await childClosed;
     await rm(dir, { recursive: true, force: true });
   }
 }

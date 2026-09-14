@@ -5,6 +5,28 @@ export const FREE_QUOTA_MIGRATION_STATE = "free_quota_gmail_migration:v1:state";
 export const freeQuotaRedirectKey = (subject: string) =>
   `free_quota_gmail_migration:v1:redirect:${subject}`;
 
+// Recheck in the same transaction as admission. A request can resolve its
+// subject just before the operator pauses, then reach Redis after the pause.
+export const FREE_QUOTA_ADMISSION_GUARD_SCRIPT = `
+local migrationState = redis.call("GET", "${FREE_QUOTA_MIGRATION_STATE}")
+if migrationState == "paused" or migrationState == "migrated" then
+  return redis.error_reply("Free quota migration paused")
+end
+`;
+
+// Resolve again inside each Redis transaction. A caller may hold an old subject
+// across cutover; settlement must land either before the transfer or after it,
+// never recreate a discarded source counter.
+export const FREE_QUOTA_KEY_REDIRECT_SCRIPT = `
+for i, key in ipairs(KEYS) do
+  local subject = string.match(key, "free_quota:v1:%x+")
+  if subject then
+    local target = redis.call("GET", "free_quota_gmail_migration:v1:redirect:" .. subject)
+    if target then KEYS[i] = string.gsub(key, subject, target) end
+  end
+end
+`;
+
 /** Old durable payloads and rollback builds must continue charging merged keys. */
 export async function resolveMigratedFreeQuotaSubject(
   redis: Redis,

@@ -6,6 +6,8 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
 jest.mock("../free-quota-migration", () => ({
+  FREE_QUOTA_ADMISSION_GUARD_SCRIPT: "",
+  FREE_QUOTA_KEY_REDIRECT_SCRIPT: "",
   resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
     subject,
 }));

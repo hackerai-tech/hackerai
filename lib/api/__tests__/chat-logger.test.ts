@@ -685,6 +685,7 @@ describe("captureAgentCompletionAnalytics", () => {
         fallback_served: false,
       };
       captureAgentCompletionAnalytics({
+        hasResponseContent: true,
         abliteratedProviderSummary: summary,
         posthog: { capture },
         userId: "user",
@@ -731,6 +732,7 @@ describe("captureAgentCompletionAnalytics", () => {
         provider_estimated_cost_dollars: 0.12,
       };
       captureAgentCompletionAnalytics({
+        hasResponseContent: true,
         abliteratedProviderSummary: providerSummary,
         posthog: { capture } as any,
         userId: "user",
@@ -754,7 +756,12 @@ describe("captureAgentCompletionAnalytics", () => {
           requestId: "message",
         },
       });
-      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
+      expect(capture).toHaveBeenCalledTimes(
+        mode === "agent" ||
+          experimentKey === "abliterated_free_ask_moderated_v1"
+          ? 2
+          : 1,
+      );
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "abliterated_model_response_outcome",
@@ -770,10 +777,11 @@ describe("captureAgentCompletionAnalytics", () => {
       );
     },
   );
-  it("uses the existing agent completion event for successful free Agent activation", () => {
+  it("preserves the existing Agent event alongside successful free activation", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      hasResponseContent: true,
       abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",
@@ -790,7 +798,7 @@ describe("captureAgentCompletionAnalytics", () => {
       fallbackServed: false,
     });
 
-    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledTimes(2);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
@@ -813,6 +821,7 @@ describe("captureAgentCompletionAnalytics", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      hasResponseContent: true,
       abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",

@@ -15,7 +15,11 @@ import {
   getFreeRequestLimit,
 } from "./free-config";
 import { createRedisClient } from "./redis";
-import { resolveMigratedFreeQuotaSubject } from "./free-quota-migration";
+import {
+  resolveMigratedFreeQuotaSubject,
+  FREE_QUOTA_ADMISSION_GUARD_SCRIPT,
+  FREE_QUOTA_KEY_REDIRECT_SCRIPT,
+} from "./free-quota-migration";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const REFERRAL_BONUS_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -29,7 +33,8 @@ const getFreeReferralBonusGrantKey = (idempotencyKey: string) =>
 // Upstash fixedWindow supports `{ rate: 2 }`, but failed multi-unit calls are
 // counted before failure is returned. This checks capacity before incrementing
 // so a blocked agent request cannot consume the last ask unit.
-const CONSUME_FREE_REQUEST_UNITS_SCRIPT = `
+const CONSUME_FREE_REQUEST_UNITS_SCRIPT = `${FREE_QUOTA_ADMISSION_GUARD_SCRIPT}
+${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
 local usageKey = KEYS[1]
 local bonusKey = KEYS[2]
 local requestLimit = tonumber(ARGV[1])
@@ -80,7 +85,8 @@ end
 return {1, nextBaseRemaining + nextBonusRemaining}
 `;
 
-const PEEK_FREE_REQUEST_UNITS_SCRIPT = `
+const PEEK_FREE_REQUEST_UNITS_SCRIPT = `${FREE_QUOTA_ADMISSION_GUARD_SCRIPT}
+${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
 local usageKey = KEYS[1]
 local bonusKey = KEYS[2]
 local requestLimit = tonumber(ARGV[1])
@@ -99,7 +105,8 @@ end
 return baseRemaining + bonusRemaining
 `;
 
-const GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT = `
+const GRANT_FREE_REFERRAL_BONUS_UNITS_SCRIPT = `${FREE_QUOTA_ADMISSION_GUARD_SCRIPT}
+${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
 local bonusKey = KEYS[1]
 local grantKey = KEYS[2]
 local bonusUnits = tonumber(ARGV[1])

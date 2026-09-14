@@ -1312,7 +1312,7 @@ type AgentCompletionAnalyticsArgs = {
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
-  hasResponseContent?: boolean;
+  hasResponseContent: boolean;
   abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
@@ -1419,7 +1419,10 @@ export function captureAgentRun({
   providerRecoverySucceeded,
 }: Omit<
   AgentCompletionAnalyticsArgs,
-  "endpoint" | "chatLogger" | "abliteratedProviderSummary"
+  | "endpoint"
+  | "chatLogger"
+  | "abliteratedProviderSummary"
+  | "hasResponseContent"
 > &
   Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
   if (mode !== "agent") return;

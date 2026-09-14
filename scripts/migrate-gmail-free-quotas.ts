@@ -127,11 +127,12 @@ async function main() {
   if (
     state !== "paused" ||
     !values["all-free-runs-drained"] ||
+    !values["canonical-runtimes-ready"] ||
     activeLocks ||
     unknown
   ) {
     throw new Error(
-      "Apply blocked: pause, drain every free run, and resolve every unmapped quota key first",
+      "Apply blocked: pause, deploy canonical runtimes, drain every free run, and resolve every unmapped quota key first",
     );
   }
   // Bound request sizes without one network round trip per historical alias.
@@ -162,7 +163,7 @@ async function main() {
   }
   await redis.set(FREE_QUOTA_MIGRATION_STATE, "migrated");
   console.log(
-    "Migration complete; free admissions remain paused. Enable canonicalization on every runtime, then resume.",
+    "Migration complete; free admissions remain paused. Verify canonical runtimes, then explicitly resume.",
   );
 }
 

@@ -5673,7 +5673,7 @@ export const agentLongTask = task({
                           : "success";
                       captureAgentCompletionAnalytics({
                         hasResponseContent: hasCompletedAssistantText(
-                          messages,
+                          finishedMessages,
                           assistantMessageId,
                         ),
                         handledToolFailureCount,

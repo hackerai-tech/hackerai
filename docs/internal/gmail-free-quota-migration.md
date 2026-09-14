@@ -15,8 +15,8 @@ survives deletion of an individual account and expires normally.
 
 ## Cutover (each environment separately)
 
-This PR does not perform a production migration. Do not set
-`FREE_QUOTA_GMAIL_CANONICALIZATION=true` before completing the following procedure.
+This PR does not perform a production migration. Enable
+`FREE_QUOTA_GMAIL_CANONICALIZATION=true` only during the paused cutover below.
 Preview and Production require independent verified Redis and HMAC credentials,
 user inventories and execution records. No Convex schema migration is needed.
 
@@ -40,19 +40,22 @@ user inventories and execution records. No Convex schema migration is needed.
 
 4. Run the same command with `--action pause`. This pauses all free admissions and
    referral grants; final cost settlement continues. Keep paid traffic running.
-   Drain **all** free Ask streams and Trigger runs, including queued, retrying,
+   Drain **all** in-flight free HTTP admissions, Ask streams and Trigger runs, including queued, retrying,
    suspended approvals and older worker versions. A zero lock count alone does
    not prove this. Do not force-expire locks or cancel billable runs to speed up
    the migration. Prevent old builds from serving free traffic throughout cutover.
-5. Refresh the inventory and run `--action apply --all-free-runs-drained` with the
-   same other arguments. The tool checks pause state, active locks and complete
+5. While paused, set `FREE_QUOTA_GMAIL_CANONICALIZATION=true` on Vercel and Trigger
+   independently, deploy both, and verify every runtime. New payloads now carry
+   canonical subjects, but free admissions remain blocked. Drain the old versions
+   and refresh the inventory **after** this rollout, so no new legacy payload can
+   be created outside that inventory. Run `--action apply --all-free-runs-drained
+--canonical-runtimes-ready` with the same other arguments. The tool checks pause state, active locks and complete
    quota-key coverage before writing. Each alias transfer and forwarding pointer
    is atomic; a failed/uncertain apply may be retried while traffic remains paused.
    It preserves usage already in the destination and does not repeat a transfer.
    Never resume on an error or delete forwarding pointers.
 6. Successful apply leaves state `migrated`, with free admissions still paused.
-   Set `FREE_QUOTA_GMAIL_CANONICALIZATION=true` on Vercel and Trigger independently,
-   deploy both, and verify the selected environment. Then run `--action resume
+   Verify the selected environment and canonical runtimes again. Then run `--action resume
 --canonical-runtimes-ready --expected-redis-host VERIFIED_HOST`. Read back state
    `complete` and verify the actual custom domain and a new Trigger run.
 7. In Preview, use two disposable accounts for aliases of a mailbox the tester
