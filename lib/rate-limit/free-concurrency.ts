@@ -2,8 +2,18 @@ import { ChatSDKError } from "@/lib/errors";
 import { getLimitPressureContext } from "@/lib/limit-pressure";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "./free-config";
 import { createRedisClient } from "./redis";
+import {
+  resolveMigratedFreeQuotaSubject,
+  FREE_QUOTA_ADMISSION_GUARD_SCRIPT,
+  FREE_QUOTA_KEY_REDIRECT_SCRIPT,
+} from "./free-quota-migration";
 
-const RELEASE_FREE_RUN_LOCK_SCRIPT = `
+const ACQUIRE_FREE_RUN_LOCK_SCRIPT = `${FREE_QUOTA_ADMISSION_GUARD_SCRIPT}
+${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
+return redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2])
+`;
+
+const RELEASE_FREE_RUN_LOCK_SCRIPT = `${FREE_QUOTA_KEY_REDIRECT_SCRIPT}
 local key = KEYS[1]
 local token = ARGV[1]
 
@@ -40,12 +50,14 @@ export async function acquireFreeRunConcurrencyLock(
     );
   }
 
+  userId = await resolveMigratedFreeQuotaSubject(redis, userId);
   const lockKey = freeRunLockKey(userId);
   const lockToken = crypto.randomUUID();
-  const acquired = await redis.set(lockKey, lockToken, {
-    nx: true,
-    ex: Math.max(1, Math.trunc(ttlSeconds)),
-  });
+  const acquired = await redis.eval(
+    ACQUIRE_FREE_RUN_LOCK_SCRIPT,
+    [lockKey],
+    [lockToken, Math.max(1, Math.trunc(ttlSeconds))],
+  );
 
   if (acquired !== "OK") {
     const capReason = "free_concurrency";

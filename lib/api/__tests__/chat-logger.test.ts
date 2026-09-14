@@ -620,6 +620,58 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each([
+    ["ask", "free", "success", true, false, true],
+    ["agent", "free", "success", true, false, true],
+    ["ask", "free", "error", true, false, false],
+    ["agent", "free", "aborted", true, false, false],
+    ["ask", "free", "success", false, false, false],
+    ["agent", "free", "success", true, true, false],
+    ["ask", "pro", "success", true, false, false],
+  ] as const)(
+    "activation requires a nonempty successful free response (%s, %s, %s)",
+    (
+      mode,
+      subscription,
+      outcome,
+      hasResponseContent,
+      isAutoContinue,
+      expected,
+    ) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        abliteratedProviderSummary: undefined,
+        posthog: { capture } as any,
+        userId: "synthetic-user",
+        chatId: "private-chat-id",
+        endpoint: "/api/chat",
+        mode,
+        subscription,
+        outcome,
+        hasResponseContent,
+        isAutoContinue,
+        selectedModel: "test-model",
+        configuredModelId: "test-model",
+        sandboxInfo: null,
+        chatLogger: undefined,
+      });
+      const activations = capture.mock.calls
+        .map((call) => call[0])
+        .filter((event) => event.event === "free_response_completed");
+      expect(activations).toHaveLength(expected ? 1 : 0);
+      if (expected)
+        expect(activations[0]).toEqual({
+          distinctId: "synthetic-user",
+          event: "free_response_completed",
+          properties: {
+            activation_definition_version: 1,
+            mode,
+            subscription_tier: "free",
+            $process_person_profile: false,
+          },
+        });
+    },
+  );
   it.each(["ask", "agent"] as const)(
     "uses versioned routing evidence instead of final-model mismatch for %s",
     (mode) => {
@@ -633,6 +685,7 @@ describe("captureAgentCompletionAnalytics", () => {
         fallback_served: false,
       };
       captureAgentCompletionAnalytics({
+        hasResponseContent: true,
         abliteratedProviderSummary: summary,
         posthog: { capture },
         userId: "user",
@@ -679,6 +732,7 @@ describe("captureAgentCompletionAnalytics", () => {
         provider_estimated_cost_dollars: 0.12,
       };
       captureAgentCompletionAnalytics({
+        hasResponseContent: true,
         abliteratedProviderSummary: providerSummary,
         posthog: { capture } as any,
         userId: "user",
@@ -702,7 +756,12 @@ describe("captureAgentCompletionAnalytics", () => {
           requestId: "message",
         },
       });
-      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
+      expect(capture).toHaveBeenCalledTimes(
+        mode === "agent" ||
+          experimentKey === "abliterated_free_ask_moderated_v1"
+          ? 2
+          : 1,
+      );
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "abliterated_model_response_outcome",
@@ -718,10 +777,11 @@ describe("captureAgentCompletionAnalytics", () => {
       );
     },
   );
-  it("uses the existing agent completion event for successful free Agent activation", () => {
+  it("preserves the existing Agent event alongside successful free activation", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      hasResponseContent: true,
       abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",
@@ -738,7 +798,7 @@ describe("captureAgentCompletionAnalytics", () => {
       fallbackServed: false,
     });
 
-    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledTimes(2);
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
@@ -761,6 +821,7 @@ describe("captureAgentCompletionAnalytics", () => {
     const capture = jest.fn();
 
     captureAgentCompletionAnalytics({
+      hasResponseContent: true,
       abliteratedProviderSummary: undefined,
       posthog: { capture } as any,
       userId: "user_123",

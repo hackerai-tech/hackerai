@@ -1312,6 +1312,7 @@ type AgentCompletionAnalyticsArgs = {
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  hasResponseContent: boolean;
   abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
@@ -1418,7 +1419,10 @@ export function captureAgentRun({
   providerRecoverySucceeded,
 }: Omit<
   AgentCompletionAnalyticsArgs,
-  "endpoint" | "chatLogger" | "abliteratedProviderSummary"
+  | "endpoint"
+  | "chatLogger"
+  | "abliteratedProviderSummary"
+  | "hasResponseContent"
 > &
   Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
   if (mode !== "agent") return;
@@ -1725,6 +1729,30 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  // A successful free response is activation evidence; metered cost alone also
+  // occurs on failed requests. Keep this separate from task-completion claims.
+  if (
+    subscription === "free" &&
+    outcome === "success" &&
+    args.hasResponseContent &&
+    !args.isAutoContinue
+  ) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "free_response_completed",
+        properties: {
+          activation_definition_version: 1,
+          mode,
+          subscription_tier: subscription,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      // Analytics must never interrupt response persistence.
+    }
+  }
+
   if (isAbliterationExperimentKey(args.experiment?.key)) {
     try {
       posthog?.capture({
