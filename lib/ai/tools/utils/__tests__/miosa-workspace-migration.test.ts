@@ -90,11 +90,12 @@ describe("file migration transaction", () => {
       async ({ onExisting }) =>
         onExisting([
           {
-            cluster: { cluster: "us" },
+            cluster: { cluster: "us", template: "template" },
             info: {
               sandboxId: "source",
               templateId: "template",
               state: "paused",
+              metadata: { template: "template" },
             },
           },
         ]),
@@ -103,7 +104,7 @@ describe("file migration transaction", () => {
       sandboxId: "source",
       templateId: "template",
       state: "paused",
-      metadata: { userID: "user" },
+      metadata: { userID: "user", template: "template" },
       lifecycle: { onTimeout: "pause" },
     });
     (Sandbox.connect as jest.Mock).mockResolvedValue(source);
@@ -135,6 +136,10 @@ describe("file migration transaction", () => {
           },
         }),
     );
+    // The real Miosa upload API rejects arbitrary root paths with INVALID_PATH.
+    target.sdkSandbox.files.write.mockImplementation(async (path: string) => {
+      if (!path.startsWith("/tmp/")) throw new Error("INVALID_PATH");
+    });
     target.sdkSandbox.exec.run.mockImplementation(async (command: string) => {
       if (command.includes(" restore '/"))
         return ok({
@@ -213,6 +218,33 @@ describe("file migration transaction", () => {
       reason: "rollout_stopped",
     });
     expect(claim.commit).not.toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
+
+  it("does not release the fence after a nonzero source cleanup result", async () => {
+    const normal = source.commands.run.getMockImplementation()!;
+    source.commands.run.mockImplementation(async (command: string) =>
+      command.includes("shutil.rmtree")
+        ? { exitCode: 1, stdout: "", stderr: "" }
+        : normal(command),
+    );
+    await expect(migrateE2BWorkspace(request)).rejects.toThrow();
+    expect(claim.commit).not.toHaveBeenCalled();
+    expect(claim.abandon).not.toHaveBeenCalled();
+    expect(destroy).toHaveBeenCalled();
+  });
+
+  it("does not copy an environment's source based only on a matching user ID", async () => {
+    (Sandbox.getInfo as jest.Mock).mockResolvedValue({
+      templateId: "template",
+      state: "paused",
+      metadata: { userID: "user", template: "other-environment" },
+      lifecycle: { onTimeout: "pause" },
+    });
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "state_changed",
+    });
+    expect(Sandbox.connect).not.toHaveBeenCalled();
     expect(claim.abandon).toHaveBeenCalled();
   });
 });

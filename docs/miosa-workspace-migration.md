@@ -18,7 +18,10 @@ The existing paid-plan and Miosa assignment gates still apply. A server request
 selected by `miosa_e2b_file_migration_v1` schedules a Trigger task after 20 minutes
 and continues using E2B. Scheduling is deduplicated per user/source for one hour.
 The worker rechecks the flag, complete cross-cluster inventory, source ownership,
-paused lifecycle, region and the exclusive 15-minute activity fence. Multiple
+paused lifecycle, region and the exclusive 15-minute activity fence. Source
+metadata must match the worker's configured E2B template alias because multiple
+environments may share an E2B account. Unknown or other-environment sources are
+deferred even if their user ID matches. Multiple
 sources, attached volumes, EU/unknown execution, existing Miosa workspaces,
 active commands, unsupported mounts, unsupported home entries and links from
 home to un-restored paths are deferred. The destination must use the native

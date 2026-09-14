@@ -33,6 +33,7 @@ export async function queueE2BFileMigration(options: {
     triggerRegion === "eu-central-1" ||
     workspaces.length !== 1 ||
     workspaces[0].cluster.cluster !== "us" ||
+    workspaces[0].info.metadata.template !== workspaces[0].cluster.template ||
     workspaces[0].info.volumeMounts?.length
   )
     return false;

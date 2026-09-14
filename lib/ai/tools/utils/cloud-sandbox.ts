@@ -83,12 +83,13 @@ const ensureMiosaCloudSandboxConnection = (options: {
           if (migration) {
             if (
               migration.phase !== "miosa" ||
-              migration.region !== options.context?.triggerRegion
+              migration.region !== options.context?.triggerRegion ||
+              migration.destinationId
             ) {
               throw new CloudMigrationUnavailableError();
             }
-            // A committed migration can retry a failed create despite its retained
-            // E2B source. Re-running fresh enrollment would permanently strand it.
+            // Only legacy empty migrations may create here. A file migration
+            // appearing after the earlier read must retry with its exact ID.
             return;
           }
           await assertFreshMiosaEnrollment({

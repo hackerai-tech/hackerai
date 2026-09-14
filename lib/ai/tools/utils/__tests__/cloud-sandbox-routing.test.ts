@@ -96,6 +96,33 @@ describe("cloud sandbox provider routing", () => {
     expect(mockEnsureMiosa).not.toHaveBeenCalled();
   });
 
+  it("never creates a canonical workspace when a file migration commits during acquisition", async () => {
+    let created = false;
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      mockMigrationRead.mockResolvedValue({
+        phase: "miosa",
+        region: "us-east-1",
+        destinationId: "verified-copy",
+      });
+      mockMigrationAssert.mockRejectedValue(new Error("migration fence"));
+      await options.beforeCreate();
+      created = true;
+      return {
+        sandbox: { sandboxKind: "miosa", sandboxId: "wrong-empty-copy" },
+      };
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa", triggerRegion: "us-east-1" },
+      }),
+    ).rejects.toThrow("migration fence");
+    expect(created).toBe(false);
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+    expect(setSandbox).not.toHaveBeenCalled();
+  });
+
   it("does not fall back after a migration committed but Miosa creation failed", async () => {
     mockEnsureMiosa.mockImplementationOnce(async () => {
       mockMigrationAssert.mockRejectedValueOnce(new Error("migration fence"));

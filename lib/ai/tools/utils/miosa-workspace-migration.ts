@@ -72,14 +72,15 @@ export async function transferArchive(
   let bytes = 0;
   let pending = Buffer.alloc(CHUNK_BYTES);
   let used = 0;
+  // The Miosa file API only accepts its supported upload roots. The destination
+  // is still private; consume each uniquely named /tmp chunk into the root-only
+  // staging directory and remove it before accepting another chunk.
+  const uploadPath = `${stage.replace(/^\/\./, "/tmp/")}-chunk`;
   const flush = async () => {
     if (!used) return;
-    await target.sdkSandbox.files.write(
-      `${stage}/chunk`,
-      pending.subarray(0, used),
-    );
+    await target.sdkSandbox.files.write(uploadPath, pending.subarray(0, used));
     const result = await target.sdkSandbox.exec.run(
-      `cat '${stage}/chunk' >> '${stage}/source.tar.gz' && unlink '${stage}/chunk'`,
+      `umask 077; cat '${uploadPath}' >> '${stage}/source.tar.gz' && unlink '${uploadPath}'`,
       { timeoutSec: 60 },
     );
     if (result.exitCode !== 0) throw new Error("Transfer failed");
@@ -180,6 +181,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     workspaces.length !== 1 ||
     workspaces[0].cluster.cluster !== "us" ||
     workspaces[0].info.sandboxId !== sourceId ||
+    workspaces[0].info.metadata.template !== workspaces[0].cluster.template ||
     workspaces[0].info.state !== "paused" ||
     workspaces[0].info.volumeMounts?.length
   )
@@ -201,6 +203,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     if (
       current.state !== "paused" ||
       current.metadata.userID !== userId ||
+      current.metadata.template !== workspaces[0].cluster.template ||
       current.templateId !== workspaces[0].info.templateId ||
       current.lifecycle?.onTimeout !== "pause" ||
       current.volumeMounts?.length
@@ -267,10 +270,11 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       { timeoutSec: 60 },
     );
     if (retained.exitCode !== 0) throw new Error("Archive retention failed");
-    await source.commands.run(
+    const sourceCleanup = await source.commands.run(
       `python3 -I -c 'import shutil; shutil.rmtree("${stage}")'`,
       { user: "root", cwd: "/", timeoutMs: 60000 },
     );
+    if (sourceCleanup.exitCode !== 0) throw new Error("Source cleanup failed");
     sourceStageCreated = false;
     // Under the exclusive fence, pause the source before publishing the copy.
     await source.betaPause();
@@ -328,10 +332,12 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       }
       if (source && sourceStageCreated) {
         try {
-          await source.commands.run(
+          const cleanup = await source.commands.run(
             `python3 -I -c 'import os, shutil; p="${stage}"; shutil.rmtree(p) if os.path.lexists(p) else None'`,
             { user: "root", cwd: "/", timeoutMs: 60000 },
           );
+          if (cleanup.exitCode !== 0)
+            throw new CloudMigrationUnavailableError();
         } catch {
           throw new CloudMigrationUnavailableError();
         }

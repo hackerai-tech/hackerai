@@ -42,10 +42,16 @@ def paths():
             '/run/credentials/getty@tty1.service', '/run/credentials/systemd-journald.service',
             '/run/credentials/systemd-networkd.service'}
         with open('/proc/self/mountinfo') as mounts:
+            virtual_types = {}
             for line in mounts:
-                mount = line.split()[4]
+                fields = line.split()
+                mount = fields[4]
+                if mount in ('/proc', '/sys'):
+                    virtual_types[mount] = fields[fields.index('-') + 1]
                 if mount not in allowed and not any(mount == p or mount.startswith(p + '/') for p in ('/proc', '/sys', '/dev')):
                     raise ValueError('mount')
+            if virtual_types != {'/proc': 'proc', '/sys': 'sysfs'}:
+                raise ValueError('virtual_mount')
     def walk(path, name):
         check()
         if name in ('proc', 'sys') or os.path.abspath(path) == os.path.abspath(stage): return
@@ -71,6 +77,7 @@ def scan(archive=None):
         count += 1
         if count > MAX_ENTRIES: raise ValueError('limit')
         in_home = name == home or name.startswith(home + '/')
+        if name == home and not stat.S_ISDIR(info.st_mode): raise ValueError('workspace_root')
         if in_home and not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
             raise ValueError('unsupported_workspace_entry')
         if stat.S_ISSOCK(info.st_mode):
@@ -126,11 +133,14 @@ def restore():
     os.mkdir(extract, 0o700)
     os.mkdir(os.path.join(extract, 'home'), 0o700)
     members = []
+    restored_bytes = 0
     with tarfile.open(bundle, 'r:gz') as archive:
         for member in archive:
             check()
             name = member.name
             if not (name == home or name.startswith(home + '/')): continue
+            if len(members) >= MAX_ENTRIES: raise ValueError('limit')
+            if name == home and not member.isdir(): raise ValueError('workspace_root')
             if name != os.path.normpath(name) or name.startswith('/') or '..' in name.split('/'):
                 raise ValueError('unsafe_path')
             path = os.path.join(extract, name)
@@ -138,7 +148,8 @@ def restore():
             if os.path.lexists(path): raise ValueError('duplicate_path')
             if member.isdir(): os.mkdir(path, 0o700)
             elif member.isreg():
-                if member.size > MAX_BYTES or os.statvfs(extract).f_bavail * os.statvfs(extract).f_frsize < member.size + 256 * 1024**2:
+                restored_bytes += member.size
+                if member.size < 0 or restored_bytes > MAX_BYTES or os.statvfs(extract).f_bavail * os.statvfs(extract).f_frsize < member.size + 256 * 1024**2:
                     raise ValueError('space')
                 with archive.extractfile(member) as source, open(path, 'xb') as destination:
                     shutil.copyfileobj(source, destination, 1024 * 1024)

@@ -14,7 +14,13 @@ describe("migration scheduling", () => {
     subscription: "pro" as const,
     triggerRegion: "us-east-1" as const,
     workspaces: [
-      { info: { sandboxId: "existing" }, cluster: { cluster: "us" } },
+      {
+        info: {
+          sandboxId: "existing",
+          metadata: { template: "test-template" },
+        },
+        cluster: { cluster: "us", template: "test-template" },
+      },
     ],
   } as Parameters<typeof queueE2BFileMigration>[0];
   beforeEach(() => {
