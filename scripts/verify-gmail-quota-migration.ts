@@ -305,9 +305,16 @@ async function main() {
     );
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "migrated");
     assert.equal(await client.get(destination[0]), "3");
+    assert.equal(await cli("pause"), 0);
+    assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "migrated");
     assert.equal(await cli("resume"), 1);
     assert.equal(await cli("resume", ["--canonical-runtimes-ready"]), 0);
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "complete");
+    assert.equal(await cli("pause"), 0);
+    assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "migrated");
+    assert.equal(await cli("resume", ["--canonical-runtimes-ready"]), 0);
+    assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "complete");
+    assert.equal(await client.get(destination[0]), "3");
     console.log(
       "PASS: real Redis migration, retry, TTL, old-payload settlement, Ask/Agent budget, referral idempotency, concurrency, fail-closed gate and corrupt-state rejection",
     );

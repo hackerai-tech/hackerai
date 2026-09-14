@@ -39,9 +39,17 @@ async function main() {
   const redis = new Redis({ url, token });
   const state = await redis.get<string>(FREE_QUOTA_MIGRATION_STATE);
   if (values.action === "pause") {
-    await redis.set(FREE_QUOTA_MIGRATION_STATE, "paused");
+    // A later maintenance pause must retain the completed backfill so resume
+    // does not require another inventory or replaying the migration.
+    const migrationComplete = state === "complete" || state === "migrated";
+    await redis.set(
+      FREE_QUOTA_MIGRATION_STATE,
+      migrationComplete ? "migrated" : "paused",
+    );
     console.log(
-      "Free admissions paused. Drain all active, queued and approval-waiting free runs before applying.",
+      migrationComplete
+        ? "Free admissions paused; completed migration preserved. Verify canonical runtimes before resuming."
+        : "Free admissions paused. Drain all active, queued and approval-waiting free runs before applying.",
     );
     return;
   }
