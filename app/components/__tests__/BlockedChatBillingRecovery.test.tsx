@@ -236,3 +236,40 @@ it("keeps a manual server-admitted retry available during billing lookup outages
     screen.queryByRole("button", { name: "Upgrade" }),
   ).not.toBeInTheDocument();
 });
+
+it.each(["focus", "online"])(
+  "rechecks billing on %s after returning or reconnecting",
+  async (eventName) => {
+    jest.useFakeTimers();
+    try {
+      const { act } = await import("@testing-library/react");
+      let view: ReturnType<typeof setup>;
+      await act(async () => {
+        view = setup();
+      });
+      expect(
+        screen.getByRole("button", { name: "Update payment" }),
+      ).toBeVisible();
+      statusMock.mockResolvedValue({
+        ...delinquent,
+        subscriptionStatus: "active",
+        renewalPaymentRequired: undefined,
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(31_000);
+      });
+      await act(async () => {
+        window.dispatchEvent(new Event(eventName));
+        jest.advanceTimersByTime(1);
+      });
+      expect(statusMock).toHaveBeenCalledTimes(2);
+      expect(
+        screen.queryByRole("button", { name: "Update payment" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText("Add credits or upgrade")).toBeVisible();
+      view!.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
