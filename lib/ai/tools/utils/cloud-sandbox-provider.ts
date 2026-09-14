@@ -10,6 +10,7 @@ export type CloudSandboxSelectionReason =
   | "configured"
   | "miosa_rollout"
   | "miosa_rollout_control"
+  | "miosa_empty_workspace_migration"
   | "miosa_configuration_unavailable"
   | "miosa_region_unavailable"
   | "miosa_europe_region";

@@ -19,6 +19,10 @@ import {
   type ConnectionInfo,
 } from "./sandbox-types";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
+import {
+  assertCloudWorkspaceAvailable,
+  registerE2BMigrationLease,
+} from "./cloud-migration-state";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -282,6 +286,8 @@ export class HybridSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    if (this.sandbox && isE2BSandbox(this.sandbox))
+      registerE2BMigrationLease(this.sandbox, userID);
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(this.sandbox) ??
       cloudSandboxContext?.provider ??
@@ -791,6 +797,7 @@ export class HybridSandboxManager implements SandboxManager {
     if (this.cloudAcquisition) return this.cloudAcquisition;
     if (!this.isLocal && this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
+        await assertCloudWorkspaceAvailable(this.userID, "e2b");
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
           source: "hybrid_manager_cache",
         });
@@ -828,6 +835,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: SandboxInstance): void {
+    if (isE2BSandbox(sandbox)) registerE2BMigrationLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;

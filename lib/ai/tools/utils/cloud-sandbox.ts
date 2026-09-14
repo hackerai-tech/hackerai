@@ -17,6 +17,14 @@ import {
   MiosaEnrollmentError,
 } from "./miosa-enrollment";
 import { miosaErrorDiagnostics } from "./miosa-acquisition-diagnostics";
+import { tryMigrateEmptyE2BWorkspace } from "./miosa-empty-workspace-migration";
+import {
+  readCloudMigrationState,
+  assertCloudWorkspaceAvailable,
+  CloudMigrationUnavailableError,
+  clearCloudMigrationAfterReset,
+  registerE2BMigrationLease,
+} from "./cloud-migration-state";
 
 export type CloudSandboxAcquisitionContext = {
   provider?: CloudSandboxProvider;
@@ -68,11 +76,30 @@ const ensureMiosaCloudSandboxConnection = (options: {
         options.initialSandbox && isMiosaSandbox(options.initialSandbox)
           ? options.initialSandbox
           : null,
-      beforeCreate: () =>
-        assertFreshMiosaEnrollment({
+      beforeCreate: async () => {
+        const migration = await readCloudMigrationState(options.userId);
+        if (migration) {
+          if (
+            migration.phase !== "miosa" ||
+            migration.region !== options.context?.triggerRegion
+          ) {
+            throw new CloudMigrationUnavailableError();
+          }
+          // A committed migration can retry a failed create despite its retained
+          // E2B source. Re-running fresh enrollment would permanently strand it.
+          return;
+        }
+        await assertFreshMiosaEnrollment({
           userId: options.userId,
           subscription: options.context?.subscription,
-        }),
+          onExisting: (workspaces) =>
+            tryMigrateEmptyE2BWorkspace({
+              userId: options.userId,
+              workspaces,
+              triggerRegion: options.context?.triggerRegion,
+            }),
+        });
+      },
       onDiagnostic: (diagnostic) => {
         const fields = {
           ...diagnostic,
@@ -169,7 +196,28 @@ export async function ensureCloudSandboxConnection(options: {
   context?: CloudSandboxAcquisitionContext;
 }): Promise<{ sandbox: AnySandbox; provider: CloudSandboxProvider }> {
   const startedAt = Date.now();
-  const preferredProvider = options.context?.provider ?? "e2b";
+  const migrationState = await readCloudMigrationState(options.userId);
+  if (
+    migrationState &&
+    (migrationState.phase !== "miosa" ||
+      migrationState.region !== options.context?.triggerRegion ||
+      (options.initialSandbox && isE2BSandbox(options.initialSandbox)))
+  ) {
+    throw new CloudMigrationUnavailableError();
+  }
+  const preferredProvider = migrationState
+    ? "miosa"
+    : (options.context?.provider ?? "e2b");
+  if (migrationState) {
+    options = {
+      ...options,
+      context: {
+        ...options.context,
+        provider: "miosa",
+        selectionReason: "miosa_empty_workspace_migration",
+      },
+    };
+  }
   let bootInfo: SandboxBootInfo | undefined;
   let fallbackUsed = false;
   let enrollmentDeniedReason: MiosaEnrollmentError["reason"] | undefined;
@@ -225,10 +273,25 @@ export async function ensureCloudSandboxConnection(options: {
         throw new MiosaEnrollmentError("existing_e2b_workspace");
       }
       const result = await ensureMiosaCloudSandboxConnection(options);
+      const migrated = await readCloudMigrationState(options.userId);
+      if (migrated?.phase === "miosa") {
+        phLogger.event("miosa_empty_e2b_migration_exposed", {
+          userId: options.userId,
+          trigger_run_id: options.context?.triggerRunId,
+          ...(options.context?.triggerRunId && {
+            eventUuid: `${options.context.triggerRunId}:miosa-empty-e2b-migration-v1`,
+          }),
+          sandbox_provider: "miosa",
+          miosa_empty_e2b_migration_event_version: 1,
+        });
+      }
       recordRolloutExposure(options);
       recordOutcome("miosa", "success");
       return { ...result, provider: "miosa" };
     } catch (error) {
+      // This check also covers a migration committed during beforeCreate, even
+      // when Miosa creation/readiness failed or the commit response was lost.
+      await assertCloudWorkspaceAvailable(options.userId, "e2b");
       if (error instanceof MiosaEnrollmentError) {
         enrollmentDeniedReason = error.reason;
         phLogger.event("miosa_cloud_sandbox_enrollment_denied", {
@@ -274,7 +337,15 @@ export async function ensureCloudSandboxConnection(options: {
   }
 
   try {
-    const result = await ensureE2BCloudSandboxConnection(options);
+    await assertCloudWorkspaceAvailable(options.userId, "e2b");
+    // Do not publish a connection until a racing migration has been excluded.
+    const result = await ensureE2BCloudSandboxConnection({
+      ...options,
+      setSandbox: () => {},
+    });
+    await assertCloudWorkspaceAvailable(options.userId, "e2b");
+    registerE2BMigrationLease(result.sandbox, options.userId);
+    options.setSandbox(result.sandbox);
     recordOutcome("e2b", "success");
     return { ...result, provider: "e2b" };
   } catch (error) {
@@ -295,6 +366,15 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   killed: number;
   alreadyGone: number;
 }> {
+  const migration = await readCloudMigrationState(userId);
+  if (migration?.phase === "checking")
+    throw new CloudMigrationUnavailableError();
+  if (
+    migration &&
+    (!process.env.MIOSA_API_KEY?.trim() || !process.env.E2B_API_KEY?.trim())
+  ) {
+    throw new CloudMigrationUnavailableError();
+  }
   const totals = { total: 0, killed: 0, alreadyGone: 0 };
   const failures: unknown[] = [];
 
@@ -358,5 +438,6 @@ export async function terminateCloudSandboxesForUser(userId: string): Promise<{
   if (failures.length > 1) {
     throw new AggregateError(failures, "Cloud sandbox cleanup failed");
   }
+  if (migration) await clearCloudMigrationAfterReset(userId, migration);
   return totals;
 }

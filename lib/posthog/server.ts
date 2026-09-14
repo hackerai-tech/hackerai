@@ -15,12 +15,14 @@ function getClient(): PostHog | null {
 export async function getPostHogFeatureFlagForUser(
   flagKey: string,
   userId: string,
+  personProperties?: Record<string, string>,
 ): Promise<boolean> {
   const client = getClient();
   if (!client) return false;
   try {
     const flags = await client.evaluateFlags(userId, {
       flagKeys: [flagKey],
+      ...(personProperties && { personProperties }),
     });
     return flags.getFlag(flagKey) === true;
   } catch {

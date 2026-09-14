@@ -111,6 +111,54 @@ describe("fresh MIOSA enrollment", () => {
     ).rejects.toMatchObject({ reason: "workspace_discovery_unavailable" });
   });
 
+  it("waits for the complete inventory before considering an empty-workspace migration", async () => {
+    process.env.E2B_EU_API_KEY = "test-eu";
+    const onExisting = jest.fn().mockResolvedValue(true);
+    mockList
+      .mockReturnValueOnce({
+        nextItems: jest.fn(async () => [
+          { sandboxId: "source", state: "paused" },
+        ]),
+        hasNext: false,
+      })
+      .mockReturnValueOnce({
+        nextItems: jest
+          .fn()
+          .mockRejectedValue(new Error("unknown EU inventory")),
+        hasNext: false,
+      });
+    await expect(
+      assertFreshMiosaEnrollment({
+        userId: "user-1",
+        subscription: "pro",
+        onExisting,
+      }),
+    ).rejects.toMatchObject({ reason: "workspace_discovery_unavailable" });
+    expect(onExisting).not.toHaveBeenCalled();
+  });
+
+  it("admits a verified existing workspace only through the migration guard", async () => {
+    mockList.mockReturnValue({
+      nextItems: jest.fn(async () => [
+        { sandboxId: "source", state: "paused" },
+      ]),
+      hasNext: false,
+    });
+    const onExisting = jest.fn().mockResolvedValue(true);
+    await expect(
+      assertFreshMiosaEnrollment({
+        userId: "user-1",
+        subscription: "pro",
+        onExisting,
+      }),
+    ).resolves.toBeUndefined();
+    expect(onExisting).toHaveBeenCalledWith([
+      expect.objectContaining({
+        info: { sandboxId: "source", state: "paused" },
+      }),
+    ]);
+  });
+
   it("fails closed without the default E2B account", async () => {
     delete process.env.E2B_API_KEY;
     await expect(

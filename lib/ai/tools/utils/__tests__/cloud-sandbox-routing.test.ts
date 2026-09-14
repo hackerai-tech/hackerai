@@ -2,6 +2,16 @@ const mockEnsureE2B = jest.fn();
 const mockEnsureMiosa = jest.fn();
 const mockTerminateMiosa = jest.fn();
 const mockPostHogEvent = jest.fn();
+const mockMigrationRead = jest.fn();
+const mockMigrationAssert = jest.fn();
+
+jest.mock("../cloud-migration-state", () => ({
+  readCloudMigrationState: (...args: unknown[]) => mockMigrationRead(...args),
+  assertCloudWorkspaceAvailable: (...args: unknown[]) =>
+    mockMigrationAssert(...args),
+  CloudMigrationUnavailableError: class extends Error {},
+  registerE2BMigrationLease: jest.fn(),
+}));
 
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: { list: jest.fn(), kill: jest.fn() },
@@ -31,6 +41,89 @@ describe("cloud sandbox provider routing", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockMigrationRead.mockResolvedValue(null);
+    mockMigrationAssert.mockResolvedValue(undefined);
+  });
+
+  it("keeps migrated files on Miosa when the rollout now selects E2B", async () => {
+    mockMigrationRead.mockResolvedValue({
+      phase: "miosa",
+      region: "us-east-1",
+    });
+    mockEnsureMiosa.mockResolvedValueOnce({
+      sandbox: { sandboxKind: "miosa", sandboxId: "miosa-1" },
+    });
+    const result = await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { provider: "e2b", triggerRegion: "us-east-1" },
+    });
+    expect(result.provider).toBe("miosa");
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+  });
+
+  it("allows a committed migration to retry creation despite the retained E2B source", async () => {
+    mockMigrationRead.mockResolvedValue({
+      phase: "miosa",
+      region: "us-east-1",
+    });
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      await options.beforeCreate();
+      return { sandbox: { sandboxKind: "miosa", sandboxId: "miosa-retry" } };
+    });
+    const result = await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { provider: "e2b", triggerRegion: "us-east-1" },
+    });
+    expect(result.provider).toBe("miosa");
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+  });
+
+  it("does not expose either provider during an incomplete check", async () => {
+    mockMigrationRead.mockResolvedValue({
+      phase: "checking",
+      region: "us-east-1",
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "e2b", triggerRegion: "us-east-1" },
+      }),
+    ).rejects.toThrow();
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back after a migration committed but Miosa creation failed", async () => {
+    mockEnsureMiosa.mockImplementationOnce(async () => {
+      mockMigrationAssert.mockRejectedValueOnce(new Error("migration fence"));
+      throw new Error("Miosa unavailable after cutover");
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa", triggerRegion: "us-east-1" },
+      }),
+    ).rejects.toThrow("migration fence");
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+  });
+
+  it("does not publish an E2B connection when another request started migration", async () => {
+    mockEnsureE2B.mockImplementationOnce(async () => {
+      mockMigrationAssert.mockRejectedValueOnce(new Error("migration fence"));
+      return { sandbox: { sandboxId: "source-1" } };
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "e2b" },
+      }),
+    ).rejects.toThrow("migration fence");
+    expect(setSandbox).not.toHaveBeenCalled();
   });
 
   it.each([
