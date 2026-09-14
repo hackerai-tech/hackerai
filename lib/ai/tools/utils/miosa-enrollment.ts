@@ -6,7 +6,13 @@ import {
   getConfiguredE2BClustersForCleanup,
   type E2BCluster,
 } from "./e2b-cluster";
-import type { ExistingE2BWorkspace } from "./miosa-empty-workspace-migration";
+import type { SandboxInfo } from "e2b";
+import type { E2BClusterConfig } from "./e2b-cluster";
+
+export type ExistingE2BWorkspace = {
+  info: SandboxInfo;
+  cluster: E2BClusterConfig;
+};
 
 export type MiosaDiscoveryFailure = {
   cluster: E2BCluster;

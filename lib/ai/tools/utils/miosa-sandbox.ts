@@ -121,10 +121,13 @@ const initializeMiosaRuntime = async (
   }
 };
 
-const createMiosaClient = async (): Promise<MiosaClient> => {
+export const createMiosaClient = async (
+  timeoutMs?: number,
+): Promise<MiosaClient> => {
   const { Miosa } = await import("@miosa/sdk");
   return new Miosa({
     apiKey: process.env.MIOSA_API_KEY,
+    ...(timeoutMs && { timeout: timeoutMs }),
     ...(process.env.MIOSA_BASE_URL && {
       baseUrl: process.env.MIOSA_BASE_URL,
     }),
@@ -354,10 +357,17 @@ export async function ensureMiosaSandboxConnection(
   options: {
     initialSandbox?: MiosaSandbox | null;
     beforeCreate?: () => Promise<void>;
+    destinationId?: string;
+    migrationName?: string;
     onDiagnostic?: (diagnostic: MiosaAcquisitionDiagnostic) => void;
   } = {},
 ): Promise<{ sandbox: MiosaSandbox }> {
   if (options.initialSandbox) {
+    if (
+      options.destinationId &&
+      options.initialSandbox.sandboxId !== options.destinationId
+    )
+      throw new Error("Migrated workspace identity mismatch");
     return { sandbox: options.initialSandbox };
   }
 
@@ -365,16 +375,23 @@ export async function ensureMiosaSandboxConnection(
     process.env.MIOSA_TEMPLATE_ID?.trim() || MIOSA_NATIVE_TEMPLATE_ID;
 
   const startedAt = performance.now();
-  const workspaceName = sandboxNameForUser(context.userID);
+  const workspaceName =
+    options.migrationName ?? sandboxNameForUser(context.userID);
   const step = createMiosaAcquisitionDiagnostics({
     templateId,
     workspaceName,
     onDiagnostic: options.onDiagnostic,
   });
-  const client = await step("client_init", createMiosaClient);
+  // Migration destinations can wait for a snapshot restore beyond the SDK's
+  // 30-second HTTP default, including later resumes of a committed destination.
+  const client = await step("client_init", () =>
+    createMiosaClient(
+      options.migrationName || options.destinationId ? 180_000 : undefined,
+    ),
+  );
   const externalUserId = miosaExternalUserId(context.userID);
   const identity = miosaIdentityMetadata(context.userID);
-  if (options.beforeCreate) {
+  if (options.beforeCreate && !options.destinationId) {
     const { NotFoundError } = await import("@miosa/sdk");
     try {
       // Existing assignments retain their files, even after a plan upgrade or
@@ -388,53 +405,83 @@ export async function ensureMiosaSandboxConnection(
     }
   }
   const sdkSandbox = await step("get_or_create", () =>
-    client.sandboxes
-      .getOrCreate({
-        name: workspaceName,
-        templateId,
-        cpuCount: MIOSA_CPU_COUNT,
-        memoryMb: MIOSA_MEMORY_MB,
-        diskSizeMb: MIOSA_DISK_SIZE_MB,
-        persistent: true,
-        timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
-        idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
-        snapshotExpirationDays: MIOSA_SNAPSHOT_EXPIRATION_DAYS,
-        keepLastSnapshots: 1,
-        externalWorkspaceId: externalUserId,
-        externalUserId,
-        waitUntilReady: false,
-        tags: [
-          identity.userReference,
-          `hackerai-environment-${identity.environment}`,
-        ],
-        metadata: {
-          provider: "hackerai",
-          sandboxVersion: MIOSA_SANDBOX_VERSION,
-          ...identity,
-        },
-      })
-      .catch(async (error: unknown) => {
-        if (
-          !(error instanceof Error) ||
-          !("code" in error) ||
-          error.code !== "SANDBOX_NOT_PAUSED"
-        )
-          throw error;
-
-        // Another run may have resumed the shared workspace after getOrCreate's
-        // lookup. Re-read that same name, never create a replacement or retry a
-        // destructive/ambiguous lifecycle operation. Readiness still runs below.
-        return step("resume_conflict_refresh", async () => {
-          const current = await client.sandboxes
-            .getByName(workspaceName)
-            .catch(() => {
-              throw error;
-            });
-          if (current.state !== "running") throw error;
+    options.destinationId
+      ? (async () => {
+          const current = await client.sandboxes.get(options.destinationId!);
+          if (
+            current.id !== options.destinationId ||
+            current.data.external_user_id !== externalUserId
+          )
+            throw new Error("Migrated workspace identity mismatch");
+          if (current.state === "paused") {
+            try {
+              await current.resume();
+            } catch (error) {
+              if (
+                !(error instanceof Error) ||
+                !("code" in error) ||
+                error.code !== "SANDBOX_NOT_PAUSED"
+              )
+                throw error;
+              const refreshed = await current.refresh();
+              if (refreshed.state !== "running") throw error;
+            }
+          }
           return current;
-        });
-      }),
+        })()
+      : client.sandboxes
+          .getOrCreate({
+            name: workspaceName,
+            templateId,
+            cpuCount: MIOSA_CPU_COUNT,
+            memoryMb: MIOSA_MEMORY_MB,
+            diskSizeMb: MIOSA_DISK_SIZE_MB,
+            persistent: true,
+            timeoutSec: MIOSA_ACTIVITY_TIMEOUT_SECONDS,
+            idleTimeoutSec: MIOSA_IDLE_TIMEOUT_SECONDS,
+            snapshotExpirationDays: MIOSA_SNAPSHOT_EXPIRATION_DAYS,
+            keepLastSnapshots: 1,
+            externalWorkspaceId: externalUserId,
+            externalUserId,
+            waitUntilReady: false,
+            tags: [
+              identity.userReference,
+              `hackerai-environment-${identity.environment}`,
+            ],
+            metadata: {
+              provider: "hackerai",
+              sandboxVersion: MIOSA_SANDBOX_VERSION,
+              ...identity,
+            },
+          })
+          .catch(async (error: unknown) => {
+            if (
+              !(error instanceof Error) ||
+              !("code" in error) ||
+              error.code !== "SANDBOX_NOT_PAUSED"
+            )
+              throw error;
+
+            // Another run may have resumed the shared workspace after getOrCreate's
+            // lookup. Re-read that same name, never create a replacement or retry a
+            // destructive/ambiguous lifecycle operation. Readiness still runs below.
+            return step("resume_conflict_refresh", async () => {
+              const current = await client.sandboxes
+                .getByName(workspaceName)
+                .catch(() => {
+                  throw error;
+                });
+              if (current.state !== "running") throw error;
+              return current;
+            });
+          }),
   );
+  if (
+    (options.destinationId || options.migrationName) &&
+    ((options.destinationId && sdkSandbox.id !== options.destinationId) ||
+      sdkSandbox.data.external_user_id !== externalUserId)
+  )
+    throw new Error("Migrated workspace identity mismatch");
   const runtime = miosaRuntimeForTemplate(sdkSandbox.data.template_id);
   await step(
     "readiness",

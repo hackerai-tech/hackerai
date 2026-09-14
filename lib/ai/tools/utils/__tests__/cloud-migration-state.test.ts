@@ -74,6 +74,17 @@ describe("persistent cloud migration fence", () => {
     expect((await readCloudMigrationState("user-1"))?.phase).toBe("miosa");
   });
 
+  it("persists the verified destination identity for file migration recovery", async () => {
+    const claim = await claimCloudMigration("user-1", "source", "us-east-1");
+    await claim!.commit("verified-destination");
+    expect((await readCloudMigrationState("user-1"))?.destinationId).toBe(
+      "verified-destination",
+    );
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "e2b"),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+  });
+
   it("releases a denied inspection without affecting another user", async () => {
     const first = await claimCloudMigration("user-1", "source", "us-east-1");
     await claimCloudMigration("user-2", "other", "us-west-2");

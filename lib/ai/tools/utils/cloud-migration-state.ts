@@ -9,6 +9,8 @@ type MigrationState = {
   token: string;
   sourceId: string;
   region: TriggerRunRegion;
+  // File migrations pin an exact verified destination. Never recreate it empty.
+  destinationId?: string;
 };
 
 export class CloudMigrationUnavailableError extends Error {
@@ -54,6 +56,8 @@ export async function readCloudMigrationState(
       !["checking", "miosa"].includes(value.phase) ||
       typeof value.token !== "string" ||
       typeof value.sourceId !== "string" ||
+      (value.destinationId !== undefined &&
+        (typeof value.destinationId !== "string" || !value.destinationId)) ||
       !["us-east-1", "us-west-2"].includes(value.region)
     ) {
       throw new CloudMigrationUnavailableError();
@@ -93,6 +97,7 @@ export async function claimCloudMigration(
     throw new CloudMigrationUnavailableError();
   }
   return {
+    token: state.token,
     // Compare the full original value so a stale checker cannot undo recovery.
     abandon: async () => {
       const removed = await redis.eval(
@@ -102,11 +107,18 @@ export async function claimCloudMigration(
       );
       if (removed !== 1) throw new CloudMigrationUnavailableError();
     },
-    commit: async () => {
+    commit: async (destinationId?: string) => {
       const committed = await redis.eval(
         `if redis.call('GET', KEYS[1]) == ARGV[1] then redis.call('SET', KEYS[1], ARGV[2]); return 1 end return 0`,
         [key],
-        [serialized, JSON.stringify({ ...state, phase: "miosa" })],
+        [
+          serialized,
+          JSON.stringify({
+            ...state,
+            phase: "miosa",
+            ...(destinationId && { destinationId }),
+          }),
+        ],
       );
       if (committed !== 1) throw new CloudMigrationUnavailableError();
       // No TTL: once Miosa can accept writes, neither flag rollback nor a
