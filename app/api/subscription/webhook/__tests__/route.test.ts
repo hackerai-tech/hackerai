@@ -14,6 +14,7 @@ import {
 } from "@/lib/analytics/paid-funnel";
 
 const mockConstructEvent = jest.fn();
+const mockListCheckoutSessions = jest.fn();
 const mockRetrieveCustomer = jest.fn();
 const mockRetrieveSubscription = jest.fn();
 const mockUpdateSubscription = jest.fn();
@@ -54,6 +55,7 @@ jest.mock("next/server", () => ({
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
+    checkout: { sessions: { list: mockListCheckoutSessions } },
     webhooks: {
       constructEvent: mockConstructEvent,
     },
@@ -499,6 +501,37 @@ describe("POST /api/subscription/webhook", () => {
     jest.restoreAllMocks();
     delete process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET;
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
+  });
+
+  it("does not consume fulfillment idempotency for unrelated payment intents", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_unrelated",
+      type: "payment_intent.succeeded",
+      data: { object: { id: "pi_unrelated" } },
+    });
+    mockListCheckoutSessions.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).not.toHaveBeenCalled();
+  });
+
+  it("requests retry for checkout lookup failures without consuming fulfillment or logging payment data", async () => {
+    mockConstructEvent.mockReturnValue({
+      id: "evt_retry",
+      type: "payment_intent.payment_failed",
+      data: { object: { id: "pi_retry" } },
+    });
+    mockListCheckoutSessions.mockRejectedValue(
+      new Error("PRIVATE payment details") as never,
+    );
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(500);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    expect(JSON.stringify(mockPostHogWarn.mock.calls)).not.toContain("PRIVATE");
   });
 
   it("rejects invalid signatures with a sanitized warning before side effects", async () => {
