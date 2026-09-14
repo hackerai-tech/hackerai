@@ -3,10 +3,10 @@ import { z } from "zod";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-export const maxDuration = 10;
+export const maxDuration = 30;
 
 const REPORT_PATH = "/api/v1/reports/health?period=1h&format=json";
-const FETCH_TIMEOUT_MS = 8_000;
+const FETCH_TIMEOUT_MS = 20_000;
 const CACHE_TTL_MS = 60_000;
 const MAX_REPORT_AGE_MS = 120_000;
 const DIMENSIONS = ["flow", "execution", "liveness"] as const;
@@ -105,6 +105,8 @@ function parseReport(payload: unknown): HealthResult {
 }
 
 async function fetchReport(config: ReportConfig): Promise<HealthResult> {
+  const startedAt = Date.now();
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   try {
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -114,7 +116,7 @@ async function fetchReport(config: ReportConfig): Promise<HealthResult> {
     const response = await fetch(new URL(REPORT_PATH, config.baseURL), {
       cache: "no-store",
       redirect: "error",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal,
       headers,
     });
     if (!response.ok) {
@@ -124,13 +126,33 @@ async function fetchReport(config: ReportConfig): Promise<HealthResult> {
         sourceStatus: response.status,
       };
     }
-    return parseReport(await response.json());
-  } catch {
-    // Fetch errors and upstream bodies can contain credentials or private data.
-    console.warn(
-      JSON.stringify({ event: "trigger_agent_health_report_fetch_failed" }),
+    const result = parseReport(await response.json());
+    console.info(
+      JSON.stringify({
+        event: "trigger_agent_health_report_received",
+        duration_ms: Date.now() - startedAt,
+        status: result.status,
+      }),
     );
-    return { status: "unknown", error: "trigger_report_fetch_failed" };
+    return result;
+  } catch (error) {
+    // Fetch errors and upstream bodies can contain credentials or private data.
+    const category =
+      signal.aborted ||
+      (error instanceof Error && error.name === "TimeoutError")
+        ? "timeout"
+        : error instanceof SyntaxError
+          ? "invalid_json"
+          : "fetch_failed";
+    console.warn(
+      JSON.stringify({
+        event: "trigger_agent_health_report_fetch_failed",
+        category,
+        duration_ms: Date.now() - startedAt,
+        timeout_ms: FETCH_TIMEOUT_MS,
+      }),
+    );
+    return { status: "unknown", error: `trigger_report_${category}` };
   }
 }
 

@@ -62,12 +62,14 @@ async function check() {
 }
 
 describe("GET /api/health/trigger-agent-mode", () => {
+  let infoSpy: jest.SpiedFunction<typeof console.info>;
   let warnSpy: jest.SpiedFunction<typeof console.warn>;
   beforeEach(() => {
     jest.resetModules();
     mockFetch.mockReset();
     jest.spyOn(Date, "now").mockReturnValue(NOW.getTime());
     warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     process.env = { ...originalEnv, TRIGGER_SECRET_KEY: "test-key" };
     for (const name of [
       "TRIGGER_API_URL",
@@ -80,6 +82,7 @@ describe("GET /api/health/trigger-agent-mode", () => {
     global.fetch = mockFetch;
   });
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
     process.env = originalEnv;
     global.fetch = originalFetch;
@@ -221,12 +224,17 @@ describe("GET /api/health/trigger-agent-mode", () => {
   );
 
   it.each([
-    new Error("must-not-leak"),
-    new DOMException("must-not-leak", "TimeoutError"),
-  ])("sanitizes fetch failures (%#)", async (error) => {
+    [new Error("must-not-leak"), "fetch_failed"],
+    [new DOMException("must-not-leak", "TimeoutError"), "timeout"],
+  ])("sanitizes fetch failures (%#)", async (error, category) => {
     mockFetch.mockRejectedValueOnce(error);
     const { body } = await check();
-    expect(body.error).toBe("trigger_report_fetch_failed");
+    expect(body.error).toBe(`trigger_report_${category}`);
+    expect(JSON.parse(warnSpy.mock.calls[0][0] as string)).toMatchObject({
+      category,
+      timeout_ms: 20_000,
+      duration_ms: 0,
+    });
     expect(JSON.stringify(body)).not.toContain("must-not-leak");
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("must-not-leak");
   });
@@ -239,8 +247,85 @@ describe("GET /api/health/trigger-agent-mode", () => {
         throw new SyntaxError("not JSON");
       },
     } as unknown as Response);
-    expect((await check()).body.status).toBe("unknown");
+    expect((await check()).body).toMatchObject({
+      status: "unknown",
+      error: "trigger_report_invalid_json",
+    });
+    expect(JSON.parse(warnSpy.mock.calls[0][0] as string).category).toBe(
+      "invalid_json",
+    );
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("not JSON");
   });
+
+  it.each([12_000, 25_000])(
+    "allows slow reports but aborts at 20 seconds (%i ms)",
+    async (latency) => {
+      const { GET, maxDuration } = await import("../route");
+      expect(maxDuration).toBe(30);
+      jest.useFakeTimers({ now: NOW });
+      const controller = new AbortController();
+      jest.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+        setTimeout(() => controller.abort(), milliseconds);
+        return controller.signal;
+      });
+      mockFetch.mockImplementationOnce(
+        (_url, options) =>
+          new Promise((resolve, reject) => {
+            const timer = setTimeout(
+              () =>
+                resolve({
+                  ok: true,
+                  status: 200,
+                  json: async () => report(),
+                } as Response),
+              latency,
+            );
+            options?.signal?.addEventListener(
+              "abort",
+              () => {
+                clearTimeout(timer);
+                reject(new Error("must-not-leak"));
+              },
+              { once: true },
+            );
+          }),
+      );
+      let completed = false;
+      const pending = GET().then((response) => {
+        completed = true;
+        return response;
+      });
+      await jest.advanceTimersByTimeAsync(8_000);
+      expect(completed).toBe(false);
+      await jest.advanceTimersByTimeAsync(Math.min(latency, 20_000) - 8_000);
+      const response = await pending;
+      const body = await response.json();
+      expect(response.status).toBe(latency < 20_000 ? 200 : 503);
+      if (latency < 20_000) {
+        expect(body.status).toBe("healthy");
+        expect(JSON.parse(infoSpy.mock.calls[0][0] as string)).toEqual({
+          event: "trigger_agent_health_report_received",
+          duration_ms: latency,
+          status: "healthy",
+        });
+        expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(
+          "must-not-leak",
+        );
+      } else {
+        expect(body).toMatchObject({
+          status: "unknown",
+          error: "trigger_report_timeout",
+        });
+        expect(JSON.parse(warnSpy.mock.calls[0][0] as string)).toMatchObject({
+          category: "timeout",
+          duration_ms: 20_000,
+        });
+        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(
+          "must-not-leak",
+        );
+      }
+    },
+  );
 
   it("does not fetch without authentication", async () => {
     delete process.env.TRIGGER_SECRET_KEY;
