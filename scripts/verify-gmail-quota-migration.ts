@@ -181,11 +181,41 @@ async function main() {
     );
     await recordFreeMonthlyCost(source, 0.01);
     assert.equal(await client.get(destination[1]), "2800");
+    const expandedBudget = {
+      dailyRequests: 10,
+      monthlyCostDollars: 0.5,
+      monthlyBudgetExperiment: "free_monthly_budget_v1" as const,
+    };
+    const ttlBeforeBudgetChange = await client.pTTL(destination[1]);
+    const expandedSnapshot = await checkFreeMonthlyCostLimit(
+      source,
+      expandedBudget,
+    );
+    assert.equal(expandedSnapshot.monthlyRemainingAtStart, 2200);
+    assert.equal(await client.get(destination[1]), "2800");
+    assert.ok((await client.pTTL(destination[1])) <= ttlBeforeBudgetChange);
+    // Disable/re-enable the experiment: usage and reset stay in the same key.
+    await assert.rejects(checkFreeMonthlyCostLimit(other));
+    assert.equal(
+      (await checkFreeMonthlyCostLimit(other, expandedBudget))
+        .monthlyRemainingAtStart,
+      2200,
+    );
+    await recordFreeMonthlyCost(other, 0.22);
+    assert.equal(await client.get(destination[1]), "5000");
+    await assert.rejects(checkFreeMonthlyCostLimit(target, expandedBudget));
     for (let i = 0; i < 6; i++)
       await (i % 2
         ? checkFreeAgentRateLimit(source)
         : checkFreeUserRateLimit(other));
     await assert.rejects(checkFreeUserRateLimit(target));
+    // A higher monthly budget must not grant more daily units or referrals.
+    await assert.rejects(
+      checkFreeUserRateLimit(target, 1, expandedBudget),
+      (error: unknown) =>
+        (error as { metadata?: { capReason?: string } }).metadata?.capReason ===
+        "daily_requests_exhausted",
+    );
     assert.equal(
       (
         await grantFreeReferralBonusUnits(
