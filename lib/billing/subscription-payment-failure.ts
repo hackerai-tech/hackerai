@@ -114,7 +114,7 @@ function normalizedBillingStage(invoice: Stripe.Invoice): string {
   return reason ?? "unknown";
 }
 
-function failureGroup(args: {
+export function paymentFailureGroup(args: {
   failureCode?: string | null;
   declineCode?: string | null;
   outcomeType?: string | null;
@@ -188,7 +188,7 @@ export function subscriptionPaymentFailureProperties({
   return {
     billing_failure_lifecycle: lifecycle,
     billing_failure_stage: normalizedBillingStage(invoice),
-    billing_failure_group: failureGroup({
+    billing_failure_group: paymentFailureGroup({
       failureCode,
       declineCode,
       outcomeType: outcome?.type,

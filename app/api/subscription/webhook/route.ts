@@ -11,6 +11,10 @@ import {
   clearOrgRemovedUsage,
 } from "@/lib/rate-limit";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  captureCheckoutPaymentAnalytics,
+  isCheckoutPaymentAnalyticsEvent,
+} from "@/lib/billing/checkout-payment-analytics";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import {
@@ -2644,7 +2648,9 @@ async function handleSubscriptionDeleted(
  * - Events: checkout.session.completed, invoice.paid,
  *   invoice.payment_failed, customer.subscription.updated,
  *   customer.subscription.deleted, customer.updated,
- *   refund.created, refund.updated
+ *   refund.created, refund.updated, checkout.session.expired,
+ *   payment_intent.payment_failed, payment_intent.requires_action,
+ *   payment_intent.canceled, payment_intent.succeeded
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -2692,6 +2698,27 @@ export async function POST(req: NextRequest) {
       { error: "Webhook signature verification failed" },
       { status: 400 },
     );
+  }
+
+  // Analytics-only events must not consume the shared fulfillment idempotency
+  // record: other webhook endpoints may handle the same PaymentIntent event.
+  if (isCheckoutPaymentAnalyticsEvent(event.type)) {
+    try {
+      await captureCheckoutPaymentAnalytics(stripe, event);
+      after(() => phLogger.flush());
+      return NextResponse.json({ received: true });
+    } catch {
+      // Avoid logging Stripe objects or raw errors containing payment details.
+      phLogger.warn("checkout_payment_analytics_lookup_failed", {
+        stripe_event_id: event.id,
+        stripe_event_type: event.type,
+      });
+      after(() => phLogger.flush());
+      return NextResponse.json(
+        { error: "Checkout analytics lookup failed" },
+        { status: 500 },
+      );
+    }
   }
 
   // Payment-mode Checkout Sessions are fulfilled by their own webhook routes.
