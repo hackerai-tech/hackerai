@@ -1,3 +1,4 @@
+import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { loadObjectiveCheckpoint } from "@/lib/db/objective-checkpoint";
 import { OBJECTIVE_CHECKPOINT_FLAG } from "@/lib/chat/objective-checkpoint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
@@ -4681,6 +4682,10 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                hasResponseContent: hasCompletedAssistantText(
+                  retryMessages,
+                  retryMessageId,
+                ),
                 handledToolFailureCount,
                 abliteratedProviderSummary: abliteratedTelemetry?.getSummary(),
                 posthog,
@@ -5667,6 +5672,10 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        hasResponseContent: hasCompletedAssistantText(
+                          messages,
+                          assistantMessageId,
+                        ),
                         handledToolFailureCount,
                         abliteratedProviderSummary:
                           abliteratedTelemetry?.getSummary(),

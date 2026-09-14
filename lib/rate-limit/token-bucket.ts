@@ -27,10 +27,7 @@ import {
   getLimitPressureContext,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
-import {
-  isFreeQuotaSubjectRateLimitKey,
-  isUserRateLimitKey,
-} from "./key-cleanup";
+import { isUserRateLimitKey } from "./key-cleanup";
 import {
   NORMAL_USAGE_MULTIPLIER,
   EXTRA_USAGE_REQUEST_MULTIPLIER,
@@ -1777,30 +1774,14 @@ export const capCurrentCycleAllocation = async (
 };
 
 /**
- * Delete Redis keys associated with a user across every rate-limit namespace
- * written by this codebase. Called during account deletion so orphaned
- * buckets, stashes, sliding-window counters, and seat-debt flags are purged
- * immediately rather than waiting on the 30-day TTL. Best-effort — returns
- * the number of keys deleted, never throws.
- *
- * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
- *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
- *   - upgrade:carryover:<userId>:*   — tier-change stash, claim, and completion keys
- *   - free_limit:<quotaSubject>:*    — free-tier shared ask/agent sliding window
- *   - free_referral_bonus:<quotaSubject> — one-time free request units from referral signup
- *   - free_referral_bonus_grant:*:<quotaSubject> — referral bonus grant idempotency marker
- *   - free_agent_limit:<quotaSubject>:* — legacy free-tier agent sliding window
- *   - free_monthly_cost:<quotaSubject>:* — free-tier monthly provider/tool cost cap
- *   - free_usage_budget_started:v1:<quotaSubject> — retired experiment marker cleanup
- *   - free_run_lock:<quotaSubject>   — free-tier active-run concurrency lock
- *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
- *
- * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
- * user-scoped) and any extra-usage balance records (stored in Convex, not Redis).
+ * Remove account-scoped rate-limit state after deletion. Shared mailbox quotas
+ * and migration redirects deliberately survive until their normal expiry so
+ * deletion cannot reset free usage or affect another alias account.
+ * Best-effort: returns the number of deleted keys, never throws.
  */
 export const deleteUserRateLimitKeys = async (
   userId: string,
-  freeQuotaSubject?: string,
+  _freeQuotaSubject?: string,
 ): Promise<number> => {
   const redis = createRedisClient();
   if (!redis) return 0;
@@ -1809,13 +1790,9 @@ export const deleteUserRateLimitKeys = async (
     const userKeys = (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
       isUserRateLimitKey(key, userId),
     );
-    const freeQuotaKeys =
-      freeQuotaSubject && freeQuotaSubject !== userId
-        ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
-            isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
-          )
-        : [];
-    const keys = Array.from(new Set([...userKeys, ...freeQuotaKeys]));
+    // Identity-scoped quotas outlive account deletion until their own TTLs.
+    // Deleting one alias must not reset the allowance of the shared mailbox.
+    const keys = Array.from(new Set(userKeys));
     if (keys.length === 0) return 0;
     await deleteRedisKeys(redis, keys);
     return keys.length;

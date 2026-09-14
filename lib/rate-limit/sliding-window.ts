@@ -15,6 +15,7 @@ import {
   getFreeRequestLimit,
 } from "./free-config";
 import { createRedisClient } from "./redis";
+import { resolveMigratedFreeQuotaSubject } from "./free-quota-migration";
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 const REFERRAL_BONUS_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -178,6 +179,11 @@ export const grantFreeReferralBonusUnits = async (
     return { granted: false, units: 0 };
   }
 
+  const originalSubject = userId;
+  userId = await resolveMigratedFreeQuotaSubject(redis, userId);
+  if (idempotencyKey === `referral_signup:${originalSubject}`) {
+    idempotencyKey = `referral_signup:${userId}`;
+  }
   const bonusKey = getFreeReferralBonusKey(userId);
   const grantKey = getFreeReferralBonusGrantKey(idempotencyKey);
   const result = (await redis.eval(
@@ -225,6 +231,7 @@ export const checkFreeUserRateLimit = async (
   }
 
   try {
+    userId = await resolveMigratedFreeQuotaSubject(redis, userId);
     const { success, remaining } = await consumeFreeRequestUnits({
       redis,
       userId,
@@ -302,6 +309,7 @@ export const checkFreeUserRateLimitCapacity = async (
   }
 
   try {
+    userId = await resolveMigratedFreeQuotaSubject(redis, userId);
     const remaining = Math.max(
       0,
       Number(

@@ -143,41 +143,15 @@ describe("token-bucket async functions", () => {
   };
 
   describe("deleteUserRateLimitKeys", () => {
-    it("deletes user and distinct identity-scoped free quota keys", async () => {
+    it("preserves shared mailbox usage when deleting an alias account", async () => {
       const { deleteUserRateLimitKeys } = getIsolatedModule();
-      const identitySubject =
-        "free_quota:v1:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-      mockScanFn
-        .mockResolvedValueOnce(["0", ["usage:monthly:user-123:pro"]])
-        .mockResolvedValueOnce([
-          "0",
-          [
-            `free_monthly_cost:${identitySubject}:2026-06`,
-            `free_limit:${identitySubject}:free:123`,
-            `free_referral_bonus:${identitySubject}`,
-            `free_usage_budget_started:v1:${identitySubject}`,
-          ],
-        ]);
-
+      const identitySubject = "free_quota:v1:shared";
+      mockScanFn.mockResolvedValueOnce(["0", ["usage:monthly:user-123:pro"]]);
       await expect(
         deleteUserRateLimitKeys("user-123", identitySubject),
-      ).resolves.toBe(5);
-
-      expect(mockScanFn).toHaveBeenCalledWith(
-        "0",
-        expect.objectContaining({ match: "*user-123*" }),
-      );
-      expect(mockScanFn).toHaveBeenCalledWith(
-        "0",
-        expect.objectContaining({ match: `*${identitySubject}*` }),
-      );
-      expect(mockDelFn).toHaveBeenCalledWith(
-        "usage:monthly:user-123:pro",
-        `free_monthly_cost:${identitySubject}:2026-06`,
-        `free_limit:${identitySubject}:free:123`,
-        `free_referral_bonus:${identitySubject}`,
-        `free_usage_budget_started:v1:${identitySubject}`,
-      );
+      ).resolves.toBe(1);
+      expect(mockScanFn).toHaveBeenCalledTimes(1);
+      expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
     });
   });
 

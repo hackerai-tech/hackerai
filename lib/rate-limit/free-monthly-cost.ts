@@ -5,6 +5,7 @@ import {
 } from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
+import { resolveMigratedFreeQuotaSubject } from "./free-quota-migration";
 import { getLimitPressureContext } from "@/lib/limit-pressure";
 
 const RECORD_FREE_MONTHLY_COST_SCRIPT = `
@@ -94,6 +95,7 @@ export async function checkFreeMonthlyCostLimit(
     );
   }
 
+  quotaSubject = await resolveMigratedFreeQuotaSubject(redis, quotaSubject);
   const usedPoints = Math.max(
     0,
     Number((await redis.get(freeMonthlyCostKey(quotaSubject, bucket))) ?? 0),
@@ -139,6 +141,7 @@ export async function recordFreeMonthlyCost(
     );
   }
 
+  userId = await resolveMigratedFreeQuotaSubject(redis, userId, true);
   const { bucket, ttlMs } = getCurrentUtcMonthWindow();
   await redis.eval(
     RECORD_FREE_MONTHLY_COST_SCRIPT,

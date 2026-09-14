@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
+jest.mock("../free-quota-migration", () => ({
+  resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
+    subject,
+}));
+
 describe("acquireFreeRunConcurrencyLock", () => {
   const mockCreateRedisClient = jest.fn();
   const mockSet = jest.fn();

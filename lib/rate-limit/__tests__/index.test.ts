@@ -7,6 +7,11 @@
  */
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
+jest.mock("../free-quota-migration", () => ({
+  resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
+    subject,
+}));
+
 describe("checkRateLimit", () => {
   const mockEvalFn = jest.fn();
   const mockCheckTokenBucketLimit = jest.fn();

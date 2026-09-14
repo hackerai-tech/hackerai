@@ -12,11 +12,14 @@ jest.mock("server-only", () => ({}));
 describe("free quota subject", () => {
   const originalSecret = process.env.ACCOUNT_IDENTITY_HMAC_SECRET;
   const originalNodeEnv = process.env.NODE_ENV;
+  const originalCanonicalization =
+    process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
 
   beforeEach(() => {
     jest.resetModules();
     process.env.ACCOUNT_IDENTITY_HMAC_SECRET = "test-account-identity-secret";
     process.env.NODE_ENV = "test";
+    delete process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
   });
 
   afterEach(() => {
@@ -26,6 +29,10 @@ describe("free quota subject", () => {
       process.env.ACCOUNT_IDENTITY_HMAC_SECRET = originalSecret;
     }
     process.env.NODE_ENV = originalNodeEnv;
+    if (originalCanonicalization === undefined)
+      delete process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
+    else
+      process.env.FREE_QUOTA_GMAIL_CANONICALIZATION = originalCanonicalization;
   });
 
   it("normalizes email with trim and lowercase only", async () => {
@@ -50,6 +57,18 @@ describe("free quota subject", () => {
     expect(createFreeQuotaSubject("one@example.com")).not.toBe(
       createFreeQuotaSubject("two@example.com"),
     );
+  });
+
+  it("switches Gmail quota derivation only for the explicitly enabled cutover", async () => {
+    const { createFreeQuotaSubject } = await import("../free-quota-subject");
+    const originalAddress = "F.irst+Signup@gmail.com";
+    const before = createFreeQuotaSubject(originalAddress);
+    expect(before).not.toBe(createFreeQuotaSubject("first@gmail.com"));
+    process.env.FREE_QUOTA_GMAIL_CANONICALIZATION = "true";
+    expect(createFreeQuotaSubject(originalAddress)).toBe(
+      createFreeQuotaSubject("first@gmail.com"),
+    );
+    expect(originalAddress).toBe("F.irst+Signup@gmail.com");
   });
 
   it("does not expose the raw email in the subject or redacted log value", async () => {

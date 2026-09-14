@@ -1,3 +1,4 @@
+import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import {
   evaluateRegionalFreeLimits,
   captureRegionalFreeLimitsExposure,
@@ -2292,6 +2293,10 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
+                                  hasResponseContent: hasCompletedAssistantText(
+                                    retryMessages,
+                                    retryMessageId,
+                                  ),
                                   abliteratedProviderSummary:
                                     abliteratedTelemetry?.getSummary(),
                                   posthog,
@@ -2617,6 +2622,10 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
+                      hasResponseContent: hasCompletedAssistantText(
+                        messages,
+                        assistantMessageId,
+                      ),
                       abliteratedProviderSummary:
                         abliteratedTelemetry?.getSummary(),
                       posthog,

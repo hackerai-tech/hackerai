@@ -620,6 +620,58 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each([
+    ["ask", "free", "success", true, false, true],
+    ["agent", "free", "success", true, false, true],
+    ["ask", "free", "error", true, false, false],
+    ["agent", "free", "aborted", true, false, false],
+    ["ask", "free", "success", false, false, false],
+    ["agent", "free", "success", true, true, false],
+    ["ask", "pro", "success", true, false, false],
+  ] as const)(
+    "activation requires a nonempty successful free response (%s, %s, %s)",
+    (
+      mode,
+      subscription,
+      outcome,
+      hasResponseContent,
+      isAutoContinue,
+      expected,
+    ) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        abliteratedProviderSummary: undefined,
+        posthog: { capture } as any,
+        userId: "synthetic-user",
+        chatId: "private-chat-id",
+        endpoint: "/api/chat",
+        mode,
+        subscription,
+        outcome,
+        hasResponseContent,
+        isAutoContinue,
+        selectedModel: "test-model",
+        configuredModelId: "test-model",
+        sandboxInfo: null,
+        chatLogger: undefined,
+      });
+      const activations = capture.mock.calls
+        .map((call) => call[0])
+        .filter((event) => event.event === "free_response_completed");
+      expect(activations).toHaveLength(expected ? 1 : 0);
+      if (expected)
+        expect(activations[0]).toEqual({
+          distinctId: "synthetic-user",
+          event: "free_response_completed",
+          properties: {
+            activation_definition_version: 1,
+            mode,
+            subscription_tier: "free",
+            $process_person_profile: false,
+          },
+        });
+    },
+  );
   it.each(["ask", "agent"] as const)(
     "uses versioned routing evidence instead of final-model mismatch for %s",
     (mode) => {

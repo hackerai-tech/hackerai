@@ -7,6 +7,11 @@ import {
   jest,
 } from "@jest/globals";
 
+jest.mock("../free-quota-migration", () => ({
+  resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
+    subject,
+}));
+
 describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
   const mockGet = jest.fn();

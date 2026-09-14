@@ -5,6 +5,11 @@
  */
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
+jest.mock("../free-quota-migration", () => ({
+  resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
+    subject,
+}));
+
 describe("sliding-window", () => {
   const mockEvalFn = jest.fn();
   const mockCreateRedisClient = jest.fn();

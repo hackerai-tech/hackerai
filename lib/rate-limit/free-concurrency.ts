@@ -2,6 +2,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { getLimitPressureContext } from "@/lib/limit-pressure";
 import { FREE_RUN_LOCK_TTL_SECONDS } from "./free-config";
 import { createRedisClient } from "./redis";
+import { resolveMigratedFreeQuotaSubject } from "./free-quota-migration";
 
 const RELEASE_FREE_RUN_LOCK_SCRIPT = `
 local key = KEYS[1]
@@ -40,6 +41,7 @@ export async function acquireFreeRunConcurrencyLock(
     );
   }
 
+  userId = await resolveMigratedFreeQuotaSubject(redis, userId);
   const lockKey = freeRunLockKey(userId);
   const lockToken = crypto.randomUUID();
   const acquired = await redis.set(lockKey, lockToken, {
