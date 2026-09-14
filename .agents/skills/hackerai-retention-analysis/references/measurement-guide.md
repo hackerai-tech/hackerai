@@ -54,14 +54,14 @@ research requires the separate authorized HackerAI research workflow.
 
 ## Outcome definitions
 
-| Outcome                              | Denominator and window                                                                                                                                                                                 |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Natural Agent completion             | All eligible exposed requests, including errors, aborts, and missing outcomes; success + stop + no step-limit is an operational proxy, not verified task quality                                       |
-| Return usage                         | Users with the same complete follow-up after exposure; define exact elapsed-hour intervals, deduplicate requests, and distinguish user return from retries/automatic continuations                     |
-| New voluntary cancellation decisions | Enrolled subscribers without a pending decision at baseline; decisions within a fixed window, with pauses and reversals reported separately                                                            |
-| Renewal retention                    | Enrolled subscriptions reaching their baseline scheduled renewal date with the required follow-up, including those canceled before that date; do not keep only subscriptions that generated an invoice |
-| Payment success among attempts       | Distinct eligible renewal invoices actually attempted; label this conditional rate, not subscriber renewal retention                                                                                   |
-| Payment recovery                     | Distinct invoices entering first failure, each with equal fixed follow-up; payment on the same invoice/subscription is required, and restored access is a separate outcome                             |
+| Outcome                              | Denominator and window                                                                                                                                                                                           |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Natural Agent completion             | All eligible exposed requests, including errors, aborts, and missing outcomes; success + stop + no step-limit is an operational proxy, not verified task quality                                                 |
+| Return usage                         | Users with the same complete follow-up after exposure; define exact elapsed-hour intervals, deduplicate requests, and distinguish user return from retries/automatic continuations                               |
+| New voluntary cancellation decisions | Enrolled subscribers without a pending decision at baseline; decisions within a fixed window, with pauses and reversals reported separately                                                                      |
+| Renewal retention                    | All eligible subscriptions enrolled at baseline, retaining pre-renewal cancellations; assess outcomes after the baseline scheduled renewal date plus required follow-up. Do not require an invoice for inclusion |
+| Payment success among attempts       | Distinct eligible renewal invoices actually attempted; label this conditional rate, not subscriber renewal retention                                                                                             |
+| Payment recovery                     | Distinct invoices entering first failure, each with equal fixed follow-up; payment on the same invoice/subscription is required, and restored access is a separate outcome                                       |
 
 State exactly how pauses, trials, free/zero-dollar invoices, refunds, plan changes,
 annual billing, and admin/fraud endings affect eligibility and outcomes. Treat
@@ -70,7 +70,9 @@ of the old subscription. A cancellation decision is not its later ending, and
 a card update is not payment or retention.
 
 Freeze enrollment and the baseline schedule so treatment-induced cancellation
-cannot silently remove a subscriber from the renewal denominator. When only
+cannot silently remove a subscriber from the renewal denominator. Count
+subscriptions that end before renewal as non-renewals; a pending cancellation
+that is reversed before successful renewal is not a renewal loss. When only
 paid/failed invoice events exist, report an observed-attempt proxy and disclose
 that the full subscriber renewal rate is unavailable.
 
