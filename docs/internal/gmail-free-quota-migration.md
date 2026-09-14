@@ -106,6 +106,10 @@ inventories, quota subjects, credentials or alternate provider URLs.
    users may not cover historical/deleted addresses; the hosted runner cannot
    manufacture those. Resolve missing inventory through the offline runbook or
    wait for unknown keys to expire. Never delete counters to pass coverage.
+   The exact retired `free_agent_limit:user_<WorkOS ID>:free_agent:<UTC-day>`
+   format is excluded only when its day is strictly before today. These obsolete
+   daily counters remain untouched, even if their Redis TTL is missing. Current
+   and future days, malformed keys and monthly usage are never exempted.
    `restart-audit` clears the prior audit on its next page; `restart-inventory`
    starts a fresh WorkOS traversal while retaining previously known mappings.
 3. With zero unknown keys, follow the cutover/drain procedure above and call

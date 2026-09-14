@@ -365,6 +365,8 @@ async function main() {
     const runnerTarget = canonical("ab@gmail.com", "test")!;
     const sourceCounter = `free_monthly_cost:${runnerSource}:2026-09`;
     const targetCounter = `free_monthly_cost:${runnerTarget}:2026-09`;
+    const expiredLegacy = `free_agent_limit:user_${"A".repeat(26)}:free_agent:20000`;
+    await client.set(expiredLegacy, "4"); // A retired daily counter without a TTL.
     await client.set(sourceCounter, "15", { PX: 60000 });
     await client.set(targetCounter, "25", { PX: 90000 });
     await runner({ action: "inventory" });
@@ -422,6 +424,8 @@ async function main() {
     await runner({ action: "resume", canonicalRuntimesReady: true }, true);
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "complete");
     await runner({ action: "cleanup" }, true);
+    assert.equal(await client.get(expiredLegacy), "4");
+    assert.equal(await client.ttl(expiredLegacy), -1);
     assert.equal(await client.get(targetCounter), "40");
     assert.equal(
       await client.get(freeQuotaRedirectKey(runnerSource)),

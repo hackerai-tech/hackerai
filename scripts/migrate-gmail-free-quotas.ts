@@ -11,7 +11,10 @@ import {
   freeQuotaRedirectKey,
   MIGRATE_FREE_QUOTA_ALIAS_SCRIPT,
 } from "../lib/rate-limit/free-quota-migration";
-import { isFreeQuotaSubjectRateLimitKey } from "../lib/rate-limit/key-cleanup";
+import {
+  isExpiredLegacyFreeAgentWindow,
+  isFreeQuotaSubjectRateLimitKey,
+} from "../lib/rate-limit/key-cleanup";
 
 async function main() {
   const { values } = parseArgs({
@@ -99,6 +102,8 @@ async function main() {
   const bySubject = new Map<string, string[]>();
   let unknown = 0;
   for (const key of keys) {
+    // Preserve obsolete daily counters in place; they are not active quotas.
+    if (isExpiredLegacyFreeAgentWindow(key)) continue;
     const subject = key.match(/free_quota:v1:[a-f0-9]{64}/)?.[0];
     if (!subject) {
       if (

@@ -4,7 +4,10 @@ import {
   createCanonicalFreeQuotaSubjectWithSecret,
   createFreeQuotaSubjectWithSecret,
 } from "../auth/free-quota-subject-core";
-import { isFreeQuotaSubjectRateLimitKey } from "./key-cleanup";
+import {
+  isExpiredLegacyFreeAgentWindow,
+  isFreeQuotaSubjectRateLimitKey,
+} from "./key-cleanup";
 import {
   FREE_QUOTA_MIGRATION_STATE,
   freeQuotaRedirectKey,
@@ -202,10 +205,12 @@ export async function runQuotaMigration(
           match: "free_*",
           count: 1000,
         });
-        const relevant = keys.filter((key) =>
-          /^free_(limit|agent_limit|monthly_cost|referral_bonus|referral_bonus_grant|run_lock|usage_budget_started):/.test(
-            key,
-          ),
+        const relevant = keys.filter(
+          (key) =>
+            !isExpiredLegacyFreeAgentWindow(key) &&
+            /^free_(limit|agent_limit|monthly_cost|referral_bonus|referral_bonus_grant|run_lock|usage_budget_started):/.test(
+              key,
+            ),
         );
         const subjects = [
           ...new Set(
