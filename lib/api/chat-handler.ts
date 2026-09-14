@@ -1,3 +1,8 @@
+import {
+  evaluateFreeMonthlyBudget,
+  captureFreeMonthlyBudgetExposure,
+} from "@/lib/experiments/free-monthly-budget";
+import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import {
   evaluateRegionalFreeLimits,
@@ -363,8 +368,13 @@ export const createChatHandler = () => {
       });
       const requestMessages = requireChatMessagesArray(messages);
 
-      const { userId, subscription, organizationId, freeQuotaSubject } =
-        await getUserIDAndPro(req);
+      const {
+        userId,
+        subscription,
+        organizationId,
+        freeQuotaSubject,
+        emailVerified,
+      } = await getUserIDAndPro(req);
       paidDailyFreeAllowanceUserId = userId;
       const freeUsageSubject = freeQuotaSubject ?? userId;
       let selectedModelOverride: SelectedModel | undefined =
@@ -495,6 +505,23 @@ export const createChatHandler = () => {
         subscription,
         country: regionalFreeCountryFromRequest(req),
       });
+      const monthlyFreeBudget = regionalFreeLimits
+        ? undefined
+        : await evaluateFreeMonthlyBudget({
+            posthog,
+            userId,
+            subscription,
+            freeQuotaSubject,
+            emailVerified,
+            country: monthlyBudgetCountryFromRequest(req),
+          });
+      const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
+      await captureFreeMonthlyBudgetExposure(
+        posthog,
+        monthlyFreeBudget,
+        userId,
+        mode,
+      );
       await captureRegionalFreeLimitsExposure(
         posthog,
         regionalFreeLimits,
@@ -503,10 +530,7 @@ export const createChatHandler = () => {
       );
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeMonthlyCostLimit(
-              freeUsageSubject,
-              regionalFreeLimits,
-            )
+          ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
           : null;
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
@@ -521,7 +545,7 @@ export const createChatHandler = () => {
               undefined,
               undefined,
               freeQuotaSubject,
-              regionalFreeLimits,
+              freeLimits,
             )
           : null;
 
@@ -678,7 +702,7 @@ export const createChatHandler = () => {
             selectedModel,
             organizationId,
             freeQuotaSubject,
-            regionalFreeLimits,
+            freeLimits,
           ));
       } catch (error) {
         if (!(error instanceof ChatSDKError)) {
@@ -1418,6 +1442,7 @@ export const createChatHandler = () => {
                 }
                 captureUsageCost({
                   regionalFreeLimits,
+                  monthlyFreeBudget,
                   posthog,
                   userId,
                   subscription,
@@ -2293,6 +2318,7 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
+                                  monthlyFreeBudget,
                                   hasResponseContent: hasCompletedAssistantText(
                                     retryMessages,
                                     retryMessageId,
@@ -2622,6 +2648,7 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
+                      monthlyFreeBudget,
                       hasResponseContent: hasCompletedAssistantText(
                         messages,
                         assistantMessageId,

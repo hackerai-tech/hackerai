@@ -1,4 +1,8 @@
 import {
+  freeMonthlyBudgetProperties,
+  type FreeMonthlyBudgetAssignment,
+} from "@/lib/experiments/free-monthly-budget";
+import {
   regionalFreeLimitsProperties,
   type RegionalFreeLimitsAssignment,
 } from "@/lib/experiments/regional-free-limits";
@@ -1301,6 +1305,7 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
   // Every completion path must explicitly forward its request telemetry.
   abliteratedProviderSummary:
     ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
@@ -1410,6 +1415,7 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
+  monthlyFreeBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1721,6 +1727,7 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }
@@ -1742,6 +1749,7 @@ export function captureAgentCompletionAnalytics(
         distinctId: userId,
         event: "free_response_completed",
         properties: {
+          ...freeMonthlyBudgetProperties(args.monthlyFreeBudget),
           activation_definition_version: 1,
           mode,
           subscription_tier: subscription,
@@ -1789,6 +1797,7 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    monthlyFreeBudget: args.monthlyFreeBudget,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
@@ -1874,6 +1883,7 @@ export function captureUsageCost({
   fallbackServed,
   experiment,
   regionalFreeLimits,
+  monthlyFreeBudget,
   triggerRunId,
 }: {
   posthog: PostHog | null;
@@ -1903,6 +1913,7 @@ export function captureUsageCost({
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
   regionalFreeLimits?: RegionalFreeLimitsAssignment;
+  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
   triggerRunId?: string;
 }) {
   if (!posthog) return;
@@ -2009,6 +2020,7 @@ export function captureUsageCost({
       }),
       ...getExperimentAnalyticsProperties(experiment),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
+      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }

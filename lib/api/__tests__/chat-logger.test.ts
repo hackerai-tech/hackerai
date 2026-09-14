@@ -620,6 +620,61 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it.each(["success", "aborted"] as const)(
+    "attributes %s to monthly budget without overwriting model experiment",
+    (outcome) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture } as any,
+        userId: "synthetic",
+        chatId: "private-chat",
+        endpoint: "/api/agent-long",
+        mode: "agent",
+        subscription: "free",
+        outcome,
+        hasResponseContent: true,
+        selectedModel: "auto",
+        configuredModelId: "model",
+        sandboxInfo: null,
+        chatLogger: undefined,
+        abliteratedProviderSummary: undefined,
+        monthlyFreeBudget: {
+          monthlyBudgetExperiment: "free_monthly_budget_v1",
+          variant: "test",
+          monthlyCostDollars: 0.5,
+          dailyRequests: 10,
+        },
+        experiment: {
+          key: "free_ask_flash_conversion_v1",
+          variant: "control",
+          requestId: "request",
+        },
+        ...(outcome === "aborted"
+          ? {
+              abortSource: "budget_exhausted" as const,
+              budgetAbortDetails: {
+                capReason: "free_monthly_exhausted",
+                midStream: true,
+              },
+            }
+          : {}),
+      });
+      const events = capture.mock.calls.map((call) => call[0]);
+      const run = events.find((event) => event.event === "hackerai-agent_run");
+      expect(run.properties).toMatchObject({
+        free_monthly_budget_variant: "test",
+        experiment_variant: "control",
+        outcome,
+      });
+      const activation = events.find(
+        (event) => event.event === "free_response_completed",
+      );
+      if (outcome === "success")
+        expect(activation.properties.free_monthly_budget_variant).toBe("test");
+      else expect(activation).toBeUndefined();
+    },
+  );
+
   it.each([
     ["ask", "free", "success", true, false, true],
     ["agent", "free", "success", true, false, true],

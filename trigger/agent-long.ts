@@ -1,3 +1,7 @@
+import {
+  evaluateFreeMonthlyBudget,
+  captureFreeMonthlyBudgetExposure,
+} from "@/lib/experiments/free-monthly-budget";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { loadObjectiveCheckpoint } from "@/lib/db/objective-checkpoint";
 import { OBJECTIVE_CHECKPOINT_FLAG } from "@/lib/chat/objective-checkpoint";
@@ -2345,6 +2349,8 @@ export type AgentLongPayload = {
   organizationId?: string;
   freeQuotaSubject?: string;
   regionalFreeCountry?: string;
+  monthlyBudgetCountry?: string;
+  emailVerified?: boolean;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -2789,6 +2795,23 @@ export const agentLongTask = task({
       });
       // Check capacity before moderation/model work, then consume the daily
       // request atomically under the free-run lock when execution starts.
+      const monthlyFreeBudget = regionalFreeLimits
+        ? undefined
+        : await evaluateFreeMonthlyBudget({
+            posthog,
+            userId,
+            subscription,
+            freeQuotaSubject,
+            emailVerified: payload.emailVerified,
+            country: payload.monthlyBudgetCountry,
+          });
+      const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
+      await captureFreeMonthlyBudgetExposure(
+        posthog,
+        monthlyFreeBudget,
+        userId,
+        mode,
+      );
       await captureRegionalFreeLimitsExposure(
         posthog,
         regionalFreeLimits,
@@ -2804,9 +2827,9 @@ export const agentLongTask = task({
           undefined,
           organizationId,
           freeQuotaSubject,
-          regionalFreeLimits,
+          freeLimits,
         );
-        await checkFreeMonthlyCostLimit(freeUsageSubject, regionalFreeLimits);
+        await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
       }
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -3089,10 +3112,7 @@ export const agentLongTask = task({
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(
-                    freeUsageSubject,
-                    regionalFreeLimits,
-                  )
+                ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
                 : null;
 
             try {
@@ -3105,7 +3125,7 @@ export const agentLongTask = task({
                 selectedModel,
                 organizationId,
                 freeQuotaSubject,
-                regionalFreeLimits,
+                freeLimits,
               );
             } catch (error) {
               if (!(error instanceof ChatSDKError)) throw error;
@@ -3355,13 +3375,10 @@ export const agentLongTask = task({
                 selectedModel,
                 authorization.organizationId,
                 freeQuotaSubject,
-                regionalFreeLimits,
+                freeLimits,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(
-                  freeUsageSubject,
-                  regionalFreeLimits,
-                );
+                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
@@ -3446,13 +3463,10 @@ export const agentLongTask = task({
                 selectedModel,
                 currentEntitlement.organizationId,
                 freeQuotaSubject,
-                regionalFreeLimits,
+                freeLimits,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(
-                  freeUsageSubject,
-                  regionalFreeLimits,
-                );
+                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -3565,7 +3579,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
-                          regionalFreeLimits,
+                          regionalFreeLimits: freeLimits,
                           triggerRegion,
                         }),
                         continue_agent: createContinueAgentTool(toolContext, {
@@ -3574,7 +3588,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
-                          regionalFreeLimits,
+                          regionalFreeLimits: freeLimits,
                           triggerRegion,
                         }),
                         list_agents: createListAgentsTool(toolContext),
@@ -4093,6 +4107,7 @@ export const agentLongTask = task({
                 captureUsageCost({
                   triggerRunId: ctx.run.id,
                   regionalFreeLimits,
+                  monthlyFreeBudget,
                   posthog,
                   userId,
                   subscription,
@@ -4682,6 +4697,7 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                monthlyFreeBudget,
                 hasResponseContent: hasCompletedAssistantText(
                   retryMessages,
                   retryMessageId,
@@ -5672,6 +5688,7 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        monthlyFreeBudget,
                         hasResponseContent: hasCompletedAssistantText(
                           finishedMessages,
                           assistantMessageId,
