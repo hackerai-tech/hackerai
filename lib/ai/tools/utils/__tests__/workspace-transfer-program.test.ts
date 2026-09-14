@@ -87,7 +87,7 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         "python3",
         [
           "-c",
-          "import tarfile,sys; print('\n'.join(tarfile.open(sys.argv[1]).getnames()))",
+          "import tarfile,sys,json; print(json.dumps(tarfile.open(sys.argv[1]).getnames()))",
           join(destinationStage, "source.tar.gz"),
         ],
         { encoding: "utf8" },
