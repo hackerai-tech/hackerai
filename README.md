@@ -136,7 +136,10 @@ or report details. `healthy` and `degraded` return HTTP 200; `failing` and
 and missing evidence from confirmed failures. Missing credentials, inaccessible
 reports, absent/untrustworthy telemetry, and invalid or stale reports cannot
 produce a healthy result. Each warm server instance caches results (including
-errors) for up to 60 seconds; requests time out after eight seconds.
+errors) for up to 60 seconds; report requests time out after 20 seconds within a 30-second endpoint
+execution limit. External monitors should allow at least 30 seconds. Logs record
+report fetch duration and fixed error categories (timeout, invalid JSON, or
+fetch failure), without upstream messages, credentials, or report contents.
 
 This checks the environment's recent task activity, not an end-to-end Agent
 conversation or browser streaming. After deployment, check the endpoint on the
