@@ -122,26 +122,47 @@ To use the agent locally:
 
 ### Agent runtime health
 
-`GET /api/health/trigger-agent-mode` reads Trigger.dev's project health report
-for the last hour using the server's `TRIGGER_SECRET_KEY` (or the SDK's
-`TRIGGER_ACCESS_TOKEN` fallback). Restricted credentials need `read:query` access
-to every table used by the health report. API URL and branch selection follow
-the Agent SDK environment variables, so configure Preview and Production
-independently with their own credentials; the endpoint never chooses Production
-as a fallback.
+`GET /api/health/trigger-agent-mode` serves the most recent synthetic Trigger
+execution check from shared Redis storage. The authenticated Vercel cron at
+`/api/cron/trigger-health` runs once a minute, dispatches `agent-health-probe`,
+and verifies its completed output within 40 seconds. The task uses the Agent
+worker deployment and machine size but does not call a model, start a sandbox,
+or read customer data. This measures dispatch and worker execution, not a full
+Agent conversation, Agent-specific queue health, or browser streaming.
 
-The response exposes only health statuses and timestamps, not project metrics
-or report details. `healthy` and `degraded` return HTTP 200; `failing` and
-`unknown` return 503. Monitors should inspect `status` to distinguish warnings
-and missing evidence from confirmed failures. Missing credentials, inaccessible
-reports, absent/untrustworthy telemetry, and invalid or stale reports cannot
-produce a healthy result. Each warm server instance caches results (including
-errors) for up to 60 seconds; report requests time out after 20 seconds within a 30-second endpoint
-execution limit. External monitors should allow at least 30 seconds. Logs record
-report fetch duration and fixed error categories (timeout, invalid JSON, or
-fetch failure), without upstream messages, credentials, or report contents.
+The existing Better Stack monitor can keep its URL, 30-second request timeout,
+and required keyword `"ok":true`. Only a successful probe returns 200. A failed
+run, unavailable evidence, or a probe timestamp older than three minutes returns
+503, with distinct error categories. A report timeout cannot mark execution as
+down. A stopped collector or unavailable Redis cannot silently appear healthy.
+Public requests only read Redis; they never create tasks or fetch reports.
 
-This checks the environment's recent task activity, not an end-to-end Agent
-conversation or browser streaming. After deployment, check the endpoint on the
-actual Preview URL and production custom domain separately, and confirm that
-each report corresponds to the environment used by that site's Agent runs.
+The same collector independently refreshes Trigger's one-hour health report.
+`GET /api/health/trigger-reports` exposes that diagnostic signal separately:
+healthy/degraded returns 200, failing/unknown returns 503. For transient report
+retrieval failures, the previous report may be served for at most five minutes
+from its **original generatedAt**, with `refreshError` showing the failed
+refresh. Explicit failing/unknown reports replace older results immediately.
+Expired data means reporting evidence is unavailable; it does not prove an
+Agent outage. Use a separately named reporting monitor for this URL if alerts
+on telemetry availability or report findings are wanted.
+
+Both environments require their own `TRIGGER_SECRET_KEY` (or SDK fallback
+`TRIGGER_ACCESS_TOKEN`) and existing Upstash REST URL/token. API URL and branch
+selection match the Agent SDK. Restricted Trigger credentials need task trigger,
+run read, and report `read:query` permissions. Redis keys and collection leases
+are separated by target credentials, branch, API URL, and Vercel environment /
+project. Credentials, run IDs, nonces, report metrics, and raw upstream errors
+are never returned publicly. No credential transfer between environments is
+needed.
+
+Deploy the Trigger task before relying on the new monitor. Vercel cron runs only
+in Production and requires `CRON_SECRET`; Preview verification must invoke the
+collector with that Preview environment's cron authorization after its Trigger
+branch deploys. Confirm the designated environment mapping before doing so.
+Verify the actual Preview URL and `hackerai.co` independently: a successful
+collector call should lead to `source: "trigger_probe"`, `status: "healthy"`,
+and a recent `checkedAt`. Until the first collection, the endpoint returns
+`health_data_unavailable`. If collection stops, it must return
+`health_data_stale` after three minutes. Synthetic checks create up to one short
+run per minute per actively collected environment and incur normal Trigger usage.

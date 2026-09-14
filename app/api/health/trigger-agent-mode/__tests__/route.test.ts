@@ -1,423 +1,103 @@
+import { GET } from "../route";
+import { GET as reportsGET } from "../../trigger-reports/route";
+import { GET as collectGET } from "../../../cron/trigger-health/route";
 import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  jest,
-} from "@jest/globals";
+  readTriggerHealth,
+  refreshTriggerHealth,
+} from "@/lib/health/trigger-health";
 
 jest.mock("next/server", () => ({
-  NextResponse: class MockNextResponse {
-    status: number;
-    headers: Headers;
-    constructor(
-      private body: unknown,
-      init?: ResponseInit,
-    ) {
-      this.status = init?.status ?? 200;
-      this.headers = new Headers(init?.headers);
-    }
-    static json(body: unknown, init?: ResponseInit) {
-      return new MockNextResponse(body, init);
-    }
-    async json() {
-      return this.body;
-    }
+  NextResponse: {
+    json: (body: unknown, init?: ResponseInit) => ({
+      status: init?.status ?? 200,
+      headers: new Headers(init?.headers),
+      json: async () => body,
+    }),
   },
 }));
-
-const mockFetch = jest.fn<typeof fetch>();
-const originalFetch = global.fetch;
-const originalEnv = process.env;
-const NOW = new Date("2026-09-14T12:00:00.000Z");
-
-// The consumed subset of Trigger's ReportViewModel JSON contract.
-const report = () => ({
-  title: "health",
-  scope: "prod",
-  period: "last 1h",
-  generatedAt: NOW.toISOString(),
-  windowMinutes: 60,
-  summary: { severity: "ok" },
-  findings: [
-    { type: "flow", severity: "ok", reason: "healthy", metricIds: [] },
-    { type: "execution", severity: "ok", reason: "healthy", metricIds: [] },
-    { type: "liveness", severity: "ok", reason: "fresh", metricIds: [] },
-  ],
-  facts: { trustworthy: true, privateData: "must-not-leak" },
-  metrics: [{ privateData: "must-not-leak" }],
-});
-const respond = (body: unknown = report(), status = 200) =>
-  mockFetch.mockResolvedValueOnce({
-    ok: status >= 200 && status < 300,
-    status,
-    json: async () => body,
-  } as Response);
-
-async function check() {
-  const { GET } = await import("../route");
-  const response = await GET();
-  return { response, body: await response.json() };
+jest.mock("@/lib/health/trigger-health", () => ({
+  readTriggerHealth: jest.fn(),
+  refreshTriggerHealth: jest.fn(),
+}));
+function requestWithHeaders(_url: string, init?: RequestInit): Request {
+  return { headers: new Headers(init?.headers) } as Request;
 }
+const read = jest.mocked(readTriggerHealth);
+const refresh = jest.mocked(refreshTriggerHealth);
+const originalSecret = process.env.CRON_SECRET;
+afterEach(() => {
+  jest.resetAllMocks();
+  if (originalSecret === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = originalSecret;
+});
 
-describe("GET /api/health/trigger-agent-mode", () => {
-  let infoSpy: jest.SpiedFunction<typeof console.info>;
-  let warnSpy: jest.SpiedFunction<typeof console.warn>;
-  beforeEach(() => {
-    jest.resetModules();
-    mockFetch.mockReset();
-    jest.spyOn(Date, "now").mockReturnValue(NOW.getTime());
-    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
-    process.env = { ...originalEnv, TRIGGER_SECRET_KEY: "test-key" };
-    for (const name of [
-      "TRIGGER_API_URL",
-      "TRIGGER_ACCESS_TOKEN",
-      "TRIGGER_PREVIEW_BRANCH",
-      "VERCEL_GIT_COMMIT_REF",
-      "TRIGGER_DEV_BRANCH",
-    ])
-      delete process.env[name];
-    global.fetch = mockFetch;
+it("keeps successful execution up when reporting times out", async () => {
+  read.mockResolvedValue({
+    probe: { status: "healthy", checkedAt: "2026-09-14T12:00:00Z" },
+    report: { status: "unknown", error: "trigger_report_timeout" },
   });
-  afterEach(() => {
-    jest.useRealTimers();
-    jest.restoreAllMocks();
-    process.env = originalEnv;
-    global.fetch = originalFetch;
+  const response = await GET();
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    source: "trigger_probe",
   });
+  expect((await reportsGET()).status).toBe(503);
+  expect(refresh).not.toHaveBeenCalled();
+});
 
-  it("uses authenticated reports and exposes only the health summary", async () => {
-    respond();
-    const { response, body } = await check();
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(mockFetch).toHaveBeenCalledWith(
-      new URL(
-        "https://api.trigger.dev/api/v1/reports/health?period=1h&format=json",
-      ),
-      expect.objectContaining({
-        cache: "no-store",
-        redirect: "error",
-        signal: expect.any(AbortSignal),
-        headers: {
-          accept: "application/json",
-          authorization: "Bearer test-key",
-        },
+it.each(["failing", "unknown"] as const)(
+  "does not hide %s execution behind a healthy report",
+  async (status) => {
+    read.mockResolvedValue({
+      probe: { status, checkedAt: "2026-09-14T12:00:00Z" },
+      report: { status: "healthy" },
+    });
+    const response = await GET();
+    expect(response.status).toBe(503);
+    expect(JSON.stringify(await response.json())).not.toContain('"ok":true');
+  },
+);
+
+it.each([undefined, "", "wrong", "Bearer wrong", "Bearer undefined"])(
+  "rejects unauthorized collection (%s)",
+  async (authorization) => {
+    process.env.CRON_SECRET = "test-cron-secret";
+    const response = await collectGET(
+      requestWithHeaders("http://localhost/api/cron/trigger-health", {
+        headers: authorization ? { authorization } : {},
       }),
     );
-    expect(body).toEqual({
-      ok: true,
-      source: "trigger_report",
-      checkedAt: expect.any(String),
-      status: "healthy",
-      generatedAt: NOW.toISOString(),
-      dimensions: {
-        flow: "healthy",
-        execution: "healthy",
-        liveness: "healthy",
-      },
-    });
-    expect(JSON.stringify(body)).not.toContain("must-not-leak");
+    expect(response.status).toBe(401);
+    expect(refresh).not.toHaveBeenCalled();
+  },
+);
+
+it("fails closed without a configured cron secret", async () => {
+  delete process.env.CRON_SECRET;
+  expect(
+    (
+      await collectGET(
+        requestWithHeaders("http://localhost", {
+          headers: { authorization: "Bearer undefined" },
+        }),
+      )
+    ).status,
+  ).toBe(401);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+it("runs authorized collection and propagates storage failure", async () => {
+  process.env.CRON_SECRET = "test-cron-secret";
+  const request = requestWithHeaders("http://localhost", {
+    headers: { authorization: "Bearer test-cron-secret" },
   });
-
-  it.each(["flow", "execution", "liveness"])(
-    "reports degraded %s without declaring an outage",
-    async (dimension) => {
-      const payload = report();
-      payload.findings.find((f) => f.type === dimension)!.severity = "warn";
-      payload.summary.severity = "warn";
-      respond(payload);
-      const { response, body } = await check();
-      expect(response.status).toBe(200);
-      expect(body).toMatchObject({
-        ok: true,
-        status: "degraded",
-        dimensions: { [dimension]: "degraded" },
-      });
-    },
-  );
-
-  it.each(["flow", "execution", "liveness"])(
-    "returns 503 for failing %s even if the summary disagrees",
-    async (dimension) => {
-      const payload = report();
-      payload.findings.find((f) => f.type === dimension)!.severity = "crit";
-      respond(payload);
-      const { response, body } = await check();
-      expect(response.status).toBe(503);
-      expect(body).toMatchObject({ ok: false, status: "failing" });
-    },
-  );
-
-  it("honors a critical summary", async () => {
-    const payload = report();
-    payload.summary.severity = "crit";
-    respond(payload);
-    expect((await check()).body.status).toBe("failing");
+  refresh.mockResolvedValueOnce({
+    ok: false,
+    error: "health_store_unavailable",
   });
-
-  it("does not mistake untrustworthy telemetry for health", async () => {
-    const payload = report();
-    payload.facts.trustworthy = false;
-    respond(payload);
-    const { response, body } = await check();
-    expect(response.status).toBe(503);
-    expect(body.status).toBe("unknown");
-  });
-
-  it.each(["unknown", "freshness_unknown", "flow_unmeasured"])(
-    "keeps %s distinct from healthy",
-    async (reason) => {
-      const payload = report();
-      payload.findings[0].reason = reason;
-      respond(payload);
-      expect((await check()).body.status).toBe("unknown");
-    },
-  );
-
-  it.each([
-    null,
-    {},
-    { ...report(), title: "cost" },
-    { ...report(), generatedAt: "invalid" },
-    { ...report(), facts: {} },
-    { ...report(), windowMinutes: 1440 },
-    { ...report(), summary: { severity: "healthy" } },
-    { ...report(), findings: report().findings.slice(1) },
-    { ...report(), findings: [...report().findings, report().findings[0]] },
-  ])("rejects malformed or incomplete reports (%#)", async (payload) => {
-    respond(payload);
-    const { response, body } = await check();
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      status: "unknown",
-      error: "trigger_report_invalid",
-    });
-  });
-
-  it.each([-121_000, 31_000])(
-    "rejects stale or future-dated reports (%i ms)",
-    async (offset) => {
-      respond({
-        ...report(),
-        generatedAt: new Date(NOW.getTime() + offset).toISOString(),
-      });
-      expect((await check()).body.error).toBe("trigger_report_stale");
-    },
-  );
-
-  it.each([401, 403, 404, 429, 500])(
-    "returns unknown when upstream returns %i",
-    async (status) => {
-      respond({ secret: "must-not-leak" }, status);
-      const { response, body } = await check();
-      expect(response.status).toBe(503);
-      expect(body).toMatchObject({
-        status: "unknown",
-        error: "trigger_report_unavailable",
-        sourceStatus: status,
-      });
-      expect(JSON.stringify(body)).not.toContain("must-not-leak");
-    },
-  );
-
-  it.each([
-    [new Error("must-not-leak"), "fetch_failed"],
-    [new DOMException("must-not-leak", "TimeoutError"), "timeout"],
-  ])("sanitizes fetch failures (%#)", async (error, category) => {
-    mockFetch.mockRejectedValueOnce(error);
-    const { body } = await check();
-    expect(body.error).toBe(`trigger_report_${category}`);
-    expect(JSON.parse(warnSpy.mock.calls[0][0] as string)).toMatchObject({
-      category,
-      timeout_ms: 20_000,
-      duration_ms: 0,
-    });
-    expect(JSON.stringify(body)).not.toContain("must-not-leak");
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("must-not-leak");
-  });
-
-  it("handles invalid JSON", async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => {
-        throw new SyntaxError("not JSON");
-      },
-    } as unknown as Response);
-    expect((await check()).body).toMatchObject({
-      status: "unknown",
-      error: "trigger_report_invalid_json",
-    });
-    expect(JSON.parse(warnSpy.mock.calls[0][0] as string).category).toBe(
-      "invalid_json",
-    );
-    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("not JSON");
-  });
-
-  it.each([12_000, 25_000])(
-    "allows slow reports but aborts at 20 seconds (%i ms)",
-    async (latency) => {
-      const { GET, maxDuration } = await import("../route");
-      expect(maxDuration).toBe(30);
-      jest.useFakeTimers({ now: NOW });
-      const controller = new AbortController();
-      jest.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
-        setTimeout(() => controller.abort(), milliseconds);
-        return controller.signal;
-      });
-      mockFetch.mockImplementationOnce(
-        (_url, options) =>
-          new Promise((resolve, reject) => {
-            const timer = setTimeout(
-              () =>
-                resolve({
-                  ok: true,
-                  status: 200,
-                  json: async () => report(),
-                } as Response),
-              latency,
-            );
-            options?.signal?.addEventListener(
-              "abort",
-              () => {
-                clearTimeout(timer);
-                reject(new Error("must-not-leak"));
-              },
-              { once: true },
-            );
-          }),
-      );
-      let completed = false;
-      const pending = GET().then((response) => {
-        completed = true;
-        return response;
-      });
-      await jest.advanceTimersByTimeAsync(8_000);
-      expect(completed).toBe(false);
-      await jest.advanceTimersByTimeAsync(Math.min(latency, 20_000) - 8_000);
-      const response = await pending;
-      const body = await response.json();
-      expect(response.status).toBe(latency < 20_000 ? 200 : 503);
-      if (latency < 20_000) {
-        expect(body.status).toBe("healthy");
-        expect(JSON.parse(infoSpy.mock.calls[0][0] as string)).toEqual({
-          event: "trigger_agent_health_report_received",
-          duration_ms: latency,
-          status: "healthy",
-        });
-        expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(
-          "must-not-leak",
-        );
-      } else {
-        expect(body).toMatchObject({
-          status: "unknown",
-          error: "trigger_report_timeout",
-        });
-        expect(JSON.parse(warnSpy.mock.calls[0][0] as string)).toMatchObject({
-          category: "timeout",
-          duration_ms: 20_000,
-        });
-        expect(JSON.stringify(warnSpy.mock.calls)).not.toContain(
-          "must-not-leak",
-        );
-      }
-    },
-  );
-
-  it("does not fetch without authentication", async () => {
-    delete process.env.TRIGGER_SECRET_KEY;
-    expect((await check()).body.error).toBe("trigger_report_not_configured");
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [
-      {
-        TRIGGER_PREVIEW_BRANCH: "preview-a",
-        VERCEL_GIT_COMMIT_REF: "commit-b",
-      },
-      "preview-a",
-    ],
-    [
-      { VERCEL_GIT_COMMIT_REF: "commit-b", TRIGGER_DEV_BRANCH: "dev-c" },
-      "commit-b",
-    ],
-    [{ TRIGGER_DEV_BRANCH: "dev-c" }, "dev-c"],
-    [{ TRIGGER_DEV_BRANCH: "default" }, undefined],
-  ])("matches Agent SDK branch selection (%#)", async (env, branch) => {
-    Object.assign(process.env, env);
-    respond();
-    await check();
-    expect(
-      (mockFetch.mock.calls[0][1]?.headers as Record<string, string>)[
-        "x-trigger-branch"
-      ],
-    ).toBe(branch);
-  });
-
-  it("supports the SDK API URL and access-token fallback", async () => {
-    delete process.env.TRIGGER_SECRET_KEY;
-    process.env.TRIGGER_ACCESS_TOKEN = "test-access-token";
-    process.env.TRIGGER_API_URL = "https://trigger.example.test";
-    respond();
-    await check();
-    expect(mockFetch.mock.calls[0][0]?.toString()).toBe(
-      "https://trigger.example.test/api/v1/reports/health?period=1h&format=json",
-    );
-    expect(mockFetch.mock.calls[0][1]?.headers).toMatchObject({
-      authorization: "Bearer test-access-token",
-    });
-  });
-
-  it("coalesces concurrent probes and refreshes after 60 seconds", async () => {
-    respond();
-    const { GET } = await import("../route");
-    await Promise.all([GET(), GET(), GET()]);
-    await GET();
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    jest.mocked(Date.now).mockReturnValue(NOW.getTime() + 60_000);
-    respond({ ...report(), summary: { severity: "crit" } });
-    expect((await GET()).status).toBe(503);
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-  });
-
-  it("rechecks report freshness on cache hits", async () => {
-    respond({
-      ...report(),
-      generatedAt: new Date(NOW.getTime() - 110_000).toISOString(),
-    });
-    const { GET } = await import("../route");
-    expect((await GET()).status).toBe(200);
-    jest.mocked(Date.now).mockReturnValue(NOW.getTime() + 20_000);
-    expect((await (await GET()).json()).error).toBe("trigger_report_stale");
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("bounds retries after failures and recovers after cache expiry", async () => {
-    respond({}, 500);
-    const { GET } = await import("../route");
-    expect((await GET()).status).toBe(503);
-    expect((await GET()).status).toBe(503);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    jest.mocked(Date.now).mockReturnValue(NOW.getTime() + 60_000);
-    respond();
-    expect((await GET()).status).toBe(200);
-  });
-
-  it.each(["TRIGGER_SECRET_KEY", "TRIGGER_API_URL", "TRIGGER_PREVIEW_BRANCH"])(
-    "does not reuse another target's cached result when %s changes",
-    async (name) => {
-      respond();
-      const { GET } = await import("../route");
-      await GET();
-      process.env[name] =
-        name === "TRIGGER_API_URL" ? "https://other.example.test" : "other";
-      respond({}, 403);
-      expect((await GET()).status).toBe(503);
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-    },
-  );
+  expect((await collectGET(request)).status).toBe(503);
+  refresh.mockResolvedValueOnce({ ok: true });
+  expect((await collectGET(request)).status).toBe(200);
 });
