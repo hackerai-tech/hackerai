@@ -35,6 +35,7 @@ jest.mock("../miosa-readiness", () => ({ waitForMiosaReadiness: jest.fn() }));
 jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 jest.mock("@miosa/sdk", () => ({ NotFoundError: class extends Error {} }));
 import { NotFoundError } from "@miosa/sdk";
+import { phLogger } from "@/lib/posthog/server";
 
 describe("file migration transaction", () => {
   const bytes = Buffer.from([0, 255, 2, 3]);
@@ -187,13 +188,52 @@ describe("file migration transaction", () => {
           },
         }),
     );
-    expect(await migrateE2BWorkspace(request)).toEqual({
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
       reason: "transfer_unavailable",
+      failureStage: "archive_transfer",
+      failureKind: "operation_failed",
+      failedStageDurationMs: expect.any(Number),
     });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "transfer_unavailable",
+        migration_event_version: 2,
+        failure_stage: "archive_transfer",
+        failure_kind: "operation_failed",
+        failed_stage_duration_ms: expect.any(Number),
+        stage_durations_ms: expect.objectContaining({
+          archive_transfer: expect.any(Number),
+        }),
+      }),
+    );
     expect(claim.commit).not.toHaveBeenCalled();
     expect(destroy).toHaveBeenCalled();
     expect(claim.abandon.mock.invocationCallOrder[0]).toBeGreaterThan(
       destroy.mock.invocationCallOrder[0],
+    );
+  });
+  it("reports destination creation timeouts without exposing provider errors", async () => {
+    const providerError = new Error(
+      "Request timed out for https://provider.invalid/private/path",
+    );
+    providerError.name = "TimeoutError";
+    (ensureMiosaSandboxConnection as jest.Mock).mockRejectedValue(
+      providerError,
+    );
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "destination_creation",
+      failureKind: "timeout",
+      failedStageDurationMs: expect.any(Number),
+    });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.not.objectContaining({
+        error: expect.anything(),
+        error_message: expect.anything(),
+      }),
     );
   });
   it("preserves the fence and destination when commit acknowledgement is lost", async () => {
