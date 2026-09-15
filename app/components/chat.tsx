@@ -581,6 +581,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     agentPermissionMode,
     selectedModel,
     setSelectedModel,
@@ -758,11 +759,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setIsExistingChat(true);
     } else {
       // Navigated to "/" (new chat) — reset to fresh state
+      resetSandboxPreference();
       setChatId(uuidv4());
       setIsExistingChat(false);
       wasNewChatRef.current = true;
     }
-  }, [routeChatId, setStreamedTitle]);
+  }, [routeChatId, setStreamedTitle, resetSandboxPreference]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -1145,7 +1147,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           }
 
           // Update sandbox preference to match actual sandbox used
-          setSandboxPreference(fallbackData.actualSandbox);
+          setSandboxPreference(fallbackData.actualSandbox, { remember: false });
 
           // Show toast notification
           const message =
@@ -1743,7 +1745,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       } else {
         // Navigated to an existing chat with no stored sandbox type — reset to cloud
         // so a stale local preference from a previous chat doesn't persist.
-        setSandboxPreference("e2b");
+        setSandboxPreference("e2b", { remember: false });
       }
       setInitializedSandboxChatId(chatId);
       return;
@@ -1751,6 +1753,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
     setSandboxPreference(
       storedSandboxType === "tauri" ? "desktop" : storedSandboxType,
+      { remember: false },
     );
     setInitializedSandboxChatId(chatId);
   }, [

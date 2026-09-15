@@ -527,9 +527,7 @@ describe("ChatInput - Integration Tests", () => {
         fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
         if (sandboxPreference === "desktop") {
           expect(
-            screen.getByText(
-              /Open HackerAI Desktop on the computer used for this task/,
-            ),
+            screen.getByText(/Open HackerAI Desktop on your selected computer/),
           ).toBeInTheDocument();
           expect(settingsRequested).not.toHaveBeenCalled();
         } else {
@@ -566,6 +564,36 @@ describe("ChatInput - Integration Tests", () => {
         expect(screen.getByTestId("selected-computer")).toHaveTextContent(
           `agent:${sandboxPreference}`,
         );
+      },
+    );
+
+    it.each([true, false])(
+      "shows contextual reconnect copy for isNewChat=%s",
+      (isNewChat) => {
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? []
+            : undefined,
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              isNewChat={isNewChat}
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        expect(
+          screen.getByText(
+            isNewChat
+              ? "Reconnect or choose another environment to start."
+              : "Reconnect it to continue this task.",
+          ),
+        ).toBeInTheDocument();
       },
     );
 

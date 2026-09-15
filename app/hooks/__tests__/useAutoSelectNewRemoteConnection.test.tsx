@@ -51,7 +51,9 @@ describe("useAutoSelectNewRemoteConnection", () => {
 
     rerender({ ...props, connections: [remoteConnection] });
 
-    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1");
+    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1", {
+      remember: false,
+    });
     expect(props.setSelectedModel).toHaveBeenCalledWith("auto");
     expect(props.setChatMode).toHaveBeenCalledWith("agent");
     expect(toast.success).toHaveBeenCalledWith(
@@ -115,7 +117,9 @@ describe("useAutoSelectNewRemoteConnection", () => {
 
     rerender({ ...props, connections: [remoteConnection] });
 
-    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1");
+    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1", {
+      remember: false,
+    });
     expect(props.setSelectedModel).not.toHaveBeenCalled();
     expect(props.setChatMode).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith(
@@ -137,7 +141,9 @@ describe("useAutoSelectNewRemoteConnection", () => {
 
     rerender({ ...props, connections: [remoteConnection] });
 
-    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1");
+    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1", {
+      remember: false,
+    });
     expect(props.setSelectedModel).not.toHaveBeenCalled();
     expect(props.setChatMode).toHaveBeenCalledWith("agent");
   });

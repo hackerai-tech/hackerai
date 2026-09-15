@@ -80,6 +80,52 @@ describe("useSandboxPreference", () => {
     expect(second.result.current.sandboxPreference).toBe("remote-kali");
   });
 
+  it.each(["desktop", "remote-kali", "e2b"])(
+    "restores a task on %s without changing the new-chat default, including after reload",
+    (taskPreference) => {
+      window.localStorage.setItem("sandbox-preference", "my-default-computer");
+      const first = renderHook(() => useSandboxPreference(false));
+      act(() =>
+        first.result.current.setSandboxPreference(taskPreference, {
+          remember: false,
+        }),
+      );
+      expect(first.result.current.sandboxPreference).toBe(taskPreference);
+      expect(localStorage.getItem("sandbox-preference")).toBe(
+        "my-default-computer",
+      );
+      act(() => first.result.current.resetSandboxPreference());
+      expect(first.result.current.sandboxPreference).toBe(
+        "my-default-computer",
+      );
+      act(() =>
+        first.result.current.setSandboxPreference(taskPreference, {
+          remember: false,
+        }),
+      );
+      first.unmount();
+      const second = renderHook(() => useSandboxPreference(false));
+      expect(second.result.current.sandboxPreference).toBe(
+        "my-default-computer",
+      );
+    },
+  );
+
+  it("remembers an explicit selection even when it already matches the restored task", () => {
+    window.localStorage.setItem("sandbox-preference", "e2b");
+    const { result } = renderHook(() => useSandboxPreference(false));
+    act(() =>
+      result.current.setSandboxPreference("desktop", { remember: false }),
+    );
+    act(() => result.current.setSandboxPreference("desktop"));
+    act(() =>
+      result.current.setSandboxPreference("other-task", { remember: false }),
+    );
+    act(() => result.current.resetSandboxPreference());
+    expect(result.current.sandboxPreference).toBe("desktop");
+    expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
+  });
+
   it("restores legacy Desktop preferences on the web", () => {
     mockIsTauriEnvironment.mockReturnValue(false);
     window.localStorage.setItem("sandbox-preference", "tauri");

@@ -703,7 +703,7 @@ export const ChatInput = ({
       (!sandboxPreference || sandboxPreference === "e2b") &&
       defaultLocalSandboxPreference
     ) {
-      setSandboxPreference(defaultLocalSandboxPreference);
+      setSandboxPreference(defaultLocalSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModel("auto");
@@ -845,11 +845,12 @@ export const ChatInput = ({
 
         {selectedComputerUnavailable && !computerConnectionPending && (
           <DisconnectedComputerNotice
+            isNewChat={isNewChat}
             sandboxPreference={sandboxPreference}
             onSelect={setSandboxPreference}
             reconnectInstructions={
               sandboxPreference === "desktop" && !selectedNativeDesktop
-                ? "Open HackerAI Desktop on the computer used for this task and sign in with the same account. Keep the app open while it reconnects."
+                ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
                 : undefined
             }
             reconnecting={

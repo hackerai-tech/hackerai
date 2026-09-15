@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
+import type { SetSandboxPreference } from "./useSandboxPreference";
 import type {
   ChatMode,
   SandboxPreference,
@@ -70,7 +71,7 @@ interface UseAutoSelectNewRemoteConnectionArgs {
   subscription: SubscriptionTier;
   freeSubscriptionResolved: boolean;
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  setSandboxPreference: SetSandboxPreference;
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
 }
@@ -99,7 +100,7 @@ export function useAutoSelectNewRemoteConnection({
         return;
       }
       if (sandboxPreference !== connection.connectionId) {
-        setSandboxPreference(connection.connectionId);
+        setSandboxPreference(connection.connectionId, { remember: false });
       }
 
       if (

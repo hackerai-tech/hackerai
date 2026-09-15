@@ -223,6 +223,8 @@ describe("SandboxSelector", () => {
 
     render(<SandboxSelector value="e2b" onChange={onChange} />);
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith("desktop"));
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith("desktop", { remember: false }),
+    );
   });
 });

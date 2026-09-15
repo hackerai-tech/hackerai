@@ -22,9 +22,11 @@ import { useTauri } from "@/app/hooks/useTauri";
 import { detectPlatform } from "@/app/download/DownloadSection";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
+import type { SetSandboxPreference } from "@/app/hooks/useSandboxPreference";
+
 interface SandboxSelectorProps {
   value: string;
-  onChange?: (value: string) => void;
+  onChange?: SetSandboxPreference;
   disabled?: boolean;
   size?: "sm" | "toolbar" | "md";
   triggerLabel?: string;
@@ -200,7 +202,7 @@ export function SandboxSelector({
     if (!preferredLocal) return;
 
     if (value === "e2b") {
-      onChange?.(preferredLocal);
+      onChange?.(preferredLocal, { remember: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

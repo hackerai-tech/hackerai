@@ -266,8 +266,13 @@ const ForkDraftSetter = () => {
 };
 
 const SelectedComputerProbe = () => {
-  const { sandboxPreference } = useGlobalState();
-  return <output data-testid="selected-computer">{sandboxPreference}</output>;
+  const { sandboxPreference, initializeNewChat } = useGlobalState();
+  return (
+    <>
+      <output data-testid="selected-computer">{sandboxPreference}</output>
+      <button onClick={initializeNewChat}>Start fresh chat</button>
+    </>
+  );
 };
 
 const DisconnectedQueueHarness = () => {
@@ -468,6 +473,68 @@ describe("Chat Component Integration", () => {
             sandboxType === "tauri" ? "desktop" : sandboxType,
           ),
         );
+      },
+    );
+
+    it.each(["button", "route"])(
+      "keeps the new-chat default after visiting Desktop and Cloud tasks (%s)",
+      async (navigation) => {
+        window.localStorage.setItem(
+          "sandbox-preference",
+          "my-default-computer",
+        );
+        mockLocalConnections = [];
+        mockRouteParams = { id: "desktop-task" };
+        mockRestoredChat = {
+          id: "desktop-task",
+          sandbox_type: "desktop",
+          default_model_slug: "agent",
+        };
+        const ui = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <SelectedComputerProbe />
+          </TestWrapper>
+        );
+        const { rerender } = render(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "desktop",
+          ),
+        );
+        expect(localStorage.getItem("sandbox-preference")).toBe(
+          "my-default-computer",
+        );
+        mockRouteParams = { id: "cloud-task" };
+        mockRestoredChat = {
+          id: "cloud-task",
+          sandbox_type: "e2b",
+          default_model_slug: "agent",
+        };
+        rerender(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "e2b",
+          ),
+        );
+        expect(localStorage.getItem("sandbox-preference")).toBe(
+          "my-default-computer",
+        );
+        if (navigation === "button")
+          fireEvent.click(
+            screen.getByRole("button", { name: "Start fresh chat" }),
+          );
+        else {
+          mockRouteParams = {};
+          mockRestoredChat = undefined;
+          rerender(ui());
+        }
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "my-default-computer",
+          ),
+        );
+        expect(mockSendMessage).not.toHaveBeenCalled();
       },
     );
 

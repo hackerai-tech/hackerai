@@ -33,6 +33,7 @@ import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   useSandboxPreference,
+  type SetSandboxPreference,
   type DesktopBridgeStatus,
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -140,7 +141,8 @@ interface GlobalStateType {
 
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  setSandboxPreference: SetSandboxPreference;
+  resetSandboxPreference: () => void;
 
   // Agent tool approval behavior
   agentPermissionMode: AgentPermissionMode;
@@ -475,6 +477,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const {
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
     retryDesktopBridge,
@@ -635,7 +638,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     agentFirstDefaultAppliedRef.current = true;
     setChatModeState("agent");
     if (localSandboxPreference) {
-      setSandboxPreference(localSandboxPreference);
+      setSandboxPreference(localSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -749,7 +752,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       freeDesktopSandboxPreference &&
       sandboxPreference !== freeDesktopSandboxPreference
     ) {
-      setSandboxPreference(freeDesktopSandboxPreference);
+      setSandboxPreference(freeDesktopSandboxPreference, { remember: false });
     }
     if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -1166,7 +1169,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setActiveProjectId(null);
-  }, []);
+    resetSandboxPreference();
+  }, [resetSandboxPreference]);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1329,6 +1333,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,
