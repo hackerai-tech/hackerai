@@ -102,7 +102,7 @@ import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
-import { useLatestRef } from "../hooks/useLatestRef";
+import { useCommittedRef, useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { useBatchedDataStreamAppend } from "@/app/hooks/useBatchedDataStreamAppend";
 import {
@@ -718,7 +718,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat && initializedSandboxChatId !== chatId
       ? "Loading the task's computer selection"
       : connectionSendDisabledReason;
-  const computerSendDisabledReasonRef = useLatestRef(
+  const computerSendDisabledReasonRef = useCommittedRef(
     computerSendDisabledReason,
   );
   const hasInitializedModelRef = useRef(false);

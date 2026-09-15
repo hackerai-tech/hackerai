@@ -2,7 +2,7 @@ import { RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useLatestRef } from "@/app/hooks/useLatestRef";
+import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
@@ -103,7 +103,7 @@ export const useChatHandlers = ({
   sendDisabledReason,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
-  const sendDisabledReasonRef = useLatestRef(sendDisabledReason);
+  const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
   const {
     getInput,
     uploadedFiles,
@@ -665,6 +665,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
@@ -718,6 +719,7 @@ export const useChatHandlers = ({
         todos: cleanedTodos,
       });
     }
+    if (sendDisabledReasonRef.current) return;
     runChatAction("regenerate response", () =>
       regenerate({
         body: {
@@ -744,6 +746,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -775,6 +778,7 @@ export const useChatHandlers = ({
       });
     }
 
+    if (sendDisabledReasonRef.current) return;
     runChatAction("retry response", () =>
       regenerate({
         body: {
@@ -815,6 +819,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     // Compute the todo snapshot before the edit mutation. Stopping a run
@@ -847,6 +852,7 @@ export const useChatHandlers = ({
       throw error;
     }
 
+    if (sendDisabledReasonRef.current) return;
     setTodos(cleanedTodosForEdit);
 
     // Build updated parts: text + remaining file parts

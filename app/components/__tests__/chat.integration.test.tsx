@@ -36,6 +36,7 @@ let mockRouteParams: Record<string, string> = {};
 let mockComputerOverlayMedia = false;
 const originalMatchMedia = window.matchMedia;
 
+let mockUseRealChatHandlers = false;
 let mockLocalConnections:
   Array<{ connectionId: string; isDesktop: boolean }> | undefined;
 let mockChatHandlerArgs: Parameters<
@@ -140,6 +141,13 @@ jest.mock("../../hooks/useChats", () => ({
 jest.mock("../../hooks/useChatHandlers", () => ({
   useChatHandlers: (args: typeof mockChatHandlerArgs) => {
     mockChatHandlerArgs = args;
+    if (mockUseRealChatHandlers) {
+      return jest
+        .requireActual<typeof import("@/app/hooks/useChatHandlers")>(
+          "@/app/hooks/useChatHandlers",
+        )
+        .useChatHandlers(args);
+    }
     return {
       handleSubmit: mockHandleSubmit,
       handleStop: jest.fn(),
@@ -373,6 +381,7 @@ describe("Chat Component Integration", () => {
     mockRouteParams = {};
     mockRestoredChat = undefined;
     mockLocalConnections = undefined;
+    mockUseRealChatHandlers = false;
     window.localStorage.clear();
     mockComputerOverlayMedia = false;
     window.matchMedia = jest.fn(
@@ -664,6 +673,7 @@ describe("Chat Component Integration", () => {
     });
 
     it("preserves a fork's pending send until its selected computer reconnects", async () => {
+      mockUseRealChatHandlers = true;
       mockRouteParams = { id: "fork-task" };
       mockRestoredChat = {
         id: "fork-task",
@@ -699,7 +709,14 @@ describe("Chat Component Integration", () => {
       expect(sessionStorage.getItem("autoSendChatId")).toBe("fork-task");
       mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
       rerender(view());
-      await waitFor(() => expect(mockHandleSubmit).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "continue" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ sandboxPreference: "desktop" }),
+          }),
+        ),
+      );
       expect(sessionStorage.getItem("autoSendChatId")).toBeNull();
     });
 
