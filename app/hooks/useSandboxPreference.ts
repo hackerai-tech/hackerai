@@ -26,7 +26,6 @@ let bridgeStartPromise: Promise<DesktopSandboxBridge | null> | null = null;
 let bridgeGeneration = 0;
 let bridgeStateListener:
   ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
-const PERSISTABLE_SANDBOX_PREFERENCES = new Set(["e2b", "desktop"]);
 const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
 const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
 const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
@@ -87,7 +86,8 @@ export function useSandboxPreference(
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
-      if (stored && stored !== "tauri") return stored as SandboxPreference;
+      if (stored)
+        return stored === "tauri" ? "desktop" : (stored as SandboxPreference);
       return isTauriEnvironment() ? "desktop" : "e2b";
     });
 
@@ -328,10 +328,7 @@ export function useSandboxPreference(
       isFirstRender.current = false;
       return;
     }
-    if (
-      typeof window !== "undefined" &&
-      PERSISTABLE_SANDBOX_PREFERENCES.has(sandboxPreference)
-    ) {
+    if (typeof window !== "undefined") {
       localStorage.setItem("sandbox-preference", sandboxPreference);
     }
   }, [sandboxPreference]);

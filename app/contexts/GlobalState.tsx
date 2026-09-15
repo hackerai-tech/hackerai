@@ -613,12 +613,14 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       return;
     }
 
-    const localSandboxPreference = agentDefaultDecision.useDefaultLocalSandbox
-      ? defaultLocalSandboxPreference
-      : null;
+    const localSandboxPreference =
+      agentDefaultDecision.useDefaultLocalSandbox && sandboxPreference === "e2b"
+        ? defaultLocalSandboxPreference
+        : null;
 
     if (
       agentDefaultDecision.useDefaultLocalSandbox &&
+      sandboxPreference === "e2b" &&
       !localSandboxPreference
     ) {
       return;

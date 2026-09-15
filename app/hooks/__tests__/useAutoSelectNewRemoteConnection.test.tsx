@@ -74,6 +74,20 @@ describe("useAutoSelectNewRemoteConnection", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it.each(["desktop", "missing-runner"])(
+    "does not replace selected %s when a different runner appears",
+    (sandboxPreference) => {
+      const props = { ...makeProps(), sandboxPreference };
+      const { rerender } = renderHook(
+        (currentProps) => useAutoSelectNewRemoteConnection(currentProps),
+        { initialProps: props },
+      );
+      rerender({ ...props, connections: [remoteConnection] });
+      expect(props.setSandboxPreference).not.toHaveBeenCalled();
+      expect(props.setChatMode).not.toHaveBeenCalled();
+    },
+  );
+
   it("ignores native Desktop bridge connections", () => {
     const props = makeProps();
     const { rerender } = renderHook(

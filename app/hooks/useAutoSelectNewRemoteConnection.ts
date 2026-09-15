@@ -90,6 +90,14 @@ export function useAutoSelectNewRemoteConnection({
 }: UseAutoSelectNewRemoteConnectionArgs) {
   const selectNewConnection = useCallback(
     (connection: RemoteConnection) => {
+      // A runner appearing (or reconnecting) is not permission to replace a
+      // different computer already selected for the task.
+      if (
+        sandboxPreference !== "e2b" &&
+        sandboxPreference !== connection.connectionId
+      ) {
+        return;
+      }
       if (sandboxPreference !== connection.connectionId) {
         setSandboxPreference(connection.connectionId);
       }

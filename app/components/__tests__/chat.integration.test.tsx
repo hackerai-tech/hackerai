@@ -15,7 +15,6 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useEffect, useRef } from "react";
-import { useGlobalState } from "@/app/contexts/GlobalState";
 
 jest.mock("uuid", () => ({
   v4: () => "queued-message-id",
@@ -25,7 +24,9 @@ jest.mock("uuid", () => ({
 // These mocks are hoisted by Jest
 
 // Mock @ai-sdk/react
-const mockSendMessage = jest.fn();
+const mockSendMessage = jest
+  .fn<() => Promise<void>>()
+  .mockResolvedValue(undefined);
 const mockSetMessages = jest.fn();
 const mockStop = jest.fn();
 const mockRegenerate = jest.fn();
@@ -33,6 +34,23 @@ const mockResumeStream = jest.fn();
 let mockRouteParams: Record<string, string> = {};
 let mockComputerOverlayMedia = false;
 const originalMatchMedia = window.matchMedia;
+
+let mockRestoredChat:
+  { id: string; sandbox_type: string; default_model_slug: string } | undefined;
+jest.mock("convex/react", () => {
+  const original =
+    jest.requireActual<typeof import("convex/react")>("convex/react");
+  return {
+    ...original,
+    useQuery: (query: any, ...args: any[]) => {
+      const { getFunctionName } = require("convex/server");
+      return getFunctionName(query) === "chats:getChatByIdFromClient" &&
+        mockRestoredChat
+        ? mockRestoredChat
+        : original.useQuery(query, ...args);
+    },
+  };
+});
 
 jest.mock("@ai-sdk/react", () => ({
   useChat: jest.fn(() => ({
@@ -69,6 +87,9 @@ jest.mock("@/hooks/use-mobile", () => ({
 }));
 
 jest.mock("@/lib/utils/client-storage", () => ({
+  ...jest.requireActual<typeof import("@/lib/utils/client-storage")>(
+    "@/lib/utils/client-storage",
+  ),
   NULL_THREAD_DRAFT_ID: "null-thread",
   getDraftContentById: jest.fn(() => null),
   getDraftAttachmentsById: jest.fn(() => []),
@@ -201,15 +222,25 @@ jest.mock("@/components/ui/sidebar", () => ({
 }));
 
 // ===== NOW import components =====
-import {
+const {
   Chat,
   getExistingChatLoadState,
   getStoredAgentApprovalRequest,
   useStreamedChatTitle,
   useServerMessages,
-} from "../chat";
-import { ChatLayout } from "../ChatLayout";
-import { TestWrapper } from "../testUtils";
+} = jest.requireActual<typeof import("../chat")>("../chat");
+const { ChatLayout } =
+  jest.requireActual<typeof import("../ChatLayout")>("../ChatLayout");
+const { TestWrapper } =
+  jest.requireActual<typeof import("../testUtils")>("../testUtils");
+const { useGlobalState } = jest.requireActual<
+  typeof import("@/app/contexts/GlobalState")
+>("@/app/contexts/GlobalState");
+
+const SelectedComputerProbe = () => {
+  const { sandboxPreference } = useGlobalState();
+  return <output data-testid="selected-computer">{sandboxPreference}</output>;
+};
 
 const QueueEditingHarness = () => {
   const {
@@ -305,6 +336,7 @@ describe("Chat Component Integration", () => {
     convexReact.resetMockConvexAuth?.();
     convexReact.resetMockConvexQueries?.();
     mockRouteParams = {};
+    mockRestoredChat = undefined;
     mockComputerOverlayMedia = false;
     window.matchMedia = jest.fn(
       (query: string) =>
@@ -369,6 +401,29 @@ describe("Chat Component Integration", () => {
 
       expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
     });
+
+    it.each(["desktop", "tauri", "missing-remote"])(
+      "restores %s from a reopened task without waiting for connections or selecting Cloud",
+      async (sandboxType) => {
+        mockRouteParams = { id: "reopened-task" };
+        mockRestoredChat = {
+          id: "reopened-task",
+          sandbox_type: sandboxType,
+          default_model_slug: "agent",
+        };
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <SelectedComputerProbe />
+          </TestWrapper>,
+        );
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            sandboxType === "tauri" ? "desktop" : sandboxType,
+          ),
+        );
+      },
+    );
 
     it("should render with provided chatId", () => {
       mockRouteParams = { id: "test-chat-123" };
@@ -552,7 +607,10 @@ describe("Chat Component Integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "Save queued edit" }));
 
       await waitFor(() => {
-        expect(screen.getByText("updated queued message")).toBeInTheDocument();
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "updated queued message" }),
+          expect.anything(),
+        );
         expect(screen.getByTestId("queue-state")).toHaveTextContent(
           "Queued: 0",
         );

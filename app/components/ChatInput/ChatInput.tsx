@@ -52,6 +52,8 @@ import {
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
+import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -270,6 +272,7 @@ export const ChatInput = ({
     localConnections,
     freeDesktopAgentOnlyActive,
     desktopBridgeStatus,
+    retryDesktopBridge,
     defaultLocalSandboxPreference,
   } = useGlobalState();
   const { user } = useAuth();
@@ -659,7 +662,7 @@ export const ChatInput = ({
     // Only show toast on actual disconnect (true → false), not on
     // initial mount or logout where sandbox availability starts as false.
     if (!freeAgentSandboxAvailable) {
-      if (freeDesktopAgentOnlyActive) {
+      if (freeDesktopAgentOnlyActive || sandboxPreference !== "e2b") {
         if (wasConnected) {
           const selectedDesktop = sandboxPreference === "desktop";
           toast.info(
@@ -717,8 +720,28 @@ export const ChatInput = ({
           ? "Select a local sandbox to use Agent"
           : "Reconnect the selected local sandbox to use Agent"
       : undefined;
+  const selectedNativeDesktop =
+    sandboxPreference === "desktop" && isTauriEnvironment();
+  const selectedComputerConnected = selectedNativeDesktop
+    ? desktopBridgeStatus === "connected"
+    : localConnections?.some((connection) =>
+        sandboxPreference === "desktop"
+          ? connection.isDesktop
+          : !connection.isDesktop &&
+            connection.connectionId === sandboxPreference,
+      );
+  const computerConnectionPending =
+    !selectedNativeDesktop && localConnections === undefined;
+  const selectedComputerUnavailable =
+    isAgent && sandboxPreference !== "e2b" && !selectedComputerConnected;
   const effectiveSendDisabledReason =
-    sendDisabledReason ?? freeDesktopSandboxUnavailableReason;
+    sendDisabledReason ??
+    freeDesktopSandboxUnavailableReason ??
+    (selectedComputerUnavailable
+      ? computerConnectionPending
+        ? "Checking your computer connection"
+        : "Reconnect your computer or choose another environment"
+      : undefined);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -829,6 +852,25 @@ export const ChatInput = ({
               {isReconnecting ? "Reconnecting..." : "Reconnect"}
             </Button>
           </div>
+        )}
+
+        {selectedComputerUnavailable && !computerConnectionPending && (
+          <DisconnectedComputerNotice
+            sandboxPreference={sandboxPreference}
+            onSelect={setSandboxPreference}
+            reconnectInstructions={
+              sandboxPreference === "desktop" && !selectedNativeDesktop
+                ? "Open HackerAI Desktop on the computer used for this task and sign in with the same account. Keep the app open while it reconnects."
+                : undefined
+            }
+            reconnecting={
+              selectedNativeDesktop && desktopBridgeStatus === "connecting"
+            }
+            onReconnect={() => {
+              if (selectedNativeDesktop) retryDesktopBridge();
+              else openSettingsDialog("Remote Control");
+            }}
+          />
         )}
 
         {rateLimitWarning && onDismissRateLimitWarning && (

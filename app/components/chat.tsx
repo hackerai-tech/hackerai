@@ -569,7 +569,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     selectedModel,
     setSelectedModel,
     subscription,
-    localConnections,
     activeProjectId,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
@@ -1687,8 +1686,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
 
-  // Initialize sandbox preference from chat data, validated against available connections.
-  // Separate from the main chatData effect so it can re-run when localConnections loads.
+  // Restore the task's environment independently of connection availability.
+  // A missing computer must reconnect or be explicitly replaced by the user.
   useEffect(() => {
     if (hasInitializedSandboxRef.current || !isExistingChat) return;
 
@@ -1708,37 +1707,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       return;
     }
 
-    if (storedSandboxType === "e2b") {
-      setSandboxPreference("e2b");
-      hasInitializedSandboxRef.current = true;
-    } else if (storedSandboxType === "tauri") {
-      // "tauri" is a legacy preference — desktop now uses "desktop"
-      setSandboxPreference("e2b");
-      hasInitializedSandboxRef.current = true;
-    } else if (storedSandboxType === "desktop") {
-      // Desktop preference — validate that a desktop connection exists
-      if (localConnections !== undefined) {
-        const desktopExists = localConnections.some((conn) => conn.isDesktop);
-        setSandboxPreference(desktopExists ? "desktop" : "e2b");
-        hasInitializedSandboxRef.current = true;
-      }
-      // If localConnections is still loading, wait for next render
-    } else if (localConnections !== undefined) {
-      // For remote connectionIds, validate the connection still exists
-      const connectionExists = localConnections.some(
-        (conn) => conn.connectionId === storedSandboxType,
-      );
-      if (connectionExists) {
-        setSandboxPreference(storedSandboxType);
-      } else {
-        // Stale connection — fall back to cloud
-        setSandboxPreference("e2b");
-      }
-      hasInitializedSandboxRef.current = true;
-    }
-    // If localConnections is still loading (undefined), wait for next render
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId]);
+    setSandboxPreference(
+      storedSandboxType === "tauri" ? "desktop" : storedSandboxType,
+    );
+    hasInitializedSandboxRef.current = true;
+  }, [
+    chatData,
+    storedSandboxType,
+    isExistingChat,
+    chatId,
+    setSandboxPreference,
+  ]);
 
   // Initialize model selection from chat data
   useEffect(() => {

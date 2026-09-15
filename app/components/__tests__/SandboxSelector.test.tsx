@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockGlobalState = {
@@ -122,7 +122,7 @@ describe("SandboxSelector", () => {
     );
   });
 
-  it("selects a healthy remote runner while the embedded bridge reconnects", async () => {
+  it("preserves Desktop while the bridge reconnects even with another healthy runner", async () => {
     const onChange = jest.fn();
     mockGlobalState.localConnections = [
       { connectionId: "stale-desktop", isDesktop: true },
@@ -140,8 +140,38 @@ describe("SandboxSelector", () => {
 
     render(<SandboxSelector value="desktop" onChange={onChange} />);
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith("remote-kali"));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    expect(onChange).not.toHaveBeenCalled();
   });
+
+  it.each(["desktop", "remote-kali"])(
+    "keeps a paid user's disconnected %s until Cloud is explicitly chosen",
+    async (value) => {
+      mockGlobalState.subscription = "pro";
+      mockGlobalState.desktopBridgeStatus = "connected";
+      mockGlobalState.localConnections = [
+        {
+          connectionId: value,
+          isDesktop: value === "desktop",
+          name: "My computer",
+        },
+      ];
+      const onChange = jest.fn();
+      const { rerender } = render(
+        <SandboxSelector value={value} onChange={onChange} />,
+      );
+      mockGlobalState.localConnections = [];
+      mockGlobalState.desktopBridgeStatus = "failed";
+      rerender(<SandboxSelector value={value} onChange={onChange} />);
+      expect(onChange).not.toHaveBeenCalled();
+      fireEvent.click(
+        screen.getByRole("button", { name: /Local unavailable/i }),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "Cloud" }));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("e2b");
+    },
+  );
 
   it("does not select a remote runner without live relay presence", async () => {
     const onChange = jest.fn();

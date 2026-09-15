@@ -71,6 +71,22 @@ describe("useSandboxPreference", () => {
     expect(result.current.sandboxPreference).toBe("e2b");
   });
 
+  it("persists a remote computer across remounts without falling back to Cloud", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    const first = renderHook(() => useSandboxPreference(false));
+    act(() => first.result.current.setSandboxPreference("remote-kali"));
+    first.unmount();
+    const second = renderHook(() => useSandboxPreference(false));
+    expect(second.result.current.sandboxPreference).toBe("remote-kali");
+  });
+
+  it("restores legacy Desktop preferences on the web", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    window.localStorage.setItem("sandbox-preference", "tauri");
+    const { result } = renderHook(() => useSandboxPreference(false));
+    expect(result.current.sandboxPreference).toBe("desktop");
+  });
+
   it("does not initialize the desktop bridge in a web browser", async () => {
     mockIsTauriEnvironment.mockReturnValue(false);
 

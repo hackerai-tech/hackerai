@@ -16,21 +16,10 @@ export function resolveFreeDesktopSandboxPreference({
   desktopBridgeActive,
   localConnections,
 }: FreeDesktopSandboxState): SandboxPreference {
-  if (sandboxPreference === "desktop" && desktopBridgeActive) {
+  // A disconnected computer is still the selected computer. Only choose a
+  // default when the current environment is Cloud, which free Agent cannot use.
+  if (sandboxPreference !== "e2b") {
     return sandboxPreference;
-  }
-
-  if (sandboxPreference !== "desktop" && sandboxPreference !== "e2b") {
-    if (localConnections === undefined) return sandboxPreference;
-    if (
-      localConnections.some(
-        (connection) =>
-          !connection.isDesktop &&
-          connection.connectionId === sandboxPreference,
-      )
-    ) {
-      return sandboxPreference;
-    }
   }
 
   if (desktopBridgeActive) return "desktop";

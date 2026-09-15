@@ -27,6 +27,7 @@ interface SandboxSelectorProps {
   onChange?: (value: string) => void;
   disabled?: boolean;
   size?: "sm" | "toolbar" | "md";
+  triggerLabel?: string;
 }
 
 interface ConnectionOption {
@@ -42,6 +43,7 @@ export function SandboxSelector({
   onChange,
   disabled = false,
   size = "sm",
+  triggerLabel,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -179,28 +181,10 @@ export function SandboxSelector({
     }
   }, [open]);
 
-  // Auto-correct stale sandbox preference
+  // Availability must never replace the user's selected computer.
   const valueMatchesOption = options.some((opt) => opt.id === value);
-  useEffect(() => {
-    if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
-      // Free users can't fall back to Cloud — leave preference as-is,
-      // the ChatInput effect will switch them to ask mode
-      if (isFreeUser) return;
-
-      onChange?.("e2b");
-      // Only show toast for remote disconnects, not when Desktop is hidden
-      const wasHiddenDesktop = value === "desktop";
-      if (!wasHiddenDesktop) {
-        toast.info("Local sandbox disconnected. Switched to Cloud.", {
-          duration: 5000,
-        });
-      }
-    }
-  }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
-
-  // Keep free users on a usable local connection. A stale Desktop presence can
-  // outlive the embedded bridge, so prefer a healthy remote runner while the
-  // bridge reconnects instead of repeatedly selecting the unavailable bridge.
+  // Choose an initial local default for free users, without replacing a
+  // previously selected computer when it disconnects.
   useEffect(() => {
     if (!isFreeUser || !connections?.length) return;
 
@@ -215,9 +199,7 @@ export function SandboxSelector({
         : firstRemote?.connectionId;
     if (!preferredLocal) return;
 
-    const desktopUnavailable =
-      isTauri && value === "desktop" && !desktopIsSelectable;
-    if (value === "e2b" || desktopUnavailable) {
+    if (value === "e2b") {
       onChange?.(preferredLocal);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,15 +252,16 @@ export function SandboxSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          type="button"
           variant="ghost"
           size={size === "md" ? "default" : "sm"}
           disabled={disabled}
           className={buttonClassName}
-          title={selectedOption?.label}
+          title={triggerLabel ?? selectedOption?.label}
         >
           <Icon className={iconClassName} />
           <span className="min-w-0 flex-1 truncate text-left">
-            {selectedOption?.shortLabel}
+            {triggerLabel ?? selectedOption?.shortLabel}
           </span>
           <ChevronDown
             className={
