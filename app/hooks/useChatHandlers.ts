@@ -220,7 +220,7 @@ export const useChatHandlers = ({
     const expectedTriggerRunId = startedRun?.runId ?? currentRunId;
     // Cancel a captured existing run even if the new start failed. Without an
     // exact handle, never send a broad cancellation that could hit a later run.
-    if (pendingStart && !expectedTriggerRunId) {
+    if (!expectedTriggerRunId) {
       if (startFailure) throw startFailure;
       return { outcome: "not_applicable" };
     }
@@ -229,7 +229,7 @@ export const useChatHandlers = ({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chatId,
-        ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
+        expectedTriggerRunId,
       }),
     });
     if (response.status === 409) {

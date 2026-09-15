@@ -270,6 +270,29 @@ describe("useChatHandlers steer todo handoff", () => {
     },
   );
 
+  it("does not broadly cancel a chat when Stop has no captured run or pending start", async () => {
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "submitted",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleStop();
+    });
+    expect(mockStop).toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("retains the starting run while Send now waits for todo persistence", async () => {
     let finishStart!: (response: Response) => void;
     let finishSave!: (value: null) => void;
