@@ -351,31 +351,58 @@ async function main() {
     assert.equal(await client.get(destination[0]), "3");
     // Exercise the hosted runner against real Redis and its actual Lua scripts.
     await client.flushDb(); // This process owns the disposable database.
+    const inventoryCursors: (string | undefined)[] = [];
     const runner = (command: MigrationCommand, canonicalReady = false) =>
       runQuotaMigration(command, {
         redis,
         hmacSecret: "test",
         canonical: canonicalReady,
-        listUsers: async () => ({
-          emails: ["a.b+one@gmail.com", "ab@gmail.com"],
-          after: null,
-        }),
+        listUsers: async (after) => {
+          inventoryCursors.push(after);
+          return {
+            emails: ["a.b+one@gmail.com", "ab@gmail.com", "ab+two@gmail.com"],
+            after: null,
+          };
+        },
       });
     const runnerSource = legacy("a.b+one@gmail.com", "test")!;
     const runnerTarget = canonical("ab@gmail.com", "test")!;
+    const shardedSource = legacy("ab+two@gmail.com", "test")!;
+    const shardedCounter = `free_monthly_cost:${shardedSource}:2026-09`;
     const sourceCounter = `free_monthly_cost:${runnerSource}:2026-09`;
     const targetCounter = `free_monthly_cost:${runnerTarget}:2026-09`;
     const expiredLegacy = `free_agent_limit:user_${"A".repeat(26)}:free_agent:20000`;
     await client.set(expiredLegacy, "4"); // A retired daily counter without a TTL.
     await client.set(sourceCounter, "15", { PX: 60000 });
     await client.set(targetCounter, "25", { PX: 90000 });
-    await runner({ action: "inventory" });
+    // Resume an old inventory already at the provider's per-record size limit.
+    // Its mapping and cursor must survive while all new mappings use shards.
+    const inventoryKey = "free_quota_runtime_migration:v1:subjects";
+    await client.hSet(inventoryKey, runnerSource, runnerTarget);
+    await client.set(
+      "free_quota_runtime_migration:v1:meta",
+      JSON.stringify({ inventoryCursor: "saved-workos-page" }),
+    );
+    await client.set(shardedCounter, "7", { PX: 60000 });
+    assert.equal((await runner({ action: "inventory" })).mappedSubjects, 3);
+    assert.deepEqual(inventoryCursors, ["saved-workos-page"]);
+    assert.equal(await client.hLen(inventoryKey), 1);
+    assert.equal(await client.hGet(inventoryKey, runnerSource), runnerTarget);
+    assert.equal(
+      await client.hGet(
+        `${inventoryKey}:${shardedSource.slice(-2)}`,
+        shardedSource,
+      ),
+      runnerTarget,
+    );
     await client.set("free_limit:unmapped:free:today", "1");
+    const unknownHmacKey = `free_monthly_cost:free_quota:v1:${"0".repeat(64)}:2026-09`;
+    await client.set(unknownHmacKey, "9");
     while (!(await runner({ action: "audit" })).auditComplete) {}
-    assert.equal((await runner({ action: "status" })).unknownQuotaKeys, 1);
+    assert.equal((await runner({ action: "status" })).unknownQuotaKeys, 2);
     await assert.rejects(runner({ action: "pause" }));
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), null);
-    await client.del("free_limit:unmapped:free:today");
+    await client.del(["free_limit:unmapped:free:today", unknownHmacKey]);
     await runner({ action: "restart-audit" });
     while (!(await runner({ action: "audit" })).auditComplete) {}
     await runner({ action: "pause" });
@@ -401,7 +428,8 @@ async function main() {
       if (
         failCommit &&
         keys[1] === "free_quota_runtime_migration:v1:meta" &&
-        args[2] === "migrated"
+        typeof args[1] === "string" &&
+        JSON.parse(args[1]).applyCollection === 1
       ) {
         failCommit = false;
         throw new Error("Synthetic connection loss before page commit");
@@ -413,7 +441,8 @@ async function main() {
     redis.eval = realEval;
     while (!(await runner(apply, true)).applied) {}
     assert.equal(await client.get(sourceCounter), null);
-    assert.equal(await client.get(targetCounter), "40");
+    assert.equal(await client.get(shardedCounter), null);
+    assert.equal(await client.get(targetCounter), "47");
     assert.ok((await client.pTTL(targetCounter)) > 60000);
     assert.equal(
       await client.get(freeQuotaRedirectKey(runnerSource)),
@@ -424,9 +453,13 @@ async function main() {
     await runner({ action: "resume", canonicalRuntimesReady: true }, true);
     assert.equal(await client.get(FREE_QUOTA_MIGRATION_STATE), "complete");
     await runner({ action: "cleanup" }, true);
+    assert.deepEqual(
+      await client.keys("free_quota_runtime_migration:v1:*"),
+      [],
+    );
     assert.equal(await client.get(expiredLegacy), "4");
     assert.equal(await client.ttl(expiredLegacy), -1);
-    assert.equal(await client.get(targetCounter), "40");
+    assert.equal(await client.get(targetCounter), "47");
     assert.equal(
       await client.get(freeQuotaRedirectKey(runnerSource)),
       runnerTarget,

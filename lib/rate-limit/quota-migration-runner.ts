@@ -17,6 +17,15 @@ import {
 const PREFIX = "free_quota_runtime_migration:v1";
 const META = `${PREFIX}:meta`;
 const SUBJECTS = `${PREFIX}:subjects`;
+// Keep an existing unsharded inventory readable, but never grow it again.
+// New mappings are partitioned by the final HMAC byte below Upstash's record cap.
+const SUBJECT_COLLECTIONS = [
+  SUBJECTS,
+  ...Array.from(
+    { length: 256 },
+    (_, bucket) => `${SUBJECTS}:${bucket.toString(16).padStart(2, "0")}`,
+  ),
+];
 const SOURCE_KEYS = `${PREFIX}:source_keys`;
 const UNKNOWN = `${PREFIX}:unknown`;
 const LOCK = `${PREFIX}:lock`;
@@ -31,6 +40,7 @@ type Progress = {
   auditPaused?: boolean;
   auditHasLocks?: boolean;
   applyCursor?: string;
+  applyCollection?: number;
   applyStarted?: boolean;
   applied?: boolean;
 };
@@ -175,7 +185,21 @@ export async function runQuotaMigration(
           mappings[source] = target;
           mappings[target] = target;
         }
-        await writePage(SUBJECTS, mappings);
+        await redis.eval(
+          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return redis.error_reply('Migration lease lost') end
+           for i = 2, #ARGV, 2 do
+             local previous = redis.call('HGET', KEYS[2], ARGV[i])
+             if previous then
+               if previous ~= ARGV[i+1] then return redis.error_reply('Inventory mapping changed') end
+             else
+               local bucket = tonumber(string.sub(ARGV[i], -2), 16)
+               redis.call('HSET', KEYS[3 + bucket], ARGV[i], ARGV[i+1])
+             end
+           end
+           return 1`,
+          [LOCK, ...SUBJECT_COLLECTIONS],
+          [owner, ...Object.entries(mappings).flat()],
+        );
         await commit({
           inventoryCursor: page.after ?? undefined,
           inventoryComplete: !page.after,
@@ -219,9 +243,25 @@ export async function runQuotaMigration(
               .filter((s): s is string => !!s),
           ),
         ];
-        const mappings = subjects.length
-          ? await redis.hmget<Record<string, string>>(SUBJECTS, ...subjects)
-          : {};
+        const targets = subjects.length
+          ? await redis.eval<string[], (string | null)[]>(
+              `local values = {}
+               for i, subject in ipairs(ARGV) do
+                 local value = redis.call('HGET', KEYS[1], subject)
+                 if not value then
+                   local bucket = tonumber(string.sub(subject, -2), 16)
+                   value = redis.call('HGET', KEYS[2 + bucket], subject)
+                 end
+                 values[i] = value
+               end
+               return values`,
+              SUBJECT_COLLECTIONS,
+              subjects,
+            )
+          : [];
+        const mappings = Object.fromEntries(
+          subjects.map((subject, i) => [subject, targets[i]]),
+        );
         const unknown: Record<string, string> = {};
         const aliases = new Map<string, Set<string>>();
         for (const key of relevant) {
@@ -293,8 +333,15 @@ export async function runQuotaMigration(
       // The paused full audit checked locks across every SCAN page. Admission
       // remains paused; the operator also verifies queued/approval-waiting work.
       await commit({ ...progress, applyStarted: true });
+      const collection = progress.applyCollection ?? 0;
+      if (
+        !Number.isInteger(collection) ||
+        collection < 0 ||
+        collection >= SUBJECT_COLLECTIONS.length
+      )
+        throw new MigrationBlocked("Invalid inventory collection cursor");
       const [cursor, entries] = await redis.hscan(
-        SUBJECTS,
+        SUBJECT_COLLECTIONS[collection],
         progress.applyCursor ?? "0",
         { count: 100 },
       );
@@ -328,14 +375,19 @@ export async function runQuotaMigration(
           [target, ...kinds, owner],
         );
       }
+      const finishedCollection = String(cursor) === "0";
+      const applied =
+        finishedCollection && collection === SUBJECT_COLLECTIONS.length - 1;
       await commit(
         {
           ...progress,
           applyStarted: true,
           applyCursor: String(cursor),
-          applied: String(cursor) === "0",
+          applyCollection:
+            finishedCollection && !applied ? collection + 1 : collection,
+          applied,
         },
-        String(cursor) === "0" ? "migrated" : undefined,
+        applied ? "migrated" : undefined,
       );
     } else if (command.action === "resume") {
       if (
@@ -354,8 +406,10 @@ export async function runQuotaMigration(
         throw new MigrationBlocked("Cleanup requires completed migration");
       await redis.eval(
         `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return redis.error_reply('Migration lease lost') end
-         return redis.call('DEL', KEYS[2], KEYS[3], KEYS[4], KEYS[5])`,
-        [LOCK, META, SUBJECTS, SOURCE_KEYS, UNKNOWN],
+         local deleted = 0
+         for i = 2, #KEYS do deleted = deleted + redis.call('DEL', KEYS[i]) end
+         return deleted`,
+        [LOCK, META, ...SUBJECT_COLLECTIONS, SOURCE_KEYS, UNKNOWN],
         [owner],
       );
     }
@@ -370,7 +424,11 @@ export async function runQuotaMigration(
       auditHasLocks: !!latest.auditHasLocks,
       applyStarted: !!latest.applyStarted,
       applied: !!latest.applied,
-      mappedSubjects: await redis.hlen(SUBJECTS),
+      mappedSubjects: await redis.eval<[], number>(
+        "local count = 0; for _, key in ipairs(KEYS) do count = count + redis.call('HLEN', key) end; return count",
+        SUBJECT_COLLECTIONS,
+        [],
+      ),
       aliasesWithKeys: await redis.hlen(SOURCE_KEYS),
       unknownQuotaKeys: await redis.hlen(UNKNOWN),
     };

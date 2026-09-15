@@ -101,6 +101,12 @@ inventories, quota subjects, credentials or alternate provider URLs.
 1. Call `inventory` repeatedly until `inventoryComplete`; each request fetches
    one WorkOS page and stores only legacy/canonical quota-subject mappings in the
    same Redis database. Cursors stay server-side. `status` returns progress.
+   New mappings use 256 hashes partitioned by HMAC byte to avoid concentrating
+   the full inventory in a single provider record. An existing unsharded inventory stays
+   readable and is never expanded: retries retain its saved WorkOS cursor and
+   store only missing subjects in shards. Audit, apply and cleanup handle both
+   layouts. Do not delete the old inventory or restart from zero to work around
+   a record-size error.
 2. Call `audit` until `auditComplete`. This scans every quota-key page and reports
    `unknownQuotaKeys`. Any unknown key blocks `pause` and `apply`. Current WorkOS
    users may not cover historical/deleted addresses; the hosted runner cannot
