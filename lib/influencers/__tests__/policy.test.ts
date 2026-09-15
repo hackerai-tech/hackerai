@@ -1,7 +1,7 @@
 import {
   anniversary,
   commissionCents,
-  PAYOUT_HOLD_MS,
+  ATTRIBUTION_DAYS,
   validPartnerCode,
 } from "../policy";
 import { partnerCookie, readPartnerCookie } from "../cookie";
@@ -37,6 +37,8 @@ describe("influencer policy and signed links", () => {
       readPartnerCookie(cookie.replace("medusa", "another"), now + 1),
     ).toBeNull();
     expect(readPartnerCookie(cookie, now - 1)).toBeNull();
-    expect(readPartnerCookie(cookie, now + PAYOUT_HOLD_MS)).toBeNull();
+    expect(
+      readPartnerCookie(cookie, now + ATTRIBUTION_DAYS * 86400_000),
+    ).toBeNull();
   });
 });

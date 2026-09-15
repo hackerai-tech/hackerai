@@ -277,15 +277,38 @@ export async function handleInfluencerEvent(
         : objectId(
             (event.data.object as Stripe.Dispute | Stripe.Refund).charge,
           );
-    if (chargeId)
-      customerId = objectId((await stripe.charges.retrieve(chargeId)).customer);
+    const charge = chargeId ? await stripe.charges.retrieve(chargeId) : null;
+    customerId = objectId(charge?.customer);
     if (
       customerId &&
       (await convex.query(api.influencers.getCustomerAttribution, {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         customerId,
       }))
-    )
-      await reconcileInfluencerCustomer(stripe, convex, customerId);
+    ) {
+      // Modern Stripe Charges no longer expose invoice. InvoicePayment is the
+      // supported mapping from a PaymentIntent to the affected invoices.
+      const intentId = objectId(charge?.payment_intent);
+      const payments = intentId
+        ? await bounded(
+            stripe.invoicePayments.list({
+              payment: { type: "payment_intent", payment_intent: intentId },
+              status: "paid",
+              limit: 100,
+            }),
+          )
+        : [];
+      const invoiceIds = new Set(
+        payments
+          .map((payment) => objectId(payment.invoice))
+          .filter((id): id is string => !!id),
+      );
+      if (invoiceIds.size) {
+        for (const invoiceId of invoiceIds)
+          await reconcileInfluencerInvoice(stripe, convex, invoiceId);
+      } else {
+        await reconcileInfluencerCustomer(stripe, convex, customerId);
+      }
+    }
   }
 }

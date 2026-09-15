@@ -183,6 +183,39 @@ describe("Stripe commission reconciliation", () => {
       grossCents: 2750,
     });
   });
+  it("reconciles charge adjustments through InvoicePayment without scanning customer history", async () => {
+    const f = fixture();
+    f.charge.payment_intent = "pi_one";
+    f.charge.amount_refunded = 2750;
+    f.stripe.invoicePayments.list.mockImplementation(() =>
+      pages([
+        {
+          invoice: "in_one",
+          amount_paid: 2750,
+          payment: { payment_intent: "pi_one" },
+        },
+      ]),
+    );
+    await handleInfluencerEvent(f.stripe, f.convex, {
+      type: "charge.refunded",
+      data: { object: { id: "ch_one" } },
+    } as any);
+    expect(f.stripe.invoicePayments.list).toHaveBeenCalledWith({
+      payment: { type: "payment_intent", payment_intent: "pi_one" },
+      status: "paid",
+      limit: 100,
+    });
+    expect(f.stripe.invoices.retrieve).toHaveBeenCalledTimes(1);
+    expect(
+      f.stripe.invoices.list.mock.calls.every(
+        (call: any[]) => call[0].subscription === "sub_one",
+      ),
+    ).toBe(true);
+    expect(f.convex.mutation.mock.calls[0][1]).toMatchObject({
+      invoiceId: "in_one",
+      netCents: 0,
+    });
+  });
   it("ignores one-time purchases and customers without attribution", async () => {
     const f = fixture();
     f.convex.query.mockResolvedValue(null);

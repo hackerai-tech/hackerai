@@ -170,6 +170,54 @@ describe("influencer financial ledger", () => {
     });
     expect(db.tables.influencer_invoices[0].paid_cents).toBe(375);
   });
+  it("normalizes retry references and prevents reusing one transfer for a second payout", async () => {
+    const db = await setup();
+    now += PAYOUT_HOLD_MS;
+    await db.call("syncInvoice", { ...db.invoice, observedAt: now });
+    await db.call("reservePayout", {
+      partnerId: db.partnerId,
+      key: "payout-001",
+    });
+    await db.call("finishPayout", {
+      key: "payout-001",
+      action: "paid",
+      reference: " transfer-123 ",
+    });
+    await db.call("finishPayout", {
+      key: "payout-001",
+      action: "paid",
+      reference: " transfer-123 ",
+    });
+    await db.call("syncInvoice", {
+      ...db.invoice,
+      invoiceId: "in_two",
+      observedAt: now,
+    });
+    await db.call("reservePayout", {
+      partnerId: db.partnerId,
+      key: "payout-002",
+    });
+    await expect(
+      db.call("finishPayout", {
+        key: "payout-002",
+        action: "paid",
+        reference: "transfer-123",
+      }),
+    ).rejects.toThrow("already belongs");
+    expect(db.tables.influencer_invoices[1].paid_cents).toBe(0);
+  });
+  it("accepts Stripe's second-resolution paid timestamp within the signup second", async () => {
+    const db = await setup();
+    db.tables.influencer_attributions[0].created_at = now + 500;
+    now += 500;
+    await db.call("syncInvoice", {
+      ...db.invoice,
+      invoiceId: "in_same_second",
+      paidAt: now - 500,
+      observedAt: now,
+    });
+    expect(db.tables.influencer_invoices).toHaveLength(2);
+  });
   it("deducts post-payout refunds from the next payout without erasing history", async () => {
     const db = await setup();
     now += PAYOUT_HOLD_MS;

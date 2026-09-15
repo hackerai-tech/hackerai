@@ -125,6 +125,7 @@ export default defineSchema({
     .index("by_partner_id", ["partner_id"]),
   influencer_payouts: defineTable(payoutFields)
     .index("by_key", ["key"])
+    .index("by_reference", ["reference"])
     .index("by_partner_id_and_status", ["partner_id", "status"]),
   pendingFileDeletions: defineTable({
     s3_region: v.optional(v.string()),

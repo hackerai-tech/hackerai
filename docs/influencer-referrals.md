@@ -121,7 +121,8 @@ Keep the three target fields in each subsequent request:
 4. `{"action":"paid","key":"medusa-2026-10-01","reference":"provider-transfer-id"}`
    records the completed external payment. Retry with the same key and reference
    if the result is uncertain. Never issue another transfer merely because the
-   recording command failed.
+   recording command failed. Use a provider-qualified reference (for example
+   `paypal:transfer-123`); the same external transfer cannot settle two payouts.
 5. `{"action":"payout","key":"medusa-2026-10-01"}` reads the immutable batch
    amount, included invoices, status, and recorded transfer reference.
 

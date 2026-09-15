@@ -13,6 +13,7 @@ import {
   DEFAULT_ANNUAL_BPS,
   DEFAULT_MONTHLY_BPS,
   PAYOUT_HOLD_MS,
+  ATTRIBUTION_DAYS,
   validPartnerCode,
 } from "../lib/influencers/policy";
 
@@ -132,7 +133,7 @@ export const attribute = mutation({
       args.clickedAt > args.userCreatedAt ||
       args.userCreatedAt > now ||
       now - args.userCreatedAt > 7 * 86400_000 ||
-      now - args.clickedAt >= PAYOUT_HOLD_MS
+      now - args.clickedAt >= ATTRIBUTION_DAYS * 86400_000
     )
       return false;
     const knownIdentity = await ctx.db
@@ -432,19 +433,27 @@ export const finishPayout = mutation({
       .unique();
     if (!payout) throw new Error("Payout not found");
     const status = args.action === "paid" ? "paid" : "canceled";
+    const reference = args.reference?.trim();
     if (payout.status !== "reserved") {
       if (
         payout.status !== status ||
-        (status === "paid" && payout.reference !== args.reference)
+        (status === "paid" && payout.reference !== reference)
       )
         throw new Error("Payout already finalized differently");
       return payout;
     }
-    if (
-      status === "paid" &&
-      (!args.reference?.trim() || args.reference.length > 200)
-    )
+    if (status === "paid" && (!reference || reference.length > 200))
       throw new Error("External payment reference is required");
+    if (status === "paid") {
+      const recorded = await ctx.db
+        .query("influencer_payouts")
+        .withIndex("by_reference", (q) => q.eq("reference", reference!))
+        .first();
+      if (recorded)
+        throw new Error(
+          "External payment reference already belongs to another payout",
+        );
+    }
     for (const item of payout.items) {
       const invoice = await ctx.db.get(item.invoice_id);
       if (!invoice || invoice.payout_id !== payout._id)
@@ -459,7 +468,7 @@ export const finishPayout = mutation({
     await ctx.db.patch(payout._id, {
       status,
       ...(status === "paid"
-        ? { reference: args.reference!.trim(), paid_at: Date.now() }
+        ? { reference: reference!, paid_at: Date.now() }
         : {}),
     });
     return (await ctx.db.get(payout._id))!;

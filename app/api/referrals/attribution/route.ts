@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
     const user = await workos.userManagement.getUser(auth.userId);
     const attributed = await attributeInfluencer(req, {
       userId: auth.userId,
+      email: user.email,
       identity: auth.freeQuotaSubject,
       subscription: auth.subscription,
       createdAt: user.createdAt,
