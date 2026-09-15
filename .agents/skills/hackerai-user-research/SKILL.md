@@ -45,10 +45,14 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
 4. Create a mode-600 temporary JSON request outside the repository using the
    gateway payload below. Run
    `node .agents/skills/hackerai-user-research/scripts/run-research.mjs --payload <path>`.
-   The runner requires `HACKERAI_PM_USER_RESEARCH_KEY` in the PM's Codex
-   environment and always calls the production HackerAI gateway. Never print
-   the key, put it in the request, or use Trigger
-   dashboard access. Remove the temporary request after the command reads it.
+   The runner first reads the machine's `~/.config/hackerai/pm-research.key`
+   (an owner-only file, mode 600), then falls back to
+   `HACKERAI_PM_USER_RESEARCH_KEY` only when that file is absent. Run the runner
+   before declaring credentials missing; an unset Codex environment variable
+   does not prove the key is unavailable. See the runbook for key discovery.
+   It always calls the production HackerAI gateway. Never print the key, put it
+   in the request or command arguments, or use Trigger dashboard access. Remove
+   the temporary request after the command reads it.
 5. Wait for the runner to return a completed result. Keep the returned
    `analysisId`; it is the audit and lookup key for the restricted Convex
    records. Do not substitute direct Trigger access if the gateway fails.
