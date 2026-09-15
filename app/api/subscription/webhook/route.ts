@@ -162,7 +162,15 @@ function invoiceLineIsProration(line: Stripe.InvoiceLineItem): boolean {
 async function invoiceSubscriptionBillingDetails(
   invoice: Stripe.Invoice,
   subscriptionId: string,
-): Promise<{ priceId: string; quantity?: number } | undefined> {
+): Promise<
+  | {
+      priceId: string;
+      quantity?: number;
+      periodStart?: number;
+      periodEnd?: number;
+    }
+  | undefined
+> {
   const lines = await invoiceLineItems(invoice);
   const candidates = lines.filter(
     (line) => invoiceLineSubscriptionId(line) === subscriptionId,
@@ -180,6 +188,10 @@ async function invoiceSubscriptionBillingDetails(
   return priceId
     ? {
         priceId,
+        ...(recurringLine?.period && {
+          periodStart: recurringLine.period.start * 1000,
+          periodEnd: recurringLine.period.end * 1000,
+        }),
         ...(typeof selectedLine?.quantity === "number" && {
           quantity: selectedLine.quantity,
         }),
@@ -765,6 +777,8 @@ function emitInvoicePaidRevenueAnalytics({
   tier,
   subscription,
   invoiceQuantity,
+  periodStart,
+  periodEnd,
 }: {
   invoice: Stripe.Invoice;
   invoicePrice: Stripe.Price;
@@ -775,6 +789,8 @@ function emitInvoicePaidRevenueAnalytics({
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
   invoiceQuantity?: number;
+  periodStart?: number;
+  periodEnd?: number;
 }) {
   const amountPaidDollars = centsToDollars(invoice.amount_paid);
   if (amountPaidDollars <= 0 || userIds.length === 0) return;
@@ -806,6 +822,9 @@ function emitInvoicePaidRevenueAnalytics({
         billing_interval: priceBillingInterval(invoicePrice),
         billing_interval_count: invoicePrice.recurring?.interval_count,
         billing_reason: invoice.billing_reason,
+        invoice_paid_at: invoicePaidAtMs(invoice),
+        billing_period_start: periodStart,
+        billing_period_end: periodEnd,
         attempt_count: invoice.attempt_count ?? undefined,
         ...(typeof invoice.attempt_count === "number" &&
           invoice.attempt_count > 1 && { recovery_result: "recovered" }),
@@ -841,6 +860,7 @@ async function recordPaidStartMix({
   orgId,
   tier,
   subscription,
+  periodEnd,
 }: {
   invoice: Stripe.Invoice;
   invoicePrice: Stripe.Price;
@@ -849,6 +869,7 @@ async function recordPaidStartMix({
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  periodEnd?: number;
 }) {
   const paidStartTier = toPaidStartTier(tier);
   if (!paidStartTier || userIds.length === 0) return;
@@ -874,6 +895,7 @@ async function recordPaidStartMix({
     paidAccountStartCount: 1,
     paidUserStartCount: userIds.length,
     paidSeatCount,
+    billingPeriodEnd: periodEnd,
     billingInterval: priceBillingInterval(invoicePrice),
     billingIntervalCount: invoicePrice.recurring?.interval_count,
     quantity: item?.quantity,
@@ -1250,6 +1272,8 @@ async function handleInvoicePaid(
     tier,
     subscription,
     invoiceQuantity,
+    periodStart: invoiceBillingDetails.periodStart,
+    periodEnd: invoiceBillingDetails.periodEnd,
   });
 
   if (resetMode.mode === "skip") {
@@ -1435,6 +1459,7 @@ async function handleInvoicePaid(
     if (!resumedFromPause) {
       try {
         await recordPaidStartMix({
+          periodEnd: invoiceBillingDetails.periodEnd,
           invoice,
           invoicePrice,
           customerId,

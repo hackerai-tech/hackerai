@@ -506,6 +506,12 @@ export const useChatHandlers = ({
       if (queueBehavior === "queue") {
         // Queue the message - will auto-send after current response completes
         queueMessage(input, validFiles);
+        captureAuthenticatedEvent("chat_user_submission", {
+          definition_version: 1,
+          mode: currentChatMode,
+          subscription_tier: subscription,
+          queued: true,
+        });
         clearInput();
         clearUploadedFiles();
         return true;
@@ -608,6 +614,12 @@ export const useChatHandlers = ({
       );
     }
 
+    captureAuthenticatedEvent("chat_user_submission", {
+      definition_version: 1,
+      mode: currentChatMode,
+      subscription_tier: subscription,
+      queued: false,
+    });
     clearInput();
     clearUploadedFiles();
     return true;

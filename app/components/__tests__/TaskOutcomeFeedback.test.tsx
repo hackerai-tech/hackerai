@@ -190,4 +190,41 @@ describe("unobtrusive task feedback", () => {
       action: "dismissed",
     });
   });
+  it.each([
+    ["Solved my task", "solved"],
+    ["Helpful, still working", "helpful"],
+    ["Haven’t checked", "not_checked"],
+  ])("records %s separately", async (label, answer) => {
+    const paidSurvey = { ...survey, survey_kind: "new_paid" as const };
+    const record = jest.fn(async (args: any) => ({
+      ...paidSurvey,
+      shown_at: Date.now(),
+      ...(args.answer && { answer: args.answer }),
+    }));
+    render(<TaskOutcomeFeedbackPrompt survey={paidSurvey} record={record} />);
+    await inView();
+    await inView();
+    expect(record).toHaveBeenCalledWith({ id: survey._id, action: "viewed" });
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: label })),
+    );
+    expect(record).toHaveBeenLastCalledWith({
+      id: survey._id,
+      action: "answered",
+      answer,
+    });
+    expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "task_outcome_survey_answered",
+        properties: expect.objectContaining({
+          survey_kind: "new_paid",
+          answer,
+          task_solved: answer === "not_checked" ? null : answer === "solved",
+        }),
+      }),
+    );
+    if (answer === "helpful")
+      expect(screen.getByText("What helped?")).toBeTruthy();
+    else expect(screen.getByText("Thanks for your feedback")).toBeTruthy();
+  });
 });

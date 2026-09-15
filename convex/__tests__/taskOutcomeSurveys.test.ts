@@ -37,28 +37,38 @@ const args = {
 };
 function setup() {
   const rows: any[] = [];
+  const paidStarts: any[] = [];
+  const payments: any[] = [];
   const ctx = {
     auth: { getUserIdentity: async () => ({ subject: "user-1" }) },
     db: {
       query: (table: string) => {
-        let matching: any[] = [];
+        let matching: any[] =
+          table === "chats"
+            ? [{ id: "chat-1", user_id: "user-1" }]
+            : table === "paid_start_events"
+              ? paidStarts
+              : table === "revenue_events"
+                ? payments
+                : rows;
+        let direction = "asc";
         const chain: any = {
           withIndex: (_: string, select: (q: any) => unknown) => {
             const q = {
               eq: (key: string, value: unknown) => {
-                matching = (
-                  table === "chats"
-                    ? [{ id: "chat-1", user_id: "user-1" }]
-                    : rows
-                ).filter((row) => row[key] === value);
+                matching = matching.filter((row) => row[key] === value);
                 return q;
               },
             };
             select(q);
             return chain;
           },
-          order: () => chain,
-          first: async () => matching.at(-1) ?? null,
+          order: (value: string) => {
+            direction = value;
+            return chain;
+          },
+          first: async () =>
+            (direction === "desc" ? matching.at(-1) : matching[0]) ?? null,
           unique: async () => {
             if (matching.length > 1) throw Error("Duplicate");
             return matching[0] ?? null;
@@ -78,7 +88,7 @@ function setup() {
       },
     },
   };
-  return { ctx, rows };
+  return { ctx, rows, paidStarts, payments };
 }
 describe("task outcome feedback", () => {
   beforeEach(() => {
@@ -218,6 +228,128 @@ describe("task outcome feedback", () => {
     jest.mocked(Date.now).mockReturnValue(row.expires_at);
     expect(
       await invoke(record, ctx, { id: row._id, action: "shown" }),
+    ).toBeNull();
+  });
+});
+
+const paidArgs = {
+  ...args,
+  survey_kind: "new_paid",
+  experiment_variant: undefined,
+  baseline_model: undefined,
+  assigned_model: undefined,
+};
+function paidSetup() {
+  const setupValue = setup();
+  setupValue.paidStarts.push({
+    _id: "paid-1",
+    entity_type: "user",
+    entity_id: "user-1",
+    tier: "pro",
+    occurred_at: Date.now() - 3600000,
+    stripe_subscription_id: "sub-1",
+    stripe_invoice_id: "in-1",
+    billing_period_end: Date.now() + 30 * 86400000,
+    billing_interval: "month",
+  });
+  setupValue.payments.push({
+    idempotency_key: "subscription:in-1:user:user-1",
+    entity_type: "user",
+    entity_id: "user-1",
+    source: "subscription",
+    gross_revenue_dollars: 20,
+    stripe_subscription_id: "sub-1",
+    stripe_invoice_id: "in-1",
+  });
+  return setupValue;
+}
+describe("new paid cohort", () => {
+  it("enrolls without a model assignment and freezes billing evidence", async () => {
+    const { ctx, paidStarts, rows } = paidSetup();
+    const row = await invoke(reserve, ctx, paidArgs);
+    expect(row).toMatchObject({
+      survey_kind: "new_paid",
+      baseline_renewal_at: paidStarts[0].billing_period_end,
+      stripe_subscription_id: "sub-1",
+    });
+    expect(row.experiment_variant).toBeUndefined();
+    paidStarts[0].billing_period_end += 86400000;
+    expect(rows[0].baseline_renewal_at).toBe(row.baseline_renewal_at);
+  });
+  it.each(["free", "team"])("excludes %s plans", async (tier) => {
+    const { ctx } = paidSetup();
+    expect(
+      await invoke(reserve, ctx, { ...paidArgs, subscription_tier: tier }),
+    ).toBeNull();
+  });
+  it.each([
+    "missing",
+    "old",
+    "future",
+    "resubscribed",
+    "zero",
+    "wrong_payment",
+    "organization",
+  ])("excludes %s billing evidence", async (condition) => {
+    const { ctx, paidStarts, payments } = paidSetup();
+    if (condition === "missing") paidStarts.length = 0;
+    if (condition === "old")
+      paidStarts[0].occurred_at = Date.now() - 7 * 86400000;
+    if (condition === "future")
+      paidStarts[0].occurred_at = Date.now() + 86400000;
+    if (condition === "resubscribed")
+      paidStarts.push({ ...paidStarts[0], _id: "paid-2" });
+    if (condition === "zero") payments[0].gross_revenue_dollars = 0;
+    if (condition === "wrong_payment")
+      payments[0].stripe_subscription_id = "other";
+    if (condition === "organization") paidStarts[0].organization_id = "org";
+    expect(await invoke(reserve, ctx, paidArgs)).toBeNull();
+  });
+  it("shares the legacy cooldown and never invites a paid cohort member twice", async () => {
+    const { ctx, rows } = paidSetup();
+    await invoke(reserve, ctx, args);
+    expect(
+      await invoke(reserve, ctx, { ...paidArgs, request_id: "new" }),
+    ).toBeNull();
+    rows[0].last_interaction_at -= TASK_OUTCOME_COOLDOWN_MS;
+    const row = await invoke(reserve, ctx, { ...paidArgs, request_id: "new" });
+    expect(row).not.toBeNull();
+    rows[1].last_interaction_at -= TASK_OUTCOME_COOLDOWN_MS;
+    expect(
+      await invoke(reserve, ctx, { ...paidArgs, request_id: "another" }),
+    ).toBeNull();
+  });
+  it("distinguishes actual view from claim and stores explicit solved without a reason", async () => {
+    const { ctx } = paidSetup();
+    const row = await invoke(reserve, ctx, paidArgs);
+    expect(
+      await invoke(record, ctx, { id: row._id, action: "viewed" }),
+    ).toBeNull();
+    const claimed = await invoke(record, ctx, { id: row._id, action: "shown" });
+    expect(claimed.viewed_at).toBeUndefined();
+    expect(
+      await invoke(record, ctx, { id: row._id, action: "viewed" }),
+    ).toHaveProperty("viewed_at");
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "yes",
+      }),
+    ).toBeNull();
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      }),
+    ).toMatchObject({ answer: "solved" });
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "helpful",
+      }),
     ).toBeNull();
   });
 });

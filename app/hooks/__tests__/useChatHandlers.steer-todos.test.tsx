@@ -2,6 +2,12 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
 
+const mockCaptureAuthenticatedEvent = jest.fn();
+jest.mock("@/lib/analytics/client", () => ({
+  captureAuthenticatedEvent: (...args: unknown[]) =>
+    mockCaptureAuthenticatedEvent(...args),
+}));
+
 const mockCancelStream = jest.fn(async () => null);
 const mockSaveAssistantMessage = jest.fn(async () => null);
 const mockDeleteLastAssistantMessage = jest.fn(async () => null);
@@ -324,6 +330,15 @@ describe("useChatHandlers steer todo handoff", () => {
     });
 
     expect(mockQueueMessage).toHaveBeenCalledWith("Use the latest result", []);
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      "chat_user_submission",
+      {
+        definition_version: 1,
+        mode: "agent",
+        subscription_tier: "pro",
+        queued: true,
+      },
+    );
     expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
@@ -357,6 +372,10 @@ describe("useChatHandlers steer todo handoff", () => {
     });
 
     expect(accepted).toBe(false);
+    expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalledWith(
+      "chat_user_submission",
+      expect.anything(),
+    );
     expect(mockSendMessage).not.toHaveBeenCalled();
     expect(mockClearInput).not.toHaveBeenCalled();
     expect(mockClearUploadedFiles).not.toHaveBeenCalled();

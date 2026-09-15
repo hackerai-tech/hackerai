@@ -1,4 +1,8 @@
-# Task outcome feedback (HAC-99)
+# Model-experiment task outcome feedback (HAC-99)
+
+The independent new-paid cohort is owned by [HAC-119](new-paid-task-feedback.md).
+This document describes the legacy model-experiment cohort only; its removal
+must preserve shared infrastructure while the independent cohort uses it.
 
 Measures user-reported task success for the **whole assigned routing policy**,
 including its baseline continuation and recovery. It cannot isolate the quality
@@ -27,7 +31,7 @@ of an individual Abliteration call. Existing provider assignment is unchanged.
 
 ## Persistence and attribution
 
-`task_outcome_surveys` stores selection, view claim, answer and reason; user ID
+`task_outcome_surveys` stores selection, view claim, actual observed view, answer and reason; user ID
 indexes enforce ownership/cooldown and support account deletion. Surveys are
 service-selected, client writes are authenticated and restricted to the owner,
 answers are first-write-wins, and reasons must match the answer. Recovery updates
@@ -118,16 +122,17 @@ This does not establish the deployed Preview or Production chat/worker journey.
 ## Required removal at experiment closeout
 
 This survey is temporary even if Abliteration becomes the default provider.
-HAC-101 must remove the UI and Messages subscription, selection and fallback
-linkage in Ask/Agent, analytics captures, shared helpers, Convex endpoints and
-validators, generated API references and survey-specific tests. Disable the flag
+HAC-101 must remove legacy experiment selection, attribution and legacy-specific
+tests. Shared UI, Messages subscription, Ask/Agent fallback linkage, analytics,
+Convex endpoints and storage remain while HAC-119 uses them. Remove those shared
+resources only after both cohorts end. Disable the flag
 in Preview 401167 and Production 144137 first; this alone is not cleanup because
 existing reservations can still show for 48 hours.
 
 Preserve the final aggregate readout. Drain old clients/runs, delete survey rows
-in bounded batches from each independently verified authorized deployment, then
-remove the table/indexes and user-deletion integration. Remove/archive both flags
-and verify Vercel and Trigger in each environment. Normal chat completion/reload
-must no longer render feedback, query the survey endpoints, or emit its events.
+in bounded batches from each independently verified authorized deployment, and remove only legacy rows while the independent cohort remains active. Remove
+the table/indexes and user-deletion integration only after both cohorts end. Remove/archive both flags
+and verify Vercel and Trigger in each environment. After legacy removal, normal chat completion/reload must no longer select or
+emit legacy experiment feedback; independent feedback may remain.
 Existing manual thumbs feedback remains a separate feature. Link the removal PR
 and environment readbacks before closing HAC-101 and HAC-99.

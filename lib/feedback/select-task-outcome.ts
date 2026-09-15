@@ -4,7 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "../db/convex-client";
 import { taskOutcomeProperties } from "../analytics/task-outcome";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "../experiments/abliterated-model-steps";
-import { TASK_OUTCOME_FLAG } from "./task-outcome";
+import { PAID_TASK_OUTCOME_FLAG, TASK_OUTCOME_FLAG } from "./task-outcome";
 
 export async function selectTaskOutcomeSurvey(args: {
   posthog: Pick<PostHog, "getFeatureFlag" | "capture"> | null;
@@ -17,40 +17,62 @@ export async function selectTaskOutcomeSurvey(args: {
   release?: string;
 }) {
   const { posthog, assignment } = args;
-  if (!posthog || !assignment || !process.env.CONVEX_SERVICE_ROLE_KEY) return;
+  if (!posthog || !process.env.CONVEX_SERVICE_ROLE_KEY) return;
   try {
-    const enabled = await posthog.getFeatureFlag(
-      TASK_OUTCOME_FLAG,
-      args.userId,
-      {
-        sendFeatureFlagEvents: false,
-        personProperties: { subscription_tier: args.subscription },
-      },
-    );
-    if (enabled !== true) return;
-    const row = await getConvexClient().mutation(
-      api.taskOutcomeSurveys.reserve,
-      {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
-        user_id: args.userId,
-        chat_id: args.chatId,
-        request_id: args.messageId,
-        message_id: args.messageId,
+    const flagOptions = {
+      sendFeatureFlagEvents: false,
+      personProperties: { subscription_tier: args.subscription },
+    };
+    const context = {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
+      user_id: args.userId,
+      chat_id: args.chatId,
+      request_id: args.messageId,
+      message_id: args.messageId,
+      mode: args.mode,
+      subscription_tier: args.subscription,
+      release:
+        args.release ||
+        process.env.VERCEL_GIT_COMMIT_SHA ||
+        process.env.GITHUB_SHA ||
+        "unknown",
+      ...(assignment && {
         experiment_key: assignment.key,
         experiment_variant: assignment.variant,
         baseline_model: assignment.baselineModel,
         assigned_model: assignment.modelKey,
-        mode: args.mode,
-        subscription_tier: args.subscription,
         routing_version: `generation_steps_${ABLITERATION_MAX_GENERATION_STEPS}_v1`,
         generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
-        release:
-          args.release ||
-          process.env.VERCEL_GIT_COMMIT_SHA ||
-          process.env.GITHUB_SHA ||
-          "unknown",
-      },
-    );
+      }),
+    };
+    let row = null;
+    if (
+      ["pro", "pro-plus", "ultra"].includes(args.subscription) &&
+      (await posthog.getFeatureFlag(
+        PAID_TASK_OUTCOME_FLAG,
+        args.userId,
+        flagOptions,
+      )) === true
+    ) {
+      row = await getConvexClient().mutation(api.taskOutcomeSurveys.reserve, {
+        ...context,
+        survey_kind: "new_paid",
+      });
+    }
+    if (
+      !row &&
+      assignment &&
+      (await posthog.getFeatureFlag(
+        TASK_OUTCOME_FLAG,
+        args.userId,
+        flagOptions,
+      )) === true
+    ) {
+      row = await getConvexClient().mutation(
+        api.taskOutcomeSurveys.reserve,
+        context,
+      );
+    }
     if (!row) return;
     try {
       posthog.capture({
