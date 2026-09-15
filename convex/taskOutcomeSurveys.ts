@@ -54,7 +54,7 @@ export const reserve = mutation({
       const paidStarts = () =>
         ctx.db
           .query("paid_start_events")
-          .withIndex("by_entity_occurred", (q) =>
+          .withIndex("by_entity_type_and_entity_id_and_occurred_at", (q) =>
             q.eq("entity_type", "user").eq("entity_id", args.user_id),
           );
       const first = await paidStarts().order("asc").first();
@@ -91,7 +91,7 @@ export const reserve = mutation({
         return null;
       const enrolled = await ctx.db
         .query("task_outcome_surveys")
-        .withIndex("by_user_and_kind", (q) =>
+        .withIndex("by_user_id_and_survey_kind", (q) =>
           q.eq("user_id", args.user_id).eq("survey_kind", "new_paid"),
         )
         .first();

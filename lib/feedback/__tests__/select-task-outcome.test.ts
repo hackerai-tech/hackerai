@@ -116,6 +116,27 @@ describe("survey selection", () => {
       expect.objectContaining({ event: "task_outcome_survey_selected" }),
     );
   });
+  it("keeps legacy selection available when the independent flag rejects", async () => {
+    const posthog = {
+      getFeatureFlag: jest.fn(async (key: string) => {
+        if (key === PAID_TASK_OUTCOME_FLAG) throw Error("flag unavailable");
+        return key === TASK_OUTCOME_FLAG;
+      }),
+      capture: jest.fn(),
+    };
+    const selected = await selectTaskOutcomeSurvey({ ...base, posthog });
+    expect(selected).toBeDefined();
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(mutation.mock.calls[0][1]).not.toHaveProperty("survey_kind");
+    expect(posthog.capture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "task_outcome_survey_selected",
+        properties: expect.objectContaining({
+          survey_kind: "model_experiment",
+        }),
+      }),
+    );
+  });
   it("does not interrupt chat when the flag or database is unavailable", async () => {
     const posthog = {
       getFeatureFlag: jest.fn(async () => {

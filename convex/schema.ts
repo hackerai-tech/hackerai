@@ -296,7 +296,7 @@ export default defineSchema({
 
   task_outcome_surveys: defineTable(taskOutcomeFields)
     .index("by_user_id", ["user_id"])
-    .index("by_user_and_kind", ["user_id", "survey_kind"])
+    .index("by_user_id_and_survey_kind", ["user_id", "survey_kind"])
     .index("by_request_id", ["request_id"]),
 
   feedback: defineTable({
@@ -1085,7 +1085,11 @@ export default defineSchema({
     created_at: v.number(),
   })
     .index("by_idempotency_key", ["idempotency_key"])
-    .index("by_entity_occurred", ["entity_type", "entity_id", "occurred_at"])
+    .index("by_entity_type_and_entity_id_and_occurred_at", [
+      "entity_type",
+      "entity_id",
+      "occurred_at",
+    ])
     .index("by_entity_day", ["entity_type", "entity_id", "day"])
     .index("by_day", ["day"])
     .index("by_user_day", ["user_id", "day"])

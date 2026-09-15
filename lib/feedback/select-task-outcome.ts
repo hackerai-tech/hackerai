@@ -46,18 +46,22 @@ export async function selectTaskOutcomeSurvey(args: {
       }),
     };
     let row = null;
-    if (
-      ["pro", "pro-plus", "ultra"].includes(args.subscription) &&
-      (await posthog.getFeatureFlag(
-        PAID_TASK_OUTCOME_FLAG,
-        args.userId,
-        flagOptions,
-      )) === true
-    ) {
-      row = await getConvexClient().mutation(api.taskOutcomeSurveys.reserve, {
-        ...context,
-        survey_kind: "new_paid",
-      });
+    try {
+      if (
+        ["pro", "pro-plus", "ultra"].includes(args.subscription) &&
+        (await posthog.getFeatureFlag(
+          PAID_TASK_OUTCOME_FLAG,
+          args.userId,
+          flagOptions,
+        )) === true
+      ) {
+        row = await getConvexClient().mutation(api.taskOutcomeSurveys.reserve, {
+          ...context,
+          survey_kind: "new_paid",
+        });
+      }
+    } catch {
+      // Independent enrollment failures must not suppress the legacy sample.
     }
     if (
       !row &&
