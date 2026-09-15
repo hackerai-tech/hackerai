@@ -46,7 +46,7 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    gateway payload below. Run
    `node .agents/skills/hackerai-user-research/scripts/run-research.mjs --payload <path>`.
    The runner first reads the machine's `~/.config/hackerai/pm-research.key`
-   (an owner-only file, mode 600), then falls back to
+   (an owner-only file; mode 600 recommended), then falls back to
    `HACKERAI_PM_USER_RESEARCH_KEY` only when that file is absent. Run the runner
    before declaring credentials missing; an unset Codex environment variable
    does not prove the key is unavailable. See the runbook for key discovery.

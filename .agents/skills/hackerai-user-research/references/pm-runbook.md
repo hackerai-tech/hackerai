@@ -45,8 +45,9 @@ Ask Codex:
 Codex should proceed from the authorized PM's request without checking for
 another approval. It should use the skill's `scripts/run-research.mjs` gateway
 runner and wait for completion. The runner reads the scoped PM key directly from
-`~/.config/hackerai/pm-research.key` first. This must be an owner-only regular
-file (mode 600) containing the key alone; a trailing newline is allowed. The
+`~/.config/hackerai/pm-research.key` first. The opened target must be a regular
+file with no group or other permission bits (mode 600 recommended), containing
+the key alone; a trailing newline is allowed. The
 runner keeps it in memory, without exporting it into Codex or copying it into
 a checkout. If the file is absent, it falls back to
 `HACKERAI_PM_USER_RESEARCH_KEY` for environments such as Slack. An unreadable,
