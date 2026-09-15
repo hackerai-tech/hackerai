@@ -625,6 +625,44 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("waits for restored preferences before auto-sending a fork loaded after its draft", async () => {
+      mockRouteParams = { id: "late-fork" };
+      mockLocalConnections = [];
+      sessionStorage.setItem("autoSendChatId", "late-fork");
+      const view = () => (
+        <TestWrapper>
+          <ForkDraftSetter />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      mockRestoredChat = {
+        id: "late-fork",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "original",
+            role: "user",
+            parts: [{ type: "text", text: "original task" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+        error: null,
+        regenerate: mockRegenerate,
+        resumeStream: mockResumeStream,
+      });
+      rerender(view());
+      expect(mockHandleSubmit).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem("autoSendChatId")).toBe("late-fork");
+      sessionStorage.removeItem("autoSendChatId");
+    });
+
     it("preserves a fork's pending send until its selected computer reconnects", async () => {
       mockRouteParams = { id: "fork-task" };
       mockRestoredChat = {

@@ -539,11 +539,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
-  const { sendDisabledReason: computerSendDisabledReason } =
+  const { sendDisabledReason: connectionSendDisabledReason } =
     useSelectedComputerConnection();
-  const computerSendDisabledReasonRef = useLatestRef(
-    computerSendDisabledReason,
-  );
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
@@ -713,9 +710,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
-  // Track whether sandbox preference has been initialized from chat for this chat id
-  const hasInitializedSandboxRef = useRef(false);
-  // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
+  // Keep automatic sends blocked until the task's saved environment is applied.
+  const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
+    string | null
+  >(null);
+  const computerSendDisabledReason =
+    isExistingChat && initializedSandboxChatId !== chatId
+      ? "Loading the task's computer selection"
+      : connectionSendDisabledReason;
+  const computerSendDisabledReasonRef = useLatestRef(
+    computerSendDisabledReason,
+  );
   const hasInitializedModelRef = useRef(false);
   // Snapshot of the last picker values successfully persisted to the chat doc.
   // Seeded after init from chatData; subsequent picker toggles trigger a debounced patch.
@@ -1667,7 +1672,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
-    hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
     persistedPrefsRef.current = null;
   }, [chatId]);
@@ -1727,7 +1731,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Restore the task's environment independently of connection availability.
   // A missing computer must reconnect or be explicitly replaced by the user.
   useEffect(() => {
-    if (hasInitializedSandboxRef.current || !isExistingChat) return;
+    if (initializedSandboxChatId === chatId || !isExistingChat) return;
 
     const dataId = (chatData as any)?.id as string | undefined;
     if (!chatData || dataId !== chatId) return;
@@ -1741,19 +1745,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         // so a stale local preference from a previous chat doesn't persist.
         setSandboxPreference("e2b");
       }
-      hasInitializedSandboxRef.current = true;
+      setInitializedSandboxChatId(chatId);
       return;
     }
 
     setSandboxPreference(
       storedSandboxType === "tauri" ? "desktop" : storedSandboxType,
     );
-    hasInitializedSandboxRef.current = true;
+    setInitializedSandboxChatId(chatId);
   }, [
     chatData,
     storedSandboxType,
     isExistingChat,
     chatId,
+    initializedSandboxChatId,
     setSandboxPreference,
   ]);
 
@@ -2329,6 +2334,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
+                    sendDisabledReason={computerSendDisabledReason}
                     isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
