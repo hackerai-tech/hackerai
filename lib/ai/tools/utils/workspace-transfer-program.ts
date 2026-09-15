@@ -10,6 +10,11 @@ deadline = time.monotonic() + 1200
 operation, stage = sys.argv[1:3]
 root = sys.argv[3] if len(sys.argv) > 3 else '/'
 home = 'home/user'
+safe_failures = {
+    'changed', 'external_hardlink', 'external_symlink', 'limit', 'mount',
+    'socket', 'unsupported_entry', 'unsupported_workspace_entry',
+    'virtual_mount', 'workspace_mount', 'workspace_root'
+}
 
 def check():
     if time.monotonic() > deadline: raise ValueError('limit')
@@ -208,8 +213,10 @@ try:
         os.rename(os.path.join(stage, 'restore', home), live)
         print(json.dumps({'installed': True}))
     else: raise ValueError('operation')
-except Exception:
-    print(json.dumps({'unknown': True}))
+except Exception as error:
+    failure = str(error) if isinstance(error, ValueError) and str(error) in safe_failures else (
+        'filesystem_unavailable' if isinstance(error, OSError) else 'unexpected')
+    print(json.dumps({'failure': failure}))
     sys.exit(1)
 `;
 

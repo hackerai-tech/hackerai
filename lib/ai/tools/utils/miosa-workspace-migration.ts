@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Sandbox } from "@e2b/code-interpreter";
+import { CommandExitError, Sandbox } from "@e2b/code-interpreter";
 import type { SubscriptionTier } from "@/types";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { phLogger } from "@/lib/posthog/server";
@@ -26,6 +26,21 @@ import { waitForMiosaReadiness } from "./miosa-readiness";
 const MAX_ARCHIVE_BYTES = 4 * 1024 ** 3;
 const CHUNK_BYTES = 4 * 1024 ** 2;
 const digestPattern = /^[a-f0-9]{64}$/;
+const sourceExportRejections = [
+  "changed",
+  "external_hardlink",
+  "external_symlink",
+  "filesystem_unavailable",
+  "limit",
+  "mount",
+  "socket",
+  "unsupported_entry",
+  "unsupported_workspace_entry",
+  "virtual_mount",
+  "workspace_mount",
+  "workspace_root",
+] as const;
+type SourceExportRejection = (typeof sourceExportRejections)[number];
 const migrationStages = [
   "source_inspection",
   "source_connection",
@@ -49,6 +64,18 @@ type Capture = {
   archiveDigest: string;
   archiveBytes: number;
 };
+
+function parseSourceExportRejection(
+  stdout: string,
+): SourceExportRejection | undefined {
+  if (stdout.length > 1024) return undefined;
+  try {
+    const value = JSON.parse(stdout);
+    return sourceExportRejections.find((reason) => reason === value.failure);
+  } catch {
+    return undefined;
+  }
+}
 
 function migrationFailureKind(error: unknown): MigrationFailureKind {
   if (error instanceof SyntaxError) return "invalid_response";
@@ -173,7 +200,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       userId,
       reason,
       duration_ms: Date.now() - startedAt,
-      migration_event_version: 2,
+      migration_event_version: 3,
       ...properties,
     });
     return { reason, ...result };
@@ -236,9 +263,17 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   const finishStage = () => {
     stageDurationsMs[migrationStage] = Date.now() - stageStartedAt;
   };
-  const reportStage = (reason: string) => {
+  const reportStage = (
+    reason: string,
+    properties: Record<string, unknown> = {},
+    result: Record<string, unknown> = {},
+  ) => {
     finishStage();
-    return report(reason, { stage_durations_ms: stageDurationsMs });
+    return report(
+      reason,
+      { ...properties, stage_durations_ms: stageDurationsMs },
+      result,
+    );
   };
   try {
     const connection = workspaces[0].cluster.connectionOptions;
@@ -265,11 +300,32 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       return reportStage("active_commands");
     startStage("source_export");
     sourceStageCreated = true;
-    const exported = await source.commands.run(
-      transferCommand("export", stage),
-      { user: "root", cwd: "/", timeoutMs: 21 * 60 * 1000 },
-    );
-    if (exported.exitCode !== 0) throw new Error("Export failed");
+    let exported;
+    try {
+      exported = await source.commands.run(transferCommand("export", stage), {
+        user: "root",
+        cwd: "/",
+        timeoutMs: 21 * 60 * 1000,
+      });
+    } catch (error) {
+      if (!(error instanceof CommandExitError)) throw error;
+      const rejection = parseSourceExportRejection(error.stdout);
+      if (!rejection) throw new Error("Export failed");
+      return reportStage(
+        "source_export_rejected",
+        { source_export_reason: rejection },
+        { sourceExportReason: rejection },
+      );
+    }
+    if (exported.exitCode !== 0) {
+      const rejection = parseSourceExportRejection(exported.stdout);
+      if (!rejection) throw new Error("Export failed");
+      return reportStage(
+        "source_export_rejected",
+        { source_export_reason: rejection },
+        { sourceExportReason: rejection },
+      );
+    }
     const capture = parseCapture(exported.stdout);
     startStage("destination_creation");
     preparedName = `${miosaExternalUserId(userId)}-migration-${claim.token}`;

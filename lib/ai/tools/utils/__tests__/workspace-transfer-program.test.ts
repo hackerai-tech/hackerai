@@ -25,17 +25,21 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
       stage: string,
       destinationStage: string;
     const run = (operation: string, selectedStage = stage, root = source) => {
-      const program = WORKSPACE_TRANSFER_PROGRAM.replace(
-        "except Exception:",
-        "except Exception as error:\n    print(type(error).__name__, str(error), file=sys.stderr)",
-      );
       const result = spawnSync(
         "python3",
-        ["-I", "-B", "-c", program, operation, selectedStage, root],
+        [
+          "-I",
+          "-B",
+          "-c",
+          WORKSPACE_TRANSFER_PROGRAM,
+          operation,
+          selectedStage,
+          root,
+        ],
         { encoding: "utf8" },
       );
       if (result.status !== 0)
-        throw new Error(`${operation}: ${result.stderr}`);
+        throw new Error(`${operation}: ${result.stdout}`);
       return JSON.parse(result.stdout);
     };
     beforeEach(() => {
