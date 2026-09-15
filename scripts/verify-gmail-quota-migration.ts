@@ -384,8 +384,25 @@ async function main() {
       JSON.stringify({ inventoryCursor: "saved-workos-page" }),
     );
     await client.set(shardedCounter, "7", { PX: 60000 });
+    // Neither a shard-only conflict nor a duplicate conflicting with the old
+    // hash may be silently overwritten or advance the saved inventory cursor.
+    for (const subject of [runnerSource, shardedSource]) {
+      const shard = `${inventoryKey}:${subject.slice(-2)}`;
+      await client.hSet(shard, subject, "conflicting-mapping");
+      await assert.rejects(
+        runner({ action: "inventory" }),
+        /Inventory mapping changed/,
+      );
+      assert.equal(await client.hGet(shard, subject), "conflicting-mapping");
+      assert.equal(
+        JSON.parse((await client.get("free_quota_runtime_migration:v1:meta"))!)
+          .inventoryCursor,
+        "saved-workos-page",
+      );
+      await client.hDel(shard, subject); // Only this disposable test fixture.
+    }
     assert.equal((await runner({ action: "inventory" })).mappedSubjects, 3);
-    assert.deepEqual(inventoryCursors, ["saved-workos-page"]);
+    assert.deepEqual(inventoryCursors, Array(3).fill("saved-workos-page"));
     assert.equal(await client.hLen(inventoryKey), 1);
     assert.equal(await client.hGet(inventoryKey, runnerSource), runnerTarget);
     assert.equal(

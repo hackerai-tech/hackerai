@@ -188,11 +188,13 @@ export async function runQuotaMigration(
         await redis.eval(
           `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return redis.error_reply('Migration lease lost') end
            for i = 2, #ARGV, 2 do
+             local bucket = tonumber(string.sub(ARGV[i], -2), 16)
              local previous = redis.call('HGET', KEYS[2], ARGV[i])
-             if previous then
-               if previous ~= ARGV[i+1] then return redis.error_reply('Inventory mapping changed') end
-             else
-               local bucket = tonumber(string.sub(ARGV[i], -2), 16)
+             local sharded = redis.call('HGET', KEYS[3 + bucket], ARGV[i])
+             if (previous and previous ~= ARGV[i+1]) or (sharded and sharded ~= ARGV[i+1]) then
+               return redis.error_reply('Inventory mapping changed')
+             end
+             if not previous and not sharded then
                redis.call('HSET', KEYS[3 + bucket], ARGV[i], ARGV[i+1])
              end
            end
