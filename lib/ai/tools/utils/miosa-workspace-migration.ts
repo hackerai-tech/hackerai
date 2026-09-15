@@ -236,6 +236,10 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   const finishStage = () => {
     stageDurationsMs[migrationStage] = Date.now() - stageStartedAt;
   };
+  const reportStage = (reason: string) => {
+    finishStage();
+    return report(reason, { stage_durations_ms: stageDurationsMs });
+  };
   try {
     const connection = workspaces[0].cluster.connectionOptions;
     const current = await Sandbox.getInfo(sourceId, {
@@ -250,14 +254,15 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       current.lifecycle?.onTimeout !== "pause" ||
       current.volumeMounts?.length
     )
-      return report("state_changed");
+      return reportStage("state_changed");
     startStage("source_connection");
     source = await Sandbox.connect(sourceId, {
       ...connection,
       timeoutMs: 2 * 60 * 60 * 1000,
       requestTimeoutMs: 10000,
     });
-    if ((await source.commands.list()).length) return report("active_commands");
+    if ((await source.commands.list()).length)
+      return reportStage("active_commands");
     startStage("source_export");
     sourceStageCreated = true;
     const exported = await source.commands.run(
@@ -304,9 +309,9 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       JSON.parse(verified.stdout).digest !== capture.digest ||
       (await source.commands.list()).length
     )
-      return report("source_changed");
+      return reportStage("source_changed");
     if (!(await isE2BFileMigrationEnabled(userId)))
-      return report("rollout_stopped");
+      return reportStage("rollout_stopped");
     startStage("cutover_preparation");
     const installed = await target.sdkSandbox.exec.run(
       transferCommand("install", stage),
@@ -357,7 +362,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     );
     if (cleaned.exitCode !== 0) throw new Error("Destination cleanup failed");
     if (!(await isE2BFileMigrationEnabled(userId)))
-      return report("rollout_stopped");
+      return reportStage("rollout_stopped");
     startStage("commit");
     commitStarted = true;
     await claim.commit(target.sandboxId);

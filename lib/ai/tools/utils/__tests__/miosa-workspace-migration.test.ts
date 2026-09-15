@@ -257,6 +257,15 @@ describe("file migration transaction", () => {
     expect(await migrateE2BWorkspace(request)).toEqual({
       reason: "rollout_stopped",
     });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "rollout_stopped",
+        stage_durations_ms: expect.objectContaining({
+          source_verification: expect.any(Number),
+        }),
+      }),
+    );
     expect(claim.commit).not.toHaveBeenCalled();
     expect(claim.abandon).toHaveBeenCalled();
   });
