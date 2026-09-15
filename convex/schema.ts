@@ -1,4 +1,10 @@
 import { defineSchema, defineTable } from "convex/server";
+import {
+  partnerFields,
+  attributionFields,
+  invoiceFields,
+  payoutFields,
+} from "./influencerValidators";
 import { v } from "convex/values";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
@@ -109,6 +115,17 @@ const validationConfidenceValidator = v.union(
 );
 
 export default defineSchema({
+  influencer_partners: defineTable(partnerFields).index("by_code", ["code"]),
+  influencer_attributions: defineTable(attributionFields)
+    .index("by_identity", ["identity"])
+    .index("by_customer_id", ["customer_id"])
+    .index("by_partner_id", ["partner_id"]),
+  influencer_invoices: defineTable(invoiceFields)
+    .index("by_invoice_id", ["invoice_id"])
+    .index("by_partner_id", ["partner_id"]),
+  influencer_payouts: defineTable(payoutFields)
+    .index("by_key", ["key"])
+    .index("by_partner_id_and_status", ["partner_id", "status"]),
   pendingFileDeletions: defineTable({
     s3_region: v.optional(v.string()),
     s3_bucket: v.optional(v.string()),

@@ -1,3 +1,4 @@
+import { attributeInfluencer } from "@/lib/influencers/attribution";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -284,6 +285,12 @@ export const POST = async (req: NextRequest) => {
 
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
+    await attributeInfluencer(req, {
+      userId,
+      identity: freeQuotaSubject,
+      subscription,
+      createdAt: user.createdAt,
+    });
     const orgName = buildWorkOSOrganizationName(user);
     const referralConfig = getReferralRewardConfig();
     const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
@@ -615,6 +622,31 @@ export const POST = async (req: NextRequest) => {
     }
 
     const cancelUrl = new URL(baseUrl);
+
+    if (freeQuotaSubject && subscription === "free") {
+      const attribution = await getConvexClient().query(
+        api.influencers.getAttribution,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          identity: freeQuotaSubject,
+        },
+      );
+      if (attribution) {
+        // Existing billing customers cannot acquire new influencer attribution.
+        const history = await stripe.subscriptions.list({
+          customer: customer.id,
+          status: "all",
+          limit: 1,
+        });
+        if (history.data.length === 0) {
+          await getConvexClient().mutation(api.influencers.bindCustomer, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            identity: freeQuotaSubject,
+            customerId: customer.id,
+          });
+        }
+      }
+    }
 
     let session = await findReusableCheckoutSession({
       customerId: customer.id,
