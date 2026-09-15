@@ -19,6 +19,7 @@ export type SetSandboxPreference = (
 
 interface SandboxPreferenceState {
   sandboxPreference: SandboxPreference;
+  hasExplicitSandboxPreference: boolean;
   setSandboxPreference: SetSandboxPreference;
   resetSandboxPreference: () => void;
   desktopBridgeActive: boolean;
@@ -97,6 +98,12 @@ export function useSandboxPreference(
       return isTauriEnvironment() ? "desktop" : "e2b";
     });
 
+  const [hasExplicitSandboxPreference, setHasExplicitSandboxPreference] =
+    useState(
+      () =>
+        typeof window !== "undefined" &&
+        Boolean(localStorage.getItem("sandbox-preference")),
+    );
   const newChatPreferenceRef = useRef(sandboxPreference);
 
   const connectDesktopMutation = useMutation(api.localSandbox.connectDesktop);
@@ -336,6 +343,7 @@ export function useSandboxPreference(
     (preference, { remember = true } = {}) => {
       setSandboxPreferenceState(preference);
       if (remember) {
+        setHasExplicitSandboxPreference(true);
         newChatPreferenceRef.current = preference;
         localStorage.setItem("sandbox-preference", preference);
       }
@@ -359,6 +367,7 @@ export function useSandboxPreference(
 
   return {
     sandboxPreference,
+    hasExplicitSandboxPreference,
     setSandboxPreference,
     resetSandboxPreference,
     desktopBridgeActive,

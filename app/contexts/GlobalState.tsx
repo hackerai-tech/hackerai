@@ -10,6 +10,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
+import { usePathname } from "next/navigation";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
@@ -476,6 +477,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
     sandboxPreference,
+    hasExplicitSandboxPreference,
     setSandboxPreference,
     resetSandboxPreference,
     desktopBridgeActive,
@@ -733,9 +735,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [agentOnlyActive],
   );
 
+  const pathname = usePathname();
   useAutoSelectNewRemoteConnection({
     connections: localConnections,
     enabled: Boolean(user),
+    isNewChat: pathname === "/",
+    hasExplicitSandboxPreference,
     chatMode: accessibleChatMode,
     setChatMode,
     subscription: paidAgentSubscription,

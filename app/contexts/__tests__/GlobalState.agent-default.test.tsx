@@ -27,6 +27,7 @@ jest.mock("@/app/hooks/useSandboxPreference", () => {
   return {
     useSandboxPreference: () => ({
       sandboxPreference: "e2b",
+      hasExplicitSandboxPreference: false,
       setSandboxPreference,
       resetSandboxPreference,
       desktopBridgeActive: mockDesktopBridgeActive,

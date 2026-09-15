@@ -126,6 +126,18 @@ describe("useSandboxPreference", () => {
     expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
   });
 
+  it("distinguishes untouched Cloud from an explicit Cloud choice across reloads", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    const first = renderHook(() => useSandboxPreference(false));
+    expect(first.result.current.hasExplicitSandboxPreference).toBe(false);
+    act(() => first.result.current.setSandboxPreference("e2b"));
+    expect(first.result.current.hasExplicitSandboxPreference).toBe(true);
+    first.unmount();
+    const second = renderHook(() => useSandboxPreference(false));
+    expect(second.result.current.sandboxPreference).toBe("e2b");
+    expect(second.result.current.hasExplicitSandboxPreference).toBe(true);
+  });
+
   it("restores legacy Desktop preferences on the web", () => {
     mockIsTauriEnvironment.mockReturnValue(false);
     window.localStorage.setItem("sandbox-preference", "tauri");

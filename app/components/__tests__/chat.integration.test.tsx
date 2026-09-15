@@ -76,7 +76,9 @@ jest.mock("@ai-sdk/react", () => ({
 
 jest.mock("next/navigation", () => ({
   useParams: jest.fn(() => mockRouteParams),
-  usePathname: jest.fn(() => "/"),
+  usePathname: jest.fn(() =>
+    mockRouteParams.id ? `/c/${mockRouteParams.id}` : "/",
+  ),
   useRouter: jest.fn(() => ({
     push: jest.fn(),
     replace: jest.fn(),

@@ -26,6 +26,8 @@ function makeProps() {
   return {
     connections: [] as Array<{ connectionId: string; isDesktop: boolean }>,
     enabled: true,
+    isNewChat: true,
+    hasExplicitSandboxPreference: false,
     chatMode: "ask" as const,
     setChatMode: jest.fn(),
     subscription: "free" as const,
@@ -89,6 +91,37 @@ describe("useAutoSelectNewRemoteConnection", () => {
       expect(props.setChatMode).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    { isNewChat: true, hasExplicitSandboxPreference: true },
+    { isNewChat: false, hasExplicitSandboxPreference: false },
+  ])(
+    "preserves Cloud and the mode when a runner appears for %j",
+    (selection) => {
+      const props = { ...makeProps(), ...selection };
+      const { rerender } = renderHook(useAutoSelectNewRemoteConnection, {
+        initialProps: props,
+      });
+      rerender({ ...props, connections: [remoteConnection] });
+      expect(props.setSandboxPreference).not.toHaveBeenCalled();
+      expect(props.setChatMode).not.toHaveBeenCalled();
+      expect(props.setSelectedModel).not.toHaveBeenCalled();
+      expect(toast.success).not.toHaveBeenCalled();
+    },
+  );
+
+  it("honors a Cloud choice made in the same update as a runner arrives", () => {
+    const props = makeProps();
+    const { rerender } = renderHook(useAutoSelectNewRemoteConnection, {
+      initialProps: props,
+    });
+    rerender({
+      ...props,
+      hasExplicitSandboxPreference: true,
+      connections: [remoteConnection],
+    });
+    expect(props.setSandboxPreference).not.toHaveBeenCalled();
+  });
 
   it("ignores native Desktop bridge connections", () => {
     const props = makeProps();
