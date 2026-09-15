@@ -26,6 +26,21 @@ import { waitForMiosaReadiness } from "./miosa-readiness";
 const MAX_ARCHIVE_BYTES = 4 * 1024 ** 3;
 const CHUNK_BYTES = 4 * 1024 ** 2;
 const digestPattern = /^[a-f0-9]{64}$/;
+const migrationStages = [
+  "source_inspection",
+  "source_connection",
+  "source_export",
+  "destination_creation",
+  "archive_transfer",
+  "restore_verification",
+  "source_verification",
+  "cutover_preparation",
+  "persistence_verification",
+  "destination_cleanup",
+  "commit",
+] as const;
+type MigrationStage = (typeof migrationStages)[number];
+type MigrationFailureKind = "invalid_response" | "operation_failed" | "timeout";
 type Capture = {
   digest: string;
   homeDigest: string;
@@ -34,6 +49,18 @@ type Capture = {
   archiveDigest: string;
   archiveBytes: number;
 };
+
+function migrationFailureKind(error: unknown): MigrationFailureKind {
+  if (error instanceof SyntaxError) return "invalid_response";
+  if (
+    error instanceof Error &&
+    (error.name === "AbortError" ||
+      error.name === "TimeoutError" ||
+      /\b(?:timeout|timed out)\b/i.test(error.message))
+  )
+    return "timeout";
+  return "operation_failed";
+}
 
 function parseCapture(stdout: string): Capture {
   if (stdout.length > 1024) throw new Error("Invalid capture");
@@ -137,15 +164,19 @@ export type E2BFileMigrationRequest = {
 export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   const { userId, sourceId, triggerRegion } = request;
   const startedAt = Date.now();
-  const report = (reason: string, counts: Record<string, number> = {}) => {
+  const report = (
+    reason: string,
+    properties: Record<string, unknown> = {},
+    result: Record<string, unknown> = {},
+  ) => {
     phLogger.event("miosa_e2b_file_migration_checked", {
       userId,
       reason,
       duration_ms: Date.now() - startedAt,
-      migration_event_version: 1,
-      ...counts,
+      migration_event_version: 2,
+      ...properties,
     });
-    return { reason };
+    return { reason, ...result };
   };
   if (
     triggerRegion === "eu-central-1" ||
@@ -194,6 +225,21 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   let sourceStageCreated = false;
   let commitStarted = false;
   let preparedName: string | undefined;
+  let migrationStage: MigrationStage = "source_inspection";
+  let stageStartedAt = Date.now();
+  const stageDurationsMs: Partial<Record<MigrationStage, number>> = {};
+  const startStage = (stage: MigrationStage) => {
+    stageDurationsMs[migrationStage] = Date.now() - stageStartedAt;
+    migrationStage = stage;
+    stageStartedAt = Date.now();
+  };
+  const finishStage = () => {
+    stageDurationsMs[migrationStage] = Date.now() - stageStartedAt;
+  };
+  const reportStage = (reason: string) => {
+    finishStage();
+    return report(reason, { stage_durations_ms: stageDurationsMs });
+  };
   try {
     const connection = workspaces[0].cluster.connectionOptions;
     const current = await Sandbox.getInfo(sourceId, {
@@ -208,13 +254,16 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       current.lifecycle?.onTimeout !== "pause" ||
       current.volumeMounts?.length
     )
-      return report("state_changed");
+      return reportStage("state_changed");
+    startStage("source_connection");
     source = await Sandbox.connect(sourceId, {
       ...connection,
       timeoutMs: 2 * 60 * 60 * 1000,
       requestTimeoutMs: 10000,
     });
-    if ((await source.commands.list()).length) return report("active_commands");
+    if ((await source.commands.list()).length)
+      return reportStage("active_commands");
+    startStage("source_export");
     sourceStageCreated = true;
     const exported = await source.commands.run(
       transferCommand("export", stage),
@@ -222,6 +271,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     );
     if (exported.exitCode !== 0) throw new Error("Export failed");
     const capture = parseCapture(exported.stdout);
+    startStage("destination_creation");
     preparedName = `${miosaExternalUserId(userId)}-migration-${claim.token}`;
     ({ sandbox: target } = await ensureMiosaSandboxConnection(
       { userID: userId, setSandbox: () => {} },
@@ -233,7 +283,9 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       { timeoutSec: 15 },
     );
     if (initialized.exitCode !== 0) throw new Error("Staging failed");
+    startStage("archive_transfer");
     await transferArchive(source, target, stage, capture);
+    startStage("restore_verification");
     const restored = await target.sdkSandbox.exec.run(
       transferCommand("restore", stage),
       { timeoutSec: 21 * 60 },
@@ -246,6 +298,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       proof.homeDigest !== capture.homeDigest
     )
       throw new Error("Verification failed");
+    startStage("source_verification");
     const verified = await source.commands.run(
       transferCommand("verify-source", stage),
       { user: "root", cwd: "/", timeoutMs: 21 * 60 * 1000 },
@@ -256,9 +309,10 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       JSON.parse(verified.stdout).digest !== capture.digest ||
       (await source.commands.list()).length
     )
-      return report("source_changed");
+      return reportStage("source_changed");
     if (!(await isE2BFileMigrationEnabled(userId)))
-      return report("rollout_stopped");
+      return reportStage("rollout_stopped");
+    startStage("cutover_preparation");
     const installed = await target.sdkSandbox.exec.run(
       transferCommand("install", stage),
       { timeoutSec: 60 },
@@ -280,6 +334,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     await source.betaPause();
     await target.sdkSandbox.pause();
     await target.sdkSandbox.resume();
+    startStage("persistence_verification");
     await waitForMiosaReadiness(target.sdkSandbox, { fastStart: true });
     const retainedProof = await target.sdkSandbox.exec.run(
       `sha256sum /var/lib/hackerai-migration/e2b-filesystem.tar.gz`,
@@ -300,22 +355,41 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       JSON.parse(homeProof.stdout).homeDigest !== capture.homeDigest
     )
       throw new Error("Workspace persistence verification failed");
+    startStage("destination_cleanup");
     const cleaned = await target.sdkSandbox.exec.run(
       `python3 -I -c 'import shutil; shutil.rmtree("${stage}")'`,
       { timeoutSec: 60 },
     );
     if (cleaned.exitCode !== 0) throw new Error("Destination cleanup failed");
     if (!(await isE2BFileMigrationEnabled(userId)))
-      return report("rollout_stopped");
+      return reportStage("rollout_stopped");
+    startStage("commit");
     commitStarted = true;
     await claim.commit(target.sandboxId);
+    finishStage();
     return report("files_verified_and_committed", {
       file_entries: capture.entries,
       archive_bytes: capture.archiveBytes,
+      stage_durations_ms: stageDurationsMs,
     });
-  } catch {
+  } catch (error) {
     if (commitStarted) throw new CloudMigrationUnavailableError();
-    return report("transfer_unavailable");
+    finishStage();
+    const failureKind = migrationFailureKind(error);
+    return report(
+      "transfer_unavailable",
+      {
+        failure_stage: migrationStage,
+        failure_kind: failureKind,
+        failed_stage_duration_ms: stageDurationsMs[migrationStage],
+        stage_durations_ms: stageDurationsMs,
+      },
+      {
+        failureStage: migrationStage,
+        failureKind,
+        failedStageDurationMs: stageDurationsMs[migrationStage],
+      },
+    );
   } finally {
     if (!commitStarted) {
       // A failed or uncertain create may exist even without a returned SDK.
