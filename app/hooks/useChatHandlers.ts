@@ -209,13 +209,21 @@ export const useChatHandlers = ({
     // Capture the target before awaiting: a later run or navigation must not
     // change which task this Stop is allowed to cancel.
     const currentRunId = activeTriggerRunRef?.current;
-    const [startedRun] = await Promise.all([pendingStart, beforeCancel]);
-    const expectedTriggerRunId = pendingStart
-      ? startedRun?.runId
-      : currentRunId;
-    // A rejected start returned no run. Never replace it with a broad chat
-    // cancellation that could stop another request which has since started.
-    if (pendingStart && !expectedTriggerRunId) return { outcome: "canceled" };
+    let startFailure: unknown;
+    const [startedRun] = await Promise.all([
+      pendingStart?.catch((error: unknown) => {
+        startFailure = error;
+        return undefined;
+      }),
+      beforeCancel,
+    ]);
+    const expectedTriggerRunId = startedRun?.runId ?? currentRunId;
+    // Cancel a captured existing run even if the new start failed. Without an
+    // exact handle, never send a broad cancellation that could hit a later run.
+    if (pendingStart && !expectedTriggerRunId) {
+      if (startFailure) throw startFailure;
+      return { outcome: "not_applicable" };
+    }
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -253,6 +261,9 @@ export const useChatHandlers = ({
         `Agent cancellation failed with status ${response.status}`,
       );
     }
+    // A lost start response can still hide a newly created durable task. Keep
+    // that uncertainty visible and prevent steering from starting another run.
+    if (startFailure) throw startFailure;
     return { outcome: "canceled" };
   };
 

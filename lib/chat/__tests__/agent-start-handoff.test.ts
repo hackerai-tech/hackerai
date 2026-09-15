@@ -95,3 +95,24 @@ it("surfaces a failed start to Stop and releases the pending handle", async () =
   expect(await handoff).toMatchObject({ message: "Synthetic network failure" });
   expect(getPendingAgentLongRunStart("handoff-chat")).toBeUndefined();
 });
+
+it("bounds a stalled start even when the request ignores its abort signal", async () => {
+  jest.useFakeTimers();
+  try {
+    jest.mocked(fetch).mockReturnValueOnce(new Promise(() => {}));
+    const response = fetchAgentLongStream(init()).catch((error) => error);
+    const handoff = getPendingAgentLongRunStart("handoff-chat")!.catch(
+      (error) => error,
+    );
+    await jest.advanceTimersByTimeAsync(45_000);
+    expect(await response).toMatchObject({
+      message: expect.stringContaining("Agent startup timed out"),
+    });
+    expect(await handoff).toBe(await response);
+    expect(jest.mocked(fetch).mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(getPendingAgentLongRunStart("handoff-chat")).toBeUndefined();
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});

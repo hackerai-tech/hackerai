@@ -48,6 +48,8 @@ export type AgentLongRunStarted = {
 };
 
 type AgentStartResult = { response: Response; handle?: RunHandle };
+// Allow the route's 30-second budget plus response delivery time.
+const AGENT_START_TIMEOUT_MS = 45_000;
 const pendingAgentStarts = new Map<string, Promise<AgentStartResult>>();
 
 /** Capture the in-flight start before Stop detaches the local stream. */
@@ -771,15 +773,27 @@ export const fetchAgentLongStream = async (
   // durable task created by the route. Retain its handle so an explicit Stop
   // can wait for association and cancel that exact run. Navigation still only
   // detaches the local stream and leaves durable work available to reconnect.
-  const start = (async (): Promise<AgentStartResult> => {
+  const startAbort = new AbortController();
+  let startTimeout: ReturnType<typeof setTimeout> | undefined;
+  const startDeadline = new Promise<never>((_, reject) => {
+    startTimeout = setTimeout(() => {
+      const error = new Error(
+        "Agent startup timed out. Reload this chat to reconnect and stop any active run.",
+      );
+      reject(error);
+      startAbort.abort(error);
+    }, AGENT_START_TIMEOUT_MS);
+  });
+  const request = (async (): Promise<AgentStartResult> => {
     const response = await fetchWithErrorHandlers(AGENT_API_ENDPOINT, {
       ...init,
-      signal: undefined,
+      signal: startAbort.signal,
     });
     return response.ok
       ? { response, handle: (await response.json()) as RunHandle }
       : { response };
   })();
+  const start = Promise.race([request, startDeadline]);
   if (chatId) pendingAgentStarts.set(chatId, start);
 
   try {
@@ -797,6 +811,7 @@ export const fetchAgentLongStream = async (
       statusEndpoint: AGENT_STATUS_ENDPOINT,
     });
   } finally {
+    clearTimeout(startTimeout);
     if (chatId && pendingAgentStarts.get(chatId) === start) {
       pendingAgentStarts.delete(chatId);
     }

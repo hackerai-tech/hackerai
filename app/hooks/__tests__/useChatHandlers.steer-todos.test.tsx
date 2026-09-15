@@ -209,6 +209,67 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(onRunStarted).not.toHaveBeenCalled();
   });
 
+  it.each(["run-previous", null])(
+    "handles failed starts without broad cancellation (captured run: %s)",
+    async (capturedRun) => {
+      let failStart!: (error: Error) => void;
+      jest.mocked(fetch).mockImplementationOnce(
+        () =>
+          new Promise<Response>((_, reject) => {
+            failStart = reject;
+          }),
+      );
+      const controller = new AbortController();
+      const stream = fetchAgentLongStream({
+        method: "POST",
+        body: JSON.stringify({ chatId: "chat-1" }),
+        signal: controller.signal,
+      }).catch((error: Error) => error);
+      const activeTriggerRunRef = { current: capturedRun };
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: () => controller.abort(),
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "submitted",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef,
+        }),
+      );
+      let stopped!: Promise<boolean>;
+      act(() => {
+        stopped = result.current.handleStop();
+      });
+      activeTriggerRunRef.current = "run-replacement";
+      await act(async () => {
+        failStart(new Error("Synthetic lost start response"));
+        expect(await stopped).toBe(false);
+      });
+      if (capturedRun) {
+        expect(fetch).toHaveBeenLastCalledWith(
+          "/api/agent/cancel",
+          expect.objectContaining({
+            body: JSON.stringify({
+              chatId: "chat-1",
+              expectedTriggerRunId: capturedRun,
+            }),
+          }),
+        );
+      } else {
+        expect(fetch).toHaveBeenCalledTimes(1);
+      }
+      expect(await stream).toMatchObject({
+        message: "Synthetic lost start response",
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("retains the starting run while Send now waits for todo persistence", async () => {
     let finishStart!: (response: Response) => void;
     let finishSave!: (value: null) => void;
