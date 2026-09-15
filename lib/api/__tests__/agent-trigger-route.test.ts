@@ -28,6 +28,26 @@ const mockSetActiveTriggerRun = jest.fn<any>();
 const mockHandleInitialChatAndUserMessage = jest.fn<any>();
 const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
+const mockGetUserIDAndPro = jest.fn<any>();
+const mockGetFeatureFlag = jest.fn<any>();
+const mockTriggerTask = jest.fn<any>();
+
+jest.mock("@/lib/auth/get-user-id", () => ({
+  getUserIDAndPro: mockGetUserIDAndPro,
+}));
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanMakeCostIncurringRequest: jest
+    .fn<any>()
+    .mockResolvedValue(undefined),
+}));
+jest.mock("@/app/posthog", () => ({
+  __esModule: true,
+  default: () => ({
+    getFeatureFlag: mockGetFeatureFlag,
+    capture: jest.fn(),
+    flush: jest.fn<any>().mockResolvedValue(undefined),
+  }),
+}));
 
 jest.mock("next/server", () => ({
   after: jest.fn(),
@@ -39,7 +59,7 @@ jest.mock("@trigger.dev/sdk", () => ({
   auth: { createPublicToken: mockCreatePublicToken },
   idempotencyKeys: { create: jest.fn() },
   sessions: { start: jest.fn() },
-  tasks: { trigger: jest.fn() },
+  tasks: { trigger: mockTriggerTask },
 }));
 
 jest.mock("@/lib/db/actions", () => ({
@@ -408,4 +428,49 @@ describe("Agent trigger route lifecycle", () => {
   ] as const)("uses %s Agent runs on %s", (subscription, machine) => {
     expect(getAgentTriggerMachine(subscription)).toBe(machine);
   });
+});
+
+describe("regional subscription gate before Agent dispatch", () => {
+  const previousVercel = process.env.VERCEL;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.VERCEL = "1";
+    mockGetFeatureFlag.mockResolvedValue("test");
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user-free",
+      subscription: "free",
+    });
+  });
+  afterEach(() => {
+    if (previousVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previousVercel;
+  });
+  it.each(["/api/agent", "/api/agent-long"] as const)(
+    "blocks %s before chat persistence or paid worker dispatch",
+    async (endpoint) => {
+      const response = await createAgentTriggerPost({ endpoint })({
+        headers: new Headers({ "x-vercel-ip-country": "NG" }),
+        cookies: { get: () => undefined },
+        json: async () => ({
+          chatId: "test-chat",
+          messages: [
+            {
+              id: "message-1",
+              role: "user",
+              parts: [{ type: "text", text: "Explain HTTP headers." }],
+            },
+          ],
+          sandboxPreference: "local",
+          regionalSubscriptionCountry: "US",
+          subscription: "pro",
+        }),
+      } as any);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        metadata: { subscription_required: true },
+      });
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
 });

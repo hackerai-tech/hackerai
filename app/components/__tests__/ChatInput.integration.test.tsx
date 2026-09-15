@@ -187,7 +187,10 @@ describe("ChatInput - Integration Tests", () => {
     mockUseQuery.mockReturnValue(undefined);
     mockReadGeneratedTextAttachment.mockReset();
     mockFetch.mockReset();
-    mockFetch.mockResolvedValue({ ok: true });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ assignment: null }),
+    });
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       writable: true,
@@ -466,7 +469,7 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
-    it("renders a glass composer with a narrower sandbox context strip", () => {
+    it("renders a glass composer with a narrower sandbox context strip", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -495,6 +498,7 @@ describe("ChatInput - Integration Tests", () => {
         </TestWrapper>,
       );
 
+      await screen.findByTestId("chat-input-surface");
       expect(screen.getByTestId("chat-input-surface")).toHaveClass(
         "chat-input-glass-surface",
         "z-10",
@@ -546,7 +550,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("moves Agent controls below the input when the composer becomes narrow", () => {
+    it("moves Agent controls below the input when the composer becomes narrow", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -601,6 +605,7 @@ describe("ChatInput - Integration Tests", () => {
           </TestWrapper>,
         );
 
+        await screen.findByTestId("chat-input-surface");
         act(() => {
           (resizeCallback as ResizeObserverCallback)(
             [{ contentRect: { width: 700 } } as ResizeObserverEntry],
@@ -898,7 +903,15 @@ describe("ChatInput - Integration Tests", () => {
       expect(failedStop).toHaveBeenCalledTimes(1);
     });
 
-    it("renders retry and stop controls when stored approval reconnection fails", () => {
+    it("keeps free-account recovery controls when stored approval reconnection fails", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
       render(
         <TestWrapper>
           <ChatInput
@@ -934,6 +947,42 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
 
       expect(mockOnReconnect).toHaveBeenCalledTimes(1);
+      await act(async () => {});
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Stop agent" })).toBeVisible();
+    });
+
+    it("keeps connected approval actions available to a free account after a stream error", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onReconnect={mockOnReconnect}
+            status="error"
+            chatId="approval-chat"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+      expect(
+        await screen.findByRole("button", { name: "Allow once" }),
+      ).toBeVisible();
+      expect(screen.getByRole("button", { name: "Deny" })).toBeVisible();
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
     });
   });
 
