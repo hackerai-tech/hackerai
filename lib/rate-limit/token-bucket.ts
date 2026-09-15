@@ -1774,9 +1774,9 @@ export const capCurrentCycleAllocation = async (
 };
 
 /**
- * Remove account-scoped rate-limit state after deletion. Shared mailbox quotas
- * and migration redirects deliberately survive until their normal expiry so
- * deletion cannot reset free usage or affect another alias account.
+ * Remove account-scoped rate-limit state after deletion. Email-scoped quotas
+ * survive until their normal expiry so deleting and recreating an account
+ * cannot reset its free usage.
  * Best-effort: returns the number of deleted keys, never throws.
  */
 export const deleteUserRateLimitKeys = async (
@@ -1791,7 +1791,7 @@ export const deleteUserRateLimitKeys = async (
       isUserRateLimitKey(key, userId),
     );
     // Identity-scoped quotas outlive account deletion until their own TTLs.
-    // Deleting one alias must not reset the allowance of the shared mailbox.
+    // Recreating an account must not reset the allowance of the same email.
     const keys = Array.from(new Set(userKeys));
     if (keys.length === 0) return 0;
     await deleteRedisKeys(redis, keys);

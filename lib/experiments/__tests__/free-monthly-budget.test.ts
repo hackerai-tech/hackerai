@@ -1,32 +1,16 @@
 import type { NextRequest } from "next/server";
-import { createCanonicalFreeQuotaSubjectWithSecret } from "@/lib/auth/free-quota-subject-core";
-import {
-  FREE_QUOTA_MIGRATION_STATE,
-  freeQuotaRedirectKey,
-} from "@/lib/rate-limit/free-quota-migration";
-import {
-  getFreeMonthlyCostLimitDollars,
-  getFreeRequestLimit,
-} from "@/lib/rate-limit/free-config";
+import { getFreeMonthlyCostLimitDollars } from "@/lib/rate-limit/free-config";
 import {
   evaluateFreeMonthlyBudget,
-  monthlyBudgetAllocation,
   captureFreeMonthlyBudgetExposure,
+  type FreeMonthlyBudgetAssignment,
 } from "../free-monthly-budget";
 import { monthlyBudgetCountryFromRequest } from "../free-monthly-budget-request";
 
-const mockGet = jest.fn();
-jest.mock("@/lib/rate-limit/redis", () => ({
-  createRedisClient: () => ({ get: mockGet }),
-}));
-
 describe("verified free monthly budget experiment", () => {
   const env = { ...process.env };
-  const subject = createCanonicalFreeQuotaSubjectWithSecret(
-    "first.last+one@gmail.com",
-    "synthetic-secret",
-  );
-  const getFeatureFlag = jest.fn();
+  const subject = `free_quota:v1:${"a".repeat(64)}`;
+  const getFeatureFlag = jest.fn().mockResolvedValue("test");
   const args = {
     posthog: { getFeatureFlag },
     userId: "synthetic-user",
@@ -37,126 +21,20 @@ describe("verified free monthly budget experiment", () => {
   };
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.FREE_QUOTA_GMAIL_CANONICALIZATION = "true";
     process.env.VERCEL = "1";
     delete process.env.FREE_MONTHLY_COST_LIMIT_USD;
-    delete process.env.FREE_RATE_LIMIT_REQUESTS;
-    mockGet.mockImplementation(async (key) =>
-      key === FREE_QUOTA_MIGRATION_STATE ? "complete" : null,
-    );
-    getFeatureFlag.mockImplementation(
-      async (_key, _id, options) =>
-        options.personProperties.free_monthly_budget_arm,
-    );
   });
   afterEach(() => {
     process.env = { ...env };
-    jest.useRealTimers();
   });
 
-  it("keeps Gmail aliases together without sending quota identities or changing daily limits", async () => {
-    process.env.FREE_RATE_LIMIT_REQUESTS = "7";
-    const alias = createCanonicalFreeQuotaSubjectWithSecret(
-      "f.i.r.s.t.last+two@googlemail.com",
-      "synthetic-secret",
-    );
-    expect(alias).toBe(subject);
-    const first = await evaluateFreeMonthlyBudget(args);
-    const second = await evaluateFreeMonthlyBudget({
-      ...args,
-      userId: "different-account",
-      freeQuotaSubject: alias,
-    });
-    expect(second).toEqual(first);
-    expect(first?.dailyRequests).toBe(7);
-    expect(getFreeRequestLimit(first)).toBe(7);
-    expect(getFreeMonthlyCostLimitDollars(first)).toBe(
-      first?.variant === "test" ? 0.5 : 0.25,
-    );
-    const sent = JSON.stringify(getFeatureFlag.mock.calls);
-    expect(sent).not.toContain(subject);
-    expect(sent).not.toContain("gmail.com");
-    expect(getFeatureFlag.mock.calls[0][2].sendFeatureFlagEvents).toBe(false);
-  });
-
-  it("resolves an old durable payload to the migrated subject before bucketing", async () => {
-    const old = `free_quota:v1:${"b".repeat(64)}`;
-    mockGet.mockImplementation(async (key) =>
-      key === FREE_QUOTA_MIGRATION_STATE
-        ? "complete"
-        : key === freeQuotaRedirectKey(old)
-          ? subject
-          : null,
-    );
-    await evaluateFreeMonthlyBudget({ ...args, freeQuotaSubject: old });
-    expect(
-      getFeatureFlag.mock.calls[0][2].personProperties
-        .free_monthly_budget_bucket,
-    ).toBe(monthlyBudgetAllocation(subject).bucket);
-  });
-
-  it.each([
-    { subscription: "pro" },
-    { subscription: "team" },
-    { emailVerified: false },
-    { emailVerified: undefined },
-    { country: "IN" },
-    { country: "PK" },
-    { country: "BD" },
-    { country: "NG" },
-    { country: undefined },
-    { country: "XX" },
-    { freeQuotaSubject: undefined },
-    { freeQuotaSubject: "user-id" },
-  ])("does not evaluate the flag for ineligible input %j", async (patch) => {
-    expect(
-      await evaluateFreeMonthlyBudget({ ...args, ...patch }),
-    ).toBeUndefined();
+  it("keeps enrollment disabled even when the remote flag would offer the larger budget", async () => {
+    const assignment = await evaluateFreeMonthlyBudget(args);
+    expect(assignment).toBeUndefined();
     expect(getFeatureFlag).not.toHaveBeenCalled();
+    expect(getFreeMonthlyCostLimitDollars(assignment)).toBe(0.25);
   });
 
-  it.each([null, "paused", "migrated"])(
-    "requires completed migration, not %s",
-    async (state) => {
-      mockGet.mockResolvedValue(state);
-      expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-      expect(getFeatureFlag).not.toHaveBeenCalled();
-    },
-  );
-  it("requires canonicalization enabled in this runtime", async () => {
-    delete process.env.FREE_QUOTA_GMAIL_CANONICALIZATION;
-    expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-    expect(getFeatureFlag).not.toHaveBeenCalled();
-  });
-  it.each([false, true, undefined, "invalid"])(
-    "does not enroll flag result %s",
-    async (result) => {
-      getFeatureFlag.mockResolvedValue(result);
-      expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-    },
-  );
-  it("rejects a remote variant inconsistent with the identity's stable arm", async () => {
-    getFeatureFlag.mockResolvedValue(
-      monthlyBudgetAllocation(subject).variant === "control"
-        ? "test"
-        : "control",
-    );
-    expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-  });
-  it.each(["0.10", "0.75"])(
-    "does not reinterpret an operational budget override %s",
-    async (limit) => {
-      process.env.FREE_MONTHLY_COST_LIMIT_USD = limit;
-      expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-      expect(getFeatureFlag).not.toHaveBeenCalled();
-    },
-  );
-  it("keeps normal allowance when evaluation fails", async () => {
-    getFeatureFlag.mockRejectedValue(new Error("unavailable"));
-    expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-    mockGet.mockRejectedValue(new Error("unavailable"));
-    expect(await evaluateFreeMonthlyBudget(args)).toBeUndefined();
-  });
   it("never raises an ordinary regional policy or a stricter emergency cap", () => {
     expect(
       getFreeMonthlyCostLimitDollars({
@@ -208,7 +86,12 @@ describe("verified free monthly budget experiment", () => {
   });
 
   it("captures enforcement exposure before any usage and bounds failed delivery", async () => {
-    const assignment = await evaluateFreeMonthlyBudget(args);
+    const assignment: FreeMonthlyBudgetAssignment = {
+      monthlyBudgetExperiment: "free_monthly_budget_v1",
+      variant: "test",
+      dailyRequests: 10,
+      monthlyCostDollars: 0.5,
+    };
     const capture = jest.fn();
     const flush = jest.fn().mockRejectedValue(new Error("offline"));
     await expect(

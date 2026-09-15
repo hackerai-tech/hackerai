@@ -1,20 +1,15 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
-jest.mock("../free-quota-migration", () => ({
-  FREE_QUOTA_ADMISSION_GUARD_SCRIPT: "",
-  FREE_QUOTA_KEY_REDIRECT_SCRIPT: "",
-  resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
-    subject,
-}));
-
 describe("acquireFreeRunConcurrencyLock", () => {
   const mockCreateRedisClient = jest.fn();
+  const mockSet = jest.fn();
   const mockEval = jest.fn();
 
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
-    mockEval.mockResolvedValue("OK");
+    mockSet.mockResolvedValue("OK");
+    mockEval.mockResolvedValue(1);
   });
 
   const getIsolatedModule = () => {
@@ -32,22 +27,21 @@ describe("acquireFreeRunConcurrencyLock", () => {
   };
 
   it("acquires a per-user Redis lock and releases it by token", async () => {
-    mockCreateRedisClient.mockReturnValue({ eval: mockEval });
+    mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
     const { acquireFreeRunConcurrencyLock } = getIsolatedModule();
 
     const lock = await acquireFreeRunConcurrencyLock("user-123", 60);
 
-    expect(mockEval).toHaveBeenNthCalledWith(
-      1,
+    expect(mockSet).toHaveBeenCalledWith(
+      "free_run_lock:user-123",
       expect.any(String),
-      ["free_run_lock:user-123"],
-      [expect.any(String), 60],
+      { nx: true, ex: 60 },
     );
 
     await lock.release();
     await lock.release();
 
-    expect(mockEval).toHaveBeenCalledTimes(2);
+    expect(mockEval).toHaveBeenCalledTimes(1);
     expect(mockEval).toHaveBeenCalledWith(
       expect.any(String),
       ["free_run_lock:user-123"],
@@ -56,8 +50,8 @@ describe("acquireFreeRunConcurrencyLock", () => {
   });
 
   it("throws a rate-limit error when another free run is active", async () => {
-    mockCreateRedisClient.mockReturnValue({ eval: mockEval });
-    mockEval.mockResolvedValue(null);
+    mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
+    mockSet.mockResolvedValue(null);
     const { acquireFreeRunConcurrencyLock } = getIsolatedModule();
 
     await expect(
@@ -81,9 +75,8 @@ describe("acquireFreeRunConcurrencyLock", () => {
   });
 
   it("allows release to be retried when Redis unlock fails", async () => {
-    mockCreateRedisClient.mockReturnValue({ eval: mockEval });
+    mockCreateRedisClient.mockReturnValue({ set: mockSet, eval: mockEval });
     mockEval
-      .mockResolvedValueOnce("OK")
       .mockRejectedValueOnce(new Error("temporary redis failure"))
       .mockResolvedValueOnce(1);
     const { acquireFreeRunConcurrencyLock } = getIsolatedModule();
@@ -93,7 +86,7 @@ describe("acquireFreeRunConcurrencyLock", () => {
     await expect(lock.release()).rejects.toThrow("temporary redis failure");
     await expect(lock.release()).resolves.toBeUndefined();
 
-    expect(mockEval).toHaveBeenCalledTimes(3);
+    expect(mockEval).toHaveBeenCalledTimes(2);
   });
 
   it("skips the lock outside production when Redis is unavailable", async () => {

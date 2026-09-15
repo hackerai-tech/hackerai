@@ -143,7 +143,7 @@ describe("token-bucket async functions", () => {
   };
 
   describe("deleteUserRateLimitKeys", () => {
-    it("preserves shared mailbox usage when deleting an alias account", async () => {
+    it("preserves email-scoped usage when deleting an account", async () => {
       const { deleteUserRateLimitKeys } = getIsolatedModule();
       const identitySubject = "free_quota:v1:shared";
       mockScanFn.mockResolvedValueOnce(["0", ["usage:monthly:user-123:pro"]]);

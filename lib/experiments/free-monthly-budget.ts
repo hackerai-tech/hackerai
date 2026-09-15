@@ -1,15 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PostHog } from "posthog-node";
-import { createRedisClient } from "@/lib/rate-limit/redis";
-import {
-  FREE_QUOTA_MIGRATION_STATE,
-  resolveMigratedFreeQuotaSubject,
-} from "@/lib/rate-limit/free-quota-migration";
-import {
-  getFreeMonthlyCostLimitDollars,
-  getFreeRequestLimit,
-  type FreeLimitPolicy,
-} from "@/lib/rate-limit/free-config";
+import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import { isRegionalFreeCountry } from "./regional-free-limits";
 
 export const FREE_MONTHLY_BUDGET_KEY = "free_monthly_budget_v1";
@@ -29,8 +20,7 @@ export function isMonthlyBudgetCountry(country: unknown): country is string {
   );
 }
 
-// The input is already a secret HMAC. Independent digest bytes select enrollment
-// and arm, keeping aliases together without sending their identity to PostHog.
+// Reserved allocation helper for a future approved pilot. Enrollment is disabled.
 export function monthlyBudgetAllocation(subject: string) {
   const digest = createHash("sha256")
     .update(`${FREE_MONTHLY_BUDGET_KEY}:${subject}`)
@@ -41,67 +31,16 @@ export function monthlyBudgetAllocation(subject: string) {
   };
 }
 
-export async function evaluateFreeMonthlyBudget({
-  posthog,
-  userId,
-  subscription,
-  emailVerified,
-  country,
-  freeQuotaSubject,
-}: {
+/** Enrollment stays off until a migration-independent pilot is approved. */
+export async function evaluateFreeMonthlyBudget(_input: {
   posthog: Pick<PostHog, "getFeatureFlag"> | null;
   userId: string;
   subscription: string;
   emailVerified?: boolean;
-  /** Present only after trusted ingress geography and consent checks. */
   country?: string;
   freeQuotaSubject?: string;
 }): Promise<FreeMonthlyBudgetAssignment | undefined> {
-  if (
-    !posthog ||
-    !userId ||
-    subscription !== "free" ||
-    emailVerified !== true ||
-    !isMonthlyBudgetCountry(country) ||
-    process.env.FREE_QUOTA_GMAIL_CANONICALIZATION !== "true" ||
-    !freeQuotaSubject ||
-    !/^free_quota:v1:[a-f0-9]{64}$/.test(freeQuotaSubject) ||
-    getFreeMonthlyCostLimitDollars() !== 0.25
-  )
-    return;
-  try {
-    const redis = createRedisClient();
-    if (!redis || (await redis.get(FREE_QUOTA_MIGRATION_STATE)) !== "complete")
-      return;
-    const subject = await resolveMigratedFreeQuotaSubject(
-      redis,
-      freeQuotaSubject,
-    );
-    const { bucket, variant } = monthlyBudgetAllocation(subject);
-    const evaluated = await posthog.getFeatureFlag(
-      FREE_MONTHLY_BUDGET_KEY,
-      userId,
-      {
-        sendFeatureFlagEvents: false,
-        personProperties: {
-          free_monthly_budget_eligible: true,
-          free_monthly_budget_bucket: bucket,
-          free_monthly_budget_arm: variant,
-        },
-      },
-    );
-    // Require the configured override to agree with the identity's stable arm.
-    if (evaluated !== variant) return;
-    return {
-      monthlyBudgetExperiment: FREE_MONTHLY_BUDGET_KEY,
-      variant,
-      dailyRequests: getFreeRequestLimit(),
-      monthlyCostDollars: variant === "test" ? 0.5 : 0.25,
-    };
-  } catch {
-    // Flag/Redis failures keep the normal allowance; admission enforces Redis.
-    return;
-  }
+  return undefined;
 }
 
 export function freeMonthlyBudgetProperties(

@@ -30,11 +30,7 @@ import {
   isFreeQuotaSubjectRateLimitKey,
   isUserRateLimitKey,
 } from "../lib/rate-limit/key-cleanup";
-import {
-  createFreeQuotaSubjectWithSecret,
-  createCanonicalFreeQuotaSubjectWithSecret,
-} from "../lib/auth/free-quota-subject-core";
-import { resolveMigratedFreeQuotaSubject } from "../lib/rate-limit/free-quota-migration";
+import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
 import { getTestUsersRecord } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
@@ -124,16 +120,10 @@ async function resetRateLimitForUser(
     const userKeys = (await scanRedisKeys(redis, pattern)).filter((key) =>
       isUserRateLimitKey(key, userId),
     );
-    let freeQuotaSubject = (
-      process.env.FREE_QUOTA_GMAIL_CANONICALIZATION === "true"
-        ? createCanonicalFreeQuotaSubjectWithSecret
-        : createFreeQuotaSubjectWithSecret
-    )(userEmail, process.env.ACCOUNT_IDENTITY_HMAC_SECRET);
-    if (freeQuotaSubject)
-      freeQuotaSubject = await resolveMigratedFreeQuotaSubject(
-        redis,
-        freeQuotaSubject,
-      );
+    const freeQuotaSubject = createFreeQuotaSubjectWithSecret(
+      userEmail,
+      process.env.ACCOUNT_IDENTITY_HMAC_SECRET,
+    );
     const identityKeys = freeQuotaSubject
       ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
           isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
