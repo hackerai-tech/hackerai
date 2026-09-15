@@ -142,6 +142,11 @@ const toolSchemasSrc = fs.readFileSync(
   "utf8",
 );
 
+const toolIndexSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../ai/tools/index.ts"),
+  "utf8",
+);
+
 const toolExecutionSources = [
   {
     src: fs.readFileSync(
@@ -203,6 +208,13 @@ const toolExecutionSources = [
       "updateNoteTool",
       "deleteNoteTool",
     ],
+  },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/findings.ts"),
+      "utf8",
+    ),
+    schemaNames: ["createVulnerabilityReportTool"],
   },
 ];
 
@@ -266,6 +278,9 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
     );
     expect(toolSchemasSrc).toMatch(/todo_write:\s*todoWriteTool/);
     expect(toolSchemasSrc).toMatch(/create_note:\s*createNoteTool/);
+    expect(toolSchemasSrc).toMatch(
+      /create_vulnerability_report:\s*createVulnerabilityReportTool/,
+    );
     expect(toolSchemasSrc).toMatch(/web_search:\s*webSearchTool/);
     expect(toolSchemasSrc).toMatch(/open_url:\s*openUrlTool/);
     expect(toolSchemasSrc).toMatch(/if\s*\(\s*mode\s*===\s*"ask"\s*\)/);
@@ -278,6 +293,15 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       }
       expect(src).toMatch(/\bexecute\s*:/);
     }
+  });
+
+  test("normal and durable Agent share one finding tool factory", () => {
+    expect(chatHandlerSrc).toMatch(/createTools\(/);
+    expect(taskSrc).toMatch(/createTools\(/);
+    expect(toolIndexSrc).toMatch(
+      /create_vulnerability_report:\s*createCreateVulnerabilityReport\(/,
+    );
+    expect(toolIndexSrc).toMatch(/return\s+mode\s*===\s*"ask"/);
   });
 });
 

@@ -184,6 +184,7 @@ const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-list_notes",
   "tool-update_note",
   "tool-delete_note",
+  "tool-create_vulnerability_report",
   "tool-list_requests",
   "tool-view_request",
   "tool-send_request",
@@ -647,6 +648,7 @@ const UI_ONLY_PART_TYPES = new Set([
   "data-agent-auto-review",
   "data-agent-auto-review-lifecycle",
   "data-summarization",
+  "data-shared-finding",
 ]);
 
 /**
