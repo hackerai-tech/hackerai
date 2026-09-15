@@ -10,6 +10,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
+import { usePathname } from "next/navigation";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
@@ -33,6 +34,7 @@ import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   useSandboxPreference,
+  type SetSandboxPreference,
   type DesktopBridgeStatus,
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -140,7 +142,8 @@ interface GlobalStateType {
 
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  setSandboxPreference: SetSandboxPreference;
+  resetSandboxPreference: () => void;
 
   // Agent tool approval behavior
   agentPermissionMode: AgentPermissionMode;
@@ -474,7 +477,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
     sandboxPreference,
+    hasExplicitSandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
     retryDesktopBridge,
@@ -613,12 +618,14 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       return;
     }
 
-    const localSandboxPreference = agentDefaultDecision.useDefaultLocalSandbox
-      ? defaultLocalSandboxPreference
-      : null;
+    const localSandboxPreference =
+      agentDefaultDecision.useDefaultLocalSandbox && sandboxPreference === "e2b"
+        ? defaultLocalSandboxPreference
+        : null;
 
     if (
       agentDefaultDecision.useDefaultLocalSandbox &&
+      sandboxPreference === "e2b" &&
       !localSandboxPreference
     ) {
       return;
@@ -633,7 +640,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     agentFirstDefaultAppliedRef.current = true;
     setChatModeState("agent");
     if (localSandboxPreference) {
-      setSandboxPreference(localSandboxPreference);
+      setSandboxPreference(localSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -728,9 +735,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [agentOnlyActive],
   );
 
+  const pathname = usePathname();
   useAutoSelectNewRemoteConnection({
     connections: localConnections,
     enabled: Boolean(user),
+    isNewChat: pathname === "/",
+    hasExplicitSandboxPreference,
     chatMode: accessibleChatMode,
     setChatMode,
     subscription: paidAgentSubscription,
@@ -747,7 +757,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       freeDesktopSandboxPreference &&
       sandboxPreference !== freeDesktopSandboxPreference
     ) {
-      setSandboxPreference(freeDesktopSandboxPreference);
+      setSandboxPreference(freeDesktopSandboxPreference, { remember: false });
     }
     if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -1164,7 +1174,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setActiveProjectId(null);
-  }, []);
+    resetSandboxPreference();
+  }, [resetSandboxPreference]);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1327,6 +1338,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,

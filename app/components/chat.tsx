@@ -95,13 +95,14 @@ import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
-import { useLatestRef } from "../hooks/useLatestRef";
+import { useCommittedRef, useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { useBatchedDataStreamAppend } from "@/app/hooks/useBatchedDataStreamAppend";
 import {
@@ -428,7 +429,9 @@ function StreamEffects({
   selectedModel,
   resetRef,
   hasActiveStream,
+  sendDisabledReason,
 }: {
+  sendDisabledReason?: string;
   chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -468,6 +471,7 @@ function StreamEffects({
     sandboxPreference,
     agentPermissionMode,
     selectedModel,
+    sendDisabledReason,
   });
 
   // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
@@ -487,7 +491,9 @@ function ForkAutoSendEffect({
   isExistingChat,
   messageCount,
   onSubmit,
+  sendDisabledReason,
 }: {
+  sendDisabledReason?: string;
   chatId: string;
   status: UseChatHelpers<ChatMessage>["status"];
   isExistingChat: boolean;
@@ -498,7 +504,7 @@ function ForkAutoSendEffect({
   const autoSendFiredRef = useRef(false);
 
   useEffect(() => {
-    if (autoSendFiredRef.current) return;
+    if (autoSendFiredRef.current || sendDisabledReason) return;
     try {
       const pendingChatId = sessionStorage.getItem("autoSendChatId");
       if (pendingChatId !== chatId) return;
@@ -511,7 +517,15 @@ function ForkAutoSendEffect({
     autoSendFiredRef.current = true;
     sessionStorage.removeItem("autoSendChatId");
     void onSubmit(new Event("submit") as unknown as React.FormEvent);
-  }, [chatId, input, isExistingChat, messageCount, onSubmit, status]);
+  }, [
+    chatId,
+    input,
+    isExistingChat,
+    messageCount,
+    onSubmit,
+    status,
+    sendDisabledReason,
+  ]);
 
   return null;
 }
@@ -525,6 +539,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
+  const { sendDisabledReason: connectionSendDisabledReason } =
+    useSelectedComputerConnection();
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
@@ -565,11 +581,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     agentPermissionMode,
     selectedModel,
     setSelectedModel,
     subscription,
-    localConnections,
     activeProjectId,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
@@ -695,9 +711,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
-  // Track whether sandbox preference has been initialized from chat for this chat id
-  const hasInitializedSandboxRef = useRef(false);
-  // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
+  // Keep automatic sends blocked until the task's saved environment is applied.
+  const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
+    string | null
+  >(null);
+  const computerSendDisabledReason =
+    isExistingChat && initializedSandboxChatId !== chatId
+      ? "Loading the task's computer selection"
+      : connectionSendDisabledReason;
+  const computerSendDisabledReasonRef = useCommittedRef(
+    computerSendDisabledReason,
+  );
   const hasInitializedModelRef = useRef(false);
   // Snapshot of the last picker values successfully persisted to the chat doc.
   // Seeded after init from chatData; subsequent picker toggles trigger a debounced patch.
@@ -735,11 +759,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setIsExistingChat(true);
     } else {
       // Navigated to "/" (new chat) — reset to fresh state
+      resetSandboxPreference();
       setChatId(uuidv4());
       setIsExistingChat(false);
       wasNewChatRef.current = true;
     }
-  }, [routeChatId, setStreamedTitle]);
+  }, [routeChatId, setStreamedTitle, resetSandboxPreference]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -978,12 +1003,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const {
     messages,
-    sendMessage,
+    sendMessage: sendMessageUnchecked,
     setMessages,
     status,
     stop,
     error,
-    regenerate,
+    regenerate: regenerateUnchecked,
     resumeStream,
   } = useChat({
     id: chatId,
@@ -1122,7 +1147,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           }
 
           // Update sandbox preference to match actual sandbox used
-          setSandboxPreference(fallbackData.actualSandbox);
+          setSandboxPreference(fallbackData.actualSandbox, { remember: false });
 
           // Show toast notification
           const message =
@@ -1185,6 +1210,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  // Guard the shared dispatch boundary as well as the UI. Forks, retries,
+  // auto-continue, and queued sends must retain the selected environment.
+  const sendMessage = useCallback<typeof sendMessageUnchecked>(
+    (...args) => {
+      const reason = computerSendDisabledReasonRef.current;
+      if (reason) return Promise.reject(new Error(reason));
+      return sendMessageUnchecked(...args);
+    },
+    [sendMessageUnchecked, computerSendDisabledReasonRef],
+  );
+  const regenerate = useCallback<typeof regenerateUnchecked>(
+    (...args) => {
+      const reason = computerSendDisabledReasonRef.current;
+      if (reason) return Promise.reject(new Error(reason));
+      return regenerateUnchecked(...args);
+    },
+    [regenerateUnchecked, computerSendDisabledReasonRef],
+  );
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -1630,7 +1674,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
-    hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
     persistedPrefsRef.current = null;
   }, [chatId]);
@@ -1687,10 +1730,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
 
-  // Initialize sandbox preference from chat data, validated against available connections.
-  // Separate from the main chatData effect so it can re-run when localConnections loads.
+  // Restore the task's environment independently of connection availability.
+  // A missing computer must reconnect or be explicitly replaced by the user.
   useEffect(() => {
-    if (hasInitializedSandboxRef.current || !isExistingChat) return;
+    if (initializedSandboxChatId === chatId || !isExistingChat) return;
 
     const dataId = (chatData as any)?.id as string | undefined;
     if (!chatData || dataId !== chatId) return;
@@ -1702,43 +1745,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       } else {
         // Navigated to an existing chat with no stored sandbox type — reset to cloud
         // so a stale local preference from a previous chat doesn't persist.
-        setSandboxPreference("e2b");
+        setSandboxPreference("e2b", { remember: false });
       }
-      hasInitializedSandboxRef.current = true;
+      setInitializedSandboxChatId(chatId);
       return;
     }
 
-    if (storedSandboxType === "e2b") {
-      setSandboxPreference("e2b");
-      hasInitializedSandboxRef.current = true;
-    } else if (storedSandboxType === "tauri") {
-      // "tauri" is a legacy preference — desktop now uses "desktop"
-      setSandboxPreference("e2b");
-      hasInitializedSandboxRef.current = true;
-    } else if (storedSandboxType === "desktop") {
-      // Desktop preference — validate that a desktop connection exists
-      if (localConnections !== undefined) {
-        const desktopExists = localConnections.some((conn) => conn.isDesktop);
-        setSandboxPreference(desktopExists ? "desktop" : "e2b");
-        hasInitializedSandboxRef.current = true;
-      }
-      // If localConnections is still loading, wait for next render
-    } else if (localConnections !== undefined) {
-      // For remote connectionIds, validate the connection still exists
-      const connectionExists = localConnections.some(
-        (conn) => conn.connectionId === storedSandboxType,
-      );
-      if (connectionExists) {
-        setSandboxPreference(storedSandboxType);
-      } else {
-        // Stale connection — fall back to cloud
-        setSandboxPreference("e2b");
-      }
-      hasInitializedSandboxRef.current = true;
-    }
-    // If localConnections is still loading (undefined), wait for next render
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId]);
+    setSandboxPreference(
+      storedSandboxType === "tauri" ? "desktop" : storedSandboxType,
+      { remember: false },
+    );
+    setInitializedSandboxChatId(chatId);
+  }, [
+    chatData,
+    storedSandboxType,
+    isExistingChat,
+    chatId,
+    initializedSandboxChatId,
+    setSandboxPreference,
+  ]);
 
   // Initialize model selection from chat data
   useEffect(() => {
@@ -1951,6 +1976,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       status === "ready" &&
+      !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
@@ -1993,6 +2019,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     status,
     messageQueue,
     editingQueuedMessageId,
+    computerSendDisabledReason,
     isProcessingQueue,
     removeQueuedMessage,
     sendMessage,
@@ -2029,6 +2056,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
+    sendDisabledReason: computerSendDisabledReason,
   });
 
   const handleScrollToBottom = useCallback(() => {
@@ -2129,6 +2157,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   return (
     <>
       <StreamEffects
+        sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
         autoResume={autoResume}
@@ -2152,6 +2181,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       />
       <ForkAutoSendEffect
+        sendDisabledReason={computerSendDisabledReason}
         key={`fork-auto-send:${chatId}`}
         chatId={chatId}
         status={status}
@@ -2307,6 +2337,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
+                    sendDisabledReason={computerSendDisabledReason}
                     isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined

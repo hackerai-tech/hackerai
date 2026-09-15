@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
+import type { SetSandboxPreference } from "./useSandboxPreference";
 import type {
   ChatMode,
   SandboxPreference,
@@ -65,12 +66,14 @@ export function useNewRemoteConnection({
 interface UseAutoSelectNewRemoteConnectionArgs {
   connections: RemoteConnection[] | undefined;
   enabled: boolean;
+  isNewChat: boolean;
+  hasExplicitSandboxPreference: boolean;
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
   subscription: SubscriptionTier;
   freeSubscriptionResolved: boolean;
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  setSandboxPreference: SetSandboxPreference;
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
 }
@@ -79,6 +82,8 @@ interface UseAutoSelectNewRemoteConnectionArgs {
 export function useAutoSelectNewRemoteConnection({
   connections,
   enabled,
+  isNewChat,
+  hasExplicitSandboxPreference,
   chatMode,
   setChatMode,
   subscription,
@@ -90,8 +95,19 @@ export function useAutoSelectNewRemoteConnection({
 }: UseAutoSelectNewRemoteConnectionArgs) {
   const selectNewConnection = useCallback(
     (connection: RemoteConnection) => {
+      // Only an untouched new-chat default may follow a newly connected runner.
+      // Saved tasks and explicit Cloud choices own their environment too.
+      if (!isNewChat || hasExplicitSandboxPreference) return;
+      // A runner appearing (or reconnecting) is not permission to replace a
+      // different computer already selected for the task.
+      if (
+        sandboxPreference !== "e2b" &&
+        sandboxPreference !== connection.connectionId
+      ) {
+        return;
+      }
       if (sandboxPreference !== connection.connectionId) {
-        setSandboxPreference(connection.connectionId);
+        setSandboxPreference(connection.connectionId, { remember: false });
       }
 
       if (
@@ -113,6 +129,8 @@ export function useAutoSelectNewRemoteConnection({
     },
     [
       chatMode,
+      isNewChat,
+      hasExplicitSandboxPreference,
       sandboxPreference,
       selectedModel,
       setChatMode,

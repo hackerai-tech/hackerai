@@ -132,6 +132,85 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it.each(["handleRegenerate", "handleRetry", "handleEditMessage"] as const)(
+    "%s rechecks a disconnect while stopping before mutating the task",
+    async (method) => {
+      let finishStop!: (value: null) => void;
+      mockCancelStream.mockImplementationOnce(
+        () =>
+          new Promise<null>((resolve) => {
+            finishStop = resolve;
+          }),
+      );
+      const regenerate = jest.fn();
+      const { result, rerender } = renderHook(
+        (sendDisabledReason: string | undefined) =>
+          useChatHandlers({
+            chatId: "chat-1",
+            messages,
+            sendMessage: mockSendMessage,
+            stop: mockStop,
+            regenerate,
+            setMessages: mockSetMessages,
+            isExistingChat: true,
+            status: "streaming",
+            isSendingNowRef: { current: false },
+            hasManuallyStoppedRef: { current: false },
+            activeTriggerRunRef: { current: "run-1" },
+            sendDisabledReason,
+          }),
+        { initialProps: undefined as string | undefined },
+      );
+      let action!: Promise<void>;
+      act(() => {
+        action =
+          method === "handleEditMessage"
+            ? result.current.handleEditMessage("user-1", "updated task")
+            : result.current[method]();
+      });
+      rerender("Reconnect your computer");
+      await act(async () => {
+        finishStop(null);
+        await action;
+      });
+      expect(mockSetTodos).not.toHaveBeenCalled();
+      expect(mockSetMessages).not.toHaveBeenCalled();
+      expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
+      expect(mockRegenerateWithNewContent).not.toHaveBeenCalled();
+      expect(regenerate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves the draft and queue when a computer is disconnected", async () => {
+    mockInput = "continue";
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        sendDisabledReason: "Reconnect your computer",
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(false);
+      await result.current.handleSendNow("queued-1");
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    expect(mockCancelStream).not.toHaveBeenCalled();
+  });
+
   it("persists todos and cancels the active run before sending the queued message", async () => {
     const { result } = renderHook(() =>
       useChatHandlers({

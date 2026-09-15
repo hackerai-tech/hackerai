@@ -2,7 +2,7 @@ import { RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useLatestRef } from "@/app/hooks/useLatestRef";
+import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
@@ -43,6 +43,7 @@ import { v4 as uuidv4 } from "uuid";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
+  sendDisabledReason?: string;
   chatId: string;
   messages: ChatMessage[];
   sendMessage: (
@@ -99,8 +100,10 @@ export const useChatHandlers = ({
   resumeActiveRun,
   onStopCallback,
   resetAutoContinueCount,
+  sendDisabledReason,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
+  const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
   const {
     getInput,
     uploadedFiles,
@@ -416,6 +419,7 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
+    if (sendDisabledReasonRef.current) return false;
 
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
@@ -553,6 +557,7 @@ export const useChatHandlers = ({
       });
       return false;
     }
+    if (sendDisabledReasonRef.current) return false;
     if (!isExistingChat) {
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
@@ -652,6 +657,7 @@ export const useChatHandlers = ({
   };
 
   const handleRegenerate = async () => {
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -659,6 +665,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
@@ -712,6 +719,7 @@ export const useChatHandlers = ({
         todos: cleanedTodos,
       });
     }
+    if (sendDisabledReasonRef.current) return;
     runChatAction("regenerate response", () =>
       regenerate({
         body: {
@@ -730,6 +738,7 @@ export const useChatHandlers = ({
   };
 
   const handleRetry = async (options: RetryOptions = {}) => {
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -737,6 +746,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -768,6 +778,7 @@ export const useChatHandlers = ({
       });
     }
 
+    if (sendDisabledReasonRef.current) return;
     runChatAction("retry response", () =>
       regenerate({
         body: {
@@ -791,6 +802,7 @@ export const useChatHandlers = ({
     newContent: string,
     remainingFileIds?: string[],
   ) => {
+    if (sendDisabledReasonRef.current) return;
     const lastUserMessageIndex = findLastUserMessageIndex(messages);
     if (
       lastUserMessageIndex === undefined ||
@@ -807,6 +819,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     // Compute the todo snapshot before the edit mutation. Stopping a run
@@ -839,6 +852,7 @@ export const useChatHandlers = ({
       throw error;
     }
 
+    if (sendDisabledReasonRef.current) return;
     setTodos(cleanedTodosForEdit);
 
     // Build updated parts: text + remaining file parts
@@ -899,6 +913,7 @@ export const useChatHandlers = ({
   };
 
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
+    if (sendDisabledReasonRef.current) return;
     if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
     resetAutoContinueCount?.();
@@ -925,6 +940,7 @@ export const useChatHandlers = ({
   };
 
   const handleSendNow = async (messageId: string) => {
+    if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
     resetAutoContinueCount?.();
@@ -940,6 +956,8 @@ export const useChatHandlers = ({
       if (hasActiveRunToReplace()) {
         if (!(await stopActiveRunForSteer())) return;
       }
+
+      if (sendDisabledReasonRef.current) return;
 
       // Keep the queued message available if stopping fails.
       removeQueuedMessage(messageId);

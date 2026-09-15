@@ -161,6 +161,15 @@ const AgentApprovalSetter = () => {
   return null;
 };
 
+const SelectedComputerProbe = () => {
+  const { sandboxPreference, chatMode } = useGlobalState();
+  return (
+    <output data-testid="selected-computer">
+      {chatMode}:{sandboxPreference}
+    </output>
+  );
+};
+
 const AgentModeSetter = () => {
   const { setChatMode } = useGlobalState();
 
@@ -466,6 +475,128 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
+    it.each([
+      ["desktop", []],
+      ["missing-remote", []],
+      ["desktop", ["pro-plan"]],
+      ["missing-remote", ["pro-plan"]],
+    ] as const)(
+      "blocks continue on disconnected %s (%j), preserves the draft, and resumes after reconnect",
+      async (sandboxPreference, entitlements) => {
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [...entitlements],
+        } as ReturnType<typeof useAuth>);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", sandboxPreference);
+        let connections: Array<{
+          connectionId: string;
+          isDesktop: boolean;
+          name: string;
+        }> = [];
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? connections
+            : undefined,
+        );
+        const settingsRequested = jest.fn();
+        window.addEventListener("open-settings-dialog", settingsRequested);
+        const input = (
+          <TestWrapper>
+            <SelectedComputerProbe />
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              onSendNow={jest.fn()}
+              status="ready"
+            />
+          </TestWrapper>
+        );
+        const { rerender } = render(input);
+        const textarea = screen.getByRole("textbox");
+        fireEvent.change(textarea, { target: { value: "continue" } });
+        fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(textarea).toHaveValue("continue");
+        expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+          `agent:${sandboxPreference}`,
+        );
+        expect(
+          screen.getByText("Your computer is disconnected."),
+        ).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+        if (sandboxPreference === "desktop") {
+          expect(
+            screen.getByText(/Open HackerAI Desktop on your selected computer/),
+          ).toBeInTheDocument();
+          expect(settingsRequested).not.toHaveBeenCalled();
+        } else {
+          expect(settingsRequested).toHaveBeenCalledWith(
+            expect.objectContaining({ detail: { tab: "Remote Control" } }),
+          );
+        }
+        window.removeEventListener("open-settings-dialog", settingsRequested);
+        connections = [
+          {
+            connectionId: sandboxPreference,
+            isDesktop: sandboxPreference === "desktop",
+            name: "My computer",
+          },
+        ];
+        rerender(
+          <TestWrapper>
+            <SelectedComputerProbe />
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              onSendNow={jest.fn()}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        await waitFor(() =>
+          expect(
+            screen.queryByText("Your computer is disconnected."),
+          ).not.toBeInTheDocument(),
+        );
+        fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+          `agent:${sandboxPreference}`,
+        );
+      },
+    );
+
+    it.each([true, false])(
+      "shows contextual reconnect copy for isNewChat=%s",
+      (isNewChat) => {
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? []
+            : undefined,
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              isNewChat={isNewChat}
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        expect(
+          screen.getByText(
+            isNewChat
+              ? "Reconnect or choose another environment to start."
+              : "Reconnect it to continue this task.",
+          ),
+        ).toBeInTheDocument();
+      },
+    );
+
     it("renders a glass composer with a narrower sandbox context strip", () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },

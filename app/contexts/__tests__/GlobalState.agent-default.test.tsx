@@ -22,11 +22,14 @@ jest.mock("@/app/hooks/useAutoSelectNewRemoteConnection", () => ({
 jest.mock("@/app/hooks/useSandboxPreference", () => {
   const setSandboxPreference = jest.fn();
   const retryDesktopBridge = jest.fn();
+  const resetSandboxPreference = jest.fn();
 
   return {
     useSandboxPreference: () => ({
       sandboxPreference: "e2b",
+      hasExplicitSandboxPreference: false,
       setSandboxPreference,
+      resetSandboxPreference,
       desktopBridgeActive: mockDesktopBridgeActive,
       desktopBridgeStatus: mockDesktopBridgeActive ? "connected" : "idle",
       retryDesktopBridge,
