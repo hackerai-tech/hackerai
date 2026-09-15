@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createCheckoutNavigationDiagnostics } from "@/lib/billing/checkout-navigation-diagnostics";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import {
@@ -91,6 +92,10 @@ export const useUpgrade = () => {
     setUpgradeLoading(true);
 
     let navigationStarted = false;
+    let diagnostics:
+      ReturnType<typeof createCheckoutNavigationDiagnostics> | undefined;
+    let failureStage: "request_failed" | "navigation_exception" =
+      "request_failed";
 
     try {
       const checkoutAttemptId = newCheckoutAttemptId();
@@ -122,6 +127,12 @@ export const useUpgrade = () => {
 
       // Use regular checkout for new subscriptions (free users)
       if (!currentSubscription || currentSubscription === "free") {
+        diagnostics = createCheckoutNavigationDiagnostics({
+          attemptId: checkoutAttemptId,
+          plan: selectedPlan,
+          source: analyticsContext.source,
+          surface: analyticsContext.surface,
+        });
         captureAuthenticatedEvent("checkout_intent_clicked", {
           checkout_attempt_id: checkoutAttemptId,
           plan: selectedPlan,
@@ -148,18 +159,32 @@ export const useUpgrade = () => {
           body: JSON.stringify(requestBody),
         });
 
-        const data = await res.json().catch(() => ({}));
+        diagnostics.responseReceived(res.status);
+        let invalidJson = false;
+        const data = await res.json().catch(() => {
+          invalidJson = true;
+          return {};
+        });
 
         if (!res.ok) {
+          diagnostics.failed("http_error", res.status);
           toast.error(
-            data.error || `Something went wrong (HTTP ${res.status})`,
+            data?.error || `Something went wrong (HTTP ${res.status})`,
           );
           return;
         }
 
-        const { error, url, pricingExperiment } = data;
+        if (invalidJson) {
+          diagnostics.failed("invalid_json", res.status);
+          toast.error("Unknown error creating checkout session");
+          return;
+        }
 
-        if (url) {
+        const { error, url, pricingExperiment } = data ?? {};
+
+        if (typeof url === "string" && url) {
+          failureStage = "navigation_exception";
+          diagnostics.navigationRequested();
           window.location.href = url;
           rememberCheckoutNavigation({
             attemptId: checkoutAttemptId,
@@ -186,6 +211,7 @@ export const useUpgrade = () => {
           return;
         }
 
+        diagnostics.failed("missing_checkout_url", res.status);
         if (error) {
           toast.error(`Error: ${error}`);
         } else {
@@ -254,6 +280,7 @@ export const useUpgrade = () => {
         }
       }
     } catch (err) {
+      diagnostics?.failed(failureStage);
       // Surface real error messages when err is an Error
       if (err instanceof Error) {
         toast.error(err.message);
