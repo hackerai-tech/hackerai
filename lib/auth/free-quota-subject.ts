@@ -3,7 +3,6 @@ import "server-only";
 import { ChatSDKError } from "@/lib/errors";
 import {
   createFreeQuotaSubjectWithSecret,
-  createCanonicalFreeQuotaSubjectWithSecret,
   normalizeQuotaEmail,
 } from "@/lib/auth/free-quota-subject-core";
 export {
@@ -29,7 +28,5 @@ export function createFreeQuotaSubject(email: unknown): string | undefined {
     return undefined;
   }
 
-  return process.env.FREE_QUOTA_GMAIL_CANONICALIZATION === "true"
-    ? createCanonicalFreeQuotaSubjectWithSecret(normalizedEmail, secret)
-    : createFreeQuotaSubjectWithSecret(normalizedEmail, secret);
+  return createFreeQuotaSubjectWithSecret(normalizedEmail, secret);
 }

@@ -7,13 +7,6 @@ import {
   jest,
 } from "@jest/globals";
 
-jest.mock("../free-quota-migration", () => ({
-  FREE_QUOTA_ADMISSION_GUARD_SCRIPT: "",
-  FREE_QUOTA_KEY_REDIRECT_SCRIPT: "",
-  resolveMigratedFreeQuotaSubject: async (_redis: unknown, subject: string) =>
-    subject,
-}));
-
 describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
   const mockGet = jest.fn();
@@ -25,9 +18,7 @@ describe("free monthly cost limit", () => {
     jest.clearAllMocks();
     delete process.env.FREE_MONTHLY_COST_LIMIT_USD;
     mockGet.mockResolvedValue(null);
-    mockEval.mockImplementation(async (_script, keys, args) =>
-      (args as unknown[]).length === 0 ? mockGet((keys as string[])[0]) : 1,
-    );
+    mockEval.mockResolvedValue(1);
   });
 
   afterEach(() => {
@@ -81,9 +72,7 @@ describe("free monthly cost limit", () => {
     const control = await checkFreeMonthlyCostLimit("quota");
     expect(control.monthlyRemainingAtStart).toBe(1500);
     expect(mockGet.mock.calls[0]).toEqual(mockGet.mock.calls[1]);
-    expect(
-      mockEval.mock.calls.every((call) => (call[2] as unknown[]).length === 0),
-    ).toBe(true);
+    expect(mockEval).not.toHaveBeenCalled();
   });
 
   it("uses existing spend for $0.50 treatment and restores $0.25 without clearing usage", async () => {
@@ -106,9 +95,7 @@ describe("free monthly cost limit", () => {
     expect(
       mockGet.mock.calls.every((call) => call[0] === mockGet.mock.calls[0][0]),
     ).toBe(true);
-    expect(
-      mockEval.mock.calls.every((call) => (call[2] as unknown[]).length === 0),
-    ).toBe(true);
+    expect(mockEval).not.toHaveBeenCalled();
   });
 
   it("throws a rate-limit error when the monthly free cost cap is exhausted", async () => {
