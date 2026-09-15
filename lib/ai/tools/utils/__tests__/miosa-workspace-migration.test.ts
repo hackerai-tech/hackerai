@@ -3,6 +3,7 @@ import { ReadableStream } from "node:stream/web";
 import { Sandbox } from "@e2b/code-interpreter";
 import {
   claimCloudMigration,
+  CloudMigrationUnavailableError,
   readCloudMigrationState,
 } from "../cloud-migration-state";
 import { assertFreshMiosaEnrollment } from "../miosa-enrollment";
@@ -15,6 +16,18 @@ import { migrateE2BWorkspace } from "../miosa-workspace-migration";
 
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
+  CommandExitError: class CommandExitError extends Error {
+    exitCode: number;
+    stdout: string;
+    stderr: string;
+
+    constructor(result: { exitCode: number; stdout: string; stderr: string }) {
+      super(`exit status ${result.exitCode}`);
+      this.exitCode = result.exitCode;
+      this.stdout = result.stdout;
+      this.stderr = result.stderr;
+    }
+  },
 }));
 jest.mock("../cloud-migration-state", () => ({
   claimCloudMigration: jest.fn(),
@@ -35,6 +48,7 @@ jest.mock("../miosa-readiness", () => ({ waitForMiosaReadiness: jest.fn() }));
 jest.mock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
 jest.mock("@miosa/sdk", () => ({ NotFoundError: class extends Error {} }));
 import { NotFoundError } from "@miosa/sdk";
+import { CommandExitError } from "@e2b/code-interpreter";
 import { phLogger } from "@/lib/posthog/server";
 
 describe("file migration transaction", () => {
@@ -178,6 +192,27 @@ describe("file migration transaction", () => {
     expect(Sandbox.connect).not.toHaveBeenCalled();
     expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
   });
+  it("keeps an interrupted checking claim fenced for recovery", async () => {
+    (readCloudMigrationState as jest.Mock).mockResolvedValue({
+      version: 1,
+      phase: "checking",
+      token: "retained",
+      sourceId: "source",
+      region: "us-east-1",
+    });
+
+    await expect(migrateE2BWorkspace(request)).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "checking_claim_recovery_required",
+      }),
+    );
+    expect(claimCloudMigration).not.toHaveBeenCalled();
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+  });
   it("destroys only the private destination and releases the fence on transfer mismatch", async () => {
     source.files.read.mockImplementation(
       async () =>
@@ -198,7 +233,7 @@ describe("file migration transaction", () => {
       "miosa_e2b_file_migration_checked",
       expect.objectContaining({
         reason: "transfer_unavailable",
-        migration_event_version: 2,
+        migration_event_version: 3,
         failure_stage: "archive_transfer",
         failure_kind: "operation_failed",
         failed_stage_duration_ms: expect.any(Number),
@@ -211,6 +246,88 @@ describe("file migration transaction", () => {
     expect(destroy).toHaveBeenCalled();
     expect(claim.abandon.mock.invocationCallOrder[0]).toBeGreaterThan(
       destroy.mock.invocationCallOrder[0],
+    );
+  });
+  it("reports allowlisted source export rejections as safe skips", async () => {
+    const normal = source.commands.run.getMockImplementation()!;
+    source.commands.run.mockImplementation(async (command: string) => {
+      if (command.includes(" export '/"))
+        throw new CommandExitError({
+          exitCode: 1,
+          stdout: JSON.stringify({ failure: "external_symlink" }),
+          stderr: "",
+        });
+      return normal(command);
+    });
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "source_export_rejected",
+      sourceExportReason: "external_symlink",
+    });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "source_export_rejected",
+        source_export_reason: "external_symlink",
+        migration_event_version: 3,
+        stage_durations_ms: expect.objectContaining({
+          source_export: expect.any(Number),
+        }),
+      }),
+    );
+    expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
+  it("keeps source filesystem failures retryable", async () => {
+    const normal = source.commands.run.getMockImplementation()!;
+    source.commands.run.mockImplementation(async (command: string) => {
+      if (command.includes(" export '/"))
+        throw new CommandExitError({
+          exitCode: 1,
+          stdout: JSON.stringify({ failure: "filesystem_unavailable" }),
+          stderr: "",
+        });
+      return normal(command);
+    });
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_export",
+      failureKind: "operation_failed",
+    });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.not.objectContaining({
+        source_export_reason: expect.anything(),
+      }),
+    );
+    expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
+  it("keeps unrecognized source export output fail-closed and private", async () => {
+    const normal = source.commands.run.getMockImplementation()!;
+    source.commands.run.mockImplementation(async (command: string) =>
+      command.includes(" export '/")
+        ? {
+            exitCode: 1,
+            stdout: JSON.stringify({ failure: "/private/customer/path" }),
+            stderr: "provider details",
+          }
+        : normal(command),
+    );
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_export",
+      failureKind: "operation_failed",
+    });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.not.objectContaining({
+        source_export_reason: expect.anything(),
+        error: expect.anything(),
+        error_message: expect.anything(),
+      }),
     );
   });
   it("reports destination creation timeouts without exposing provider errors", async () => {
