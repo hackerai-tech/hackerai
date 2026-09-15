@@ -56,6 +56,44 @@ Webhook ingestion order is not occurrence order. Expiry means a session expired;
 it does not mean payment was never attempted. Distinguish unknown cancellation
 reasons from declines. Do not label every success as a recovered failure.
 
+## Browser navigation diagnostics
+
+For free-user checkout, join the following client events to `checkout_started`
+using `checkout_attempt_id`, not a nearby event from the same user. Session reuse
+can produce multiple attempts for one Stripe session.
+
+- `checkout_response_received`: the client received the subscribe response;
+  `http_status` distinguishes HTTP errors from subsequent parsing problems.
+- `checkout_navigation_requested`: emitted immediately before assigning the
+  returned URL to the browser location.
+- `checkout_page_departed`: a `pagehide` occurred during the ten-second observation
+  window; `persisted` identifies browser back/forward cache entry.
+- `checkout_navigation_unconfirmed`: no `pagehide` was observed within ten seconds;
+  includes `visibility_state`. A hidden tab, slow navigation, or cancelled unload
+  can produce this event. It is not proof of a failed checkout.
+- `checkout_client_error`: a bounded `reason` (`request_failed`, `http_error`,
+  `invalid_json`, `missing_checkout_url`, or `navigation_exception`); no raw error
+  messages, checkout URLs, tokens, or payment details are sent.
+
+These events include `elapsed_ms` since the request began and
+`navigation_diagnostics_version=1`. They use the existing PostHog client with
+immediate beacon transport to reduce loss during navigation. They retain its
+consent/availability limits: neither the beacon nor the SDK guarantees delivery.
+There is no server fallback that bypasses client analytics preferences.
+
+The existing `checkout_redirected` event retains its meaning: JavaScript assigned
+the location. Neither assignment nor page departure proves the hosted Stripe page
+loaded; unrelated navigation can also trigger `pagehide`. Absence of client events
+cannot distinguish analytics unavailability from navigation failure. Diagnostics
+do not release submit locks, alter checkout destinations, or automatically retry.
+
+To validate, use a free test account: open Pro pricing, click Get Pro, confirm the
+Stripe payment form, then return and retry without submitting payment. Check the
+attempt-linked response/navigation events in the matching environment's PostHog
+project. In automated tests, exercise HTTP/network/JSON errors, synchronous
+navigation failure, page departure, and the observation timeout; retries must
+remain available after errors, and analytics failure must not block checkout.
+
 Compare cohorts with equal, complete follow-up windows (for example 24 hours for
 checkout completion and seven days for exposure-to-paid conversion). Count unique
 sessions with a failure rather than raw failed events; card retries legitimately
