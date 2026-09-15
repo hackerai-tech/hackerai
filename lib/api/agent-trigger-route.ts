@@ -1,3 +1,7 @@
+import {
+  enforceRegionalSubscriptionFirst,
+  subscriptionFirstCountryFromRequest,
+} from "@/lib/experiments/regional-subscription-first.server";
 import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
 import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
 import { NextRequest, NextResponse } from "next/server";
@@ -468,6 +472,14 @@ export const createAgentTriggerPost =
           subscription,
         );
       await assertUserCanMakeCostIncurringRequest(userId);
+      const regionalSubscriptionCountry =
+        subscriptionFirstCountryFromRequest(req);
+      await enforceRegionalSubscriptionFirst({
+        userId,
+        subscription,
+        country: regionalSubscriptionCountry,
+        surface: "agent",
+      });
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
@@ -696,6 +708,7 @@ export const createAgentTriggerPost =
           subscription === "free"
             ? monthlyBudgetCountryFromRequest(req)
             : undefined,
+        regionalSubscriptionCountry,
         regionalFreeCountry:
           subscription === "free"
             ? regionalFreeCountryFromRequest(req)

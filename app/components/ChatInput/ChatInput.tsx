@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -224,7 +225,15 @@ const uploadedFileToDraftAttachment = (
   };
 };
 
-export const ChatInput = ({
+export const ChatInput = (props: ChatInputProps) => (
+  <RegionalSubscriptionGate
+    running={props.status === "submitted" || props.status === "streaming"}
+  >
+    <ChatInputContent {...props} />
+  </RegionalSubscriptionGate>
+);
+
+const ChatInputContent = ({
   onSubmit,
   onStop,
   onReconnect,

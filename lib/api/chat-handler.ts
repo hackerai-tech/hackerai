@@ -1,4 +1,8 @@
 import {
+  enforceRegionalSubscriptionFirst,
+  subscriptionFirstCountryFromRequest,
+} from "@/lib/experiments/regional-subscription-first.server";
+import {
   evaluateFreeMonthlyBudget,
   captureFreeMonthlyBudgetExposure,
 } from "@/lib/experiments/free-monthly-budget";
@@ -383,6 +387,12 @@ export const createChatHandler = () => {
           subscription,
         );
       await assertUserCanMakeCostIncurringRequest(userId);
+      const subscriptionFirst = await enforceRegionalSubscriptionFirst({
+        userId,
+        subscription,
+        country: subscriptionFirstCountryFromRequest(req),
+        surface: "ask",
+      });
       usageRefundTracker.setUser(userId, subscription, organizationId);
       assertChatModeAccess({ mode, subscription });
       if (subscription === "free") {
@@ -499,22 +509,25 @@ export const createChatHandler = () => {
         projectId: projectContext.projectId,
       });
 
-      const regionalFreeLimits = await evaluateRegionalFreeLimits({
-        posthog: (posthog ??= PostHogClient()),
-        userId,
-        subscription,
-        country: regionalFreeCountryFromRequest(req),
-      });
-      const monthlyFreeBudget = regionalFreeLimits
+      const regionalFreeLimits = subscriptionFirst
         ? undefined
-        : await evaluateFreeMonthlyBudget({
-            posthog,
+        : await evaluateRegionalFreeLimits({
+            posthog: (posthog ??= PostHogClient()),
             userId,
             subscription,
-            freeQuotaSubject,
-            emailVerified,
-            country: monthlyBudgetCountryFromRequest(req),
+            country: regionalFreeCountryFromRequest(req),
           });
+      const monthlyFreeBudget =
+        subscriptionFirst || regionalFreeLimits
+          ? undefined
+          : await evaluateFreeMonthlyBudget({
+              posthog,
+              userId,
+              subscription,
+              freeQuotaSubject,
+              emailVerified,
+              country: monthlyBudgetCountryFromRequest(req),
+            });
       const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
       await captureFreeMonthlyBudgetExposure(
         posthog,

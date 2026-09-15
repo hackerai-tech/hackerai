@@ -1,3 +1,4 @@
+import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import {
   evaluateFreeMonthlyBudget,
   captureFreeMonthlyBudgetExposure,
@@ -2349,6 +2350,7 @@ export type AgentLongPayload = {
   organizationId?: string;
   freeQuotaSubject?: string;
   regionalFreeCountry?: string;
+  regionalSubscriptionCountry?: string;
   monthlyBudgetCountry?: string;
   emailVerified?: boolean;
   messages: UIMessage[];
@@ -2718,6 +2720,12 @@ export const agentLongTask = task({
 
     try {
       userStopSignal.signal.throwIfAborted();
+      const subscriptionFirst = await enforceRegionalSubscriptionFirst({
+        userId,
+        subscription,
+        country: payload.regionalSubscriptionCountry,
+        surface: "agent_worker",
+      });
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const [userCustomization, fetched] = await Promise.all([
@@ -2787,24 +2795,27 @@ export const agentLongTask = task({
               reason: "miosa_rollout_control",
             } as const);
       const cloudSandboxProvider = cloudSandboxSelection.provider;
-      const regionalFreeLimits = await evaluateRegionalFreeLimits({
-        posthog,
-        userId,
-        subscription,
-        country: payload.regionalFreeCountry,
-      });
-      // Check capacity before moderation/model work, then consume the daily
-      // request atomically under the free-run lock when execution starts.
-      const monthlyFreeBudget = regionalFreeLimits
+      const regionalFreeLimits = subscriptionFirst
         ? undefined
-        : await evaluateFreeMonthlyBudget({
+        : await evaluateRegionalFreeLimits({
             posthog,
             userId,
             subscription,
-            freeQuotaSubject,
-            emailVerified: payload.emailVerified,
-            country: payload.monthlyBudgetCountry,
+            country: payload.regionalFreeCountry,
           });
+      // Check capacity before moderation/model work, then consume the daily
+      // request atomically under the free-run lock when execution starts.
+      const monthlyFreeBudget =
+        subscriptionFirst || regionalFreeLimits
+          ? undefined
+          : await evaluateFreeMonthlyBudget({
+              posthog,
+              userId,
+              subscription,
+              freeQuotaSubject,
+              emailVerified: payload.emailVerified,
+              country: payload.monthlyBudgetCountry,
+            });
       const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
       await captureFreeMonthlyBudgetExposure(
         posthog,

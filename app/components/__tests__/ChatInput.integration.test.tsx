@@ -187,7 +187,10 @@ describe("ChatInput - Integration Tests", () => {
     mockUseQuery.mockReturnValue(undefined);
     mockReadGeneratedTextAttachment.mockReset();
     mockFetch.mockReset();
-    mockFetch.mockResolvedValue({ ok: true });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ assignment: null }),
+    });
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       writable: true,
@@ -466,7 +469,7 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Agent Mode Integration", () => {
-    it("renders a glass composer with a narrower sandbox context strip", () => {
+    it("renders a glass composer with a narrower sandbox context strip", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -495,6 +498,7 @@ describe("ChatInput - Integration Tests", () => {
         </TestWrapper>,
       );
 
+      await screen.findByTestId("chat-input-surface");
       expect(screen.getByTestId("chat-input-surface")).toHaveClass(
         "chat-input-glass-surface",
         "z-10",
@@ -546,7 +550,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("moves Agent controls below the input when the composer becomes narrow", () => {
+    it("moves Agent controls below the input when the composer becomes narrow", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -601,6 +605,7 @@ describe("ChatInput - Integration Tests", () => {
           </TestWrapper>,
         );
 
+        await screen.findByTestId("chat-input-surface");
         act(() => {
           (resizeCallback as ResizeObserverCallback)(
             [{ contentRect: { width: 700 } } as ResizeObserverEntry],
