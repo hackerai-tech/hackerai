@@ -15,7 +15,13 @@ export const miosaWorkspaceMigration = schemaTask({
   }),
   queue: { concurrencyLimit: 2 },
   maxDuration: 2 * 60 * 60,
-  retry: { maxAttempts: 1 },
+  retry: {
+    maxAttempts: 3,
+    factor: 2,
+    minTimeoutInMs: 5 * 60 * 1000,
+    maxTimeoutInMs: 15 * 60 * 1000,
+    randomize: true,
+  },
   machine: { preset: "small-1x" },
   run: async (payload, { ctx }) => {
     assertTriggerRunRegion({
@@ -24,7 +30,10 @@ export const miosaWorkspaceMigration = schemaTask({
       environmentType: ctx.environment.type,
     });
     try {
-      return await migrateE2BWorkspace(payload);
+      const result = await migrateE2BWorkspace(payload);
+      if (result.reason === "transfer_unavailable")
+        throw new Error("Miosa workspace transfer temporarily unavailable");
+      return result;
     } finally {
       await phLogger.flush().catch(() => undefined);
     }
