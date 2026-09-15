@@ -256,6 +256,32 @@ describe("file migration transaction", () => {
     expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
     expect(claim.abandon).toHaveBeenCalled();
   });
+  it("keeps source filesystem failures retryable", async () => {
+    const normal = source.commands.run.getMockImplementation()!;
+    source.commands.run.mockImplementation(async (command: string) => {
+      if (command.includes(" export '/"))
+        throw new CommandExitError({
+          exitCode: 1,
+          stdout: JSON.stringify({ failure: "filesystem_unavailable" }),
+          stderr: "",
+        });
+      return normal(command);
+    });
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_export",
+      failureKind: "operation_failed",
+    });
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.not.objectContaining({
+        source_export_reason: expect.anything(),
+      }),
+    );
+    expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
   it("keeps unrecognized source export output fail-closed and private", async () => {
     const normal = source.commands.run.getMockImplementation()!;
     source.commands.run.mockImplementation(async (command: string) =>

@@ -30,7 +30,6 @@ const sourceExportRejections = [
   "changed",
   "external_hardlink",
   "external_symlink",
-  "filesystem_unavailable",
   "limit",
   "mount",
   "socket",
