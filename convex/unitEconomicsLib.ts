@@ -3,15 +3,10 @@ import type { MutationCtx } from "./_generated/server";
 export type UnitEconomicsEntityType = "user" | "organization";
 
 export type UnitEconomicsRevenueSource =
-  | "subscription"
-  | "extra_usage"
-  | "team_extra_usage"
-  | "manual_adjustment";
+  "subscription" | "extra_usage" | "team_extra_usage" | "manual_adjustment";
 
 export type UnitEconomicsAttributionStrategy =
-  | "direct"
-  | "split_evenly"
-  | "organization_pool";
+  "direct" | "split_evenly" | "organization_pool";
 
 export type PaidStartTier = "pro" | "pro-plus" | "ultra" | "team";
 
@@ -20,8 +15,7 @@ export type PaidStartBillingInterval = "day" | "week" | "month" | "year";
 export type PaidStartMixBillingInterval = PaidStartBillingInterval | "unknown";
 
 export type PaidStartConversionType =
-  | "free_to_paid"
-  | "paid_subscription_start";
+  "free_to_paid" | "paid_subscription_start";
 
 export const LEGACY_USAGE_COST_MULTIPLIER = 1.3;
 
@@ -183,6 +177,7 @@ export async function recordPaidStartEventInternal(
     paidSeatCount?: number;
     billingInterval?: PaidStartBillingInterval;
     billingIntervalCount?: number;
+    billingPeriodEnd?: number;
     quantity?: number;
     userCount?: number;
     stripeCustomerId?: string;
@@ -230,6 +225,7 @@ export async function recordPaidStartEventInternal(
     paid_seat_count: paidSeatCount,
     billing_interval: args.billingInterval,
     billing_interval_count: args.billingIntervalCount,
+    billing_period_end: args.billingPeriodEnd,
     quantity: args.quantity,
     user_count: args.userCount,
     stripe_customer_id: args.stripeCustomerId,

@@ -4,6 +4,8 @@ import {
   FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
 } from "../lib/experiments/abliteration-keys";
 export const taskOutcomeAnswer = v.union(
+  v.literal("solved"),
+  v.literal("helpful"),
   v.literal("yes"),
   v.literal("partly"),
   v.literal("no"),
@@ -22,6 +24,7 @@ export const taskOutcomeReason = v.union(
   v.literal("other"),
 );
 export const taskOutcomeContext = {
+  survey_kind: v.optional(v.literal("new_paid")),
   request_id: v.string(),
   chat_id: v.string(),
   message_id: v.string(),
@@ -32,9 +35,11 @@ export const taskOutcomeContext = {
       v.literal(FREE_ASK_ABLITERATED_EXPERIMENT_KEY),
     ),
   ),
-  experiment_variant: v.union(v.literal("control"), v.literal("test")),
-  baseline_model: v.string(),
-  assigned_model: v.string(),
+  experiment_variant: v.optional(
+    v.union(v.literal("control"), v.literal("test")),
+  ),
+  baseline_model: v.optional(v.string()),
+  assigned_model: v.optional(v.string()),
   mode: v.union(v.literal("ask"), v.literal("agent")),
   subscription_tier: v.string(),
   release: v.string(),
@@ -45,10 +50,17 @@ export const taskOutcomeContext = {
 export const taskOutcomeFields = {
   ...taskOutcomeContext,
   user_id: v.string(),
+  paid_start_event_id: v.optional(v.id("paid_start_events")),
+  paid_started_at: v.optional(v.number()),
+  stripe_subscription_id: v.optional(v.string()),
+  paid_start_invoice_id: v.optional(v.string()),
+  baseline_renewal_at: v.optional(v.number()),
+  billing_interval: v.optional(v.string()),
   selected_at: v.number(),
   expires_at: v.number(),
   last_interaction_at: v.number(),
   shown_at: v.optional(v.number()),
+  viewed_at: v.optional(v.number()),
   dismissed_at: v.optional(v.number()),
   answered_at: v.optional(v.number()),
   answer: v.optional(taskOutcomeAnswer),
