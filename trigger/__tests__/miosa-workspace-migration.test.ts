@@ -1,13 +1,23 @@
-import { schemaTask } from "@trigger.dev/sdk";
-import { assertTriggerRunRegion } from "@/lib/api/trigger-region";
+import { AbortTaskRunError, schemaTask } from "@trigger.dev/sdk";
+import {
+  assertTriggerRunRegion,
+  TriggerRegionMismatchError,
+} from "@/lib/api/trigger-region";
 import { migrateE2BWorkspace } from "@/lib/ai/tools/utils/miosa-workspace-migration";
 import { phLogger } from "@/lib/posthog/server";
 
 jest.mock("@trigger.dev/sdk", () => ({
+  AbortTaskRunError: class AbortTaskRunError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "AbortTaskRunError";
+    }
+  },
   schemaTask: jest.fn((definition) => definition),
 }));
 jest.mock("@/lib/api/trigger-region", () => ({
   assertTriggerRunRegion: jest.fn(),
+  TriggerRegionMismatchError: class TriggerRegionMismatchError extends Error {},
 }));
 jest.mock("@/lib/ai/tools/utils/miosa-workspace-migration", () => ({
   migrateE2BWorkspace: jest.fn(),
@@ -77,5 +87,16 @@ describe("Miosa workspace migration task retries", () => {
     await expect(task.run(payload, context)).resolves.toEqual(result);
     expect(assertTriggerRunRegion).toHaveBeenCalled();
     expect(phLogger.flush).toHaveBeenCalled();
+  });
+
+  it("aborts deterministic region mismatches without retrying", async () => {
+    (assertTriggerRunRegion as jest.Mock).mockImplementation(() => {
+      throw new TriggerRegionMismatchError("us-east-1", "us-west-2");
+    });
+
+    await expect(task.run(payload, context)).rejects.toBeInstanceOf(
+      AbortTaskRunError,
+    );
+    expect(migrateE2BWorkspace).not.toHaveBeenCalled();
   });
 });

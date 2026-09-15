@@ -3,6 +3,7 @@ import { ReadableStream } from "node:stream/web";
 import { Sandbox } from "@e2b/code-interpreter";
 import {
   claimCloudMigration,
+  CloudMigrationUnavailableError,
   readCloudMigrationState,
 } from "../cloud-migration-state";
 import { assertFreshMiosaEnrollment } from "../miosa-enrollment";
@@ -190,6 +191,27 @@ describe("file migration transaction", () => {
     });
     expect(Sandbox.connect).not.toHaveBeenCalled();
     expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
+  });
+  it("keeps an interrupted checking claim fenced for recovery", async () => {
+    (readCloudMigrationState as jest.Mock).mockResolvedValue({
+      version: 1,
+      phase: "checking",
+      token: "retained",
+      sourceId: "source",
+      region: "us-east-1",
+    });
+
+    await expect(migrateE2BWorkspace(request)).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "checking_claim_recovery_required",
+      }),
+    );
+    expect(claimCloudMigration).not.toHaveBeenCalled();
+    expect(Sandbox.connect).not.toHaveBeenCalled();
   });
   it("destroys only the private destination and releases the fence on transfer mismatch", async () => {
     source.files.read.mockImplementation(
