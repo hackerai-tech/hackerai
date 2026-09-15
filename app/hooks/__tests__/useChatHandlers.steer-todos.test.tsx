@@ -132,6 +132,36 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it("preserves the draft and queue when a computer is disconnected", async () => {
+    mockInput = "continue";
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        sendDisabledReason: "Reconnect your computer",
+      }),
+    );
+    await act(async () => {
+      expect(
+        await result.current.handleSubmit({ preventDefault: jest.fn() } as any),
+      ).toBe(false);
+      await result.current.handleSendNow("queued-1");
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockClearInput).not.toHaveBeenCalled();
+    expect(mockClearUploadedFiles).not.toHaveBeenCalled();
+    expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+    expect(mockCancelStream).not.toHaveBeenCalled();
+  });
+
   it("persists todos and cancels the active run before sending the queued message", async () => {
     const { result } = renderHook(() =>
       useChatHandlers({

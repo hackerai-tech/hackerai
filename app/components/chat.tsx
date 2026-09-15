@@ -95,6 +95,7 @@ import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { SlowLoadingNotice } from "./SlowLoadingNotice";
@@ -428,7 +429,9 @@ function StreamEffects({
   selectedModel,
   resetRef,
   hasActiveStream,
+  sendDisabledReason,
 }: {
+  sendDisabledReason?: string;
   chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -468,6 +471,7 @@ function StreamEffects({
     sandboxPreference,
     agentPermissionMode,
     selectedModel,
+    sendDisabledReason,
   });
 
   // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
@@ -487,7 +491,9 @@ function ForkAutoSendEffect({
   isExistingChat,
   messageCount,
   onSubmit,
+  sendDisabledReason,
 }: {
+  sendDisabledReason?: string;
   chatId: string;
   status: UseChatHelpers<ChatMessage>["status"];
   isExistingChat: boolean;
@@ -498,7 +504,7 @@ function ForkAutoSendEffect({
   const autoSendFiredRef = useRef(false);
 
   useEffect(() => {
-    if (autoSendFiredRef.current) return;
+    if (autoSendFiredRef.current || sendDisabledReason) return;
     try {
       const pendingChatId = sessionStorage.getItem("autoSendChatId");
       if (pendingChatId !== chatId) return;
@@ -511,7 +517,15 @@ function ForkAutoSendEffect({
     autoSendFiredRef.current = true;
     sessionStorage.removeItem("autoSendChatId");
     void onSubmit(new Event("submit") as unknown as React.FormEvent);
-  }, [chatId, input, isExistingChat, messageCount, onSubmit, status]);
+  }, [
+    chatId,
+    input,
+    isExistingChat,
+    messageCount,
+    onSubmit,
+    status,
+    sendDisabledReason,
+  ]);
 
   return null;
 }
@@ -525,6 +539,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 };
 
 const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
+  const { sendDisabledReason: computerSendDisabledReason } =
+    useSelectedComputerConnection();
+  const computerSendDisabledReasonRef = useLatestRef(
+    computerSendDisabledReason,
+  );
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
@@ -977,12 +996,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const {
     messages,
-    sendMessage,
+    sendMessage: sendMessageUnchecked,
     setMessages,
     status,
     stop,
     error,
-    regenerate,
+    regenerate: regenerateUnchecked,
     resumeStream,
   } = useChat({
     id: chatId,
@@ -1184,6 +1203,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  // Guard the shared dispatch boundary as well as the UI. Forks, retries,
+  // auto-continue, and queued sends must retain the selected environment.
+  const sendMessage = useCallback<typeof sendMessageUnchecked>(
+    (...args) => {
+      const reason = computerSendDisabledReasonRef.current;
+      if (reason) return Promise.reject(new Error(reason));
+      return sendMessageUnchecked(...args);
+    },
+    [sendMessageUnchecked, computerSendDisabledReasonRef],
+  );
+  const regenerate = useCallback<typeof regenerateUnchecked>(
+    (...args) => {
+      const reason = computerSendDisabledReasonRef.current;
+      if (reason) return Promise.reject(new Error(reason));
+      return regenerateUnchecked(...args);
+    },
+    [regenerateUnchecked, computerSendDisabledReasonRef],
+  );
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -1930,6 +1968,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       status === "ready" &&
+      !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
@@ -1972,6 +2011,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     status,
     messageQueue,
     editingQueuedMessageId,
+    computerSendDisabledReason,
     isProcessingQueue,
     removeQueuedMessage,
     sendMessage,
@@ -2008,6 +2048,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
+    sendDisabledReason: computerSendDisabledReason,
   });
 
   const handleScrollToBottom = useCallback(() => {
@@ -2108,6 +2149,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   return (
     <>
       <StreamEffects
+        sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
         autoResume={autoResume}
@@ -2131,6 +2173,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
       />
       <ForkAutoSendEffect
+        sendDisabledReason={computerSendDisabledReason}
         key={`fork-auto-send:${chatId}`}
         chatId={chatId}
         status={status}

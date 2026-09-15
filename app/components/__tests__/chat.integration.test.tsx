@@ -29,12 +29,18 @@ const mockSendMessage = jest
   .mockResolvedValue(undefined);
 const mockSetMessages = jest.fn();
 const mockStop = jest.fn();
+const mockHandleSubmit = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
 let mockRouteParams: Record<string, string> = {};
 let mockComputerOverlayMedia = false;
 const originalMatchMedia = window.matchMedia;
 
+let mockLocalConnections:
+  Array<{ connectionId: string; isDesktop: boolean }> | undefined;
+let mockChatHandlerArgs: Parameters<
+  typeof import("@/app/hooks/useChatHandlers").useChatHandlers
+>[0];
 let mockRestoredChat:
   { id: string; sandbox_type: string; default_model_slug: string } | undefined;
 jest.mock("convex/react", () => {
@@ -44,6 +50,8 @@ jest.mock("convex/react", () => {
     ...original,
     useQuery: (query: any, ...args: any[]) => {
       const { getFunctionName } = require("convex/server");
+      if (getFunctionName(query) === "localSandbox:listConnections")
+        return mockLocalConnections;
       return getFunctionName(query) === "chats:getChatByIdFromClient" &&
         mockRestoredChat
         ? mockRestoredChat
@@ -130,13 +138,16 @@ jest.mock("../../hooks/useChats", () => ({
 }));
 
 jest.mock("../../hooks/useChatHandlers", () => ({
-  useChatHandlers: () => ({
-    handleSubmit: jest.fn(),
-    handleStop: jest.fn(),
-    handleRegenerate: jest.fn(),
-    handleRetry: jest.fn(),
-    handleEditMessage: jest.fn(),
-  }),
+  useChatHandlers: (args: typeof mockChatHandlerArgs) => {
+    mockChatHandlerArgs = args;
+    return {
+      handleSubmit: mockHandleSubmit,
+      handleStop: jest.fn(),
+      handleRegenerate: jest.fn(),
+      handleRetry: jest.fn(),
+      handleEditMessage: jest.fn(),
+    };
+  },
 }));
 
 jest.mock("../../hooks/useMessageScroll", () => ({
@@ -237,9 +248,33 @@ const { useGlobalState } = jest.requireActual<
   typeof import("@/app/contexts/GlobalState")
 >("@/app/contexts/GlobalState");
 
+const { useComposerActions } = jest.requireActual<
+  typeof import("@/app/contexts/ComposerState")
+>("@/app/contexts/ComposerState");
+const ForkDraftSetter = () => {
+  const { setInput } = useComposerActions();
+  useEffect(() => setInput("continue"), [setInput]);
+  return null;
+};
+
 const SelectedComputerProbe = () => {
   const { sandboxPreference } = useGlobalState();
   return <output data-testid="selected-computer">{sandboxPreference}</output>;
+};
+
+const DisconnectedQueueHarness = () => {
+  const { setChatMode, setSandboxPreference, queueMessage, messageQueue } =
+    useGlobalState();
+  useEffect(() => {
+    setChatMode("agent");
+    setSandboxPreference("desktop");
+  }, [setChatMode, setSandboxPreference]);
+  return (
+    <>
+      <button onClick={() => queueMessage("continue")}>Queue continue</button>
+      <output data-testid="pending-queue">{messageQueue.length}</output>
+    </>
+  );
 };
 
 const QueueEditingHarness = () => {
@@ -337,6 +372,8 @@ describe("Chat Component Integration", () => {
     convexReact.resetMockConvexQueries?.();
     mockRouteParams = {};
     mockRestoredChat = undefined;
+    mockLocalConnections = undefined;
+    window.localStorage.clear();
     mockComputerOverlayMedia = false;
     window.matchMedia = jest.fn(
       (query: string) =>
@@ -588,6 +625,75 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("preserves a fork's pending send until its selected computer reconnects", async () => {
+      mockRouteParams = { id: "fork-task" };
+      mockRestoredChat = {
+        id: "fork-task",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockLocalConnections = [];
+      sessionStorage.setItem("autoSendChatId", "fork-task");
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "original",
+            role: "user",
+            parts: [{ type: "text", text: "original task" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+        error: null,
+        regenerate: mockRegenerate,
+        resumeStream: mockResumeStream,
+      });
+      const view = () => (
+        <TestWrapper>
+          <ForkDraftSetter />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      expect(mockHandleSubmit).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem("autoSendChatId")).toBe("fork-task");
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      rerender(view());
+      await waitFor(() => expect(mockHandleSubmit).toHaveBeenCalledTimes(1));
+      expect(sessionStorage.getItem("autoSendChatId")).toBeNull();
+    });
+
+    it("holds queued sends and rejects direct dispatch until the selected computer reconnects", async () => {
+      mockLocalConnections = [];
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      await expect(
+        mockChatHandlerArgs.sendMessage({ text: "bypass" }),
+      ).rejects.toThrow("Reconnect your computer");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      rerender(view());
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "continue" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ sandboxPreference: "desktop" }),
+          }),
+        ),
+      );
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
+    });
+
     it("keeps an edited queued message pending, then resumes with updated text", async () => {
       render(
         <TestWrapper>

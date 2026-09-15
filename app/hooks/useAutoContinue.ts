@@ -15,6 +15,7 @@ export const AUTO_CONTINUE_PROMPT =
 const AUTO_CONTINUE_SETTLE_DELAY_MS = 250;
 
 export interface UseAutoContinueParams {
+  sendDisabledReason?: string;
   chatId: string;
   status: ChatStatus;
   chatMode: string;
@@ -39,6 +40,7 @@ export function useAutoContinue({
   sandboxPreference,
   agentPermissionMode,
   selectedModel,
+  sendDisabledReason,
 }: UseAutoContinueParams) {
   const { dataStream } = useDataStreamState();
   const { setIsAutoResuming, setIsAutoContinuing, setAutoContinueCount } =
@@ -107,6 +109,25 @@ export function useAutoContinue({
   // Depends on both `status` and `dataStream` so it re-evaluates when
   // the signal arrives after the stream has already ended (status already "ready").
   useEffect(() => {
+    if (sendDisabledReason) {
+      const keepPending =
+        pendingAutoContinueRef.current || autoContinueRunScheduledRef.current;
+      if (
+        autoContinueRunScheduledRef.current &&
+        !autoContinueRunStartedRef.current
+      ) {
+        pendingAutoContinueRef.current = true;
+        autoContinueCountRef.current = Math.max(
+          0,
+          autoContinueCountRef.current - 1,
+        );
+        setAutoContinueCount(autoContinueCountRef.current);
+      }
+      clearAutoContinueLifecycle();
+      pendingAutoContinueRef.current = keepPending;
+      setIsAutoResuming(false);
+      return;
+    }
     if (status !== "ready" || !pendingAutoContinueRef.current) return;
     if (hasManuallyStoppedRef.current || chatMode !== "agent") {
       pendingAutoContinueRef.current = false;
@@ -132,28 +153,34 @@ export function useAutoContinue({
     autoContinueTimerRef.current = setTimeout(() => {
       autoContinueTimerRef.current = null;
       if (!autoContinueRunScheduledRef.current) return;
-      sendMessageRef.current(
-        {
-          text: AUTO_CONTINUE_PROMPT,
-          metadata: { isAutoContinue: true },
-        },
-        {
-          body: {
-            mode: chatMode,
-            isAutoContinue: true,
-            isAutomaticContinuation: true,
-            todos: todosRef.current,
-            sandboxPreference: sandboxPreferenceRef.current,
-            agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: selectedModelRef.current,
+      void Promise.resolve(
+        sendMessageRef.current(
+          {
+            text: AUTO_CONTINUE_PROMPT,
+            metadata: { isAutoContinue: true },
           },
-        },
-      );
+          {
+            body: {
+              mode: chatMode,
+              isAutoContinue: true,
+              isAutomaticContinuation: true,
+              todos: todosRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
+              agentPermissionMode: agentPermissionModeRef.current,
+              selectedModel: selectedModelRef.current,
+            },
+          },
+        ),
+      ).catch(() => {
+        clearAutoContinueLifecycle();
+        setIsAutoResuming(false);
+      });
     }, 500);
 
     return clearScheduledAutoContinue;
   }, [
     status,
+    sendDisabledReason,
     dataStream,
     chatMode,
     hasManuallyStoppedRef,

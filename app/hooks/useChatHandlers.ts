@@ -43,6 +43,7 @@ import { v4 as uuidv4 } from "uuid";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
+  sendDisabledReason?: string;
   chatId: string;
   messages: ChatMessage[];
   sendMessage: (
@@ -99,8 +100,10 @@ export const useChatHandlers = ({
   resumeActiveRun,
   onStopCallback,
   resetAutoContinueCount,
+  sendDisabledReason,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
+  const sendDisabledReasonRef = useLatestRef(sendDisabledReason);
   const {
     getInput,
     uploadedFiles,
@@ -416,6 +419,7 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
+    if (sendDisabledReasonRef.current) return false;
 
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
@@ -553,6 +557,7 @@ export const useChatHandlers = ({
       });
       return false;
     }
+    if (sendDisabledReasonRef.current) return false;
     if (!isExistingChat) {
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
@@ -652,6 +657,7 @@ export const useChatHandlers = ({
   };
 
   const handleRegenerate = async () => {
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -730,6 +736,7 @@ export const useChatHandlers = ({
   };
 
   const handleRetry = async (options: RetryOptions = {}) => {
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -791,6 +798,7 @@ export const useChatHandlers = ({
     newContent: string,
     remainingFileIds?: string[],
   ) => {
+    if (sendDisabledReasonRef.current) return;
     const lastUserMessageIndex = findLastUserMessageIndex(messages);
     if (
       lastUserMessageIndex === undefined ||
@@ -899,6 +907,7 @@ export const useChatHandlers = ({
   };
 
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
+    if (sendDisabledReasonRef.current) return;
     if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
     resetAutoContinueCount?.();
@@ -925,6 +934,7 @@ export const useChatHandlers = ({
   };
 
   const handleSendNow = async (messageId: string) => {
+    if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
     resetAutoContinueCount?.();
@@ -940,6 +950,8 @@ export const useChatHandlers = ({
       if (hasActiveRunToReplace()) {
         if (!(await stopActiveRunForSteer())) return;
       }
+
+      if (sendDisabledReasonRef.current) return;
 
       // Keep the queued message available if stopping fails.
       removeQueuedMessage(messageId);

@@ -70,6 +70,30 @@ describe("useAutoContinue", () => {
     jest.useRealTimers();
   });
 
+  it.each([false, true])(
+    "keeps an automatic continuation pending across disconnect (scheduled: %s)",
+    (scheduled) => {
+      const sendMessage = jest.fn();
+      const params = buildParams({
+        sendMessage,
+        sandboxPreference: "desktop",
+        sendDisabledReason: scheduled ? undefined : "Reconnect",
+      });
+      const { result, rerender } = renderHook(
+        (p: UseAutoContinueParams) => useTestHarness(p),
+        { initialProps: params, wrapper: createWrapper() },
+      );
+      pushAutoContinue(result);
+      if (scheduled) rerender({ ...params, sendDisabledReason: "Reconnect" });
+      act(() => jest.advanceTimersByTime(1000));
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(result.current.autoContinueCount).toBe(0);
+      rerender({ ...params, sendDisabledReason: undefined });
+      act(() => jest.advanceTimersByTime(1000));
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("sets isAutoResuming to true when data-auto-continue arrives", () => {
     const params = buildParams({ status: "streaming" });
     const { result } = renderHook(() => useTestHarness(params), {
