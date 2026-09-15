@@ -8,6 +8,7 @@ import {
   jest,
 } from "@jest/globals";
 import {
+  act,
   fireEvent,
   render,
   renderHook,
@@ -875,6 +876,30 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("keeps the local run cancelable before the persisted chat query catches up", () => {
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onData: (part: unknown) => void;
+        onFinish: (result: { isAbort: boolean }) => void;
+      };
+      act(() =>
+        options.onData({
+          type: "data-agent-run-correlation",
+          data: { runId: "run-local-before-query", token: "synthetic" },
+        }),
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBe(
+        "run-local-before-query",
+      );
+      act(() => options.onFinish({ isAbort: true }));
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+    });
+
     it("should handle streaming status", () => {
       mockUseChat.mockReturnValue({
         messages: [{ id: "1", role: "assistant", content: "Streaming..." }],

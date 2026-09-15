@@ -2030,6 +2030,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     requestSelectedModelRef,
   ]);
 
+  // The start response can arrive before the Convex subscription catches up.
+  // Keep that exact local run available to Stop after the pending POST settles.
+  const cancellationTriggerRunRef = useCommittedRef(
+    agentLongRunId ?? activeTriggerRunId,
+  );
+
   // Chat handlers
   const {
     handleSubmit,
@@ -2050,7 +2056,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
-    activeTriggerRunRef,
+    activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
