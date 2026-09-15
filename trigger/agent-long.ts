@@ -1468,6 +1468,7 @@ const isSandboxUploadError = (error: ChatSDKError): boolean =>
   !!error.metadata?.upload_failure_kind;
 
 const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
+  "subscription_required",
   "chat_not_found",
   "login_required",
   "empty_prompt",
@@ -1560,17 +1561,19 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
           ? "login_required"
           : isChatNotFoundError(error)
             ? "chat_not_found"
-            : errorMetadata?.empty_prompt === true
-              ? "empty_prompt"
-              : errorMetadata?.truncation_dropped_all_messages === true
-                ? "input_too_large"
-                : errorMetadata?.empty_after_processing === true
-                  ? "empty_after_processing"
-                  : errorMetadata?.localSandboxFallbackBlocked === true
-                    ? "local_sandbox_fallback_blocked"
-                    : errorMetadata?.upload_failure_kind
-                      ? "sandbox_upload_failure"
-                      : "chat_error",
+            : errorMetadata?.subscription_required === true
+              ? "subscription_required"
+              : errorMetadata?.empty_prompt === true
+                ? "empty_prompt"
+                : errorMetadata?.truncation_dropped_all_messages === true
+                  ? "input_too_large"
+                  : errorMetadata?.empty_after_processing === true
+                    ? "empty_after_processing"
+                    : errorMetadata?.localSandboxFallbackBlocked === true
+                      ? "local_sandbox_fallback_blocked"
+                      : errorMetadata?.upload_failure_kind
+                        ? "sandbox_upload_failure"
+                        : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,

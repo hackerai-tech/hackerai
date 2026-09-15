@@ -41,7 +41,6 @@ function SubscriptionOffer({
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     let active = true;
-    setFailed(false);
     void fetch("/api/pricing/pro-monthly-experiment", {
       cache: "no-store",
       signal: controller.signal,
@@ -144,7 +143,12 @@ function SubscriptionOffer({
         </div>
         <div className="flex flex-wrap gap-2">
           {failed ? (
-            <Button onClick={() => setAttempt((value) => value + 1)}>
+            <Button
+              onClick={() => {
+                setFailed(false);
+                setAttempt((value) => value + 1);
+              }}
+            >
               Retry pricing
             </Button>
           ) : (

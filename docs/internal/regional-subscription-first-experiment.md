@@ -45,6 +45,9 @@ Convex account/deployment. The documented mapping is team
 `hackerai-development`, project `hackerai-52290`, `diligent-blackbird-710`,
 `https://diligent-blackbird-710.convex.cloud`. Do not use a production-labeled
 deployment in that account or copy environment state from another checkout.
+The existing Vercel Preview build can override that default with a branch Preview
+deployment. Verify its account, project and branch in the Convex dashboard and
+match the build logs, browser connection and Trigger payload before testing.
 No Convex changes are needed. A flag definition alone does not establish a
 worker's environment selection.
 

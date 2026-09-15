@@ -225,13 +225,21 @@ const uploadedFileToDraftAttachment = (
   };
 };
 
-export const ChatInput = (props: ChatInputProps) => (
-  <RegionalSubscriptionGate
-    running={props.status === "submitted" || props.status === "streaming"}
-  >
-    <ChatInputContent {...props} />
-  </RegionalSubscriptionGate>
-);
+export const ChatInput = (props: ChatInputProps) => {
+  const { activeToolApprovalRequest } = useAgentApproval();
+  return (
+    <RegionalSubscriptionGate
+      running={
+        props.status === "submitted" ||
+        props.status === "streaming" ||
+        !!activeToolApprovalRequest ||
+        !!props.storedApprovalRequest
+      }
+    >
+      <ChatInputContent {...props} />
+    </RegionalSubscriptionGate>
+  );
+};
 
 const ChatInputContent = ({
   onSubmit,

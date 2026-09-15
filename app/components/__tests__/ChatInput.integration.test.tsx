@@ -903,7 +903,15 @@ describe("ChatInput - Integration Tests", () => {
       expect(failedStop).toHaveBeenCalledTimes(1);
     });
 
-    it("renders retry and stop controls when stored approval reconnection fails", () => {
+    it("keeps free-account recovery controls when stored approval reconnection fails", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
       render(
         <TestWrapper>
           <ChatInput
@@ -939,6 +947,42 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
 
       expect(mockOnReconnect).toHaveBeenCalledTimes(1);
+      await act(async () => {});
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Stop agent" })).toBeVisible();
+    });
+
+    it("keeps connected approval actions available to a free account after a stream error", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ assignment: { variant: "test", country: "IN" } }),
+      });
+      render(
+        <TestWrapper>
+          <AgentApprovalSetter />
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            onReconnect={mockOnReconnect}
+            status="error"
+            chatId="approval-chat"
+            hasMessages
+          />
+        </TestWrapper>,
+      );
+      expect(
+        await screen.findByRole("button", { name: "Allow once" }),
+      ).toBeVisible();
+      expect(screen.getByRole("button", { name: "Deny" })).toBeVisible();
+      expect(
+        screen.queryByTestId("regional-subscription-offer"),
+      ).not.toBeInTheDocument();
     });
   });
 
