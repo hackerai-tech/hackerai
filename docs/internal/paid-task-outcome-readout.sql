@@ -15,8 +15,8 @@ cohort AS (
     FROM events
     WHERE event = 'task_outcome_survey_selected'
       AND properties.survey_kind = 'new_paid'
-      AND timestamp >= toDateTime('2026-09-15 00:00:00')
-      AND timestamp < toDateTime('2026-09-22 00:00:00')
+      AND timestamp >= toDateTime('2026-09-15 00:00:00', 'UTC')
+      AND timestamp < toDateTime('2026-09-22 00:00:00', 'UTC')
     GROUP BY distinct_id, request_id
 ),
 activity AS (
@@ -25,8 +25,8 @@ activity AS (
     FROM events
     WHERE event IN ('task_outcome_survey_shown', 'task_outcome_survey_answered',
                     'task_outcome_survey_dismissed', 'chat_user_submission', 'invoice_paid')
-      AND timestamp >= toDateTime('2026-09-15 00:00:00')
-      AND timestamp < toDateTime('2026-11-01 00:00:00')
+      AND timestamp >= toDateTime('2026-09-15 00:00:00', 'UTC')
+      AND timestamp < toDateTime('2026-11-01 00:00:00', 'UTC')
 ),
 per_user AS (
     SELECT c.distinct_id, c.request_id, c.billing_interval, c.selected_at,
@@ -56,15 +56,15 @@ SELECT billing_interval,
     countIf(answer = 'no') AS did_not_help,
     countIf(answer = 'not_checked') AS not_checked,
     countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND dismissed) AS dismissed_unanswered,
-    countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND NOT dismissed AND expires_at > toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS pending_unanswered,
-    countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND NOT dismissed AND NOT viewed AND expires_at <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS expired_without_observed_view,
-    countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND NOT dismissed AND viewed AND expires_at <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS expired_viewed_unanswered,
-    countIf(selected_at + 172800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS d1_mature,
-    countIf(d1 AND selected_at + 172800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS d1_returned,
-    countIf(selected_at + 691200000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS d7_mature,
-    countIf(d7 AND selected_at + 691200000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS d7_returned,
+    countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND NOT dismissed AND expires_at > toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS pending_unanswered,
+    countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND NOT dismissed AND NOT viewed AND expires_at <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS expired_without_observed_view,
+    countIf(answer NOT IN ('solved', 'helpful', 'no', 'not_checked') AND NOT dismissed AND viewed AND expires_at <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS expired_viewed_unanswered,
+    countIf(selected_at + 172800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS d1_mature,
+    countIf(d1 AND selected_at + 172800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS d1_returned,
+    countIf(selected_at + 691200000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS d7_mature,
+    countIf(d7 AND selected_at + 691200000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS d7_returned,
     countIf(renewal_due IS NULL) AS renewal_date_unknown,
-    countIf(renewal_due + 604800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS renewal_mature,
-    countIf(paid_within_grace AND renewal_due + 604800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00')) * 1000) AS paid_renewal_within_grace
+    countIf(renewal_due + 604800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS renewal_mature,
+    countIf(paid_within_grace AND renewal_due + 604800000 <= toUnixTimestamp(toDateTime('2026-11-01 00:00:00', 'UTC')) * 1000) AS paid_renewal_within_grace
 FROM per_user
 GROUP BY billing_interval
