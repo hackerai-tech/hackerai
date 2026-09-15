@@ -47,6 +47,15 @@ export type AgentLongRunStarted = {
   runCorrelationToken?: string;
 };
 
+type AgentStartResult = { response: Response; handle?: RunHandle };
+const pendingAgentStarts = new Map<string, Promise<AgentStartResult>>();
+
+/** Capture the in-flight start before Stop detaches the local stream. */
+export const getPendingAgentLongRunStart = (
+  chatId: string,
+): Promise<AgentLongRunStarted | undefined> | undefined =>
+  pendingAgentStarts.get(chatId)?.then(({ handle }) => handle);
+
 const getAgentResumeUrl = (chatId: string | undefined): string | undefined =>
   chatId
     ? `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`
@@ -751,20 +760,32 @@ export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
   onRunStarted?: (run: AgentLongRunStarted) => void,
 ): Promise<Response> => {
+  init?.signal?.throwIfAborted();
   const chatId = getChatIdFromRequestInit(init);
   const linkedAbort = createLinkedAbortController(init?.signal ?? undefined);
   const unregisterStartCancel = registerAgentLongRealtimeCancel(chatId, () => {
     linkedAbort.controller.abort();
   });
 
-  try {
-    const startResponse = await fetchWithErrorHandlers(AGENT_API_ENDPOINT, {
+  // Aborting this POST only drops the browser's response; it cannot undo the
+  // durable task created by the route. Retain its handle so an explicit Stop
+  // can wait for association and cancel that exact run. Navigation still only
+  // detaches the local stream and leaves durable work available to reconnect.
+  const start = (async (): Promise<AgentStartResult> => {
+    const response = await fetchWithErrorHandlers(AGENT_API_ENDPOINT, {
       ...init,
-      signal: linkedAbort.controller.signal,
+      signal: undefined,
     });
-    if (!startResponse.ok) return startResponse;
+    return response.ok
+      ? { response, handle: (await response.json()) as RunHandle }
+      : { response };
+  })();
+  if (chatId) pendingAgentStarts.set(chatId, start);
 
-    const handle: RunHandle = await startResponse.json();
+  try {
+    const { response, handle } = await start;
+    linkedAbort.controller.signal.throwIfAborted();
+    if (!handle) return response;
     onRunStarted?.({
       chatId: handle.chatId ?? chatId,
       runId: handle.runId,
@@ -776,6 +797,9 @@ export const fetchAgentLongStream = async (
       statusEndpoint: AGENT_STATUS_ENDPOINT,
     });
   } finally {
+    if (chatId && pendingAgentStarts.get(chatId) === start) {
+      pendingAgentStarts.delete(chatId);
+    }
     unregisterStartCancel?.();
     linkedAbort.cleanup();
   }

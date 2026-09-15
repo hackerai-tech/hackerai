@@ -1320,6 +1320,35 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect(mockSaveChatSummary).not.toHaveBeenCalled();
     });
 
+    it.each(["primary", "fallback"])(
+      "does not persist a late %s result after Stop",
+      async (attempt) => {
+        const controller = new AbortController();
+        if (attempt === "fallback") {
+          mockGenerateText.mockRejectedValueOnce(
+            Object.assign(new Error("upstream"), { statusCode: 429 }),
+          );
+        }
+        mockGenerateText.mockImplementationOnce(async () => {
+          controller.abort();
+          return { text: "Late complete summary", finishReason: "stop" };
+        });
+        await expect(
+          start({ abortSignal: controller.signal }),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        expect(mockGenerateText).toHaveBeenCalledTimes(
+          attempt === "primary" ? 1 : 2,
+        );
+        expect(mockSaveChatSummary).not.toHaveBeenCalled();
+        expect(mockWriter.write).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "data-summarization",
+            data: expect.objectContaining({ status: "completed" }),
+          }),
+        );
+      },
+    );
+
     it("does not retry permanent authorization errors", async () => {
       mockGenerateText.mockRejectedValueOnce(
         Object.assign(new Error("unauthorized"), { statusCode: 401 }),

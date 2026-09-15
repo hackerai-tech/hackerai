@@ -796,6 +796,9 @@ export const generateSummaryText = async (
     ],
   });
 
+  // A provider may finish concurrently with Stop without rejecting its call.
+  // Do not turn that late result into a persisted checkpoint or continuation.
+  abortSignal?.throwIfAborted();
   if (!result.text.trim() || result.finishReason !== "stop") {
     throw new InvalidCompactionSummaryError();
   }

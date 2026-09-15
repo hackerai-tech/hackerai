@@ -6,6 +6,7 @@ import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
+import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -197,9 +198,24 @@ export const useChatHandlers = ({
         activeTriggerRunId?: string | null;
       };
 
-  const cancelTriggerRun = async (): Promise<AgentCancellationResult> => {
-    if (!shouldCancelTriggerRun()) return { outcome: "not_applicable" };
-    const expectedTriggerRunId = activeTriggerRunRef?.current;
+  const cancelTriggerRun = async (
+    beforeCancel?: Promise<unknown>,
+  ): Promise<AgentCancellationResult> => {
+    const pendingStart = getPendingAgentLongRunStart(chatId);
+    if (!pendingStart && !shouldCancelTriggerRun()) {
+      await beforeCancel;
+      return { outcome: "not_applicable" };
+    }
+    // Capture the target before awaiting: a later run or navigation must not
+    // change which task this Stop is allowed to cancel.
+    const currentRunId = activeTriggerRunRef?.current;
+    const [startedRun] = await Promise.all([pendingStart, beforeCancel]);
+    const expectedTriggerRunId = pendingStart
+      ? startedRun?.runId
+      : currentRunId;
+    // A rejected start returned no run. Never replace it with a broad chat
+    // cancellation that could stop another request which has since started.
+    if (pendingStart && !expectedTriggerRunId) return { outcome: "canceled" };
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -403,8 +419,10 @@ export const useChatHandlers = ({
   const stopActiveRunForSteer = async (): Promise<boolean> => {
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
-    await stopActiveStream({ requireCancelSuccess: true });
-    const cancelResult = await cancelTriggerRun();
+    // Capture a pending start now, before the todo save can outlive its response.
+    const cancelResult = await cancelTriggerRun(
+      stopActiveStream({ requireCancelSuccess: true }),
+    );
     if (cancelResult.outcome === "stale_run") {
       await recoverStaleAgentRun(cancelResult);
       return false;
