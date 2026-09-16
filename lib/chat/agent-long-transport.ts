@@ -229,6 +229,7 @@ const buildSSEResponseFromRun = (
     chatId?: string;
     statusEndpoint?: string;
     resumeUrl?: string;
+    onRunClosed?: (runId: string) => void;
   },
 ): Response => {
   const { runId, publicAccessToken } = handle;
@@ -318,6 +319,7 @@ const buildSSEResponseFromRun = (
       const sendAbortAndClose = () => {
         if (closed) return;
         closed = true;
+        options?.onRunClosed?.(runId);
         if (!isControllerErrored()) {
           try {
             controller.enqueue(
@@ -338,6 +340,7 @@ const buildSSEResponseFromRun = (
       const close = () => {
         if (closed) return;
         closed = true;
+        options?.onRunClosed?.(runId);
         if (!isControllerErrored()) {
           try {
             controller.close();
@@ -761,6 +764,7 @@ const buildSSEResponseFromRun = (
 export const fetchAgentLongStream = async (
   init: RequestInit | undefined,
   onRunStarted?: (run: AgentLongRunStarted) => void,
+  onRunClosed?: (runId: string) => void,
 ): Promise<Response> => {
   init?.signal?.throwIfAborted();
   const chatId = getChatIdFromRequestInit(init);
@@ -809,6 +813,7 @@ export const fetchAgentLongStream = async (
       chatId,
       resumeUrl: getAgentResumeUrl(chatId),
       statusEndpoint: AGENT_STATUS_ENDPOINT,
+      onRunClosed,
     });
   } finally {
     clearTimeout(startTimeout);
@@ -823,6 +828,7 @@ export const fetchAgentLongStream = async (
 export const resumeAgentLongStream = async (
   url: string,
   init: RequestInit | undefined,
+  onRunClosed?: (runId: string) => void,
 ): Promise<Response> => {
   const chatId = getChatIdFromResumeUrl(url);
   const linkedAbort = createLinkedAbortController(init?.signal ?? undefined);
@@ -847,6 +853,7 @@ export const resumeAgentLongStream = async (
       chatId,
       resumeUrl: url,
       statusEndpoint: getStatusEndpointFromResumeUrl(url),
+      onRunClosed,
     });
   } finally {
     unregisterStartCancel?.();

@@ -3,6 +3,15 @@ import {
   fetchAgentLongStream,
   getPendingAgentLongRunStart,
 } from "../agent-long-transport";
+import {
+  readTriggerRunStream,
+  retrieveTriggerRunStatus,
+} from "../trigger-browser-realtime";
+
+jest.mock("../trigger-browser-realtime", () => ({
+  readTriggerRunStream: jest.fn(),
+  retrieveTriggerRunStatus: jest.fn(),
+}));
 
 const pendingResponse = () => {
   let resolve!: (response: Response) => void;
@@ -116,3 +125,37 @@ it("bounds a stalled start even when the request ignores its abort signal", asyn
     jest.useRealTimers();
   }
 });
+
+it.each(["finish", "abort"])(
+  "reports the exact closing run once for a %s stream",
+  async (terminalType) => {
+    const originalResponse = globalThis.Response;
+    // jsdom lacks Response; the real stream still drives lifecycle callbacks.
+    globalThis.Response = class {
+      constructor(public body: ReadableStream<Uint8Array>) {}
+    } as unknown as typeof Response;
+    try {
+      jest.mocked(fetch).mockResolvedValueOnce(handleResponse("run-closing"));
+      jest.mocked(retrieveTriggerRunStatus).mockResolvedValue("EXECUTING");
+      jest.mocked(readTriggerRunStream).mockReturnValue(
+        (async function* () {
+          yield { type: terminalType };
+        })(),
+      );
+      const onRunClosed = jest.fn();
+      const response = await fetchAgentLongStream(
+        init(),
+        undefined,
+        onRunClosed,
+      );
+      const reader = response.body!.getReader();
+      while (!(await reader.read()).done) {
+        /* Drain the real stream. */
+      }
+      expect(onRunClosed).toHaveBeenCalledTimes(1);
+      expect(onRunClosed).toHaveBeenCalledWith("run-closing");
+    } finally {
+      globalThis.Response = originalResponse;
+    }
+  },
+);

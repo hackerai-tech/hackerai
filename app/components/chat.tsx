@@ -853,6 +853,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
+  const handleAgentLongRunClosed = (runId: string) => {
+    setAgentLongRunId((current) => (current === runId ? null : current));
+  };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
   const transportRef = useRef(
@@ -879,6 +882,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             return resumeAgentLongStream(
               typeof input === "string" ? input : input.toString(),
               init,
+              handleAgentLongRunClosed,
             );
           }
           // Reset the previous run before starting the request. Doing this in
@@ -896,23 +900,27 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               messagesRef.current,
             ),
           };
-          return fetchAgentLongStream(init, (run) => {
-            if (
-              submissionGeneration !==
-                agentLongSubmissionGenerationRef.current ||
-              (run.chatId !== undefined &&
-                run.chatId !== activeChatIdRef.current)
-            ) {
-              return;
-            }
-            setAgentLongRunId(run.runId);
-            if (run.runCorrelationToken) {
-              agentLongRunCorrelationRef.current = {
-                runId: run.runId,
-                token: run.runCorrelationToken,
-              };
-            }
-          });
+          return fetchAgentLongStream(
+            init,
+            (run) => {
+              if (
+                submissionGeneration !==
+                  agentLongSubmissionGenerationRef.current ||
+                (run.chatId !== undefined &&
+                  run.chatId !== activeChatIdRef.current)
+              ) {
+                return;
+              }
+              setAgentLongRunId(run.runId);
+              if (run.runCorrelationToken) {
+                agentLongRunCorrelationRef.current = {
+                  runId: run.runId,
+                  token: run.runCorrelationToken,
+                };
+              }
+            },
+            handleAgentLongRunClosed,
+          );
         }
         if (init?.method !== "GET") {
           agentLongSubmissionGenerationRef.current += 1;
@@ -935,6 +943,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           return resumeAgentLongStream(
             typeof input === "string" ? input : input.toString(),
             init,
+            handleAgentLongRunClosed,
           );
         }
         return fetchWithErrorHandlers(input, init);
@@ -1166,7 +1175,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;
-      setAgentLongRunId(null);
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -1189,7 +1197,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;
-      setAgentLongRunId(null);
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
