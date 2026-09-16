@@ -704,6 +704,12 @@ export function createChatLogger(config: ChatLoggerConfig) {
      */
     setModelResponse,
 
+    recordProviderModelCall: (
+      entry: Parameters<typeof builder.recordProviderModelCall>[0],
+    ) => {
+      builder.recordProviderModelCall(entry);
+    },
+
     /**
      * Record Anthropic prompt repair before provider call.
      */

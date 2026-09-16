@@ -8,6 +8,7 @@
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import type { ProviderModelHistoryEntry } from "@/lib/ai/provider-model-history";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
@@ -113,6 +114,7 @@ export interface ChatWideEvent {
   // Model & generation
   model?: {
     configured: string;
+    history?: ProviderModelHistoryEntry[];
     actual?: string;
     provider_name?: string;
     openrouter_generation_id?: string;
@@ -378,7 +380,16 @@ export class WideEventBuilder {
    * Set model info
    */
   setModel(configured: string): this {
-    this.event.model = { configured };
+    this.event.model = { configured, history: this.event.model?.history };
+    return this;
+  }
+
+  /** Retain live, content-free entries across stream restarts and route changes. */
+  recordProviderModelCall(entry: ProviderModelHistoryEntry): this {
+    this.event.model ??= { configured: entry.configured };
+    const history = (this.event.model.history ??= []);
+    entry.call_index = history.length + 1;
+    history.push(entry);
     return this;
   }
 

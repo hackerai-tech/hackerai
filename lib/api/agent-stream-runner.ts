@@ -5,6 +5,7 @@ import type {
 } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
@@ -891,12 +892,19 @@ export async function createAgentStream(
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
+    const historyModel = ctx.chatLogger
+      ? withProviderModelHistory(languageModel, {
+          configured: activeStepModelName,
+          generationStep: stepIndex + 1,
+          onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
+        })
+      : languageModel;
     const telemetryModel =
       ctx.abliteratedTelemetry?.wrap(
-        languageModel,
+        historyModel,
         stepIndex,
         activeStepRouting,
-      ) ?? languageModel;
+      ) ?? historyModel;
     const recoveryModel = recoverAbliterationMedia(
       ctx.providerStreamTimeout
         ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
