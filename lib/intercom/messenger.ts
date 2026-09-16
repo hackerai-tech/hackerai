@@ -13,6 +13,7 @@ type IntercomUser = {
   lastName?: string | null;
 };
 
+/** Selects the stable identity attributes protected by the Messenger JWT. */
 export function getIntercomIdentityClaims(user: IntercomUser) {
   const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
 

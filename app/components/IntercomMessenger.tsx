@@ -5,7 +5,9 @@ import type { IntercomMessengerIdentity } from "@/lib/intercom/messenger";
 import { shutdownIntercomSession } from "@/lib/intercom/client";
 
 let activeUserId: string | null = null;
+let hasInitializedMessenger = false;
 
+/** Keeps the hidden Intercom session aligned with the authenticated app user. */
 export function IntercomMessenger({
   identity,
 }: {
@@ -32,8 +34,11 @@ export function IntercomMessenger({
           hide_notifications: true,
         };
 
-        if (!activeUserId) {
+        if (!hasInitializedMessenger) {
           intercom.default(settings);
+          hasInitializedMessenger = true;
+        } else if (!activeUserId) {
+          intercom.boot(settings);
         } else if (activeUserId === identity.userId) {
           intercom.update(settings);
         } else {

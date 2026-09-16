@@ -2,6 +2,7 @@ type IntercomWindow = Window & {
   Intercom?: (command: string, ...args: unknown[]) => void;
 };
 
+/** Expires one Messenger cookie for a specific host or parent domain. */
 function expireCookie(name: string, domain?: string) {
   const domainAttribute = domain ? `; domain=${domain}` : "";
   const secureAttribute =

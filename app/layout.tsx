@@ -125,6 +125,7 @@ async function getInitialAuth() {
   return resolveClientInitialAuth(withAuth);
 }
 
+/** Renders the application shell with server-resolved auth and integrations. */
 export default async function RootLayout({
   children,
 }: Readonly<{

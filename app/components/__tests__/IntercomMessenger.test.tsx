@@ -80,5 +80,12 @@ describe("IntercomMessenger", () => {
 
     rerender(<IntercomMessenger identity={null} />);
     expect(mockShutdownIntercomSession).toHaveBeenCalledTimes(1);
+
+    rerender(<IntercomMessenger identity={firstIdentity} />);
+    await waitFor(() => expect(boot).toHaveBeenCalledTimes(2));
+    expect(initialize).toHaveBeenCalledTimes(1);
+    expect(boot).toHaveBeenLastCalledWith(
+      expect.objectContaining({ intercom_user_jwt: "first.jwt" }),
+    );
   });
 });
