@@ -76,7 +76,7 @@ describe("SubagentToolHandler", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Stored XSS failed/i }));
+    fireEvent.click(screen.getByRole("group", { name: /Stored XSS failed/i }));
     expect(openSidebar).not.toHaveBeenCalled();
     expect(
       screen.queryByRole("button", { name: "Open Stored XSS in sidebar" }),

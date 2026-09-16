@@ -5,6 +5,10 @@
  * SharedMessagePartHandler (shared/read-only view).
  */
 
+import {
+  getSafeToolErrorText,
+  isToolInputValidationError as isToolInputValidationErrorValue,
+} from "@/lib/chat/tool-error-display";
 import type { AgentAutoReviewLifecycleStatus, SidebarTerminal } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -137,11 +141,7 @@ export function getShellDisplayCommand(
 }
 
 export function isToolInputValidationError(errorText?: string): boolean {
-  if (!errorText) return false;
-  return (
-    errorText.includes("Invalid input for tool") ||
-    errorText.includes("Type validation failed")
-  );
+  return isToolInputValidationErrorValue(errorText);
 }
 
 export function getTerminalFailureAction(
@@ -298,7 +298,7 @@ export function getShellOutput(
     extra?.streamingOutput ||
     (result?.error ?? "") ||
     (typeof output?.error === "string" ? output.error : "") ||
-    extra?.errorText ||
+    getSafeToolErrorText(extra?.errorText, "") ||
     ""
   );
 }

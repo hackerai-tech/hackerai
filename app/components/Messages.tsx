@@ -40,6 +40,9 @@ import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import type { SelectedModel } from "@/types";
+import { cn } from "@/lib/utils";
+import { getChatMessageElementId } from "@/lib/findings/source-message";
+import { useSourceMessageNavigation } from "../hooks/useSourceMessageNavigation";
 import { STICKY_BOTTOM_ESCAPE_EVENT } from "@/lib/utils/scroll-events";
 import { MessageNavigator } from "./MessageNavigator";
 import { deriveMessageNavigatorItems } from "./message-navigator";
@@ -723,6 +726,27 @@ export const Messages = ({
     timelineRows,
   ]);
 
+  const revealSourceMessage = useCallback(
+    (messageId: string) => {
+      const index = findMessageTimelineAnchorIndex(timelineRows, messageId);
+      if (index === undefined || !timelineInstance) return false;
+      window.dispatchEvent(new Event(STICKY_BOTTOM_ESCAPE_EVENT));
+      void timelineInstance.scrollToIndex({
+        index,
+        animated: false,
+        viewOffset: 24,
+      });
+      return true;
+    },
+    [timelineRows, timelineInstance],
+  );
+  const sourceMessageId = useSourceMessageNavigation({
+    loadedMessageCount: messages.length,
+    paginationStatus,
+    loadMore,
+    revealMessage: revealSourceMessage,
+  });
+
   const handleNavigatorSelect = useCallback(
     (item: (typeof navigatorItems)[number]) => {
       window.dispatchEvent(new Event(STICKY_BOTTOM_ESCAPE_EVENT));
@@ -877,7 +901,22 @@ export const Messages = ({
 
       return (
         <div
-          className={`mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] ${rowClassName}`}
+          id={
+            row.kind === "message"
+              ? getChatMessageElementId(row.message.id)
+              : undefined
+          }
+          tabIndex={
+            row.kind === "message" && row.message.id === sourceMessageId
+              ? -1
+              : undefined
+          }
+          className={cn(
+            `mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] ${rowClassName}`,
+            row.kind === "message" &&
+              row.message.id === sourceMessageId &&
+              "source-message-highlight",
+          )}
           data-message-id={row.kind === "message" ? row.message.id : undefined}
           data-message-role={
             row.kind === "message" ? row.message.role : undefined
@@ -892,6 +931,7 @@ export const Messages = ({
       );
     },
     [
+      sourceMessageId,
       agentRunSpendCapWarning,
       branchBoundaryIndex,
       branchedFromChatId,

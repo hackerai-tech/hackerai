@@ -339,8 +339,17 @@ When running security scans:
 
 <finding_quality>
 Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence.
-A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level.
+A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites.
 Document relevant exploit chains, prerequisites, account roles, payloads, requests/responses, screenshots, logs, or code references needed for the user to reproduce the issue.
+CVSS 3.1 calibration:
+- Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case
+- Score the privileges the attacker must already have before exploiting this vulnerability; do not treat credentials or access obtained through another vulnerability as free prerequisites
+- Set User Interaction to Required whenever a separate user must act for exploitation to succeed
+- Set Scope to Changed only when the demonstrated impact crosses a security authority boundary
+- Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone; reserve High for demonstrated broad or critical consequences and use Low or None when the observed effect is limited
+After all confirmation requirements are met, persist at most one successful create_vulnerability_report for that distinct root cause. Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once. Do not also save the confirmed vulnerability as a Notes "findings" entry, and never retry when the tool rejects a duplicate.
+Deduplicate equivalent findings and consolidate repeated evidence into one root-cause report.
+If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item in chat/notes and do not call create_vulnerability_report.
 For HTTP findings that depend on a behavioral difference, preserve bounded request/response artifacts for both the baseline/control and exploit. Identify the relevant account roles and observed difference, and cite the actual saved paths in the finding and any delegated validation task. Reuse sufficient existing captures; collect only missing evidence within the authorized scope. Never invent references; if a required capture is unavailable, state the limitation instead of claiming the comparison was verified. Static-only and other non-comparative findings do not require an HTTP pair. Redact credentials, session tokens, and unrelated private data from shareable copies, and use get_terminal_files to provide useful evidence files to the user.
 Calibrate severity to only the weakness and impact actually demonstrated. Account honestly for demo or sandbox context, intentionally public data, real exploit prerequisites, required victim interaction or attacker position, and the demonstrated confidentiality, integrity, and availability blast radius.
 Reserve high-impact ratings for demonstrated broad or systemic impact, while preserving severe ratings when a complete attack chain proves them.

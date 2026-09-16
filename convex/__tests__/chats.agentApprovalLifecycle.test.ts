@@ -34,7 +34,11 @@ jest.mock("convex/server", () => ({
 }));
 
 jest.mock("../_generated/api", () => ({
-  internal: { chats: {}, redisPubsub: {}, s3Cleanup: {} },
+  internal: {
+    chats: { deleteAllChatsBatch: "internal.chats.deleteAllChatsBatch" },
+    redisPubsub: {},
+    s3Cleanup: {},
+  },
 }));
 
 jest.mock("../fileAggregate", () => ({
@@ -55,6 +59,7 @@ jest.mock("../lib/suspensionGuards", () => ({
 
 const {
   deleteChatForBackend,
+  deleteAllChatsForUser,
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
   setActiveTriggerRun,
@@ -163,6 +168,7 @@ describe("Agent approval lifecycle guards", () => {
           );
         return {
           first: jest.fn(async () => rows()[0] ?? null),
+          unique: jest.fn(async () => rows()[0] ?? null),
           take: jest.fn(async (limit: number) => rows().slice(0, limit)),
         };
       }),
@@ -413,6 +419,351 @@ describe("Agent approval lifecycle guards", () => {
     ).resolves.toBe("updated");
     const update = patch.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(update).not.toHaveProperty("last_run_finished_at");
+  });
+
+  it("returns the approval session paired with each active Trigger run", async () => {
+    const take = jest.fn<any>().mockResolvedValue([
+      {
+        id: "chat-1",
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-session-1",
+      },
+    ]);
+    const withIndex = jest.fn(
+      (_name: string, build: (q: Record<string, jest.Mock>) => unknown) => {
+        const q: Record<string, jest.Mock> = {};
+        q.eq = jest.fn(() => q);
+        q.gt = jest.fn(() => q);
+        build(q);
+        return { take };
+      },
+    );
+    const ctx = { db: { query: jest.fn(() => ({ withIndex })) } } as any;
+
+    await expect(
+      getActiveTriggerRunsForUser.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+      }),
+    ).resolves.toEqual({
+      runs: [
+        {
+          chatId: "chat-1",
+          triggerRunId: "run-1",
+          approvalSessionId: "approval-session-1",
+        },
+      ],
+      hasMore: false,
+    });
+  });
+
+  it("returns approval Sessions even when no Trigger run is stored", async () => {
+    const chat = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_agent_approval_session_id: "approval-session-1",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [chat],
+      isDone: true,
+      continueCursor: "",
+    });
+    const withIndex = jest.fn(() => ({ paginate }));
+    const patch = jest.fn<any>().mockResolvedValue(undefined);
+    const ctx = {
+      db: { query: jest.fn(() => ({ withIndex })), patch },
+    } as any;
+
+    await expect(
+      fenceChatsForDeletion.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        cursor: null,
+      }),
+    ).resolves.toEqual({
+      fencedChats: 1,
+      isDone: true,
+      continueCursor: "",
+      resources: [
+        {
+          chatId: "chat-1",
+          approvalSessionId: "approval-session-1",
+        },
+      ],
+    });
+    expect(patch).toHaveBeenCalledWith("chat-doc-1", {
+      deletion_started_at: expect.any(Number),
+    });
+  });
+  it("cascades structured findings before deleting their source chat", async () => {
+    const tables: Record<string, Array<Record<string, any>>> = {
+      chats: [
+        {
+          _id: "chat-doc-1",
+          id: "chat-1",
+          user_id: "user-1",
+          canceled_at: 1,
+        },
+      ],
+      findings: [
+        {
+          _id: "finding-doc-1",
+          user_id: "user-1",
+          chat_id: "chat-1",
+          created_at: 1,
+        },
+      ],
+      finding_sources: [
+        {
+          _id: "finding-source-1",
+          user_id: "user-1",
+          chat_id: "chat-1",
+        },
+      ],
+      messages: [],
+      chat_summaries: [],
+    };
+    const deleted: string[] = [];
+    const db = {
+      query: jest.fn((table: string) => ({
+        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+          const filters: Array<[string, unknown]> = [];
+          const q: any = {
+            eq: (field: string, value: unknown) => {
+              filters.push([field, value]);
+              return q;
+            },
+          };
+          build(q);
+          const rows = () =>
+            (tables[table] ?? []).filter((row) =>
+              filters.every(([field, value]) => row[field] === value),
+            );
+          return {
+            first: jest.fn(async () => rows()[0] ?? null),
+            unique: jest.fn(async () => rows()[0] ?? null),
+            take: jest.fn(async (limit: number) => rows().slice(0, limit)),
+          };
+        }),
+      })),
+      patch: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn(async (id: string) => {
+        deleted.push(id);
+        for (const [table, rows] of Object.entries(tables)) {
+          tables[table] = rows.filter((row) => row._id !== id);
+        }
+      }),
+    };
+
+    await expect(
+      deleteChatForBackend.handler(
+        { db, scheduler: { runAfter: jest.fn() } } as any,
+        {
+          serviceKey: "service-key",
+          chatId: "chat-1",
+          userId: "user-1",
+          expectedTriggerRunId: null,
+          expectedApprovalSessionId: null,
+        },
+      ),
+    ).resolves.toBe("deleted");
+
+    expect(deleted).toEqual([
+      "finding-doc-1",
+      "finding-source-1",
+      "chat-doc-1",
+    ]);
+  });
+
+  it("uses bounded continuation batches for service-key test cleanup", async () => {
+    const chat = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      canceled_at: 1,
+    };
+    const findings = Array.from({ length: 26 }, (_, index) => ({
+      _id: `finding-doc-${index + 1}`,
+      user_id: "user-1",
+      chat_id: "chat-1",
+      created_at: index + 1,
+    }));
+    const deleteDoc = jest.fn<any>().mockResolvedValue(undefined);
+    const runAfter = jest.fn<any>().mockResolvedValue(undefined);
+    const db = {
+      query: jest.fn((table: string) => ({
+        withIndex: jest.fn((_index: string, build: (q: any) => any) => {
+          const filters: Array<[string, unknown]> = [];
+          const q: any = {
+            eq: (field: string, value: unknown) => {
+              filters.push([field, value]);
+              return q;
+            },
+          };
+          build(q);
+          const rows = table === "chats" ? [chat] : findings;
+          const filtered = rows.filter((row) =>
+            filters.every(
+              ([field, value]) => row[field as keyof typeof row] === value,
+            ),
+          );
+          return {
+            first: jest.fn(async () => filtered[0] ?? null),
+            take: jest.fn(async (limit: number) => filtered.slice(0, limit)),
+          };
+        }),
+      })),
+      delete: deleteDoc,
+      patch: jest.fn<any>().mockResolvedValue(undefined),
+    };
+
+    await expect(
+      deleteAllChatsForUser.handler({ db, scheduler: { runAfter } } as any, {
+        serviceKey: "service-key",
+        userId: "user-1",
+      }),
+    ).resolves.toBeNull();
+
+    expect(deleteDoc).toHaveBeenCalledTimes(25);
+    expect(deleteDoc).not.toHaveBeenCalledWith("chat-doc-1");
+    expect(runAfter).toHaveBeenCalledWith(
+      0,
+      "internal.chats.deleteAllChatsBatch",
+      {
+        userId: "user-1",
+      },
+    );
+  });
+
+  it("does not attach a new run after chat deletion starts", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      deletion_started_at: Date.now(),
+    });
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: "late-run",
+        approvalSessionId: "late-approval-session",
+      }),
+    ).resolves.toBe("deleting");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("fences an inactive chat before a late run can be associated", async () => {
+    const chat: Record<string, unknown> = {
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+    };
+    const paginate = jest.fn<any>().mockResolvedValue({
+      page: [chat],
+      isDone: true,
+      continueCursor: "",
+    });
+    const first = jest.fn<any>().mockImplementation(async () => chat);
+    const withIndex = jest.fn((indexName: string) =>
+      indexName === "by_user_and_updated" ? { paginate } : { first },
+    );
+    const patch = jest.fn<any>().mockImplementation(async (_id, update) => {
+      Object.assign(chat, update);
+    });
+    const ctx = {
+      db: { query: jest.fn(() => ({ withIndex })), patch },
+    } as any;
+
+    await expect(
+      fenceChatsForDeletion.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "user-1",
+        cursor: null,
+      }),
+    ).resolves.toEqual({
+      fencedChats: 1,
+      isDone: true,
+      continueCursor: "",
+      resources: [],
+    });
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: "late-run",
+        approvalSessionId: "late-approval-session",
+      }),
+    ).resolves.toBe("deleting");
+    expect(chat.deletion_started_at).toEqual(expect.any(Number));
+    expect(chat.active_trigger_run_id).toBeUndefined();
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 100 });
+  });
+
+  it("reports when a started run has no chat row to associate with", async () => {
+    const { ctx, patch } = makeCtx(null);
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "deleted-chat",
+        triggerRunId: "late-run",
+      }),
+    ).resolves.toBe("not_found");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("reports successful active-run association", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+    });
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: "run-1",
+        approvalSessionId: "approval-session-1",
+      }),
+    ).resolves.toBe("updated");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_trigger_run_id: "run-1",
+        active_agent_approval_session_id: "approval-session-1",
+      }),
+    );
+  });
+
+  it("replaces an ordinary stream cancellation with a new Agent run", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      canceled_at: Date.now(),
+    });
+
+    await expect(
+      setActiveTriggerRun.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        triggerRunId: "replacement-run",
+        approvalSessionId: "replacement-session",
+      }),
+    ).resolves.toBe("updated");
+    expect(patch).toHaveBeenCalledWith(
+      "chat-doc-1",
+      expect.objectContaining({
+        active_trigger_run_id: "replacement-run",
+        active_agent_approval_session_id: "replacement-session",
+        canceled_at: undefined,
+      }),
+    );
   });
 
   it("returns the approval session paired with each active Trigger run", async () => {

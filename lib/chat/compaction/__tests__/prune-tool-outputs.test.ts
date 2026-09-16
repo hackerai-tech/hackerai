@@ -565,12 +565,13 @@ describe("pruneToolOutputs", () => {
     );
   });
 
-  it("never prunes protected tools (create_note, list_notes, update_note, delete_note)", () => {
+  it("never prunes protected state tools, including structured findings", () => {
     const protectedTools = [
       "create_note",
       "list_notes",
       "update_note",
       "delete_note",
+      "create_vulnerability_report",
     ];
 
     for (const toolName of protectedTools) {
