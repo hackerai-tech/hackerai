@@ -18,6 +18,76 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
+
+it("emits the complete model history in the final request event", () => {
+  const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const chatLogger = createChatLogger({
+      chatId: "history",
+      endpoint: "/api/agent-long",
+    });
+    chatLogger.setChat(
+      {
+        messageCount: 1,
+        estimatedInputTokens: 100,
+        isNewChat: true,
+        notesEnabled: false,
+      },
+      "model-abliterated",
+    );
+    const first = {
+      timestamp: "2026-09-16T16:57:49.280Z",
+      generation_step: 1,
+      configured: "model-abliterated",
+      requested: "abliterated-model",
+      actual: "abliterated-model",
+      provider: "abliteration.chat",
+      outcome: "pending",
+    };
+    chatLogger.recordProviderModelCall(first);
+    first.outcome = "completed";
+    chatLogger.recordProviderModelCall({
+      ...first,
+      generation_step: 2,
+      configured: "baseline",
+      requested: "deepseek/requested",
+      actual: "deepseek/served",
+      provider: "openrouter",
+      upstream_provider: "DeepInfra",
+    });
+    chatLogger.setStreamResponse(
+      "deepseek/served",
+      { inputTokens: 100, outputTokens: 1 },
+      { provider_name: "DeepInfra" },
+    );
+    chatLogger.emitSuccess({
+      finishReason: "stop",
+      wasAborted: false,
+      wasPreemptiveTimeout: false,
+      hadSummarization: false,
+    });
+    const event = JSON.parse(String(logSpy.mock.calls[0][0]));
+    expect(event.model.history).toEqual([
+      expect.objectContaining({
+        call_index: 1,
+        provider: "abliteration.chat",
+        actual: "abliterated-model",
+        outcome: "completed",
+      }),
+      expect.objectContaining({
+        call_index: 2,
+        provider: "openrouter",
+        upstream_provider: "DeepInfra",
+        actual: "deepseek/served",
+        outcome: "completed",
+      }),
+    ]);
+    expect(event.model.actual).toBe("deepseek/served");
+  } finally {
+    logSpy.mockRestore();
+  }
+});
+
 describe("captureToolCalls", () => {
   it("aggregates all tool calls into one anonymous PostHog event", () => {
     const capture = jest.fn();
