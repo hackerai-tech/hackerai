@@ -217,8 +217,12 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     return report("unsupported_destination");
   const existingMigration = await readCloudMigrationState(userId);
   if (existingMigration?.phase === "miosa") return report("already_claimed");
-  if (existingMigration?.phase === "checking") {
-    report("checking_claim_recovery_required");
+  if (existingMigration) {
+    report(
+      existingMigration.phase === "checking"
+        ? "checking_claim_recovery_required"
+        : "workspace_cleanup_fenced",
+    );
     throw new CloudMigrationUnavailableError();
   }
   const client = await createMiosaClient();

@@ -22,7 +22,7 @@ import {
   readCloudMigrationState,
   assertCloudWorkspaceAvailable,
   CloudMigrationUnavailableError,
-  clearCloudMigrationAfterReset,
+  claimCloudWorkspaceCleanup,
   registerE2BMigrationLease,
 } from "./cloud-migration-state";
 
@@ -65,8 +65,10 @@ const ensureMiosaCloudSandboxConnection = (options: {
   onBoot?: (info: SandboxBootInfo) => void;
   context?: CloudSandboxAcquisitionContext;
 }) =>
-  readCloudMigrationState(options.userId).then((migration) =>
-    ensureMiosaSandboxConnection(
+  readCloudMigrationState(options.userId).then((migration) => {
+    if (migration && migration.phase !== "miosa")
+      throw new CloudMigrationUnavailableError();
+    return ensureMiosaSandboxConnection(
       {
         userID: options.userId,
         setSandbox: options.setSandbox,
@@ -136,8 +138,8 @@ const ensureMiosaCloudSandboxConnection = (options: {
           });
         },
       },
-    ),
-  );
+    );
+  });
 
 const recordAcquisitionFailure = (options: {
   userId: string;
@@ -279,8 +281,14 @@ export async function ensureCloudSandboxConnection(options: {
       if (options.initialSandbox && isE2BSandbox(options.initialSandbox)) {
         throw new MiosaEnrollmentError("existing_e2b_workspace");
       }
-      const result = await ensureMiosaCloudSandboxConnection(options);
+      const result = await ensureMiosaCloudSandboxConnection({
+        ...options,
+        setSandbox: () => {},
+      });
       const migrated = await readCloudMigrationState(options.userId);
+      if (migrated && migrated.phase !== "miosa")
+        throw new CloudMigrationUnavailableError();
+      options.setSandbox(result.sandbox);
       if (migrated?.phase === "miosa") {
         phLogger.event(
           migrated.destinationId
@@ -373,83 +381,93 @@ export async function ensureCloudSandboxConnection(options: {
   }
 }
 
-export async function terminateCloudSandboxesForUser(userId: string): Promise<{
+export async function terminateCloudSandboxesForUser(
+  userId: string,
+  options: { permanent?: boolean } = {},
+): Promise<{
   total: number;
   killed: number;
   alreadyGone: number;
 }> {
-  const migration = await readCloudMigrationState(userId);
-  if (migration?.phase === "checking")
-    throw new CloudMigrationUnavailableError();
-  if (
-    migration &&
-    (!process.env.MIOSA_API_KEY?.trim() || !process.env.E2B_API_KEY?.trim())
-  ) {
-    throw new CloudMigrationUnavailableError();
-  }
-  const totals = { total: 0, killed: 0, alreadyGone: 0 };
-  const failures: unknown[] = [];
-
-  if (process.env.MIOSA_API_KEY) {
-    try {
-      const result = await terminateMiosaSandboxesForUser(userId);
-      totals.total += result.total;
-      totals.killed += result.killed;
-      totals.alreadyGone += result.alreadyGone;
-    } catch (error) {
-      failures.push(error);
-      console.error("Failed to clean up MIOSA sandboxes:", error);
+  const cleanup = await claimCloudWorkspaceCleanup(userId, !!options.permanent);
+  let success = false;
+  try {
+    const migration = cleanup.migration;
+    if (
+      migration &&
+      (!process.env.MIOSA_API_KEY?.trim() || !process.env.E2B_API_KEY?.trim())
+    ) {
+      throw new CloudMigrationUnavailableError();
     }
-  }
+    const totals = { total: 0, killed: 0, alreadyGone: 0 };
+    const failures: unknown[] = [];
 
-  for (const cluster of getConfiguredE2BClustersForCleanup()) {
-    try {
-      const paginator = Sandbox.list({
-        ...cluster.connectionOptions,
-        // Never rely on a cluster's default list filter during data deletion.
-        query: { metadata: { userID: userId }, state: ["running", "paused"] },
-      });
-      const sandboxes = [];
-      do {
-        sandboxes.push(...(await paginator.nextItems()));
-      } while (paginator.hasNext);
-      let killed = 0;
-      let alreadyGone = 0;
-      const { isExpectedMissingResourceCleanupError } =
-        await import("@/lib/utils/cleanup-errors");
-      for (const sandbox of sandboxes) {
-        try {
-          if (cluster.connectionOptions) {
-            await Sandbox.kill(sandbox.sandboxId, cluster.connectionOptions);
-          } else {
-            await Sandbox.kill(sandbox.sandboxId);
-          }
-          killed++;
-        } catch (error) {
-          if (isExpectedMissingResourceCleanupError(error)) {
-            alreadyGone++;
-            console.debug(
-              `Sandbox ${sandbox.sandboxId} was already gone during delete`,
+    if (process.env.MIOSA_API_KEY) {
+      try {
+        const result = await terminateMiosaSandboxesForUser(userId);
+        totals.total += result.total;
+        totals.killed += result.killed;
+        totals.alreadyGone += result.alreadyGone;
+      } catch (error) {
+        failures.push(error);
+        console.error("Failed to clean up MIOSA sandboxes:", error);
+      }
+    }
+
+    for (const cluster of getConfiguredE2BClustersForCleanup()) {
+      try {
+        const paginator = Sandbox.list({
+          ...cluster.connectionOptions,
+          // Never rely on a cluster's default list filter during data deletion.
+          query: { metadata: { userID: userId }, state: ["running", "paused"] },
+        });
+        const sandboxes = [];
+        do {
+          sandboxes.push(...(await paginator.nextItems()));
+        } while (paginator.hasNext);
+        let killed = 0;
+        let alreadyGone = 0;
+        const { isExpectedMissingResourceCleanupError } =
+          await import("@/lib/utils/cleanup-errors");
+        for (const sandbox of sandboxes) {
+          try {
+            if (cluster.connectionOptions) {
+              await Sandbox.kill(sandbox.sandboxId, cluster.connectionOptions);
+            } else {
+              await Sandbox.kill(sandbox.sandboxId);
+            }
+            killed++;
+          } catch (error) {
+            if (isExpectedMissingResourceCleanupError(error)) {
+              alreadyGone++;
+              console.debug(
+                `Sandbox ${sandbox.sandboxId} was already gone during delete`,
+                error,
+              );
+              continue;
+            }
+            console.error(
+              `Failed to kill sandbox ${sandbox.sandboxId}:`,
               error,
             );
-            continue;
+            throw error;
           }
-          console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
-          throw error;
         }
+        totals.total += sandboxes.length;
+        totals.killed += killed;
+        totals.alreadyGone += alreadyGone;
+      } catch (error) {
+        failures.push(error);
       }
-      totals.total += sandboxes.length;
-      totals.killed += killed;
-      totals.alreadyGone += alreadyGone;
-    } catch (error) {
-      failures.push(error);
     }
-  }
 
-  if (failures.length === 1) throw failures[0];
-  if (failures.length > 1) {
-    throw new AggregateError(failures, "Cloud sandbox cleanup failed");
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Cloud sandbox cleanup failed");
+    }
+    success = true;
+    return totals;
+  } finally {
+    await cleanup.finish(success);
   }
-  if (migration) await clearCloudMigrationAfterReset(userId, migration);
-  return totals;
 }
