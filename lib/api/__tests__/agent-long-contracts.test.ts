@@ -573,7 +573,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
     );
     expect(chatComponentSrc).toMatch(
-      /fetchAgentLongStream\(init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
+      /fetchAgentLongStream\(\s*init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
     );
   });
 

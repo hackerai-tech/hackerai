@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { ChatMessage, Todo } from "@/types";
+import { fetchAgentLongStream } from "@/lib/chat/agent-long-transport";
 
 const mockCaptureAuthenticatedEvent = jest.fn();
 jest.mock("@/lib/analytics/client", () => ({
@@ -136,6 +137,228 @@ describe("useChatHandlers steer todo handoff", () => {
       configurable: true,
       value: jest.fn(async () => ({ ok: true, status: 200 }) as Response),
     });
+  });
+
+  it("waits for a pending start and cancels its exact run after an early Stop", async () => {
+    let finishStart!: (response: Response) => void;
+    const controller = new AbortController();
+    const activeTriggerRunRef = { current: "run-previous" };
+    const fetchMock = globalThis.fetch as jest.Mock<typeof fetch>;
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((resolve, reject) => {
+          finishStart = resolve;
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("Aborted", "AbortError")),
+          );
+        }),
+    );
+    const onRunStarted = jest.fn();
+    const stream = fetchAgentLongStream(
+      {
+        method: "POST",
+        body: JSON.stringify({ chatId: "chat-1" }),
+        signal: controller.signal,
+      },
+      onRunStarted,
+    ).catch((error: Error) => error);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: () => controller.abort(),
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "submitted",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef,
+      }),
+    );
+    let stopped!: Promise<boolean>;
+    act(() => {
+      stopped = result.current.handleStop();
+    });
+    // The old no-active-run response must not be mistaken for stopping a start
+    // that has not returned its handle yet.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    activeTriggerRunRef.current = "run-replacement";
+    await act(async () => {
+      finishStart({
+        ok: true,
+        json: async () => ({
+          runId: "run-starting",
+          chatId: "chat-1",
+          publicAccessToken: "synthetic",
+        }),
+      } as Response);
+      expect(await stopped).toBe(true);
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/agent/cancel",
+      expect.objectContaining({
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "run-starting",
+        }),
+      }),
+    );
+    expect(await stream).toMatchObject({ name: "AbortError" });
+    expect(onRunStarted).not.toHaveBeenCalled();
+  });
+
+  it.each(["run-previous", null])(
+    "handles failed starts without broad cancellation (captured run: %s)",
+    async (capturedRun) => {
+      let failStart!: (error: Error) => void;
+      jest.mocked(fetch).mockImplementationOnce(
+        () =>
+          new Promise<Response>((_, reject) => {
+            failStart = reject;
+          }),
+      );
+      const controller = new AbortController();
+      const stream = fetchAgentLongStream({
+        method: "POST",
+        body: JSON.stringify({ chatId: "chat-1" }),
+        signal: controller.signal,
+      }).catch((error: Error) => error);
+      const activeTriggerRunRef = { current: capturedRun };
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          stop: () => controller.abort(),
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "submitted",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+          activeTriggerRunRef,
+        }),
+      );
+      let stopped!: Promise<boolean>;
+      act(() => {
+        stopped = result.current.handleStop();
+      });
+      activeTriggerRunRef.current = "run-replacement";
+      await act(async () => {
+        failStart(new Error("Synthetic lost start response"));
+        expect(await stopped).toBe(false);
+      });
+      if (capturedRun) {
+        expect(fetch).toHaveBeenLastCalledWith(
+          "/api/agent/cancel",
+          expect.objectContaining({
+            body: JSON.stringify({
+              chatId: "chat-1",
+              expectedTriggerRunId: capturedRun,
+            }),
+          }),
+        );
+      } else {
+        expect(fetch).toHaveBeenCalledTimes(1);
+      }
+      expect(await stream).toMatchObject({
+        message: "Synthetic lost start response",
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not broadly cancel a chat when Stop has no captured run or pending start", async () => {
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "submitted",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: undefined },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleStop();
+    });
+    expect(mockStop).toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("retains the starting run while Send now waits for todo persistence", async () => {
+    let finishStart!: (response: Response) => void;
+    let finishSave!: (value: null) => void;
+    mockCancelStream.mockImplementationOnce(
+      () =>
+        new Promise<null>((resolve) => {
+          finishSave = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    jest.mocked(fetch).mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          finishStart = resolve;
+        }),
+    );
+    const stream = fetchAgentLongStream({
+      method: "POST",
+      body: JSON.stringify({ chatId: "chat-1" }),
+      signal: controller.signal,
+    }).catch((error: Error) => error);
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: () => controller.abort(),
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "submitted",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "run-previous" },
+      }),
+    );
+    let steering!: Promise<void>;
+    act(() => {
+      steering = result.current.handleSendNow("queued-1");
+    });
+    await act(async () => {
+      finishStart({
+        ok: true,
+        json: async () => ({
+          runId: "run-starting",
+          publicAccessToken: "synthetic",
+        }),
+      } as Response);
+      await stream;
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    await act(async () => {
+      finishSave(null);
+      await steering;
+    });
+    expect(fetch).toHaveBeenLastCalledWith(
+      "/api/agent/cancel",
+      expect.objectContaining({
+        body: JSON.stringify({
+          chatId: "chat-1",
+          expectedTriggerRunId: "run-starting",
+        }),
+      }),
+    );
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it.each(["handleRegenerate", "handleRetry", "handleEditMessage"] as const)(

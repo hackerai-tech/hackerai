@@ -8,6 +8,7 @@ import {
   jest,
 } from "@jest/globals";
 import {
+  act,
   fireEvent,
   render,
   renderHook,
@@ -32,6 +33,18 @@ const mockStop = jest.fn();
 const mockHandleSubmit = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
+const mockResumeAgentLongStream =
+  jest.fn<
+    typeof import("@/lib/chat/agent-long-transport").resumeAgentLongStream
+  >();
+jest.mock("@/lib/chat/agent-long-transport", () => ({
+  ...jest.requireActual<typeof import("@/lib/chat/agent-long-transport")>(
+    "@/lib/chat/agent-long-transport",
+  ),
+  resumeAgentLongStream: (
+    ...args: Parameters<typeof mockResumeAgentLongStream>
+  ) => mockResumeAgentLongStream(...args),
+}));
 let mockRouteParams: Record<string, string> = {};
 let mockComputerOverlayMedia = false;
 const originalMatchMedia = window.matchMedia;
@@ -875,6 +888,44 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onData: (part: unknown) => void;
+        onFinish: (result: { isAbort: boolean }) => void;
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockResumeAgentLongStream.mockResolvedValueOnce({} as Response);
+      await options.transport.fetch(
+        "/api/agent/resume?chatId=queued-message-id",
+        { method: "GET" },
+      );
+      const onRunClosed = mockResumeAgentLongStream.mock.calls.at(-1)![2]!;
+      act(() =>
+        options.onData({
+          type: "data-agent-run-correlation",
+          data: { runId: "run-local-before-query", token: "synthetic" },
+        }),
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBe(
+        "run-local-before-query",
+      );
+      act(() => options.onFinish({ isAbort: true }));
+      act(() => onRunClosed("run-previous"));
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBe(
+        "run-local-before-query",
+      );
+      act(() => onRunClosed("run-local-before-query"));
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+    });
+
     it("should handle streaming status", () => {
       mockUseChat.mockReturnValue({
         messages: [{ id: "1", role: "assistant", content: "Streaming..." }],

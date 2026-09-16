@@ -6,6 +6,7 @@ import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
+import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -197,15 +198,38 @@ export const useChatHandlers = ({
         activeTriggerRunId?: string | null;
       };
 
-  const cancelTriggerRun = async (): Promise<AgentCancellationResult> => {
-    if (!shouldCancelTriggerRun()) return { outcome: "not_applicable" };
-    const expectedTriggerRunId = activeTriggerRunRef?.current;
+  const cancelTriggerRun = async (
+    beforeCancel?: Promise<unknown>,
+  ): Promise<AgentCancellationResult> => {
+    const pendingStart = getPendingAgentLongRunStart(chatId);
+    if (!pendingStart && !shouldCancelTriggerRun()) {
+      await beforeCancel;
+      return { outcome: "not_applicable" };
+    }
+    // Capture the target before awaiting: a later run or navigation must not
+    // change which task this Stop is allowed to cancel.
+    const currentRunId = activeTriggerRunRef?.current;
+    let startFailure: unknown;
+    const [startedRun] = await Promise.all([
+      pendingStart?.catch((error: unknown) => {
+        startFailure = error;
+        return undefined;
+      }),
+      beforeCancel,
+    ]);
+    const expectedTriggerRunId = startedRun?.runId ?? currentRunId;
+    // Cancel a captured existing run even if the new start failed. Without an
+    // exact handle, never send a broad cancellation that could hit a later run.
+    if (!expectedTriggerRunId) {
+      if (startFailure) throw startFailure;
+      return { outcome: "not_applicable" };
+    }
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chatId,
-        ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
+        expectedTriggerRunId,
       }),
     });
     if (response.status === 409) {
@@ -237,6 +261,9 @@ export const useChatHandlers = ({
         `Agent cancellation failed with status ${response.status}`,
       );
     }
+    // A lost start response can still hide a newly created durable task. Keep
+    // that uncertainty visible and prevent steering from starting another run.
+    if (startFailure) throw startFailure;
     return { outcome: "canceled" };
   };
 
@@ -403,8 +430,10 @@ export const useChatHandlers = ({
   const stopActiveRunForSteer = async (): Promise<boolean> => {
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
-    await stopActiveStream({ requireCancelSuccess: true });
-    const cancelResult = await cancelTriggerRun();
+    // Capture a pending start now, before the todo save can outlive its response.
+    const cancelResult = await cancelTriggerRun(
+      stopActiveStream({ requireCancelSuccess: true }),
+    );
     if (cancelResult.outcome === "stale_run") {
       await recoverStaleAgentRun(cancelResult);
       return false;
