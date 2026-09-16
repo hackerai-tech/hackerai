@@ -110,6 +110,9 @@ importers:
       '@e2b/code-interpreter':
         specifier: 2.8.0
         version: 2.8.0
+      '@intercom/messenger-js-sdk':
+        specifier: 0.0.20
+        version: 0.0.20
       '@langchain/community':
         specifier: ^1.1.29
         version: 1.1.29(704c093355a38bf1ce3e93a308f6b4fb)
@@ -1758,6 +1761,9 @@ packages:
   '@inquirer/figures@1.0.15':
     resolution: {integrity: sha512-t2IEY+unGHOzAaVM5Xx6DEWKeXlDDcNPeDyUpsRc6CUhBfU3VQOEl+Vssh7VNp1dR8MdUJBWhuObjXCsVpjN5g==}
     engines: {node: '>=18'}
+
+  '@intercom/messenger-js-sdk@0.0.20':
+    resolution: {integrity: sha512-99ixqRcsX4ZL+HnH3xxpQewKqdN9/mtptsnxk5vDd31TQG4x1o0gvp6aNPJm5iX3SPSJldQhA/uqW66NV1LO1w==}
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -9777,6 +9783,8 @@ snapshots:
 
   '@inquirer/figures@1.0.15': {}
 
+  '@intercom/messenger-js-sdk@0.0.20': {}
+
   '@isaacs/cliui@8.0.2':
     dependencies:
       string-width: 5.1.2
@@ -14133,7 +14141,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.18.0(debug@4.4.3))
+      retry-axios: 2.6.0(axios@1.18.0)
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -16479,7 +16487,7 @@ snapshots:
 
   resumable-stream@2.2.12: {}
 
-  retry-axios@2.6.0(axios@1.18.0(debug@4.4.3)):
+  retry-axios@2.6.0(axios@1.18.0):
     dependencies:
       axios: 1.18.0(debug@4.4.3)
 

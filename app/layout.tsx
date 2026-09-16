@@ -30,6 +30,8 @@ import {
   countryCodeFromHeaders,
   getAnalyticsConsentDecision,
 } from "@/lib/privacy/analytics-consent";
+import { IntercomMessenger } from "./components/IntercomMessenger";
+import { createIntercomMessengerIdentity } from "@/lib/intercom/messenger";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -135,6 +137,9 @@ export default async function RootLayout({
     cookies(),
     headers(),
   ]);
+  const intercomIdentity = initialAuth.user
+    ? await createIntercomMessengerIdentity(initialAuth.user)
+    : null;
   const firstTouchAttribution = parseFirstTouchAttributionCookie(
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
@@ -190,6 +195,7 @@ export default async function RootLayout({
       <body className="antialiased h-full">
         <ConvexClientProvider initialAuth={initialAuth}>
           {content}
+          <IntercomMessenger identity={intercomIdentity} />
         </ConvexClientProvider>
       </body>
     </html>
