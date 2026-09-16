@@ -405,7 +405,7 @@ export const POST = async (req: NextRequest) => {
     );
 
     stage = "terminate_cloud_sandboxes";
-    await terminateCloudSandboxesForUser(userId);
+    await terminateCloudSandboxesForUser(userId, { permanent: true });
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.

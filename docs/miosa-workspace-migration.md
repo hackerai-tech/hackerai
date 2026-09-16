@@ -44,8 +44,10 @@ size and SHA-256; the destination rechecks archive integrity and the restored
 home's content/metadata fingerprint. It verifies the source again, pauses it,
 and tests destination pause/resume persistence before committing the destination
 ID. Oversized workspaces and insufficient destination storage stay on E2B.
-Two jobs may run concurrently. Tasks have a two-hour ceiling and no automatic
-retry; individual filesystem operations and transfers have shorter limits.
+Two jobs may run concurrently. Tasks have a two-hour ceiling and up to three
+attempts with backoff; individual filesystem operations and transfers have
+shorter limits. A retained checking fence requires recovery before a retry can
+proceed.
 
 ## Cutover and recovery
 
@@ -65,8 +67,24 @@ Committed records pin an exact destination ID. Missing or broken destinations
 fail safely; neither creation of an empty replacement nor fallback to the stale
 E2B copy is permitted. Flag rollback stops new migrations, including in-flight
 copies before installation, while migrated users retain Miosa. Legacy committed
-empty-migration records remain readable. Explicit user reset still deletes both
-providers and then clears the matching record.
+empty-migration records remain readable. Cleanup atomically owns the same Redis
+key before enumerating either provider, including when no migration existed.
+An active checking claim blocks cleanup before enumeration; never revoke it to
+force deletion. Concurrent cleanup attempts must retry.
+
+Explicit workspace reset deletes both providers, then clears only its matching
+cleanup token. Failed reset restores the prior committed record so it cannot
+expose the retained E2B copy. Account deletion retains a non-expiring `deleted`
+fence even after partial provider failure, preventing delayed migration jobs
+from creating another destination. Failed deletion retains any committed pin so
+retries still require both providers; account deletion may retry cleanup under
+that fence. Never clear a deleted account's fence to retry a task.
+
+A crashed cleanup retains `cleanup` ownership and any prior committed record
+inside it. Stop the cleanup invocation and confirm it cannot resume before
+operator recovery. For reset, finish provider deletion or restore the recorded
+committed pin; clear the matching cleanup token only after complete deletion.
+For account deletion, finish provider cleanup and retain the `deleted` fence.
 
 For a stranded checking record, stop the corresponding Trigger job, confirm the
 record token/source and both provider identities, destroy the exact uncommitted

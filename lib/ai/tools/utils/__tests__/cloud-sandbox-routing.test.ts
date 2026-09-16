@@ -96,6 +96,70 @@ describe("cloud sandbox provider routing", () => {
     expect(mockEnsureMiosa).not.toHaveBeenCalled();
   });
 
+  it.each(["cleanup", "deleted"])(
+    "blocks fresh and cached acquisitions while %s",
+    async (phase) => {
+      mockMigrationRead.mockResolvedValue({ phase });
+      for (const provider of ["e2b", "miosa"] as const) {
+        for (const initialSandbox of [
+          null,
+          {
+            sandboxId: "cached",
+            ...(provider === "miosa" && { sandboxKind: "miosa" }),
+          },
+        ]) {
+          await expect(
+            ensureCloudSandboxConnection({
+              userId: "user-1",
+              setSandbox,
+              initialSandbox: initialSandbox as never,
+              context: { provider, triggerRegion: "us-east-1" },
+            }),
+          ).rejects.toThrow();
+        }
+      }
+      expect(mockEnsureE2B).not.toHaveBeenCalled();
+      expect(mockEnsureMiosa).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects cleanup appearing at the second Miosa read before SDK acquisition", async () => {
+    mockMigrationRead
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ phase: "cleanup" });
+    mockMigrationAssert.mockRejectedValue(new Error("cleanup fence"));
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).rejects.toThrow();
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+    expect(setSandbox).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a Miosa connection if cleanup appears during acquisition", async () => {
+    mockEnsureMiosa.mockImplementationOnce(async (context) => {
+      const sandbox = { sandboxKind: "miosa", sandboxId: "racing-miosa" };
+      context.setSandbox(sandbox);
+      mockMigrationRead.mockResolvedValue({ phase: "cleanup" });
+      mockMigrationAssert.mockRejectedValue(new Error("cleanup fence"));
+      return { sandbox };
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).rejects.toThrow();
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+    expect(setSandbox).not.toHaveBeenCalled();
+  });
+
   it("never creates a canonical workspace when a file migration commits during acquisition", async () => {
     let created = false;
     mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
