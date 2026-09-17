@@ -2501,3 +2501,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 });
+
+it("forwards the automatic continuation gate into paid first-step evaluation in both runtimes", () => {
+  for (const path of ["lib/api/chat-handler.ts", "trigger/agent-long.ts"]) {
+    const source = require("fs").readFileSync(
+      require("path").join(process.cwd(), path),
+      "utf8",
+    );
+    expect(source).toMatch(
+      /evaluatePaidFirstStepModel\(\{\s*isAutomaticContinuation,/,
+    );
+  }
+});

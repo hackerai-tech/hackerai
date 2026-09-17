@@ -26,11 +26,13 @@ export async function evaluatePaidFirstStepModel(args: {
   safetyEligible: boolean;
   messages: UIMessage[];
   limitRescue: boolean;
+  isAutomaticContinuation?: boolean;
   existingAssignment?: AbliteratedAssignment;
 }): Promise<AbliteratedAssignment | undefined> {
   const unchanged = args.existingAssignment;
   if (
     !args.posthog ||
+    args.isAutomaticContinuation === true ||
     !args.organizationId ||
     !isAbliterationConfigured() ||
     (args.subscription !== "pro" &&

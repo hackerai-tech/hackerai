@@ -607,6 +607,7 @@ export const createChatHandler = () => {
         limitRescue: Boolean(limitRescue),
       });
       abliteratedExperiment = await evaluatePaidFirstStepModel({
+        isAutomaticContinuation,
         posthog,
         userId,
         organizationId,

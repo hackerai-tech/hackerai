@@ -2891,6 +2891,7 @@ export const agentLongTask = task({
         limitRescue: Boolean(limitRescue),
       });
       abliteratedExperiment = await evaluatePaidFirstStepModel({
+        isAutomaticContinuation,
         posthog,
         userId,
         organizationId,

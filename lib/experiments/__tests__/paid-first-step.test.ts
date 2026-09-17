@@ -138,6 +138,7 @@ describe("paid first-step expansion", () => {
     },
   );
   it.each([
+    { isAutomaticContinuation: true },
     { safetyEligible: false },
     { limitRescue: true },
     { organizationId: undefined },

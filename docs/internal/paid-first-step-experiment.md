@@ -11,6 +11,7 @@ Large v2 routes remain in both arms. Later generation steps retain the original
 baseline, including when a control user already qualifies for Abliteration.
 Moderation still runs: failed checks, upper-score/category safety gates, rescue,
 unsupported files, missing credentials and non-solo plans do not become eligible.
+Automatic continuation requests also retain existing routing without new enrollment.
 
 The authenticated user is the assignment unit. Initial enrollment verifies an
 active single-seat subscription and freezes its next renewal, billing interval,
