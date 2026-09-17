@@ -80,7 +80,11 @@ describe("MIOSA readiness polling", () => {
       s.readiness.mockResolvedValue({ ready: false, state });
       await expect(
         waitForMiosaReadiness(s as unknown as Sandbox),
-      ).rejects.toMatchObject({ code: "SANDBOX_BOOT_FAILED" });
+      ).rejects.toMatchObject({
+        code: "SANDBOX_BOOT_FAILED",
+        sandboxId: "test-miosa",
+        sandboxState: state,
+      });
       expect(s.refresh).not.toHaveBeenCalled();
       expect(jest.getTimerCount()).toBe(0);
     },

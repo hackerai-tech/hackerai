@@ -32,7 +32,13 @@ const createSdkSandbox = () => ({
   id: "miosa-1",
   state: "running",
   templateId: "hackerai-kali-promoted",
-  data: { id: "miosa-1", state: "running", boot_path: "created" },
+  data: {
+    id: "miosa-1",
+    state: "running",
+    boot_path: "created",
+    name: "hackerai-c6c289e49e9c05b214586038-v2",
+    external_user_id: "hackerai-c6c289e49e9c05b214586038",
+  },
   exec: {
     run: jest.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
     stream: jest.fn(async function* () {
@@ -172,7 +178,93 @@ describe("MIOSA sandbox adapter", () => {
     );
   });
 
-  it.each(["paused", "error", "destroyed", "resuming"])(
+  it("waits for a concurrently resuming original VM and records its identity", async () => {
+    const sdk = createSdkSandbox();
+    sdk.state = "resuming";
+    sdk.refresh.mockImplementation(async () => {
+      sdk.state = "running";
+    });
+    mockGetByName.mockResolvedValueOnce(sdk);
+    mockGet.mockResolvedValueOnce(sdk);
+    mockGetOrCreate.mockRejectedValueOnce(
+      Object.assign(new Error("conflict"), { code: "SANDBOX_NOT_PAUSED" }),
+    );
+    const onDiagnostic = jest.fn();
+    const setSandbox = jest.fn();
+    const result = await ensureMiosaSandboxConnection(
+      { userID: "user-1", setSandbox },
+      { beforeCreate: jest.fn(), onDiagnostic },
+    );
+    expect(result.sandbox.sdkSandbox).toBe(sdk);
+    expect(mockGet).toHaveBeenCalledWith("miosa-1");
+    expect(sdk.readiness).toHaveBeenCalled();
+    expect(sdk.refresh).toHaveBeenCalled();
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "resume_conflict_refresh",
+        outcome: "success",
+        sandbox_id: "miosa-1",
+        sandbox_state: "resuming",
+        acquisition_id: expect.any(String),
+      }),
+    );
+    expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses a late successful acquisition after timeout instead of leaving it unused", async () => {
+    const sdk = createSdkSandbox();
+    mockGetOrCreate.mockRejectedValueOnce(
+      Object.assign(new Error("timeout"), { code: "TIMEOUT", status: 408 }),
+    );
+    mockGetByName.mockResolvedValueOnce(sdk);
+    const onDiagnostic = jest.fn();
+    const setSandbox = jest.fn();
+    const result = await ensureMiosaSandboxConnection(
+      { userID: "user-1", setSandbox },
+      { onDiagnostic },
+    );
+    expect(result.sandbox.sdkSandbox).toBe(sdk);
+    expect(sdk.readiness).toHaveBeenCalled();
+    expect(sdk.exec.stream).toHaveBeenCalled();
+    expect(setSandbox).toHaveBeenCalledWith(result.sandbox);
+    expect(mockGetOrCreate).toHaveBeenCalledTimes(1);
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "acquisition_reconciliation",
+        outcome: "success",
+        recovery_trigger_code: "TIMEOUT",
+      }),
+    );
+  });
+
+  it("never substitutes another VM during known-ID timeout reconciliation", async () => {
+    const sdk = createSdkSandbox();
+    mockGetByName.mockResolvedValueOnce(sdk);
+    mockGet.mockResolvedValueOnce({ ...sdk, id: "replacement-id" });
+    const error = Object.freeze(
+      Object.assign(new Error("timeout"), { code: "TIMEOUT" }),
+    );
+    mockGetOrCreate.mockRejectedValueOnce(error);
+    const setSandbox = jest.fn();
+    const onDiagnostic = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox },
+        { beforeCreate: jest.fn(), onDiagnostic },
+      ),
+    ).rejects.toBe(error);
+    expect(setSandbox).not.toHaveBeenCalled();
+    expect(sdk.exec.stream).not.toHaveBeenCalled();
+    expect(onDiagnostic).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stage: "acquisition_reconciliation",
+        outcome: "failure",
+        error_code: "ACQUISITION_IDENTITY_MISMATCH",
+      }),
+    );
+  });
+
+  it.each(["paused", "error", "destroyed", "pausing", "stopped"])(
     "does not hide a resume conflict when current state is %s",
     async (state) => {
       const error = Object.assign(new Error("not paused"), {

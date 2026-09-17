@@ -1,4 +1,5 @@
 import type { AnySandbox, SandboxBootInfo } from "@/types";
+import { randomUUID } from "node:crypto";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SubscriptionTier } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
@@ -16,7 +17,10 @@ import {
   assertFreshMiosaEnrollment,
   MiosaEnrollmentError,
 } from "./miosa-enrollment";
-import { miosaErrorDiagnostics } from "./miosa-acquisition-diagnostics";
+import {
+  miosaErrorDiagnostics,
+  miosaAcquisitionFailureDiagnostics,
+} from "./miosa-acquisition-diagnostics";
 import { queueE2BFileMigration } from "./miosa-workspace-migration-queue";
 import {
   readCloudMigrationState,
@@ -27,6 +31,7 @@ import {
 } from "./cloud-migration-state";
 
 export type CloudSandboxAcquisitionContext = {
+  acquisitionId?: string;
   provider?: CloudSandboxProvider;
   selectionReason?: CloudSandboxSelectionReason;
   subscription?: SubscriptionTier;
@@ -76,6 +81,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
       },
       {
         destinationId: migration?.destinationId,
+        acquisitionId: options.context?.acquisitionId,
         initialSandbox:
           options.initialSandbox && isMiosaSandbox(options.initialSandbox)
             ? options.initialSandbox
@@ -115,7 +121,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
             trigger_region: options.context?.triggerRegion,
             sandbox_provider: "miosa",
             sandbox_type: "cloud",
-            miosa_sandbox_acquisition_step_event_version: 1,
+            miosa_sandbox_acquisition_step_event_version: 2,
           };
           const logFields = {
             ...fields,
@@ -124,7 +130,11 @@ const ensureMiosaCloudSandboxConnection = (options: {
           // Keep failures visible without flooding production traces with every
           // successful lookup/readiness/initialization step. PostHog retains all
           // step events independently of this troubleshooting switch.
-          if (diagnostic.outcome === "failure") {
+          if (
+            diagnostic.outcome === "failure" ||
+            diagnostic.stage === "acquisition_reconciliation" ||
+            diagnostic.stage === "resume_conflict_refresh"
+          ) {
             console.warn("MIOSA sandbox acquisition step", logFields);
           } else if (
             process.env.MIOSA_DEBUG_LOGS === "true" ||
@@ -152,6 +162,7 @@ const recordAcquisitionFailure = (options: {
     userId: options.userId,
     chat_id: options.context?.chatId,
     trigger_run_id: options.context?.triggerRunId,
+    acquisition_id: options.context?.acquisitionId,
     provider: options.provider,
     sandbox_type: "cloud",
     sandbox_provider: options.provider,
@@ -166,7 +177,10 @@ const recordAcquisitionFailure = (options: {
     error_name:
       options.error instanceof Error ? options.error.name : "UnknownError",
     ...(options.provider === "miosa"
-      ? miosaErrorDiagnostics(options.error)
+      ? {
+          ...miosaErrorDiagnostics(options.error),
+          ...miosaAcquisitionFailureDiagnostics(options.error),
+        }
       : {}),
     cloud_sandbox_acquisition_failed_event_version: 5,
   });
@@ -203,6 +217,10 @@ export async function ensureCloudSandboxConnection(options: {
   context?: CloudSandboxAcquisitionContext;
 }): Promise<{ sandbox: AnySandbox; provider: CloudSandboxProvider }> {
   const startedAt = Date.now();
+  options = {
+    ...options,
+    context: { ...options.context, acquisitionId: randomUUID() },
+  };
   const migrationState = await readCloudMigrationState(options.userId);
   if (
     migrationState &&
@@ -247,6 +265,7 @@ export async function ensureCloudSandboxConnection(options: {
     const fields = {
       chat_id: options.context?.chatId,
       trigger_run_id: options.context?.triggerRunId,
+      acquisition_id: options.context?.acquisitionId,
       agent_run_kind: options.context?.runKind ?? "parent",
       subscription_tier: options.context?.subscription,
       trigger_region: options.context?.triggerRegion,
@@ -343,6 +362,7 @@ export async function ensureCloudSandboxConnection(options: {
           chat_id: options.context?.chatId,
           trigger_run_id: options.context?.triggerRunId,
           from_provider: "miosa",
+          acquisition_id: options.context?.acquisitionId,
           to_provider: "e2b",
           sandbox_type: "cloud",
           sandbox_provider: "e2b",
