@@ -32,6 +32,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/cron/trigger-health",
   "/api/cron/influencer-analytics",
   "/api/internal/user-research",
+  "/api/internal/influencers/partners",
   "/robots.txt",
   "/sitemap.xml",
 ]);

@@ -87,6 +87,20 @@ the independently verified Convex URL, Stripe account, and Stripe mode. The
 script checks these before writing. Requests are strict JSON. Store request
 and report files privately outside version control (for example `.artifacts/`).
 
+Create a partner through the verified web deployment. Set `NEXT_PUBLIC_BASE_URL`
+to that deployment's verified origin and load its matching `NEXT_PUBLIC_CONVEX_URL`
+and `CONVEX_SERVICE_ROLE_KEY`. Creation calls the service-authenticated
+`/api/internal/influencers/partners` endpoint, where the Stripe account/mode and
+Convex target are checked before writing. The web runtime computes the owner
+identity using its existing `ACCOUNT_IDENTITY_HMAC_SECRET`; do not export or copy
+that secret to an operator machine. Creation does not require a local Stripe key;
+other operator actions still do.
+
+Retrying creation with the same normalized details returns the same link. An
+existing code with different details or an inactive partner returns a conflict;
+creation never overwrites a partner or reactivates it. Use `activate` explicitly.
+Deploy the web endpoint before using the updated creation command.
+
 Create a partner:
 
 ```json
