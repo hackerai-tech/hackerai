@@ -14,6 +14,10 @@ import {
   readPartnerCookie,
 } from "@/lib/influencers/cookie";
 import { partnerTrackingAllowed } from "@/lib/influencers/attribution";
+import {
+  ANALYTICS_CONSENT_COOKIE_NAME,
+  parseAnalyticsConsent,
+} from "@/lib/privacy/analytics-consent";
 
 export const runtime = "nodejs";
 
@@ -30,12 +34,24 @@ export async function GET(
   });
   if (!partner?.active)
     return new NextResponse("Referral link not found", { status: 404 });
-  const response = NextResponse.redirect(new URL("/", req.url), 302);
+  const isBot = /bot|crawler|spider|preview/i.test(
+    req.headers.get("user-agent") ?? "",
+  );
+  const allowed = partnerTrackingAllowed(req) && !isBot;
+  const destination = new URL("/", req.url);
+  if (
+    !allowed &&
+    !isBot &&
+    parseAnalyticsConsent(
+      req.cookies.get(ANALYTICS_CONSENT_COOKIE_NAME)?.value,
+    ) === null
+  ) {
+    // Keep the code in the URL, without storage or analytics, until consent.
+    destination.searchParams.set("ref", code);
+  }
+  const response = NextResponse.redirect(destination, 302);
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("X-Robots-Tag", "noindex");
-  const allowed =
-    partnerTrackingAllowed(req) &&
-    !/bot|crawler|spider|preview/i.test(req.headers.get("user-agent") ?? "");
   if (allowed) {
     const firstClick = readPartnerCookie(
       req.cookies.get(INFLUENCER_COOKIE)?.value,

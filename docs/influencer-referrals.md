@@ -11,7 +11,11 @@ digits, or hyphens and cannot be reused.
 - A signed first-click cookie lasts 30 days, subject to the existing analytics
   consent policy. No attribution cookie is set when consent is required but
   absent, or declined. Cross-device and cookie-blocked attribution is not
-  inferred. Users who consent later need to revisit the link. Link-open counts
+  inferred. While consent is pending, the landing URL retains `?ref=<code>`
+  without storing or tracking it. Accepting automatically revisits the short
+  link to save attribution and return to the clean homepage; declining removes
+  the parameter without tracking. Leaving the landing page before choosing can
+  lose the pending code. Link-open counts
   exclude recognized bots and count visits, not unique people.
 - Only accounts created after the click can qualify, with attribution captured
   within seven days of signup. Signup and checkout both attempt attribution.
@@ -169,7 +173,7 @@ after account deletion, so recreating an account cannot reset attribution.
 In the verified Preview environment with Stripe test mode:
 
 1. Create a disposable partner, open its short link, accept analytics consent
-   where required, then revisit the link. Sign up as a new test user and purchase
+   where required, and confirm the URL clears automatically. Sign up as a new test user and purchase
    a monthly plan. Confirm one attribution and one holding invoice in the report.
 2. Reload, retry checkout, and replay the payment webhook. Confirm no duplicate
    attribution or commission. Existing accounts and self-referrals must not earn.
