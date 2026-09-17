@@ -1757,6 +1757,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
     const restoredPreference =
       storedSandboxType === "tauri" ? "desktop" : storedSandboxType || "e2b";
+    // Only an unspecified/Cloud default needs discovery. Saved computers must
+    // restore immediately, even when unavailable or still being discovered.
+    if (
+      freeDesktopAgentOnlyActive &&
+      restoredPreference === "e2b" &&
+      !desktopBridgeActive &&
+      localConnections === undefined
+    ) {
+      return;
+    }
     // Resolve free Desktop's local default before committing the selection.
     // Restoring Cloud first creates a false unavailable → available transition.
     setSandboxPreference(

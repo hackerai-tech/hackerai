@@ -561,6 +561,54 @@ describe("Chat Component Integration", () => {
       },
     );
 
+    it.each([undefined, "e2b", "desktop", "missing-remote"])(
+      "restores free Desktop sandbox %s across pending connection discovery",
+      async (sandboxType) => {
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockDesktopState = {
+          freeDesktopAgentOnlyActive: true,
+          desktopBridgeActive: false,
+          localConnections: undefined,
+        };
+        mockRouteParams = { id: "discovery-task" };
+        mockRestoredChat = {
+          id: "discovery-task",
+          sandbox_type: sandboxType,
+          default_model_slug: "agent",
+        };
+        const selections: string[] = [];
+        const ui = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <ComputerSelectionHistory selections={selections} />
+          </TestWrapper>
+        );
+        const { rerender } = render(ui());
+        expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+          sandboxType === "missing-remote" ? "missing-remote" : "desktop",
+        );
+
+        mockDesktopState = {
+          ...mockDesktopState,
+          localConnections: [
+            { connectionId: "available-remote", isDesktop: false },
+          ],
+        };
+        rerender(ui());
+        const expectedPreference =
+          !sandboxType || sandboxType === "e2b"
+            ? "available-remote"
+            : sandboxType;
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            expectedPreference,
+          ),
+        );
+        expect(selections).not.toContain("e2b");
+        expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
+      },
+    );
+
     it.each(["button", "route"])(
       "keeps the new-chat default after visiting Desktop and Cloud tasks (%s)",
       async (navigation) => {
