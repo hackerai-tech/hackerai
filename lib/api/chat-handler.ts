@@ -4,11 +4,8 @@ import {
 } from "@/lib/experiments/free-monthly-budget";
 import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import {
-  evaluateRegionalFreeLimits,
-  captureRegionalFreeLimitsExposure,
-} from "@/lib/experiments/regional-free-limits";
-import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
+import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
+import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import {
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
@@ -504,8 +501,7 @@ export const createChatHandler = () => {
         projectId: projectContext.projectId,
       });
 
-      const regionalFreeLimits = await evaluateRegionalFreeLimits({
-        posthog: (posthog ??= PostHogClient()),
+      const regionalFreeLimits = getRegionalFreeLimits({
         userId,
         subscription,
         country: regionalFreeCountryFromRequest(req),
@@ -513,7 +509,7 @@ export const createChatHandler = () => {
       const monthlyFreeBudget = regionalFreeLimits
         ? undefined
         : await evaluateFreeMonthlyBudget({
-            posthog,
+            posthog: (posthog ??= PostHogClient()),
             userId,
             subscription,
             freeQuotaSubject,
@@ -524,12 +520,6 @@ export const createChatHandler = () => {
       await captureFreeMonthlyBudgetExposure(
         posthog,
         monthlyFreeBudget,
-        userId,
-        mode,
-      );
-      await captureRegionalFreeLimitsExposure(
-        posthog,
-        regionalFreeLimits,
         userId,
         mode,
       );

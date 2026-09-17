@@ -7,10 +7,7 @@ import { loadObjectiveCheckpoint } from "@/lib/db/objective-checkpoint";
 import { OBJECTIVE_CHECKPOINT_FLAG } from "@/lib/chat/objective-checkpoint";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
-import {
-  evaluateRegionalFreeLimits,
-  captureRegionalFreeLimitsExposure,
-} from "@/lib/experiments/regional-free-limits";
+import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -2792,8 +2789,7 @@ export const agentLongTask = task({
               reason: "miosa_rollout_control",
             } as const);
       const cloudSandboxProvider = cloudSandboxSelection.provider;
-      const regionalFreeLimits = await evaluateRegionalFreeLimits({
-        posthog,
+      const regionalFreeLimits = getRegionalFreeLimits({
         userId,
         subscription,
         country: payload.regionalFreeCountry,
@@ -2814,12 +2810,6 @@ export const agentLongTask = task({
       await captureFreeMonthlyBudgetExposure(
         posthog,
         monthlyFreeBudget,
-        userId,
-        mode,
-      );
-      await captureRegionalFreeLimitsExposure(
-        posthog,
-        regionalFreeLimits,
         userId,
         mode,
       );

@@ -1,121 +1,69 @@
-# Regional free allowance experiment
+# Regional free allowance policy
 
-Owner and decision record: [HAC-104](https://linear.app/hackerai/issue/HAC-104/experiment-regional-free-allowance-for-india-pakistan-and-bangladesh).
+Owner and historical decision record: [HAC-104](https://linear.app/hackerai/issue/HAC-104).
+The owner selected the lower allowance as a permanent regional policy and closed
+the [allowance experiment](https://us.posthog.com/project/144137/experiments/462736)
+early. Cost savings were supported in the interim readout; paid conversion and
+revenue were inconclusive. Do not describe this as a proven overall business win.
+The decision record contains the dated readout and deployment acceptance.
 
-Hypothesis: a smaller free allowance in India, Pakistan and Bangladesh lowers
-serving cost per exposed account without losing enough paid conversion/revenue
-to outweigh the savings. This is a hypothesis, not a conclusion from traffic or
-cancellation data. Initial review is September 23, 2026, with a conversion
-follow-up September 30. Leave the issue open until the readout is reviewed.
+## Scope and enforcement
 
-## Eligibility and treatment
+Authenticated free accounts with trusted Vercel ingress country `IN`, `PK`, `BD`,
+or `NG` and analytics allowed receive at most three shared Ask/Agent requests per
+day and $0.10 in tracked provider/tool cost per calendar month. Stricter runtime
+configuration takes precedence. Paid accounts, consent opt-outs, unknown country,
+out-of-region accounts and requests outside trusted Vercel ingress keep their
+established allowances. Location reflects the connection, not residence; VPNs
+and travel affect eligibility.
 
-Only authenticated free accounts with a Vercel ingress country of `IN`, `PK`,
-or `BD` and analytics allowed are eligible. Vercel sets `x-vercel-ip-country`;
-client JSON and `cf-ipcountry` cannot enroll an account. Outside Vercel,
-unknown country, declined consent, paid tiers and failed/disabled flag lookup
-all retain normal limits. Location reflects the current connection, not
-residence; VPNs and travel affect eligibility.
+The policy no longer depends on PostHog availability or flag assignment.
+The web route derives consent-aware country from `x-vercel-ip-country`; neither
+client JSON nor `cf-ipcountry` may select a regional policy. The trusted Trigger
+worker receives that country and derives the same policy from current plan and
+runtime caps. Local/desktop Agent transports retain this server-side enforcement.
 
-`regional_free_limits_v1` assigns by WorkOS user ID, independently of the
-existing model-routing experiments. Assignment is stable across new requests
-and the web/Trigger services. The web route forwards only the eligible coarse
-country to the trusted worker; the worker evaluates its own PostHog project.
+Existing identity-scoped usage counters, UTC resets and earned referral credits
+are preserved. Policy changes do not reset usage. Accounts above the monthly cap
+are blocked immediately; in-flight calls may exceed the nominal budget. Agent
+preflight, approval revalidation, continuation and delegated child execution keep
+the same policy snapshot. Already-running workers retain their deployed behavior.
+Paid entitlements, model eligibility and safety gates are unchanged.
 
-| Variant | Daily shared Ask/Agent requests          | Calendar-month provider/tool cost        |
-| ------- | ---------------------------------------- | ---------------------------------------- |
-| control | Configured normal allowance (default 10) | Configured normal budget (default $0.25) |
-| test    | At most 3                                | At most $0.10                            |
+Usage telemetry retains coarse country, applied caps and
+`regional_free_policy_version`. New requests do not emit
+`regional_free_limits_exposed`, `regional_free_variant`, or
+`$feature/regional_free_limits_v1`. Historical experiment data remains available.
 
-Existing stricter configuration takes precedence. Both variants use the same
-identity-scoped usage counters, UTC resets and earned referral bonuses. Joining
-the test does not clear prior usage: accounts already above the treatment budget
-hit the limit immediately. Cost enforcement uses the existing usage accounting
-and budget checkpoints; in-flight calls can exceed a nominal budget. Paid
-entitlements, model eligibility and moderation behavior remain unchanged.
+## Deployment and retirement
 
-Agent preflight, post-approval revalidation and delegated child starts receive
-the same policy. The country and assignment are never accepted from client
-request bodies. Child/continued runs receive only the parent's internal policy.
+Deploy both Vercel and Trigger; success in one does not prove the other is current.
+Verify their environment identities independently before configuration access:
+Preview belongs to the HackerAI Developer Convex account, while Production belongs
+to the HackerAI account. Do not copy credentials or configuration between them.
+No Convex schema/configuration migration is required for this policy.
 
-## Measurement
+Once flag-independent code is deployed, disable/archive `regional_free_limits_v1`
+separately in Preview PostHog project `401167` (flag `875174`) and Production
+project `144137` (flag `875171`). Preserve the experiment's historical results and
+record the final definitions in HAC-104. Archived flags cannot roll this policy
+back: revert the policy code and redeploy both Vercel and Trigger if needed.
 
-The `regional_free_limits_exposed` event fires when quota enforcement is
-encountered, including rejected attempts. It does not fire merely because a
-flag is evaluated. Properties include `$feature/regional_free_limits_v1`,
-`regional_free_variant`, `regional_free_country`, both applied limits and mode.
-There are no IP addresses, prompts, answers or written customer feedback.
+The independent subscription-first experiment is not enabled by this closeout.
+Any later launch needs its own reviewed decision and must account for the new
+regional allowance baseline.
 
-Existing `hackerai-usage_cost` events receive these additional dimensions without
-overwriting model-routing experiment properties. PostHog's custom exposure
-configuration attributes later outcomes by the same user ID, including users
-with no subsequent usage (zero-cost participants). Do not divide costs by usage
-events: that would omit users blocked by the policy and bias the comparison.
+## Acceptance
 
-Production [experiment 462736](https://us.posthog.com/project/144137/experiments/462736):
+On the actual Preview URL and then `hackerai.co`, use a disposable eligible free
+account from trusted IN/PK/BD/NG ingress. Complete a bounded Ask request and an
+Agent request through a connected local/desktop sandbox, reload the responses,
+and retry at exhaustion. Both modes must share the reduced allowance without
+resetting counters; earned referral credits can permit additional requests.
+Exercise approval/resume and continuation when applicable. Check the monthly cap
+against existing spend without resetting usage.
 
-- Primary: free serving cost per exposed account, sum of `cost_dollars` where
-  `subscription_tier=free`.
-- Guardrail: `subscription_started` with `conversion_type=free_to_paid`.
-- Guardrail: attributed subscription revenue per exposed account from the same
-  conversion event's `attributed_revenue_dollars` (not total lifetime revenue).
-- Operational readout: assignment ratio and country coverage, existing
-  `limit_hit`, `hackerai-agent_run` success, errors and request completions.
-
-Compare matched follow-up windows, inspect the country breakdown and report
-sample sizes. Do not decide from fewer requests alone. Stop for any paid or
-out-of-country restriction, broken chat/Agent flow, inconsistent enforcement,
-or clear conversion/revenue harm that exceeds savings. Review exposure loss
-from consent, unknown geography and flag failures separately from control.
-
-## Environment and rollout
-
-| Environment | PostHog project       | Flag ID | Enrollment                            | Split                  |
-| ----------- | --------------------- | ------- | ------------------------------------- | ---------------------- |
-| Preview     | hackerai-dev / 401167 | 875174  | 100% code-eligible QA population      | Forced test            |
-| Production  | HackerAI / 144137     | 875171  | 100% eligible population after launch | 50% control / 50% test |
-
-Production flag stays disabled until the PR and deployment pass verification.
-Vercel project `hackerai` belongs to the HackerAI team and is connected to
-`hackerai-tech/hackerai`. Trigger project is `proj_fixirhycbcnfdpicejfb`.
-Verified environment boundaries:
-
-- Preview: Convex team `hackerai-development`, project `hackerai-52290`,
-  designated deployment `diligent-blackbird-710`,
-  `https://diligent-blackbird-710.convex.cloud`. Both Vercel Preview and Trigger
-  Preview use this URL and the PostHog 401167 key.
-- Production: Convex team/project `hackerai`, designated deployment
-  `greedy-cod-889`, `https://greedy-cod-889.convex.cloud`, with the registered
-  Convex Cloud custom domain `https://convex.haiusercontent.com`. Both Vercel
-  Production and Trigger Production use the custom domain. The user-facing
-  production domain is `https://hackerai.co`.
-
-This change needs new Vercel and Trigger deployments. No Convex schema or
-configuration change is required. Flag updates affect new requests/runs;
-already-running tasks retain their policy snapshot. Disable the production flag
-to restore normal limits on new requests, without clearing usage counters.
-
-## Verification and cleanup
-
-Automated tests cover each target country, excluded countries, all paid tiers,
-consent denial, missing/error/disabled flags, stricter overrides, shared
-Ask/Agent counters, monthly existing-spend handling and rollback without reset.
-
-Manual verification on the PR Preview URL:
-
-1. Use a disposable free account connecting from IN/PK/BD with analytics allowed.
-   Send three short Ask/local-Agent requests; the next request must show the
-   existing upgrade/reset message, unless earned referral credits remain.
-2. Reload and retry. Usage must remain exhausted; changing mode must not reset it.
-3. Verify a paid account and an account outside the target countries can complete
-   a chat, reload its response and continue normally.
-4. Confirm Preview exposure and usage events have the test variant and country;
-   compare displayed limits with the actual enforcement. Exercise an Agent run
-   and approval/resume when a connected local sandbox is available.
-5. After production launch, verify both control and test exposure, 50/50 expected
-   assignment, country coverage and conversion attribution. Do not manufacture
-   purchases or customer activity to populate the readout.
-
-After the reviewed decision, remove the code and both flags if unsuccessful,
-or replace them with an explicitly approved permanent policy. Do not ship a
-winning variant or expand targeting automatically.
+Confirm a paid account, consent opt-out and out-of-region account retain normal
+behavior. New usage events must contain policy dimensions without ended
+experiment attribution. Confirm the regional policy still applies with the flag
+archived, and check the actual Trigger worker version separately from Vercel.

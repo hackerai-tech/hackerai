@@ -1,5 +1,5 @@
 import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
-import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
+import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
