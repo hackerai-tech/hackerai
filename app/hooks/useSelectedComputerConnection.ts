@@ -29,8 +29,9 @@ export function useSelectedComputerConnection() {
           : !connection.isDesktop &&
             connection.connectionId === sandboxPreference,
       );
-  const computerConnectionPending =
-    !selectedNativeDesktop && localConnections === undefined;
+  const computerConnectionPending = selectedNativeDesktop
+    ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
+    : localConnections === undefined;
   const selectedComputerUnavailable =
     isAgentMode(chatMode) && sandboxPreference !== "e2b" && !connected;
   const sendDisabledReason = selectedComputerUnavailable
