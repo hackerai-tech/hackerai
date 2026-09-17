@@ -16,6 +16,10 @@
     {
       "path": "/api/cron/trigger-health",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/influencer-analytics",
+      "schedule": "* * * * *"
     }
   ]
 }

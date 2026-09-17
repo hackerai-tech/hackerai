@@ -1,3 +1,4 @@
+import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
 import { attributeInfluencer } from "@/lib/influencers/attribution";
 import { INFLUENCER_COOKIE } from "@/lib/influencers/policy";
 import { after, NextRequest, NextResponse } from "next/server";
@@ -39,6 +40,7 @@ export async function POST(req: NextRequest) {
       createdAt: user.createdAt,
     });
     if (attributed) {
+      after(() => flushInfluencerAnalytics().then(() => {}));
       const response = NextResponse.json({
         attributed: true,
         status: "attributed",

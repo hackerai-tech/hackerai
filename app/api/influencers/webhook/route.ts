@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
+import { after, NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { handleInfluencerEvent } from "@/lib/influencers/stripe";
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
     // Invoice IDs deduplicate writes. Keep this endpoint independent of the
     // subscription fulfillment webhook's shared event-id ledger.
     await handleInfluencerEvent(stripe, getConvexClient(), event);
+    after(() => flushInfluencerAnalytics().then(() => {}));
     return NextResponse.json({ received: true });
   } catch (error) {
     console.error("Influencer reconciliation failed", {

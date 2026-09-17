@@ -30,6 +30,7 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/cron/platform-costs/vercel",
   "/api/cron/subscription-pauses",
   "/api/cron/trigger-health",
+  "/api/cron/influencer-analytics",
   "/api/internal/user-research",
   "/robots.txt",
   "/sitemap.xml",

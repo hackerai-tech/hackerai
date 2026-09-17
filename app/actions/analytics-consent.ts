@@ -1,5 +1,13 @@
 "use server";
 
+import { INFLUENCER_COOKIE } from "@/lib/influencers/policy";
+import {
+  INFLUENCER_VISITOR_COOKIE,
+  readPartnerCookie,
+} from "@/lib/influencers/cookie";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { api } from "@/convex/_generated/api";
+import { withAuth } from "@workos-inc/authkit-nextjs";
 import { cookies } from "next/headers";
 import {
   ANALYTICS_CONSENT_COOKIE_NAME,
@@ -32,6 +40,25 @@ export async function saveAnalyticsConsent(
 
   if (consent === "accepted") return;
 
+  // Resolve persisted attribution even when the visitor cookie has expired.
+  const { user } = await withAuth();
+  if (user)
+    await getConvexClient().mutation(api.influencerAnalytics.optOut, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      userId: user.id,
+    });
+
+  // Only a signed browser cookie may opt out its visitor. Preserve it if persistence fails so retry remains possible.
+  for (const name of [INFLUENCER_COOKIE, INFLUENCER_VISITOR_COOKIE]) {
+    const click = readPartnerCookie(cookieStore.get(name)?.value);
+    if (click?.visitorId)
+      await getConvexClient().mutation(api.influencerAnalytics.optOut, {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        visitorId: click.visitorId,
+      });
+  }
+  cookieStore.delete(INFLUENCER_COOKIE);
+  cookieStore.delete(INFLUENCER_VISITOR_COOKIE);
   cookieStore.delete(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME);
   cookieStore.delete(REFERRAL_COOKIE_NAME);
   cookieStore.delete(REFERRAL_COOKIE_CREATED_AT_NAME);
