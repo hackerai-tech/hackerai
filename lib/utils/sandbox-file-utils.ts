@@ -1,5 +1,12 @@
 import "server-only";
 
+import { abortableDelay as delay } from "./abortable-delay";
+import {
+  runAttachmentCommand,
+  throwIfAttachmentAborted,
+  AttachmentCommandCleanupError,
+} from "@/lib/ai/tools/utils/attachment-command";
+
 import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
@@ -81,6 +88,7 @@ type SandboxRefreshOptions = {
 type EnsureSandboxForUpload = (options?: SandboxRefreshOptions) => Promise<any>;
 
 type UploadSandboxFilesOptions = {
+  signal?: AbortSignal;
   retryWithFreshSandboxOnTransientFailure?: boolean | (() => boolean);
   logContext?: {
     service: "agent-long" | "chat-handler" | "hackerai-web";
@@ -263,22 +271,23 @@ const logSandboxAcquisitionRecovery = (
   else console.info(payload);
 };
 
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
 const runSandboxCommand = async (
   sandbox: any,
   command: string,
+  signal?: AbortSignal,
 ): Promise<SandboxCommandResult> => {
   for (let attempt = 1; attempt <= SANDBOX_COMMAND_MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await sandbox.commands.run(command);
+      signal?.throwIfAborted();
+      const result = await runAttachmentCommand(sandbox, command, signal);
+      signal?.throwIfAborted();
       return {
         stdout: result?.stdout ?? "",
         stderr: result?.stderr ?? "",
         exitCode: typeof result?.exitCode === "number" ? result.exitCode : 0,
       };
     } catch (error) {
+      throwIfAttachmentAborted(signal, error);
       const commandResult = commandErrorToResult(error);
       if (commandResult) return commandResult;
 
@@ -292,7 +301,7 @@ const runSandboxCommand = async (
       console.warn(
         `[sandbox-command] transient command channel failure on attempt ${attempt}/${SANDBOX_COMMAND_MAX_ATTEMPTS}, retrying: ${errorMessage(error)}`,
       );
-      await delay(SANDBOX_COMMAND_RETRY_BASE_DELAY_MS * attempt);
+      await delay(SANDBOX_COMMAND_RETRY_BASE_DELAY_MS * attempt, signal);
     }
   }
 
@@ -743,12 +752,20 @@ const downloadFileToSandbox = async (
   sandbox: any,
   url: string,
   localPath: string,
+  signal?: AbortSignal,
 ): Promise<void> => {
+  signal?.throwIfAborted();
   validateDownloadUrl(url);
 
   // CentrifugoSandbox has downloadFromUrl method
   if (sandbox.files?.downloadFromUrl) {
-    return sandbox.files.downloadFromUrl(url, localPath);
+    await sandbox.files.downloadFromUrl(
+      url,
+      localPath,
+      ...(signal ? [{ signal }] : []),
+    );
+    signal?.throwIfAborted();
+    return;
   }
 
   // E2B sandbox - use curl with --create-dirs to avoid a separate mkdir race
@@ -770,7 +787,7 @@ const downloadFileToSandbox = async (
     `curl -fsSL --retry 3 --retry-all-errors --retry-delay 1 --create-dirs ` +
     `-o '${escapedLocalPath}' '${escapedUrl}'`;
 
-  let result = await runSandboxCommand(sandbox, curlCmd);
+  let result = await runSandboxCommand(sandbox, curlCmd, signal);
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (result.exitCode === 0) return;
     if (
@@ -782,8 +799,8 @@ const downloadFileToSandbox = async (
     console.warn(
       `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${localPath}, retrying`,
     );
-    await new Promise((r) => setTimeout(r, 500 * attempt));
-    result = await runSandboxCommand(sandbox, curlCmd);
+    await delay(500 * attempt, signal);
+    result = await runSandboxCommand(sandbox, curlCmd, signal);
   }
 
   // Best-effort diagnostics probe — never let this mask the original error.
@@ -792,9 +809,11 @@ const downloadFileToSandbox = async (
     const probe = await runSandboxCommand(
       sandbox,
       `df -h /home/user 2>&1 || true; ls -la /home/user/upload 2>&1 || true; id 2>&1 || true`,
+      signal,
     );
     diagnostics = (probe.stdout || "").slice(0, 1024);
-  } catch {
+  } catch (error) {
+    throwIfAttachmentAborted(signal, error);
     // ignore probe failures
   }
 
@@ -820,14 +839,21 @@ const copyLocalFileToSandbox = async (
   sandbox: any,
   sourcePath: string,
   localPath: string,
+  signal?: AbortSignal,
 ): Promise<void> => {
+  signal?.throwIfAborted();
   if (!sandbox.files?.copyLocal) {
     throw new Error(
       "Desktop-local attachments require a desktop local sandbox.",
     );
   }
 
-  return sandbox.files.copyLocal(sourcePath, localPath);
+  await sandbox.files.copyLocal(
+    sourcePath,
+    localPath,
+    ...(signal ? [{ signal }] : []),
+  );
+  signal?.throwIfAborted();
 };
 
 const shellQuote = (value: string): string =>
@@ -859,7 +885,9 @@ const shouldTryUploadPathFallback = (
 const resolveWritableUploadFallbackPath = async (
   sandbox: any,
   originalLocalPath: string,
+  signal?: AbortSignal,
 ): Promise<string | null> => {
+  signal?.throwIfAborted();
   const fileName = originalLocalPath.split(/[/\\]/).pop();
   if (!fileName || !sandbox.commands?.run) return null;
   const fallbackDirectory = `fallback-${randomUUID()}`;
@@ -882,9 +910,10 @@ const resolveWritableUploadFallbackPath = async (
     `exit 1`,
   ].join("\n");
 
-  const result = await sandbox.commands.run(script, {
+  const result = await runAttachmentCommand(sandbox, script, signal, {
     displayName: "",
   });
+  signal?.throwIfAborted();
   if (result.exitCode !== 0) return null;
   const fallbackPath = result.stdout.trim();
   return fallbackPath ? fallbackPath : null;
@@ -893,15 +922,18 @@ const resolveWritableUploadFallbackPath = async (
 const stageSandboxFile = async (
   sandbox: any,
   file: SandboxFile,
+  signal?: AbortSignal,
 ): Promise<SandboxFilePathRewrite | null> => {
+  signal?.throwIfAborted();
   try {
     if (file.kind === "url") {
-      await downloadFileToSandbox(sandbox, file.url, file.localPath);
+      await downloadFileToSandbox(sandbox, file.url, file.localPath, signal);
     } else {
-      await copyLocalFileToSandbox(sandbox, file.path, file.localPath);
+      await copyLocalFileToSandbox(sandbox, file.path, file.localPath, signal);
     }
     return null;
   } catch (error) {
+    throwIfAttachmentAborted(signal, error);
     if (!shouldTryUploadPathFallback(file.localPath, error)) {
       throw error;
     }
@@ -909,6 +941,7 @@ const stageSandboxFile = async (
     const fallbackPath = await resolveWritableUploadFallbackPath(
       sandbox,
       file.localPath,
+      signal,
     );
     if (!fallbackPath || fallbackPath === file.localPath) {
       throw error;
@@ -925,15 +958,18 @@ const stageSandboxFile = async (
           sandbox,
           fallbackFile.url,
           fallbackFile.localPath,
+          signal,
         );
       } else {
         await copyLocalFileToSandbox(
           sandbox,
           fallbackFile.path,
           fallbackFile.localPath,
+          signal,
         );
       }
     } catch (fallbackError) {
+      throwIfAttachmentAborted(signal, fallbackError);
       const originalMessage =
         error instanceof Error ? error.message : String(error);
       const fallbackMessage =
@@ -1060,8 +1096,18 @@ const uploadSandboxFilesOnce = async (
   options?: UploadSandboxFilesOptions,
 ): Promise<SandboxUploadResult> => {
   const results = await Promise.allSettled(
-    sandboxFiles.map((file) => stageSandboxFile(sandbox, file)),
+    sandboxFiles.map((file) =>
+      stageSandboxFile(sandbox, file, options?.signal),
+    ),
   );
+
+  const cleanupFailure = results.find(
+    (result) =>
+      result.status === "rejected" &&
+      result.reason instanceof AttachmentCommandCleanupError,
+  );
+  if (cleanupFailure?.status === "rejected") throw cleanupFailure.reason;
+  options?.signal?.throwIfAborted();
 
   const failedIndices = results
     .map((r, i) => (r.status === "rejected" ? i : -1))
@@ -1325,6 +1371,8 @@ export const uploadSandboxFiles = async (
   ensureSandbox: EnsureSandboxForUpload,
   options?: UploadSandboxFilesOptions,
 ): Promise<SandboxUploadResult> => {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
   if (sandboxFiles.length === 0) return { failedCount: 0, pathRewrites: [] };
 
   logLocalAttachmentDebug("sandbox-staging-start", {
@@ -1338,7 +1386,9 @@ export const uploadSandboxFiles = async (
   let retriedWithFreshSandbox = false;
   try {
     sandbox = await ensureSandbox();
+    signal?.throwIfAborted();
   } catch (error) {
+    signal?.throwIfAborted();
     const initialFailureReason = classifySandboxUploadReadinessFailure(error);
     const shouldRetryAcquisition =
       RETRYABLE_SANDBOX_ACQUISITION_FAILURES.has(initialFailureReason) &&
@@ -1366,10 +1416,12 @@ export const uploadSandboxFiles = async (
       recoveryStrategy,
     );
     try {
+      signal?.throwIfAborted();
       sandbox = await ensureSandbox({
         refresh: true,
         reason: "attachment_staging_sandbox_acquisition_failure",
       });
+      signal?.throwIfAborted();
       logSandboxAcquisitionRecovery(
         options,
         "sandbox_attachment_acquisition_recovered",
@@ -1379,6 +1431,7 @@ export const uploadSandboxFiles = async (
         recoveryStrategy,
       );
     } catch (retryError) {
+      signal?.throwIfAborted();
       const finalFailureReason =
         classifySandboxUploadReadinessFailure(retryError);
       logSandboxAcquisitionRecovery(
@@ -1433,11 +1486,13 @@ export const uploadSandboxFiles = async (
       "[sandbox-upload] transient command channel failure while staging attachments; refreshing sandbox and retrying all attachments",
     );
     try {
+      signal?.throwIfAborted();
       const refreshedSandbox = await ensureSandbox({
         refresh: true,
         reason: "attachment_staging_transient_command_failure",
         ...(excludeConnectionId ? { excludeConnectionId } : {}),
       });
+      signal?.throwIfAborted();
       const retryResult = await uploadSandboxFilesOnce(
         sandboxFiles,
         refreshedSandbox,
@@ -1445,6 +1500,7 @@ export const uploadSandboxFiles = async (
       );
       return { ...retryResult, retriedWithFreshSandbox: true };
     } catch (error) {
+      throwIfAttachmentAborted(signal, error);
       console.error("Failed to refresh sandbox for upload retry:", error);
       return { ...firstResult, retriedWithFreshSandbox: true };
     }

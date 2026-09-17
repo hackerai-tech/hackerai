@@ -3063,6 +3063,7 @@ export const agentLongTask = task({
       let rateLimitInfo: RateLimitInfo;
 
       let streamError: unknown;
+      let preparationCanceled = false;
       const visionSummaryRecovery = createVisionSummaryRecoveryController({
         available: directGlmVisionEnabled,
         service: "agent-long",
@@ -3745,6 +3746,7 @@ export const agentLongTask = task({
                   sandboxFiles,
                   ensureSandbox,
                   {
+                    signal: userStopSignal.signal,
                     retryWithFreshSandboxOnTransientFailure: true,
                     logContext: {
                       service: "agent-long",
@@ -6031,6 +6033,15 @@ export const agentLongTask = task({
               await releasePaidDailyFreeAllowanceReservation();
             }
             await releaseFreeRunLockOnce();
+            if (
+              userStopSignal.signal.aborted &&
+              error === userStopSignal.signal.reason
+            ) {
+              preparationCanceled = true;
+              await usageRefundTracker.refund().catch(() => {});
+              writer.write({ type: "abort" });
+              return;
+            }
             throw error;
           }
         },
@@ -6117,7 +6128,7 @@ export const agentLongTask = task({
         });
       }
 
-      metadata.set("status", "done");
+      metadata.set("status", preparationCanceled ? "canceled" : "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
       if (!hasObservedUsage()) {
