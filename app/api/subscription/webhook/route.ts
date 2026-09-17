@@ -2589,6 +2589,9 @@ async function handleSubscriptionDeleted(
   for (const uid of userIds) {
     phLogger.event("subscription_cancelled", {
       userId: uid,
+      stripe_subscription_id: subscription.id,
+      stripe_customer_id: customerId,
+      occurred_at: eventOccurredAtMs,
       tier,
       org_id: orgId,
       cancellation_reason: cancellationReason,

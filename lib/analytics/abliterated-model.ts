@@ -1,4 +1,6 @@
 import type { AbliterationRoutingMarker } from "@/lib/experiments/abliteration-history";
+import { getExperimentAnalyticsProperties } from "./experiment-context";
+import { estimateExperimentProviderCost } from "./experiment-provider-cost";
 import {
   wrapLanguageModel,
   type LanguageModel,
@@ -49,6 +51,7 @@ export class AbliteratedModelTelemetry {
     provider_baseline_attempt_count: 0,
     provider_continuation_completed_count: 0,
     provider_usage_reported_count: 0,
+    provider_priced_cost_dollars: 0,
     provider_input_tokens: 0,
     provider_output_tokens: 0,
     provider_cache_read_tokens: 0,
@@ -73,7 +76,7 @@ export class AbliteratedModelTelemetry {
     upstream_model_fallback_served: false,
   };
   private successfulAbliterationGeneration = false;
-  private selectionSource: "moderation" | "history";
+  private selectionSource: AbliterationRoutingMarker["source"];
   private readonly startedAt = Date.now();
   private readonly properties: Record<string, string | number | boolean>;
 
@@ -87,10 +90,12 @@ export class AbliteratedModelTelemetry {
       mode: ChatMode;
       subscription: SubscriptionTier;
       selectedModelOverride?: SelectedModel;
+      isAutoContinue?: boolean;
     },
   ) {
     this.selectionSource = args.assignment.selectionSource ?? "moderation";
     this.properties = {
+      ...getExperimentAnalyticsProperties(args.assignment),
       experiment_key: args.assignment.key,
       experiment_variant: args.assignment.variant,
       [`$feature/${args.assignment.key}`]: args.assignment.variant,
@@ -103,7 +108,10 @@ export class AbliteratedModelTelemetry {
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
       generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
-      moderation_eligible: this.selectionSource === "moderation",
+      moderation_eligible:
+        args.assignment.moderationEligible ??
+        this.selectionSource === "moderation",
+      is_auto_continue: args.isAutoContinue === true,
       selection_source: this.selectionSource,
       independent_history_count: args.assignment.independentHistoryCount ?? 0,
       routing_version: 2,
@@ -265,6 +273,10 @@ export class AbliteratedModelTelemetry {
               this.totals.provider_estimated_cost_dollars +=
                 properties.estimated_provider_cost_dollars;
             }
+            if (typeof properties.priced_provider_cost_dollars === "number") {
+              this.totals.provider_priced_cost_dollars +=
+                properties.priced_provider_cost_dollars;
+            }
             for (const key of [
               "input_tokens",
               "output_tokens",
@@ -370,6 +382,18 @@ export class AbliteratedModelTelemetry {
                                 modelName: responseModel,
                               }),
                             cost_source: "configured_token_rates",
+                            priced_provider_cost_dollars:
+                              estimateExperimentProviderCost({
+                                inputTokens: part.usage.inputTokens.total,
+                                outputTokens: part.usage.outputTokens.total,
+                                cacheReadTokens:
+                                  part.usage.inputTokens.cacheRead,
+                                modelName: responseModel,
+                              }),
+                            experiment_cost_source:
+                              "abliteration_2026_09_16_other_configured_rates",
+                            cache_read_tokens_reported:
+                              part.usage.inputTokens.cacheRead !== undefined,
                           }),
                       },
                     );

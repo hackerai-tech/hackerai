@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
+import { paidModelEnrollmentFields } from "./paidModelEnrollmentValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
   researchCohortReportValidator,
@@ -298,6 +299,11 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_user_id_and_survey_kind", ["user_id", "survey_kind"])
     .index("by_request_id", ["request_id"]),
+
+  paid_model_enrollments: defineTable(paidModelEnrollmentFields).index(
+    "by_user_id",
+    ["user_id"],
+  ),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),

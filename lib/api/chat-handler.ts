@@ -1,3 +1,4 @@
+import { evaluatePaidFirstStepModel } from "@/lib/experiments/paid-first-step";
 import {
   evaluateFreeMonthlyBudget,
   captureFreeMonthlyBudgetExposure,
@@ -15,7 +16,10 @@ import {
 } from "@/lib/chat/agent-long-provider-retry";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
-import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
+import {
+  evaluateAbliteratedModel,
+  hasAbliterationRoute,
+} from "@/lib/experiments/abliterated-model";
 import { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
 import {
   createUIMessageStream,
@@ -588,7 +592,7 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
-      const abliteratedExperiment = await evaluateAbliteratedModel({
+      let abliteratedExperiment = await evaluateAbliteratedModel({
         posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
@@ -602,11 +606,25 @@ export const createChatHandler = () => {
         messages: processedMessages,
         limitRescue: Boolean(limitRescue),
       });
+      abliteratedExperiment = await evaluatePaidFirstStepModel({
+        posthog,
+        userId,
+        organizationId,
+        subscription,
+        mode,
+        selectedModel,
+        moderationEligible: platformAuthorized,
+        safetyEligible: allowsAbliterationContinuation,
+        messages: processedMessages,
+        limitRescue: Boolean(limitRescue),
+        existingAssignment: abliteratedExperiment,
+      });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
       const abliteratedTelemetry = abliteratedExperiment
         ? new AbliteratedModelTelemetry(posthog, userId, {
             assignment: abliteratedExperiment,
+            isAutoContinue,
             messageId: assistantMessageId,
             chatId,
             mode,
@@ -815,6 +833,7 @@ export const createChatHandler = () => {
         ? {
             key: activeAbliteratedExperiment.key,
             variant: activeAbliteratedExperiment.variant,
+            paidFirstStep: activeAbliteratedExperiment.paidFirstStep,
             requestId: assistantMessageId,
           }
         : (activeFlashRoutingAssignment ??
@@ -1215,18 +1234,18 @@ export const createChatHandler = () => {
 
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
-            const retrySelectionModel =
-              abliteratedExperiment?.variant === "test"
-                ? abliteratedExperiment.baselineModel
-                : selectedModel;
+            const retrySelectionModel = hasAbliterationRoute(
+              abliteratedExperiment,
+            )
+              ? abliteratedExperiment.baselineModel
+              : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
               selectedModel: retrySelectionModel,
               selectedModelOverride,
             });
-            const fallbackModel =
-              abliteratedExperiment?.variant === "test"
-                ? abliteratedExperiment.baselineModel
-                : getRetryFallbackModel(selectedModel, mode);
+            const fallbackModel = hasAbliterationRoute(abliteratedExperiment)
+              ? abliteratedExperiment.baselineModel
+              : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
 
             let hasRecordedUsage = false;
@@ -1628,7 +1647,7 @@ export const createChatHandler = () => {
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
               abliteratedTelemetry,
-              ...(activeAbliteratedExperiment?.variant === "test" && {
+              ...(hasAbliterationRoute(activeAbliteratedExperiment) && {
                 abliteratedStepRouting: {
                   baselineModel: activeAbliteratedExperiment.baselineModel,
                 },

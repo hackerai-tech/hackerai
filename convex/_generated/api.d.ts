@@ -38,6 +38,8 @@ import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
 import type * as notes from "../notes.js";
+import type * as paidModelEnrollments from "../paidModelEnrollments.js";
+import type * as paidModelEnrollmentValidators from "../paidModelEnrollmentValidators.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
@@ -100,6 +102,8 @@ declare const fullApi: ApiFromModules<{
   localSandbox: typeof localSandbox;
   messages: typeof messages;
   notes: typeof notes;
+  paidModelEnrollments: typeof paidModelEnrollments;
+  paidModelEnrollmentValidators: typeof paidModelEnrollmentValidators;
   platformCosts: typeof platformCosts;
   projects: typeof projects;
   rateLimitStatus: typeof rateLimitStatus;

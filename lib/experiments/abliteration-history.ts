@@ -1,7 +1,7 @@
 /** Server-owned metadata stored inside the existing messages.usage object. */
 export type AbliterationRoutingMarker = {
   version: 1;
-  source: "moderation" | "history";
+  source: "moderation" | "history" | "paid_expansion";
   completed: boolean;
 };
 

@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import {
   ABLITERATED_EXPERIMENT_KEY,
   FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
+  PAID_FIRST_STEP_ABLITERATED_EXPERIMENT_KEY,
 } from "../lib/experiments/abliteration-keys";
 export const taskOutcomeAnswer = v.union(
   v.literal("solved"),
@@ -33,6 +34,7 @@ export const taskOutcomeContext = {
     v.union(
       v.literal(ABLITERATED_EXPERIMENT_KEY),
       v.literal(FREE_ASK_ABLITERATED_EXPERIMENT_KEY),
+      v.literal(PAID_FIRST_STEP_ABLITERATED_EXPERIMENT_KEY),
     ),
   ),
   experiment_variant: v.optional(
