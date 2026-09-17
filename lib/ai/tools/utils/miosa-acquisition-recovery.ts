@@ -1,4 +1,5 @@
 import type { Sandbox } from "@miosa/sdk";
+import { miosaErrorDiagnostics } from "./miosa-acquisition-diagnostics";
 
 const RECOVERY_BUDGET_MS = 10_000;
 const RECOVERY_POLL_MS = 500;
@@ -36,11 +37,16 @@ export async function recoverMiosaAcquisition(options: {
         if (expired) throw error;
         // A timed-out fresh create may not be visible yet. This does not grant
         // permission to create a replacement or resume another instance.
-        if (
-          error instanceof Error &&
-          error.name === "NotFoundError" &&
-          !options.expectedId
-        ) {
+        const diagnostic = miosaErrorDiagnostics(error);
+        const transient =
+          diagnostic.error_retryable === true &&
+          (diagnostic.error_code === "TIMEOUT" ||
+            diagnostic.error_code === "NETWORK_ERROR" ||
+            (diagnostic.error_http_status !== undefined &&
+              diagnostic.error_http_status >= 500));
+        const missing =
+          error instanceof Error && error.name === "NotFoundError";
+        if ((missing && !options.expectedId) || (!missing && transient)) {
           await new Promise((resolve) => setTimeout(resolve, RECOVERY_POLL_MS));
           continue;
         }

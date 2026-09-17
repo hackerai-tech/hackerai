@@ -52,7 +52,9 @@ before use. Pause/resume conflicts use the same verification path. Missing
 known IDs never fall back to a replacement by name.
 
 Reconciliation adds at most ten seconds of lookup time; its separate client has
-two-second HTTP timeouts and no HTTP retries. Failed reconciliation preserves
+two-second HTTP timeouts and no HTTP retries. Explicitly retryable
+timeout/network/5xx lookup failures may be polled again within the same budget.
+Failed reconciliation preserves
 the original failure for fallback and records the reconciliation cause as a
 separate step. Success means the VM is reused by the current request, not proof
 that no other late provider operations exist.

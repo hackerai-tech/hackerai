@@ -81,12 +81,61 @@ describe("read-only MIOSA acquisition reconciliation", () => {
     const o = options();
     const missing = Object.assign(new Error("not found"), {
       name: "NotFoundError",
+      retryable: true,
+      code: "TIMEOUT",
     });
     o.lookup.mockRejectedValue(missing);
     await expect(
       recoverMiosaAcquisition({ ...o, expectedId: "original-id" }),
     ).rejects.toBe(missing);
     expect(o.lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { code: "TIMEOUT", status: 408, retryable: true },
+    { code: "NETWORK_ERROR", status: 0, retryable: true },
+    { code: "UNAVAILABLE", status: 503, retryable: true },
+  ])("retries a classified transient lookup failure: %j", async (fields) => {
+    const o = options();
+    o.lookup.mockRejectedValueOnce(
+      Object.assign(new Error("transient"), fields),
+    );
+    const pending = recoverMiosaAcquisition({
+      ...o,
+      expectedId: "original-id",
+    });
+    await jest.advanceTimersByTimeAsync(500);
+    expect(await pending).toHaveProperty("id", "original-id");
+    expect(o.lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { code: "UNAUTHORIZED", status: 401, retryable: false },
+    { code: "UNAVAILABLE", status: 503, retryable: false },
+    { code: "UNKNOWN", status: 409, retryable: true },
+    {},
+  ])("does not retry a permanent or unclassified error: %j", async (fields) => {
+    const o = options();
+    const error = Object.assign(new Error("failure"), fields);
+    o.lookup.mockRejectedValue(error);
+    await expect(recoverMiosaAcquisition(o)).rejects.toBe(error);
+    expect(o.lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds persistent transient failures and stops lookup retries", async () => {
+    const o = options();
+    o.lookup.mockRejectedValue(
+      Object.assign(new Error("timeout"), { code: "TIMEOUT", retryable: true }),
+    );
+    const result = expect(recoverMiosaAcquisition(o)).rejects.toMatchObject({
+      code: "ACQUISITION_RECONCILIATION_TIMEOUT",
+    });
+    await jest.advanceTimersByTimeAsync(10_000);
+    await result;
+    const count = o.lookup.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(o.lookup).toHaveBeenCalledTimes(count);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it("bounds a missing late create and stops polling", async () => {
