@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { PostHog } from "posthog-node";
 import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
-import { isRegionalFreeCountry } from "./regional-free-limits";
+import { isRegionalFreeCountry } from "@/lib/rate-limit/regional-free-limits";
 
 export const FREE_MONTHLY_BUDGET_KEY = "free_monthly_budget_v1";
 export const FREE_MONTHLY_BUDGET_EXPOSURE = "free_monthly_budget_exposed";

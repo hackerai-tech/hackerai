@@ -4,8 +4,8 @@ import {
 } from "@/lib/experiments/free-monthly-budget";
 import {
   regionalFreeLimitsProperties,
-  type RegionalFreeLimitsAssignment,
-} from "@/lib/experiments/regional-free-limits";
+  type RegionalFreeLimitsPolicy,
+} from "@/lib/rate-limit/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -1918,7 +1918,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
-  regionalFreeLimits?: RegionalFreeLimitsAssignment;
+  regionalFreeLimits?: RegionalFreeLimitsPolicy;
   monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
   triggerRunId?: string;
 }) {

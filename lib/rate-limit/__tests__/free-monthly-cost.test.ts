@@ -6,6 +6,7 @@ import {
   afterEach,
   jest,
 } from "@jest/globals";
+import { getRegionalFreeLimits } from "../regional-free-limits";
 
 describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
@@ -59,15 +60,19 @@ describe("free monthly cost limit", () => {
     expect(snapshot.extraUsageAutoReload).toBe(false);
   });
 
-  it("enforces the treatment cap against existing spend and restores control without clearing it", async () => {
+  it("enforces the permanent regional cap against existing spend without clearing it", async () => {
     mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
     mockGet.mockResolvedValue(1000);
     const { checkFreeMonthlyCostLimit } = getIsolatedModule();
     await expect(
-      checkFreeMonthlyCostLimit("quota", {
-        dailyRequests: 3,
-        monthlyCostDollars: 0.1,
-      }),
+      checkFreeMonthlyCostLimit(
+        "quota",
+        getRegionalFreeLimits({
+          userId: "quota",
+          subscription: "free",
+          country: "NG",
+        }),
+      ),
     ).rejects.toMatchObject({ type: "rate_limit" });
     const control = await checkFreeMonthlyCostLimit("quota");
     expect(control.monthlyRemainingAtStart).toBe(1500);

@@ -1008,6 +1008,56 @@ describe("captureAgentCompletionAnalytics", () => {
 });
 
 describe("captureUsageCost", () => {
+  it.each(["ask", "agent"])(
+    "records %s regional policy without contaminating the ended experiment",
+    (mode) => {
+      const capture = jest.fn();
+      captureUsageCost({
+        posthog: { capture } as any,
+        userId: "regional-user",
+        subscription: "free",
+        chatId: "regional-chat",
+        endpoint: mode === "ask" ? "/api/chat" : "/api/agent-long",
+        mode,
+        regionalFreeLimits: {
+          country: "NG",
+          dailyRequests: 3,
+          monthlyCostDollars: 0.1,
+        },
+        experiment: { key: "separate-model-test", variant: "control" },
+        usage: {
+          model: "auto",
+          type: "included",
+          inputTokens: 100,
+          outputTokens: 50,
+          totalTokens: 150,
+          costDollars: 0.01,
+          includedCostDollars: 0.01,
+          extraUsageCostDollars: 0,
+          uncoveredCostDollars: 0,
+          includedPointsDeducted: 100,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 0,
+          usageDeductionFailed: false,
+          modelCostDollars: 0.01,
+          nonModelCostDollars: 0,
+          costSource: "provider",
+        },
+      });
+      const properties = capture.mock.calls[0][0].properties;
+      expect(properties).toMatchObject({
+        regional_free_policy_version: 1,
+        regional_free_country: "NG",
+        regional_free_daily_requests: 3,
+        regional_free_monthly_cost_dollars: 0.1,
+        experiment_key: "separate-model-test",
+        experiment_variant: "control",
+      });
+      expect(properties).not.toHaveProperty("regional_free_variant");
+      expect(properties).not.toHaveProperty("$feature/regional_free_limits_v1");
+    },
+  );
+
   it("keeps model=auto while adding the actual served model and allowance fields", () => {
     const capture = jest.fn();
 
