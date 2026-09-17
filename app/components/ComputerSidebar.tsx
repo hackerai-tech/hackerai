@@ -320,6 +320,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const navigateManually = useCallback(
     (content: SidebarContent) => {
+      // Preserve normal-message following; only subagent browsing pins tools.
       if (!followLiveOnOpen) setIsFollowingLive(false);
       onNavigate?.(content);
     },
@@ -384,14 +385,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   // Initialize tool count ref on mount
   useEffect(() => {
-    setIsFollowingLive(followLiveOnOpen);
     if (sidebarOpen && toolExecutions.length > 0) {
       previousToolCountRef.current = toolExecutions.length;
     } else {
       previousToolCountRef.current = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally only sync on sidebar open/close, not on every tool execution
-  }, [sidebarOpen, followLiveOnOpen]);
+  }, [sidebarOpen]);
 
   // Auto-follow new tools when at live position during streaming
   useEffect(() => {
