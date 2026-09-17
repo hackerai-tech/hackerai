@@ -173,4 +173,30 @@ describe("read-only MIOSA acquisition reconciliation", () => {
     expect(o.onObserved).not.toHaveBeenCalled();
     expect(o.lookup).toHaveBeenCalledTimes(1);
   });
+
+  it("clears a poll delay immediately when the deadline interrupts it", async () => {
+    const o = options();
+    o.lookup.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          setTimeout(
+            () =>
+              reject(
+                Object.assign(new Error("timeout"), {
+                  code: "TIMEOUT",
+                  retryable: true,
+                }),
+              ),
+            9_850,
+          );
+        }),
+    );
+    const result = expect(recoverMiosaAcquisition(o)).rejects.toMatchObject({
+      code: "ACQUISITION_RECONCILIATION_TIMEOUT",
+    });
+    await jest.advanceTimersByTimeAsync(10_000);
+    await result;
+    expect(jest.getTimerCount()).toBe(0);
+    expect(o.lookup).toHaveBeenCalledTimes(1);
+  });
 });

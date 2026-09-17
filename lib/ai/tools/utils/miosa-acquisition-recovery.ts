@@ -22,6 +22,7 @@ export async function recoverMiosaAcquisition(options: {
 }): Promise<Sandbox> {
   let expired = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelPollWait: (() => void) | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       expired = true;
@@ -47,7 +48,16 @@ export async function recoverMiosaAcquisition(options: {
         const missing =
           error instanceof Error && error.name === "NotFoundError";
         if ((missing && !options.expectedId) || (!missing && transient)) {
-          await new Promise((resolve) => setTimeout(resolve, RECOVERY_POLL_MS));
+          await new Promise<void>((resolve) => {
+            const pollTimer = setTimeout(() => {
+              cancelPollWait = undefined;
+              resolve();
+            }, RECOVERY_POLL_MS);
+            cancelPollWait = () => {
+              clearTimeout(pollTimer);
+              resolve();
+            };
+          });
           continue;
         }
         throw error;
@@ -79,5 +89,6 @@ export async function recoverMiosaAcquisition(options: {
   } finally {
     expired = true;
     if (timer) clearTimeout(timer);
+    cancelPollWait?.();
   }
 }
