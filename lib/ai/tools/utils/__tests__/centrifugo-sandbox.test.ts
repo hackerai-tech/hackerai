@@ -139,6 +139,81 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
+  describe("attachment cancellation", () => {
+    it.each(["copy", "download"])(
+      "forwards Stop through %s and waits for command cancellation",
+      async (operation) => {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform: "linux",
+            arch: "x64",
+            release: "test",
+            hostname: "test",
+          },
+        } as any);
+        (sandbox as any).httpClient = "curl";
+        (sandbox as any).curlCaps = {
+          retryAllErrors: true,
+          retryConnrefused: true,
+          sslNoRevoke: false,
+        };
+        const controller = new AbortController();
+        let started!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (_command, options) => {
+            expect(options?.signal).toBe(controller.signal);
+            started();
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), {
+                once: true,
+              }),
+            );
+            return { stdout: "", stderr: "", exitCode: 130 };
+          });
+        const pending =
+          operation === "copy"
+            ? sandbox.files.copyLocal(
+                "/tmp/source.txt",
+                "/tmp/destination.txt",
+                { signal: controller.signal },
+              )
+            : sandbox.files.downloadFromUrl(
+                "https://example.com/file",
+                "/tmp/destination.txt",
+                { signal: controller.signal },
+              );
+        await ready;
+        controller.abort();
+        await expect(pending).rejects.toBe(controller.signal.reason);
+        expect(run).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("cancels a capability probe without retrying or starting a download", async () => {
+      const sandbox = createSandbox();
+      const controller = new AbortController();
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (_command, options) => {
+          expect(options?.signal).toBe(controller.signal);
+          controller.abort();
+          return { stdout: "", stderr: "", exitCode: 130 };
+        });
+      await expect(
+        sandbox.files.downloadFromUrl(
+          "https://example.com/file",
+          "/tmp/destination.txt",
+          { signal: controller.signal },
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("parseSandboxMessage", () => {
     it("ignores known PTY traffic without warning", () => {
       const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
