@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export type MiosaAcquisitionStage =
   | "client_init"
@@ -6,10 +6,19 @@ export type MiosaAcquisitionStage =
   | "enrollment"
   | "get_or_create"
   | "resume_conflict_refresh"
+  | "acquisition_reconciliation"
   | "readiness"
   | "initialize_runtime";
 
 export type MiosaAcquisitionDiagnostic = {
+  acquisition_id: string;
+  sandbox_id?: string;
+  sandbox_state?: string;
+  provider_operation_id?: string;
+  provider_request_id?: string;
+  expected_sandbox_id?: string;
+  recovery_trigger_code?: string;
+  recovery_trigger_request_id?: string;
   stage: MiosaAcquisitionStage;
   outcome: "success" | "not_found" | "denied" | "failure";
   stage_duration_ms: number;
@@ -23,6 +32,31 @@ export type MiosaAcquisitionDiagnostic = {
 
 const miosaDiagnosticFingerprint = (value: string): string =>
   createHash("sha256").update(value).digest("hex").slice(0, 16);
+
+const failures = new WeakMap<object, MiosaAcquisitionDiagnostic>();
+export function miosaAcquisitionFailureDiagnostics(error: unknown) {
+  const diagnostic =
+    error && typeof error === "object" ? failures.get(error) : undefined;
+  return diagnostic
+    ? {
+        acquisition_id: diagnostic.acquisition_id,
+        miosa_failure_stage: diagnostic.stage,
+        sandbox_id: diagnostic.sandbox_id,
+        sandbox_state: diagnostic.sandbox_state,
+        provider_operation_id: diagnostic.provider_operation_id,
+        provider_request_id: diagnostic.provider_request_id,
+        ...(diagnostic.expected_sandbox_id && {
+          expected_sandbox_id: diagnostic.expected_sandbox_id,
+        }),
+        ...(diagnostic.recovery_trigger_code && {
+          recovery_trigger_code: diagnostic.recovery_trigger_code,
+        }),
+        ...(diagnostic.recovery_trigger_request_id && {
+          recovery_trigger_request_id: diagnostic.recovery_trigger_request_id,
+        }),
+      }
+    : {};
+}
 
 // Never serialize an SDK Error: message/details/cause/stack can include bodies,
 // authorization headers, initialization stderr, or files. Request IDs let the
@@ -71,6 +105,8 @@ const VALIDATION_FIELDS = new Set([
 ]);
 
 type MiosaErrorDiagnostic = {
+  sandbox_id?: string;
+  sandbox_state?: string;
   error_name?: string;
   error_code?: string;
   error_http_status?: number;
@@ -91,6 +127,20 @@ function readMiosaErrorDiagnostics(error: unknown): MiosaErrorDiagnostic {
   if (!error || typeof error !== "object")
     return { error_name: "UnknownError" };
   const e = error as Record<string, unknown>;
+  const sandboxId = safeToken(e.sandboxId, /^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+  const sandboxState = [
+    "provisioning",
+    "running",
+    "pausing",
+    "paused",
+    "resuming",
+    "stopped",
+    "destroying",
+    "destroyed",
+    "error",
+  ].includes(String(e.sandboxState))
+    ? String(e.sandboxState)
+    : undefined;
   // Inspect only known validation paths, never their rejected input or messages.
   const details = e.details;
   const issues = Array.isArray(details)
@@ -111,6 +161,8 @@ function readMiosaErrorDiagnostics(error: unknown): MiosaErrorDiagnostic {
     }
   }
   return {
+    ...(sandboxId && { sandbox_id: sandboxId }),
+    ...(sandboxState && { sandbox_state: sandboxState }),
     error_name:
       safeToken(e.name, /^(?:Error|[A-Za-z][A-Za-z0-9]*Error)$/) ??
       "UnknownError",
@@ -131,9 +183,22 @@ function readMiosaErrorDiagnostics(error: unknown): MiosaErrorDiagnostic {
 export function createMiosaAcquisitionDiagnostics(options: {
   templateId: string;
   workspaceName: string;
+  acquisitionId?: string;
+  getExpectedId?: () => string | undefined;
+  getRecoveryTrigger?: () => unknown;
+  getSandbox?: () =>
+    | {
+        id: string;
+        state: string;
+        data: { operation_id?: string | null; request_id?: string | null };
+      }
+    | undefined;
   onDiagnostic?: (diagnostic: MiosaAcquisitionDiagnostic) => void;
 }) {
   const startedAt = performance.now();
+  const acquisitionId =
+    safeToken(options.acquisitionId, /^[A-Za-z0-9][A-Za-z0-9_-]*$/) ??
+    randomUUID();
   const common: Pick<
     MiosaAcquisitionDiagnostic,
     | "requested_template"
@@ -163,15 +228,48 @@ export function createMiosaAcquisitionDiagnostics(options: {
       error?: unknown,
     ) => {
       try {
-        options.onDiagnostic?.({
+        const sandbox = options.getSandbox?.();
+        const trigger = miosaErrorDiagnostics(options.getRecoveryTrigger?.());
+        const diagnostic: MiosaAcquisitionDiagnostic = {
           ...common,
+          acquisition_id: acquisitionId,
+          expected_sandbox_id: safeToken(
+            options.getExpectedId?.(),
+            /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+          ),
+          recovery_trigger_code: trigger.error_code,
+          recovery_trigger_request_id: trigger.error_request_id,
+          sandbox_id: safeToken(sandbox?.id, /^[A-Za-z0-9][A-Za-z0-9_-]*$/),
+          sandbox_state: [
+            "provisioning",
+            "running",
+            "pausing",
+            "paused",
+            "resuming",
+            "stopped",
+            "destroying",
+            "destroyed",
+            "error",
+          ].includes(sandbox?.state ?? "")
+            ? sandbox?.state
+            : undefined,
+          provider_operation_id: safeToken(
+            sandbox?.data.operation_id,
+            /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+          ),
+          provider_request_id: safeToken(
+            sandbox?.data.request_id,
+            /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+          ),
           stage,
           runtime,
           outcome,
           stage_duration_ms: Math.round(performance.now() - stageStartedAt),
           acquisition_duration_ms: Math.round(performance.now() - startedAt),
           ...(error === undefined ? {} : miosaErrorDiagnostics(error)),
-        });
+        };
+        if (error && typeof error === "object") failures.set(error, diagnostic);
+        options.onDiagnostic?.(diagnostic);
       } catch {
         /* Observability must not change enrollment, recovery, or fallback. */
       }

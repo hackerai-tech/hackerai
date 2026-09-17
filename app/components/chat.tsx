@@ -1756,7 +1756,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
 
     const restoredPreference =
-      storedSandboxType === "tauri" ? "desktop" : (storedSandboxType ?? "e2b");
+      storedSandboxType === "tauri" ? "desktop" : storedSandboxType || "e2b";
     // Resolve free Desktop's local default before committing the selection.
     // Restoring Cloud first creates a false unavailable → available transition.
     setSandboxPreference(

@@ -313,7 +313,8 @@ export const ChatInput = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
-  const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
+  const showAgentApprovalPrompt =
+    !!user && !!approvalRequest && !isStoppingAgent;
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -642,6 +643,7 @@ export const ChatInput = ({
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
+    !!user &&
     !isCheckingProPlan &&
     subscription === "free" &&
     isAgentMode(chatMode) &&
@@ -741,8 +743,9 @@ export const ChatInput = ({
   } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
     sendDisabledReason ??
-    freeDesktopSandboxUnavailableReason ??
-    computerSendDisabledReason;
+    (user
+      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+      : undefined);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -855,7 +858,7 @@ export const ChatInput = ({
           </div>
         )}
 
-        {selectedComputerUnavailable && !computerConnectionPending && (
+        {user && selectedComputerUnavailable && !computerConnectionPending && (
           <DisconnectedComputerNotice
             isNewChat={isNewChat}
             sandboxPreference={sandboxPreference}
@@ -875,29 +878,31 @@ export const ChatInput = ({
           />
         )}
 
-        {rateLimitWarning && onDismissRateLimitWarning && (
+        {user && rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
             data={rateLimitWarning}
             onDismiss={onDismissRateLimitWarning}
           />
         )}
 
-        <div className="flex flex-col [&>*+*]:rounded-t-none">
-          <TodoPanel status={status} />
+        {user && (
+          <div className="flex flex-col [&>*+*]:rounded-t-none">
+            <TodoPanel status={status} />
 
-          {messageQueue.length > 0 && (
-            <QueuedMessagesPanel
-              messages={messageQueue}
-              onSendNow={onSendNow}
-              onEdit={updateQueuedMessage}
-              onEditingMessageChange={setEditingQueuedMessageId}
-              onDelete={removeQueuedMessage}
-              isStreaming={status === "streaming"}
-              queueBehavior={queueBehavior}
-              onQueueBehaviorChange={setQueueBehavior}
-            />
-          )}
-        </div>
+            {messageQueue.length > 0 && (
+              <QueuedMessagesPanel
+                messages={messageQueue}
+                onSendNow={onSendNow}
+                onEdit={updateQueuedMessage}
+                onEditingMessageChange={setEditingQueuedMessageId}
+                onDelete={removeQueuedMessage}
+                isStreaming={status === "streaming"}
+                queueBehavior={queueBehavior}
+                onQueueBehaviorChange={setQueueBehavior}
+              />
+            )}
+          </div>
+        )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
@@ -949,7 +954,7 @@ export const ChatInput = ({
               isUploadingFiles={isUploadingFiles}
               input={input}
               uploadedFiles={uploadedFiles}
-              chatMode={chatMode}
+              chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
               sendDisabledReason={effectiveSendDisabledReason}
             />

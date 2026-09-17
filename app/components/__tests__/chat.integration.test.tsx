@@ -515,7 +515,7 @@ describe("Chat Component Integration", () => {
       },
     );
 
-    it.each([undefined, "e2b", "desktop", "tauri", "missing-remote"])(
+    it.each([undefined, "", "e2b", "desktop", "tauri", "missing-remote"])(
       "restores a free Desktop task (%s) without a transient Cloud selection",
       async (sandboxType) => {
         window.localStorage.setItem("sandbox-preference", "desktop");

@@ -55,7 +55,7 @@ const setNavigatorOnline = (isOnline: boolean) => {
   });
 };
 
-// Mock only external dependencies, not contexts
+// Keep real providers; stub external services and sandbox lifecycle snapshots.
 jest.mock("react-hotkeys-hook", () => ({
   useHotkeys: jest.fn(),
 }));
@@ -86,6 +86,10 @@ jest.mock("@/app/hooks/useTauri", () => ({
   readGeneratedTextAttachment: (...args: unknown[]) =>
     mockReadGeneratedTextAttachment(...args),
 }));
+
+const { isTauriEnvironment } = jest.requireMock<
+  typeof import("@/app/hooks/useTauri")
+>("@/app/hooks/useTauri");
 
 const { ChatInput } =
   jest.requireActual<typeof import("../ChatInput")>("../ChatInput");
@@ -204,6 +208,19 @@ const AgentModeSetter = () => {
   return null;
 };
 
+const TaskPanelsSetter = () => {
+  const { setTodos, queueMessage } = useGlobalState();
+
+  useEffect(() => {
+    setTodos([
+      { id: "todo-1", content: "Private task progress", status: "in_progress" },
+    ]);
+    queueMessage("Private queued message");
+  }, [setTodos, queueMessage]);
+
+  return null;
+};
+
 describe("ChatInput - Integration Tests", () => {
   const mockOnSubmit = jest.fn();
   const mockOnStop = jest.fn();
@@ -212,6 +229,7 @@ describe("ChatInput - Integration Tests", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSandboxState = {};
+    jest.mocked(isTauriEnvironment).mockReturnValue(false);
     jest
       .mocked(useAuth)
       .mockReturnValue({ user: null, entitlements: [] } as ReturnType<
@@ -241,6 +259,10 @@ describe("ChatInput - Integration Tests", () => {
 
     beforeEach(() => {
       jest.spyOn(toast, "info").mockReturnValue(0);
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
       mockSandboxState = {
         chatMode: "agent",
         subscription: "free",
@@ -609,7 +631,119 @@ describe("ChatInput - Integration Tests", () => {
     });
   });
 
+  describe("Signed-out home composer", () => {
+    it.each([
+      ["desktop", true],
+      ["desktop", false],
+      ["missing-remote", false],
+    ])(
+      "hides disconnected %s controls (native=%s) and allows the auth submission with a saved Agent preference",
+      async (sandboxPreference, isNative) => {
+        jest.mocked(isTauriEnvironment).mockReturnValue(isNative);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", sandboxPreference);
+        mockUseQuery.mockReturnValue([]);
+        render(
+          <TestWrapper>
+            <ChatInput
+              isNewChat
+              restoreDraftAttachments={false}
+              offlineProtection={false}
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        expect(
+          screen.queryByText("Your computer is disconnected."),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "Reconnect" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByText("Choose another environment"),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId("chat-input-agent-context"),
+        ).not.toBeInTheDocument();
+        fireEvent.change(screen.getByRole("textbox"), {
+          target: { value: "Test request" },
+        });
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeEnabled();
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).not.toHaveClass("bg-red-500/10");
+        fireEvent.keyDown(screen.getByRole("textbox"), {
+          key: "Enter",
+          code: "Enter",
+        });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
+
+    it("hides task progress, queued messages, and a live approval after logout", () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      const content = () => (
+        <TestWrapper>
+          <TaskPanelsSetter />
+          <AgentApprovalSetter />
+          <ChatInput
+            isNewChat
+            restoreDraftAttachments={false}
+            rateLimitWarning={{
+              warningType: "sliding-window",
+              remaining: 1,
+              resetTime: new Date(Date.now() + 60_000),
+              mode: "agent",
+              subscription: "free",
+            }}
+            onDismissRateLimitWarning={jest.fn()}
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(content());
+      expect(screen.getByText("Private task progress")).toBeInTheDocument();
+      expect(screen.getByText("Private queued message")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+      expect(screen.getByTestId("rate-limit-warning")).toBeInTheDocument();
+      jest
+        .mocked(useAuth)
+        .mockReturnValue({ user: null, entitlements: [] } as ReturnType<
+          typeof useAuth
+        >);
+      rerender(content());
+      expect(
+        screen.queryByText("Private task progress"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Private queued message"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("rate-limit-warning"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox")).toBeInTheDocument();
+    });
+  });
+
   describe("Agent Mode Integration", () => {
+    beforeEach(() => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+    });
     it.each([
       ["desktop", []],
       ["missing-remote", []],
