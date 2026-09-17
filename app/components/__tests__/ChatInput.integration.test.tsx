@@ -289,6 +289,71 @@ describe("ChatInput - Integration Tests", () => {
       expect(toast.info).not.toHaveBeenCalled();
     });
 
+    it("waits for Desktop startup without flashing a disconnect warning and preserves the draft", async () => {
+      jest.mocked(isTauriEnvironment).mockReturnValue(true);
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "idle",
+        hasLocalSandbox: false,
+      };
+      const { rerender } = render(ui());
+      const textarea = screen.getByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Test startup" } });
+
+      for (const desktopBridgeStatus of ["idle", "connecting"] as const) {
+        mockSandboxState = { ...mockSandboxState, desktopBridgeStatus };
+        rerender(ui());
+        expect(
+          screen.queryByText("Your computer is disconnected."),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeDisabled();
+        fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(textarea).toHaveValue("Test startup");
+      }
+
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "connected",
+        hasLocalSandbox: true,
+      };
+      rerender(ui());
+      expect(
+        screen.queryByText("Your computer is disconnected."),
+      ).not.toBeInTheDocument();
+      expect(toast.info).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeEnabled();
+      fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+    });
+
+    it("shows reconnect controls if Desktop startup fails", () => {
+      jest.mocked(isTauriEnvironment).mockReturnValue(true);
+      const retryDesktopBridge = jest.fn();
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "connecting",
+        hasLocalSandbox: false,
+        retryDesktopBridge,
+      };
+      const { rerender } = render(ui());
+      expect(
+        screen.queryByText("Your computer is disconnected."),
+      ).not.toBeInTheDocument();
+
+      mockSandboxState = { ...mockSandboxState, desktopBridgeStatus: "failed" };
+      rerender(ui());
+      expect(
+        screen.getByText("Your computer is disconnected."),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      expect(retryDesktopBridge).toHaveBeenCalledTimes(1);
+    });
+
     it("does not warn when free Desktop access finishes resolving", () => {
       mockSandboxState = {
         ...mockSandboxState,
