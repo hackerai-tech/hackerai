@@ -183,6 +183,11 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
+import {
+  evaluateProPlusAutoRouting,
+  getActiveProPlusAutoRoutingAssignment,
+  createProPlusAutoExposureRecorder,
+} from "@/lib/experiments/pro-plus-auto-routing";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2872,6 +2877,21 @@ export const agentLongTask = task({
         );
       }
 
+      const proPlusAutoRoutingAssignment = await evaluateProPlusAutoRouting({
+        posthog,
+        userId,
+        subscription,
+        selectedModelOverride,
+        selectedModel,
+        hasImages:
+          countFileAttachments(messagesForProcessing).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+        limitRescue: Boolean(limitRescue),
+      });
+      if (proPlusAutoRoutingAssignment) {
+        selectedModel = proPlusAutoRoutingAssignment.modelKey;
+      }
+
       const abliteratedExperiment = await evaluateAbliteratedModel({
         posthog,
         userId,
@@ -3232,6 +3252,30 @@ export const agentLongTask = task({
               abliteratedExperiment?.modelKey === selectedModel
                 ? abliteratedExperiment
                 : undefined;
+            const activeProPlusAutoRoutingAssignment =
+              getActiveProPlusAutoRoutingAssignment(
+                proPlusAutoRoutingAssignment,
+                selectedModel,
+                !!paidDailyFreeAllowanceReservation,
+              );
+            const recordProPlusAutoExposure = createProPlusAutoExposureRecorder(
+              {
+                posthog,
+                assignment: activeProPlusAutoRoutingAssignment,
+                userId,
+                mode,
+                requestId: assistantMessageId,
+              },
+            );
+            const recordFlashRoutingExposure =
+              createFlashRoutingExposureRecorder({
+                posthog,
+                assignment: activeFlashRoutingAssignment,
+                userId,
+                mode,
+                subscription,
+                requestId: assistantMessageId,
+              });
             const routingExperimentContext = activeAbliteratedExperiment
               ? {
                   key: activeAbliteratedExperiment.key,
@@ -3239,6 +3283,7 @@ export const agentLongTask = task({
                   requestId: assistantMessageId,
                 }
               : (activeFlashRoutingAssignment ??
+                activeProPlusAutoRoutingAssignment ??
                 getDeepSeekV4Pro0813ExperimentContext(
                   activeDeepSeekV4Pro0813Experiment,
                 ));
@@ -4451,14 +4496,10 @@ export const agentLongTask = task({
                   baselineModel: activeAbliteratedExperiment.baselineModel,
                 },
               }),
-              onProviderRequestStart: createFlashRoutingExposureRecorder({
-                posthog,
-                assignment: activeFlashRoutingAssignment,
-                userId,
-                mode,
-                subscription,
-                requestId: assistantMessageId,
-              }),
+              onProviderRequestStart: (configuredModel) => {
+                recordProPlusAutoExposure(configuredModel);
+                recordFlashRoutingExposure(configuredModel);
+              },
               trackedProvider,
               currentSystemPrompt,
               tools,

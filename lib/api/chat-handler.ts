@@ -193,6 +193,11 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
+import {
+  evaluateProPlusAutoRouting,
+  getActiveProPlusAutoRoutingAssignment,
+  createProPlusAutoExposureRecorder,
+} from "@/lib/experiments/pro-plus-auto-routing";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -588,6 +593,21 @@ export const createChatHandler = () => {
       }
 
       const assistantMessageId = uuidv4();
+      const proPlusAutoRoutingAssignment = await evaluateProPlusAutoRouting({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        subscription,
+        selectedModelOverride,
+        selectedModel,
+        hasImages:
+          countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
+          uiMessagesContainImageViewResult(processedMessages),
+        limitRescue: Boolean(limitRescue),
+      });
+      if (proPlusAutoRoutingAssignment) {
+        selectedModel = proPlusAutoRoutingAssignment.modelKey;
+      }
+
       const abliteratedExperiment = await evaluateAbliteratedModel({
         posthog: (posthog ??= PostHogClient()),
         userId,
@@ -811,6 +831,27 @@ export const createChatHandler = () => {
         abliteratedExperiment?.modelKey === selectedModel
           ? abliteratedExperiment
           : undefined;
+      const activeProPlusAutoRoutingAssignment =
+        getActiveProPlusAutoRoutingAssignment(
+          proPlusAutoRoutingAssignment,
+          selectedModel,
+          !!paidDailyFreeAllowanceReservation,
+        );
+      const recordProPlusAutoExposure = createProPlusAutoExposureRecorder({
+        posthog,
+        assignment: activeProPlusAutoRoutingAssignment,
+        userId,
+        mode,
+        requestId: assistantMessageId,
+      });
+      const recordFlashRoutingExposure = createFlashRoutingExposureRecorder({
+        posthog,
+        assignment: activeFlashRoutingAssignment,
+        userId,
+        mode,
+        subscription,
+        requestId: assistantMessageId,
+      });
       const routingExperimentContext = activeAbliteratedExperiment
         ? {
             key: activeAbliteratedExperiment.key,
@@ -818,6 +859,7 @@ export const createChatHandler = () => {
             requestId: assistantMessageId,
           }
         : (activeFlashRoutingAssignment ??
+          activeProPlusAutoRoutingAssignment ??
           getDeepSeekV4Pro0813ExperimentContext(
             activeDeepSeekV4Pro0813Experiment,
           ));
@@ -1633,14 +1675,10 @@ export const createChatHandler = () => {
                   baselineModel: activeAbliteratedExperiment.baselineModel,
                 },
               }),
-              onProviderRequestStart: createFlashRoutingExposureRecorder({
-                posthog,
-                assignment: activeFlashRoutingAssignment,
-                userId,
-                mode,
-                subscription,
-                requestId: assistantMessageId,
-              }),
+              onProviderRequestStart: (configuredModel) => {
+                recordProPlusAutoExposure(configuredModel);
+                recordFlashRoutingExposure(configuredModel);
+              },
               trackedProvider,
               currentSystemPrompt,
               tools,
