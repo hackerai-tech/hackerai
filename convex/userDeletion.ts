@@ -19,6 +19,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "files",
     "feedback",
     "task_outcome_surveys",
+    "paid_model_enrollments",
     "notes",
     "user_customization",
     "extra_usage",
@@ -417,6 +418,11 @@ async function cleanupUserDataForUser(
     "by_user_and_updated",
     (q) => q.eq("user_id", userId),
   );
+  const paidModelEnrollmentsBatch = await collectByIndexBatch<
+    Doc<"paid_model_enrollments">
+  >(ctx, budget, "paid_model_enrollments", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
@@ -498,6 +504,7 @@ async function cleanupUserDataForUser(
     filesBatch,
     notesBatch,
     taskOutcomeSurveysBatch,
+    paidModelEnrollmentsBatch,
     customizationBatch,
     messagesBatch,
     localSandboxTokensBatch,
@@ -576,6 +583,13 @@ async function cleanupUserDataForUser(
     mode,
   );
   await deleteDocs(ctx, stats, "feedback", feedback, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "paid_model_enrollments",
+    paidModelEnrollmentsBatch.docs,
+    mode,
+  );
   await deleteDocs(ctx, stats, "messages", messages, mode);
   await deleteDocs(ctx, stats, "chat_summaries", chatSummaries, mode);
   await deleteDocs(ctx, stats, "subagent_messages", subagentMessages, mode);

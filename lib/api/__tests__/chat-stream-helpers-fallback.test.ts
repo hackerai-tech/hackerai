@@ -1038,6 +1038,15 @@ describe("getRetryFallbackModel", () => {
 });
 
 describe("shouldRetryAbliterationError", () => {
+  it("preserves baseline recovery for expansion controls using an existing Large v2 route", () => {
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "control", modelKey: "model-abliterated-large-v2" },
+        "model-abliterated-large-v2",
+        new AbortController().signal,
+      ),
+    ).toBe(true);
+  });
   it.each([
     "model-abliterated",
     "model-abliterated-large-v2",

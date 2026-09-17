@@ -819,12 +819,17 @@ export function getRetryFallbackModel(
 
 /** Any failure of the active treatment route gets one baseline attempt. */
 export function shouldRetryAbliterationError(
-  assignment: Pick<AbliteratedAssignment, "variant"> | undefined,
+  assignment:
+    | (Pick<AbliteratedAssignment, "variant"> &
+        Partial<Pick<AbliteratedAssignment, "modelKey">>)
+    | undefined,
   failedModel: string,
   abortSignal: AbortSignal,
 ): boolean {
   return (
-    assignment?.variant === "test" &&
+    !!assignment &&
+    (assignment.variant === "test" ||
+      isAbliterationModel(assignment.modelKey)) &&
     isAbliterationModel(failedModel) &&
     !abortSignal.aborted
   );

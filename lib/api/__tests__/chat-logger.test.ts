@@ -844,6 +844,8 @@ describe("captureAgentCompletionAnalytics", () => {
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],
+    ["ask", "abliterated_paid_first_step_v1"],
+    ["agent", "abliterated_paid_first_step_v1"],
     ["ask", "abliterated_free_ask_moderated_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
@@ -897,6 +899,49 @@ describe("captureAgentCompletionAnalytics", () => {
             experiment_variant: "test",
             experiment_request_id: "message",
             fallback_served: true,
+          }),
+        }),
+      );
+    },
+  );
+  it.each([
+    ["success", "stop", true, false, true],
+    ["success", "stop", true, true, false],
+    ["success", "stop", false, false, false],
+    ["success", "length", true, false, false],
+    ["error", "stop", true, false, false],
+    ["aborted", "stop", true, false, false],
+  ])(
+    "distinguishes natural completion from terminal status %s/%s",
+    (outcome, finishReason, hasResponseContent, stepLimitReached, expected) => {
+      const capture = jest.fn();
+      captureAgentCompletionAnalytics({
+        posthog: { capture },
+        userId: "u",
+        chatId: "c",
+        mode: "ask",
+        endpoint: "/api/chat",
+        subscription: "pro",
+        sandboxInfo: null,
+        outcome,
+        finishReason,
+        hasResponseContent,
+        selectedModel: "model-abliterated",
+        configuredModelId: "abliterated-model",
+        abliteratedProviderSummary: undefined,
+        stepLimitTelemetry: { stepLimitReached },
+        experiment: {
+          key: "abliterated_paid_first_step_v1",
+          variant: "test",
+          requestId: "r",
+        },
+      });
+      expect(capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "abliterated_model_response_outcome",
+          properties: expect.objectContaining({
+            natural_completion: expected,
+            experiment_request_id: "r",
           }),
         }),
       );

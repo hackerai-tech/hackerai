@@ -263,6 +263,10 @@ function seedTables(userId = "user_123", otherUserId = "user_other"): Tables {
         is_attached: false,
       },
     ],
+    paid_model_enrollments: [
+      { _id: "enrollment-user", user_id: userId },
+      { _id: "enrollment-other", user_id: otherUserId },
+    ],
     notes: [
       { _id: "note-user", user_id: userId, note_id: "note-1" },
       { _id: "note-other", user_id: otherUserId, note_id: "note-2" },
@@ -733,6 +737,12 @@ describe("userDeletion", () => {
       row(tables, "subagent_events", "subagent-event-user"),
     ).toBeUndefined();
     expect(row(tables, "subagent_events", "subagent-event-other")).toBeTruthy();
+    expect(
+      row(tables, "paid_model_enrollments", "enrollment-user"),
+    ).toBeUndefined();
+    expect(
+      row(tables, "paid_model_enrollments", "enrollment-other"),
+    ).toBeTruthy();
     expect(
       row(tables, "subagent_work_items", "subagent-work-user"),
     ).toBeUndefined();

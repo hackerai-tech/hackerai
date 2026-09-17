@@ -1779,6 +1779,16 @@ export function captureAgentCompletionAnalytics(
           mode,
           subscription_tier: subscription,
           outcome,
+          has_response_content: args.hasResponseContent,
+          is_auto_continue: args.isAutoContinue === true,
+          natural_completion:
+            outcome === "success" &&
+            args.hasResponseContent &&
+            args.finishReason === "stop" &&
+            args.stepLimitTelemetry?.stepLimitReached !== true,
+          step_limit_reached: args.stepLimitTelemetry?.stepLimitReached,
+          request_to_first_model_chunk_ms: args.requestToFirstModelChunkMs,
+          trigger_usage_duration_ms: args.triggerUsageDurationMs,
           abort_source: args.abortSource,
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,

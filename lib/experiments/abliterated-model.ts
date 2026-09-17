@@ -14,6 +14,7 @@ import {
   ABLITERATION_MODEL_KEY,
   ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationConfigured,
+  isAbliterationModel,
 } from "@/lib/ai/abliteration";
 import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 
@@ -23,9 +24,17 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
-  selectionSource?: "moderation" | "history";
+  selectionSource?: "moderation" | "history" | "paid_expansion";
+  moderationEligible?: boolean;
   independentHistoryCount?: number;
 };
+
+/** A paid expansion control can still use the existing moderated route. */
+export function hasAbliterationRoute(
+  assignment: AbliteratedAssignment | undefined,
+): assignment is AbliteratedAssignment {
+  return !!assignment && isAbliterationModel(assignment.modelKey);
+}
 
 const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
   "model-deepseek-v4-flash-vision-pro",

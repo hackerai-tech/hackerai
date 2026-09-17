@@ -1,5 +1,6 @@
 import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
 import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
+import { preparePaidFirstStepEnrollment } from "@/lib/experiments/prepare-paid-first-step";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
@@ -626,6 +627,16 @@ export const createAgentTriggerPost =
         chat: existingChat ?? null,
         isHidden: isAutoContinue ? true : undefined,
         projectId: projectContext.projectId,
+      });
+
+      // Billing preparation is not model exposure: worker safety/eligibility
+      // checks still decide whether the stored assignment can be used.
+      await preparePaidFirstStepEnrollment({
+        userId,
+        organizationId,
+        subscription,
+        isAutomaticContinuation,
+        limitRescue: Boolean(limitRescue),
       });
 
       // Snapshot permission behavior once for this run. UI changes made while
