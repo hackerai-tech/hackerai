@@ -656,14 +656,26 @@ export const ChatInput = ({
       })
     : hasLocalSandbox;
 
-  const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
+  const prevFreeAgentSandboxRef = useRef({
+    sandboxPreference,
+    available: freeAgentSandboxAvailable,
+    isFreeAgent,
+  });
   useEffect(() => {
-    const wasConnected = prevFreeAgentSandboxAvailableRef.current;
-    prevFreeAgentSandboxAvailableRef.current = freeAgentSandboxAvailable;
+    const previous = prevFreeAgentSandboxRef.current;
+    const wasConnected =
+      previous.isFreeAgent &&
+      previous.sandboxPreference === sandboxPreference &&
+      previous.available;
+    prevFreeAgentSandboxRef.current = {
+      sandboxPreference,
+      available: freeAgentSandboxAvailable,
+      isFreeAgent,
+    };
 
     if (!isFreeAgent) return;
-    // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where sandbox availability starts as false.
+    // Only warn when the same selected sandbox loses availability. Restoring a
+    // different task or resolving plan access is not a connection lifecycle event.
     if (!freeAgentSandboxAvailable) {
       if (freeDesktopAgentOnlyActive || sandboxPreference !== "e2b") {
         if (wasConnected) {

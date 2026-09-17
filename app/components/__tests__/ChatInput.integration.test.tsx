@@ -1,7 +1,14 @@
 import "@testing-library/jest-dom";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { getFunctionName } from "convex/server";
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 import {
   act,
   render,
@@ -18,6 +25,23 @@ import {
   getDraftContentById,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
+import { toast } from "sonner";
+
+let mockSandboxState: Partial<
+  ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
+> = {};
+jest.mock("@/app/contexts/GlobalState", () => {
+  const original = jest.requireActual<
+    typeof import("@/app/contexts/GlobalState")
+  >("@/app/contexts/GlobalState");
+  return {
+    ...original,
+    useGlobalState: () => ({
+      ...original.useGlobalState(),
+      ...mockSandboxState,
+    }),
+  };
+});
 
 const mockUseQuery = jest.fn(() => undefined);
 const mockReadGeneratedTextAttachment = jest.fn();
@@ -31,7 +55,7 @@ const setNavigatorOnline = (isOnline: boolean) => {
   });
 };
 
-// Mock only external dependencies, not contexts
+// Keep real providers; stub external services and sandbox lifecycle snapshots.
 jest.mock("react-hotkeys-hook", () => ({
   useHotkeys: jest.fn(),
 }));
@@ -204,6 +228,7 @@ describe("ChatInput - Integration Tests", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSandboxState = {};
     jest.mocked(isTauriEnvironment).mockReturnValue(false);
     jest
       .mocked(useAuth)
@@ -222,6 +247,120 @@ describe("ChatInput - Integration Tests", () => {
     });
     window.localStorage.clear();
     setNavigatorOnline(true);
+  });
+
+  describe("Sandbox disconnect warnings", () => {
+    afterEach(() => jest.restoreAllMocks());
+    const ui = () => (
+      <TestWrapper>
+        <ChatInput onSubmit={mockOnSubmit} onStop={mockOnStop} status="ready" />
+      </TestWrapper>
+    );
+
+    beforeEach(() => {
+      jest.spyOn(toast, "info").mockReturnValue(0);
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "free",
+        isCheckingProPlan: false,
+        freeDesktopAgentOnlyActive: true,
+        sandboxPreference: "desktop",
+        desktopBridgeStatus: "connected",
+        localConnections: [],
+        hasLocalSandbox: true,
+      };
+    });
+
+    it("does not mistake task selection changes for a disconnect", () => {
+      const { rerender } = render(ui());
+      for (const sandboxPreference of [
+        "e2b",
+        "desktop",
+        "missing-runner",
+        "desktop",
+      ]) {
+        mockSandboxState = { ...mockSandboxState, sandboxPreference };
+        rerender(ui());
+      }
+      expect(toast.info).not.toHaveBeenCalled();
+    });
+
+    it("does not warn when free Desktop access finishes resolving", () => {
+      mockSandboxState = {
+        ...mockSandboxState,
+        isCheckingProPlan: true,
+        freeDesktopAgentOnlyActive: false,
+        sandboxPreference: "e2b",
+      };
+      const { rerender } = render(ui());
+      mockSandboxState = {
+        ...mockSandboxState,
+        isCheckingProPlan: false,
+        freeDesktopAgentOnlyActive: true,
+      };
+      rerender(ui());
+      mockSandboxState = { ...mockSandboxState, sandboxPreference: "desktop" };
+      rerender(ui());
+      expect(toast.info).not.toHaveBeenCalled();
+    });
+
+    it("warns once when the selected Desktop bridge actually disconnects", () => {
+      const { rerender } = render(ui());
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "connecting",
+      };
+      rerender(ui());
+      rerender(ui());
+      expect(toast.info).toHaveBeenCalledTimes(1);
+      expect(toast.info).toHaveBeenCalledWith(
+        "Desktop sandbox disconnected.",
+        expect.objectContaining({
+          description: "Reconnect the Desktop sandbox to keep using Agent.",
+        }),
+      );
+    });
+
+    it("warns when the selected remote runner disconnects even if Desktop is healthy", () => {
+      mockSandboxState = {
+        ...mockSandboxState,
+        sandboxPreference: "remote-kali",
+        localConnections: [{ connectionId: "remote-kali", isDesktop: false }],
+      };
+      const { rerender } = render(ui());
+      mockSandboxState = { ...mockSandboxState, localConnections: [] };
+      rerender(ui());
+      expect(toast.info).toHaveBeenCalledWith(
+        "Local sandbox disconnected.",
+        expect.objectContaining({
+          description:
+            "Reconnect the selected local runner to keep using Agent.",
+        }),
+      );
+    });
+
+    it("still switches free web Agent to Ask when its local connection is lost on the Cloud default", () => {
+      const setChatMode = jest.fn();
+      mockSandboxState = {
+        ...mockSandboxState,
+        freeDesktopAgentOnlyActive: false,
+        sandboxPreference: "e2b",
+        defaultLocalSandboxPreference: null,
+        setChatMode,
+      };
+      const { rerender } = render(ui());
+      mockSandboxState = { ...mockSandboxState, hasLocalSandbox: false };
+      rerender(ui());
+      expect(setChatMode).toHaveBeenCalledWith("ask");
+      expect(toast.info).toHaveBeenCalledWith(
+        "Local sandbox disconnected. Switched to Ask mode.",
+        expect.any(Object),
+      );
+    });
   });
 
   describe("Ask Mode Integration", () => {
