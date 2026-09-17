@@ -8,6 +8,13 @@ wins. Recovery retains completed tool results and removes only the incomplete
 tail. The existing model selection, billing, authorization, and retry limits
 still apply.
 
+A retained local tool call can lack its result even before a completed sibling
+or later step. Continuation preserves that call as an error with an explicitly
+unknown execution outcome, so the next request has a matching result without
+claiming success or user cancellation. The model must verify its effects before
+considering another execution; this marker alone does not prove whether the
+tool ran. Completed results and provider-executed calls remain unchanged.
+
 The local provider watchdog distinguishes waiting for a response from waiting
 for a streamed chunk. A response timeout can leave only completed tool results
 in the transcript, with no new step or partial tail to trim. That specific local
