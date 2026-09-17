@@ -619,6 +619,23 @@ export const attributeReferredSignup = mutation({
 
     const now = Date.now();
     const starterBonusUnits = Math.max(0, Math.trunc(args.starterBonusUnits));
+    if (args.referredIdentityHash) {
+      const influencer = await ctx.db
+        .query("influencer_attributions")
+        .withIndex("by_identity", (q) =>
+          q.eq("identity", args.referredIdentityHash!),
+        )
+        .unique();
+      if (influencer)
+        return {
+          status: "blocked" as const,
+          reason: "influencer_attribution",
+          starterBonusAwarded: false,
+          starterBonusEligible: false,
+          starterBonusUnits: 0,
+        };
+    }
+
     const existing = await ctx.db
       .query("referral_attributions")
       .withIndex("by_referred_user_id", (q) =>

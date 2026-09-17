@@ -1,5 +1,8 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { mockMutation as mockConvexMutation } from "convex/browser";
+import {
+  mockQuery as mockConvexQuery,
+  mockMutation as mockConvexMutation,
+} from "convex/browser";
 import { ChatSDKError } from "@/lib/errors";
 
 const mockGetUserIDAndPro = jest.fn();
@@ -9,6 +12,7 @@ const mockCreateOrganizationMembership = jest.fn();
 const mockGetOrganization = jest.fn();
 const mockCreateOrganization = jest.fn();
 const mockUpdateOrganization = jest.fn();
+const mockListSubscriptions = jest.fn();
 const mockListPrices = jest.fn();
 const mockListCustomers = jest.fn();
 const mockCreateCustomer = jest.fn();
@@ -59,6 +63,7 @@ jest.mock("@/app/api/workos", () => ({
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
+    subscriptions: { list: mockListSubscriptions },
     prices: {
       list: mockListPrices,
     },
@@ -113,6 +118,8 @@ describe("POST /api/subscribe", () => {
     mockGetPostHogFeatureFlagVariant.mockResolvedValue("control");
 
     mockConvexMutation.mockResolvedValue(null);
+    mockConvexQuery.mockResolvedValue(null);
+    mockListSubscriptions.mockResolvedValue({ data: [] } as never);
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",
@@ -1092,5 +1099,50 @@ describe("POST /api/subscribe", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+  it("binds an influencer customer before creating the checkout session", async () => {
+    const { POST } = await import("../route");
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user_123",
+      subscription: "free",
+      organizationId: "org_team",
+      freeQuotaSubject: "free_quota:v1:customer",
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      name: "Team",
+      stripeCustomerId: "cus_existing",
+    } as never);
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          id: "membership_1",
+          userId: "user_123",
+          organizationId: "org_team",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockConvexQuery.mockResolvedValue({ _id: "attribution_1" });
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    expect(response.status).toBe(200);
+    expect(mockListSubscriptions).toHaveBeenCalledWith({
+      customer: "cus_existing",
+      status: "all",
+      limit: 1,
+    });
+    const binding = mockConvexMutation.mock.calls.findIndex(
+      (call: any[]) =>
+        call[1]?.identity === "free_quota:v1:customer" &&
+        call[1]?.customerId === "cus_existing",
+    );
+    expect(binding).toBeGreaterThanOrEqual(0);
+    expect(mockConvexMutation.mock.invocationCallOrder[binding]).toBeLessThan(
+      mockCreateCheckoutSession.mock.invocationCallOrder[0],
+    );
   });
 });
