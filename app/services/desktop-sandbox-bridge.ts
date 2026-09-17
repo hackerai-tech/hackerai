@@ -66,6 +66,7 @@ const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
 const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
 
+/** Recognize browser transport failures without swallowing native filesystem errors. */
 function isFileTransportError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /^(load failed|failed to fetch|fetch failed|networkerror.*|network request failed)$/i.test(
@@ -220,6 +221,7 @@ export class DesktopSandboxBridge {
   private connectionId: string | null = null;
   private activeCommands = new Set<string>();
   private isStoppingOrStopped = true;
+  private startupGeneration = 0;
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
@@ -355,10 +357,15 @@ export class DesktopSandboxBridge {
   }
 
   async start(): Promise<string> {
+    const generation = ++this.startupGeneration;
+    const wasStopped = () =>
+      this.isStoppingOrStopped || generation !== this.startupGeneration;
     this.isStoppingOrStopped = false;
     this.nativeFileIpcAvailable = null;
     const osInfo = await this.getOsInfo();
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const files = await this.probeFileBridge();
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
       await this.config.connectDesktop({
@@ -366,6 +373,17 @@ export class DesktopSandboxBridge {
         osInfo,
         capabilities: { commands: true, pty: true, files },
       });
+
+    if (wasStopped()) {
+      // stop() could not see this connection while registration was pending.
+      // Clean up only this attempt, without touching a newer start's relay.
+      await this.config.disconnectDesktop({ connectionId }).catch(() => {
+        console.warn(
+          "[DesktopSandboxBridge] Failed to disconnect canceled startup",
+        );
+      });
+      throw new Error("Desktop bridge stopped during startup");
+    }
 
     this.connectionId = connectionId;
 
@@ -635,7 +653,7 @@ export class DesktopSandboxBridge {
       });
       throw error;
     }
-    if (this.isStoppingOrStopped || this.connectionId !== connectionId) {
+    if (wasStopped() || this.connectionId !== connectionId) {
       throw new Error("Desktop bridge stopped before relay became ready");
     }
     this.config.onConnectionState?.("connected");
@@ -940,6 +958,7 @@ export class DesktopSandboxBridge {
     return payload as T;
   }
 
+  /** Check file transport availability without creating files or hanging terminal startup. */
   private async probeFileBridge(): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -1028,11 +1047,11 @@ export class DesktopSandboxBridge {
     }
   }
 
+  /** Report the failing adapter without logging paths, content, credentials, or raw errors. */
   private fileTransportFailure(
     operation: string,
     transport: "native_ipc" | "legacy_http",
   ): Error {
-    // Never include file paths, content, loopback credentials, or raw errors in analytics.
     captureAuthenticatedEvent("desktop_file_bridge_transport_failed", {
       connectionId: this.connectionId,
       operation,
@@ -1721,6 +1740,7 @@ export class DesktopSandboxBridge {
   }
 
   async stop(): Promise<void> {
+    this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
     this.publishQueue = null;

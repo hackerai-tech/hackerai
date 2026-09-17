@@ -153,6 +153,81 @@ afterEach(() => {
 // ── desktop capability registration ───────────────────────────────────
 
 describe("desktop capability registration", () => {
+  it("does not register a connection after stopping during the file probe", async () => {
+    let finishProbe!: () => void;
+    let enteredProbe!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredProbe = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      finishProbe = resolve;
+    });
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request") {
+        enteredProbe();
+        await pending;
+      }
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    const stopped = expect(bridge.start()).rejects.toThrow(
+      "stopped during startup",
+    );
+    await entered;
+    await bridge.stop();
+    finishProbe();
+    await stopped;
+    expect(config.connectDesktop).not.toHaveBeenCalled();
+    expect(mockClient.connect).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "disconnects a late registration without reviving it (restart=%s)",
+    async (restart) => {
+      let finishConnect!: () => void;
+      let enteredConnect!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enteredConnect = resolve;
+      });
+      const pending = new Promise<void>((resolve) => {
+        finishConnect = resolve;
+      });
+      const response = {
+        connectionId: "new-connection",
+        centrifugoToken: createTestJwt("user-456"),
+        centrifugoWsUrl: "ws://localhost:8000/connection/websocket",
+      };
+      const config = buildConfig({
+        connectDesktop: jest
+          .fn()
+          .mockImplementationOnce(async () => {
+            enteredConnect();
+            await pending;
+            return { ...response, connectionId: "late-connection" };
+          })
+          .mockResolvedValue(response),
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      const stopped = expect(bridge.start()).rejects.toThrow(
+        "stopped during startup",
+      );
+      await entered;
+      await bridge.stop();
+      await bridge.stop();
+      if (restart) await bridge.start();
+      finishConnect();
+      await stopped;
+      expect(config.disconnectDesktop).toHaveBeenCalledTimes(1);
+      expect(config.disconnectDesktop).toHaveBeenCalledWith({
+        connectionId: "late-connection",
+      });
+      expect(bridge.getConnectionId()).toBe(restart ? "new-connection" : null);
+      expect(mockClient.connect).toHaveBeenCalledTimes(restart ? 1 : 0);
+      await bridge.stop();
+    },
+  );
   it("advertises native file relay support for updated desktop builds", async () => {
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
