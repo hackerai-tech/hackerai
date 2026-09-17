@@ -27,6 +27,7 @@ export async function evaluatePaidFirstStepModel(args: {
   messages: UIMessage[];
   limitRescue: boolean;
   isAutomaticContinuation?: boolean;
+  enrollmentReadOnly?: boolean;
   existingAssignment?: AbliteratedAssignment;
 }): Promise<AbliteratedAssignment | undefined> {
   const unchanged = args.existingAssignment;
@@ -63,6 +64,7 @@ export async function evaluatePaidFirstStepModel(args: {
       organizationId: args.organizationId,
       variant,
       subscription: args.subscription,
+      readOnly: args.enrollmentReadOnly,
     });
     if (!enrollment) {
       args.posthog.capture({

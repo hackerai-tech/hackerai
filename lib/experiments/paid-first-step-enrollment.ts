@@ -13,6 +13,7 @@ type EnrollmentArgs = {
   organizationId: string;
   variant: "control" | "test";
   subscription: "pro" | "pro-plus" | "ultra";
+  readOnly?: boolean;
 };
 
 /** Bound optional billing work; slow dependencies leave current routing intact. */
@@ -41,6 +42,7 @@ async function loadEnrollment(args: EnrollmentArgs, deadline: number) {
   });
   if (existing)
     return existing.organization_id === args.organizationId ? existing : null;
+  if (args.readOnly) return null;
   if (Date.now() >= deadline) return null;
 
   const membership = await workos.userManagement.listOrganizationMemberships({

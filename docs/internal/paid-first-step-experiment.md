@@ -21,6 +21,10 @@ has a two-second total budget and fails back to existing routing. Concurrent
 enrollment is first-writer-wins; later flag changes cannot overwrite assignment.
 The live flag is checked before enrollment on every request, so disabling it
 returns new requests to current routing. Account deletion removes enrollment.
+For Agent, the authenticated web route prepares the billing snapshot before
+dispatch; the Trigger worker only reads it, so billing credentials stay in the
+web runtime. Preparation does not establish analytics exposure: the worker's
+safety/eligibility checks must still pass before emitting the eligibility event.
 
 ## Measurement
 

@@ -2892,6 +2892,7 @@ export const agentLongTask = task({
       });
       abliteratedExperiment = await evaluatePaidFirstStepModel({
         isAutomaticContinuation,
+        enrollmentReadOnly: true,
         posthog,
         userId,
         organizationId,

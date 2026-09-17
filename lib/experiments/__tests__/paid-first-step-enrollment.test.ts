@@ -92,6 +92,16 @@ describe("paid enrollment billing snapshot", () => {
     });
     expect(stripe.subscriptions.list).not.toHaveBeenCalled();
   });
+  it("never performs billing lookup in a read-only worker", async () => {
+    expect(
+      await getPaidFirstStepEnrollment({ ...args, readOnly: true }),
+    ).toBeNull();
+    expect(
+      workos.userManagement.listOrganizationMemberships,
+    ).not.toHaveBeenCalled();
+    expect(stripe.subscriptions.list).not.toHaveBeenCalled();
+    expect(convex.mutation).not.toHaveBeenCalled();
+  });
   it.each([
     { data: [subscription, subscription], has_more: false },
     { data: [subscription], has_more: true },
