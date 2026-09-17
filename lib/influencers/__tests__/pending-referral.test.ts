@@ -22,7 +22,28 @@ describe("pending influencer consent", () => {
   it("discards only the pending code on rejection", () => {
     const tab = browser("https://hackerai.co/?ref=medusa&utm_source=x#pricing");
     resolvePendingInfluencerReferral(tab, "declined");
-    expect(tab.location.replace).toHaveBeenCalledWith("/?utm_source=x#pricing");
+    expect(tab.location.replace).toHaveBeenCalledWith(
+      "https://hackerai.co/?utm_source=x#pricing",
+    );
+  });
+
+  it.each(["", "//evil.example", "../signup", "javascript:alert(1)"])(
+    "removes empty or invalid codes on rejection: %s",
+    (code) => {
+      const tab = browser(
+        `https://hackerai.co/?ref=${encodeURIComponent(code)}`,
+      );
+      resolvePendingInfluencerReferral(tab, "declined");
+      expect(tab.location.replace).toHaveBeenCalledWith("https://hackerai.co/");
+    },
+  );
+
+  it("keeps rejection cleanup on the current origin for double-slash paths", () => {
+    const tab = browser("https://hackerai.co//evil.example?ref=medusa");
+    resolvePendingInfluencerReferral(tab, "declined");
+    expect(tab.location.replace).toHaveBeenCalledWith(
+      "https://hackerai.co//evil.example",
+    );
   });
 
   it.each([

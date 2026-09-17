@@ -7,16 +7,19 @@ export function resolvePendingInfluencerReferral(
 ) {
   if (!consent) return;
   const url = new URL(browser.location.href);
-  const code = url.searchParams.get("ref")?.toLowerCase();
-  if (!code || !validPartnerCode(code)) return;
+  if (!url.searchParams.has("ref")) return;
 
-  if (consent === "accepted") {
-    // Reuse the server's partner validation, signed cookies and first-click
-    // policy. Navigate only after the consent cookie has been saved.
-    browser.location.replace(`/r/${code}`);
-  } else {
+  if (consent === "declined") {
     url.searchParams.delete("ref");
     // A full navigation avoids a Server Action refresh restoring the old URL.
-    browser.location.replace(`${url.pathname}${url.search}${url.hash}`);
+    // Use the absolute same-origin URL even if the pathname starts with //.
+    browser.location.replace(url.toString());
+    return;
   }
+
+  const code = url.searchParams.get("ref")?.toLowerCase();
+  if (!code || !validPartnerCode(code)) return;
+  // Reuse the server's partner validation, signed cookies and first-click
+  // policy. Navigate only after the consent cookie has been saved.
+  browser.location.replace(`/r/${code}`);
 }
