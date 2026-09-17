@@ -56,7 +56,22 @@ let mockChatHandlerArgs: Parameters<
   typeof import("@/app/hooks/useChatHandlers").useChatHandlers
 >[0];
 let mockRestoredChat:
-  { id: string; sandbox_type: string; default_model_slug: string } | undefined;
+  { id: string; sandbox_type?: string; default_model_slug: string } | undefined;
+let mockDesktopState: Partial<
+  ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
+> = {};
+jest.mock("@/app/contexts/GlobalState", () => {
+  const original = jest.requireActual<
+    typeof import("@/app/contexts/GlobalState")
+  >("@/app/contexts/GlobalState");
+  return {
+    ...original,
+    useGlobalState: () => ({
+      ...original.useGlobalState(),
+      ...mockDesktopState,
+    }),
+  };
+});
 jest.mock("convex/react", () => {
   const original =
     jest.requireActual<typeof import("convex/react")>("convex/react");
@@ -290,6 +305,14 @@ const SelectedComputerProbe = () => {
   );
 };
 
+const ComputerSelectionHistory = ({ selections }: { selections: string[] }) => {
+  const { sandboxPreference } = useGlobalState();
+  useEffect(() => {
+    selections.push(sandboxPreference);
+  }, [sandboxPreference, selections]);
+  return <SelectedComputerProbe />;
+};
+
 const DisconnectedQueueHarness = () => {
   const { setChatMode, setSandboxPreference, queueMessage, messageQueue } =
     useGlobalState();
@@ -400,6 +423,7 @@ describe("Chat Component Integration", () => {
     convexReact.resetMockConvexQueries?.();
     mockRouteParams = {};
     mockRestoredChat = undefined;
+    mockDesktopState = {};
     mockLocalConnections = undefined;
     mockUseRealChatHandlers = false;
     window.localStorage.clear();
@@ -488,6 +512,52 @@ describe("Chat Component Integration", () => {
             sandboxType === "tauri" ? "desktop" : sandboxType,
           ),
         );
+      },
+    );
+
+    it.each([undefined, "e2b", "desktop", "tauri", "missing-remote"])(
+      "restores a free Desktop task (%s) without a transient Cloud selection",
+      async (sandboxType) => {
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockDesktopState = {
+          freeDesktopAgentOnlyActive: true,
+          desktopBridgeActive: true,
+          localConnections: [],
+        };
+        mockRouteParams = { id: "first-desktop-task" };
+        mockRestoredChat = {
+          id: "first-desktop-task",
+          sandbox_type: "desktop",
+          default_model_slug: "agent",
+        };
+        const selections: string[] = [];
+        const ui = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <ComputerSelectionHistory selections={selections} />
+          </TestWrapper>
+        );
+        const { rerender } = render(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "desktop",
+          ),
+        );
+
+        mockRouteParams = { id: "second-task" };
+        mockRestoredChat = {
+          id: "second-task",
+          sandbox_type: sandboxType,
+          default_model_slug: "agent",
+        };
+        rerender(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            sandboxType === "missing-remote" ? "missing-remote" : "desktop",
+          ),
+        );
+        expect(selections).not.toContain("e2b");
+        expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
       },
     );
 

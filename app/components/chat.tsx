@@ -30,6 +30,7 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useComposerInput } from "../contexts/ComposerState";
 import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
@@ -582,6 +583,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     sandboxPreference,
     setSandboxPreference,
     resetSandboxPreference,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeActive,
+    localConnections,
     agentPermissionMode,
     selectedModel,
     setSelectedModel,
@@ -1745,21 +1749,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     const dataId = (chatData as any)?.id as string | undefined;
     if (!chatData || dataId !== chatId) return;
 
-    if (!storedSandboxType) {
-      if (wasNewChatRef.current) {
-        // Chat was just created — keep the user's current sandboxPreference
-        // (it was already sent in the request body). Don't reset to cloud.
-      } else {
-        // Navigated to an existing chat with no stored sandbox type — reset to cloud
-        // so a stale local preference from a previous chat doesn't persist.
-        setSandboxPreference("e2b", { remember: false });
-      }
+    if (!storedSandboxType && wasNewChatRef.current) {
+      // The newly created chat already sent the current environment in its request.
       setInitializedSandboxChatId(chatId);
       return;
     }
 
+    const restoredPreference =
+      storedSandboxType === "tauri" ? "desktop" : (storedSandboxType ?? "e2b");
+    // Resolve free Desktop's local default before committing the selection.
+    // Restoring Cloud first creates a false unavailable → available transition.
     setSandboxPreference(
-      storedSandboxType === "tauri" ? "desktop" : storedSandboxType,
+      freeDesktopAgentOnlyActive
+        ? resolveFreeDesktopSandboxPreference({
+            sandboxPreference: restoredPreference,
+            desktopBridgeActive,
+            localConnections,
+          })
+        : restoredPreference,
       { remember: false },
     );
     setInitializedSandboxChatId(chatId);
@@ -1770,6 +1777,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     initializedSandboxChatId,
     setSandboxPreference,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeActive,
+    localConnections,
   ]);
 
   // Initialize model selection from chat data
