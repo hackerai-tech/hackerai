@@ -1213,20 +1213,26 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   /**
    * Ensure a directory exists on the target, using the correct command for the shell.
    */
-  private async ensureDirectory(dir: string): Promise<void> {
+  private async ensureDirectory(
+    dir: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (!dir) return;
     const {
       useBash,
       path: shellDir,
       escapePath,
-    } = await this.shellContext(dir);
+    } = await this.shellContext(dir, signal);
     const escaped = escapePath(shellDir);
     // cmd.exe mkdir creates parent dirs by default; use `if not exist` to
     // skip gracefully when it already exists without swallowing real errors.
     const command = useBash
       ? `mkdir -p ${escaped}`
       : `if not exist ${escaped} mkdir ${escaped}`;
-    const result = await this.commands.run(command, { displayName: "" });
+    const result = await this.runFileCommand(command, {
+      displayName: "",
+      signal,
+    });
     if (result.exitCode !== 0) {
       throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
     }
@@ -1361,6 +1367,33 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`;
   }
 
+  /** Execute one file mutation without retrying partially completed writes. */
+  private async runFileCommand(
+    command: string,
+    options: { displayName?: string; signal?: AbortSignal },
+  ): Promise<CommandResult> {
+    const { signal, ...commandOptions } = options;
+    const result = await runAttachmentCommand(
+      this,
+      command,
+      signal,
+      commandOptions,
+    );
+    signal?.throwIfAborted();
+    return result;
+  }
+
+  /** Give temporary-file cleanup its own bounded lifetime after user cancellation. */
+  private async cleanupTransferFile(path: string): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      await this.files.remove(path, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async preparePowerShellCommand(
     script: string,
     signal?: AbortSignal,
@@ -1373,7 +1406,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     try {
       // files.write already chunks legacy cmd.exe writes below its command
       // length limit and uses the native file relay when the client supports it.
-      await this.files.write(nativeScriptPath, script);
+      await this.files.write(nativeScriptPath, script, { signal });
       const { useBash, path, escapePath } = await this.shellContext(
         nativeScriptPath,
         signal,
@@ -1382,11 +1415,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       return {
         command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
         cleanup: async () => {
-          await this.files.remove(nativeScriptPath);
+          await this.cleanupTransferFile(nativeScriptPath);
         },
       };
     } catch (error) {
-      await this.files.remove(nativeScriptPath).catch(() => undefined);
+      await this.cleanupTransferFile(nativeScriptPath).catch(() => undefined);
       throw error;
     }
   }
@@ -1431,6 +1464,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   private async writeNativeFile(
     rawPath: string,
     content: string | Buffer | ArrayBuffer,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (
       typeof content === "string" &&
@@ -1445,6 +1479,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         },
         new Set(["file_ok"]),
         120000,
+        signal,
       );
       return;
     }
@@ -1466,17 +1501,24 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         },
         new Set(["file_ok"]),
         120000,
+        signal,
       );
       return;
     }
 
-    await this.sendNativeBase64Chunks(rawPath, encodedContent, "file_write");
+    await this.sendNativeBase64Chunks(
+      rawPath,
+      encodedContent,
+      "file_write",
+      signal,
+    );
   }
 
   private async sendNativeBase64Chunks(
     rawPath: string,
     encodedContent: string,
     firstChunkType: "file_write" | "file_append",
+    signal?: AbortSignal,
   ): Promise<void> {
     for (
       let offset = 0;
@@ -1495,6 +1537,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         },
         new Set(["file_ok"]),
         120000,
+        signal,
       );
     }
   }
@@ -1526,11 +1569,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     );
   }
 
-  private async removeNativeFile(rawPath: string): Promise<void> {
+  private async removeNativeFile(
+    rawPath: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     await this.runFileRequest<FileOkMessage>(
       { type: "file_remove", path: rawPath },
       new Set(["file_ok"]),
       30000,
+      signal,
     );
   }
 
@@ -1577,20 +1624,32 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     write: async (
       rawPath: string,
       content: string | Buffer | ArrayBuffer,
+      options?: { signal?: AbortSignal },
     ): Promise<void> => {
+      const signal = options?.signal;
+      signal?.throwIfAborted();
       if (this.supportsNativeFileMutations()) {
-        await this.writeNativeFile(rawPath, content);
+        try {
+          await this.writeNativeFile(rawPath, content, signal);
+        } catch (error) {
+          throwIfAttachmentAborted(signal, error);
+          throw error;
+        }
+        signal?.throwIfAborted();
         return;
       }
 
-      const { useBash, path, escapePath } = await this.shellContext(rawPath);
+      const { useBash, path, escapePath } = await this.shellContext(
+        rawPath,
+        signal,
+      );
       const fileName = path.split(/[/\\]/).pop() || "file";
 
       // Ensure parent directory exists. Pass the native (unconverted) dir
       // so ensureDirectory re-applies its own shell-aware path handling.
       const dir = CentrifugoSandbox.parentDir(this.toNativePath(rawPath));
       if (dir) {
-        await this.ensureDirectory(dir);
+        await this.ensureDirectory(dir, signal);
       }
 
       let contentStr: string;
@@ -1626,30 +1685,31 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         // Write base64 to temp file, then certutil -decode to target
         // certutil adds header/footer lines, so we write raw base64 via echo
-        const tempFile = this.escapeForTarget(`${path}.b64tmp.${Date.now()}`);
+        const tempFileId = Date.now();
+        const tempFile = this.escapeForTarget(`${path}.b64tmp.${tempFileId}`);
         try {
           for (let i = 0; i < chunks.length; i++) {
             const operator = i === 0 ? ">" : ">>";
-            const result = await this.commands.run(
+            const result = await this.runFileCommand(
               `echo ${chunks[i]} ${operator} ${tempFile}`,
-              { displayName: i === 0 ? `Writing: ${fileName}` : "" },
+              { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
             );
             if (result.exitCode !== 0) {
               throw new Error(`Failed to write file: ${result.stderr}`);
             }
           }
           // Decode and clean up temp file
-          const decodeResult = await this.commands.run(
+          const decodeResult = await this.runFileCommand(
             `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
-            { displayName: "" },
+            { displayName: "", signal },
           );
           if (decodeResult.exitCode !== 0) {
             throw new Error(`Failed to write file: ${decodeResult.stderr}`);
           }
         } catch (error) {
-          await this.commands
-            .run(`del /q /f ${tempFile}`, { displayName: "" })
-            .catch(() => undefined);
+          await this.cleanupTransferFile(`${path}.b64tmp.${tempFileId}`).catch(
+            () => undefined,
+          );
           throw error;
         }
       } else if (
@@ -1671,9 +1731,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         const escapedPath = escapePath(path);
         for (let i = 0; i < chunks.length; i++) {
           const operator = i === 0 ? ">" : ">>";
-          const result = await this.commands.run(
+          const result = await this.runFileCommand(
             `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
-            { displayName: i === 0 ? `Writing: ${fileName}` : "" },
+            { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
             throw new Error(`Failed to write file: ${result.stderr}`);
@@ -1691,8 +1751,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           command = `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
         }
 
-        const result = await this.commands.run(command, {
+        const result = await this.runFileCommand(command, {
           displayName: `Writing: ${fileName}`,
+          signal,
         });
         if (result.exitCode !== 0) {
           throw new Error(`Failed to write file: ${result.stderr}`);
@@ -1762,21 +1823,30 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
     },
 
-    remove: async (rawPath: string): Promise<void> => {
+    remove: async (
+      rawPath: string,
+      options?: { signal?: AbortSignal },
+    ): Promise<void> => {
+      const signal = options?.signal;
+      signal?.throwIfAborted();
       if (this.supportsNativeFileRelay()) {
-        await this.removeNativeFile(rawPath);
+        await this.removeNativeFile(rawPath, signal);
         return;
       }
 
-      const { useBash, path, escapePath } = await this.shellContext(rawPath);
+      const { useBash, path, escapePath } = await this.shellContext(
+        rawPath,
+        signal,
+      );
       const fileName = path.split(/[/\\]/).pop() || "file";
       const escaped = escapePath(path);
       // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
       const command = useBash
         ? `rm -rf ${escaped}`
         : `del /q /f ${escaped} 2>nul & rmdir /s /q ${escaped} 2>nul`;
-      const result = await this.commands.run(command, {
+      const result = await this.runFileCommand(command, {
         displayName: `Removing: ${fileName}`,
+        signal,
       });
       // Under cmd.exe, if both del and rmdir fail the path didn't exist — that's OK for rm -rf semantics
       if (useBash && result.exitCode !== 0) {
