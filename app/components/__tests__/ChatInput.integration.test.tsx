@@ -534,6 +534,9 @@ describe("ChatInput - Integration Tests", () => {
         expect(
           screen.getByRole("button", { name: "Send message" }),
         ).toBeEnabled();
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).not.toHaveClass("bg-red-500/10");
         fireEvent.keyDown(screen.getByRole("textbox"), {
           key: "Enter",
           code: "Enter",
