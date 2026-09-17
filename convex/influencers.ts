@@ -1,3 +1,4 @@
+import { queueInfluencerEvent, validVisitor } from "./lib/influencerAnalytics";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { mutation, query } from "./_generated/server";
@@ -114,6 +115,7 @@ export const attribute = mutation({
     identity: v.string(),
     userId: v.string(),
     userCreatedAt: v.number(),
+    analyticsVisitorId: v.optional(v.string()),
     clickedAt: v.number(),
   },
   returns: v.boolean(),
@@ -168,14 +170,31 @@ export const attribute = mutation({
       )
       .first();
     if (creditReferral || creditIdentity) return false;
-    await ctx.db.insert("influencer_attributions", {
+    const attributionId = await ctx.db.insert("influencer_attributions", {
       partner_id: partner._id,
       identity: args.identity,
+      ...(validVisitor(args.analyticsVisitorId)
+        ? { analytics_visitor_id: args.analyticsVisitorId }
+        : {}),
       clicked_at: args.clickedAt,
       created_at: now,
       monthly_bps: partner.monthly_bps,
       annual_bps: partner.annual_bps,
     });
+    if (validVisitor(args.analyticsVisitorId))
+      await queueInfluencerEvent(ctx, {
+        key: `signup:${attributionId}`,
+        event: "influencer_signup_attributed",
+        visitor_id: args.analyticsVisitorId,
+        code: partner.code,
+        timestamp: args.userCreatedAt,
+        properties: {
+          seconds_since_click: Math.max(
+            0,
+            (args.userCreatedAt - args.clickedAt) / 1000,
+          ),
+        },
+      });
     return true;
   },
 });
@@ -242,6 +261,7 @@ export const syncInvoice = mutation({
     eligible: v.boolean(),
     reviewReason: v.optional(v.string()),
     observedAt: v.number(),
+    firstInvoice: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -299,6 +319,61 @@ export const syncInvoice = mutation({
       review_reason: args.reviewReason,
       synced_at: args.observedAt,
     };
+    if (attribution.analytics_visitor_id && args.firstInvoice !== undefined) {
+      const changed =
+        !existing?.analytics_revision ||
+        existing.net_cents !== values.net_cents ||
+        existing.earned_cents !== values.earned_cents ||
+        existing.review_reason !== values.review_reason ||
+        existing.gross_cents !== values.gross_cents;
+      const partner = changed ? await ctx.db.get(attribution.partner_id) : null;
+      if (partner) {
+        const revision = (existing?.analytics_revision ?? 0) + 1;
+        const initial = revision === 1;
+        await queueInfluencerEvent(ctx, {
+          key: `invoice:${args.invoiceId}:${revision}`,
+          event: initial
+            ? "influencer_invoice_paid"
+            : "influencer_invoice_adjusted",
+          visitor_id: attribution.analytics_visitor_id,
+          code: partner.code,
+          timestamp: initial ? args.paidAt : Date.now(),
+          properties: {
+            currency: args.currency,
+            billing_interval: args.interval,
+            first_invoice: args.firstInvoice,
+            net_revenue_delta_cents:
+              values.net_cents - (initial ? 0 : existing!.net_cents),
+            commission_delta_cents:
+              values.earned_cents - (initial ? 0 : existing!.earned_cents),
+            net_revenue_cents: values.net_cents,
+            commission_cents: values.earned_cents,
+            review_reason: values.review_reason ?? "none",
+            seconds_since_click: Math.max(
+              0,
+              (args.paidAt - attribution.clicked_at) / 1000,
+            ),
+          },
+        });
+        if (initial && args.firstInvoice)
+          await queueInfluencerEvent(ctx, {
+            key: `first-payment:${attribution._id}`,
+            event: "influencer_first_payment",
+            visitor_id: attribution.analytics_visitor_id,
+            code: partner.code,
+            // Stripe rounds paid_at to seconds; preserve funnel ordering for a checkout paid in that same second.
+            timestamp: Math.max(
+              args.paidAt,
+              (attribution.analytics_checkout_at ?? attribution.created_at) + 1,
+            ),
+            properties: {
+              currency: args.currency,
+              billing_interval: args.interval,
+            },
+          });
+        Object.assign(values, { analytics_revision: revision });
+      }
+    }
     if (existing) await ctx.db.patch(existing._id, values);
     else
       await ctx.db.insert("influencer_invoices", { ...values, paid_cents: 0 });

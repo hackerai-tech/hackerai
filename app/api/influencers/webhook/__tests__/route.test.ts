@@ -8,6 +8,7 @@ jest.mock("@/lib/influencers/stripe", () => ({
 }));
 jest.mock("@/lib/db/convex-client", () => ({ getConvexClient: () => ({}) }));
 jest.mock("next/server", () => ({
+  after: jest.fn(),
   NextResponse: {
     json: (body: unknown, options: any = {}) => ({
       status: options.status ?? 200,

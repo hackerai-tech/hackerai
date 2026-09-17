@@ -9,18 +9,34 @@ function sign(payload: string): string {
     .digest("base64url");
 }
 
-export function partnerCookie(code: string, now = Date.now()): string {
+export const INFLUENCER_VISITOR_COOKIE = "hackerai_partner_visitor";
+const validVisitor = (id: string) =>
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+    id,
+  );
+
+export function partnerCookie(
+  code: string,
+  now = Date.now(),
+  visitorId?: string,
+): string {
   if (!validPartnerCode(code)) throw new Error("Invalid partner code");
-  const payload = `${code}.${now}`;
+  if (visitorId && !validVisitor(visitorId))
+    throw new Error("Invalid visitor ID");
+  const payload = `${code}.${now}${visitorId ? `.${visitorId}` : ""}`;
   return `${payload}.${sign(payload)}`;
 }
 
 export function readPartnerCookie(value: string | undefined, now = Date.now()) {
   if (!value || value.length > 200) return null;
-  const [code, timestamp, signature, extra] = value.split(".");
+  const parts = value.split(".");
+  const [code, timestamp] = parts;
+  const visitorId = parts.length === 4 ? parts[2] : undefined;
+  const signature = parts.at(-1);
   const clickedAt = Number(timestamp);
   if (
-    extra ||
+    (parts.length !== 3 && parts.length !== 4) ||
+    (visitorId !== undefined && !validVisitor(visitorId)) ||
     !code ||
     !signature ||
     !validPartnerCode(code) ||
@@ -30,8 +46,8 @@ export function readPartnerCookie(value: string | undefined, now = Date.now()) {
   )
     return null;
   const actual = Buffer.from(signature);
-  const expected = Buffer.from(sign(`${code}.${timestamp}`));
+  const expected = Buffer.from(sign(parts.slice(0, -1).join(".")));
   return actual.length === expected.length && timingSafeEqual(actual, expected)
-    ? { code, clickedAt }
+    ? { code, clickedAt, ...(visitorId ? { visitorId } : {}) }
     : null;
 }

@@ -223,6 +223,7 @@ export async function reconcileInfluencerInvoice(
     eligible,
     ...(reviewReason ? { reviewReason } : {}),
     observedAt,
+    firstInvoice: first.id === invoice.id,
   });
 }
 

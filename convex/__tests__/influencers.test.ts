@@ -2,7 +2,9 @@ jest.mock("../_generated/server", () => ({
   mutation: (x: unknown) => x,
   query: (x: unknown) => x,
 }));
-import * as functions from "../influencers";
+import * as ledger from "../influencers";
+import * as analytics from "../influencerAnalytics";
+const functions = { ...ledger, ...analytics };
 import { PAYOUT_HOLD_MS } from "../../lib/influencers/policy";
 
 type Row = Record<string, any>;
@@ -35,6 +37,20 @@ function database() {
             },
             first: async () => rows[0] ?? null,
             take: async (n: number) => rows.slice(0, n),
+            paginate: async ({
+              cursor,
+              numItems,
+            }: {
+              cursor: string | null;
+              numItems: number;
+            }) => {
+              const start = Number(cursor ?? 0);
+              return {
+                page: rows.slice(start, start + numItems),
+                isDone: start + numItems >= rows.length,
+                continueCursor: String(start + numItems),
+              };
+            },
           };
         },
       }),
@@ -108,6 +124,155 @@ describe("influencer financial ledger", () => {
     return { ...db, partnerId, signup, invoice };
   }
 
+  it("queues each consented signup and invoice transition once, including refund deltas", async () => {
+    const db = database();
+    await db.call("createPartner", {
+      code: "partner",
+      name: "Partner",
+      contactEmail: "owner@example.test",
+      ownerIdentity: "free_quota:v1:owner",
+    });
+    const signup = {
+      code: "partner",
+      identity: "free_quota:v1:new",
+      userId: "user",
+      clickedAt: now - 1000,
+      userCreatedAt: now - 500,
+      analyticsVisitorId: "00000000-0000-4000-8000-000000000001",
+    };
+    await db.call("attribute", signup);
+    await db.call("attribute", signup);
+    await db.call("bindCustomer", {
+      identity: signup.identity,
+      customerId: "cus_private",
+    });
+    const invoice = {
+      invoiceId: "in_private",
+      customerId: "cus_private",
+      subscriptionId: "sub_private",
+      currency: "usd",
+      interval: "month",
+      paidAt: now,
+      grossCents: 2500,
+      netCents: 2500,
+      eligible: true,
+      observedAt: now,
+      firstInvoice: true,
+    };
+    await db.call("recordCheckout", {
+      identity: signup.identity,
+      attemptId: "cs_one",
+      plan: "pro",
+      interval: "month",
+      timestamp: now + 500,
+    });
+    await db.call("syncInvoice", invoice);
+    await db.call("syncInvoice", { ...invoice, observedAt: now + 1 });
+    expect(db.tables.influencer_analytics.map((x) => x.event)).toEqual([
+      "influencer_signup_attributed",
+      "influencer_checkout_started",
+      "influencer_invoice_paid",
+      "influencer_first_payment",
+    ]);
+    await db.call("syncInvoice", {
+      ...invoice,
+      netCents: 0,
+      observedAt: now + 2,
+    });
+    await db.call("syncInvoice", invoice); // older snapshot cannot restore money or emit another event
+    const financial = db.tables.influencer_analytics.filter((x) =>
+      x.event.startsWith("influencer_invoice_"),
+    );
+    expect(financial).toHaveLength(2);
+    expect(
+      financial.reduce((n, x) => n + x.properties.net_revenue_delta_cents, 0),
+    ).toBe(0);
+    expect(
+      financial.reduce((n, x) => n + x.properties.commission_delta_cents, 0),
+    ).toBe(0);
+    expect(db.tables.influencer_invoices[0].analytics_revision).toBe(2);
+    expect(
+      db.tables.influencer_analytics.find(
+        (x) => x.event === "influencer_first_payment",
+      ).timestamp,
+    ).toBe(now + 501);
+    await db.call("syncInvoice", {
+      ...invoice,
+      invoiceId: "in_renewal",
+      firstInvoice: false,
+      observedAt: now + 3,
+    });
+    expect(
+      db.tables.influencer_analytics.filter(
+        (x) => x.event === "influencer_first_payment",
+      ),
+    ).toHaveLength(1);
+    db.tables.account_identities = [
+      { latest_user_id: signup.userId, identity_hash: signup.identity },
+    ];
+    // Email changes can leave multiple identity hashes belonging to the same user.
+    db.tables.account_identities.push({
+      latest_user_id: signup.userId,
+      identity_hash: "free_quota:v1:previous-email",
+    });
+    await db.call("optOut", { userId: signup.userId });
+    await db.call("optOut", { userId: signup.userId });
+    expect(db.tables.influencer_analytics_optouts).toHaveLength(1);
+    const pending = await db.call("pending", {});
+    expect(pending.every((x: Row) => x.suppressed)).toBe(true);
+  });
+  it("does not export legacy attributions without a consented visitor identity", async () => {
+    const db = await setup();
+    await db.call("syncInvoice", { ...db.invoice, firstInvoice: true });
+    expect(db.tables.influencer_analytics ?? []).toHaveLength(0);
+  });
+  it("suppresses future analytics after withdrawal while preserving financial accounting", async () => {
+    const db = database();
+    const visitorId = "00000000-0000-4000-8000-000000000001";
+    await db.call("createPartner", {
+      code: "partner",
+      name: "Partner",
+      contactEmail: "owner@example.test",
+      ownerIdentity: "free_quota:v1:owner",
+    });
+    await db.call("optOut", { visitorId });
+    await db.call("attribute", {
+      code: "partner",
+      identity: "free_quota:v1:new",
+      userId: "user",
+      clickedAt: now - 1000,
+      userCreatedAt: now - 500,
+      analyticsVisitorId: visitorId,
+    });
+    expect(db.tables.influencer_attributions).toHaveLength(1);
+    expect(db.tables.influencer_analytics ?? []).toHaveLength(0);
+  });
+  it("deduplicates sponsorship cost edits and emits signed corrections", async () => {
+    const db = database();
+    await db.call("createPartner", {
+      code: "partner",
+      name: "Partner",
+      contactEmail: "owner@example.test",
+      ownerIdentity: "free_quota:v1:owner",
+    });
+    await db.call("setSponsorshipCost", {
+      code: "partner",
+      amountCents: 65000,
+    });
+    await db.call("setSponsorshipCost", {
+      code: "partner",
+      amountCents: 65000,
+    });
+    await db.call("setSponsorshipCost", {
+      code: "partner",
+      amountCents: 60000,
+    });
+    expect(
+      db.tables.influencer_analytics.map(
+        (x) => x.properties.sponsorship_cost_delta_cents,
+      ),
+    ).toEqual([65000, -5000]);
+  });
   it("requires service authorization on administrative and money operations", async () => {
     const db = database();
     for (const name of [
@@ -116,6 +281,12 @@ describe("influencer financial ledger", () => {
       "finishPayout",
       "syncInvoice",
       "attribute",
+      "recordVisit",
+      "recordCheckout",
+      "pending",
+      "acknowledge",
+      "setSponsorshipCost",
+      "optOut",
     ] as const) {
       await expect(db.call(name, { serviceKey: "wrong" })).rejects.toThrow(
         "Unauthorized",

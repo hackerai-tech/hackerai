@@ -1,4 +1,8 @@
-import { attributeInfluencer } from "@/lib/influencers/attribution";
+import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
+import {
+  attributeInfluencer,
+  partnerTrackingAllowed,
+} from "@/lib/influencers/attribution";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -792,6 +796,30 @@ export const POST = async (req: NextRequest) => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+
+    if (
+      freeQuotaSubject &&
+      subscription === "free" &&
+      partnerTrackingAllowed(req)
+    ) {
+      const checkoutStartedAt = Date.now();
+      after(async () => {
+        try {
+          const client = getConvexClient();
+          await client.mutation(api.influencerAnalytics.recordCheckout, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            identity: freeQuotaSubject,
+            attemptId: session.id,
+            timestamp: checkoutStartedAt,
+            plan: resolvedPriceLookupKey,
+            interval: selectedPrice.recurring?.interval ?? "unknown",
+          });
+          await flushInfluencerAnalytics(client);
+        } catch {
+          console.warn("Influencer checkout analytics unavailable");
+        }
+      });
     }
 
     phLogger.event(
