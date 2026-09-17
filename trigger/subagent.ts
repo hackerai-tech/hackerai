@@ -1,3 +1,4 @@
+import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   verifyResultEvidence,
   evidenceWarningText,
@@ -1293,6 +1294,7 @@ export const subagentTask = task({
                 }
               } else {
                 const attemptStream = generation.toUIMessageStream({
+                  onError: formatToolStreamError,
                   generateMessageId: () =>
                     `${row.subagent_id}-attempt-${generationAttempt}`,
                   sendReasoning: true,

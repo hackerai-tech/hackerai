@@ -129,6 +129,9 @@ beforeEach(() => {
   global.fetch = originalFetch;
 
   mockInvokeHandler = async (cmd: string) => {
+    if (cmd === "desktop_file_request") {
+      return { kind: "not_file", path: "." };
+    }
     if (cmd === "execute_command") {
       return {
         stdout: "Darwin 24.0.0 arm64\ntest-host\n",
@@ -160,6 +163,86 @@ describe("desktop capability registration", () => {
         capabilities: { commands: true, pty: true, files: true },
       }),
     );
+  });
+
+  it("selects command-based files when the legacy file transport is broken, and reprobes on reconnect", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request")
+        throw new Error("Command desktop_file_request not found");
+      if (cmd === "get_cmd_server_info")
+        return { port: 49152, token: "private-token" };
+      return original(cmd, args);
+    };
+    global.fetch = jest.fn().mockRejectedValue(new TypeError("Load failed"));
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        capabilities: { commands: true, pty: true, files: false },
+      }),
+    );
+    expect(global.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:49152/files/stat",
+      expect.objectContaining({ body: JSON.stringify({ path: "." }) }),
+    );
+    expect(
+      JSON.stringify((captureAuthenticatedEvent as jest.Mock).mock.calls),
+    ).not.toContain("private-token");
+    await bridge.stop();
+    mockInvokeHandler = original;
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        capabilities: { commands: true, pty: true, files: true },
+      }),
+    );
+    await bridge.stop();
+  });
+
+  it("keeps native permission denials on the native adapter", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request")
+        throw new Error("Metadata error: Permission denied");
+      return original(cmd, args);
+    };
+    global.fetch = jest.fn();
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: { commands: true, pty: true, files: true },
+      }),
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+    await bridge.stop();
+  });
+
+  it("does not block terminal startup on a hung file probe", async () => {
+    jest.useFakeTimers();
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "desktop_file_request") return new Promise(() => {});
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    try {
+      const started = bridge.start();
+      await jest.advanceTimersByTimeAsync(3_001);
+      await started;
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilities: { commands: true, pty: true, files: false },
+        }),
+      );
+    } finally {
+      await bridge.stop();
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -513,6 +596,52 @@ describe("command cancellation acknowledgement", () => {
 // ── native desktop file relay ─────────────────────────────────────────
 
 describe("native desktop file relay", () => {
+  it.each(["file_write", "file_append"])(
+    "does not replay %s after an uncertain transport failure",
+    async (type) => {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const handler = getPublicationHandler();
+      const invokeHandler = jest
+        .fn()
+        .mockRejectedValue(new TypeError("Load failed"));
+      mockInvokeHandler = invokeHandler;
+      global.fetch = jest.fn();
+      handler({
+        data: {
+          type,
+          requestId: "file-uncertain",
+          targetConnectionId: "conn-123",
+          path: "/private/user-path",
+          content: "private-content",
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(invokeHandler).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(mockSubscription.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_error",
+          requestId: "file-uncertain",
+          message: expect.stringContaining("verify the file before retrying"),
+        }),
+      );
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "desktop_file_bridge_transport_failed",
+        {
+          connectionId: "conn-123",
+          operation: type,
+          transport: "native_ipc",
+        },
+      );
+      const telemetry = JSON.stringify(
+        (captureAuthenticatedEvent as jest.Mock).mock.calls,
+      );
+      expect(telemetry).not.toContain("private-content");
+      expect(telemetry).not.toContain("/private/user-path");
+      await bridge.stop();
+    },
+  );
   it("handles file_read through native IPC without loopback HTTP", async () => {
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
@@ -988,6 +1117,8 @@ describe("forwardChunk", () => {
 
     // Mock execute_stream_command to send chunks via channel
     mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
       if (cmd === "execute_stream_command") {
         if (capturedChannel?.onmessage) {
           for (const chunk of chunks) {
@@ -1192,6 +1323,8 @@ describe("forwardChunk", () => {
         finishCommand = resolve;
       });
       mockInvokeHandler = async (cmd: string) => {
+        if (cmd === "desktop_file_request")
+          return { kind: "not_file", path: "." };
         if (cmd === "execute_stream_command") {
           await commandFinished;
           return undefined;
@@ -1319,6 +1452,8 @@ describe("forwardChunk", () => {
       finishCommand = resolve;
     });
     mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
       if (cmd === "execute_stream_command") {
         await commandFinished;
       }
@@ -1385,6 +1520,8 @@ describe("forwardChunk", () => {
       finishCommand = resolve;
     });
     mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
       if (cmd === "execute_stream_command") {
         await commandFinished;
       }
@@ -1509,6 +1646,8 @@ describe("forwardChunk", () => {
       finishCommand = resolve;
     });
     mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
       if (cmd === "execute_stream_command") {
         await commandFinished;
       }
@@ -1580,6 +1719,8 @@ describe("forwardChunk", () => {
       finishCommand = resolve;
     });
     mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
       if (cmd === "execute_stream_command") {
         await commandFinished;
       }
@@ -1658,6 +1799,8 @@ describe("pty_data publish ordering", () => {
     });
 
     mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "desktop_file_request")
+        return { kind: "not_file", path: "." };
       if (cmd === "execute_pty_create") {
         return { pid: 9999, session_id: "sess-x" };
       }

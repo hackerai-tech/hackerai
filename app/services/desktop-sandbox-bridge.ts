@@ -64,6 +64,14 @@ const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
 const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
+
+function isFileTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^(load failed|failed to fetch|fetch failed|networkerror.*|network request failed)$/i.test(
+    message,
+  );
+}
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -348,13 +356,15 @@ export class DesktopSandboxBridge {
 
   async start(): Promise<string> {
     this.isStoppingOrStopped = false;
+    this.nativeFileIpcAvailable = null;
     const osInfo = await this.getOsInfo();
+    const files = await this.probeFileBridge();
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
       await this.config.connectDesktop({
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: { commands: true, pty: true, files },
       });
 
     this.connectionId = connectionId;
@@ -930,6 +940,51 @@ export class DesktopSandboxBridge {
     return payload as T;
   }
 
+  private async probeFileBridge(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // A read-only directory stat checks the transport without creating files
+      // or depending on a particular home directory or shell.
+      const payload = await Promise.race([
+        this.callDesktopFileBridge<{ kind: string; path: string }>(
+          "file_stat",
+          "/files/stat",
+          { path: "." },
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Desktop file probe timed out")),
+            DESKTOP_FILE_PROBE_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (
+        !payload ||
+        payload.kind !== "not_file" ||
+        typeof payload.path !== "string"
+      ) {
+        throw new Error("Invalid desktop file probe response");
+      }
+      return true;
+    } catch (error) {
+      // A filesystem permission error proves the handler responded. Keep native
+      // handling so an access denial cannot silently select a different adapter.
+      const message = this.getErrorMessage(error);
+      const permissionDenied =
+        /permission denied|access denied|operation not permitted|forbidden/i.test(
+          message,
+        );
+      captureAuthenticatedEvent("desktop_file_bridge_probe_failed", {
+        transport:
+          this.nativeFileIpcAvailable === false ? "legacy_http" : "native_ipc",
+        reason: permissionDenied ? "permission_denied" : "unavailable",
+      });
+      return permissionDenied;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private async callDesktopFileBridge<T>(
     requestType:
       | "file_stat"
@@ -951,6 +1006,9 @@ export class DesktopSandboxBridge {
         return payload;
       } catch (error) {
         if (!this.isUnavailableNativeFileCommandError(error)) {
+          if (isFileTransportError(error)) {
+            throw this.fileTransportFailure(requestType, "native_ipc");
+          }
           throw error;
         }
         this.nativeFileIpcAvailable = false;
@@ -960,7 +1018,29 @@ export class DesktopSandboxBridge {
       }
     }
 
-    return this.callLegacyLocalFileServer<T>(legacyRoute, body);
+    try {
+      return await this.callLegacyLocalFileServer<T>(legacyRoute, body);
+    } catch (error) {
+      if (isFileTransportError(error)) {
+        throw this.fileTransportFailure(requestType, "legacy_http");
+      }
+      throw error;
+    }
+  }
+
+  private fileTransportFailure(
+    operation: string,
+    transport: "native_ipc" | "legacy_http",
+  ): Error {
+    // Never include file paths, content, loopback credentials, or raw errors in analytics.
+    captureAuthenticatedEvent("desktop_file_bridge_transport_failed", {
+      connectionId: this.connectionId,
+      operation,
+      transport,
+    });
+    return new Error(
+      `Desktop file bridge transport failed (${transport}, ${operation}). Reconnect the Desktop app and retry after it is ready. A write may have completed; verify the file before retrying a mutation. This is not a file-permission diagnosis.`,
+    );
   }
 
   private countLines(content: string): number {

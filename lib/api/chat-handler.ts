@@ -1,3 +1,4 @@
+import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   evaluateFreeMonthlyBudget,
   captureFreeMonthlyBudgetExposure,
@@ -1904,6 +1905,7 @@ export const createChatHandler = () => {
 
             mergePrimaryStream(
               result.toUIMessageStream({
+                onError: formatToolStreamError,
                 generateMessageId: () => assistantMessageId,
                 messageMetadata: ({ part }) => {
                   if (part.type === "start") {
@@ -2272,6 +2274,7 @@ export const createChatHandler = () => {
 
                         writer.merge(
                           retryResult.toUIMessageStream({
+                            onError: formatToolStreamError,
                             generateMessageId: () => retryMessageId,
                             messageMetadata: ({ part }) => {
                               if (part.type === "start") {

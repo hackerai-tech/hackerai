@@ -323,6 +323,17 @@ export class CentrifugoSandbox extends EventEmitter {
 
   /** Native write/append support may be available without the full file API. */
   protected supportsNativeFileMutations(): boolean {
+    if (
+      this.connectionInfo.isDesktop === true &&
+      this.connectionInfo.capabilities?.files === false &&
+      this.workingDirectory
+    ) {
+      // The native adapter enforces allowedRoot, including symlinks. Do not
+      // downgrade project-scoped mutations to an unscoped shell write.
+      throw new Error(
+        "Desktop project file writes require the native file bridge. Reconnect the Desktop app and retry after it is ready.",
+      );
+    }
     return this.supportsNativeFileRelay();
   }
 
@@ -352,8 +363,11 @@ export class CentrifugoSandbox extends EventEmitter {
       const { platform, arch, release, hostname } = osInfo;
       const platformName = getPlatformDisplayName(platform);
 
-      const shellInfo =
-        platform === "win32"
+      const shellInfo = this.connectionInfo.isDesktop
+        ? platform === "win32"
+          ? "Desktop commands use Git Bash when available, otherwise cmd.exe /C. Confirm the active shell before choosing shell-specific syntax."
+          : 'Desktop commands use the host\'s configured login shell with -lc, which may be zsh, bash, or sh. Do not assume Bash. Confirm the shell and home directory with `printf \'%s\\n\' "$SHELL" "$HOME"` before using shell-specific syntax or choosing an absolute workspace path.'
+        : platform === "win32"
           ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
           : `Commands are invoked via /bin/bash -c.`;
       const agentBrowserProbe =
@@ -369,6 +383,8 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
 - Process management (can affect host system)${projectContext}
+
+Quote URLs and paths, especially URLs containing ?, &, or brackets; zsh treats unquoted patterns as globs. Do not assume /root or /home/user exists on this host. Check command availability before use; if rg is missing, use grep or find. A successful final pipeline command does not prove earlier commands succeeded: inspect stderr and use explicit status checks or pipefail when supported. Do not install host tools without the user's request.
 
 Browser automation is host-dependent on this connection. Chromium and agent-browser are preinstalled only in the Cloud sandbox. If browser automation is needed, first check with \`${agentBrowserProbe}\`. Use agent-browser only if it is already installed, and do not install browser automation packages on the host unless the user explicitly asks.${capabilities?.pty === false ? "\n\nInteractive PTY sessions are not available on this connection. Use non-interactive terminal commands only." : ""}`;
     }
@@ -1547,7 +1563,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         return;
       }
 
-      const { useBash, path, escapePath } = await this.shellContext(rawPath);
+      const { useBash, path, escapePath, escapeValue } =
+        await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
 
       // Ensure parent directory exists. Pass the native (unconverted) dir
@@ -1645,14 +1662,13 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         }
       } else {
         const escapedPath = escapePath(path);
-        // Docker containers and Unix dangerous-mode hosts use cat heredoc
-        // (more efficient — no ~33% base64 inflation or arg length limits).
+        // Quote text as one literal argument; printf preserves trailing newlines
+        // exactly, unlike a heredoc which always adds a final newline.
         let command: string;
         if (isBinary) {
           command = `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`;
         } else {
-          const delimiter = `HACKERAI_EOF_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-          command = `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
+          command = `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
         }
 
         const result = await this.commands.run(command, {
