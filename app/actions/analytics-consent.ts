@@ -42,11 +42,19 @@ export async function saveAnalyticsConsent(
 
   // Resolve persisted attribution even when the visitor cookie has expired.
   const { user } = await withAuth();
-  if (user)
-    await getConvexClient().mutation(api.influencerAnalytics.optOut, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId: user.id,
-    });
+  if (user) {
+    let cursor: string | null = null;
+    do {
+      cursor = await getConvexClient().mutation(
+        api.influencerAnalytics.optOut,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          userId: user.id,
+          cursor,
+        },
+      );
+    } while (cursor !== null);
+  }
 
   // Only a signed browser cookie may opt out its visitor. Preserve it if persistence fails so retry remains possible.
   for (const name of [INFLUENCER_COOKIE, INFLUENCER_VISITOR_COOKIE]) {

@@ -37,6 +37,20 @@ function database() {
             },
             first: async () => rows[0] ?? null,
             take: async (n: number) => rows.slice(0, n),
+            paginate: async ({
+              cursor,
+              numItems,
+            }: {
+              cursor: string | null;
+              numItems: number;
+            }) => {
+              const start = Number(cursor ?? 0);
+              return {
+                page: rows.slice(start, start + numItems),
+                isDone: start + numItems >= rows.length,
+                continueCursor: String(start + numItems),
+              };
+            },
           };
         },
       }),
@@ -196,6 +210,11 @@ describe("influencer financial ledger", () => {
     db.tables.account_identities = [
       { latest_user_id: signup.userId, identity_hash: signup.identity },
     ];
+    // Email changes can leave multiple identity hashes belonging to the same user.
+    db.tables.account_identities.push({
+      latest_user_id: signup.userId,
+      identity_hash: "free_quota:v1:previous-email",
+    });
     await db.call("optOut", { userId: signup.userId });
     await db.call("optOut", { userId: signup.userId });
     expect(db.tables.influencer_analytics_optouts).toHaveLength(1);

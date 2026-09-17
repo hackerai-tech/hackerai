@@ -168,20 +168,23 @@ export const optOut = mutation({
     ...auth,
     visitorId: v.optional(v.string()),
     userId: v.optional(v.string()),
+    cursor: v.optional(v.union(v.string(), v.null())),
   },
-  returns: v.null(),
+  returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const visitors = new Set<string>();
     if (validVisitor(args.visitorId)) visitors.add(args.visitorId);
+    let nextCursor: string | null = null;
     if (args.userId) {
-      const identity = await ctx.db
+      const page = await ctx.db
         .query("account_identities")
         .withIndex("by_latest_user_id", (q) =>
           q.eq("latest_user_id", args.userId!),
         )
-        .unique();
-      if (identity) {
+        .paginate({ cursor: args.cursor ?? null, numItems: 100 });
+      nextCursor = page.isDone ? null : page.continueCursor;
+      for (const identity of page.page) {
         const attribution = await ctx.db
           .query("influencer_attributions")
           .withIndex("by_identity", (q) =>
@@ -202,6 +205,6 @@ export const optOut = mutation({
           visitor_id: visitorId,
         });
     }
-    return null;
+    return nextCursor;
   },
 });

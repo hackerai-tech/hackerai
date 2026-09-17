@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockWithAuth = jest.fn<() => Promise<{ user: { id: string } | null }>>();
-const mockMutation = jest.fn<(...args: unknown[]) => Promise<null>>();
+const mockMutation = jest.fn<(...args: unknown[]) => Promise<string | null>>();
 jest.mock("@workos-inc/authkit-nextjs", () => ({ withAuth: mockWithAuth }));
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ mutation: mockMutation }),
@@ -45,7 +45,13 @@ describe("saveAnalyticsConsent", () => {
 
   it("withdraws persisted attribution for the authenticated user without browser cookies", async () => {
     mockWithAuth.mockResolvedValue({ user: { id: "user_authenticated" } });
+    mockMutation.mockResolvedValueOnce("next-page").mockResolvedValueOnce(null);
     await saveAnalyticsConsent("declined");
+    expect(mockMutation).toHaveBeenCalledTimes(2);
+    expect(mockMutation).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ cursor: "next-page" }),
+    );
     expect(mockMutation).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ userId: "user_authenticated" }),
