@@ -15,7 +15,9 @@ const mockUseQuery = jest.fn<any>();
 const mockOpenSidebar = jest.fn();
 const mockCloseSidebar = jest.fn();
 const mockRetrySubagentRealtime = jest.fn();
-let mockSubagentRealtime = {
+let mockSubagentRealtime: ReturnType<
+  typeof import("@/app/hooks/useSubagentRealtime").useSubagentRealtime
+> = {
   message: null,
   state: "idle",
   retry: mockRetrySubagentRealtime,
@@ -86,8 +88,18 @@ jest.mock("../ComputerCodeBlock", () => ({
 }));
 
 jest.mock("../TerminalCodeBlock", () => ({
-  TerminalCodeBlock: ({ command }: { command: string }) => (
-    <pre data-testid="terminal-code-block">{command}</pre>
+  TerminalCodeBlock: ({
+    command,
+    output,
+  }: {
+    command: string;
+    output?: string;
+  }) => (
+    <pre data-testid="terminal-code-block">
+      {command}
+      {"\n"}
+      {output}
+    </pre>
   ),
 }));
 
@@ -369,5 +381,142 @@ describe("ComputerSidebar reconnect behavior", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(mockRetrySubagentRealtime).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins a clicked subagent command through replay, output updates, and new commands until Jump to live", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "echo command-2",
+      output: "selected output",
+      isExecuting: true,
+      toolCallId: "child-tool-2",
+      origin,
+    };
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? { status: "running", trigger_run_id: "run-child" }
+        : [],
+    );
+    mockOpenSidebar.mockImplementation((content) => {
+      mockSidebarContent = content as SidebarContent;
+    });
+    const { rerender } = render(<ComputerSidebar />);
+    const replay = (count: number, selectedOutput = "updated output") => {
+      mockSubagentRealtime = {
+        ...mockSubagentRealtime,
+        state: "live",
+        message: {
+          id: "child-message",
+          role: "assistant",
+          parts: Array.from({ length: count }, (_, index) => ({
+            type: "tool-shell" as const,
+            toolCallId: `child-tool-${index + 1}`,
+            state: "output-available" as const,
+            input: { action: "exec", command: `echo command-${index + 1}` },
+            output: { output: index === 1 ? selectedOutput : "other output" },
+          })),
+        },
+      };
+      rerender(<ComputerSidebar />);
+    };
+
+    // A fresh subscription first replays commands older than the selected one.
+    replay(1);
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-2",
+    );
+    replay(2);
+    replay(3);
+    replay(3, "new selected output");
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-2",
+    );
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "new selected output",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump to live" }));
+    rerender(<ComputerSidebar />);
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-3",
+    );
+    replay(4);
+    rerender(<ComputerSidebar />);
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-4",
+    );
+
+    // Browsing back and forward pins even the last currently known command.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Previous tool execution" }),
+    );
+    rerender(<ComputerSidebar />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next tool execution" }),
+    );
+    rerender(<ComputerSidebar />);
+    mockOpenSidebar.mockClear();
+    replay(5);
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-4",
+    );
+
+    // Reconnecting replays from zero again without releasing the selection.
+    replay(0);
+    replay(1);
+    replay(5);
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-4",
+    );
+  });
+
+  it("still follows newly arriving tools in normal messages", () => {
+    const onNavigate = jest.fn();
+    const first = otherToolMessage.parts[0];
+    const props = {
+      sidebarOpen: true,
+      sidebarContent: {
+        command: "pwd",
+        output: "/tmp\n",
+        isExecuting: false,
+        toolCallId: first.toolCallId,
+      },
+      closeSidebar: jest.fn(),
+      onNavigate,
+      status: "streaming" as const,
+    };
+    const { rerender } = render(
+      <ComputerSidebarBase {...props} messages={[otherToolMessage]} />,
+    );
+    rerender(
+      <ComputerSidebarBase
+        {...props}
+        messages={[
+          {
+            ...otherToolMessage,
+            parts: [
+              first,
+              { ...first, toolCallId: "new-tool", input: { command: "date" } },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "new-tool" }),
+    );
   });
 });

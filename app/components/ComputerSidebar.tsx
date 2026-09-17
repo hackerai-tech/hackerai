@@ -69,6 +69,8 @@ interface ComputerSidebarProps {
   messages?: any[];
   onNavigate?: (content: SidebarContent) => void;
   status?: ChatStatus;
+  /** Child tool clicks select a command; following new tools requires Jump to live. */
+  followLiveOnOpen?: boolean;
   backNavigation?: {
     label: string;
     onBack: () => void;
@@ -308,11 +310,21 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   messages = [],
   onNavigate,
   status,
+  followLiveOnOpen = true,
   backNavigation,
   realtimeRecovery,
 }) => {
   const [isWrapped, setIsWrapped] = useState(true);
+  const [isFollowingLive, setIsFollowingLive] = useState(followLiveOnOpen);
   const previousToolCountRef = useRef<number>(0);
+
+  const navigateManually = useCallback(
+    (content: SidebarContent) => {
+      if (!followLiveOnOpen) setIsFollowingLive(false);
+      onNavigate?.(content);
+    },
+    [followLiveOnOpen, onNavigate],
+  );
 
   const {
     toolExecutions,
@@ -320,7 +332,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     maxIndex,
     handlePrev,
     handleNext,
-    handleJumpToLive,
     handleSliderClick,
     getProgressPercentage,
     isAtLive,
@@ -329,8 +340,15 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   } = useSidebarNavigation({
     messages,
     sidebarContent,
-    onNavigate,
+    onNavigate: onNavigate ? navigateManually : undefined,
   });
+
+  const handleJumpToLive = useCallback(() => {
+    const latestTool = toolExecutions.at(-1);
+    if (!latestTool || !onNavigate) return;
+    setIsFollowingLive(true);
+    onNavigate(latestTool);
+  }, [onNavigate, toolExecutions]);
 
   // When showing a terminal, use live data from toolExecutions so streaming output updates in real time
   const resolvedTerminal = useMemo(() => {
@@ -366,11 +384,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   // Initialize tool count ref on mount
   useEffect(() => {
+    setIsFollowingLive(followLiveOnOpen);
     if (sidebarOpen && toolExecutions.length > 0) {
       previousToolCountRef.current = toolExecutions.length;
+    } else {
+      previousToolCountRef.current = 0;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally only sync on sidebar open/close, not on every tool execution
-  }, [sidebarOpen]);
+  }, [sidebarOpen, followLiveOnOpen]);
 
   // Auto-follow new tools when at live position during streaming
   useEffect(() => {
@@ -382,15 +403,18 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     const previousToolCount = previousToolCountRef.current;
 
     // Check if new tools arrived (count increased)
-    if (currentToolCount > previousToolCount) {
+    if (
+      isFollowingLive &&
+      previousToolCount > 0 &&
+      currentIndex >= 0 &&
+      currentToolCount > previousToolCount
+    ) {
       // Check if we were at the last position before new tools arrived
       const wasAtLive = currentIndex === previousToolCount - 1;
 
-      // Also check if we're currently at live (in case sidebarContent already updated)
-      const isCurrentlyAtLive = currentIndex === currentToolCount - 1;
-
-      // Auto-update if we were at live OR currently at live
-      if (wasAtLive || isCurrentlyAtLive) {
+      // An absent selection has index -1, just like an empty replay's last
+      // position. Neither means the user chose to follow replayed tools.
+      if (wasAtLive) {
         // Navigate to the latest tool execution
         // Since we only extract file operations when output is available,
         // content should always be ready
@@ -405,6 +429,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     previousToolCountRef.current = currentToolCount;
   }, [
     toolExecutions.length,
+    isFollowingLive,
     currentIndex,
     sidebarOpen,
     onNavigate,
@@ -1049,19 +1074,20 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     live
                   </span>
                 </div>
-                {!isAtLive && (
-                  <button
-                    onClick={handleJumpToLive}
-                    className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
-                    style={{ bottom: "calc(100% + 10px)" }}
-                    aria-label="Jump to live"
-                  >
-                    <Play size={16} className="text-foreground" />
-                    <span className="text-foreground text-sm font-medium">
-                      Jump to live
-                    </span>
-                  </button>
-                )}
+                {toolExecutions.length > 0 &&
+                  (!isAtLive || !isFollowingLive) && (
+                    <button
+                      onClick={handleJumpToLive}
+                      className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
+                      style={{ bottom: "calc(100% + 10px)" }}
+                      aria-label="Jump to live"
+                    >
+                      <Play size={16} className="text-foreground" />
+                      <span className="text-foreground text-sm font-medium">
+                        Jump to live
+                      </span>
+                    </button>
+                  )}
                 <div></div>
               </div>
             </div>
@@ -1137,6 +1163,7 @@ const SubagentComputerSidebar = ({
       messages={messages}
       onNavigate={navigateWithinSubagent}
       status={timelineStatus}
+      followLiveOnOpen={false}
       backNavigation={{
         label: "Back to subagent",
         onBack: returnToSubagent,
@@ -1171,6 +1198,7 @@ export const ComputerSidebar: React.FC<{
   if (sidebarOpen && sidebarContent?.origin?.kind === "subagent") {
     return (
       <SubagentComputerSidebar
+        key={sidebarContent.origin.subagentId}
         closeSidebar={closeSidebar}
         openSidebar={openSidebar}
         origin={sidebarContent.origin}
