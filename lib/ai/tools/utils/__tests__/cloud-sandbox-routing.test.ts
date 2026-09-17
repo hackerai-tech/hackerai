@@ -435,6 +435,21 @@ describe("cloud sandbox provider routing", () => {
         cloud_sandbox_provider_fallback_event_version: 3,
       }),
     );
+    const failure = mockPostHogEvent.mock.calls.find(
+      ([event]) => event === "cloud_sandbox_acquisition_failed",
+    )[1];
+    const fallback = mockPostHogEvent.mock.calls.find(
+      ([event]) => event === "cloud_sandbox_provider_fallback",
+    )[1];
+    const completed = mockPostHogEvent.mock.calls.find(
+      ([event]) => event === "cloud_sandbox_acquisition_completed",
+    )[1];
+    expect(failure.acquisition_id).toEqual(expect.any(String));
+    expect(fallback.acquisition_id).toBe(failure.acquisition_id);
+    expect(completed.acquisition_id).toBe(failure.acquisition_id);
+    expect(mockEnsureMiosa.mock.calls[0][1].acquisitionId).toBe(
+      failure.acquisition_id,
+    );
   });
 
   it("excludes secret-like Miosa error names from all fallback telemetry", async () => {

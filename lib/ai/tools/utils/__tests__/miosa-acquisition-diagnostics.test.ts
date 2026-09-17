@@ -1,9 +1,67 @@
 import {
   createMiosaAcquisitionDiagnostics,
   miosaErrorDiagnostics,
+  miosaAcquisitionFailureDiagnostics,
 } from "../miosa-acquisition-diagnostics";
 
 describe("Miosa acquisition diagnostics", () => {
+  it("correlates frozen acquisition errors with safe provider operation and sandbox identifiers", async () => {
+    const onDiagnostic = jest.fn();
+    const sdk = {
+      id: "sandbox-1",
+      state: "resuming",
+      data: { operation_id: "operation-1", request_id: "request-1" },
+    };
+    const step = createMiosaAcquisitionDiagnostics({
+      templateId: "hackerai-tools",
+      workspaceName: "private-name",
+      acquisitionId: "acquisition-1",
+      getSandbox: () => sdk,
+      onDiagnostic,
+    });
+    const error = Object.freeze(
+      Object.assign(new Error("private body"), { code: "TIMEOUT" }),
+    );
+    await expect(
+      step("get_or_create", async () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+    expect(miosaAcquisitionFailureDiagnostics(error)).toEqual({
+      acquisition_id: "acquisition-1",
+      miosa_failure_stage: "get_or_create",
+      sandbox_id: "sandbox-1",
+      sandbox_state: "resuming",
+      provider_operation_id: "operation-1",
+      provider_request_id: "request-1",
+    });
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private");
+  });
+
+  it("sanitizes sandbox and operation identifiers and rejects arbitrary state strings", async () => {
+    const onDiagnostic = jest.fn();
+    const step = createMiosaAcquisitionDiagnostics({
+      templateId: "hackerai-tools",
+      workspaceName: "private-name",
+      getSandbox: () => ({
+        id: "msk_private",
+        state: "private output",
+        data: {
+          operation_id: "https://host?secret=private",
+          request_id: "msk_private",
+        },
+      }),
+      onDiagnostic,
+    });
+    await step("readiness", async () => true);
+    expect(onDiagnostic.mock.calls[0][0]).toMatchObject({
+      sandbox_id: undefined,
+      sandbox_state: undefined,
+      provider_operation_id: undefined,
+      provider_request_id: undefined,
+    });
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private");
+  });
   it.each([
     "not_pro",
     "existing_e2b_workspace",

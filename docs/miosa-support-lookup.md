@@ -35,6 +35,44 @@ Multiple matches are rejected; use the full existing workspace name or UUID.
 SDK sandbox listing determines which workspaces are returned, including whether
 destroyed workspaces are available.
 
+## Acquisition incident correlation
+
+Acquisition step, failure, fallback, and completion telemetry share an
+`acquisition_id`; a Trigger run can perform multiple acquisitions. Step events
+also contain sanitized sandbox ID/state and provider operation/request IDs when
+available. Local readiness failures retain their observed terminal state, not
+just the stale SDK object's state. Raw messages, headers, metadata, and user
+command/file content must not be collected to obtain this correlation.
+
+On an SDK acquisition timeout, reconciliation uses bounded read-only lookup of
+the known sandbox ID, or the stable name with matching external-user identity
+when a fresh create's ID is unknown. It never replays create/resume. A running,
+resuming, or provisioning result must still pass readiness and initialization
+before use. Pause/resume conflicts use the same verification path. Missing
+known IDs never fall back to a replacement by name.
+
+Reconciliation adds at most ten seconds of lookup time; its separate client has
+two-second HTTP timeouts and no HTTP retries. Failed reconciliation preserves
+the original failure for fallback and records the reconciliation cause as a
+separate step. Success means the VM is reused by the current request, not proof
+that no other late provider operations exist.
+
+If a late create remains invisible, telemetry records an unresolved failure.
+The configured seven-minute provider idle-pause policy remains the safeguard
+for unused late allocations. Automatic client-side pause/destroy is unsafe:
+another chat or worker may be using the shared workspace. Strict post-timeout
+cleanup needs a provider-side conditional cancellation/inactivity contract or
+a cross-worker use fence covering every sandbox transport; an in-process lock
+or a name lookup alone cannot establish inactivity. Keep E2B fallback enabled.
+
+Before deploying broadly, use an eligible Preview test account to run a bounded
+Agent command in a disposable chat, reconnect after pause, and verify completion
+and file integrity. Confirm acquisition step/fallback/completion correlation in
+the actual Trigger Preview worker. Controlled timeout/conflict tests should run
+in the test harness, never by disrupting a customer VM; recovery must use the
+known ID and pass readiness before commands execute. Live verification must
+not be inferred from mocked regression tests.
+
 ## Compatibility
 
 The 24-character external user hash, external workspace ID, and `-v2` sandbox
