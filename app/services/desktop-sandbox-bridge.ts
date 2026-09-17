@@ -64,6 +64,15 @@ const DESKTOP_STREAM_PUBLISH_RETRY_BASE_DELAY_MS = 250;
 const DESKTOP_STREAM_RECONNECT_WAIT_MS = 5_000;
 const DESKTOP_STREAM_RECOVERY_DEADLINE_BUFFER_MS = 3_000;
 const DESKTOP_BRIDGE_READY_TIMEOUT_MS = 15_000;
+const DESKTOP_FILE_PROBE_TIMEOUT_MS = 3_000;
+
+/** Recognize browser transport failures without swallowing native filesystem errors. */
+function isFileTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^(load failed|failed to fetch|fetch failed|networkerror.*|network request failed)$/i.test(
+    message,
+  );
+}
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -212,6 +221,7 @@ export class DesktopSandboxBridge {
   private connectionId: string | null = null;
   private activeCommands = new Set<string>();
   private isStoppingOrStopped = true;
+  private startupGeneration = 0;
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
@@ -347,15 +357,33 @@ export class DesktopSandboxBridge {
   }
 
   async start(): Promise<string> {
+    const generation = ++this.startupGeneration;
+    const wasStopped = () =>
+      this.isStoppingOrStopped || generation !== this.startupGeneration;
     this.isStoppingOrStopped = false;
+    this.nativeFileIpcAvailable = null;
     const osInfo = await this.getOsInfo();
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
+    const files = await this.probeFileBridge();
+    if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
       await this.config.connectDesktop({
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: { commands: true, pty: true, files },
       });
+
+    if (wasStopped()) {
+      // stop() could not see this connection while registration was pending.
+      // Clean up only this attempt, without touching a newer start's relay.
+      await this.config.disconnectDesktop({ connectionId }).catch(() => {
+        console.warn(
+          "[DesktopSandboxBridge] Failed to disconnect canceled startup",
+        );
+      });
+      throw new Error("Desktop bridge stopped during startup");
+    }
 
     this.connectionId = connectionId;
 
@@ -625,7 +653,7 @@ export class DesktopSandboxBridge {
       });
       throw error;
     }
-    if (this.isStoppingOrStopped || this.connectionId !== connectionId) {
+    if (wasStopped() || this.connectionId !== connectionId) {
       throw new Error("Desktop bridge stopped before relay became ready");
     }
     this.config.onConnectionState?.("connected");
@@ -930,6 +958,52 @@ export class DesktopSandboxBridge {
     return payload as T;
   }
 
+  /** Check file transport availability without creating files or hanging terminal startup. */
+  private async probeFileBridge(): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // A read-only directory stat checks the transport without creating files
+      // or depending on a particular home directory or shell.
+      const payload = await Promise.race([
+        this.callDesktopFileBridge<{ kind: string; path: string }>(
+          "file_stat",
+          "/files/stat",
+          { path: "." },
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Desktop file probe timed out")),
+            DESKTOP_FILE_PROBE_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      if (
+        !payload ||
+        payload.kind !== "not_file" ||
+        typeof payload.path !== "string"
+      ) {
+        throw new Error("Invalid desktop file probe response");
+      }
+      return true;
+    } catch (error) {
+      // A filesystem permission error proves the handler responded. Keep native
+      // handling so an access denial cannot silently select a different adapter.
+      const message = this.getErrorMessage(error);
+      const permissionDenied =
+        /permission denied|access denied|operation not permitted|forbidden/i.test(
+          message,
+        );
+      captureAuthenticatedEvent("desktop_file_bridge_probe_failed", {
+        transport:
+          this.nativeFileIpcAvailable === false ? "legacy_http" : "native_ipc",
+        reason: permissionDenied ? "permission_denied" : "unavailable",
+      });
+      return permissionDenied;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   private async callDesktopFileBridge<T>(
     requestType:
       | "file_stat"
@@ -951,6 +1025,9 @@ export class DesktopSandboxBridge {
         return payload;
       } catch (error) {
         if (!this.isUnavailableNativeFileCommandError(error)) {
+          if (isFileTransportError(error)) {
+            throw this.fileTransportFailure(requestType, "native_ipc");
+          }
           throw error;
         }
         this.nativeFileIpcAvailable = false;
@@ -960,7 +1037,29 @@ export class DesktopSandboxBridge {
       }
     }
 
-    return this.callLegacyLocalFileServer<T>(legacyRoute, body);
+    try {
+      return await this.callLegacyLocalFileServer<T>(legacyRoute, body);
+    } catch (error) {
+      if (isFileTransportError(error)) {
+        throw this.fileTransportFailure(requestType, "legacy_http");
+      }
+      throw error;
+    }
+  }
+
+  /** Report the failing adapter without logging paths, content, credentials, or raw errors. */
+  private fileTransportFailure(
+    operation: string,
+    transport: "native_ipc" | "legacy_http",
+  ): Error {
+    captureAuthenticatedEvent("desktop_file_bridge_transport_failed", {
+      connectionId: this.connectionId,
+      operation,
+      transport,
+    });
+    return new Error(
+      `Desktop file bridge transport failed (${transport}, ${operation}). Reconnect the Desktop app and retry after it is ready. A write may have completed; verify the file before retrying a mutation. This is not a file-permission diagnosis.`,
+    );
   }
 
   private countLines(content: string): number {
@@ -1641,6 +1740,7 @@ export class DesktopSandboxBridge {
   }
 
   async stop(): Promise<void> {
+    this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
     this.publishQueue = null;

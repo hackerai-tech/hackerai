@@ -1470,7 +1470,7 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("files.write", () => {
-    it("uses heredoc approach for text content", async () => {
+    it("uses literal printf for text content", async () => {
       jest.useRealTimers();
 
       let callCount = 0;
@@ -1518,20 +1518,20 @@ describe("CentrifugoSandbox", () => {
         });
         await sandbox.files.write("/tmp/hackerai/test.txt", "hello world");
 
-        // files.write runs mkdir -p then cat > ... heredoc.
-        // Find the subscription whose publish was called with a cat > command
+        // Find the write after the parent-directory setup.
         const allPublishCalls = mockSubscriptions.flatMap((sub) =>
           (sub.publish as jest.Mock).mock.calls.map(
             (call: unknown[]) => call[0],
           ),
         );
         const writeCmd = allPublishCalls.find((msg: { command?: string }) =>
-          msg?.command?.includes("cat >"),
+          msg?.command?.includes("printf '%s'"),
         );
         expect(writeCmd).toBeDefined();
 
-        expect(writeCmd.command).toContain("cat >");
-        expect(writeCmd.command).toContain("<<'HACKERAI_EOF_");
+        expect(writeCmd.command).toBe(
+          "printf '%s' 'hello world' > '/tmp/hackerai/test.txt'",
+        );
         expect(writeCmd.command).toContain("hello world");
       } finally {
         jest.useFakeTimers();
@@ -2675,13 +2675,12 @@ describe("CentrifugoSandbox", () => {
       expect(runs[0]).toContain("-maxdepth 1 -type f");
     });
 
-    it("files.write for text content uses heredoc with MSYS path", async () => {
+    it("files.write preserves text with an MSYS path", async () => {
       const { sandbox, runs } = createWindowsBashSandbox();
       await sandbox.files.write("/tmp/foo/bar.txt", "hello");
       // First call is the ensureDirectory mkdir -p, second is the write itself.
       expect(runs[0]).toBe("mkdir -p '/c/temp/foo'");
-      expect(runs[1]).toContain("cat > '/c/temp/foo/bar.txt'");
-      expect(runs[1]).toContain("<<'HACKERAI_EOF_");
+      expect(runs[1]).toBe("printf '%s' 'hello' > '/c/temp/foo/bar.txt'");
       expect(runs[1]).toContain("hello");
       // No certutil / cmd.exe artifacts.
       expect(runs[1]).not.toContain("certutil");
@@ -2714,6 +2713,49 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("getSandboxContext", () => {
+    it("describes the desktop login shell without assuming Bash or a Linux home", () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          osInfo: {
+            platform: "darwin",
+            arch: "arm64",
+            release: "24",
+            hostname: "mac",
+          },
+        },
+        defaultConfig,
+      );
+      expect(sandbox.getSandboxContext()).toContain(
+        "configured login shell with -lc",
+      );
+      expect(sandbox.getSandboxContext()).toContain('"$HOME"');
+      expect(sandbox.getSandboxContext()).toContain("Quote URLs and paths");
+      expect(sandbox.getSandboxContext()).not.toContain("/bin/bash -c");
+    });
+
+    it("does not downgrade project-scoped mutations when the file probe failed", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, files: false },
+        },
+        defaultConfig,
+        "/project",
+      );
+      const run = jest.spyOn(sandbox.commands, "run");
+      await expect(
+        sandbox.files.write("/outside/file", "content"),
+      ).rejects.toThrow("require the native file bridge");
+      await expect(
+        sandbox.files.append("/outside/file", "content"),
+      ).rejects.toThrow("require the native file bridge");
+      expect(run).not.toHaveBeenCalled();
+    });
     it("returns context with OS info", () => {
       const sandbox = createSandbox({
         osInfo: {

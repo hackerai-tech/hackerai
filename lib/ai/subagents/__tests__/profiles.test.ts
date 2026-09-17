@@ -3,6 +3,20 @@ import { describe, expect, it } from "@jest/globals";
 import { getSubagentProfileDefinition } from "../profiles";
 
 describe("subagent profiles", () => {
+  it.each(["general", "security_validation", "security_task"] as const)(
+    "allows evidence correction without duplicate accepted results in %s",
+    (name) => {
+      const profile = getSubagentProfileDefinition(name);
+      const instructions = [
+        profile.buildSystemPrompt({ objective: "Test" }),
+        profile.buildPrompt({ objective: "Test" }, []),
+        profile.finalResultTool.description,
+      ].join("\n");
+      expect(instructions).toContain("retry once");
+      expect(instructions).toContain("never resubmit after acceptance");
+      expect(instructions).not.toContain("exactly once");
+    },
+  );
   it("defines a generic profile whose tools come from server capability bundles", () => {
     const profile = getSubagentProfileDefinition("general");
     expect(profile.finalResultTool.name).toBe("submit_task_result");

@@ -1,3 +1,4 @@
+import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import {
   evaluateFreeMonthlyBudget,
   captureFreeMonthlyBudgetExposure,
@@ -5017,6 +5018,7 @@ export const agentLongTask = task({
             mergePrimaryStream(
               withAgentLongStreamHeartbeat(
                 result.toUIMessageStream({
+                  onError: formatToolStreamError,
                   generateMessageId: () => assistantMessageId,
                   sendReasoning: true,
                   messageMetadata: ({ part }) => {
@@ -5480,6 +5482,7 @@ export const agentLongTask = task({
                         writer.merge(
                           withAgentLongStreamHeartbeat(
                             retryResult.toUIMessageStream({
+                              onError: formatToolStreamError,
                               generateMessageId: () => retryMessageId,
                               sendReasoning: true,
                               messageMetadata: ({ part }) => {
@@ -5615,6 +5618,7 @@ export const agentLongTask = task({
                                     writer.merge(
                                       withAgentLongStreamHeartbeat(
                                         finalRetryResult.toUIMessageStream({
+                                          onError: formatToolStreamError,
                                           generateMessageId: () =>
                                             finalRetryMessageId,
                                           sendReasoning: true,
