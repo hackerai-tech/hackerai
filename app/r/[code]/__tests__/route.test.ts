@@ -1,5 +1,7 @@
 import { partnerCookie, readPartnerCookie } from "@/lib/influencers/cookie";
 import { INFLUENCER_COOKIE } from "@/lib/influencers/policy";
+import { INFLUENCER_VISITOR_COOKIE } from "@/lib/influencers/cookie";
+import { after } from "next/server";
 const mockQuery = jest.fn();
 jest.mock("@/lib/db/convex-client", () => ({
   getConvexClient: () => ({ query: mockQuery }),
@@ -35,8 +37,40 @@ const request = (values: Record<string, string> = {}, country = "US") =>
   }) as any;
 describe("short influencer links", () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     mockQuery.mockReset().mockResolvedValue({ active: true });
     process.env.WORKOS_COOKIE_PASSWORD = "test-cookie-key";
+  });
+  it("retains the code without cookies or events while consent is pending", async () => {
+    const response = await GET(request({}, "DE"), {
+      params: Promise.resolve({ code: "Medusa" }),
+    });
+    expect(response.headers.get("location")).toBe(
+      "https://hackerai.co/?ref=medusa",
+    );
+    expect(response.cookies.get(INFLUENCER_COOKIE)?.value).toBeUndefined();
+    expect(
+      response.cookies.get(INFLUENCER_VISITOR_COOKIE)?.value,
+    ).toBeUndefined();
+    expect(after).not.toHaveBeenCalled();
+  });
+  it("discards the code without tracking for declined consent and bots", async () => {
+    const botRequest = request({}, "DE");
+    botRequest.headers.set("user-agent", "SocialPreviewBot");
+    for (const req of [
+      request({ hackerai_analytics_consent: "declined" }, "DE"),
+      botRequest,
+    ]) {
+      const response = await GET(req, {
+        params: Promise.resolve({ code: "medusa" }),
+      });
+      expect(response.headers.get("location")).toBe("https://hackerai.co/");
+      expect(response.cookies.get(INFLUENCER_COOKIE)?.value).toBeUndefined();
+      expect(
+        response.cookies.get(INFLUENCER_VISITOR_COOKIE)?.value,
+      ).toBeUndefined();
+    }
+    expect(after).not.toHaveBeenCalled();
   });
   it("normalizes the slug and redirects to the app with signed attribution", async () => {
     const response = await GET(request(), {
