@@ -70,13 +70,15 @@ const response = (parts: unknown[]) => ({
 afterEach(() => jest.useRealTimers());
 
 it.each([
-  [false, false],
-  [true, false],
-  [false, true],
-  [true, true],
+  [false, false, true],
+  [true, false, true],
+  [false, true, true],
+  [true, true, true],
+  [true, false, false],
+  [true, true, false],
 ])(
-  "settles an unfinished retained tool before fallback (later step: %s, completed tail: %s)",
-  async (laterStep, allowCompletedTail) => {
+  "settles an unfinished retained tool before fallback (later step: %s, completed tail: %s, completed tool: %s)",
+  async (laterStep, allowCompletedTail, hasCompletedTool) => {
     const execute = jest.fn();
     const tools = { save: tool({ inputSchema: z.object({}), execute }) };
     const unfinished = {
@@ -99,7 +101,7 @@ it.each([
         { type: "step-start" },
         unfinished,
         ...(laterStep ? [{ type: "step-start" }] : []),
-        completed,
+        ...(hasCompletedTool ? [completed] : []),
         ...(allowCompletedTail
           ? []
           : [{ type: "text", text: "incomplete", state: "streaming" }]),
@@ -156,8 +158,12 @@ it.each([
       unmatched_tool_call_count: 0,
       unmatched_tool_result_count: 0,
     });
-    expect(continuation?.preservedCompletedToolCount).toBe(1);
-    expect(continuation?.messages[0].parts).toContainEqual(completed);
+    expect(continuation?.preservedCompletedToolCount).toBe(
+      hasCompletedTool ? 1 : 0,
+    );
+    expect(continuation?.preservedUnknownToolCount).toBe(1);
+    if (hasCompletedTool)
+      expect(continuation?.messages[0].parts).toContainEqual(completed);
     expect(continuation?.messages[0].parts).toContainEqual({
       ...unfinished,
       state: "output-error",

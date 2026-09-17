@@ -2229,7 +2229,11 @@ export const createChatHandler = () => {
                             prepareProviderDisconnectContinuation(messages, {
                               allowCompletedTail: true,
                             });
-                          if (continuation?.preservedCompletedToolCount) {
+                          if (
+                            continuation &&
+                            (continuation.preservedCompletedToolCount > 0 ||
+                              continuation.preservedUnknownToolCount > 0)
+                          ) {
                             state.finalMessages = [
                               ...state.finalMessages,
                               ...continuation.messages,
