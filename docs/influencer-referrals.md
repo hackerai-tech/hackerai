@@ -168,3 +168,86 @@ In the verified Preview environment with Stripe test mode:
    and reference and confirm the paid balance changes once.
 5. Confirm the short link works through the actual Preview URL. Repeat the
    non-payment checks on `hackerai.co` only after an authorized production rollout.
+
+## PostHog analytics
+
+The influencer funnel is separate; the existing `referred_*` events
+belong to the usage-credit program. Filter the **Influencer referrals** dashboard
+by the event property `influencer_code`. Preview/development uses the
+[development dashboard](https://us.posthog.com/project/401167/dashboard/2108269);
+Production uses the [production dashboard](https://us.posthog.com/project/144137/dashboard/2108283).
+Never send QA fixtures to Production.
+
+A signed random browser visitor ID connects link visits, attributed signup,
+checkout creation, and first payment. It survives clearing the attribution
+cookie after signup. Repeated visits count separately; unique visitors count
+once per browser ID. Cookies last 30 days. Browsers/devices, expired cookies,
+blocked cookies, and missing consent cannot be joined or inferred. Existing
+legacy attribution cookies still work for commissions, but have no visitor ID
+and are excluded from this new analytics series. Historical traffic is not
+backfilled. Signup events mean eligible attributed signups, not every account
+that opened a link. The ordered funnel uses the same influencer at every step
+and a 30-day visit-to-payment window; recent cohorts are still incomplete.
+
+Consent denial prevents visitor cookies and link events. Withdrawal through
+privacy settings clears influencer cookies, records an opt-out for signed
+visitor IDs and the signed-in account’s persisted attribution (including expired
+cookies), suppresses their pending events, and stops future financial
+analytics for those IDs. It does not erase delivered historical events or the
+commission ledger. An event already in flight may finish delivery. A database
+failure during withdrawal is surfaced so the user can retry before the signed
+visitor cookie is removed.
+
+Financial transitions and signup attribution enqueue events in the same Convex
+transaction. Delivery runs after HTTP responses; the authenticated
+`/api/cron/influencer-analytics` job retries up to 500 queued events each minute
+in Production. Preview has immediate delivery but Vercel does not run Preview
+crons; invoke the authenticated endpoint or run an operator report to retry.
+Capture failures leave events pending and do not prevent payments or payouts.
+Original timestamps and stable UUIDs survive retries. PostHog deduplication is
+eventual, so revenue tables also deduplicate UUIDs before summing signed deltas.
+Stripe's second-resolution payment time is clamped just after checkout for the
+first-payment funnel event when both happen in the same second; the invoice
+ledger retains the original Stripe payment time.
+
+Use PostHog's Activity view for automatically refreshing incoming events.
+Dashboards require refresh and are subject to ingestion and query caching;
+this is near-real-time measurement, not an instantaneous or authoritative
+payout balance. Set `INFLUENCER_ANALYTICS_DISABLED=true` in the relevant web
+runtime to pause delivery without discarding the queue. This uses the web
+runtime's existing PostHog write key/host and service key; no Trigger worker
+configuration is involved. The cron uses the existing `CRON_SECRET`.
+
+Revenue and commission charts sum deltas: first invoice observations add the
+current amounts; refunds, credits, and later reconciliation adjust them.
+First-payment conversions remain conversions after a refund; review the
+adjustment and net-revenue charts alongside the funnel. Renewals are paid
+invoices whose Stripe invoice ID differs from the subscription's first positive
+paid invoice. Review reasons highlight unsupported payments and open disputes.
+The existing ledger's revenue basis is collected subscription revenue after
+discounts/tax/refunds/credits, not accounting profit or a chargeback settlement
+report. Use Stripe to reconcile dispute losses. Currency-specific money must
+never be summed together; the dashboard economics table is USD only.
+
+Record a partner's **cumulative USD sponsorship spend**, rather than adding the
+same fee each time, using the usual verified target fields:
+
+```json
+{ "action": "cost", "code": "example", "amountCents": 65000 }
+```
+
+This records $650 of total spend; repeating it changes nothing. A later
+correction emits only the difference. No money is transferred. The operator
+report includes the saved spend. Dashboard contribution subtracts commissions
+and recorded sponsorship spend from revenue; it excludes payment processing,
+model/sandbox costs, and dispute settlements, so must not be called profit.
+Period acquisition spend per new payer includes renewal commissions and the
+period in which spend was recorded; it is not a matched acquisition-cohort CAC.
+
+Only allowlisted event properties are exported: partner code, random visitor
+ID, plan/interval, currency, monetary deltas, review status and elapsed time.
+Contact emails, identity HMACs, raw Stripe IDs, prompts, targets, findings and
+payment credentials are not sent. Person profiles and GeoIP enrichment are
+disabled for these events. Delivered queue rows are pruned in bounded batches
+after 90 days; invoice revisions and attribution records prevent replay from
+recreating financial/signup transitions.

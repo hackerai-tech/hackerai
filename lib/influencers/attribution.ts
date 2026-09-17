@@ -82,5 +82,6 @@ export async function attributeInfluencer(
     userCreatedAt: createdAt,
     code: click.code,
     clickedAt: click.clickedAt,
+    ...(click.visitorId ? { analyticsVisitorId: click.visitorId } : {}),
   });
 }

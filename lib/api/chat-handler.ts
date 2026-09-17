@@ -1072,6 +1072,7 @@ export const createChatHandler = () => {
                   sandboxFiles,
                   ensureSandbox,
                   {
+                    signal: userStopSignal.signal,
                     retryWithFreshSandboxOnTransientFailure: true,
                     logContext: {
                       service: "chat-handler",
@@ -2231,7 +2232,14 @@ export const createChatHandler = () => {
                             prepareProviderDisconnectContinuation(messages, {
                               allowCompletedTail: true,
                             });
-                          if (continuation?.preservedCompletedToolCount) {
+                          if (!continuation?.preservedCompletedToolCount) {
+                            usageTracker.resetModelLeg();
+                          }
+                          if (
+                            continuation &&
+                            (continuation.preservedCompletedToolCount > 0 ||
+                              continuation.preservedUnknownToolCount > 0)
+                          ) {
                             state.finalMessages = [
                               ...state.finalMessages,
                               ...continuation.messages,
@@ -2246,8 +2254,6 @@ export const createChatHandler = () => {
                                 ],
                               },
                             ];
-                          } else {
-                            usageTracker.resetModelLeg();
                           }
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
@@ -3099,6 +3105,13 @@ export const createChatHandler = () => {
               });
             }
             shutdownPostHog(posthog);
+            if (
+              userStopSignal.signal.aborted &&
+              error === userStopSignal.signal.reason
+            ) {
+              writer.write({ type: "abort" });
+              return;
+            }
             throw error;
           }
         },

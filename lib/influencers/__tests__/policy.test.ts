@@ -26,6 +26,22 @@ describe("influencer policy and signed links", () => {
     for (const code of ["a", "../a", "a/b", "x?y", "MEDUSA", "a".repeat(25)])
       expect(validPartnerCode(code)).toBe(false);
   });
+  it("binds the analytics visitor ID to the signature while preserving legacy cookies", () => {
+    const id = "00000000-0000-4000-8000-000000000001";
+    const now = Date.now();
+    const cookie = partnerCookie("partner", now, id);
+    expect(readPartnerCookie(cookie, now)?.visitorId).toBe(id);
+    expect(
+      readPartnerCookie(
+        cookie.replace(id, "00000000-0000-4000-8000-000000000002"),
+        now,
+      ),
+    ).toBeNull();
+    expect(readPartnerCookie(partnerCookie("partner", now), now)).toEqual({
+      code: "partner",
+      clickedAt: now,
+    });
+  });
   it("rejects tampering, future clicks, and cookies at the 30-day boundary", () => {
     const now = 1_700_000_000_000;
     const cookie = partnerCookie("medusa", now);

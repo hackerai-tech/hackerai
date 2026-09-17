@@ -10,10 +10,14 @@ export const partnerFields = {
   annual_bps: v.number(),
   created_at: v.number(),
   link_opens: v.optional(v.number()),
+  sponsorship_cost_cents: v.optional(v.number()),
+  sponsorship_cost_revision: v.optional(v.number()),
 };
 export const attributionFields = {
   partner_id: v.id("influencer_partners"),
   identity: v.string(),
+  analytics_visitor_id: v.optional(v.string()),
+  analytics_checkout_at: v.optional(v.number()),
   clicked_at: v.number(),
   created_at: v.number(),
   monthly_bps: v.number(),
@@ -38,6 +42,7 @@ export const invoiceFields = {
   paid_cents: v.number(),
   review_reason: v.optional(v.string()),
   synced_at: v.number(),
+  analytics_revision: v.optional(v.number()),
   payout_id: v.optional(v.id("influencer_payouts")),
 };
 export const payoutFields = {

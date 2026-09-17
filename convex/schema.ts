@@ -1,3 +1,4 @@
+import { analyticsFields } from "./lib/influencerAnalytics";
 import { defineSchema, defineTable } from "convex/server";
 import {
   partnerFields,
@@ -115,6 +116,13 @@ const validationConfidenceValidator = v.union(
 );
 
 export default defineSchema({
+  influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
+    "by_visitor",
+    ["visitor_id"],
+  ),
+  influencer_analytics: defineTable(analyticsFields)
+    .index("by_key", ["key"])
+    .index("by_delivered", ["delivered"]),
   influencer_partners: defineTable(partnerFields).index("by_code", ["code"]),
   influencer_attributions: defineTable(attributionFields)
     .index("by_identity", ["identity"])

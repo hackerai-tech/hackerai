@@ -5,6 +5,7 @@ import Stripe from "stripe";
 import { z } from "zod";
 import { api } from "../convex/_generated/api";
 import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
+import { flushInfluencerAnalytics } from "../lib/influencers/analytics";
 import { reconcileInfluencerCustomer } from "../lib/influencers/stripe";
 
 const requestSchema = z
@@ -14,6 +15,7 @@ const requestSchema = z
     live: z.boolean(),
     action: z.enum([
       "create",
+      "cost",
       "activate",
       "deactivate",
       "report",
@@ -25,6 +27,7 @@ const requestSchema = z
     code: z.string().optional(),
     name: z.string().optional(),
     email: z.email().optional(),
+    amountCents: z.number().int().nonnegative().optional(),
     monthlyBps: z.number().int().min(0).max(10000).optional(),
     annualBps: z.number().int().min(0).max(10000).optional(),
     key: z.string().optional(),
@@ -116,6 +119,18 @@ async function main() {
     return;
   }
   if (!request.code) throw new Error("Partner code is required");
+  if (request.action === "cost") {
+    if (request.amountCents === undefined)
+      throw new Error("Cumulative sponsorship amount in USD cents is required");
+    await convex.mutation(api.influencerAnalytics.setSponsorshipCost, {
+      serviceKey,
+      code: request.code,
+      amountCents: request.amountCents,
+    });
+    await flushInfluencerAnalytics(convex);
+    console.log("Sponsorship cost recorded; no money transferred");
+    return;
+  }
   if (request.action === "activate" || request.action === "deactivate") {
     await convex.mutation(api.influencers.setActive, {
       serviceKey,
@@ -153,6 +168,7 @@ async function main() {
     }
     cursor = page.isDone ? null : page.continueCursor;
   } while (cursor);
+  await flushInfluencerAnalytics(convex);
   if (request.action === "reserve") {
     if (!request.key) throw new Error("A unique payout key is required");
     const payout = await convex.mutation(api.influencers.reservePayout, {
@@ -189,6 +205,7 @@ async function main() {
     annualBps: partner.annual_bps,
     signups,
     linkOpens: partner.link_opens ?? 0,
+    sponsorshipCostCents: partner.sponsorship_cost_cents ?? 0,
     netRevenueCents: invoices
       .filter((row) => row.currency === "usd")
       .reduce((sum, row) => sum + row.net_cents, 0),

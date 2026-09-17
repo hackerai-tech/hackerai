@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
 import { after, NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -6,7 +8,11 @@ import {
   INFLUENCER_COOKIE,
   validPartnerCode,
 } from "@/lib/influencers/policy";
-import { partnerCookie, readPartnerCookie } from "@/lib/influencers/cookie";
+import {
+  INFLUENCER_VISITOR_COOKIE,
+  partnerCookie,
+  readPartnerCookie,
+} from "@/lib/influencers/cookie";
 import { partnerTrackingAllowed } from "@/lib/influencers/attribution";
 
 export const runtime = "nodejs";
@@ -27,31 +33,56 @@ export async function GET(
   const response = NextResponse.redirect(new URL("/", req.url), 302);
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("X-Robots-Tag", "noindex");
-  if (
+  const allowed =
     partnerTrackingAllowed(req) &&
-    !/bot|crawler|spider|preview/i.test(req.headers.get("user-agent") ?? "")
-  ) {
+    !/bot|crawler|spider|preview/i.test(req.headers.get("user-agent") ?? "");
+  if (allowed) {
+    const firstClick = readPartnerCookie(
+      req.cookies.get(INFLUENCER_COOKIE)?.value,
+    );
+    const visitor = readPartnerCookie(
+      req.cookies.get(INFLUENCER_VISITOR_COOKIE)?.value,
+    );
+    const visitorId =
+      firstClick?.visitorId ?? visitor?.visitorId ?? randomUUID();
+    const options = {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax" as const,
+      path: "/",
+      maxAge: ATTRIBUTION_DAYS * 86400,
+    };
+    if (!visitor?.visitorId)
+      response.cookies.set(
+        INFLUENCER_VISITOR_COOKIE,
+        partnerCookie("visitor", Date.now(), visitorId),
+        options,
+      );
+    if (!firstClick)
+      response.cookies.set(
+        INFLUENCER_COOKIE,
+        partnerCookie(code, Date.now(), visitorId),
+        options,
+      );
+    const visitedAt = Date.now();
     after(async () => {
       try {
-        await getConvexClient().mutation(api.influencers.recordLinkOpen, {
+        const client = getConvexClient();
+        await client.mutation(api.influencers.recordLinkOpen, {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
           code,
         });
+        await client.mutation(api.influencerAnalytics.recordVisit, {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          code,
+          visitorId,
+          visitId: randomUUID(),
+          timestamp: visitedAt,
+        });
+        await flushInfluencerAnalytics(client);
       } catch {
-        console.warn("Influencer link-open counter unavailable");
+        console.warn("Influencer visit analytics unavailable");
       }
-    });
-  }
-  if (
-    partnerTrackingAllowed(req) &&
-    !readPartnerCookie(req.cookies.get(INFLUENCER_COOKIE)?.value)
-  ) {
-    response.cookies.set(INFLUENCER_COOKIE, partnerCookie(code), {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: ATTRIBUTION_DAYS * 86400,
     });
   }
   return response;

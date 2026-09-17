@@ -139,6 +139,185 @@ describe("CentrifugoSandbox", () => {
     crypto.randomUUID = originalRandomUUID;
   });
 
+  describe("attachment cancellation", () => {
+    it.each(["copy", "download"])(
+      "forwards Stop through %s and waits for command cancellation",
+      async (operation) => {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform: "linux",
+            arch: "x64",
+            release: "test",
+            hostname: "test",
+          },
+        } as any);
+        (sandbox as any).httpClient = "curl";
+        (sandbox as any).curlCaps = {
+          retryAllErrors: true,
+          retryConnrefused: true,
+          sslNoRevoke: false,
+        };
+        const controller = new AbortController();
+        let started!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (_command, options) => {
+            expect(options?.signal).toBe(controller.signal);
+            started();
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), {
+                once: true,
+              }),
+            );
+            return { stdout: "", stderr: "", exitCode: 130 };
+          });
+        const pending =
+          operation === "copy"
+            ? sandbox.files.copyLocal(
+                "/tmp/source.txt",
+                "/tmp/destination.txt",
+                { signal: controller.signal },
+              )
+            : sandbox.files.downloadFromUrl(
+                "https://example.com/file",
+                "/tmp/destination.txt",
+                { signal: controller.signal },
+              );
+        await ready;
+        controller.abort();
+        await expect(pending).rejects.toBe(controller.signal.reason);
+        expect(run).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(["small", "chunked", "empty"])(
+      "cancels a pending %s native write without publishing more chunks",
+      async (size) => {
+        const sandbox = createDesktopSandbox();
+        const controller = new AbortController();
+        const content =
+          size === "small"
+            ? "script"
+            : Buffer.alloc(size === "empty" ? 0 : 500_000);
+        const pending = sandbox.files.write("C:\\temp\\script.ps1", content, {
+          signal: controller.signal,
+        });
+        const rejected = expect(pending).rejects.toMatchObject({
+          name: "AbortError",
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sub.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "file_write" }),
+        );
+
+        controller.abort();
+        await rejected;
+        expect(sub.unsubscribe).toHaveBeenCalled();
+        expect(mockClients[0].disconnect).toHaveBeenCalled();
+        expect(mockSubscriptions).toHaveLength(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("bounds stalled PowerShell script cleanup after canceling its native write", async () => {
+      const sandbox = createDesktopSandbox();
+      (sandbox as any).httpClient = "powershell";
+      (sandbox as any).shellKind = "cmd";
+      const controller = new AbortController();
+      const run = jest.spyOn(sandbox.commands, "run");
+      const pending = sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "/tmp/file.txt",
+        { signal: controller.signal },
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      mockSubscriptions[0].emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscriptions[0].publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "file_write" }),
+      );
+      controller.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscriptions[0].unsubscribe).toHaveBeenCalled();
+      expect(mockSubscriptions).toHaveLength(2);
+      mockSubscriptions[1].emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscriptions[1].publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "file_remove" }),
+      );
+      await jest.advanceTimersByTimeAsync(5000);
+      await rejected;
+      expect(mockSubscriptions[1].unsubscribe).toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it.each(["directory", "chunk"])(
+      "stops legacy Windows script staging during the first %s command",
+      async (stage) => {
+        const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+        (sandbox as any).shellKind = "cmd";
+        const controller = new AbortController();
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command, options) => {
+            if (
+              command.startsWith(
+                stage === "directory" ? "if not exist" : "echo ",
+              )
+            ) {
+              expect(options?.signal).toBe(controller.signal);
+              controller.abort();
+              return { stdout: "", stderr: "", exitCode: 130 };
+            }
+            return { stdout: "", stderr: "", exitCode: 0 };
+          });
+        await expect(
+          sandbox.files.write("C:\\temp\\script.ps1", "x".repeat(20_000), {
+            signal: controller.signal,
+          }),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        const commands = run.mock.calls.map(([command]) => command);
+        expect(
+          commands.filter((command) => command.startsWith("echo ")),
+        ).toHaveLength(stage === "chunk" ? 1 : 0);
+        expect(commands.some((command) => command.startsWith("certutil"))).toBe(
+          false,
+        );
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("cancels a capability probe without retrying or starting a download", async () => {
+      const sandbox = createSandbox();
+      const controller = new AbortController();
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (_command, options) => {
+          expect(options?.signal).toBe(controller.signal);
+          controller.abort();
+          return { stdout: "", stderr: "", exitCode: 130 };
+        });
+      await expect(
+        sandbox.files.downloadFromUrl(
+          "https://example.com/file",
+          "/tmp/destination.txt",
+          { signal: controller.signal },
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("parseSandboxMessage", () => {
     it("ignores known PTY traffic without warning", () => {
       const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -1388,7 +1567,9 @@ describe("CentrifugoSandbox", () => {
       )!;
       const tempFile = firstChunk.match(/ > (.+)$/)?.[1];
       expect(tempFile).toBeDefined();
-      expect(commands).toContain(`del /q /f ${tempFile}`);
+      expect(commands).toContain(
+        `del /q /f ${tempFile} 2>nul & rmdir /s /q ${tempFile} 2>nul`,
+      );
     });
   });
 
@@ -1775,7 +1956,9 @@ describe("CentrifugoSandbox", () => {
           .replace(/\\/g, "/")}'`,
       );
       expect(powerShellCommand).not.toContain(nativeSource);
-      expect(remove).toHaveBeenCalledWith(nativeScriptPath);
+      expect(remove).toHaveBeenCalledWith(nativeScriptPath, {
+        signal: expect.any(AbortSignal),
+      });
     });
 
     it("redacts the native destination from Git Bash PowerShell download errors", async () => {
