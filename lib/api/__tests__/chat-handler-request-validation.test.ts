@@ -16,6 +16,7 @@ describe("chat-handler request validation", () => {
     const routingEnd = source.indexOf("if (flashRoutingAssignment)");
     const attachmentCheck = source.indexOf(
       "countFileAttachments(fetched.truncatedMessages).imageCount > 0",
+      routingStart,
     );
     expect(routingStart).toBeGreaterThan(-1);
     expect(routingEnd).toBeGreaterThan(-1);
