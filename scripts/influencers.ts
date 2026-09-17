@@ -4,7 +4,10 @@ import { ConvexHttpClient } from "convex/browser";
 import Stripe from "stripe";
 import { z } from "zod";
 import { api } from "../convex/_generated/api";
-import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
+import {
+  partnerRequestSchema,
+  partnerProvisioningUrl,
+} from "../lib/influencers/provisioning";
 import { flushInfluencerAnalytics } from "../lib/influencers/analytics";
 import { reconcileInfluencerCustomer } from "../lib/influencers/stripe";
 
@@ -43,6 +46,54 @@ async function main() {
   const request = requestSchema.parse(
     JSON.parse(Buffer.concat(chunks).toString("utf8")),
   );
+  if (request.action === "create") {
+    if (
+      request.targetUrl !== process.env.NEXT_PUBLIC_CONVEX_URL ||
+      !process.env.CONVEX_SERVICE_ROLE_KEY ||
+      !process.env.NEXT_PUBLIC_BASE_URL
+    )
+      throw new Error(
+        "Create requires a matching Convex URL, service credential, and verified web base URL",
+      );
+    const payload = partnerRequestSchema.parse({
+      targetUrl: request.targetUrl,
+      stripeAccountId: request.stripeAccountId,
+      live: request.live,
+      code: request.code,
+      name: request.name,
+      email: request.email,
+      monthlyBps: request.monthlyBps,
+      annualBps: request.annualBps,
+    });
+    const endpoint = partnerProvisioningUrl(process.env.NEXT_PUBLIC_BASE_URL);
+    console.error(
+      `Target: ${payload.targetUrl}; web ${endpoint.origin}; Stripe ${payload.stripeAccountId}; ${payload.live ? "LIVE" : "TEST"}`,
+    );
+    const response = await fetch(endpoint, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.CONVEX_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok)
+      throw new Error(
+        `Partner creation returned HTTP ${response.status}; verify deployment, credentials, target, and existing partner details before retrying`,
+      );
+    const result = z
+      .object({ code: z.string(), link: z.url() })
+      .parse(await response.json());
+    if (
+      result.code !== payload.code ||
+      result.link !== new URL(`/r/${payload.code}`, endpoint.origin).toString()
+    )
+      throw new Error("Partner response did not match the requested link");
+    console.log(result.link);
+    return;
+  }
   if (
     request.targetUrl !== process.env.NEXT_PUBLIC_CONVEX_URL ||
     !process.env.CONVEX_SERVICE_ROLE_KEY ||
@@ -67,40 +118,6 @@ async function main() {
   console.error(
     `Target: ${request.targetUrl}; Stripe ${account.id}; ${request.live ? "LIVE" : "TEST"}`,
   );
-  if (request.action === "create") {
-    const identity = createFreeQuotaSubjectWithSecret(
-      request.email,
-      process.env.ACCOUNT_IDENTITY_HMAC_SECRET,
-    );
-    if (!request.code || !request.name || !request.email || !identity)
-      throw new Error(
-        "Create requires code, name, influencer account email, and identity HMAC configuration",
-      );
-    if (!process.env.NEXT_PUBLIC_BASE_URL)
-      throw new Error("NEXT_PUBLIC_BASE_URL is required to print the link");
-    await convex.mutation(api.influencers.createPartner, {
-      serviceKey,
-      code: request.code,
-      name: request.name,
-      contactEmail: request.email,
-      ownerIdentity: identity,
-      ...(request.monthlyBps !== undefined
-        ? { monthlyBps: request.monthlyBps }
-        : {}),
-      ...(request.annualBps !== undefined
-        ? { annualBps: request.annualBps }
-        : {}),
-    });
-    if (!process.env.NEXT_PUBLIC_BASE_URL)
-      throw new Error("NEXT_PUBLIC_BASE_URL is required to print the link");
-    console.log(
-      new URL(
-        `/r/${request.code}`,
-        process.env.NEXT_PUBLIC_BASE_URL,
-      ).toString(),
-    );
-    return;
-  }
   if (["paid", "cancel", "payout"].includes(request.action)) {
     if (!request.key) throw new Error("Payout key is required");
     const payout =
