@@ -1,7 +1,6 @@
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
 import {
   ABLITERATED_EXPERIMENT_KEY,
-  FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
   type AbliterationExperimentKey,
 } from "./abliteration-keys";
 export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
@@ -80,6 +79,7 @@ export function isEligibleForAbliteratedModel({
   limitRescue?: boolean;
 }): boolean {
   return (
+    subscription !== "free" &&
     !limitRescue &&
     moderationEligible &&
     messages.length > 0 &&
@@ -131,10 +131,7 @@ export async function evaluateAbliteratedModel({
   )
     return undefined;
 
-  const experimentKey =
-    subscription === "free" && mode === "ask"
-      ? FREE_ASK_ABLITERATED_EXPERIMENT_KEY
-      : ABLITERATED_EXPERIMENT_KEY;
+  const experimentKey = ABLITERATED_EXPERIMENT_KEY;
   try {
     // This pinned SDK's evaluateFlags.getFlag emits exposure on access. Use the
     // supported no-event API until it supports deferring exposure explicitly.

@@ -6,29 +6,27 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## Free rollout phase
+## Free-user exclusion
 
-The free Agent group of Production flag 869145 enrolls 100% of eligible users
-with control/test 50/50 (50% each, no outside group). Paid criteria are unchanged.
-Preview flag 869147 remains 100% of eligible test users with forced treatment.
+Free-user Abliteration pilots are stopped. The shared assignment eligibility
+check excludes `subscription=free` in both Ask and Agent before any flag lookup,
+including requests with existing Abliteration chat history. Free users retain
+their normal baseline models even if a retired flag is re-enabled.
 
-The separate free Ask flag enrolls authenticated free users; code additionally
-requires the existing moderation signal and supported inputs. Production is
-prepared with enrollment 100%, control/test 50/50, and remains inactive until the
-free Ask implementation is deployed and verified. Preview enrolls 100%
-for acceptance testing. Record actual flag IDs, activation and cohort boundaries
-in HAC-103. Keep the retired DeepSeek-vs-GLM Ask flag disabled.
+In both Preview and Production, disable `abliterated_free_ask_moderated_v1`
+and remove the free-tier release condition from `abliterated_paid_moderated_v1`.
+Keep paid targeting and rollout intact. Flag rollback applies to new requests
+and runs; already-running work can retain its original assignment. Deploy the
+shared code guard to Vercel and Trigger independently for permanent enforcement.
 
-Analyze Ask and Agent separately by experiment key and mode. The same user may
-enter both experiments; report overlap for conversion/retention attribution.
-Feedback reservations persist their actual experiment key; old reservations
-without a key remain attributed to the original experiment. The existing
-feedback cooldown and UI stay unchanged. Review health 24h after activation and
-outcomes with equal seven-day follow-up; record inconclusive results honestly.
+Keep retired experiment keys and analytics attribution for historical readouts.
+Analyze the original Ask and Agent cohorts separately, preserving assignment,
+exposure, prior-payer exclusions and equal follow-up windows. Stopping enrollment
+does not establish a statistical winner or remove historical data.
 
 ## Routing contract
 
-Paid and free requests in Ask and Agent may use an Abliteration model at
+Eligible paid requests in Ask and Agent may use an Abliteration model at
 `https://api.abliteration.ai/v1`. Auto/Standard routes use `abliterated-model`;
 explicit HackerAI Pro and Max routes use `abliterated-model-large-v2`. Ultra Ask
 Auto also uses Large v2 because its current baseline is Pro, while Ultra Agent
@@ -64,17 +62,12 @@ Explicit free-allowance rescue requests are excluded before assignment. Eligibil
 is recorded before model-priced budget checks so cost-induced blocking cannot
 silently remove treatment users from the denominator.
 
-Paid daily free-allowance rescue requests are excluded. Free Agent
-treatment uses the base model and preserves its exact free OpenRouter baseline
-for control, later steps and provider recovery. Existing free quota/concurrency
-checks and local-sandbox entitlement still apply; this does not grant cloud access.
-Free Ask uses the separate `abliterated_free_ask_moderated_v1` flag
-([HAC-103](https://linear.app/hackerai/issue/HAC-103)). It compares the fixed
-`ask-model-free-glm` baseline (GLM 5.3 Flash low) with base Abliteration, using
-the same moderation, supported-file, first-step and prompt-annotation contract.
-The exact GLM baseline returns on later steps and errors; free Ask keeps low
-reasoning on OpenRouter recovery. Missing/disabled Ask flags never inherit the
-Agent assignment. Free Ask cannot qualify through paid chat-history continuity.
+Paid daily free-allowance rescue requests and all free-tier requests are excluded.
+Free Ask retains `ask-model-free-glm`; free Agent retains its selected baseline.
+Existing quotas, concurrency checks and sandbox entitlements continue to apply.
+The retired free Ask key `abliterated_free_ask_moderated_v1`
+([HAC-103](https://linear.app/hackerai/issue/HAC-103)) is retained only for historical
+analytics attribution. Free requests do not evaluate either Abliteration flag.
 
 Every control retains its exact existing baseline. Analyze provider model,
 selector, subscription, input modality, and mode separately as well as overall.
@@ -164,24 +157,21 @@ Do not seed routing markers by editing live user messages.
 
 ## Environment and rollout record
 
-Definitions read back on 2026-09-08 after free Agent enrollment was expanded
-and the separate free Ask flags were prepared.
+Flag definitions verified after the free-user rollback:
 
-| Environment | PostHog project       | Flag ID | Key                               | Configured rollout                                                       |
+| Environment | PostHog project       | Flag ID | Key                               | State and targeting                                                      |
 | ----------- | --------------------- | ------- | --------------------------------- | ------------------------------------------------------------------------ |
-| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1     | Active; 100% of eligible paid and free Agent users, forced test          |
-| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1     | Active; 100% enrollment, 50/50 control/test, approximately 50% treatment |
-| Preview     | hackerai-dev / 401167 | 872124  | abliterated_free_ask_moderated_v1 | Active; 100% eligible free enrollment, 50/50 control/test                |
-| Production  | HackerAI / 144137     | 872126  | abliterated_free_ask_moderated_v1 | Inactive pending deployment; saved 100% enrollment, 50/50 control/test   |
+| Preview     | hackerai-dev / 401167 | 869147  | abliterated_paid_moderated_v1     | Active; paid tiers only; 100% treatment                                  |
+| Production  | HackerAI / 144137     | 869145  | abliterated_paid_moderated_v1     | Active; paid tiers only; 100% treatment; paid internal override retained |
+| Preview     | hackerai-dev / 401167 | 872124  | abliterated_free_ask_moderated_v1 | Inactive; historical targeting and variants retained                     |
+| Production  | HackerAI / 144137     | 872126  | abliterated_free_ask_moderated_v1 | Inactive; historical targeting and variants retained                     |
 
 Paid groups target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
-The free Agent extension adds a separate `subscription_tier=free` group, with the
-mode enforced in code before any flag evaluation. The legacy flag key is retained
-to preserve stable assignment and analytics joins. Free Ask never evaluates it.
 The server supplies the current trusted subscription and enforces the remaining
-eligibility checks. Production evaluates the explicit test-user override first,
-then the broader paid-user experiment group. Keep override traffic out of the
-causal readout. Never apply Preview's 100% test split to Production.
+eligibility checks. Only paid requests can evaluate the parent experiment flag.
+Keep the legacy free Ask key for stable historical analytics joins, rather than
+removing its event attribution. Never infer a runtime's environment from another
+service's configuration.
 
 Before any deployment/configuration work, independently verify the intended
 Convex account, project, designated deployment, URL, and custom domain, and the
@@ -385,30 +375,16 @@ References: [provider models](https://docs.abliteration.ai/models),
 [PostHog exposure semantics](https://posthog.com/docs/experiments/exposures),
 [PostHog retention](https://posthog.com/docs/product-analytics/retention).
 
-## Free Agent pilot
+## Free-user rollback verification
 
-Free Agent rollout is governed by HAC-99. Production flag 869145 now enrolls
-100% of eligible free users with control/test 50/50, matching the free rollout
-phase above. Existing paid groups and their internal override are unchanged.
-Preview flag 869147 targets all eligible free Agent testers with forced treatment.
-The activation timestamp, previous cohort boundaries, and runtime evidence are
-recorded in HAC-99.
+Use a disposable free Ask chat and a free Agent chat with a connected local
+sandbox. Submit a bounded synthetic request that previously qualified for
+Abliteration. Verify completion, reload persistence and the normal free baseline;
+verify there is no new Abliteration assignment or exposure. Repeat with an
+existing chat that contains Abliteration history. Check the designated Preview
+URL and production custom domain independently after the Vercel and Trigger
+code deployments. Verify one eligible paid request still uses treatment.
 
-Compare free control/test users separately from paid users and from earlier routing
-phases. Prioritize useful results, linked thumbs, and task-outcome ratings only
-where the separate survey flag already permits them. Missing ratings are unknown.
-Track completion, return usage, free-to-paid conversion, quota exhaustion, provider
-fallbacks, tool failures and cost per completed task. Paid churn does not apply to
-free users. Do not widen the survey flag as part of the provider rollout.
-
-Review the free cohort operationally on 2026-09-08 and review quality on 2026-09-14;
-keep uncertainty and mature retention windows explicit. Remove the free flag group
-to roll back just this cohort. No automatic ramp. Full temporary survey removal
-at experiment conclusion remains mandatory under HAC-101.
-
-Verify a free Agent test and control on the designated Preview: completed first
-step, exact free baseline on step two, provider failure recovery, original request
-attribution, unchanged quotas and sandbox permissions, and reload persistence.
-Also verify free Ask evaluates only its separate Ask flag and missing/off/unknown
-flags retain baseline. Use a free test account with a connected local sandbox, then
-verify a bounded production free-cohort run before expansion.
+Historical free Agent decisions and cohort boundaries remain in HAC-99; free Ask
+records remain in HAC-103. The paid pilot and its temporary feedback workflow
+continue. Full temporary survey cleanup is governed separately by HAC-101.

@@ -1,4 +1,3 @@
-import { FREE_ASK_ABLITERATED_EXPERIMENT_KEY } from "../abliteration-keys";
 import {
   evaluateAbliteratedModel,
   ABLITERATED_EXPERIMENT_KEY,
@@ -158,115 +157,59 @@ describe("moderation-gated Abliteration assignment", () => {
     expect(getFeatureFlag).not.toHaveBeenCalled();
   });
 
-  it.each(["test", "control"] as const)(
-    "routes free Ask %s through its separate flag with the exact GLM baseline",
-    async (variant) => {
-      const getFeatureFlag = jest.fn().mockResolvedValue(variant);
-      const result = await evaluateAbliteratedModel({
-        ...defaults,
-        subscription: "free",
-        selectedModel: "ask-model-free-glm",
-        posthog: { getFeatureFlag },
-      });
-      expect(result).toMatchObject({
-        key: FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
-        variant,
-        baselineModel: "ask-model-free-glm",
-        modelKey:
-          variant === "test" ? ABLITERATION_MODEL_KEY : "ask-model-free-glm",
-        selectionSource: "moderation",
-      });
-      expect(getFeatureFlag).toHaveBeenCalledTimes(1);
-      expect(getFeatureFlag).toHaveBeenCalledWith(
-        FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
-        "u",
-        {
-          sendFeatureFlagEvents: false,
-          personProperties: { subscription: "free", subscription_tier: "free" },
-        },
-      );
-    },
-  );
-  it.each([false, undefined, "unknown"])(
-    "leaves free Ask on GLM when its own flag returns %s",
-    async (variant) => {
-      const getFeatureFlag = jest.fn(async (key) =>
-        key === FREE_ASK_ABLITERATED_EXPERIMENT_KEY ? variant : "test",
-      );
-      await expect(
-        evaluateAbliteratedModel({
-          ...defaults,
-          subscription: "free",
-          selectedModel: "ask-model-free-glm",
-          posthog: { getFeatureFlag },
-        }),
-      ).resolves.toBeUndefined();
-      expect(getFeatureFlag).toHaveBeenCalledTimes(1);
-    },
-  );
-  it.each(["test", "control"] as const)(
-    "routes free Agent %s assignments while retaining their original free baseline",
-    async (variant) => {
-      const getFeatureFlag = jest.fn().mockResolvedValue(variant);
-      const result = await evaluateAbliteratedModel({
-        ...defaults,
-        mode: "agent",
-        subscription: "free",
-        selectedModel: "agent-model-free",
-        posthog: { getFeatureFlag },
-      });
-      expect(result).toMatchObject({
-        variant,
-        modelKey:
-          variant === "test" ? ABLITERATION_MODEL_KEY : "agent-model-free",
-        baselineModel: "agent-model-free",
-      });
-      expect(getFeatureFlag).toHaveBeenCalledWith(
-        ABLITERATED_EXPERIMENT_KEY,
-        "u",
-        {
-          sendFeatureFlagEvents: false,
-          personProperties: { subscription: "free", subscription_tier: "free" },
-        },
-      );
-    },
-  );
-  describe.each(["ask", "agent"] as const)("free %s safeguards", (mode) => {
-    it.each([
-      { moderationEligible: false },
-      { limitRescue: true },
-      { messages: [] },
-      {
-        messages: [
-          {
-            id: "pdf",
-            role: "user" as const,
-            parts: [
-              {
-                type: "file" as const,
-                mediaType: "application/pdf",
-                url: "https://example.test/lab.pdf",
-              },
-            ],
-          },
-        ],
-      },
-    ])("keeps free routing safeguards: %j", async (overrides) => {
-      const getFeatureFlag = jest.fn().mockResolvedValue("test");
-      expect(
-        await evaluateAbliteratedModel({
+  describe.each(["ask", "agent"] as const)("free %s exclusion", (mode) => {
+    it.each(["test", "control", true, false, undefined])(
+      "keeps the free baseline without evaluating flags, even if they return %s",
+      async (variant) => {
+        const getFeatureFlag = jest.fn().mockResolvedValue(variant);
+        const baselineModel =
+          mode === "ask" ? "ask-model-free-glm" : "agent-model-free";
+        const assignment = await evaluateAbliteratedModel({
           ...defaults,
           mode,
           subscription: "free",
-          selectedModel:
-            mode === "ask" ? "ask-model-free-glm" : "agent-model-free",
-          ...overrides,
+          selectedModel: baselineModel,
+          posthog: { getFeatureFlag },
+        });
+        expect(assignment).toBeUndefined();
+        expect(assignment?.modelKey ?? baselineModel).toBe(baselineModel);
+        expect(getFeatureFlag).not.toHaveBeenCalled();
+      },
+    );
+    it("does not restore treatment from an existing Abliteration chat history", async () => {
+      const getFeatureFlag = jest.fn().mockResolvedValue("test");
+      await expect(
+        evaluateAbliteratedModel({
+          ...defaults,
+          mode,
+          subscription: "free",
+          allowsAbliterationContinuation: true,
+          independentAbliterationResponses: 5,
           posthog: { getFeatureFlag },
         }),
-      ).toBeUndefined();
+      ).resolves.toBeUndefined();
       expect(getFeatureFlag).not.toHaveBeenCalled();
     });
   });
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "preserves paid %s treatment in Ask and Agent",
+    async (subscription) => {
+      for (const mode of ["ask", "agent"] as const) {
+        const getFeatureFlag = jest.fn().mockResolvedValue("test");
+        await expect(
+          evaluateAbliteratedModel({
+            ...defaults,
+            mode,
+            subscription,
+            posthog: { getFeatureFlag },
+          }),
+        ).resolves.toMatchObject({
+          modelKey: ABLITERATION_MODEL_KEY,
+          key: ABLITERATED_EXPERIMENT_KEY,
+        });
+      }
+    },
+  );
 
   it("keeps a request at the Abliteration image limit eligible", async () => {
     const getFeatureFlag = jest.fn().mockResolvedValue("test");
