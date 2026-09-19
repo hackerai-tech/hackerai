@@ -1415,7 +1415,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     signal?: AbortSignal,
   ): Promise<{ command: string; cleanup: () => Promise<void> }> {
     signal?.throwIfAborted();
-    const scriptPath = `/tmp/hackerai-transfer-${crypto.randomUUID()}.ps1`;
+    const scriptName = `hackerai-transfer-${crypto.randomUUID()}.ps1`;
+    // Native Desktop writes enforce the selected project root. Stage helper
+    // scripts there too, rather than attempting an out-of-project temp write.
+    const scriptPath = this.workingDirectory
+      ? scriptName
+      : `/tmp/${scriptName}`;
     const nativeScriptPath = this.toNativePath(
       this.resolveWorkingPath(scriptPath),
     );
