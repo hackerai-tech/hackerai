@@ -5,7 +5,7 @@ export const POINTS_PER_DOLLAR = 10_000;
  * Request usage pricing multiplier applied to raw provider and tool cost before
  * deducting points from a paid plan's included balance.
  */
-export const NORMAL_USAGE_MULTIPLIER = 1.5;
+export const NORMAL_USAGE_MULTIPLIER = 1.3;
 
 /**
  * Request multiplier used when provider/tool cost is paid from Extra Usage.
