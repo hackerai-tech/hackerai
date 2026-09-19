@@ -839,9 +839,37 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const agentLongRequestGenerationRef = useRef(0);
+  const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
+    useState(0);
+  const [terminalAgentRunUiState, setTerminalAgentRunUiState] = useState<{
+    chatId: string;
+    submissionGeneration: number;
+    runId?: string;
+  } | null>(null);
+  const lastPersistedAgentRunRef = useRef<{
+    chatId: string;
+    runId?: string;
+  }>({ chatId });
   const agentLongHasVisibleProgressRef = useRef(false);
   const agentLongRunFallbackAllowedRef = useRef(true);
-  const agentLongSubmissionGenerationRef = useRef(0);
+
+  const markAgentRunUiTerminal = useCallback(
+    (runId: string | undefined, requestGeneration: number | undefined) => {
+      if (
+        requestGeneration !== undefined &&
+        requestGeneration !== agentLongRequestGenerationRef.current
+      ) {
+        return;
+      }
+      setTerminalAgentRunUiState({
+        chatId,
+        submissionGeneration: agentLongSubmissionGeneration,
+        ...(runId ? { runId } : {}),
+      });
+    },
+    [agentLongSubmissionGeneration, chatId],
+  );
 
   useLayoutEffect(() => {
     activeChatIdRef.current = chatId;
@@ -892,8 +920,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           // Reset the previous run before starting the request. Doing this in
           // the passive `submitted` effect can race with onRunStarted and
           // erase the new run metadata before completion reconciliation sees it.
-          const submissionGeneration =
-            ++agentLongSubmissionGenerationRef.current;
+          const requestGeneration = ++agentLongRequestGenerationRef.current;
+          setAgentLongSubmissionGeneration((generation) => generation + 1);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -908,8 +936,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             init,
             (run) => {
               if (
-                submissionGeneration !==
-                  agentLongSubmissionGenerationRef.current ||
+                requestGeneration !== agentLongRequestGenerationRef.current ||
                 (run.chatId !== undefined &&
                   run.chatId !== activeChatIdRef.current)
               ) {
@@ -927,7 +954,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           );
         }
         if (init?.method !== "GET") {
-          agentLongSubmissionGenerationRef.current += 1;
+          agentLongRequestGenerationRef.current += 1;
+          setAgentLongSubmissionGeneration((generation) => generation + 1);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -1402,6 +1430,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, [chatId, shouldUseAgentLongForCurrentChat, status]);
 
   useEffect(() => {
+    if (lastPersistedAgentRunRef.current.chatId !== chatId) {
+      lastPersistedAgentRunRef.current = { chatId };
+    }
+
+    if (activeTriggerRunId) {
+      lastPersistedAgentRunRef.current = {
+        chatId,
+        runId: activeTriggerRunId,
+      };
+      return;
+    }
+
+    if (status !== "streaming" && status !== "submitted") {
+      lastPersistedAgentRunRef.current = { chatId };
+    }
+  }, [activeTriggerRunId, chatId, status]);
+
+  useEffect(() => {
     const isAgentLongDoubleCloseNoise = (message: unknown) =>
       shouldUseAgentLongForCurrentChatRef.current &&
       typeof message === "string" &&
@@ -1452,7 +1498,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, []);
 
   useEffect(() => {
-    agentLongSubmissionGenerationRef.current += 1;
+    agentLongRequestGenerationRef.current += 1;
     agentLongRunCorrelationRef.current = null;
     agentLongRunFallbackAllowedRef.current = true;
     setAgentLongRunId(null);
@@ -1501,11 +1547,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // the app's authenticated resume endpoint so the first message in a new
   // chat can leave "Working..." even before chatData is subscribed.
   useEffect(() => {
+    const requestGeneration = agentLongRequestGenerationRef.current;
     const trackedAgentLongRunId =
       agentLongRunId ??
       agentLongRunCorrelationRef.current?.runId ??
       (agentLongRunFallbackAllowedRef.current
-        ? activeTriggerRunRef.current
+        ? (activeTriggerRunRef.current ??
+          (lastPersistedAgentRunRef.current.chatId === chatId
+            ? lastPersistedAgentRunRef.current.runId
+            : null))
         : null);
     if (
       (status !== "streaming" && status !== "submitted") ||
@@ -1545,6 +1595,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
     const scheduleFinishLocally = () => {
       if (stopped || finishTimeout !== undefined) return;
+      markAgentRunUiTerminal(
+        trackedAgentLongRunId ?? undefined,
+        requestGeneration,
+      );
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
       // The transport also polls the status endpoint and can deliver a
@@ -1625,7 +1679,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         );
       }, delayMs);
     };
-    scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
+    const persistedRunDetached =
+      !activeTriggerRunId &&
+      lastPersistedAgentRunRef.current.chatId === chatId &&
+      lastPersistedAgentRunRef.current.runId === trackedAgentLongRunId;
+    if (persistedRunDetached) {
+      scheduleFinishLocally();
+    } else {
+      scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
+    }
 
     return () => {
       stopped = true;
@@ -1639,9 +1701,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
   }, [
     activeTriggerRunRef,
+    activeTriggerRunId,
+    agentLongSubmissionGeneration,
     agentLongRunId,
     chatId,
     isExistingChatRef,
+    markAgentRunUiTerminal,
     setIsAutoResuming,
     saveAgentLongPartialSnapshot,
     shouldUseAgentLongForCurrentChat,
@@ -2085,6 +2150,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
+    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
+    onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
@@ -2186,6 +2253,19 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     lastMessage?.role === "assistant" &&
     hasVisibleAssistantContent([lastMessage]) &&
     messages.some((message) => message.role === "user");
+  const currentAgentRunUiId =
+    agentLongRunId ??
+    activeTriggerRunId ??
+    (terminalAgentRunUiState?.chatId === chatId
+      ? terminalAgentRunUiState.runId
+      : undefined);
+  const isAgentRunUiTerminal =
+    terminalAgentRunUiState?.chatId === chatId &&
+    terminalAgentRunUiState.submissionGeneration ===
+      agentLongSubmissionGeneration &&
+    (terminalAgentRunUiState.runId
+      ? terminalAgentRunUiState.runId === currentAgentRunUiId
+      : !currentAgentRunUiId);
 
   return (
     <>
@@ -2327,6 +2407,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                             onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
+                            hideStop={isAgentRunUiTerminal}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -2365,6 +2446,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
+                    hideStop={isAgentRunUiTerminal}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}

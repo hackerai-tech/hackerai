@@ -680,6 +680,24 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnStop).toHaveBeenCalledTimes(1);
     });
 
+    it("hides a stale stop action after an Agent run is known to be terminal", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            hideStop
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.queryByLabelText("Stop generation"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
+    });
+
     it("should not show queue panel in ask mode even with queued messages", () => {
       render(
         <TestWrapper>
