@@ -14,6 +14,7 @@ export type UltraMaxModelAssignment = {
   configuredModel: "x-ai/grok-4.6" | "z-ai/glm-5.3";
 };
 
+/** Return a stable model assignment only for eligible Ultra Max requests. */
 export async function evaluateUltraMaxModel({
   posthog,
   userId,
@@ -68,6 +69,7 @@ export async function evaluateUltraMaxModel({
   }
 }
 
+/** Drop assignments superseded by rescue or later model-routing decisions. */
 export function getActiveUltraMaxModelAssignment(
   assignment: UltraMaxModelAssignment | undefined,
   selectedModel: ModelName,
@@ -78,6 +80,7 @@ export function getActiveUltraMaxModelAssignment(
     : undefined;
 }
 
+/** Record one exposure when the assigned provider request actually starts. */
 export function createUltraMaxModelExposureRecorder({
   posthog,
   assignment,
@@ -109,7 +112,7 @@ export function createUltraMaxModelExposureRecorder({
         distinctId: userId,
         event: ULTRA_MAX_MODEL_EXPOSURE_EVENT,
         properties: {
-          ...getExperimentAnalyticsProperties(assignment),
+          ...getExperimentAnalyticsProperties({ ...assignment, requestId }),
           subscription,
           subscription_tier: subscription,
           mode,

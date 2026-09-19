@@ -844,11 +844,16 @@ export const createChatHandler = () => {
             variant: activeAbliteratedExperiment.variant,
             requestId: assistantMessageId,
           }
-        : (activeUltraMaxModelAssignment ??
-          activeFlashRoutingAssignment ??
-          getDeepSeekV4Pro0813ExperimentContext(
-            activeDeepSeekV4Pro0813Experiment,
-          ));
+        : activeUltraMaxModelAssignment
+          ? {
+              key: activeUltraMaxModelAssignment.key,
+              variant: activeUltraMaxModelAssignment.variant,
+              requestId: assistantMessageId,
+            }
+          : (activeFlashRoutingAssignment ??
+            getDeepSeekV4Pro0813ExperimentContext(
+              activeDeepSeekV4Pro0813Experiment,
+            ));
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
 

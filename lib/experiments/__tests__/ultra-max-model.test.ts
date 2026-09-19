@@ -149,6 +149,7 @@ describe("Ultra Max model experiment", () => {
         mode: "agent",
         selected_model: "model-glm-5.3",
         configured_model: "z-ai/glm-5.3",
+        experiment_request_id: "request-1",
         request_id: "request-1",
         exposure_surface: "provider_request",
         $process_person_profile: false,
