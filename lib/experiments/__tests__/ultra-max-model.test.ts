@@ -48,10 +48,35 @@ describe("Ultra Max model experiment", () => {
     },
   );
 
+  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    "evaluates an authorized %s request that resolved to the Ultra Max model",
+    async (subscription) => {
+      const posthog = flags("test");
+      await expect(
+        evaluateUltraMaxModel({
+          ...eligible,
+          subscription,
+          posthog: posthog as never,
+        }),
+      ).resolves.toMatchObject({
+        variant: "test",
+        modelKey: "model-glm-5.3",
+      });
+      expect(posthog.getFeatureFlag).toHaveBeenCalledWith(
+        ULTRA_MAX_MODEL_EXPERIMENT_KEY,
+        "ultra-user",
+        {
+          sendFeatureFlagEvents: false,
+          personProperties: {
+            subscription,
+            subscription_tier: subscription,
+          },
+        },
+      );
+    },
+  );
+
   it.each([
-    { ...eligible, subscription: "pro" as const },
-    { ...eligible, subscription: "pro-plus" as const },
-    { ...eligible, subscription: "team" as const },
     { ...eligible, selectedModel: "model-grok-4.6-pro" as const },
     { ...eligible, selectedModel: "model-glm-5.3" as const },
     { ...eligible, hasImages: true },
