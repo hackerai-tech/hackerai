@@ -21,6 +21,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { useTauri } from "@/app/hooks/useTauri";
 import { detectPlatform } from "@/app/download/DownloadSection";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useInitialConnectionPending } from "@/app/hooks/useInitialConnectionPending";
 
 import type { SetSandboxPreference } from "@/app/hooks/useSandboxPreference";
 
@@ -57,6 +58,23 @@ export function SandboxSelector({
   } = useGlobalState();
   const isFreeUser = subscription === "free";
 
+  const selectedConnectionKnown = Boolean(
+    connections?.some((connection) =>
+      value === "desktop"
+        ? connection.isDesktop
+        : !connection.isDesktop && connection.connectionId === value,
+    ),
+  );
+  const initialConnectionPending = useInitialConnectionPending({
+    connected: selectedConnectionKnown,
+    connectionCount: connections?.length,
+    preference: value,
+  });
+  const computerConnectionPending =
+    value === "desktop" && isTauri
+      ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
+      : initialConnectionPending;
+
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
     return detectPlatform();
@@ -72,7 +90,9 @@ export function SandboxSelector({
     isTauri && desktopBridgeStatus !== "connected"
       ? desktopBridgeStatus === "connecting"
         ? "Local reconnecting"
-        : "Local unavailable"
+        : computerConnectionPending
+          ? "Local"
+          : "Local unavailable"
       : "Local";
   const desktopConnection = connections?.find((conn) => conn.isDesktop);
   const desktopIsSelectable = !isTauri || desktopBridgeStatus === "connected";
@@ -225,13 +245,17 @@ export function SandboxSelector({
           label:
             value === "desktop" && desktopBridgeStatus === "connecting"
               ? "Local reconnecting"
-              : "Local unavailable",
+              : computerConnectionPending
+                ? "Local"
+                : "Local unavailable",
           shortLabel:
             value === "desktop" && desktopBridgeStatus === "connecting"
               ? "Local reconnecting"
-              : value === "desktop" && desktopBridgeStatus === "connected"
+              : computerConnectionPending
                 ? "Local"
-                : "Local unavailable",
+                : value === "desktop" && desktopBridgeStatus === "connected"
+                  ? "Local"
+                  : "Local unavailable",
           icon: value === "desktop" ? Monitor : Laptop,
         }
       : null;

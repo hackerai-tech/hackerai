@@ -4,6 +4,7 @@ import { useSyncExternalStore } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { isTauriEnvironment } from "./useTauri";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { useInitialConnectionPending } from "./useInitialConnectionPending";
 
 // The native environment is fixed for the page lifetime. Use a server snapshot
 // so hydration starts with the same environment as the server render.
@@ -29,9 +30,15 @@ export function useSelectedComputerConnection() {
           : !connection.isDesktop &&
             connection.connectionId === sandboxPreference,
       );
+
+  const initialConnectionPending = useInitialConnectionPending({
+    connected: Boolean(connected),
+    connectionCount: localConnections?.length,
+    preference: sandboxPreference,
+  });
   const computerConnectionPending = selectedNativeDesktop
     ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
-    : localConnections === undefined;
+    : initialConnectionPending;
   const selectedComputerUnavailable =
     isAgentMode(chatMode) && sandboxPreference !== "e2b" && !connected;
   const sendDisabledReason = selectedComputerUnavailable

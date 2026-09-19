@@ -946,6 +946,9 @@ describe("ChatInput - Integration Tests", () => {
               : "Reconnect it to continue this task.",
           ),
         ).toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveClass(
+          "computer-reconnection-warning",
+        );
       },
     );
 

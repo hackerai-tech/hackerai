@@ -4,12 +4,14 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockGlobalState = {
   subscription: "free",
-  localConnections: [] as Array<{
-    connectionId: string;
-    isDesktop: boolean;
-    name?: string;
-    osInfo?: { hostname?: string };
-  }>,
+  localConnections: [] as
+    | Array<{
+        connectionId: string;
+        isDesktop: boolean;
+        name?: string;
+        osInfo?: { hostname?: string };
+      }>
+    | undefined,
   desktopBridgeStatus: "connecting",
 };
 let mockPresenceConnections: Array<{
@@ -64,6 +66,18 @@ describe("SandboxSelector", () => {
     expect(
       screen.getByRole("button", { name: /Local reconnecting/i }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the selected local label neutral while connections hydrate", () => {
+    mockGlobalState.desktopBridgeStatus = "idle";
+    mockGlobalState.localConnections = undefined;
+
+    render(<SandboxSelector value="desktop" />);
+
+    expect(
+      screen.getByRole("button", { name: /^Local$/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Local unavailable/i)).not.toBeInTheDocument();
   });
 
   it("shows Local unavailable instead of Cloud after Desktop recovery fails", () => {

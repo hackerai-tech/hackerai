@@ -24,7 +24,7 @@ export function DisconnectedComputerNotice({
   return (
     <div
       role="status"
-      className="mb-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
+      className="computer-reconnection-warning mb-2 rounded-lg border border-amber-500/25 px-3 py-2 text-sm text-foreground"
     >
       <p className="font-medium">Your computer is disconnected.</p>
       <p>
