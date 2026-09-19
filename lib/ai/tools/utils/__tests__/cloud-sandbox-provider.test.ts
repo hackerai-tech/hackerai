@@ -50,7 +50,7 @@ describe("cloud sandbox provider selection", () => {
     expect(getCloudSandboxProvider()).toBe("miosa");
   });
 
-  it("keeps E2B in Europe even when MIOSA is explicitly configured", async () => {
+  it("honors an explicit MIOSA provider in Europe", async () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
 
     await expect(
@@ -60,12 +60,12 @@ describe("cloud sandbox provider selection", () => {
         triggerRegion: "eu-central-1",
       }),
     ).resolves.toEqual({
-      provider: "e2b",
-      reason: "miosa_europe_region",
+      provider: "miosa",
+      reason: "configured",
     });
   });
 
-  it("does not evaluate the MIOSA rollout for Europe", async () => {
+  it("evaluates the MIOSA rollout for Europe", async () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     process.env.MIOSA_API_KEY = "msk_test";
     process.env.MIOSA_TEMPLATE_ID = "hackerai-kali-promoted";
@@ -81,10 +81,16 @@ describe("cloud sandbox provider selection", () => {
         featureFlagClient: { evaluateFlags },
       }),
     ).resolves.toEqual({
-      provider: "e2b",
-      reason: "miosa_europe_region",
+      provider: "miosa",
+      reason: "miosa_rollout",
     });
-    expect(evaluateFlags).not.toHaveBeenCalled();
+    expect(evaluateFlags).toHaveBeenCalledWith("user-eu", {
+      flagKeys: [MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG],
+      personProperties: {
+        [MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY]: "preview",
+        subscription_tier: "unknown",
+      },
+    });
   });
 
   it("keeps E2B when request geography is unknown", async () => {
