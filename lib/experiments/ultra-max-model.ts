@@ -28,13 +28,7 @@ export async function evaluateUltraMaxModel({
   selectedModel: ModelName;
   hasImages: boolean;
 }): Promise<UltraMaxModelAssignment | undefined> {
-  if (
-    !posthog ||
-    !userId ||
-    subscription !== "ultra" ||
-    selectedModel !== "model-grok-4.6" ||
-    hasImages
-  )
+  if (!posthog || !userId || selectedModel !== "model-grok-4.6" || hasImages)
     return undefined;
 
   try {
