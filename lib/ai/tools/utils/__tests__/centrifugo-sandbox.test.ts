@@ -225,8 +225,8 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
-    it("bounds stalled PowerShell script cleanup after canceling its native write", async () => {
-      const sandbox = createDesktopSandbox();
+    it("bounds stalled project PowerShell script cleanup after canceling its native write", async () => {
+      const sandbox = createDesktopSandbox("C:\\work\\project");
       (sandbox as any).httpClient = "powershell";
       (sandbox as any).shellKind = "cmd";
       const controller = new AbortController();
@@ -243,7 +243,11 @@ describe("CentrifugoSandbox", () => {
       mockSubscriptions[0].emit("subscribed");
       await jest.advanceTimersByTimeAsync(0);
       expect(mockSubscriptions[0].publish).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "file_write" }),
+        expect.objectContaining({
+          type: "file_write",
+          path: `C:\\work\\project\\hackerai-transfer-${FIXED_UUID}.ps1`,
+          allowedRoot: "C:\\work\\project",
+        }),
       );
       controller.abort();
       await jest.advanceTimersByTimeAsync(0);
@@ -252,7 +256,10 @@ describe("CentrifugoSandbox", () => {
       mockSubscriptions[1].emit("subscribed");
       await jest.advanceTimersByTimeAsync(0);
       expect(mockSubscriptions[1].publish).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "file_remove" }),
+        expect.objectContaining({
+          type: "file_remove",
+          path: `C:\\work\\project\\hackerai-transfer-${FIXED_UUID}.ps1`,
+        }),
       );
       await jest.advanceTimersByTimeAsync(5000);
       await rejected;
@@ -1347,6 +1354,79 @@ describe("CentrifugoSandbox", () => {
 
       await expect(promise).resolves.toBeUndefined();
     });
+
+    it.each([
+      ["cmd", "download"],
+      ["bash", "download"],
+      ["cmd", "upload"],
+      ["bash", "upload"],
+    ] as const)(
+      "completes a project-scoped PowerShell %s %s through the native file guard",
+      async (shell, direction) => {
+        const project = "C:\\work\\project with spaces";
+        const sandbox = createDesktopSandbox(project);
+        (sandbox as any).shellKind = shell;
+        (sandbox as any).httpClient = "powershell";
+        const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        });
+        const url = "https://example.com/file?signature=opaque";
+        const transfer =
+          direction === "download"
+            ? sandbox.files.downloadFromUrl(url, "file.txt")
+            : sandbox.files.uploadToUrl("file.txt", url, "text/plain");
+        const outcome = transfer.catch((error: unknown) => error);
+
+        await jest.advanceTimersByTimeAsync(0);
+        // Exercise the real write/remove relay. Model the Desktop's project
+        // boundary so a global-temp write fails as it did in production.
+        for (let index = 0; index < mockSubscriptions.length; index++) {
+          const sub = mockSubscriptions[index];
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          const request = sub.publish.mock.calls[0][0];
+          const outsideProject =
+            request.type === "file_write" &&
+            (request.allowedRoot !== project ||
+              !request.path.startsWith(`${project}\\`));
+          sub.emit("publication", {
+            data: outsideProject
+              ? {
+                  type: "file_error",
+                  requestId: request.requestId,
+                  message: "Path is outside the allowed project folder",
+                }
+              : { type: "file_ok", requestId: request.requestId },
+          });
+          await jest.advanceTimersByTimeAsync(0);
+        }
+
+        await expect(outcome).resolves.toBeUndefined();
+        const scriptPath = `${project}\\hackerai-transfer-${FIXED_UUID}.ps1`;
+        expect(mockSubscriptions).toHaveLength(2);
+        expect(mockSubscriptions[0].publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "file_write",
+            path: scriptPath,
+            allowedRoot: project,
+          }),
+        );
+        expect(mockSubscriptions[1].publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "file_remove", path: scriptPath }),
+        );
+        expect(run).toHaveBeenCalledTimes(1);
+        const command = run.mock.calls[0][0];
+        expect(command).toContain(
+          shell === "cmd"
+            ? `-File "${scriptPath}"`
+            : `-File '/c/work/project with spaces/hackerai-transfer-${FIXED_UUID}.ps1'`,
+        );
+        expect(command).not.toContain(url);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
 
     it("includes the project folder as the allowed root for native writes", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\hackerai");
