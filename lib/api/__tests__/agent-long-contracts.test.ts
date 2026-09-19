@@ -506,7 +506,15 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
     expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
     expect(chatComponentSrc).toMatch(/markAgentRunUiTerminal/);
-    expect(chatComponentSrc).toMatch(/submissionGeneration/);
+    expect(chatComponentSrc).toMatch(
+      /submissionGeneration:\s*agentLongSubmissionGeneration/,
+    );
+    expect(reconciliationSrc).toMatch(
+      /const requestGeneration\s*=\s*agentLongRequestGenerationRef\.current/,
+    );
+    expect(reconciliationSrc).toMatch(
+      /markAgentRunUiTerminal\([\s\S]*requestGeneration/,
+    );
     expect(reconciliationSrc).toMatch(/persistedRunDetached/);
     expect(reconciliationSrc).toMatch(
       /persistedRunDetached[\s\S]*scheduleFinishLocally\(\)/,
@@ -536,10 +544,10 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /agentLongRunFallbackAllowedRef\.current\s*=\s*false;[\s\S]*return fetchAgentLongStream/,
     );
     expect(chatComponentSrc).toMatch(
-      /submissionGeneration\s*=\s*\+\+agentLongSubmissionGenerationRef\.current/,
+      /requestGeneration\s*=\s*\+\+agentLongRequestGenerationRef\.current/,
     );
     expect(chatComponentSrc).toMatch(
-      /submissionGeneration\s*!==\s*agentLongSubmissionGenerationRef\.current/,
+      /requestGeneration\s*!==\s*agentLongRequestGenerationRef\.current/,
     );
     expect(chatComponentSrc).toMatch(
       /if \(init\?\.method !== "GET"\) \{[\s\S]*agentLongRunCorrelationRef\.current = null;[\s\S]*agentLongRunFallbackAllowedRef\.current = false;[\s\S]*setAgentLongRunId\(null\)/,

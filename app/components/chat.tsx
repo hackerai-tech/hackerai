@@ -839,7 +839,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
-  const agentLongSubmissionGenerationRef = useRef(0);
+  const agentLongRequestGenerationRef = useRef(0);
   const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
     useState(0);
   const [terminalAgentRunUiState, setTerminalAgentRunUiState] = useState<{
@@ -855,21 +855,20 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const agentLongRunFallbackAllowedRef = useRef(true);
 
   const markAgentRunUiTerminal = useCallback(
-    (runId: string | undefined, submissionGeneration: number | undefined) => {
+    (runId: string | undefined, requestGeneration: number | undefined) => {
       if (
-        submissionGeneration !== undefined &&
-        submissionGeneration !== agentLongSubmissionGenerationRef.current
+        requestGeneration !== undefined &&
+        requestGeneration !== agentLongRequestGenerationRef.current
       ) {
         return;
       }
       setTerminalAgentRunUiState({
         chatId,
-        submissionGeneration:
-          submissionGeneration ?? agentLongSubmissionGenerationRef.current,
+        submissionGeneration: agentLongSubmissionGeneration,
         ...(runId ? { runId } : {}),
       });
     },
-    [chatId],
+    [agentLongSubmissionGeneration, chatId],
   );
 
   useLayoutEffect(() => {
@@ -921,9 +920,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           // Reset the previous run before starting the request. Doing this in
           // the passive `submitted` effect can race with onRunStarted and
           // erase the new run metadata before completion reconciliation sees it.
-          const submissionGeneration =
-            ++agentLongSubmissionGenerationRef.current;
-          setAgentLongSubmissionGeneration(submissionGeneration);
+          const requestGeneration = ++agentLongRequestGenerationRef.current;
+          setAgentLongSubmissionGeneration((generation) => generation + 1);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -938,8 +936,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             init,
             (run) => {
               if (
-                submissionGeneration !==
-                  agentLongSubmissionGenerationRef.current ||
+                requestGeneration !== agentLongRequestGenerationRef.current ||
                 (run.chatId !== undefined &&
                   run.chatId !== activeChatIdRef.current)
               ) {
@@ -957,10 +954,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           );
         }
         if (init?.method !== "GET") {
-          agentLongSubmissionGenerationRef.current += 1;
-          setAgentLongSubmissionGeneration(
-            agentLongSubmissionGenerationRef.current,
-          );
+          agentLongRequestGenerationRef.current += 1;
+          setAgentLongSubmissionGeneration((generation) => generation + 1);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -1503,7 +1498,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, []);
 
   useEffect(() => {
-    agentLongSubmissionGenerationRef.current += 1;
+    agentLongRequestGenerationRef.current += 1;
     agentLongRunCorrelationRef.current = null;
     agentLongRunFallbackAllowedRef.current = true;
     setAgentLongRunId(null);
@@ -1552,6 +1547,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   // the app's authenticated resume endpoint so the first message in a new
   // chat can leave "Working..." even before chatData is subscribed.
   useEffect(() => {
+    const requestGeneration = agentLongRequestGenerationRef.current;
     const trackedAgentLongRunId =
       agentLongRunId ??
       agentLongRunCorrelationRef.current?.runId ??
@@ -1601,7 +1597,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       if (stopped || finishTimeout !== undefined) return;
       markAgentRunUiTerminal(
         trackedAgentLongRunId ?? undefined,
-        agentLongSubmissionGeneration,
+        requestGeneration,
       );
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
@@ -2154,8 +2150,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
-    getAgentRunSubmissionGeneration: () =>
-      agentLongSubmissionGenerationRef.current,
+    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
