@@ -177,10 +177,10 @@ describe("selectModel", () => {
   );
 
   it.each([
-    ["ask", "model-deepseek-v4-flash-0731"],
-    ["agent", "model-deepseek-v4-flash-0731"],
+    ["ask", "model-deepseek-v4-flash-vision-pro"],
+    ["agent", "model-deepseek-v4-flash-vision-pro"],
   ] as const)(
-    "routes %s Pro Plus Auto text to the Standard model",
+    "routes %s Pro Plus Auto text to DeepSeek V4.1 Flash",
     (mode, expected) => {
       expect(selectModel(mode, "pro-plus", "auto", false, false)).toBe(
         expected,
@@ -200,11 +200,14 @@ describe("selectModel", () => {
     );
   });
 
-  it("routes Pro Plus Agent Auto PDFs to DeepSeek V4 Flash", () => {
-    expect(selectModel("agent", "pro-plus", "auto", false, true)).toBe(
-      "model-deepseek-v4-flash-0731",
-    );
-  });
+  it.each(["ask", "agent"] as const)(
+    "routes %s Pro Plus Auto PDFs to DeepSeek V4.1 Flash",
+    (mode) => {
+      expect(selectModel(mode, "pro-plus", "auto", false, true)).toBe(
+        "model-deepseek-v4-flash-vision-pro",
+      );
+    },
+  );
 
   it("routes paid Agent Ultra Auto PDFs to DeepSeek V4 Flash", () => {
     expect(selectModel("agent", "ultra", "auto", false, true)).toBe(
@@ -332,7 +335,11 @@ describe("selectModel", () => {
                 false,
                 directVision,
               ),
-            ).toBe("model-deepseek-v4-flash-0731");
+            ).toBe(
+              subscription === "pro-plus" && selection !== "hackerai-standard"
+                ? "model-deepseek-v4-flash-vision-pro"
+                : "model-deepseek-v4-flash-0731",
+            );
             expect(
               selectModel(
                 mode,
@@ -342,12 +349,20 @@ describe("selectModel", () => {
                 true,
                 directVision,
               ),
-            ).toBe("model-deepseek-v4-flash-0731");
+            ).toBe(
+              subscription === "pro-plus" && selection !== "hackerai-standard"
+                ? "model-deepseek-v4-flash-vision-pro"
+                : "model-deepseek-v4-flash-0731",
+            );
             expect(
               selectModel(mode, subscription, selection, true, false, {
                 auxiliaryVisionEnabled: true,
               }),
-            ).toBe("model-deepseek-v4-flash-0731");
+            ).toBe(
+              subscription === "pro-plus" && selection !== "hackerai-standard"
+                ? "model-deepseek-v4-flash-vision-pro"
+                : "model-deepseek-v4-flash-0731",
+            );
           }
           expect(
             selectModel(mode, subscription, "hackerai-pro", true, false, {
@@ -397,7 +412,7 @@ describe("selectModel", () => {
     },
   );
 
-  it.each(["pro", "pro-plus", "team"] as const)(
+  it.each(["pro", "team"] as const)(
     "routes paid %s Auto text to the mode-specific Standard model",
     (subscription) => {
       expect(selectModel("ask", subscription, "auto")).toBe(
@@ -411,7 +426,7 @@ describe("selectModel", () => {
 
   // Default model selection by mode
   describe("default models (no override)", () => {
-    it.each(["pro", "pro-plus", "team"] as const)(
+    it.each(["pro", "team"] as const)(
       "should return DeepSeek V4 Flash for paid agent text on %s",
       (subscription) => {
         expect(selectModel("agent", subscription)).toBe(
@@ -419,6 +434,15 @@ describe("selectModel", () => {
         );
       },
     );
+
+    it("should return DeepSeek V4.1 Flash for Pro Plus text", () => {
+      expect(selectModel("ask", "pro-plus")).toBe(
+        "model-deepseek-v4-flash-vision-pro",
+      );
+      expect(selectModel("agent", "pro-plus")).toBe(
+        "model-deepseek-v4-flash-vision-pro",
+      );
+    });
 
     it("should return DeepSeek V4 Flash for paid agent text on Ultra", () => {
       expect(selectModel("agent", "ultra")).toBe(
