@@ -62,7 +62,11 @@ interface UseChatHandlersProps {
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
   resumeActiveRun?: () => void | Promise<void>;
-  onAgentRunAlreadyFinished?: (runId?: string) => void;
+  getAgentRunSubmissionGeneration?: () => number;
+  onAgentRunAlreadyFinished?: (
+    runId: string | undefined,
+    submissionGeneration: number | undefined,
+  ) => void;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -100,6 +104,7 @@ export const useChatHandlers = ({
   hasManuallyStoppedRef,
   activeTriggerRunRef,
   resumeActiveRun,
+  getAgentRunSubmissionGeneration,
   onAgentRunAlreadyFinished,
   onStopCallback,
   resetAutoContinueCount,
@@ -271,6 +276,7 @@ export const useChatHandlers = ({
 
   const recoverStaleAgentRun = async (
     result: Extract<AgentCancellationResult, { outcome: "stale_run" }>,
+    submissionGeneration?: number,
   ): Promise<void> => {
     hasManuallyStoppedRef.current = false;
     if (activeTriggerRunRef && result.activeTriggerRunId !== undefined) {
@@ -296,7 +302,10 @@ export const useChatHandlers = ({
       // The user's intent is already satisfied. Treat this completion race as
       // a silent, successful reconciliation instead of surfacing internal run
       // lifecycle state or asking them to repeat an action that cannot help.
-      onAgentRunAlreadyFinished?.(result.expectedTriggerRunId);
+      onAgentRunAlreadyFinished?.(
+        result.expectedTriggerRunId,
+        submissionGeneration,
+      );
       return;
     }
 
@@ -407,6 +416,7 @@ export const useChatHandlers = ({
   };
 
   const stopActiveRunForReplacement = async (): Promise<boolean> => {
+    const submissionGeneration = getAgentRunSubmissionGeneration?.();
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
       cancelTriggerRun(),
       stopActiveStream({ skipSave: true }),
@@ -424,13 +434,17 @@ export const useChatHandlers = ({
       throw streamStopResult.reason;
     }
     if (triggerCancelResult.value.outcome === "stale_run") {
-      await recoverStaleAgentRun(triggerCancelResult.value);
+      await recoverStaleAgentRun(
+        triggerCancelResult.value,
+        submissionGeneration,
+      );
       return false;
     }
     return true;
   };
 
   const stopActiveRunForSteer = async (): Promise<boolean> => {
+    const submissionGeneration = getAgentRunSubmissionGeneration?.();
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
     // Capture a pending start now, before the todo save can outlive its response.
@@ -438,7 +452,7 @@ export const useChatHandlers = ({
       stopActiveStream({ requireCancelSuccess: true }),
     );
     if (cancelResult.outcome === "stale_run") {
-      await recoverStaleAgentRun(cancelResult);
+      await recoverStaleAgentRun(cancelResult, submissionGeneration);
       return false;
     }
     return true;
@@ -658,6 +672,7 @@ export const useChatHandlers = ({
   };
 
   const handleStop = async () => {
+    const submissionGeneration = getAgentRunSubmissionGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
       message_id: messages.findLast((message) => message.role === "assistant")
@@ -693,7 +708,10 @@ export const useChatHandlers = ({
       triggerCancelResult.status === "fulfilled" &&
       triggerCancelResult.value.outcome === "stale_run"
     ) {
-      await recoverStaleAgentRun(triggerCancelResult.value);
+      await recoverStaleAgentRun(
+        triggerCancelResult.value,
+        submissionGeneration,
+      );
       return false;
     }
 

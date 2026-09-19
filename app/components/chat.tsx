@@ -840,6 +840,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
   const agentLongSubmissionGenerationRef = useRef(0);
+  const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
+    useState(0);
   const [terminalAgentRunUiState, setTerminalAgentRunUiState] = useState<{
     chatId: string;
     submissionGeneration: number;
@@ -853,10 +855,17 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const agentLongRunFallbackAllowedRef = useRef(true);
 
   const markAgentRunUiTerminal = useCallback(
-    (runId?: string) => {
+    (runId: string | undefined, submissionGeneration: number | undefined) => {
+      if (
+        submissionGeneration !== undefined &&
+        submissionGeneration !== agentLongSubmissionGenerationRef.current
+      ) {
+        return;
+      }
       setTerminalAgentRunUiState({
         chatId,
-        submissionGeneration: agentLongSubmissionGenerationRef.current,
+        submissionGeneration:
+          submissionGeneration ?? agentLongSubmissionGenerationRef.current,
         ...(runId ? { runId } : {}),
       });
     },
@@ -914,6 +923,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           // erase the new run metadata before completion reconciliation sees it.
           const submissionGeneration =
             ++agentLongSubmissionGenerationRef.current;
+          setAgentLongSubmissionGeneration(submissionGeneration);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -948,6 +958,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         }
         if (init?.method !== "GET") {
           agentLongSubmissionGenerationRef.current += 1;
+          setAgentLongSubmissionGeneration(
+            agentLongSubmissionGenerationRef.current,
+          );
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -1586,7 +1599,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
     const scheduleFinishLocally = () => {
       if (stopped || finishTimeout !== undefined) return;
-      markAgentRunUiTerminal(trackedAgentLongRunId ?? undefined);
+      markAgentRunUiTerminal(
+        trackedAgentLongRunId ?? undefined,
+        agentLongSubmissionGeneration,
+      );
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
       // The transport also polls the status endpoint and can deliver a
@@ -1690,6 +1706,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   }, [
     activeTriggerRunRef,
     activeTriggerRunId,
+    agentLongSubmissionGeneration,
     agentLongRunId,
     chatId,
     isExistingChatRef,
@@ -2137,6 +2154,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
+    getAgentRunSubmissionGeneration: () =>
+      agentLongSubmissionGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -2242,13 +2261,13 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const currentAgentRunUiId =
     agentLongRunId ??
     activeTriggerRunId ??
-    (lastPersistedAgentRunRef.current.chatId === chatId
-      ? lastPersistedAgentRunRef.current.runId
+    (terminalAgentRunUiState?.chatId === chatId
+      ? terminalAgentRunUiState.runId
       : undefined);
   const isAgentRunUiTerminal =
     terminalAgentRunUiState?.chatId === chatId &&
     terminalAgentRunUiState.submissionGeneration ===
-      agentLongSubmissionGenerationRef.current &&
+      agentLongSubmissionGeneration &&
     (terminalAgentRunUiState.runId
       ? terminalAgentRunUiState.runId === currentAgentRunUiId
       : !currentAgentRunUiId);
