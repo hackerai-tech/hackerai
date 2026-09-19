@@ -16,12 +16,11 @@ describe("chat-handler request validation", () => {
     const routingEnd = source.indexOf("if (flashRoutingAssignment)");
     const attachmentCheck = source.indexOf(
       "countFileAttachments(fetched.truncatedMessages).imageCount > 0",
-      routingStart,
     );
     expect(routingStart).toBeGreaterThan(-1);
     expect(routingEnd).toBeGreaterThan(-1);
-    expect(attachmentCheck).toBeGreaterThan(routingStart);
-    expect(attachmentCheck).toBeLessThan(routingEnd);
+    expect(attachmentCheck).toBeGreaterThan(-1);
+    expect(attachmentCheck).toBeLessThan(routingStart);
   });
   it("enforces the Trigger.dev Agent boundary before Vercel auth or billing work", () => {
     const source = fs.readFileSync(
