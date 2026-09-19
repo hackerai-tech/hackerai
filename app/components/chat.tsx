@@ -839,6 +839,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const [isAgentRunUiTerminal, setIsAgentRunUiTerminal] = useState(false);
+  const lastPersistedAgentRunRef = useRef<{
+    chatId: string;
+    runId?: string;
+  }>({ chatId });
   const agentLongHasVisibleProgressRef = useRef(false);
   const agentLongRunFallbackAllowedRef = useRef(true);
   const agentLongSubmissionGenerationRef = useRef(0);
@@ -1385,6 +1390,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   useEffect(() => {
     if (status === "submitted") {
+      setIsAgentRunUiTerminal(false);
       agentLongHasVisibleProgressRef.current = false;
       agentLongMessageFingerprintRef.current = {
         chatId,
@@ -1400,6 +1406,35 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       browserStreamFinishedRef.current = false;
     }
   }, [chatId, shouldUseAgentLongForCurrentChat, status]);
+
+  useEffect(() => {
+    if (lastPersistedAgentRunRef.current.chatId !== chatId) {
+      lastPersistedAgentRunRef.current = { chatId };
+      setIsAgentRunUiTerminal(false);
+    }
+
+    if (activeTriggerRunId) {
+      lastPersistedAgentRunRef.current = {
+        chatId,
+        runId: activeTriggerRunId,
+      };
+      setIsAgentRunUiTerminal(false);
+      return;
+    }
+
+    if (status !== "streaming" && status !== "submitted") {
+      lastPersistedAgentRunRef.current = { chatId };
+      setIsAgentRunUiTerminal(false);
+      return;
+    }
+
+    // Convex clearing the exact run we previously observed is authoritative:
+    // the user-visible answer is persisted and only backend cleanup may remain.
+    // Hide Stop immediately while the transport gets its short finish grace.
+    if (lastPersistedAgentRunRef.current.runId) {
+      setIsAgentRunUiTerminal(true);
+    }
+  }, [activeTriggerRunId, chatId, status]);
 
   useEffect(() => {
     const isAgentLongDoubleCloseNoise = (message: unknown) =>
@@ -1456,6 +1491,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     agentLongRunCorrelationRef.current = null;
     agentLongRunFallbackAllowedRef.current = true;
     setAgentLongRunId(null);
+    setIsAgentRunUiTerminal(false);
     agentLongHasVisibleProgressRef.current = false;
     clearDataStream();
     setIsAutoResuming(false);
@@ -1545,6 +1581,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
     const scheduleFinishLocally = () => {
       if (stopped || finishTimeout !== undefined) return;
+      setIsAgentRunUiTerminal(true);
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
       // The transport also polls the status endpoint and can deliver a
@@ -1625,7 +1662,15 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         );
       }, delayMs);
     };
-    scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
+    const persistedRunDetached =
+      !activeTriggerRunId &&
+      lastPersistedAgentRunRef.current.chatId === chatId &&
+      lastPersistedAgentRunRef.current.runId === trackedAgentLongRunId;
+    if (persistedRunDetached) {
+      scheduleFinishLocally();
+    } else {
+      scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
+    }
 
     return () => {
       stopped = true;
@@ -1639,6 +1684,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     };
   }, [
     activeTriggerRunRef,
+    activeTriggerRunId,
     agentLongRunId,
     chatId,
     isExistingChatRef,
@@ -2085,6 +2131,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
+    onAgentRunAlreadyFinished: () => {
+      setIsAgentRunUiTerminal(true);
+    },
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
@@ -2327,6 +2376,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                             onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
+                            hideStop={isAgentRunUiTerminal}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -2365,6 +2415,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
+                    hideStop={isAgentRunUiTerminal}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}

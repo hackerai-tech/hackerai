@@ -505,6 +505,11 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(reconciliationSrc).toMatch(/clearTimeout\(requestTimeout\)/);
     expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
     expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
+    expect(chatComponentSrc).toMatch(/setIsAgentRunUiTerminal\(true\)/);
+    expect(reconciliationSrc).toMatch(/persistedRunDetached/);
+    expect(reconciliationSrc).toMatch(
+      /persistedRunDetached[\s\S]*scheduleFinishLocally\(\)/,
+    );
     expect(statusSrc).toMatch(/active_trigger_run_id\s*!==\s*runId/);
     expect(statusSrc).toMatch(/status:\s*"DETACHED",\s*terminal:\s*true/);
     expect(transportSrc).toMatch(

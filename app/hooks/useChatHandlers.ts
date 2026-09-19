@@ -62,6 +62,7 @@ interface UseChatHandlersProps {
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
   resumeActiveRun?: () => void | Promise<void>;
+  onAgentRunAlreadyFinished?: () => void;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -99,6 +100,7 @@ export const useChatHandlers = ({
   hasManuallyStoppedRef,
   activeTriggerRunRef,
   resumeActiveRun,
+  onAgentRunAlreadyFinished,
   onStopCallback,
   resetAutoContinueCount,
   sendDisabledReason,
@@ -291,9 +293,10 @@ export const useChatHandlers = ({
 
     if (hasNoActiveRun) {
       setIsAutoResuming(false);
-      toast.info("Agent run already finished", {
-        description: "Nothing is running to cancel. Try the action again.",
-      });
+      // The user's intent is already satisfied. Treat this completion race as
+      // a silent, successful reconciliation instead of surfacing internal run
+      // lifecycle state or asking them to repeat an action that cannot help.
+      onAgentRunAlreadyFinished?.();
       return;
     }
 
