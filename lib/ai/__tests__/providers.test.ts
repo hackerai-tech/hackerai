@@ -228,13 +228,6 @@ describe("provider registry", () => {
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash");
-    expect(
-      (
-        myProvider.languageModel("agent-auto-review-model") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6")).toBe("xAI Grok 4.6");
@@ -265,10 +258,6 @@ describe("provider registry", () => {
     expect(getModelDisplayName("title-generator-model")).toBe(
       "DeepSeek V4 Flash",
     );
-    expect(getModelDisplayName("agent-auto-review-model")).toBe(
-      "DeepSeek V4 Flash 0731",
-    );
-    expect(getModelCutoffDate("agent-auto-review-model")).toBe("July 2026");
   });
 
   it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
@@ -293,7 +282,6 @@ describe("provider registry", () => {
     expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
-    expect(isDeepSeekModel("agent-auto-review-model")).toBe(true);
   });
 
   it("keeps tracked free Ask on GLM and Agent/rescue on DeepSeek", () => {

@@ -1268,9 +1268,6 @@ const buildProviderMap = (
     "fallback-ask-model": or(GROK_4_6_SLUG),
     // Titles are a short structured-output task and should never use reasoning.
     "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
-    // Separate text-only, tool-less call used to review one approval-gated
-    // action. The reviewer receives serialized evidence rather than images.
-    "agent-auto-review-model": or(DEEPSEEK_V4_FLASH_SLUG),
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
@@ -1305,7 +1302,6 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
   "title-generator-model": "May 2025",
-  "agent-auto-review-model": "July 2026",
   "auxiliary-vision-model": "July 2026",
 };
 
@@ -1337,7 +1333,6 @@ export const modelDisplayNames: Record<ModelName, string> &
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model": "DeepSeek V4 Flash",
-  "agent-auto-review-model": "DeepSeek V4 Flash 0731",
   "auxiliary-vision-model": "Auxiliary vision model",
 };
 
@@ -1361,7 +1356,6 @@ export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
     modelName === "agent-model-free" ||
-    modelName === "agent-auto-review-model" ||
     modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
     modelName === "model-deepseek-v4-flash-vision-pro" ||
@@ -1432,6 +1426,15 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
  * V4 Pro 0813 in Ask and V4.1 Flash in Agent. Max uses Grok 4.6 in both
  * modes; media-aware promotion happens in `selectModel`.
  */
+export function resolveTierToProviderKey(
+  tier: Exclude<SelectedModel, "auto">,
+  mode: ChatMode,
+): ModelName;
+export function resolveTierToProviderKey(tier: "auto", mode: ChatMode): null;
+export function resolveTierToProviderKey(
+  tier: SelectedModel,
+  mode: ChatMode,
+): ModelName | null;
 export function resolveTierToProviderKey(
   tier: SelectedModel,
   mode: ChatMode,
