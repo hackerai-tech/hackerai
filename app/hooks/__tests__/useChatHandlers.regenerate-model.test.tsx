@@ -514,7 +514,7 @@ describe("useChatHandlers regenerate model", () => {
     expect(activeTriggerRunRef.current).toBeUndefined();
     expect(resumeActiveRun).not.toHaveBeenCalled();
     expect(mockSetIsAutoResuming).toHaveBeenLastCalledWith(false);
-    expect(onAgentRunAlreadyFinished).toHaveBeenCalledTimes(1);
+    expect(onAgentRunAlreadyFinished).toHaveBeenCalledWith("run-1");
     expect(mockToastInfo).not.toHaveBeenCalled();
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "agent_cancel_stale_recovery_started",

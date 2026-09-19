@@ -62,7 +62,7 @@ interface UseChatHandlersProps {
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
   resumeActiveRun?: () => void | Promise<void>;
-  onAgentRunAlreadyFinished?: () => void;
+  onAgentRunAlreadyFinished?: (runId?: string) => void;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -296,7 +296,7 @@ export const useChatHandlers = ({
       // The user's intent is already satisfied. Treat this completion race as
       // a silent, successful reconciliation instead of surfacing internal run
       // lifecycle state or asking them to repeat an action that cannot help.
-      onAgentRunAlreadyFinished?.();
+      onAgentRunAlreadyFinished?.(result.expectedTriggerRunId);
       return;
     }
 
