@@ -41,6 +41,7 @@ type SubagentPresentation = {
   sidebarContent: SidebarSubagents;
   suffix?: string;
   toolCallId: string;
+  visualSeed: string;
   waiting: boolean;
 };
 
@@ -108,6 +109,46 @@ const nameForAgentId = (
   return undefined;
 };
 
+const creationToolCallIdForAgent = (
+  message: UIMessage,
+  agentId: string | undefined,
+  agentName: string,
+): string | undefined => {
+  const parts = message.parts as any[];
+  const creationParts = parts.filter(
+    (candidate) =>
+      candidate?.type === "tool-create_agent" ||
+      candidate?.type === "tool-delegate_task",
+  );
+
+  for (const candidate of creationParts) {
+    if (agentId && candidate?.output?.agent_id === agentId) {
+      return candidate.toolCallId;
+    }
+    if (
+      agentId &&
+      parts.some(
+        (lifecycle) =>
+          lifecycle?.type === "data-subagent-lifecycle" &&
+          lifecycle?.data?.parent_tool_call_id === candidate?.toolCallId &&
+          lifecycle?.data?.subagent_id === agentId,
+      )
+    ) {
+      return candidate.toolCallId;
+    }
+  }
+
+  for (const candidate of creationParts) {
+    const candidateName =
+      candidate?.output?.name ??
+      candidate?.input?.name ??
+      candidate?.input?.profile_input?.candidate?.title;
+    if (candidateName === agentName) return candidate.toolCallId;
+  }
+
+  return undefined;
+};
+
 const hashString = (value: string) => {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -118,8 +159,8 @@ const hashString = (value: string) => {
 
 const assignVisualIndexes = (presentations: SubagentPresentation[]) => {
   const occupied = new Set<number>();
-  return presentations.map(({ toolCallId }) => {
-    const preferredIndex = hashString(toolCallId) % SUBAGENT_VISUALS.length;
+  return presentations.map(({ visualSeed }) => {
+    const preferredIndex = hashString(visualSeed) % SUBAGENT_VISUALS.length;
     for (let offset = 0; offset < SUBAGENT_VISUALS.length; offset += 1) {
       const visualIndex = (preferredIndex + offset) % SUBAGENT_VISUALS.length;
       if (occupied.has(visualIndex)) continue;
@@ -198,6 +239,11 @@ const presentationForPart = (
   const isSend = type === "tool-send_message_to_agent";
   const isWait = type === "tool-wait_for_agents";
   const isCancel = type === "tool-cancel_agent";
+  const visualSeed = isCreate
+    ? toolCallId
+    : (creationToolCallIdForAgent(message, agentId, agentName) ??
+      agentId ??
+      toolCallId);
   const hasChildLifecycle = Boolean(lifecycle?.data?.subagent_id);
   const failed = Boolean(errorText) || output?.success === false;
   const legacyCanOpen =
@@ -303,6 +349,7 @@ const presentationForPart = (
     },
     suffix,
     toolCallId,
+    visualSeed,
     waiting,
   };
 };
