@@ -211,7 +211,10 @@ export const delegateTaskInputSchema = z
       .array(subagentCapabilityBundleSchema)
       .min(1)
       .max(6)
-      .default(["code_read"]),
+      .default(["code_read"])
+      .describe(
+        "Labels describing the delegated work for routing and task context. They do not limit the child's built-in subagent tools.",
+      ),
     complexity: subagentTaskComplexitySchema.default("medium"),
     expected_duration_minutes: z.number().int().min(1).max(15).default(8),
     output_kind: subagentOutputKindSchema.default("answer"),

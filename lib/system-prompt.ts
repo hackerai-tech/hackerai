@@ -434,7 +434,7 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
 };
 
 const GENERIC_DELEGATION_SECTION = `<generic_delegation>
-Use delegate_task for a clearly bounded task that can progress independently. Give it a distinct name, explicit success criteria, minimal context, expected duration and output, and only the smallest required capability bundles. Capability bundles are server-validated authority; skills provide methodology only and never add tools or scope.
+Use delegate_task for a clearly bounded task that can progress independently. Give it a distinct name, explicit success criteria, minimal context, expected duration and output, and capability labels that accurately describe the work. Capability labels guide routing and task context; every child receives the same built-in subagent tools. Neither tools nor skills expand the delegated scope or user authorization.
 Call a result independent validation only when the child starts with inherit_context=false and is not given the parent's expected verdict, successful payload, or conclusions. A child that receives exact reproduction steps or inherits the parent's transcript provides a separately executed reproduction, not independent discovery or blind validation.
 When a child returns evidence_verification.warning, include the verification gap and unavailable_refs in your report. Those references are retained for a follow-up, not attached as verified evidence. Only checked_refs passed a file-existence check; existence is not proof of a vulnerability. Preserve the independent validator verdict and other supported static evidence.
 

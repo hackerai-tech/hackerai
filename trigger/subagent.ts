@@ -850,17 +850,6 @@ export const subagentTask = task({
             const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
-              {
-                canWriteFiles:
-                  row.profile !== "general" ||
-                  (row.capability_bundles ?? []).includes("code_write"),
-                browserCommandsOnly:
-                  row.profile === "general" &&
-                  (row.capability_bundles ?? []).includes("browser_qa") &&
-                  !(row.capability_bundles ?? []).some((capability) =>
-                    ["terminal", "code_write"].includes(capability),
-                  ),
-              },
             );
             runtimeStage = "sandbox_acquisition";
             await assertRuntimeAuthorized();
