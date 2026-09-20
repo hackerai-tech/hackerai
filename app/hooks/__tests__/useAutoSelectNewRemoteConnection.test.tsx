@@ -1,4 +1,4 @@
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 jest.mock("sonner", () => ({
@@ -7,9 +7,10 @@ jest.mock("sonner", () => ({
   },
 }));
 
-const { useAutoSelectNewRemoteConnection } = jest.requireActual<
-  typeof import("../useAutoSelectNewRemoteConnection")
->("../useAutoSelectNewRemoteConnection");
+const { requestRemoteConnectionSelection, useAutoSelectNewRemoteConnection } =
+  jest.requireActual<typeof import("../useAutoSelectNewRemoteConnection")>(
+    "../useAutoSelectNewRemoteConnection",
+  );
 const { toast } = jest.requireMock<typeof import("sonner")>("sonner");
 
 const remoteConnection = {
@@ -78,15 +79,75 @@ describe("useAutoSelectNewRemoteConnection", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it.each(["desktop", "missing-runner"])(
-    "does not replace selected %s when a different runner appears",
-    (sandboxPreference) => {
-      const props = { ...makeProps(), sandboxPreference };
+  it("selects a reconnected runner when the saved connection ID is unavailable", () => {
+    const props = {
+      ...makeProps(),
+      hasExplicitSandboxPreference: true,
+      chatMode: "agent" as const,
+      sandboxPreference: "expired-connection-id",
+    };
+    const { rerender } = renderHook(
+      (currentProps) => useAutoSelectNewRemoteConnection(currentProps),
+      { initialProps: props },
+    );
+
+    act(() => requestRemoteConnectionSelection("expired-connection-id"));
+    rerender({ ...props, connections: [remoteConnection] });
+
+    expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1", {
+      remember: false,
+    });
+    expect(props.setChatMode).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith(
+      "Local machine connected and selected.",
+    );
+  });
+
+  it("does not replace an unavailable saved runner without a reconnect request", () => {
+    const props = {
+      ...makeProps(),
+      hasExplicitSandboxPreference: true,
+      sandboxPreference: "expired-connection-id",
+    };
+    const { rerender } = renderHook(
+      (currentProps) => useAutoSelectNewRemoteConnection(currentProps),
+      { initialProps: props },
+    );
+
+    rerender({ ...props, connections: [remoteConnection] });
+
+    expect(props.setSandboxPreference).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      sandboxPreference: "remote-existing",
+      existingConnection: {
+        connectionId: "remote-existing",
+        isDesktop: false,
+      },
+    },
+    {
+      sandboxPreference: "desktop",
+      existingConnection: desktopConnection,
+    },
+  ])(
+    "does not replace connected $sandboxPreference when a different runner appears",
+    ({ sandboxPreference, existingConnection }) => {
+      const props = {
+        ...makeProps(),
+        sandboxPreference,
+        connections: [existingConnection],
+      };
       const { rerender } = renderHook(
         (currentProps) => useAutoSelectNewRemoteConnection(currentProps),
         { initialProps: props },
       );
-      rerender({ ...props, connections: [remoteConnection] });
+      rerender({
+        ...props,
+        connections: [existingConnection, remoteConnection],
+      });
       expect(props.setSandboxPreference).not.toHaveBeenCalled();
       expect(props.setChatMode).not.toHaveBeenCalled();
     },

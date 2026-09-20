@@ -21,6 +21,29 @@ interface UseNewRemoteConnectionArgs {
   onNewConnection: (connection: RemoteConnection) => void;
 }
 
+const REMOTE_CONNECTION_SELECTION_REQUEST_EVENT =
+  "hackerai:remote-connection-selection-request";
+const REMOTE_CONNECTION_SELECTION_REQUEST_TTL_MS = 5 * 60 * 1000;
+
+interface RemoteConnectionSelectionRequest {
+  sandboxPreference: SandboxPreference;
+  requestedAt: number;
+}
+
+/** Allows the next newly connected runner to replace this unavailable selection. */
+export function requestRemoteConnectionSelection(
+  sandboxPreference: SandboxPreference,
+) {
+  window.dispatchEvent(
+    new CustomEvent<RemoteConnectionSelectionRequest>(
+      REMOTE_CONNECTION_SELECTION_REQUEST_EVENT,
+      {
+        detail: { sandboxPreference, requestedAt: Date.now() },
+      },
+    ),
+  );
+}
+
 /** Detects remote connections added after the current session baseline. */
 export function useNewRemoteConnection({
   connections,
@@ -93,19 +116,73 @@ export function useAutoSelectNewRemoteConnection({
   selectedModel,
   setSelectedModel,
 }: UseAutoSelectNewRemoteConnectionArgs) {
+  const pendingReconnectRef = useRef<RemoteConnectionSelectionRequest | null>(
+    null,
+  );
+
+  useEffect(() => {
+    if (!enabled) {
+      pendingReconnectRef.current = null;
+      return;
+    }
+
+    const handleSelectionRequest = (event: Event) => {
+      const request = (event as CustomEvent<RemoteConnectionSelectionRequest>)
+        .detail;
+      if (request?.sandboxPreference) {
+        pendingReconnectRef.current = request;
+      }
+    };
+
+    window.addEventListener(
+      REMOTE_CONNECTION_SELECTION_REQUEST_EVENT,
+      handleSelectionRequest,
+    );
+    return () =>
+      window.removeEventListener(
+        REMOTE_CONNECTION_SELECTION_REQUEST_EVENT,
+        handleSelectionRequest,
+      );
+  }, [enabled]);
+
   const selectNewConnection = useCallback(
     (connection: RemoteConnection) => {
-      // Only an untouched new-chat default may follow a newly connected runner.
-      // Saved tasks and explicit Cloud choices own their environment too.
-      if (!isNewChat || hasExplicitSandboxPreference) return;
-      // A runner appearing (or reconnecting) is not permission to replace a
-      // different computer already selected for the task.
+      const pendingReconnect = pendingReconnectRef.current;
+      const reconnectRequested = Boolean(
+        pendingReconnect &&
+        pendingReconnect.sandboxPreference === sandboxPreference &&
+        Date.now() - pendingReconnect.requestedAt <=
+          REMOTE_CONNECTION_SELECTION_REQUEST_TTL_MS,
+      );
+      if (pendingReconnect && !reconnectRequested) {
+        pendingReconnectRef.current = null;
+      }
+
+      // An untouched new-task default may follow a newly connected runner.
+      // Replacing a saved local connection requires an explicit Reconnect
+      // action so an unrelated runner cannot silently take over the task.
+      if (
+        !isNewChat ||
+        (hasExplicitSandboxPreference &&
+          (sandboxPreference === "e2b" || !reconnectRequested))
+      )
+        return;
+
+      const selectedConnectionAvailable = connections?.some((candidate) =>
+        sandboxPreference === "desktop"
+          ? candidate.isDesktop
+          : !candidate.isDesktop &&
+            candidate.connectionId === sandboxPreference,
+      );
       if (
         sandboxPreference !== "e2b" &&
-        sandboxPreference !== connection.connectionId
+        sandboxPreference !== connection.connectionId &&
+        selectedConnectionAvailable
       ) {
         return;
       }
+
+      pendingReconnectRef.current = null;
       if (sandboxPreference !== connection.connectionId) {
         setSandboxPreference(connection.connectionId, { remember: false });
       }
@@ -129,6 +206,7 @@ export function useAutoSelectNewRemoteConnection({
     },
     [
       chatMode,
+      connections,
       isNewChat,
       hasExplicitSandboxPreference,
       sandboxPreference,
