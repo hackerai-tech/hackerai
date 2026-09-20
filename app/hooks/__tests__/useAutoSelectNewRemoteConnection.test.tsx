@@ -41,6 +41,19 @@ function makeProps() {
 }
 
 describe("useAutoSelectNewRemoteConnection", () => {
+  it("never replaces a stable environment with the next unrelated runner", () => {
+    const props = {
+      ...makeProps(),
+      sandboxPreference: "environment:original",
+      hasExplicitSandboxPreference: true,
+    };
+    const { rerender } = renderHook(useAutoSelectNewRemoteConnection, {
+      initialProps: props,
+    });
+    act(() => requestRemoteConnectionSelection(props.sandboxPreference));
+    rerender({ ...props, connections: [remoteConnection] });
+    expect(props.setSandboxPreference).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -95,7 +108,7 @@ describe("useAutoSelectNewRemoteConnection", () => {
     rerender({ ...props, connections: [remoteConnection] });
 
     expect(props.setSandboxPreference).toHaveBeenCalledWith("remote-1", {
-      remember: false,
+      remember: true,
     });
     expect(props.setChatMode).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith(

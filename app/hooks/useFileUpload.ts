@@ -160,6 +160,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     subscription,
     getTotalTokens,
     sandboxPreference,
+    desktopEnvironmentId,
   } = useGlobalState();
   const uploadedFilesRef = useRef(uploadedFiles);
   const preferredStorageRegionPromiseRef = useRef<ReturnType<
@@ -190,7 +191,9 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const shouldUseLocalDesktopAttachments =
     isTauriEnvironment() &&
     isAgentMode(mode) &&
-    sandboxPreference === "desktop";
+    (sandboxPreference === "desktop" ||
+      (desktopEnvironmentId !== undefined &&
+        sandboxPreference === `desktop-environment:${desktopEnvironmentId}`));
 
   const applyUploadedFileUpdate = useCallback(
     (indexToUpdate: number, updates: Partial<UploadedFileState>) => {

@@ -220,6 +220,7 @@ import {
   requireVercelChatMode,
 } from "@/lib/api/chat-request-validation";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -564,7 +565,7 @@ export const createChatHandler = () => {
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
         allowLocalDesktopFiles:
-          isAgentMode(mode) && sandboxPreference === "desktop",
+          isAgentMode(mode) && isDesktopPreference(sandboxPreference ?? "e2b"),
         directGlmVisionEnabled,
         chatId,
         requestId,

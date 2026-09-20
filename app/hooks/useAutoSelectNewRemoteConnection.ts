@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 import type { SetSandboxPreference } from "./useSandboxPreference";
+import {
+  connectionMatchesPreference,
+  environmentPreference,
+  isEnvironmentPreference,
+} from "@/lib/sandbox/environment";
 import type {
   ChatMode,
   SandboxPreference,
@@ -12,6 +17,7 @@ import type {
 
 interface RemoteConnection {
   connectionId: string;
+  environmentId?: string;
   isDesktop: boolean;
 }
 
@@ -147,6 +153,9 @@ export function useAutoSelectNewRemoteConnection({
 
   const selectNewConnection = useCallback(
     (connection: RemoteConnection) => {
+      // Stable selections reconnect through identity resolution, never through
+      // the legacy "next runner" heuristic (even after clicking Reconnect).
+      if (isEnvironmentPreference(sandboxPreference)) return;
       const pendingReconnect = pendingReconnectRef.current;
       const reconnectRequested = Boolean(
         pendingReconnect &&
@@ -169,10 +178,7 @@ export function useAutoSelectNewRemoteConnection({
         return;
 
       const selectedConnectionAvailable = connections?.some((candidate) =>
-        sandboxPreference === "desktop"
-          ? candidate.isDesktop
-          : !candidate.isDesktop &&
-            candidate.connectionId === sandboxPreference,
+        connectionMatchesPreference(candidate, sandboxPreference),
       );
       if (
         sandboxPreference !== "e2b" &&
@@ -184,7 +190,9 @@ export function useAutoSelectNewRemoteConnection({
 
       pendingReconnectRef.current = null;
       if (sandboxPreference !== connection.connectionId) {
-        setSandboxPreference(connection.connectionId, { remember: false });
+        setSandboxPreference(environmentPreference(connection), {
+          remember: reconnectRequested,
+        });
       }
 
       if (

@@ -37,6 +37,7 @@ import {
 } from "@/lib/api/chat-request-validation";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import type {
   Todo,
   LimitRescueRequest,
@@ -548,7 +549,7 @@ export const createAgentTriggerPost =
       let localDesktopAttachmentsPrepared = false;
 
       if (hasLocalDesktopSourcePaths(requestMessages)) {
-        if (sandboxPreference !== "desktop") {
+        if (!isDesktopPreference(sandboxPreference ?? "e2b")) {
           throw new ChatSDKError(
             "bad_request:api",
             "Desktop-local attachments can only be used with the desktop sandbox.",
@@ -564,7 +565,7 @@ export const createAgentTriggerPost =
           const sandboxManager = new HybridSandboxManager(
             userId,
             () => {},
-            "desktop",
+            sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY!,
             null,
             subscription,

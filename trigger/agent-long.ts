@@ -1,4 +1,5 @@
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import {
   evaluateFreeMonthlyBudget,
   captureFreeMonthlyBudgetExposure,
@@ -2849,7 +2850,7 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        allowLocalDesktopFiles: sandboxPreference === "desktop",
+        allowLocalDesktopFiles: isDesktopPreference(sandboxPreference ?? "e2b"),
         directGlmVisionEnabled,
         chatId,
         triggerRunId: ctx.run.id,

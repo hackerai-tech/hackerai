@@ -1,7 +1,12 @@
 import type { SandboxPreference } from "@/types/chat";
+import {
+  connectionMatchesPreference,
+  environmentPreference,
+} from "@/lib/sandbox/environment";
 
 interface LocalSandboxConnection {
   connectionId: string;
+  environmentId?: string;
   isDesktop: boolean;
 }
 
@@ -27,7 +32,7 @@ export function resolveFreeDesktopSandboxPreference({
   const remoteConnection = localConnections?.find(
     (connection) => !connection.isDesktop,
   );
-  return remoteConnection?.connectionId ?? "desktop";
+  return remoteConnection ? environmentPreference(remoteConnection) : "desktop";
 }
 
 export function isFreeDesktopSandboxAvailable({
@@ -38,9 +43,8 @@ export function isFreeDesktopSandboxAvailable({
   if (sandboxPreference === "desktop") return desktopBridgeActive;
   if (sandboxPreference === "e2b") return false;
   return Boolean(
-    localConnections?.some(
-      (connection) =>
-        !connection.isDesktop && connection.connectionId === sandboxPreference,
+    localConnections?.some((connection) =>
+      connectionMatchesPreference(connection, sandboxPreference),
     ),
   );
 }

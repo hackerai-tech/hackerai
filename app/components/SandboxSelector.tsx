@@ -24,6 +24,11 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useInitialConnectionPending } from "@/app/hooks/useInitialConnectionPending";
 
 import type { SetSandboxPreference } from "@/app/hooks/useSandboxPreference";
+import {
+  connectionMatchesPreference,
+  environmentPreference,
+  isDesktopPreference,
+} from "@/lib/sandbox/environment";
 
 interface SandboxSelectorProps {
   value: string;
@@ -55,14 +60,13 @@ export function SandboxSelector({
     subscription,
     localConnections: connections,
     desktopBridgeStatus,
+    desktopEnvironmentId,
   } = useGlobalState();
   const isFreeUser = subscription === "free";
 
   const selectedConnectionKnown = Boolean(
     connections?.some((connection) =>
-      value === "desktop"
-        ? connection.isDesktop
-        : !connection.isDesktop && connection.connectionId === value,
+      connectionMatchesPreference(connection, value),
     ),
   );
   const initialConnectionPending = useInitialConnectionPending({
@@ -70,10 +74,14 @@ export function SandboxSelector({
     connectionCount: connections?.length,
     preference: value,
   });
-  const computerConnectionPending =
-    value === "desktop" && isTauri
-      ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
-      : initialConnectionPending;
+  const selectedNativeDesktop =
+    isTauri &&
+    (value === "desktop" ||
+      (desktopEnvironmentId !== undefined &&
+        value === `desktop-environment:${desktopEnvironmentId}`));
+  const computerConnectionPending = selectedNativeDesktop
+    ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
+    : initialConnectionPending;
 
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -94,19 +102,40 @@ export function SandboxSelector({
           ? "Local"
           : "Local unavailable"
       : "Local";
-  const desktopConnection = connections?.find((conn) => conn.isDesktop);
+  const desktopConnection = connections?.find(
+    (conn) =>
+      conn.isDesktop &&
+      (!isTauri ||
+        !desktopEnvironmentId ||
+        conn.environmentId === desktopEnvironmentId),
+  );
   const desktopIsSelectable = !isTauri || desktopBridgeStatus === "connected";
-  const desktopOptions: ConnectionOption[] = desktopConnection
-    ? [
-        {
-          id: "desktop",
-          label: desktopLabel,
-          shortLabel: desktopLabel,
-          icon: Monitor,
-          disabled: !desktopIsSelectable,
-        },
-      ]
-    : [];
+  const desktopOptions: ConnectionOption[] = (connections ?? [])
+    .filter(
+      (conn, index, all) =>
+        conn.isDesktop &&
+        all.findIndex(
+          (candidate) =>
+            environmentPreference(candidate) === environmentPreference(conn),
+        ) === index,
+    )
+    .map((conn) => {
+      const isCurrentDesktop = isTauri && conn === desktopConnection;
+      const label =
+        isCurrentDesktop || !conn.environmentId
+          ? desktopLabel
+          : conn.osInfo?.hostname || conn.name;
+      return {
+        id:
+          value === "desktop" && conn === desktopConnection
+            ? "desktop"
+            : environmentPreference(conn),
+        label,
+        shortLabel: label,
+        icon: Monitor,
+        disabled: isCurrentDesktop && !desktopIsSelectable,
+      };
+    });
   const remoteConnections = useMemo(
     () => connections?.filter((conn) => !conn.isDesktop) ?? [],
     [connections],
@@ -147,14 +176,20 @@ export function SandboxSelector({
         : remoteConnections,
     [onlineRemoteConnectionIds, remoteConnections, shouldVerifyRemotePresence],
   );
-  const remoteOptions: ConnectionOption[] = liveRemoteConnections.map(
-    (conn) => ({
-      id: conn.connectionId,
+  const remoteOptions: ConnectionOption[] = liveRemoteConnections
+    .filter(
+      (conn, index, all) =>
+        all.findIndex(
+          (candidate) =>
+            environmentPreference(candidate) === environmentPreference(conn),
+        ) === index,
+    )
+    .map((conn) => ({
+      id: value === conn.connectionId ? value : environmentPreference(conn),
       label: conn.osInfo?.hostname || conn.name,
       shortLabel: conn.osInfo?.hostname || conn.name,
       icon: Laptop,
-    }),
-  );
+    }));
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
 
   // A connected Convex row can briefly exist before the command relay has
@@ -217,8 +252,10 @@ export function SandboxSelector({
       : remoteConnections[0];
     const preferredLocal =
       desktopConnection && desktopIsSelectable
-        ? "desktop"
-        : firstRemote?.connectionId;
+        ? environmentPreference(desktopConnection)
+        : firstRemote
+          ? environmentPreference(firstRemote)
+          : undefined;
     if (!preferredLocal) return;
 
     if (value === "e2b") {
@@ -243,20 +280,20 @@ export function SandboxSelector({
       ? {
           id: value,
           label:
-            value === "desktop" && desktopBridgeStatus === "connecting"
+            selectedNativeDesktop && desktopBridgeStatus === "connecting"
               ? "Local reconnecting"
               : computerConnectionPending
                 ? "Local"
                 : "Local unavailable",
           shortLabel:
-            value === "desktop" && desktopBridgeStatus === "connecting"
+            selectedNativeDesktop && desktopBridgeStatus === "connecting"
               ? "Local reconnecting"
               : computerConnectionPending
                 ? "Local"
-                : value === "desktop" && desktopBridgeStatus === "connected"
+                : selectedNativeDesktop && desktopBridgeStatus === "connected"
                   ? "Local"
                   : "Local unavailable",
-          icon: value === "desktop" ? Monitor : Laptop,
+          icon: isDesktopPreference(value) ? Monitor : Laptop,
         }
       : null;
   const selectedOption =
@@ -342,7 +379,11 @@ export function SandboxSelector({
                 disabled={option.disabled}
                 onClick={() => {
                   if (option.disabled) return;
-                  onChange?.(option.id);
+                  onChange?.(
+                    option.id === "desktop" && desktopConnection
+                      ? environmentPreference(desktopConnection)
+                      : option.id,
+                  );
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${

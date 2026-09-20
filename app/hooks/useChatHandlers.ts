@@ -127,6 +127,7 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
+    desktopEnvironmentId,
     agentPermissionMode,
     selectedModel,
     sidebarOpen,
@@ -148,6 +149,7 @@ export const useChatHandlers = ({
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
@@ -530,7 +532,12 @@ export const useChatHandlers = ({
     if (
       hasLocalDesktopFiles &&
       (!isAgentMode(currentChatMode) ||
-        sandboxPreferenceRef.current !== "desktop")
+        !(
+          sandboxPreferenceRef.current === "desktop" ||
+          (desktopEnvironmentIdRef.current !== undefined &&
+            sandboxPreferenceRef.current ===
+              `desktop-environment:${desktopEnvironmentIdRef.current}`)
+        ))
     ) {
       toast.error("Local attachments require desktop Agent mode", {
         description:

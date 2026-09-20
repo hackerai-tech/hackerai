@@ -7,12 +7,14 @@ const mockGlobalState = {
   localConnections: [] as
     | Array<{
         connectionId: string;
+        environmentId?: string;
         isDesktop: boolean;
         name?: string;
         osInfo?: { hostname?: string };
       }>
     | undefined,
   desktopBridgeStatus: "connecting",
+  desktopEnvironmentId: undefined as string | undefined,
 };
 let mockPresenceConnections: Array<{
   connectionId: string;
@@ -53,6 +55,7 @@ describe("SandboxSelector", () => {
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";
+    mockGlobalState.desktopEnvironmentId = undefined;
     mockPresenceConnections = [];
     global.fetch = jest.fn().mockImplementation(async () => ({
       ok: true,
@@ -66,6 +69,42 @@ describe("SandboxSelector", () => {
     expect(
       screen.getByRole("button", { name: /Local reconnecting/i }),
     ).toBeInTheDocument();
+  });
+
+  it("retains the reconnecting label for the current stable Desktop identity", () => {
+    mockGlobalState.desktopEnvironmentId = "this-desktop";
+    render(<SandboxSelector value="desktop-environment:this-desktop" />);
+    expect(
+      screen.getByRole("button", { name: /Local reconnecting/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows one option per environment after a replacement session connects", () => {
+    mockGlobalState.desktopBridgeStatus = "connected";
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "old-session",
+        environmentId: "same-computer",
+        isDesktop: false,
+        name: "Kali",
+      },
+      {
+        connectionId: "new-session",
+        environmentId: "same-computer",
+        isDesktop: false,
+        name: "Kali",
+      },
+      {
+        connectionId: "other-session",
+        environmentId: "other-computer",
+        isDesktop: false,
+        name: "Other",
+      },
+    ];
+    render(<SandboxSelector value="environment:same-computer" />);
+    fireEvent.click(screen.getByRole("button", { name: "Kali" }));
+    expect(screen.getAllByRole("button", { name: "Kali" })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Other" })).toBeInTheDocument();
   });
 
   it("keeps the selected local label neutral while connections hydrate", () => {
