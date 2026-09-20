@@ -731,6 +731,8 @@ type FallbackOptions = {
   reasoningOverride?: ProviderReasoningOverride;
   excludedModelSlugs?: readonly string[];
   requestedModelSlug?: string;
+  /** Stable OpenRouter sticky-routing key for cache-capable model requests. */
+  cacheSessionId?: string;
 };
 
 export type ProviderReasoningOverride = {
@@ -1087,6 +1089,8 @@ export function buildProviderOptions(
           }
         : {}),
       ...(userId && { user: userId }),
+      ...(isDeepSeekV4 &&
+        options.cacheSessionId && { session_id: options.cacheSessionId }),
       ...(providerRouting && { provider: providerRouting }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },

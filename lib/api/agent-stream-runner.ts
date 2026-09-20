@@ -41,6 +41,7 @@ import {
   type ToolSet,
 } from "ai";
 import { randomUUID } from "crypto";
+import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
 import {
   buildProviderOptions,
   buildSystemPrompt,
@@ -1084,6 +1085,11 @@ export async function createAgentStream(
   ) => {
     const requestedModelSlug =
       ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    const cacheSessionId = createOpenRouterCacheSessionId({
+      chatId: ctx.chatId,
+      mode: ctx.mode,
+      requestedModelSlug,
+    });
     return buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
@@ -1091,6 +1097,7 @@ export async function createAgentStream(
       ctx.mode,
       {
         requestedModelSlug,
+        cacheSessionId,
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
