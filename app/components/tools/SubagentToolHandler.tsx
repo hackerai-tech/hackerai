@@ -109,41 +109,108 @@ const nameForAgentId = (
   return undefined;
 };
 
+type AgentCreationIdentity = {
+  agentId?: string;
+  agentName?: string;
+  toolCallId: string;
+};
+
+type AgentLifecycleLink = {
+  agentId: string;
+  toolCallId: string;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const creationIdentityForPart = (
+  candidate: unknown,
+): AgentCreationIdentity | undefined => {
+  if (!isRecord(candidate)) return undefined;
+  if (
+    candidate.type !== "tool-create_agent" &&
+    candidate.type !== "tool-delegate_task"
+  ) {
+    return undefined;
+  }
+  if (typeof candidate.toolCallId !== "string") return undefined;
+
+  const output = isRecord(candidate.output) ? candidate.output : undefined;
+  const input = isRecord(candidate.input) ? candidate.input : undefined;
+  const profileInput = isRecord(input?.profile_input)
+    ? input.profile_input
+    : undefined;
+  const profileCandidate = isRecord(profileInput?.candidate)
+    ? profileInput.candidate
+    : undefined;
+  const agentId =
+    typeof output?.agent_id === "string" ? output.agent_id : undefined;
+  const agentName =
+    typeof output?.name === "string"
+      ? output.name
+      : typeof input?.name === "string"
+        ? input.name
+        : typeof profileCandidate?.title === "string"
+          ? profileCandidate.title
+          : undefined;
+
+  return { agentId, agentName, toolCallId: candidate.toolCallId };
+};
+
+const lifecycleLinkForPart = (
+  candidate: unknown,
+): AgentLifecycleLink | undefined => {
+  if (!isRecord(candidate) || candidate.type !== "data-subagent-lifecycle") {
+    return undefined;
+  }
+  if (!isRecord(candidate.data)) return undefined;
+  if (
+    typeof candidate.data.subagent_id !== "string" ||
+    typeof candidate.data.parent_tool_call_id !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    agentId: candidate.data.subagent_id,
+    toolCallId: candidate.data.parent_tool_call_id,
+  };
+};
+
 const creationToolCallIdForAgent = (
   message: UIMessage,
   agentId: string | undefined,
   agentName: string,
 ): string | undefined => {
-  const parts = message.parts as any[];
-  const creationParts = parts.filter(
-    (candidate) =>
-      candidate?.type === "tool-create_agent" ||
-      candidate?.type === "tool-delegate_task",
-  );
+  const creationParts = (message.parts as unknown[])
+    .map(creationIdentityForPart)
+    .filter((candidate): candidate is AgentCreationIdentity =>
+      Boolean(candidate),
+    );
+  const lifecycleLinks = (message.parts as unknown[])
+    .map(lifecycleLinkForPart)
+    .filter((candidate): candidate is AgentLifecycleLink => Boolean(candidate));
 
   for (const candidate of creationParts) {
-    if (agentId && candidate?.output?.agent_id === agentId) {
+    if (agentId && candidate.agentId === agentId) {
       return candidate.toolCallId;
     }
     if (
       agentId &&
-      parts.some(
+      lifecycleLinks.some(
         (lifecycle) =>
-          lifecycle?.type === "data-subagent-lifecycle" &&
-          lifecycle?.data?.parent_tool_call_id === candidate?.toolCallId &&
-          lifecycle?.data?.subagent_id === agentId,
+          lifecycle.toolCallId === candidate.toolCallId &&
+          lifecycle.agentId === agentId,
       )
     ) {
       return candidate.toolCallId;
     }
   }
 
-  for (const candidate of creationParts) {
-    const candidateName =
-      candidate?.output?.name ??
-      candidate?.input?.name ??
-      candidate?.input?.profile_input?.candidate?.title;
-    if (candidateName === agentName) return candidate.toolCallId;
+  const matchingNames = creationParts.filter(
+    (candidate) => candidate.agentName === agentName,
+  );
+  if (matchingNames.length === 1) {
+    return matchingNames[0].toolCallId;
   }
 
   return undefined;
