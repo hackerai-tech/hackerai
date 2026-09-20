@@ -30,6 +30,9 @@ interface StepUsage {
   };
 }
 
+const isValidCacheTokenCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
 type ModelStepCost = {
   rawCost: number;
   authoritativeCost?: number;
@@ -135,9 +138,17 @@ export class UsageTracker {
   }
 
   accumulateStep(usage: StepUsage, modelName?: string): number {
+    const reportedCacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
+    const reportedCacheWriteTokens = usage.inputTokenDetails?.cacheWriteTokens;
+    const cacheReadTokens = isValidCacheTokenCount(reportedCacheReadTokens)
+      ? reportedCacheReadTokens
+      : 0;
+    const cacheWriteTokens = isValidCacheTokenCount(reportedCacheWriteTokens)
+      ? reportedCacheWriteTokens
+      : 0;
     if (
-      usage.inputTokenDetails?.cacheReadTokens !== undefined ||
-      usage.inputTokenDetails?.cacheWriteTokens !== undefined
+      isValidCacheTokenCount(reportedCacheReadTokens) ||
+      isValidCacheTokenCount(reportedCacheWriteTokens)
     ) {
       this.modelCacheTelemetryObserved = true;
     }
@@ -145,8 +156,8 @@ export class UsageTracker {
     this.outputTokens += usage.outputTokens || 0;
     this.totalTokens += usage.totalTokens || 0;
     this.lastStepInputTokens = usage.inputTokens || 0;
-    this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
-    this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
+    this.cacheReadTokens += cacheReadTokens;
+    this.cacheWriteTokens += cacheWriteTokens;
     const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const stepCostIndex =
@@ -154,8 +165,8 @@ export class UsageTracker {
         rawCost,
         inputTokens: usage.inputTokens || 0,
         outputTokens: usage.outputTokens || 0,
-        cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens || 0,
-        cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens || 0,
+        cacheReadTokens,
+        cacheWriteTokens,
         modelName,
       }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
@@ -173,16 +184,20 @@ export class UsageTracker {
     cost?: number;
     model?: string;
   }): void {
+    const cacheReadTokens = isValidCacheTokenCount(usage.cacheReadTokens)
+      ? usage.cacheReadTokens
+      : 0;
+    const cacheWriteTokens = isValidCacheTokenCount(usage.cacheWriteTokens)
+      ? usage.cacheWriteTokens
+      : 0;
     if (
-      usage.cacheReadTokens !== undefined ||
-      usage.cacheWriteTokens !== undefined
+      isValidCacheTokenCount(usage.cacheReadTokens) ||
+      isValidCacheTokenCount(usage.cacheWriteTokens)
     ) {
       this.summarizationCacheTelemetryObserved = true;
     }
     const inputTokens = usage.inputTokens || 0;
     const outputTokens = usage.outputTokens || 0;
-    const cacheReadTokens = usage.cacheReadTokens || 0;
-    const cacheWriteTokens = usage.cacheWriteTokens || 0;
     const rawCost = isPositiveFiniteNumber(usage.cost) ? usage.cost : 0;
 
     this.inputTokens += inputTokens;

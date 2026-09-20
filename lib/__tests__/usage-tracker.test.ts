@@ -174,6 +174,19 @@ describe("UsageTracker", () => {
       });
       expect(tracker.cacheHitRate).toBe(0);
     });
+
+    it("should ignore malformed cache telemetry", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: {
+          cacheReadTokens: null as unknown as number,
+          cacheWriteTokens: Number.NaN,
+        },
+      });
+      expect(tracker.cacheReadTokens).toBe(0);
+      expect(tracker.cacheWriteTokens).toBe(0);
+      expect(tracker.cacheHitRate).toBeNull();
+    });
   });
 
   describe("hasCacheData", () => {
