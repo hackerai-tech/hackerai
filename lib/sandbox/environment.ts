@@ -23,6 +23,19 @@ export function environmentPreference(
       : connection.connectionId;
 }
 
+/**
+ * Identity for work and approvals performed inside a local environment.
+ * Modern clients use their persistent installation identity; legacy clients
+ * remain scoped to their replaceable relay session.
+ */
+export function localEnvironmentIdentity(
+  connection: EnvironmentConnection,
+): string {
+  return connection.environmentId
+    ? environmentPreference(connection)
+    : connection.connectionId;
+}
+
 export function connectionMatchesPreference(
   connection: EnvironmentConnection,
   preference: string,

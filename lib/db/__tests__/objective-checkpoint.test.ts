@@ -64,3 +64,19 @@ it("a user follow-up does not erase unknown external outcomes", async () => {
   expect(runtime.state.blocker).toContain("unknown outcome");
   expect(runtime.state.actions[0].state).toBe("outcome_unknown");
 });
+
+it("migrates a retained relay session checkpoint to its stable environment", async () => {
+  const saved = newObjectiveCheckpoint("old-run");
+  saved.environment = "connection:old-session";
+  mockQuery
+    .mockResolvedValueOnce(JSON.stringify(saved))
+    .mockResolvedValueOnce("environment:machine-a");
+
+  const runtime = await loadObjectiveCheckpoint({
+    ...args,
+    environment: async () => "connection:environment:machine-a",
+  });
+
+  expect(runtime.state.environment).toBe("connection:environment:machine-a");
+  expect(runtime.state.blocker).toBeUndefined();
+});

@@ -512,6 +512,37 @@ describe("HybridSandboxManager prompt-time fallback", () => {
     ).toThrow("selected sandbox changed after approval");
   });
 
+  it("keeps approvals bound to a stable local environment across relay sessions", () => {
+    const local = (connectionId: string, environmentId: string) =>
+      ({
+        sandboxKind: "centrifugo" as const,
+        getConnectionId: () => connectionId,
+        getConnectionInfo: () => ({
+          connectionId,
+          environmentId,
+          isDesktop: false,
+        }),
+      }) as never;
+    const first = local("session-a", "machine-a");
+    const replacement = local("session-b", "machine-a");
+    const other = local("session-c", "machine-b");
+    const approvedIdentity = getAgentApprovalSandboxIdentity(first);
+
+    expect(getAgentApprovalSandboxIdentity(replacement)).toBe(approvedIdentity);
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: replacement,
+        expectedSandboxIdentity: approvedIdentity,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: other,
+        expectedSandboxIdentity: approvedIdentity,
+      }),
+    ).toThrow("selected sandbox changed after approval");
+  });
+
   it("keeps MIOSA approvals isolated from E2B", () => {
     const miosa = { sandboxKind: "miosa" as const } as never;
     const e2b = { commands: {} } as never;

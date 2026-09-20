@@ -1,6 +1,7 @@
 import {
   connectionMatchesPreference,
   environmentPreference,
+  localEnvironmentIdentity,
   resolveEnvironmentConnection,
 } from "../environment";
 
@@ -46,6 +47,14 @@ it("keeps desktop identity distinct from a CLI using the same UUID", () => {
   expect(
     connectionMatchesPreference(newSession, "desktop-environment:machine-a"),
   ).toBe(false);
+});
+
+it("uses the stable environment for work identity and a session for legacy clients", () => {
+  expect(localEnvironmentIdentity(newSession)).toBe("environment:machine-a");
+  expect(localEnvironmentIdentity({ ...newSession, isDesktop: true })).toBe(
+    "desktop-environment:machine-a",
+  );
+  expect(localEnvironmentIdentity({ connectionId: "legacy" })).toBe("legacy");
 });
 
 it("continues resolving legacy selections without matching different sessions", () => {
