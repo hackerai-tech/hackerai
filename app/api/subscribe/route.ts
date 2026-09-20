@@ -40,6 +40,8 @@ import {
   type ProMonthlyPricingExperimentAssignment,
 } from "@/lib/experiments/pro-monthly-pricing";
 import { evaluateProMonthlyPricingExperiment } from "@/lib/experiments/pro-monthly-pricing.server";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 function stripeProductId(product: Stripe.Price["product"]): string | undefined {
   return typeof product === "string" ? product : product?.id;
@@ -286,6 +288,10 @@ export const POST = async (req: NextRequest) => {
     // Get user ID and subscription state from authenticated session
     const { userId, subscription, organizationId, freeQuotaSubject } =
       await getUserIDAndPro(req);
+
+    if (await hasActiveSuspensionForUser(userId)) {
+      return json({ error: BILLING_ERRORS.accountSuspended }, { status: 403 });
+    }
 
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);

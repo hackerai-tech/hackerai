@@ -172,6 +172,25 @@ describe("POST /api/subscribe", () => {
     );
   });
 
+  it("blocks checkout creation while the account has an active dispute hold", async () => {
+    mockConvexQuery.mockResolvedValueOnce({
+      status: "active",
+      category: "dispute_billing_hold",
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error:
+        "Billing is disabled while this account has an active payment dispute or fraud hold. Contact support before making another payment.",
+    });
+    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockCreateCustomer).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
   it("rejects existing organization members who are not billing admins", async () => {
     mockListOrganizationMemberships.mockResolvedValue({
       data: [

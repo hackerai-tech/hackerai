@@ -3,6 +3,8 @@ import Stripe from "stripe";
 import { workos } from "../../workos";
 import { stripe } from "../../stripe";
 import { requireAdminOrg } from "../team-auth";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const MAX_SEATS = 999;
 
@@ -66,6 +68,12 @@ async function getSeatOperationContext(
     };
   }
   const { userId, organizationId } = guard;
+
+  if (await hasActiveSuspensionForUser(userId)) {
+    return {
+      error: { message: BILLING_ERRORS.accountSuspended, status: 403 },
+    };
+  }
 
   const organization =
     await workos.organizations.getOrganization(organizationId);

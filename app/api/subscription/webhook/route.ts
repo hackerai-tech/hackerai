@@ -56,6 +56,7 @@ import {
   proMonthlyPricingAssignmentFromMetadata,
   proMonthlyPricingExperimentProperties,
 } from "@/lib/experiments/pro-monthly-pricing";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -1745,6 +1746,16 @@ async function handlePaymentMethodUpdated(args: {
     customerResult.reason === "legacy_user_metadata" ||
     userIds.length === 0
   ) {
+    return;
+  }
+
+  const activeSuspensions = await Promise.all(
+    userIds.map((userId) => hasActiveSuspensionForUser(userId)),
+  );
+  // Recovery can charge the shared Stripe customer. A hold on any resolved
+  // member therefore blocks the customer-level operation, not just that
+  // member's analytics or entitlement updates.
+  if (activeSuspensions.some(Boolean)) {
     return;
   }
 

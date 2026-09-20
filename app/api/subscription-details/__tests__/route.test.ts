@@ -11,6 +11,7 @@ const mockCreatePreview = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogFlush = jest.fn();
+const mockHasActiveSuspensionForUser = jest.fn();
 
 jest.mock("next/server", () => ({
   after: jest.fn((callback: () => void) => callback()),
@@ -31,6 +32,10 @@ jest.mock("@/lib/posthog/server", () => ({
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: mockGetUserIDAndPro,
+}));
+
+jest.mock("@/lib/suspensions", () => ({
+  hasActiveSuspensionForUser: mockHasActiveSuspensionForUser,
 }));
 
 jest.mock("../../workos", () => ({
@@ -75,6 +80,7 @@ function makeRequest(body: Record<string, unknown> = {}) {
 describe("POST /api/subscription-details", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockHasActiveSuspensionForUser.mockResolvedValue(false);
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",
