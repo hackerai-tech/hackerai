@@ -55,7 +55,7 @@ describe("Open URL failure capture through phLogger", () => {
     ],
     ["unexpected reader failure", "UnknownError", "unexpected reader failure"],
   ])(
-    "preserves the original cause beside the stable exception summary: %s",
+    "preserves the original sanitized exception details: %s",
     async (error, name, message) => {
       mockFetch.mockRejectedValue(error);
       const onToolFailure = jest.fn();
@@ -82,7 +82,7 @@ describe("Open URL failure capture through phLogger", () => {
       expect(properties).toMatchObject(cause);
       expect(log.attributes).toMatchObject(cause);
       expect(distinctId).toBe("user_123");
-      expect(exception.message).toBe("Open URL tool error");
+      expect(exception).toMatchObject({ name, message });
       expect(properties.error_message).toBe(exception.message);
       expect(onToolFailure).toHaveBeenCalledWith(
         expect.objectContaining({ error_name: name, error_message: message }),
@@ -167,4 +167,20 @@ describe("Open URL failure capture through phLogger", () => {
     expect(mockEmitPostHogLog).not.toHaveBeenCalled();
     expect(onToolFailure).not.toHaveBeenCalled();
   });
+
+  it.each(["run cancelled", "Canceled by user"])(
+    "keeps runtime cancellation silent: %s",
+    async (error) => {
+      mockFetch.mockRejectedValue(error);
+      const onToolFailure = jest.fn();
+
+      await expect(runTool(onToolFailure)).resolves.toBe(
+        "Error: Operation aborted",
+      );
+
+      expect(mockCaptureException).not.toHaveBeenCalled();
+      expect(mockEmitPostHogLog).not.toHaveBeenCalled();
+      expect(onToolFailure).not.toHaveBeenCalled();
+    },
+  );
 });
