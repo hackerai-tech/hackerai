@@ -56,6 +56,7 @@ import {
 } from "./computer-sidebar-utils";
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
+import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -69,8 +70,11 @@ interface ComputerSidebarProps {
   messages?: any[];
   onNavigate?: (content: SidebarContent) => void;
   status?: ChatStatus;
-  /** Child tool clicks select a command; following new tools requires Jump to live. */
+  /** Whether a newly opened selection starts at the live edge. */
   followLiveOnOpen?: boolean;
+  /** Historical child selections stay pinned until the user returns to the edge. */
+  pinHistoricalNavigation?: boolean;
+  onFollowingLiveChange?: (isFollowingLive: boolean) => void;
   backNavigation?: {
     label: string;
     onBack: () => void;
@@ -311,6 +315,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   onNavigate,
   status,
   followLiveOnOpen = true,
+  pinHistoricalNavigation = false,
+  onFollowingLiveChange,
   backNavigation,
   realtimeRecovery,
 }) => {
@@ -319,13 +325,18 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const previousToolCountRef = useRef<number>(0);
 
   const navigateManually = useCallback(
-    (content: SidebarContent) => {
-      // Preserve normal-message following; only subagent browsing pins tools.
-      if (!followLiveOnOpen) setIsFollowingLive(false);
+    (content: SidebarContent, context: { isLatest: boolean }) => {
+      if (pinHistoricalNavigation) {
+        setIsFollowingLive(context.isLatest);
+      }
       onNavigate?.(content);
     },
-    [followLiveOnOpen, onNavigate],
+    [onNavigate, pinHistoricalNavigation],
   );
+
+  useEffect(() => {
+    onFollowingLiveChange?.(isFollowingLive);
+  }, [isFollowingLive, onFollowingLiveChange]);
 
   const {
     toolExecutions,
@@ -1101,11 +1112,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
 const SubagentComputerSidebar = ({
   closeSidebar,
+  parentMessages,
   openSidebar,
   origin,
   sidebarContent,
 }: {
   closeSidebar: () => void;
+  parentMessages: any[];
   openSidebar: (content: SidebarContent) => void;
   origin: SidebarSubagentOrigin;
   sidebarContent: SidebarContent;
@@ -1117,6 +1130,13 @@ const SubagentComputerSidebar = ({
     subagentId: origin.subagentId,
   });
   const active = !!run && SUBAGENT_ACTIVE_STATUSES.has(run.status);
+  const followLiveOnOpen =
+    ("isExecuting" in sidebarContent && sidebarContent.isExecuting === true) ||
+    ("isSearching" in sidebarContent && sidebarContent.isSearching === true);
+  const isFollowingLiveRef = useRef(followLiveOnOpen);
+  const sawActiveRunRef = useRef(false);
+  const parentBoundaryToolCallIdRef = useRef(origin.returnContent.toolCallId);
+  const handedOffToParentRef = useRef(false);
   const hasPersistedAssistant = persisted?.some(
     (message) => message.role === "assistant",
   );
@@ -1141,6 +1161,10 @@ const SubagentComputerSidebar = ({
       ? [...saved, liveMessage]
       : saved;
   }, [hasPersistedAssistant, liveMessage, origin.subagentId, persisted]);
+  const parentToolExecutions = useMemo(
+    () => extractAllSidebarContent(parentMessages),
+    [parentMessages],
+  );
 
   const navigateWithinSubagent = useCallback(
     (content: SidebarContent) => openSidebar({ ...content, origin }),
@@ -1150,10 +1174,47 @@ const SubagentComputerSidebar = ({
     () => openSidebar(origin.returnContent),
     [openSidebar, origin.returnContent],
   );
+  const handleFollowingLiveChange = useCallback((isFollowingLive: boolean) => {
+    isFollowingLiveRef.current = isFollowingLive;
+  }, []);
   const timelineStatus: ChatStatus =
     run === undefined || persisted === undefined || active
       ? "streaming"
       : "ready";
+
+  useEffect(() => {
+    if (!active) return;
+    sawActiveRunRef.current = true;
+    const latestParentTool = parentToolExecutions.at(-1);
+    if (latestParentTool?.toolCallId) {
+      parentBoundaryToolCallIdRef.current = latestParentTool.toolCallId;
+    }
+  }, [active, parentToolExecutions]);
+
+  useEffect(() => {
+    if (
+      run === undefined ||
+      active ||
+      !sawActiveRunRef.current ||
+      !isFollowingLiveRef.current ||
+      handedOffToParentRef.current
+    ) {
+      return;
+    }
+
+    const boundaryIndex = parentToolExecutions.findIndex(
+      (content) => content.toolCallId === parentBoundaryToolCallIdRef.current,
+    );
+    if (boundaryIndex < 0) return;
+
+    const nextParentTool = parentToolExecutions.at(-1);
+    if (!nextParentTool || boundaryIndex === parentToolExecutions.length - 1) {
+      return;
+    }
+
+    handedOffToParentRef.current = true;
+    openSidebar(nextParentTool);
+  }, [active, openSidebar, parentToolExecutions, run]);
 
   return (
     <ComputerSidebarBase
@@ -1163,7 +1224,9 @@ const SubagentComputerSidebar = ({
       messages={messages}
       onNavigate={navigateWithinSubagent}
       status={timelineStatus}
-      followLiveOnOpen={false}
+      followLiveOnOpen={followLiveOnOpen}
+      pinHistoricalNavigation
+      onFollowingLiveChange={handleFollowingLiveChange}
       backNavigation={{
         label: "Back to subagent",
         onBack: returnToSubagent,
@@ -1200,6 +1263,7 @@ export const ComputerSidebar: React.FC<{
       <SubagentComputerSidebar
         key={sidebarContent.origin.subagentId}
         closeSidebar={closeSidebar}
+        parentMessages={messages ?? []}
         openSidebar={openSidebar}
         origin={sidebarContent.origin}
         sidebarContent={sidebarContent}
