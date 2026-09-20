@@ -1674,6 +1674,8 @@ describe("createAgentStream repeated compaction", () => {
         message_count: 2,
         role_counts: { user: 2 },
         serialized_message_bytes: expect.any(Number),
+        invalid_tool_call_name_count: 0,
+        invalid_tool_result_name_count: 0,
       }),
       {
         raw_message_count: 2,

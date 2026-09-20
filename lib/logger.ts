@@ -43,6 +43,9 @@ export interface ProviderRequestDiagnostics {
   unmatched_tool_call_count?: number;
   unmatched_tool_result_count?: number;
   duplicate_tool_call_count?: number;
+  // Missing, non-string, or blank names in model history, before provider conversion.
+  invalid_tool_call_name_count?: number;
+  invalid_tool_result_name_count?: number;
   tool_call_batches_split?: number;
 }
 

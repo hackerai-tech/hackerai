@@ -50,6 +50,8 @@ describe("provider tool-call batches", () => {
       unmatched_tool_call_count: 0,
       unmatched_tool_result_count: 0,
       duplicate_tool_call_count: 0,
+      invalid_tool_call_name_count: 0,
+      invalid_tool_result_name_count: 0,
     });
     for (const role of ["assistant", "tool"]) {
       const parts = (messages: ModelMessage[]) =>
@@ -129,6 +131,60 @@ describe("provider tool-call batches", () => {
       unmatched_tool_result_count: 1,
     });
     expect(JSON.stringify(diagnostics)).not.toContain("private");
+  });
+
+  it("counts invalid names across the whole request without exposing or repairing history", () => {
+    const names = ["", " \t\n", undefined, null, 42, {}, "file"];
+    const input = names.flatMap((name) => {
+      const messages = history(1);
+      for (const message of messages) {
+        if (!Array.isArray(message.content)) continue;
+        for (const part of message.content) {
+          if (part.type === "tool-call" || part.type === "tool-result") {
+            // Stored data can predate or bypass current TypeScript types.
+            (part as { toolName: unknown }).toolName = name;
+          }
+        }
+      }
+      return messages;
+    });
+    const original = JSON.stringify(input);
+    const diagnostics = getProviderToolCallDiagnostics(input);
+    expect(diagnostics).toMatchObject({
+      invalid_tool_call_name_count: 6,
+      invalid_tool_result_name_count: 6,
+      unmatched_tool_call_count: 0,
+      unmatched_tool_result_count: 0,
+      duplicate_tool_call_count: 0,
+    });
+    expect(Object.values(diagnostics).every(Number.isInteger)).toBe(true);
+    expect(JSON.stringify(diagnostics)).not.toContain("private");
+    expect(JSON.stringify(input)).toBe(original);
+  });
+
+  it("detects an empty static tool name after real SDK serialization even when IDs are paired", async () => {
+    const messages = await convertToModelMessages([
+      {
+        id: "private-assistant",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-",
+            toolCallId: "private-call",
+            state: "output-available",
+            input: { path: "private path" },
+            output: "private output",
+          },
+        ],
+      },
+    ]);
+    expect(getProviderToolCallDiagnostics(messages)).toMatchObject({
+      invalid_tool_call_name_count: 1,
+      invalid_tool_result_name_count: 1,
+      unmatched_tool_call_count: 0,
+      unmatched_tool_result_count: 0,
+      duplicate_tool_call_count: 0,
+    });
   });
 
   it("preserves step boundaries through storage compaction and real SDK serialization", async () => {
