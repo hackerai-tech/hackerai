@@ -68,7 +68,7 @@ import {
 import type { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
-import { resolveSubagentSkills } from "@/lib/ai/subagents/skills";
+import { resolveDelegatedSubagentSkills } from "@/lib/ai/subagents/skills";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { phLogger } from "@/lib/posthog/server";
@@ -111,7 +111,7 @@ export const createDelegateTaskTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose the smallest server-validated capability bundle, give explicit success criteria, and continue useful parent work while it runs. Skills are optional methodology and never grant authority. The child cannot delegate.`,
+    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose the smallest server-validated capability bundle, give explicit success criteria, and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. The child cannot delegate.`,
     inputSchema: delegateTaskInputSchema,
     execute: async (input, execution) => {
       const parsed = delegateTaskInputSchema.parse(input);
@@ -131,11 +131,17 @@ export const createDelegateTaskTool = (
             "external_connectors is not available to delegated children yet. Use the connector in the parent and pass only the required result reference.",
         };
       }
-      const resolvedSkills = resolveSubagentSkills(parsed.skills ?? []);
+      const resolvedSkills = resolveDelegatedSubagentSkills(
+        parsed.skills ?? [],
+      );
       if (!resolvedSkills.success) {
         return { success: false, error: resolvedSkills.error };
       }
       const skills = resolvedSkills.skills.map((skill) => skill.id);
+      const skillWarnings = resolvedSkills.ignoredSkills.map(
+        ({ requested, reason }) =>
+          `Ignored ${reason} optional skill: ${requested}`,
+      );
       const parentTriggerRunId = context.triggerRunId;
       const parentMessageId = context.assistantMessageId;
       if (!parentTriggerRunId || !parentMessageId) {
@@ -399,11 +405,27 @@ export const createDelegateTaskTool = (
         }
       }
 
+      if (skillWarnings.length > 0) {
+        phLogger.event("subagent_optional_skills_ignored", {
+          userId: context.userID,
+          parent_trigger_run_id: parentTriggerRunId,
+          ignored_skill_count: skillWarnings.length,
+          unknown_skill_count: resolvedSkills.ignoredSkills.filter(
+            (skill) => skill.reason === "unknown",
+          ).length,
+          ambiguous_skill_count: resolvedSkills.ignoredSkills.filter(
+            (skill) => skill.reason === "ambiguous",
+          ).length,
+        });
+      }
+
       return {
         success: true,
         agent_id: agentHandle,
         name: agentName(record),
         status: record.status,
+        skills,
+        ...(skillWarnings.length > 0 ? { warnings: skillWarnings } : {}),
         message: `Delegated to '${agentName(record)}' (${agentHandle}) in parallel. Continue useful work, inspect progress with list_agents or wait_for_agents, and consume its terminal result before the final answer.`,
       };
     },
