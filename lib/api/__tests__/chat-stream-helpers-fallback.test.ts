@@ -457,6 +457,26 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
+  it("adds a sticky cache session only to DeepSeek requests", () => {
+    const deepSeek = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-flash-0731",
+      "agent",
+      { cacheSessionId: "hackerai-cache-v1-test" },
+    );
+    expect(deepSeek.openrouter.session_id).toBe("hackerai-cache-v1-test");
+
+    const grok = buildProviderOptions(
+      false,
+      "user-1",
+      "model-grok-4.6",
+      "agent",
+      { cacheSessionId: "hackerai-cache-v1-test" },
+    );
+    expect(grok.openrouter).not.toHaveProperty("session_id");
+  });
+
   it("can keep later PDF steps on the Cloudflare parser", () => {
     const opts = buildProviderOptions(
       false,

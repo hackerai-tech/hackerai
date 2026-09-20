@@ -30,6 +30,9 @@ interface StepUsage {
   };
 }
 
+const isValidCacheTokenCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
+
 type ModelStepCost = {
   rawCost: number;
   authoritativeCost?: number;
@@ -112,6 +115,8 @@ export class UsageTracker {
   /** Cache tokens from summarization requests, preserved across model fallback. */
   summarizationCacheReadTokens = 0;
   summarizationCacheWriteTokens = 0;
+  private modelCacheTelemetryObserved = false;
+  private summarizationCacheTelemetryObserved = false;
 
   /**
    * Discard the model leg's accumulated usage before a fallback retry runs.
@@ -128,16 +133,31 @@ export class UsageTracker {
     this.lastStepInputTokens = 0;
     this.cacheReadTokens = this.summarizationCacheReadTokens;
     this.cacheWriteTokens = this.summarizationCacheWriteTokens;
+    this.modelCacheTelemetryObserved = false;
     this.modelStepCosts = [];
   }
 
   accumulateStep(usage: StepUsage, modelName?: string): number {
+    const reportedCacheReadTokens = usage.inputTokenDetails?.cacheReadTokens;
+    const reportedCacheWriteTokens = usage.inputTokenDetails?.cacheWriteTokens;
+    const cacheReadTokens = isValidCacheTokenCount(reportedCacheReadTokens)
+      ? reportedCacheReadTokens
+      : 0;
+    const cacheWriteTokens = isValidCacheTokenCount(reportedCacheWriteTokens)
+      ? reportedCacheWriteTokens
+      : 0;
+    if (
+      isValidCacheTokenCount(reportedCacheReadTokens) ||
+      isValidCacheTokenCount(reportedCacheWriteTokens)
+    ) {
+      this.modelCacheTelemetryObserved = true;
+    }
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
     this.totalTokens += usage.totalTokens || 0;
     this.lastStepInputTokens = usage.inputTokens || 0;
-    this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
-    this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
+    this.cacheReadTokens += cacheReadTokens;
+    this.cacheWriteTokens += cacheWriteTokens;
     const stepCost = getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const stepCostIndex =
@@ -145,8 +165,8 @@ export class UsageTracker {
         rawCost,
         inputTokens: usage.inputTokens || 0,
         outputTokens: usage.outputTokens || 0,
-        cacheReadTokens: usage.inputTokenDetails?.cacheReadTokens || 0,
-        cacheWriteTokens: usage.inputTokenDetails?.cacheWriteTokens || 0,
+        cacheReadTokens,
+        cacheWriteTokens,
         modelName,
       }) - 1;
     if (isPositiveFiniteNumber(stepCost)) {
@@ -164,10 +184,20 @@ export class UsageTracker {
     cost?: number;
     model?: string;
   }): void {
+    const cacheReadTokens = isValidCacheTokenCount(usage.cacheReadTokens)
+      ? usage.cacheReadTokens
+      : 0;
+    const cacheWriteTokens = isValidCacheTokenCount(usage.cacheWriteTokens)
+      ? usage.cacheWriteTokens
+      : 0;
+    if (
+      isValidCacheTokenCount(usage.cacheReadTokens) ||
+      isValidCacheTokenCount(usage.cacheWriteTokens)
+    ) {
+      this.summarizationCacheTelemetryObserved = true;
+    }
     const inputTokens = usage.inputTokens || 0;
     const outputTokens = usage.outputTokens || 0;
-    const cacheReadTokens = usage.cacheReadTokens || 0;
-    const cacheWriteTokens = usage.cacheWriteTokens || 0;
     const rawCost = isPositiveFiniteNumber(usage.cost) ? usage.cost : 0;
 
     this.inputTokens += inputTokens;
@@ -238,14 +268,16 @@ export class UsageTracker {
 
   /** Whether any cache token data was reported by the provider */
   get hasCacheData(): boolean {
-    return this.cacheReadTokens > 0 || this.cacheWriteTokens > 0;
+    return (
+      this.modelCacheTelemetryObserved ||
+      this.summarizationCacheTelemetryObserved
+    );
   }
 
-  /** Cache hit rate: proportion of cached input tokens that were reads (0–1), or null if no cache data */
+  /** Cache hit rate: proportion of all input tokens served from cache (0–1). */
   get cacheHitRate(): number | null {
-    const total = this.cacheReadTokens + this.cacheWriteTokens;
-    if (total === 0) return null;
-    return this.cacheReadTokens / total;
+    if (!this.hasCacheData || this.inputTokens <= 0) return null;
+    return Math.min(1, Math.max(0, this.cacheReadTokens / this.inputTokens));
   }
 
   get hasUsage(): boolean {
