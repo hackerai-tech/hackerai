@@ -52,6 +52,12 @@ describe("systemPrompt security instructions", () => {
     expect(enabled).toContain("four children may be created");
     expect(enabled).toContain("shared work ledger");
     expect(enabled).toContain("continue_agent");
+    expect(enabled).toContain(
+      "Call a result independent validation only when the child starts with inherit_context=false",
+    );
+    expect(enabled).toContain(
+      "provides a separately executed reproduction, not independent discovery or blind validation",
+    );
   });
 
   it("does not expose legacy security profiles through extra arguments", async () => {
@@ -393,6 +399,11 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       expect(prompt).toContain(
         "Use the least disruptive proof necessary to demonstrate impact.",
       );
+      expect(prompt).toContain("Separate observations from inferences.");
+      expect(prompt).toContain(
+        "it does not by itself prove the exact source implementation, query construction, database ordering, or vulnerable line",
+      );
+      expect(prompt).toContain("a bypass-issued token, not a forged token");
     }
   });
 

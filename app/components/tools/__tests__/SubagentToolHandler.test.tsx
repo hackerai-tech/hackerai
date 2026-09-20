@@ -110,6 +110,51 @@ describe("SubagentToolHandler", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the same visual while an agent transitions from starting to started", () => {
+    const startingPart = {
+      type: "tool-create_agent",
+      toolCallId: "tool-create-stable-visual",
+      state: "input-available",
+      input: { name: "Stored XSS validator", task: "Validate XSS" },
+    };
+    const message = {
+      id: "parent-run",
+      role: "assistant",
+      parts: [],
+    } as any;
+    const { rerender } = render(
+      <SubagentToolHandler
+        message={message}
+        status="streaming"
+        part={startingPart}
+      />,
+    );
+    const startingVisual = screen.getByTitle("Stored XSS validator").dataset
+      .subagentVisual;
+    expect(startingVisual).toBeDefined();
+
+    rerender(
+      <SubagentToolHandler
+        message={message}
+        status="ready"
+        part={{
+          ...startingPart,
+          state: "output-available",
+          output: {
+            success: true,
+            agent_id: "sa_xss",
+            name: "Stored XSS validator",
+            status: "queued",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByTitle("Stored XSS validator").dataset.subagentVisual,
+    ).toBe(startingVisual);
+  });
+
   it("names and opens the exact agent when it is updated", () => {
     render(
       <SubagentToolHandler
