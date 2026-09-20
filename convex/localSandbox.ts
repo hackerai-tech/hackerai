@@ -154,7 +154,6 @@ async function collectConnectedLocalConnections(
   );
   return groups
     .flat()
-    .filter((connection) => connection.ready !== false)
     .sort((left, right) => left._creationTime - right._creationTime);
 }
 
@@ -788,16 +787,18 @@ export const listConnections = query({
 
     const connections = await collectConnectedLocalConnections(ctx.db, userId);
 
-    return connections.map((conn) => ({
-      connectionId: conn.connection_id,
-      environmentId: conn.environment_id,
-      createdAt: conn.created_at,
-      name: conn.connection_name,
-      osInfo: conn.os_info,
-      lastSeen: conn.last_heartbeat,
-      isDesktop: conn.client_version === "desktop",
-      capabilities: conn.capabilities ?? { commands: true, pty: true },
-    }));
+    return connections
+      .filter((conn) => conn.ready !== false)
+      .map((conn) => ({
+        connectionId: conn.connection_id,
+        environmentId: conn.environment_id,
+        createdAt: conn.created_at,
+        name: conn.connection_name,
+        osInfo: conn.os_info,
+        lastSeen: conn.last_heartbeat,
+        isDesktop: conn.client_version === "desktop",
+        capabilities: conn.capabilities ?? { commands: true, pty: true },
+      }));
   },
 });
 
@@ -837,15 +838,17 @@ export const listConnectionsForBackend = query({
       args.userId,
     );
 
-    return connections.map((conn) => ({
-      connectionId: conn.connection_id,
-      environmentId: conn.environment_id,
-      createdAt: conn.created_at,
-      name: conn.connection_name,
-      osInfo: conn.os_info,
-      lastSeen: conn.last_heartbeat,
-      isDesktop: conn.client_version === "desktop",
-      capabilities: conn.capabilities ?? { commands: true, pty: true },
-    }));
+    return connections
+      .filter((conn) => conn.ready !== false)
+      .map((conn) => ({
+        connectionId: conn.connection_id,
+        environmentId: conn.environment_id,
+        createdAt: conn.created_at,
+        name: conn.connection_name,
+        osInfo: conn.os_info,
+        lastSeen: conn.last_heartbeat,
+        isDesktop: conn.client_version === "desktop",
+        capabilities: conn.capabilities ?? { commands: true, pty: true },
+      }));
   },
 });

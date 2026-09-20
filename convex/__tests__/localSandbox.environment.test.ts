@@ -24,6 +24,7 @@ import {
   connect,
   connectDesktop,
   ready,
+  regenerateToken,
   listConnections,
   resolveEnvironmentPreference,
 } from "../localSandbox";
@@ -32,7 +33,9 @@ const environmentId = "cafecafe-1234-4123-8123-abcdefabcdef";
 // Exercise the actual handlers against a small indexed database fixture.
 function fixture() {
   const rows: Record<string, any[]> = {
-    local_sandbox_tokens: [{ token: "test-token", user_id: "user-a" }],
+    local_sandbox_tokens: [
+      { _id: "token-1", token: "test-token", user_id: "user-a" },
+    ],
     local_sandbox_connections: [],
   };
   let user: string | null = "user-a";
@@ -66,7 +69,9 @@ function fixture() {
     },
     patch: async (id: string, patch: any) =>
       Object.assign(
-        rows.local_sandbox_connections.find((row) => row._id === id),
+        Object.values(rows)
+          .flat()
+          .find((row) => row._id === id),
         patch,
       ),
   };
@@ -198,4 +203,38 @@ it("does not disconnect another desktop environment when a desktop restarts", as
       (row) => row.connection_id === other.connectionId,
     ).status,
   ).toBe("connected");
+});
+
+it("invalidates pending as well as ready sessions when the connection token is regenerated", async () => {
+  const { ctx, rows } = fixture();
+  const args = {
+    token: "test-token",
+    connectionName: "machine",
+    clientVersion: "test",
+    environmentId,
+  };
+  const active = await handler(connect)(ctx, args);
+  await handler(ready)(ctx, {
+    token: args.token,
+    connectionId: active.connectionId,
+  });
+  await handler(connect)(ctx, args);
+  await handler(connectDesktop)(ctx, {
+    connectionName: "desktop",
+    environmentId,
+  });
+  expect(rows.local_sandbox_connections.map((row) => row.ready)).toEqual([
+    true,
+    false,
+    false,
+  ]);
+  await handler(regenerateToken)(ctx, {});
+  expect(
+    rows.local_sandbox_connections.every(
+      (row) =>
+        row.status === "disconnected" &&
+        row.disconnect_reason === "token_regenerated",
+    ),
+  ).toBe(true);
+  expect(await handler(listConnections)(ctx, {})).toEqual([]);
 });
