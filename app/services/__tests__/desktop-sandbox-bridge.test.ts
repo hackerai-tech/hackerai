@@ -153,6 +153,30 @@ afterEach(() => {
 // ── desktop capability registration ───────────────────────────────────
 
 describe("desktop capability registration", () => {
+  it.each([
+    "Command get_environment_id not allowed by ACL",
+    "Command get_environment_id not found",
+    "Unknown command: get_environment_id",
+    "get_environment_id is not registered",
+  ])(
+    "keeps legacy Desktop usable when native identity is unavailable: %s",
+    async (message) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "get_environment_id") throw new Error(message);
+        return original(cmd, args);
+      };
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      await bridge.start();
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.not.objectContaining({ environmentId: expect.anything() }),
+      );
+      expect(bridge.getEnvironmentId()).toBeUndefined();
+      await bridge.stop();
+    },
+  );
+
   it("registers the persistent native identity and waits for relay readiness before heartbeating", async () => {
     const original = mockInvokeHandler;
     mockInvokeHandler = async (cmd, args) =>

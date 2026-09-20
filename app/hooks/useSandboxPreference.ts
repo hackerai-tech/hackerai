@@ -133,7 +133,16 @@ export function useSandboxPreference(
         localStorage.setItem("sandbox-preference", upgradedPreference);
       }
     }
-    setSandboxPreferenceState(upgradedPreference);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSandboxPreferenceState((current) =>
+        current === sandboxPreference ? upgradedPreference : current,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [upgradedPreference, sandboxPreference]);
 
   const connectDesktopMutation = useMutation(api.localSandbox.connectDesktop);
@@ -172,6 +181,11 @@ export function useSandboxPreference(
     const syncBridgeState = (active: boolean, status: DesktopBridgeStatus) => {
       queueMicrotask(() => {
         updateBridgeState(active, status);
+      });
+    };
+    const syncDesktopEnvironmentId = (environmentId: string | undefined) => {
+      queueMicrotask(() => {
+        if (!cancelled) setDesktopEnvironmentId(environmentId);
       });
     };
     const scheduleBridgeRecovery = (
@@ -229,7 +243,7 @@ export function useSandboxPreference(
     };
 
     if (!isAuthenticated || !isTauriEnvironment()) {
-      setDesktopEnvironmentId(undefined);
+      syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
       bridgeGeneration += 1;
       bridgeStartPromise = null;
@@ -247,7 +261,7 @@ export function useSandboxPreference(
 
     // Already running — just sync bridge active state.
     if (activeBridge?.getConnectionId()) {
-      setDesktopEnvironmentId(activeBridge.getEnvironmentId?.());
+      syncDesktopEnvironmentId(activeBridge.getEnvironmentId?.());
       syncBridgeState(true, "connected");
       // setSandboxPreferenceState(activeBridge.getConnectionId()!);
       return () => {

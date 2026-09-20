@@ -377,7 +377,9 @@ export class DesktopSandboxBridge {
     } catch (error) {
       if (
         !String(error).includes("get_environment_id") ||
-        !/not found|Unknown command/i.test(String(error))
+        !/not found|unknown command|not registered|not allowed by acl/i.test(
+          String(error),
+        )
       )
         throw error;
     }

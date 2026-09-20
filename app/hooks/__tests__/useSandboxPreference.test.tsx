@@ -120,6 +120,21 @@ describe("useSandboxPreference", () => {
     );
   });
 
+  it("does not let a queued legacy upgrade replace a newer explicit selection", async () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "old-session");
+    mockResolvedPreferences.set("old-session", "environment:old-computer");
+    const { result } = renderHook(() => useSandboxPreference(true));
+    act(() => result.current.setSandboxPreference("environment:new-computer"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.sandboxPreference).toBe("environment:new-computer");
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:new-computer",
+    );
+  });
+
   it.each(["desktop", "remote-kali", "e2b"])(
     "restores a task on %s without changing the new-chat default, including after reload",
     (taskPreference) => {
