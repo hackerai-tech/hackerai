@@ -390,6 +390,8 @@ export interface SidebarSubagents {
 export interface SidebarSubagentOrigin {
   kind: "subagent";
   subagentId: string;
+  /** Latest sidebar-compatible child tool when the transcript was clicked. */
+  liveToolCallId?: string;
   returnContent: SidebarSubagents;
 }
 
