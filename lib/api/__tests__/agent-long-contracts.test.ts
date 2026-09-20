@@ -1221,10 +1221,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
-  test("full-access runs enable generic delegation without a rollout flag", () => {
-    expect(routeSrc).toMatch(
-      /const genericDelegationEnabled\s*=\s*agentPermissionMode === "full_access"/,
-    );
+  test("all Agent permission modes enable generic delegation without a rollout flag", () => {
+    expect(routeSrc).toMatch(/const genericDelegationEnabled\s*=\s*true/);
     expect(routeSrc).not.toContain('"agent-generic-delegation-v1"');
     expect(routeSrc).not.toContain("securityValidationSubagentsEnabled");
     expect(routeSrc).not.toContain("securityTaskSubagentsEnabled");

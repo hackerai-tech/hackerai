@@ -472,7 +472,7 @@ export const createAgentTriggerPost =
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
-      const genericDelegationEnabled = agentPermissionMode === "full_access";
+      const genericDelegationEnabled = true;
 
       assertFreeAgentGates({
         mode: "agent",

@@ -65,6 +65,7 @@ export async function assertSubagentRuntimeAuthorized(args: {
 export function guardSubagentToolExecutions(
   tools: ToolSet,
   authorize: () => Promise<void>,
+  capabilities?: { canWriteFiles: boolean },
 ): ToolSet {
   return Object.fromEntries(
     Object.entries(tools).map(([name, definition]) => {
@@ -77,6 +78,20 @@ export function guardSubagentToolExecutions(
           ...definition,
           execute: async (...args: Parameters<typeof execute>) => {
             await authorize();
+            if (
+              name === "file" &&
+              capabilities?.canWriteFiles === false &&
+              typeof args[0] === "object" &&
+              args[0] !== null &&
+              "action" in args[0] &&
+              !["read", "view"].includes(
+                String((args[0] as { action?: unknown }).action),
+              )
+            ) {
+              throw new SubagentRuntimeAuthorizationError(
+                "This Agent permission mode keeps file changes in the parent for approval",
+              );
+            }
             return await execute(...args);
           },
         },

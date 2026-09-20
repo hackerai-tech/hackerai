@@ -33,6 +33,15 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
   });
 
+  it("accepts every Agent permission mode and removes action tools outside full access", () => {
+    const source = read("trigger/subagent.ts");
+    expect(source).toContain("isAgentPermissionMode(persistedPermissionMode)");
+    expect(source).toContain(
+      "resolveSubagentAllowedToolNamesForPermissionMode",
+    );
+    expect(source).toMatch(/canWriteFiles:\s*permissionMode === "full_access"/);
+  });
+
   it("loads only validated server-reviewed skills into focused task children", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const profiles = read("lib/ai/subagents/profiles.ts");

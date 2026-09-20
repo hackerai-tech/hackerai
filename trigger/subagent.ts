@@ -69,8 +69,9 @@ import {
 } from "@/lib/ai/subagents/runtime-recovery";
 import {
   getSubagentProfileDefinition,
-  resolveSubagentAllowedToolNames,
+  resolveSubagentAllowedToolNamesForPermissionMode,
 } from "@/lib/ai/subagents/profiles";
+import { isAgentPermissionMode, type AgentPermissionMode } from "@/types/chat";
 import {
   resolveSubagentModelForImageToolResults,
   resolveSubagentTextModel,
@@ -414,6 +415,7 @@ export const subagentTask = task({
     }
     const costLimitDollars = row.cost_limit_dollars;
     let profile!: ReturnType<typeof getSubagentProfileDefinition>;
+    let permissionMode!: AgentPermissionMode;
 
     cancellationCleanup.set(ctx.run.id, {
       subagentId: row.subagent_id,
@@ -444,13 +446,15 @@ export const subagentTask = task({
       if (attachOutcome !== "updated") {
         throw new Error(`Subagent attachment failed: ${attachOutcome}`);
       }
+      const persistedPermissionMode = row.permission_mode;
       if (
         row.depth !== 1 ||
         (row.status !== "queued" && row.status !== "running") ||
-        row.permission_mode !== "full_access"
+        !isAgentPermissionMode(persistedPermissionMode)
       ) {
         throw new Error("Unsupported subagent profile or depth");
       }
+      permissionMode = persistedPermissionMode;
       profile = getSubagentProfileDefinition(row.profile);
       await tags.add([
         `subagent_${row.subagent_id}`,
@@ -796,10 +800,12 @@ export const subagentTask = task({
                 return { updated };
               },
             });
-            const allowedToolNames = resolveSubagentAllowedToolNames(
-              row.profile,
-              row.capability_bundles,
-            );
+            const allowedToolNames =
+              resolveSubagentAllowedToolNamesForPermissionMode(
+                row.profile,
+                row.capability_bundles ?? [],
+                permissionMode,
+              );
             const {
               tools: unguardedTools,
               ensureSandbox,
@@ -850,6 +856,7 @@ export const subagentTask = task({
             const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
+              { canWriteFiles: permissionMode === "full_access" },
             );
             runtimeStage = "sandbox_acquisition";
             await assertRuntimeAuthorized();

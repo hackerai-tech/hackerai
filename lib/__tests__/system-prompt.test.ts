@@ -60,6 +60,29 @@ describe("systemPrompt security instructions", () => {
     );
   });
 
+  it("explains the approval-mode boundary for delegated children", async () => {
+    for (const permissionMode of ["ask_approval", "auto_review"] as const) {
+      const prompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        "agent-model",
+        null,
+        null,
+        permissionMode,
+        true,
+      );
+
+      expect(prompt).toContain("<generic_delegation>");
+      expect(prompt).toContain(
+        "delegated children are limited to code_read and web_research",
+      );
+      expect(prompt).toContain(
+        "Keep terminal commands, browser QA, and file changes in the parent",
+      );
+    }
+  });
+
   it("does not expose legacy security profiles through extra arguments", async () => {
     const prompt = await systemPrompt(
       "user_123",
