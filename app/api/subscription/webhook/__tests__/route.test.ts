@@ -42,6 +42,7 @@ const mockPostHogWarn = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogFlush = jest.fn();
 const mockGetReferralRewardConfig = jest.fn();
+const mockHasActiveSuspensionForUser = jest.fn();
 
 jest.mock("next/server", () => ({
   after: jest.fn((callback: () => void) => callback()),
@@ -153,6 +154,10 @@ jest.mock("@/lib/posthog/server", () => ({
 
 jest.mock("@/lib/referrals/config", () => ({
   getReferralRewardConfig: mockGetReferralRewardConfig,
+}));
+
+jest.mock("@/lib/suspensions", () => ({
+  hasActiveSuspensionForUser: mockHasActiveSuspensionForUser,
 }));
 
 function makeWebhookRequest({

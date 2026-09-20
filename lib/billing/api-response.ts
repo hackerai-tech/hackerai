@@ -11,6 +11,7 @@ const BILLING_ERROR_STATUSES = new Map<string, number>([
   ["Only admins or owners can manage billing", 403],
   ["No billing account found for this organization", 404],
   ["No active subscription found", 404],
+  [BILLING_ERRORS.accountSuspended, 403],
   ["Please select the main cancellation reason", 400],
   ["Please select what best describes the issue", 400],
   ["Please write a cancellation reason before continuing", 400],

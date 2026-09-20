@@ -13,6 +13,7 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import { assertUserCanStartBillingTransaction } from "@/lib/suspensions";
 
 export default async function redirectToBillingPortal(
   flow?: BillingPortalFlow,
@@ -32,6 +33,7 @@ export default async function redirectToBillingPortal(
     });
     throw error;
   });
+  await assertUserCanStartBillingTransaction(context.user.id);
   const stripeCustomerId = context.stripeCustomerId;
   const billingFields = {
     userId: context.user.id,

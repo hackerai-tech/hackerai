@@ -8,6 +8,8 @@ import {
 } from "@jest/globals";
 
 const mockConstructEvent = jest.fn();
+const mockListCheckoutSessions = jest.fn();
+const mockExpireCheckoutSession = jest.fn();
 const mockListSubscriptions = jest.fn();
 const mockCancelSubscription = jest.fn();
 const mockListPaymentMethods = jest.fn();
@@ -30,6 +32,12 @@ jest.mock("next/server", () => ({
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     webhooks: { constructEvent: mockConstructEvent },
+    checkout: {
+      sessions: {
+        list: mockListCheckoutSessions,
+        expire: mockExpireCheckoutSession,
+      },
+    },
     subscriptions: {
       list: mockListSubscriptions,
       cancel: mockCancelSubscription,
@@ -133,6 +141,11 @@ describe("POST /api/fraud/webhook", () => {
       orgId: "org_opaque",
     } as never);
     mockListSubscriptions.mockResolvedValue({ data: [] } as never);
+    mockListCheckoutSessions.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    mockExpireCheckoutSession.mockResolvedValue({ id: "cs_expired" } as never);
     mockListPaymentMethods.mockResolvedValue({ data: [] } as never);
     mockUpdateCustomer.mockResolvedValue({ id: "cus_deleted" } as never);
     mockUpdateCharge.mockResolvedValue({ id: "ch_disputed" } as never);
@@ -226,6 +239,15 @@ describe("POST /api/fraud/webhook", () => {
         },
       },
     });
+    mockListCheckoutSessions
+      .mockResolvedValueOnce({
+        data: [{ id: "cs_open_after_dispute" }],
+        has_more: true,
+      } as never)
+      .mockResolvedValueOnce({
+        data: [{ id: "cs_open_second_page" }],
+        has_more: false,
+      } as never);
     mockListSubscriptions.mockRejectedValue(missingCustomerError as never);
 
     const { POST } = await import("../route");
@@ -241,6 +263,21 @@ describe("POST /api/fraud/webhook", () => {
     );
     expect(mockUpdateCustomer).not.toHaveBeenCalled();
     expect(mockUpdateCharge).not.toHaveBeenCalled();
+    expect(mockExpireCheckoutSession).toHaveBeenCalledWith(
+      "cs_open_after_dispute",
+    );
+    expect(mockExpireCheckoutSession).toHaveBeenCalledWith(
+      "cs_open_second_page",
+    );
+    expect(mockListCheckoutSessions).toHaveBeenNthCalledWith(2, {
+      customer: "cus_deleted",
+      status: "open",
+      limit: 100,
+      starting_after: "cs_open_after_dispute",
+    });
+    expect(mockListCheckoutSessions.mock.invocationCallOrder[1]).toBeLessThan(
+      mockExpireCheckoutSession.mock.invocationCallOrder[0]!,
+    );
 
     const suspensionCall = mockConvexMutation.mock.calls.findIndex(
       ([operation]) => operation === "userSuspensions.upsertActive",

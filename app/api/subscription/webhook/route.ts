@@ -56,6 +56,7 @@ import {
   proMonthlyPricingAssignmentFromMetadata,
   proMonthlyPricingExperimentProperties,
 } from "@/lib/experiments/pro-monthly-pricing";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -1745,6 +1746,13 @@ async function handlePaymentMethodUpdated(args: {
     customerResult.reason === "legacy_user_metadata" ||
     userIds.length === 0
   ) {
+    return;
+  }
+
+  const activeSuspensions = await Promise.all(
+    userIds.map((userId) => hasActiveSuspensionForUser(userId)),
+  );
+  if (activeSuspensions.some(Boolean)) {
     return;
   }
 

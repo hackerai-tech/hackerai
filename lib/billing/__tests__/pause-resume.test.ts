@@ -17,6 +17,7 @@ const mockRetrieveCustomer = jest.fn();
 const mockConvexMutation = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogError = jest.fn();
+const mockAssertUserCanStartBillingTransaction = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -61,6 +62,11 @@ jest.mock("@/lib/posthog/server", () => ({
   },
 }));
 
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanStartBillingTransaction:
+    mockAssertUserCanStartBillingTransaction,
+}));
+
 const NOW = 1_795_000_000_000;
 
 function pauseRecord(overrides: Record<string, unknown> = {}) {
@@ -92,6 +98,7 @@ describe("resumePausedSubscription", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.CONVEX_SERVICE_ROLE_KEY = "service-key";
+    mockAssertUserCanStartBillingTransaction.mockResolvedValue(undefined);
     mockConvexMutation.mockImplementation((async (
       name: string,
       args: Record<string, unknown>,

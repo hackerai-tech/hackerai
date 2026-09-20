@@ -4,6 +4,7 @@ const mockCreateBillingPortalSession = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogEvent = jest.fn();
+const mockAssertUserCanStartBillingTransaction = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -17,6 +18,11 @@ jest.mock("@/app/api/stripe", () => ({
 
 jest.mock("@/lib/actions/billing-context", () => ({
   getBillingActionContext: mockGetBillingActionContext,
+}));
+
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanStartBillingTransaction:
+    mockAssertUserCanStartBillingTransaction,
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -35,6 +41,7 @@ describe("redirectToBillingPortal", () => {
       user: { id: "user_123" },
       stripeCustomerId: "cus_123",
     } as never);
+    mockAssertUserCanStartBillingTransaction.mockResolvedValue(undefined);
   });
 
   it("returns the Stripe billing portal URL", async () => {
