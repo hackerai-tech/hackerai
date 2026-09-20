@@ -77,6 +77,11 @@ const subscriptionValidator = v.union(
   v.literal("team"),
 );
 
+const agentAutoReviewContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+});
+
 const candidateValidator = v.object({
   title: v.string(),
   affected_asset: v.string(),
@@ -258,6 +263,12 @@ export const reserveForBackend = mutation({
     sandboxPreference: v.optional(v.string()),
     sandboxIdentity: v.optional(v.string()),
     permissionMode: v.optional(v.string()),
+    approvalSessionId: v.optional(v.string()),
+    autoReviewRolloutPhase: v.optional(
+      v.union(v.literal("shadow"), v.literal("enforce")),
+    ),
+    autoReviewAuthorizationContext: v.optional(agentAutoReviewContextValidator),
+    autoReviewConversationContext: v.optional(agentAutoReviewContextValidator),
     selectedModel: v.optional(v.string()),
     subscription: subscriptionValidator,
     freeQuotaSubject: v.optional(v.string()),
@@ -409,6 +420,10 @@ export const reserveForBackend = mutation({
       sandbox_preference: args.sandboxPreference,
       sandbox_identity: args.sandboxIdentity,
       permission_mode: args.permissionMode,
+      approval_session_id: args.approvalSessionId,
+      auto_review_rollout_phase: args.autoReviewRolloutPhase,
+      auto_review_authorization_context: args.autoReviewAuthorizationContext,
+      auto_review_conversation_context: args.autoReviewConversationContext,
       selected_model: args.selectedModel,
       subscription: args.subscription,
       free_quota_subject: args.freeQuotaSubject,

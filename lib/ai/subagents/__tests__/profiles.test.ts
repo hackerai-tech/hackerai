@@ -2,7 +2,6 @@ import { describe, expect, it } from "@jest/globals";
 
 import {
   getSubagentProfileDefinition,
-  getUnsupportedSubagentCapabilities,
   resolveSubagentAllowedToolNames,
   resolveSubagentAllowedToolNamesForPermissionMode,
 } from "../profiles";
@@ -99,58 +98,16 @@ describe("subagent profiles", () => {
     );
   });
 
-  it("keeps child action tools in the parent for approval modes", () => {
-    expect(
-      getUnsupportedSubagentCapabilities("ask_approval", [
-        "code_read",
-        "web_research",
-        "terminal",
-        "browser_qa",
-        "code_write",
-      ]),
-    ).toEqual(["terminal", "browser_qa", "code_write"]);
-    expect(
-      resolveSubagentAllowedToolNamesForPermissionMode(
-        "general",
-        ["code_read", "web_research"],
-        "auto_review",
-      ),
-    ).toEqual([
-      "get_terminal_files",
-      "file",
-      "todo_write",
-      "web_search",
-      "open_url",
-      "search_skills",
-      "load_skill",
-      "report_to_parent",
-      "update_work_ledger",
-    ]);
-    expect(
-      resolveSubagentAllowedToolNamesForPermissionMode(
-        "general",
-        ["code_write", "terminal", "browser_qa"],
-        "ask_approval",
-      ),
-    ).not.toEqual(
-      expect.arrayContaining(["run_terminal_cmd", "interact_terminal_session"]),
-    );
-  });
-
-  it("preserves the shared child tools in full access mode", () => {
-    expect(
-      getUnsupportedSubagentCapabilities("full_access", [
-        "terminal",
-        "browser_qa",
-        "code_write",
-      ]),
-    ).toEqual([]);
-    expect(
-      resolveSubagentAllowedToolNamesForPermissionMode(
-        "general",
-        ["code_read"],
-        "full_access",
-      ),
-    ).toEqual(getSubagentProfileDefinition("general").allowedToolNames);
-  });
+  it.each(["ask_approval", "auto_review", "full_access"] as const)(
+    "preserves the shared child tools in %s mode",
+    (permissionMode) => {
+      expect(
+        resolveSubagentAllowedToolNamesForPermissionMode(
+          "general",
+          ["code_write", "terminal", "browser_qa"],
+          permissionMode,
+        ),
+      ).toEqual(getSubagentProfileDefinition("general").allowedToolNames);
+    },
+  );
 });

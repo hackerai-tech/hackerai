@@ -69,10 +69,10 @@ import type { subagentTask } from "@/trigger/subagent";
 import { resultFromPersistedSubagent } from "@/lib/ai/subagents/persisted-result";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { resolveDelegatedSubagentSkills } from "@/lib/ai/subagents/skills";
-import { getUnsupportedSubagentCapabilities } from "@/lib/ai/subagents/profiles";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { phLogger } from "@/lib/posthog/server";
+import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -82,6 +82,10 @@ export type SubagentToolsRuntimeConfig = {
   freeQuotaSubject?: string;
   regionalFreeLimits?: FreeLimitPolicy;
   triggerRegion?: TriggerRunRegion;
+  approvalSessionId?: string;
+  autoReviewAssignment?: AgentAutoReviewAssignment;
+  autoReviewAuthorizationContext?: { text: string; complete: boolean };
+  autoReviewConversationContext?: { text: string; complete: boolean };
 };
 
 const writeLifecycle = (
@@ -112,7 +116,8 @@ export const createDelegateTaskTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose capability labels that accurately describe the work so routing and task context match it; every child receives the same built-in subagent tools, and those tools never expand the delegated scope or user authorization. Give explicit success criteria and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. For clean-slate validation, set inherit_context=false and provide the bounded candidate without the parent's conclusion or known-working payload. When exact steps are supplied, describe the result as a separately executed reproduction. The child cannot delegate.${config.permissionMode === "full_access" ? "" : " In this approval mode, children may use only code_read and web_research; keep terminal, browser QA, and file-changing actions in the parent so the platform can review each action."}`,
+    description:
+      "Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose capability labels that accurately describe the work so routing and task context match it; every child inherits the current permission mode and each sensitive child action uses the same approval boundary as the parent. Give explicit success criteria and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. For clean-slate validation, set inherit_context=false and provide the bounded candidate without the parent's conclusion or known-working payload. When exact steps are supplied, describe the result as a separately executed reproduction. The child cannot delegate.",
     inputSchema: delegateTaskInputSchema,
     execute: async (input, execution) => {
       const parsed = delegateTaskInputSchema.parse(input);
@@ -151,17 +156,6 @@ export const createDelegateTaskTool = (
           error: "delegate_task is only available inside a durable Agent run.",
         };
       }
-      const unsupportedCapabilities = getUnsupportedSubagentCapabilities(
-        config.permissionMode,
-        parsed.capabilities,
-      );
-      if (unsupportedCapabilities.length > 0) {
-        return {
-          success: false,
-          error: `This approval mode keeps action-taking tools in the parent so each action can be reviewed. Delegate with code_read and/or web_research only; unsupported capabilities: ${unsupportedCapabilities.join(", ")}.`,
-        };
-      }
-
       captureSubagentLifecycleEvent("subagent_create_attempted", {
         userId: context.userID,
         eventUuid: subagentCreateAttemptEventUuid(
@@ -247,6 +241,10 @@ export const createDelegateTaskTool = (
         sandboxPreference: config.sandboxPreference,
         sandboxIdentity,
         permissionMode: config.permissionMode,
+        approvalSessionId: config.approvalSessionId,
+        autoReviewRolloutPhase: config.autoReviewAssignment?.phase,
+        autoReviewAuthorizationContext: config.autoReviewAuthorizationContext,
+        autoReviewConversationContext: config.autoReviewConversationContext,
         capabilityBundles: parsed.capabilities,
         taskComplexity: parsed.complexity,
         expectedDurationMinutes: parsed.expected_duration_minutes,

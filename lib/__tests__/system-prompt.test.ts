@@ -60,7 +60,7 @@ describe("systemPrompt security instructions", () => {
     );
   });
 
-  it("explains the approval-mode boundary for delegated children", async () => {
+  it("explains inherited approval modes for delegated children", async () => {
     for (const permissionMode of ["ask_approval", "auto_review"] as const) {
       const prompt = await systemPrompt(
         "user_123",
@@ -75,10 +75,12 @@ describe("systemPrompt security instructions", () => {
 
       expect(prompt).toContain("<generic_delegation>");
       expect(prompt).toContain(
-        "delegated children are limited to code_read and web_research",
+        permissionMode === "auto_review"
+          ? "Delegated children inherit Approve for me"
+          : "Delegated children inherit Ask for approval",
       );
       expect(prompt).toContain(
-        "Keep terminal commands, browser QA, and file changes in the parent",
+        "Sensitive child actions cross the same per-action approval boundary",
       );
     }
   });

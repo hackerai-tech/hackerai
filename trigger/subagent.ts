@@ -121,7 +121,12 @@ import {
   buildExtraUsageConfig,
   getContentFilterRetryModel,
 } from "@/lib/api/chat-stream-helpers";
-import { getUserCustomization } from "@/lib/db/actions";
+import {
+  getChatById,
+  getCurrentAgentEntitlementContext,
+  getUserCustomization,
+  persistAgentApprovalGrant,
+} from "@/lib/db/actions";
 import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 import {
   captureSubagentLifecycleEvent,
@@ -141,6 +146,26 @@ import {
   type TriggerRunRegion,
 } from "@/lib/api/trigger-region";
 import { assertSubagentRunRegion } from "@/lib/ai/subagents/region-guard";
+import {
+  createActiveRuntimeBudget,
+  type ActiveRuntimeBudget,
+} from "@/lib/chat/active-runtime-budget";
+import {
+  AgentAutoReviewEntitlementRevalidationUnavailableError,
+  buildAgentToolApprovalRequester,
+} from "@/lib/chat/agent-tool-approval-requester";
+import {
+  AgentApprovalAuthorizationError,
+  verifyAgentToolApprovalInputAuthorization,
+} from "@/lib/chat/agent-approval-authorization";
+import { getAgentApprovalSandboxIdentity } from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
+  serializeSandboxScopedAgentApprovalTargetPrefix,
+  type AnySandbox,
+  type AgentToolApprovalInputRecord,
+} from "@/types";
+import type { PersistedAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 
 const loadPersistedTerminalOutput = async (
   subagentId: string,
@@ -508,10 +533,13 @@ export const subagentTask = task({
     let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
-    const timeout = setTimeout(() => {
-      activeTimedOut = true;
-      activeAbort.abort();
-    }, SUBAGENT_MAX_ACTIVE_SECONDS * 1_000);
+    const activeRuntimeBudget: ActiveRuntimeBudget = createActiveRuntimeBudget({
+      maxDurationMs: SUBAGENT_MAX_ACTIVE_SECONDS * 1_000,
+      onExceeded: () => {
+        activeTimedOut = true;
+        activeAbort.abort();
+      },
+    });
 
     const usageTracker = new UsageTracker();
     let resultValue: CheckedSubagentResult | undefined;
@@ -800,6 +828,191 @@ export const subagentTask = task({
                 return { updated };
               },
             });
+            const approvalSessionId = row.approval_session_id;
+            const approvalChat = approvalSessionId
+              ? await getChatById({ id: row.chat_id })
+              : null;
+            const initialTargetGrants =
+              (approvalChat?.agent_approval_grants as PersistedAgentApprovalTargetGrant[]) ??
+              [];
+            let approvalEnsureSandbox: (() => Promise<AnySandbox>) | undefined;
+            const revalidateCurrentAuthorization = async ({
+              autoReview,
+              approvalId,
+              toolCallId,
+            }: {
+              autoReview: boolean;
+              approvalId?: string;
+              toolCallId?: string;
+            }) => {
+              await assertSubagentRuntimeAuthorized({
+                subagentId: row.subagent_id,
+                childTriggerRunId: ctx.run.id,
+                parentTriggerRunId: row.parent_trigger_run_id,
+                loadChild: getSubagent,
+                retrieveParent: async (parentTriggerRunId) =>
+                  await runs.retrieve(parentTriggerRunId),
+              });
+              await assertUserCanMakeCostIncurringRequest(row.user_id);
+
+              let currentEntitlement;
+              try {
+                currentEntitlement = await getCurrentAgentEntitlementContext({
+                  userId: row.user_id,
+                  organizationId: row.organization_id,
+                });
+              } catch (error) {
+                if (autoReview) {
+                  throw new AgentAutoReviewEntitlementRevalidationUnavailableError();
+                }
+                throw error;
+              }
+              if (
+                currentEntitlement.subscription !== row.subscription ||
+                currentEntitlement.organizationId !== row.organization_id
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the subagent start.",
+                );
+              }
+
+              const currentChat = await getChatById({ id: row.chat_id });
+              const pendingRequest = currentChat?.active_agent_approval_request;
+              if (
+                !currentChat ||
+                currentChat.user_id !== row.user_id ||
+                currentChat.active_trigger_run_id !==
+                  row.parent_trigger_run_id ||
+                currentChat.active_agent_approval_session_id !==
+                  approvalSessionId ||
+                (!autoReview &&
+                  (pendingRequest?.approvalId !== approvalId ||
+                    pendingRequest?.toolCallId !== toolCallId ||
+                    pendingRequest?.sourceRunId !== ctx.run.id ||
+                    pendingRequest?.sourceAgentId !== row.subagent_id))
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The chat is no longer waiting for this subagent approval.",
+                );
+              }
+
+              const currentCustomization = await getUserCustomization({
+                userId: row.user_id,
+              });
+              const currentExtraUsageConfig = await buildExtraUsageConfig({
+                userId: row.user_id,
+                subscription: currentEntitlement.subscription,
+                userCustomization: currentCustomization,
+                organizationId: currentEntitlement.organizationId,
+                failClosedOnLookupError: true,
+              });
+              await checkSubagentBillingCapacity({
+                userId: row.user_id,
+                organizationId: currentEntitlement.organizationId,
+                subscription: currentEntitlement.subscription,
+                freeQuotaSubject: row.free_quota_subject,
+                freeLimits: payload.regionalFreeLimits,
+                extraUsageConfig: currentExtraUsageConfig,
+                modelName: selectedModel,
+              });
+            };
+            const requestToolApproval = buildAgentToolApprovalRequester({
+              agentPermissionMode: permissionMode,
+              approvalSessionId,
+              writer,
+              chatId: row.chat_id,
+              userId: row.user_id,
+              runId: row.parent_trigger_run_id,
+              source: {
+                runId: ctx.run.id,
+                agentId: row.subagent_id,
+                agentName: row.name ?? "Subagent",
+              },
+              signal: activeAbort.signal,
+              activeRuntimeBudget,
+              initialTargetGrants,
+              persistTargetGrant: (grant, sandboxIdentity) =>
+                persistAgentApprovalGrant({
+                  chatId: row.chat_id,
+                  userId: row.user_id,
+                  grant: {
+                    ...grant,
+                    targetPrefix:
+                      serializeSandboxScopedAgentApprovalTargetPrefix({
+                        sandboxIdentity,
+                        targetPrefix: grant.targetPrefix,
+                      }),
+                  },
+                }),
+              resolveSandboxIdentity: async () => {
+                if (!approvalEnsureSandbox) {
+                  throw new Error(
+                    "Sandbox is unavailable for subagent approval",
+                  );
+                }
+                return getAgentApprovalSandboxIdentity(
+                  await approvalEnsureSandbox(),
+                );
+              },
+              revalidateAfterSuspend: async (
+                input: AgentToolApprovalInputRecord,
+              ) => {
+                const authorization = verifyAgentToolApprovalInputAuthorization(
+                  {
+                    input,
+                    expected: {
+                      userId: row.user_id,
+                      chatId: row.chat_id,
+                      runId: row.parent_trigger_run_id,
+                      approvalSessionId: approvalSessionId!,
+                      approvalId: input.approvalId,
+                      toolCallId: input.toolCallId,
+                    },
+                  },
+                );
+                if (
+                  authorization.subscription !== row.subscription ||
+                  authorization.organizationId !== row.organization_id
+                ) {
+                  throw new AgentApprovalAuthorizationError(
+                    "authorization_mismatch",
+                    "The approval entitlement differs from the subagent start.",
+                  );
+                }
+                await revalidateCurrentAuthorization({
+                  autoReview: false,
+                  approvalId: input.approvalId,
+                  toolCallId: input.toolCallId,
+                });
+              },
+              revalidateAfterAutoReview: async ({ approvalId, toolCallId }) =>
+                await revalidateCurrentAuthorization({
+                  autoReview: true,
+                  approvalId,
+                  toolCallId,
+                }),
+              autoReviewAssignment: row.auto_review_rollout_phase
+                ? { phase: row.auto_review_rollout_phase }
+                : undefined,
+              autoReviewAuthorizationContext:
+                row.auto_review_authorization_context ?? {
+                  text: "",
+                  complete: false,
+                },
+              autoReviewConversationContext:
+                row.auto_review_conversation_context ?? {
+                  text: "",
+                  complete: false,
+                },
+              onAutoReviewCost: (costDollars) => {
+                usageTracker.providerCost += costDollars;
+                usageTracker.nonModelCost += costDollars;
+              },
+              onAutoReviewCircuitBreaker: () => activeAbort.abort(),
+              onPostWaitAuthorizationDenied: () => activeAbort.abort(),
+            });
             const allowedToolNames =
               resolveSubagentAllowedToolNamesForPermissionMode(
                 row.profile,
@@ -830,8 +1043,9 @@ export const subagentTask = task({
               undefined,
               selectedModel,
               undefined,
-              undefined,
-              undefined,
+              requestToolApproval,
+              permissionMode === "auto_review" &&
+                row.auto_review_rollout_phase !== undefined,
               undefined,
               undefined,
               ctx.run.id,
@@ -853,10 +1067,10 @@ export const subagentTask = task({
                 triggerRegion,
               },
             );
+            approvalEnsureSandbox = ensureSandbox;
             const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
-              { canWriteFiles: permissionMode === "full_access" },
             );
             runtimeStage = "sandbox_acquisition";
             await assertRuntimeAuthorized();
@@ -1898,7 +2112,7 @@ export const subagentTask = task({
         .set("runtimeErrorCategory", outerRuntimeDiagnostics.category);
       throw error;
     } finally {
-      clearTimeout(timeout);
+      activeRuntimeBudget.dispose();
       triggerSignal.removeEventListener("abort", abortFromParent);
       cancellationCleanup.delete(ctx.run.id);
       await ptySessionManager.closeAll(row.subagent_id).catch(() => undefined);

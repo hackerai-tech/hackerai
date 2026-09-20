@@ -1,5 +1,4 @@
 import type { z } from "zod";
-import type { AgentPermissionMode } from "@/types/chat";
 
 import {
   GENERAL_SUBAGENT_PROFILE,
@@ -55,21 +54,6 @@ const SHARED_SUBAGENT_TOOLS = [
   "update_work_ledger",
 ] as const;
 
-const APPROVAL_MODE_SUBAGENT_CAPABILITIES = new Set<SubagentCapabilityBundle>([
-  "code_read",
-  "web_research",
-]);
-
-export const getUnsupportedSubagentCapabilities = (
-  permissionMode: AgentPermissionMode,
-  capabilities: readonly SubagentCapabilityBundle[],
-): SubagentCapabilityBundle[] =>
-  permissionMode === "full_access"
-    ? []
-    : capabilities.filter(
-        (capability) => !APPROVAL_MODE_SUBAGENT_CAPABILITIES.has(capability),
-      );
-
 export const resolveSubagentAllowedToolNames = (
   _profile: SubagentProfile,
   _capabilities: readonly SubagentCapabilityBundle[] = [],
@@ -78,20 +62,8 @@ export const resolveSubagentAllowedToolNames = (
 export const resolveSubagentAllowedToolNamesForPermissionMode = (
   profile: SubagentProfile,
   capabilities: readonly SubagentCapabilityBundle[],
-  permissionMode: AgentPermissionMode,
-): readonly string[] => {
-  const allowedToolNames = resolveSubagentAllowedToolNames(
-    profile,
-    capabilities,
-  );
-  if (permissionMode === "full_access") return allowedToolNames;
-
-  return allowedToolNames.filter(
-    (toolName) =>
-      toolName !== "run_terminal_cmd" &&
-      toolName !== "interact_terminal_session",
-  );
-};
+  _permissionMode: unknown,
+): readonly string[] => resolveSubagentAllowedToolNames(profile, capabilities);
 
 const HTTP_FINDING_EVIDENCE_GUIDANCE = `For an HTTP finding that depends on a behavioral difference, preserve bounded baseline/control and exploit request/response artifacts, identify the relevant account roles and observed difference, and cite the actual saved paths in evidence_refs. Preserve failed checks and contradictory or unexpected responses; explain them rather than deleting them to simplify a report. Verify the target's authentication mechanism before interpreting an empty identity response. Reuse sufficient existing captures; independently inspect them when validating a claim, and collect only missing evidence within the assigned scope. Never invent references. Cite saved captures as absolute paths or file:<path> (static file citations may include :line). Submission checks file existence in your current authorized sandbox; it does not validate vulnerability semantics. If the submission tool explicitly rejects evidence references during validation, correct the references and retry once. Allow only one successful accepted submission; never resubmit after acceptance. This exception does not permit retries for other rejection reasons. If it returns evidence_verification.warning, preserve that warning and its unavailable_refs in the report; do not claim those references were attached or verified. Other citation types are not checked by this file-existence check. If a required capture is unavailable, state the limitation instead of claiming the comparison was verified. Static-only and other non-comparative findings do not require an HTTP pair. Redact credentials, session tokens, and unrelated private data from shareable copies; return their paths to the parent for delivery.`;
 

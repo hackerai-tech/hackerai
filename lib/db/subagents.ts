@@ -49,6 +49,10 @@ export type PersistedSubagent = {
   sandbox_preference?: string;
   sandbox_identity?: string;
   permission_mode?: string;
+  approval_session_id?: string;
+  auto_review_rollout_phase?: "shadow" | "enforce";
+  auto_review_authorization_context?: { text: string; complete: boolean };
+  auto_review_conversation_context?: { text: string; complete: boolean };
   selected_model?: string;
   subscription: SubscriptionTier;
   free_quota_subject?: string;
@@ -101,6 +105,10 @@ export const reserveSubagent = async (args: {
   sandboxPreference?: string;
   sandboxIdentity?: string;
   permissionMode?: string;
+  approvalSessionId?: string;
+  autoReviewRolloutPhase?: "shadow" | "enforce";
+  autoReviewAuthorizationContext?: { text: string; complete: boolean };
+  autoReviewConversationContext?: { text: string; complete: boolean };
   selectedModel?: string;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;

@@ -70,7 +70,11 @@ const args = {
   },
   candidateFingerprint: "fingerprint",
   contextRefs: [],
-  permissionMode: "full_access",
+  permissionMode: "auto_review",
+  approvalSessionId: "approval-session-1",
+  autoReviewRolloutPhase: "enforce" as const,
+  autoReviewAuthorizationContext: { text: "Authorized target", complete: true },
+  autoReviewConversationContext: { text: "Test the target", complete: true },
   selectedModel: "agent-model",
   subscription: "pro" as const,
 };
@@ -380,6 +384,17 @@ describe("subagent reservation", () => {
         depth: 1,
         profile: "security_validation",
         status: "queued",
+        permission_mode: "auto_review",
+        approval_session_id: "approval-session-1",
+        auto_review_rollout_phase: "enforce",
+        auto_review_authorization_context: {
+          text: "Authorized target",
+          complete: true,
+        },
+        auto_review_conversation_context: {
+          text: "Test the target",
+          complete: true,
+        },
         cost_limit_dollars: 1,
       }),
     );

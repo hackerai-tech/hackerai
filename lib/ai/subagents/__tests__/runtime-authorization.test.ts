@@ -190,27 +190,6 @@ describe("subagent runtime authorization", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps file changes in the parent when child writes are disabled", async () => {
-    const execute = jest.fn(async () => "written");
-    const guarded = guardSubagentToolExecutions(
-      { file: { execute } as never },
-      async () => undefined,
-      { canWriteFiles: false },
-    );
-
-    await expect(
-      guarded.file.execute?.(
-        { action: "write", path: "/tmp/result.txt", text: "unsafe" },
-        {
-          toolCallId: "tool-write",
-          messages: [],
-          abortSignal: undefined,
-        } as never,
-      ),
-    ).rejects.toThrow("keeps file changes in the parent for approval");
-    expect(execute).not.toHaveBeenCalled();
-  });
-
   it("allows general terminal commands after runtime authorization", async () => {
     const execute = jest.fn(async () => "ran");
     const guarded = guardSubagentToolExecutions(

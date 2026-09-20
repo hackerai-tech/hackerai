@@ -1804,24 +1804,30 @@ export async function setActiveAgentApprovalPending({
   request,
   expectedRunId,
   expectedApprovalSessionId,
+  expectedApprovalId,
 }: {
   chatId: string;
   pending: boolean;
   request?: AgentToolApprovalPendingRequest;
   expectedRunId?: string;
   expectedApprovalSessionId?: string;
+  expectedApprovalId?: string;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.setActiveAgentApprovalPending, {
-      serviceKey,
-      chatId,
-      pending,
-      ...(request !== undefined ? { request } : {}),
-      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
-      ...(expectedApprovalSessionId !== undefined
-        ? { expectedApprovalSessionId }
-        : {}),
-    });
+    return await getConvexClient().mutation(
+      api.chats.setActiveAgentApprovalPending,
+      {
+        serviceKey,
+        chatId,
+        pending,
+        ...(request !== undefined ? { request } : {}),
+        ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+        ...(expectedApprovalSessionId !== undefined
+          ? { expectedApprovalSessionId }
+          : {}),
+        ...(expectedApprovalId !== undefined ? { expectedApprovalId } : {}),
+      },
+    );
   } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
