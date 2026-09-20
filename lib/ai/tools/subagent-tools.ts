@@ -151,12 +151,6 @@ export const createDelegateTaskTool = (
           error: "delegate_task is only available inside a durable Agent run.",
         };
       }
-      if (config.permissionMode !== "full_access") {
-        return {
-          success: false,
-          error: "delegate_task requires Full access for the shared sandbox.",
-        };
-      }
       const unsupportedCapabilities = getUnsupportedSubagentCapabilities(
         config.permissionMode,
         parsed.capabilities,

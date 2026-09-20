@@ -35,11 +35,16 @@ describe("security validation subagent runtime contracts", () => {
 
   it("accepts every Agent permission mode and removes action tools outside full access", () => {
     const source = read("trigger/subagent.ts");
+    const tools = read("lib/ai/tools/subagent-tools.ts");
     expect(source).toContain("isAgentPermissionMode(persistedPermissionMode)");
     expect(source).toContain(
       "resolveSubagentAllowedToolNamesForPermissionMode",
     );
     expect(source).toMatch(/canWriteFiles:\s*permissionMode === "full_access"/);
+    expect(tools).not.toContain('config.permissionMode !== "full_access"');
+    expect(tools).not.toContain(
+      "delegate_task requires Full access for the shared sandbox",
+    );
   });
 
   it("loads only validated server-reviewed skills into focused task children", () => {
