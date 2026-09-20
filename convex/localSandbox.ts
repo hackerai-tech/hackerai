@@ -792,7 +792,7 @@ export const listConnections = query({
       .map((conn) => ({
         connectionId: conn.connection_id,
         environmentId: conn.environment_id,
-        createdAt: conn.created_at,
+        createdAt: conn._creationTime,
         name: conn.connection_name,
         osInfo: conn.os_info,
         lastSeen: conn.last_heartbeat,
@@ -843,7 +843,7 @@ export const listConnectionsForBackend = query({
       .map((conn) => ({
         connectionId: conn.connection_id,
         environmentId: conn.environment_id,
-        createdAt: conn.created_at,
+        createdAt: conn._creationTime,
         name: conn.connection_name,
         osInfo: conn.os_info,
         lastSeen: conn.last_heartbeat,
