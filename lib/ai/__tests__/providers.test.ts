@@ -133,7 +133,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash");
     expect(
       (
         myProvider.languageModel("auxiliary-vision-model") as {
@@ -284,7 +284,7 @@ describe("provider registry", () => {
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
   });
 
-  it("keeps tracked free Ask on GLM and Agent/rescue on DeepSeek", () => {
+  it("keeps tracked free Ask on GLM, rescue on 0731, and Agent on V4.1", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free-glm") as { modelId: string })
@@ -296,7 +296,7 @@ describe("provider registry", () => {
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash");
   });
 
   it.each([

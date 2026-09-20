@@ -1236,7 +1236,7 @@ const buildProviderMap = (
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
   freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
-  freeAgentModelSlug = DEEPSEEK_V4_FLASH_SLUG,
+  freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
 ) =>
   ({
     "ask-model": or(GROK_4_6_SLUG),

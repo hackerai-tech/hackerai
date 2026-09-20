@@ -581,6 +581,7 @@ describe("token-bucket", () => {
     it.each([
       "model-deepseek-v4-flash-vision",
       "model-deepseek-v4-flash-vision-pro",
+      "agent-model-free",
       "deepseek/deepseek-v4.1-flash",
       "deepseek/deepseek-v4.1-flash-20260910",
     ])(
@@ -626,7 +627,6 @@ describe("token-bucket", () => {
 
     it.each([
       "ask-model-free",
-      "agent-model-free",
       "deepseek/deepseek-v4-flash-0731",
       "deepseek/deepseek-v4-flash-20260731",
     ])(

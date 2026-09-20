@@ -1170,11 +1170,11 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe(DEEPSEEK_FLASH_PREVIOUS_SLUG);
   });
 
-  it("maps the free Agent DeepSeek primary slug to its route key", () => {
+  it("maps the free Agent DeepSeek V4.1 primary slug to its route key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "agent-model-free",
-        responseModel: DEEPSEEK_FLASH_SLUG,
+        responseModel: DEEPSEEK_VISION_SLUG,
         mode: "agent",
       }),
     ).toBe("agent-model-free");
