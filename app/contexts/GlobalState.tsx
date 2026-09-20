@@ -63,6 +63,7 @@ import {
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import { environmentPreference } from "@/lib/sandbox/environment";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -152,6 +153,7 @@ interface GlobalStateType {
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
   desktopBridgeStatus: DesktopBridgeStatus;
+  desktopEnvironmentId?: string;
   retryDesktopBridge: () => void;
 
   // Whether a local sandbox (desktop or remote) is available
@@ -219,6 +221,8 @@ interface GlobalStateProviderProps {
 
 interface LocalSandboxConnection {
   connectionId: string;
+  environmentId?: string;
+  createdAt?: number;
   name: string;
   osInfo?: {
     platform: string;
@@ -482,6 +486,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
   } = useSandboxPreference(!!user);
 
@@ -504,13 +509,16 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   const defaultLocalSandboxPreference =
     useMemo<SandboxPreference | null>(() => {
-      if (desktopBridgeActive) return "desktop";
+      if (desktopBridgeActive)
+        return desktopEnvironmentId
+          ? `desktop-environment:${desktopEnvironmentId}`
+          : "desktop";
       const firstRemote = localConnections?.find((c) => !c.isDesktop);
-      if (firstRemote) return firstRemote.connectionId;
+      if (firstRemote) return environmentPreference(firstRemote);
       const firstDesktop = localConnections?.find((c) => c.isDesktop);
-      if (firstDesktop) return "desktop";
+      if (firstDesktop) return environmentPreference(firstDesktop);
       return null;
-    }, [desktopBridgeActive, localConnections]);
+    }, [desktopBridgeActive, desktopEnvironmentId, localConnections]);
 
   const entitlementRefreshRequested =
     typeof window !== "undefined" &&
@@ -1343,6 +1351,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setAgentPermissionMode,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
     hasLocalSandbox,
     localConnections,

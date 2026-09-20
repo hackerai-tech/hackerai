@@ -2,8 +2,11 @@ import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+const mockResolvedPreferences = new Map<string, string>();
 jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(),
+  useQuery: (_query: unknown, args: "skip" | { preference: string }) =>
+    args === "skip" ? undefined : mockResolvedPreferences.get(args.preference),
 }));
 
 const mockIsTauriEnvironment = jest.fn(() => true);
@@ -47,6 +50,7 @@ describe("useSandboxPreference", () => {
     jest.clearAllMocks();
     mockIsTauriEnvironment.mockReturnValue(true);
     window.localStorage.clear();
+    mockResolvedPreferences.clear();
   });
 
   it("defaults Desktop to the local sandbox when no preference is saved", () => {
@@ -78,6 +82,57 @@ describe("useSandboxPreference", () => {
     first.unmount();
     const second = renderHook(() => useSandboxPreference(false));
     expect(second.result.current.sandboxPreference).toBe("remote-kali");
+  });
+
+  it("upgrades an owned legacy session preference and remembers the logical environment", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "old-session");
+    mockResolvedPreferences.set("old-session", "environment:same-computer");
+    const first = renderHook(() => useSandboxPreference(true));
+    expect(first.result.current.sandboxPreference).toBe(
+      "environment:same-computer",
+    );
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:same-computer",
+    );
+    first.unmount();
+    const second = renderHook(() => useSandboxPreference(true));
+    expect(second.result.current.sandboxPreference).toBe(
+      "environment:same-computer",
+    );
+  });
+
+  it("upgrades a restored task without overwriting the new-task default", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "environment:default-computer");
+    mockResolvedPreferences.set("task-session", "environment:task-computer");
+    const { result } = renderHook(() => useSandboxPreference(true));
+    act(() =>
+      result.current.setSandboxPreference("task-session", { remember: false }),
+    );
+    expect(result.current.sandboxPreference).toBe("environment:task-computer");
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:default-computer",
+    );
+    act(() => result.current.resetSandboxPreference());
+    expect(result.current.sandboxPreference).toBe(
+      "environment:default-computer",
+    );
+  });
+
+  it("does not let a queued legacy upgrade replace a newer explicit selection", async () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "old-session");
+    mockResolvedPreferences.set("old-session", "environment:old-computer");
+    const { result } = renderHook(() => useSandboxPreference(true));
+    act(() => result.current.setSandboxPreference("environment:new-computer"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.sandboxPreference).toBe("environment:new-computer");
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:new-computer",
+    );
   });
 
   it.each(["desktop", "remote-kali", "e2b"])(
@@ -154,6 +209,27 @@ describe("useSandboxPreference", () => {
       expect(result.current.desktopBridgeStatus).toBe("idle");
     });
     expect(DesktopSandboxBridge).not.toHaveBeenCalled();
+  });
+
+  it("binds the Desktop default to this installation rather than another online Desktop", async () => {
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(() => ({
+      start: jest.fn().mockResolvedValue("new-session"),
+      stop: jest.fn().mockResolvedValue(undefined),
+      getConnectionId: jest.fn().mockReturnValue("new-session"),
+      getEnvironmentId: jest.fn().mockReturnValue("this-installation"),
+    }));
+    const { result, rerender } = renderHook(
+      ({ authenticated }) => useSandboxPreference(authenticated),
+      { initialProps: { authenticated: true } },
+    );
+    await waitFor(() =>
+      expect(result.current.desktopBridgeStatus).toBe("connected"),
+    );
+    expect(result.current.sandboxPreference).toBe(
+      "desktop-environment:this-installation",
+    );
+    expect(result.current.desktopEnvironmentId).toBe("this-installation");
+    await act(async () => rerender({ authenticated: false }));
   });
 
   it("automatically retries a bridge that fails during startup readiness", async () => {

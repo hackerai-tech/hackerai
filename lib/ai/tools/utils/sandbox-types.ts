@@ -13,6 +13,8 @@ export interface OsInfo {
 
 export interface ConnectionInfo {
   connectionId: string;
+  environmentId?: string;
+  createdAt?: number;
   name: string;
   osInfo?: OsInfo;
   lastSeen?: number;

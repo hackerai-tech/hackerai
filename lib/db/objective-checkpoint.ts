@@ -7,6 +7,30 @@ import {
   objectiveCheckpointSchema,
 } from "@/lib/chat/objective-checkpoint";
 import { ObjectiveCheckpointRuntime } from "@/lib/ai/objective-checkpoint-runtime";
+import { isEnvironmentPreference } from "@/lib/sandbox/environment";
+
+const LOCAL_CHECKPOINT_PREFIX = "connection:";
+
+async function migrateLegacyLocalEnvironmentIdentity({
+  environment,
+  userId,
+  serviceKey,
+}: {
+  environment: string | undefined;
+  userId: string;
+  serviceKey: string;
+}): Promise<string | undefined> {
+  if (!environment?.startsWith(LOCAL_CHECKPOINT_PREFIX)) return environment;
+
+  const preference = environment.slice(LOCAL_CHECKPOINT_PREFIX.length);
+  if (isEnvironmentPreference(preference)) return environment;
+
+  const resolvedPreference = await getConvexClient().query(
+    api.localSandbox.resolveEnvironmentPreferenceForBackend,
+    { userId, preference, serviceKey },
+  );
+  return `${LOCAL_CHECKPOINT_PREFIX}${resolvedPreference}`;
+}
 
 export async function loadObjectiveCheckpoint(args: {
   userId: string;
@@ -30,6 +54,13 @@ export async function loadObjectiveCheckpoint(args: {
   const state = stored
     ? objectiveCheckpointSchema.parse(JSON.parse(stored))
     : newObjectiveCheckpoint(args.triggerRunId);
+  if (stored) {
+    state.environment = await migrateLegacyLocalEnvironmentIdentity({
+      environment: state.environment,
+      userId: args.userId,
+      serviceKey: selection.serviceKey,
+    });
+  }
   const isNewRun = state.runId !== args.triggerRunId;
   const priorSpendDollars = state.spendDollars;
   if (isNewRun && allowFollowUp && state.unsuccessfulAttempts >= 2) {

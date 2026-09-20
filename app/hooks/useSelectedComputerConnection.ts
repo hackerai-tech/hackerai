@@ -5,6 +5,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { isTauriEnvironment } from "./useTauri";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useInitialConnectionPending } from "./useInitialConnectionPending";
+import { connectionMatchesPreference } from "@/lib/sandbox/environment";
 
 // The native environment is fixed for the page lifetime. Use a server snapshot
 // so hydration starts with the same environment as the server render.
@@ -13,22 +14,28 @@ const getServerEnvironment = () => false;
 
 /** Share connection readiness between the composer and all Agent send paths. */
 export function useSelectedComputerConnection() {
-  const { chatMode, sandboxPreference, desktopBridgeStatus, localConnections } =
-    useGlobalState();
+  const {
+    chatMode,
+    sandboxPreference,
+    desktopBridgeStatus,
+    desktopEnvironmentId,
+    localConnections,
+  } = useGlobalState();
   const isNative = useSyncExternalStore(
     subscribeToEnvironment,
     isTauriEnvironment,
     getServerEnvironment,
   );
 
-  const selectedNativeDesktop = sandboxPreference === "desktop" && isNative;
+  const selectedNativeDesktop =
+    isNative &&
+    (sandboxPreference === "desktop" ||
+      (desktopEnvironmentId !== undefined &&
+        sandboxPreference === `desktop-environment:${desktopEnvironmentId}`));
   const connected = selectedNativeDesktop
     ? desktopBridgeStatus === "connected"
     : localConnections?.some((connection) =>
-        sandboxPreference === "desktop"
-          ? connection.isDesktop
-          : !connection.isDesktop &&
-            connection.connectionId === sandboxPreference,
+        connectionMatchesPreference(connection, sandboxPreference),
       );
 
   const initialConnectionPending = useInitialConnectionPending({

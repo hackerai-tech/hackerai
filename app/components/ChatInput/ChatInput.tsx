@@ -50,6 +50,7 @@ import {
   useOnlineStatus,
 } from "@/app/hooks/useOnlineStatus";
 import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
@@ -680,7 +681,7 @@ export const ChatInput = ({
     if (!freeAgentSandboxAvailable) {
       if (freeDesktopAgentOnlyActive || sandboxPreference !== "e2b") {
         if (wasConnected) {
-          const selectedDesktop = sandboxPreference === "desktop";
+          const selectedDesktop = isDesktopPreference(sandboxPreference);
           toast.info(
             selectedDesktop
               ? "Desktop sandbox disconnected."
@@ -728,7 +729,7 @@ export const ChatInput = ({
 
   const freeDesktopSandboxUnavailableReason =
     freeDesktopAgentOnlyActive && !freeAgentSandboxAvailable
-      ? sandboxPreference === "desktop"
+      ? isDesktopPreference(sandboxPreference)
         ? desktopBridgeStatus === "connecting"
           ? "Desktop sandbox is reconnecting"
           : "Reconnect the Desktop sandbox to use Agent"
@@ -865,7 +866,7 @@ export const ChatInput = ({
             sandboxPreference={sandboxPreference}
             onSelect={setSandboxPreference}
             reconnectInstructions={
-              sandboxPreference === "desktop" && !selectedNativeDesktop
+              isDesktopPreference(sandboxPreference) && !selectedNativeDesktop
                 ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
                 : undefined
             }

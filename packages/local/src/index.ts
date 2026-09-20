@@ -17,6 +17,7 @@ import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket from "ws";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
+import { getEnvironmentId } from "./environment-identity";
 import {
   truncateOutput,
   MAX_OUTPUT_SIZE,
@@ -51,6 +52,7 @@ const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
 const api = {
   localSandbox: {
     connect: "localSandbox:connect" as const,
+    ready: "localSandbox:ready" as const,
     disconnect: "localSandbox:disconnect" as const,
     refreshCentrifugoToken: "localSandbox:refreshCentrifugoToken" as const,
   },
@@ -416,6 +418,7 @@ export class LocalSandboxClient {
         api.localSandbox.connect as never,
         {
           token: this.config.token,
+          environmentId: await getEnvironmentId(),
           connectionName: this.config.name,
           clientVersion: "1.0.0",
           osInfo: this.getOsInfo(),
@@ -440,6 +443,13 @@ export class LocalSandboxClient {
       await this.setupCentrifugo(
         result.centrifugoWsUrl,
         result.centrifugoToken,
+      );
+      await this.convexHttp.mutation(
+        api.localSandbox.ready as never,
+        {
+          token: this.config.token,
+          connectionId: this.connectionId,
+        } as never,
       );
       console.log(
         chalk.green(

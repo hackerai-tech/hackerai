@@ -913,6 +913,9 @@ export default defineSchema({
   local_sandbox_connections: defineTable({
     user_id: v.string(),
     connection_id: v.string(),
+    environment_id: v.optional(v.string()),
+    // New clients publish readiness after subscribing to the command relay.
+    ready: v.optional(v.boolean()),
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),

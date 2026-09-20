@@ -8,7 +8,12 @@ const mockGlobalState = {
   sandboxPreference: "desktop",
   desktopBridgeStatus: "failed",
   localConnections: [{ connectionId: "stale-row", isDesktop: true }] as
-    Array<{ connectionId: string; isDesktop: boolean }> | undefined,
+    | Array<{
+        connectionId: string;
+        isDesktop: boolean;
+        environmentId?: string;
+      }>
+    | undefined,
 };
 const mockIsTauriEnvironment = jest.fn(() => true);
 
@@ -33,6 +38,38 @@ function Probe() {
 }
 
 describe("selected computer hydration", () => {
+  it("restores the selected computer after its relay session changes", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    mockGlobalState.sandboxPreference = "environment:machine-a";
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "session-one",
+        environmentId: "machine-a",
+        isDesktop: false,
+      },
+    ];
+    const { result, rerender } = renderHook(useSelectedComputerConnection);
+    expect(result.current.selectedComputerUnavailable).toBe(false);
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "other-session",
+        environmentId: "machine-b",
+        isDesktop: false,
+      },
+    ];
+    rerender();
+    expect(result.current.selectedComputerUnavailable).toBe(true);
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "session-two",
+        environmentId: "machine-a",
+        isDesktop: false,
+      },
+    ];
+    rerender();
+    expect(result.current.selectedComputerUnavailable).toBe(false);
+    expect(mockGlobalState.sandboxPreference).toBe("environment:machine-a");
+  });
   afterEach(() => {
     jest.useRealTimers();
     mockGlobalState.chatMode = "agent";

@@ -153,6 +153,77 @@ afterEach(() => {
 // ── desktop capability registration ───────────────────────────────────
 
 describe("desktop capability registration", () => {
+  it.each([
+    "Command get_environment_id not allowed by ACL",
+    "Command get_environment_id not found",
+    "Unknown command: get_environment_id",
+    "get_environment_id is not registered",
+  ])(
+    "keeps legacy Desktop usable when native identity is unavailable: %s",
+    async (message) => {
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "get_environment_id") throw new Error(message);
+        return original(cmd, args);
+      };
+      const config = buildConfig();
+      const bridge = new DesktopSandboxBridge(config);
+      await bridge.start();
+      expect(config.connectDesktop).toHaveBeenCalledWith(
+        expect.not.objectContaining({ environmentId: expect.anything() }),
+      );
+      expect(bridge.getEnvironmentId()).toBeUndefined();
+      await bridge.stop();
+    },
+  );
+
+  it("registers the persistent native identity and waits for relay readiness before heartbeating", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) =>
+      cmd === "get_environment_id" ? "native-environment" : original(cmd, args);
+    let finishSubscription!: () => void;
+    let subscriptionEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      subscriptionEntered = resolve;
+    });
+    mockSubscription.ready.mockImplementationOnce(() => {
+      subscriptionEntered();
+      return new Promise<void>((resolve) => {
+        finishSubscription = resolve;
+      });
+    });
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    const started = bridge.start();
+    // Wait until registration has reached the subscription readiness barrier.
+    await entered;
+    expect(config.connectDesktop).toHaveBeenCalledWith(
+      expect.objectContaining({ environmentId: "native-environment" }),
+    );
+    expect(config.heartbeatDesktop).not.toHaveBeenCalled();
+    finishSubscription();
+    await started;
+    expect(bridge.getEnvironmentId()).toBe("native-environment");
+    expect(config.heartbeatDesktop).toHaveBeenCalledWith({
+      connectionId: "conn-123",
+    });
+    await bridge.stop();
+  });
+
+  it("fails closed when native identity storage is corrupt", async () => {
+    const original = mockInvokeHandler;
+    mockInvokeHandler = async (cmd, args) => {
+      if (cmd === "get_environment_id")
+        throw new Error("Invalid environment identity version");
+      return original(cmd, args);
+    };
+    const config = buildConfig();
+    await expect(new DesktopSandboxBridge(config).start()).rejects.toThrow(
+      "Invalid environment identity",
+    );
+    expect(config.connectDesktop).not.toHaveBeenCalled();
+  });
+
   it("does not register a connection after stopping during the file probe", async () => {
     let finishProbe!: () => void;
     let enteredProbe!: () => void;

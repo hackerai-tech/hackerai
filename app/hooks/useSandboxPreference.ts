@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
 import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
@@ -24,6 +25,7 @@ interface SandboxPreferenceState {
   resetSandboxPreference: () => void;
   desktopBridgeActive: boolean;
   desktopBridgeStatus: DesktopBridgeStatus;
+  desktopEnvironmentId?: string;
   retryDesktopBridge: () => void;
 }
 
@@ -88,6 +90,7 @@ export function useSandboxPreference(
   const [desktopBridgeStatus, setDesktopBridgeStatus] =
     useState<DesktopBridgeStatus>("idle");
   const [desktopBridgeRetryAttempt, setDesktopBridgeRetryAttempt] = useState(0);
+  const [desktopEnvironmentId, setDesktopEnvironmentId] = useState<string>();
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
@@ -105,6 +108,42 @@ export function useSandboxPreference(
         Boolean(localStorage.getItem("sandbox-preference")),
     );
   const newChatPreferenceRef = useRef(sandboxPreference);
+  const resolvedPreference = useQuery(
+    api.localSandbox.resolveEnvironmentPreference,
+    isAuthenticated &&
+      sandboxPreference !== "desktop" &&
+      sandboxPreference !== "e2b" &&
+      !isEnvironmentPreference(sandboxPreference)
+      ? { preference: sandboxPreference }
+      : "skip",
+  );
+  const upgradedPreference =
+    sandboxPreference === "desktop" && desktopEnvironmentId
+      ? `desktop-environment:${desktopEnvironmentId}`
+      : resolvedPreference;
+  useEffect(() => {
+    if (
+      typeof upgradedPreference !== "string" ||
+      !isEnvironmentPreference(upgradedPreference)
+    )
+      return;
+    if (newChatPreferenceRef.current === sandboxPreference) {
+      newChatPreferenceRef.current = upgradedPreference;
+      if (localStorage.getItem("sandbox-preference") === sandboxPreference) {
+        localStorage.setItem("sandbox-preference", upgradedPreference);
+      }
+    }
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSandboxPreferenceState((current) =>
+        current === sandboxPreference ? upgradedPreference : current,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [upgradedPreference, sandboxPreference]);
 
   const connectDesktopMutation = useMutation(api.localSandbox.connectDesktop);
   const refreshTokenMutation = useMutation(
@@ -142,6 +181,11 @@ export function useSandboxPreference(
     const syncBridgeState = (active: boolean, status: DesktopBridgeStatus) => {
       queueMicrotask(() => {
         updateBridgeState(active, status);
+      });
+    };
+    const syncDesktopEnvironmentId = (environmentId: string | undefined) => {
+      queueMicrotask(() => {
+        if (!cancelled) setDesktopEnvironmentId(environmentId);
       });
     };
     const scheduleBridgeRecovery = (
@@ -199,6 +243,7 @@ export function useSandboxPreference(
     };
 
     if (!isAuthenticated || !isTauriEnvironment()) {
+      syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
       bridgeGeneration += 1;
       bridgeStartPromise = null;
@@ -216,6 +261,7 @@ export function useSandboxPreference(
 
     // Already running — just sync bridge active state.
     if (activeBridge?.getConnectionId()) {
+      syncDesktopEnvironmentId(activeBridge.getEnvironmentId?.());
       syncBridgeState(true, "connected");
       // setSandboxPreferenceState(activeBridge.getConnectionId()!);
       return () => {
@@ -291,6 +337,7 @@ export function useSandboxPreference(
         if (cancelled || !bridge) return;
 
         setDesktopBridgeActive(true);
+        setDesktopEnvironmentId(bridge.getEnvironmentId?.());
         setDesktopBridgeStatus("connected");
       } catch (error) {
         if (cancelled) return;
@@ -366,12 +413,17 @@ export function useSandboxPreference(
   }, [isAuthenticated]);
 
   return {
-    sandboxPreference,
+    sandboxPreference:
+      typeof upgradedPreference === "string" &&
+      isEnvironmentPreference(upgradedPreference)
+        ? upgradedPreference
+        : sandboxPreference,
     hasExplicitSandboxPreference,
     setSandboxPreference,
     resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
   };
 }

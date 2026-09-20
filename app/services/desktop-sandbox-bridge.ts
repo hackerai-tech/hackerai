@@ -185,6 +185,7 @@ function isUnauthenticatedError(error: unknown): boolean {
 
 interface DesktopBridgeConfig {
   connectDesktop: (args: {
+    environmentId?: string;
     connectionName: string;
     osInfo?: {
       platform: string;
@@ -216,6 +217,11 @@ interface DesktopBridgeConfig {
 }
 
 export class DesktopSandboxBridge {
+  private environmentId?: string;
+
+  getEnvironmentId(): string | undefined {
+    return this.environmentId;
+  }
   private client: Centrifuge | null = null;
   private subscription: Subscription | null = null;
   private connectionId: string | null = null;
@@ -362,6 +368,22 @@ export class DesktopSandboxBridge {
       this.isStoppingOrStopped || generation !== this.startupGeneration;
     this.isStoppingOrStopped = false;
     this.nativeFileIpcAvailable = null;
+    // Older desktop binaries do not expose identity yet. Keep their legacy
+    // registration path until the native update is installed.
+    const { invoke } = await import("@tauri-apps/api/core");
+    let environmentId: string | undefined;
+    try {
+      environmentId = await invoke<string>("get_environment_id");
+    } catch (error) {
+      if (
+        !String(error).includes("get_environment_id") ||
+        !/not found|unknown command|not registered|not allowed by acl/i.test(
+          String(error),
+        )
+      )
+        throw error;
+    }
+    this.environmentId = environmentId;
     const osInfo = await this.getOsInfo();
     if (wasStopped()) throw new Error("Desktop bridge stopped during startup");
     const files = await this.probeFileBridge();
@@ -369,6 +391,7 @@ export class DesktopSandboxBridge {
 
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
       await this.config.connectDesktop({
+        ...(environmentId ? { environmentId } : {}),
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
         capabilities: { commands: true, pty: true, files },
