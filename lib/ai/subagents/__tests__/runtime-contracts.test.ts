@@ -36,7 +36,7 @@ describe("security validation subagent runtime contracts", () => {
   it("loads only validated server-reviewed skills into focused task children", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const profiles = read("lib/ai/subagents/profiles.ts");
-    expect(tools).toContain("resolveSubagentSkills");
+    expect(tools).toContain("resolveDelegatedSubagentSkills");
     expect(tools).toContain("skills = resolvedSkills.skills.map");
     expect(tools).toContain("Skills are optional methodology");
     expect(tools).not.toContain("1-3 normally");
