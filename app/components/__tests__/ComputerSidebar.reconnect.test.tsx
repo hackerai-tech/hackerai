@@ -478,10 +478,11 @@ describe("ComputerSidebar reconnect behavior", () => {
     );
   });
 
-  it("follows the next subagent command when the selected command is streaming", () => {
+  it("follows the next subagent command when the latest selected command is complete", () => {
     const origin = {
       kind: "subagent" as const,
       subagentId: "sa_child",
+      liveToolCallId: "child-tool-2",
       returnContent: {
         kind: "subagents" as const,
         parentMessageId: "parent-message",
@@ -492,7 +493,7 @@ describe("ComputerSidebar reconnect behavior", () => {
     mockSidebarContent = {
       command: "echo command-2",
       output: "selected output",
-      isExecuting: true,
+      isExecuting: false,
       toolCallId: "child-tool-2",
       origin,
     };
@@ -539,6 +540,7 @@ describe("ComputerSidebar reconnect behavior", () => {
     const origin = {
       kind: "subagent" as const,
       subagentId: "sa_child",
+      liveToolCallId: "child-tool-1",
       returnContent: {
         kind: "subagents" as const,
         parentMessageId: "parent-message",
@@ -548,8 +550,8 @@ describe("ComputerSidebar reconnect behavior", () => {
     };
     mockSidebarContent = {
       command: "npm test",
-      output: "running",
-      isExecuting: true,
+      output: "passed",
+      isExecuting: false,
       toolCallId: "child-tool-1",
       origin,
     };

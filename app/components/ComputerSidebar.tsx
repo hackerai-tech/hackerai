@@ -1131,8 +1131,8 @@ const SubagentComputerSidebar = ({
   });
   const active = !!run && SUBAGENT_ACTIVE_STATUSES.has(run.status);
   const followLiveOnOpen =
-    ("isExecuting" in sidebarContent && sidebarContent.isExecuting === true) ||
-    ("isSearching" in sidebarContent && sidebarContent.isSearching === true);
+    origin.liveToolCallId !== undefined &&
+    origin.liveToolCallId === sidebarContent.toolCallId;
   const isFollowingLiveRef = useRef(followLiveOnOpen);
   const sawActiveRunRef = useRef(false);
   const parentBoundaryToolCallIdRef = useRef(origin.returnContent.toolCallId);
