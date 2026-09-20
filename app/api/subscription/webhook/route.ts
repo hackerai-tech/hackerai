@@ -1752,6 +1752,9 @@ async function handlePaymentMethodUpdated(args: {
   const activeSuspensions = await Promise.all(
     userIds.map((userId) => hasActiveSuspensionForUser(userId)),
   );
+  // Recovery can charge the shared Stripe customer. A hold on any resolved
+  // member therefore blocks the customer-level operation, not just that
+  // member's analytics or entitlement updates.
   if (activeSuspensions.some(Boolean)) {
     return;
   }

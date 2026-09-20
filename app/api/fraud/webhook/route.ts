@@ -33,24 +33,33 @@ type SuspensionCategory =
  * re-subscribe until support resolves the hold.
  */
 async function cancelAllSubscriptions(customerId: string): Promise<void> {
-  let subs: Stripe.ApiList<Stripe.Subscription>;
-  try {
-    subs = await stripe.subscriptions.list({
-      customer: customerId,
-      status: "all",
-      limit: 100,
-    });
-  } catch (err) {
-    if (isTerminalStripeResourceError(err)) {
-      console.log(
-        `[Fraud Webhook] Subscription cleanup skipped for customer ${customerId}: resource_missing`,
-      );
-      return;
-    }
-    throw err;
-  }
+  let startingAfter: string | undefined;
+  const subscriptions: Stripe.Subscription[] = [];
 
-  for (const sub of subs.data) {
+  do {
+    let page: Stripe.ApiList<Stripe.Subscription>;
+    try {
+      page = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "all",
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+      });
+    } catch (err) {
+      if (isTerminalStripeResourceError(err)) {
+        console.log(
+          `[Fraud Webhook] Subscription cleanup skipped for customer ${customerId}: resource_missing`,
+        );
+        return;
+      }
+      throw err;
+    }
+
+    subscriptions.push(...page.data);
+    startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+  } while (startingAfter);
+
+  for (const sub of subscriptions) {
     try {
       await stripe.subscriptions.cancel(sub.id as string);
     } catch (err) {
@@ -74,23 +83,32 @@ async function cancelAllSubscriptions(customerId: string): Promise<void> {
  * a replacement card from becoming a path around the dispute suspension.
  */
 async function detachAllPaymentMethods(customerId: string): Promise<void> {
-  let paymentMethods: Stripe.ApiList<Stripe.PaymentMethod>;
-  try {
-    paymentMethods = await stripe.paymentMethods.list({
-      customer: customerId,
-      limit: 100,
-    });
-  } catch (err) {
-    if (isTerminalStripeResourceError(err)) {
-      console.log(
-        `[Fraud Webhook] Payment method cleanup skipped for customer ${customerId}: resource_missing`,
-      );
-      return;
-    }
-    throw err;
-  }
+  let startingAfter: string | undefined;
+  const paymentMethods: Stripe.PaymentMethod[] = [];
 
-  for (const pm of paymentMethods.data) {
+  do {
+    let page: Stripe.ApiList<Stripe.PaymentMethod>;
+    try {
+      page = await stripe.paymentMethods.list({
+        customer: customerId,
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+      });
+    } catch (err) {
+      if (isTerminalStripeResourceError(err)) {
+        console.log(
+          `[Fraud Webhook] Payment method cleanup skipped for customer ${customerId}: resource_missing`,
+        );
+        return;
+      }
+      throw err;
+    }
+
+    paymentMethods.push(...page.data);
+    startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+  } while (startingAfter);
+
+  for (const pm of paymentMethods) {
     try {
       await stripe.paymentMethods.detach(pm.id);
     } catch (err) {

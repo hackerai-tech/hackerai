@@ -225,6 +225,54 @@ describe("POST /api/fraud/webhook", () => {
     );
   });
 
+  it("fetches every cleanup page before mutating Stripe state", async () => {
+    mockListSubscriptions
+      .mockResolvedValueOnce({
+        data: [{ id: "sub_first_page" }],
+        has_more: true,
+      } as never)
+      .mockResolvedValueOnce({
+        data: [{ id: "sub_second_page" }],
+        has_more: false,
+      } as never);
+    mockListPaymentMethods
+      .mockResolvedValueOnce({
+        data: [{ id: "pm_first_page" }],
+        has_more: true,
+      } as never)
+      .mockResolvedValueOnce({
+        data: [{ id: "pm_second_page" }],
+        has_more: false,
+      } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockListSubscriptions).toHaveBeenNthCalledWith(2, {
+      customer: "cus_deleted",
+      status: "all",
+      limit: 100,
+      starting_after: "sub_first_page",
+    });
+    expect(mockCancelSubscription).toHaveBeenCalledWith("sub_first_page");
+    expect(mockCancelSubscription).toHaveBeenCalledWith("sub_second_page");
+    expect(mockListSubscriptions.mock.invocationCallOrder[1]).toBeLessThan(
+      mockCancelSubscription.mock.invocationCallOrder[0]!,
+    );
+
+    expect(mockListPaymentMethods).toHaveBeenNthCalledWith(2, {
+      customer: "cus_deleted",
+      limit: 100,
+      starting_after: "pm_first_page",
+    });
+    expect(mockDetachPaymentMethod).toHaveBeenCalledWith("pm_first_page");
+    expect(mockDetachPaymentMethod).toHaveBeenCalledWith("pm_second_page");
+    expect(mockListPaymentMethods.mock.invocationCallOrder[1]).toBeLessThan(
+      mockDetachPaymentMethod.mock.invocationCallOrder[0]!,
+    );
+  });
+
   it("applies a non-fraudulent billing hold before terminal cleanup", async () => {
     mockConstructEvent.mockReturnValue({
       id: "evt_dispute_non_fraudulent",
