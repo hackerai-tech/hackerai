@@ -39,6 +39,12 @@ describe("security validation subagent runtime contracts", () => {
     expect(tools).toContain("resolveDelegatedSubagentSkills");
     expect(tools).toContain("skills = resolvedSkills.skills.map");
     expect(tools).toContain("Skills are optional methodology");
+    expect(tools).toContain(
+      "For clean-slate validation, set inherit_context=false",
+    );
+    expect(tools).toContain(
+      "describe the result as a separately executed reproduction",
+    );
     expect(tools).not.toContain("1-3 normally");
     expect(tools).not.toContain(
       "security_task uses fixed server tools and does not accept skills",

@@ -111,7 +111,7 @@ export const createDelegateTaskTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose the smallest server-validated capability bundle, give explicit success criteria, and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. The child cannot delegate.`,
+    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose the smallest server-validated capability bundle, give explicit success criteria, and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. For clean-slate validation, set inherit_context=false and provide the bounded candidate without the parent's conclusion or known-working payload. When exact steps are supplied, describe the result as a separately executed reproduction. The child cannot delegate.`,
     inputSchema: delegateTaskInputSchema,
     execute: async (input, execution) => {
       const parsed = delegateTaskInputSchema.parse(input);

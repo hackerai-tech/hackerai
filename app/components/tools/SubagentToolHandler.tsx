@@ -118,9 +118,8 @@ const hashString = (value: string) => {
 
 const assignVisualIndexes = (presentations: SubagentPresentation[]) => {
   const occupied = new Set<number>();
-  return presentations.map(({ agentId, toolCallId }) => {
-    const preferredIndex =
-      hashString(agentId ?? toolCallId) % SUBAGENT_VISUALS.length;
+  return presentations.map(({ toolCallId }) => {
+    const preferredIndex = hashString(toolCallId) % SUBAGENT_VISUALS.length;
     for (let offset = 0; offset < SUBAGENT_VISUALS.length; offset += 1) {
       const visualIndex = (preferredIndex + offset) % SUBAGENT_VISUALS.length;
       if (occupied.has(visualIndex)) continue;
