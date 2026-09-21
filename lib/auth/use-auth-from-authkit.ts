@@ -60,6 +60,11 @@ export function useAuthFromAuthKit(
   const accessTokenRef = useRef<string | undefined>(undefined);
   const lastRefreshErrorAt = useRef<number>(0);
   const hasResolvedOrgRef = useRef(false);
+  const sessionRecoveryRef = useRef<{
+    userId: string;
+    startedAt: number;
+    pending: Promise<boolean>;
+  } | null>(null);
 
   const isCrossTabEnabled = useMemo(
     () => (deps.isCrossTabEnabled ?? isCrossTabTokenSharingEnabled)(user?.id),
@@ -92,6 +97,36 @@ export function useAuthFromAuthKit(
 
   const isAuthenticated = !!user;
 
+  const reconcileMissingToken = useCallback(async (): Promise<boolean> => {
+    if (!user || !refreshAuth) return false;
+    const previous = sessionRecoveryRef.current;
+    if (
+      previous?.userId === user.id &&
+      Date.now() - previous.startedAt < 10_000
+    ) {
+      return previous.pending;
+    }
+
+    // Token refresh updates AuthKit's token store, but not its cached user.
+    // Reconcile that user before Convex renders the signed-out page. Unlike
+    // getAuth, refreshAuth preserves the user on transient request failures.
+    const pending = (async () => {
+      try {
+        const result = await refreshAuth();
+        return result !== undefined;
+      } catch {
+        // A failed session check is not evidence that the user signed out.
+        return true;
+      }
+    })();
+    sessionRecoveryRef.current = {
+      userId: user.id,
+      startedAt: Date.now(),
+      pending,
+    };
+    return pending;
+  }, [user, refreshAuth]);
+
   const fetchAccessToken = useCallback(
     async ({
       forceRefreshToken,
@@ -101,6 +136,7 @@ export function useAuthFromAuthKit(
       }
 
       try {
+        let token: string | null | undefined;
         if (forceRefreshToken) {
           // Cooldown: skip refresh if we recently hit an error (e.g., rate limit)
           // to prevent Convex retry loops from hammering the server
@@ -127,14 +163,24 @@ export function useAuthFromAuthKit(
               );
             };
 
-            return getFreshSharedTokenWithFallback(refreshWithLock);
+            token = await getFreshSharedTokenWithFallback(refreshWithLock);
+          } else {
+            // Legacy behavior: direct refresh without cross-tab coordination
+            token = await refresh();
           }
-
-          // Legacy behavior: direct refresh without cross-tab coordination
-          const newToken = await refresh();
-          return newToken ?? null;
+        } else {
+          token = await getAccessToken();
         }
-        return (await getAccessToken()) ?? null;
+        if (!token) {
+          const cachedToken = accessTokenRef.current;
+          const recoveryFailed = await reconcileMissingToken();
+          if (recoveryFailed) return cachedToken ?? null;
+          accessTokenRef.current = undefined;
+        } else {
+          accessTokenRef.current = token;
+          sessionRecoveryRef.current = null;
+        }
+        return token ?? null;
       } catch {
         // On network errors during laptop wake, fall back to cached token.
         // Even if expired, Convex will treat it like null and clear auth.
@@ -144,7 +190,14 @@ export function useAuthFromAuthKit(
         return accessTokenRef.current ?? null;
       }
     },
-    [user, getAccessToken, refresh, deps.mutex, isCrossTabEnabled],
+    [
+      user,
+      getAccessToken,
+      refresh,
+      deps.mutex,
+      isCrossTabEnabled,
+      reconcileMissingToken,
+    ],
   );
 
   return {
