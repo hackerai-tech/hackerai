@@ -191,11 +191,6 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
-import {
-  createUltraMaxModelExposureRecorder,
-  evaluateUltraMaxModel,
-  getActiveUltraMaxModelAssignment,
-} from "@/lib/experiments/ultra-max-model";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   capturePaidDailyFreeAllowanceServerEvent,
@@ -645,15 +640,6 @@ export const createChatHandler = () => {
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
-      const ultraMaxModelAssignment = await evaluateUltraMaxModel({
-        posthog,
-        userId,
-        subscription,
-        selectedModel,
-        hasImages: requestHasImages,
-      });
-      if (ultraMaxModelAssignment)
-        selectedModel = ultraMaxModelAssignment.modelKey;
       const notesEnabled =
         (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_notes ?? true);
@@ -813,11 +799,6 @@ export const createChatHandler = () => {
         selectedModel,
         !!paidDailyFreeAllowanceReservation,
       );
-      const activeUltraMaxModelAssignment = getActiveUltraMaxModelAssignment(
-        ultraMaxModelAssignment,
-        selectedModel,
-        !!paidDailyFreeAllowanceReservation,
-      );
       const activeAbliteratedExperiment =
         !paidDailyFreeAllowanceReservation &&
         abliteratedExperiment?.modelKey === selectedModel
@@ -831,30 +812,16 @@ export const createChatHandler = () => {
         subscription,
         requestId: assistantMessageId,
       });
-      const recordUltraMaxModelExposure = createUltraMaxModelExposureRecorder({
-        posthog,
-        assignment: activeUltraMaxModelAssignment,
-        userId,
-        mode,
-        subscription,
-        requestId: assistantMessageId,
-      });
       const routingExperimentContext = activeAbliteratedExperiment
         ? {
             key: activeAbliteratedExperiment.key,
             variant: activeAbliteratedExperiment.variant,
             requestId: assistantMessageId,
           }
-        : activeUltraMaxModelAssignment
-          ? {
-              key: activeUltraMaxModelAssignment.key,
-              variant: activeUltraMaxModelAssignment.variant,
-              requestId: assistantMessageId,
-            }
-          : (activeFlashRoutingAssignment ??
-            getDeepSeekV4Pro0813ExperimentContext(
-              activeDeepSeekV4Pro0813Experiment,
-            ));
+        : (activeFlashRoutingAssignment ??
+          getDeepSeekV4Pro0813ExperimentContext(
+            activeDeepSeekV4Pro0813Experiment,
+          ));
 
       usageRefundTracker.recordDeductions(rateLimitInfo);
 
@@ -1670,7 +1637,6 @@ export const createChatHandler = () => {
               }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
-                recordUltraMaxModelExposure(configuredModel);
               },
               trackedProvider,
               currentSystemPrompt,

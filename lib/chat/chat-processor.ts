@@ -40,7 +40,7 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Pro Plus Auto and Agent Pro use DeepSeek V4.1 Flash. Other paid Agent
  *   Auto and Standard requests use DeepSeek V4 Flash 0731. Ask Ultra Auto
- *   and Ask Pro use DeepSeek V4 Pro 0813, while Max uses Grok 4.6.
+ *   and Ask Pro use DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
  *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4 Flash Vision before fallbacks.
  * @returns Model name to use
@@ -138,6 +138,13 @@ export function selectModel(
     return hasProviderImage
       ? "model-grok-4.5-pro"
       : "model-deepseek-v4-pro-0813";
+  }
+
+  // GLM 5.3 is the Max text model. Keep image requests on the existing
+  // multimodal route because the retired experiment intentionally excluded
+  // image inputs.
+  if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
+    return "model-grok-4.6";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);

@@ -839,10 +839,10 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(true);
   });
 
-  it("keeps explicitly selected HackerAI Max Grok 4.6 retryable", () => {
+  it("keeps explicitly selected HackerAI Max GLM 5.3 retryable", () => {
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-grok-4.6",
+        selectedModel: "model-glm-5.3",
         selectedModelOverride: "hackerai-max",
       }),
     ).toBe(true);

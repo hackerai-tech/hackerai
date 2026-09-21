@@ -549,10 +549,8 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Grok 4.6 for Ultra", () => {
-      expect(selectModel("ask", "ultra", "hackerai-max")).toBe(
-        "model-grok-4.6",
-      );
+    it("should map HackerAI Max to GLM 5.3 for Ultra", () => {
+      expect(selectModel("ask", "ultra", "hackerai-max")).toBe("model-glm-5.3");
     });
 
     it("should downgrade HackerAI Max to Pro outside Ultra", () => {
@@ -567,12 +565,12 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Grok 4.6 for paid users with extra usage", () => {
+    it("should map HackerAI Max to GLM 5.3 for paid users with extra usage", () => {
       expect(
         selectModel("ask", "pro", "hackerai-max", false, false, {
           extraUsageAvailable: true,
         }),
-      ).toBe("model-grok-4.6");
+      ).toBe("model-glm-5.3");
     });
   });
 
@@ -614,9 +612,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Grok 4.6 in agent mode for Ultra", () => {
+    it("should map HackerAI Max to GLM 5.3 in agent mode for Ultra", () => {
       expect(selectModel("agent", "ultra", "hackerai-max")).toBe(
-        "model-grok-4.6",
+        "model-glm-5.3",
       );
     });
 
@@ -632,12 +630,12 @@ describe("selectModel", () => {
       );
     });
 
-    it("should map HackerAI Max to Grok 4.6 in agent mode for paid users with extra usage", () => {
+    it("should map HackerAI Max to GLM 5.3 in agent mode for paid users with extra usage", () => {
       expect(
         selectModel("agent", "pro-plus", "hackerai-max", false, false, {
           extraUsageAvailable: true,
         }),
-      ).toBe("model-grok-4.6");
+      ).toBe("model-glm-5.3");
     });
 
     it("should default to DeepSeek V4 Flash when no model is selected", () => {

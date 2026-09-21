@@ -181,11 +181,6 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
 } from "@/lib/experiments/flash-routing";
-import {
-  createUltraMaxModelExposureRecorder,
-  evaluateUltraMaxModel,
-  getActiveUltraMaxModelAssignment,
-} from "@/lib/experiments/ultra-max-model";
 import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
@@ -2075,15 +2070,6 @@ export const agentLongTask = task({
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
-      const ultraMaxModelAssignment = await evaluateUltraMaxModel({
-        posthog,
-        userId,
-        subscription,
-        selectedModel,
-        hasImages: requestHasImages,
-      });
-      if (ultraMaxModelAssignment)
-        selectedModel = ultraMaxModelAssignment.modelKey;
       const notesEnabled = userCustomization?.include_notes ?? true;
 
       const estimatedInputTokens = await estimatePreflightInputTokens({
@@ -2380,12 +2366,6 @@ export const agentLongTask = task({
                 selectedModel,
                 !!paidDailyFreeAllowanceReservation,
               );
-            const activeUltraMaxModelAssignment =
-              getActiveUltraMaxModelAssignment(
-                ultraMaxModelAssignment,
-                selectedModel,
-                !!paidDailyFreeAllowanceReservation,
-              );
             const activeAbliteratedExperiment =
               !paidDailyFreeAllowanceReservation &&
               abliteratedExperiment?.modelKey === selectedModel
@@ -2400,31 +2380,16 @@ export const agentLongTask = task({
                 subscription,
                 requestId: assistantMessageId,
               });
-            const recordUltraMaxModelExposure =
-              createUltraMaxModelExposureRecorder({
-                posthog,
-                assignment: activeUltraMaxModelAssignment,
-                userId,
-                mode,
-                subscription,
-                requestId: assistantMessageId,
-              });
             const routingExperimentContext = activeAbliteratedExperiment
               ? {
                   key: activeAbliteratedExperiment.key,
                   variant: activeAbliteratedExperiment.variant,
                   requestId: assistantMessageId,
                 }
-              : activeUltraMaxModelAssignment
-                ? {
-                    key: activeUltraMaxModelAssignment.key,
-                    variant: activeUltraMaxModelAssignment.variant,
-                    requestId: assistantMessageId,
-                  }
-                : (activeFlashRoutingAssignment ??
-                  getDeepSeekV4Pro0813ExperimentContext(
-                    activeDeepSeekV4Pro0813Experiment,
-                  ));
+              : (activeFlashRoutingAssignment ??
+                getDeepSeekV4Pro0813ExperimentContext(
+                  activeDeepSeekV4Pro0813Experiment,
+                ));
 
             usageRefundTracker.recordDeductions(rateLimitInfo);
             chatLogger?.setRateLimit(
@@ -3647,7 +3612,6 @@ export const agentLongTask = task({
               }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
-                recordUltraMaxModelExposure(configuredModel);
               },
               trackedProvider,
               currentSystemPrompt,

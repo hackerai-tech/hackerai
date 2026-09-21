@@ -28,7 +28,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "xAI Grok 4.6",
+    poweredBy: "Z.ai GLM 5.3",
   },
 ];
 
@@ -51,7 +51,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "xAI Grok 4.6",
+    poweredBy: "Z.ai GLM 5.3",
     thinking: true,
   },
 ];

@@ -575,7 +575,7 @@ export class SummarizationTracker {
  * model's rate (response.modelId reflects what actually ran).
  *
  * Standard uses DeepSeek V4 Flash 0731. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses Grok 4.6. Image turns use DeepSeek vision. Both DeepSeek
+ * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -665,6 +665,7 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "agent-model-free",
 ]);
 const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
+  "model-glm-5.3",
   "model-grok-4.6",
   "model-grok-4.6-pro",
 ]);
