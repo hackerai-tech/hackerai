@@ -1,4 +1,4 @@
-import { AbortTaskRunError, schemaTask } from "@trigger.dev/sdk";
+import { AbortTaskRunError, schemaTask, wait } from "@trigger.dev/sdk";
 import { z } from "zod";
 import {
   assertTriggerRunRegion,
@@ -7,6 +7,13 @@ import {
 import { migrateE2BWorkspace } from "@/lib/ai/tools/utils/miosa-workspace-migration";
 import { E2B_FILE_MIGRATION_TASK } from "@/lib/ai/tools/utils/miosa-workspace-migration-queue";
 import { phLogger } from "@/lib/posthog/server";
+
+const RECENT_IDLE_RECHECKS = 3;
+const RECENT_IDLE_RECHECK_MINUTES = 15;
+
+function shouldRecheckWhenIdle(reason: string) {
+  return reason === "source_active" || reason === "workspace_in_use";
+}
 
 export const miosaWorkspaceMigration = schemaTask({
   id: E2B_FILE_MIGRATION_TASK,
@@ -41,18 +48,30 @@ export const miosaWorkspaceMigration = schemaTask({
       throw error;
     }
     try {
-      const result = await migrateE2BWorkspace(payload);
-      if (result.reason === "transfer_unavailable") {
-        const failure = result as Record<string, unknown>;
-        const diagnostic = ["failureStage", "failureOperation", "failureKind"]
-          .map((key) => failure[key])
-          .filter((value): value is string => typeof value === "string")
-          .join("/");
-        throw new Error(
-          `Miosa workspace transfer temporarily unavailable (${diagnostic})`,
-        );
+      for (let recheck = 0; ; recheck += 1) {
+        const result = await migrateE2BWorkspace(payload);
+        if (
+          shouldRecheckWhenIdle(result.reason) &&
+          recheck < RECENT_IDLE_RECHECKS
+        ) {
+          // The acquisition that nominated this workspace stays on E2B. Keep
+          // only this recent candidate alive until its sandbox becomes idle.
+          await phLogger.flush().catch(() => undefined);
+          await wait.for({ minutes: RECENT_IDLE_RECHECK_MINUTES });
+          continue;
+        }
+        if (result.reason === "transfer_unavailable") {
+          const failure = result as Record<string, unknown>;
+          const diagnostic = ["failureStage", "failureOperation", "failureKind"]
+            .map((key) => failure[key])
+            .filter((value): value is string => typeof value === "string")
+            .join("/");
+          throw new Error(
+            `Miosa workspace transfer temporarily unavailable (${diagnostic})`,
+          );
+        }
+        return result;
       }
-      return result;
     } finally {
       await phLogger.flush().catch(() => undefined);
     }

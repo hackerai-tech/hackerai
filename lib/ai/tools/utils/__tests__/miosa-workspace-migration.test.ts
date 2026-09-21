@@ -285,6 +285,110 @@ describe("file migration transaction", () => {
     expect(Sandbox.connect).not.toHaveBeenCalled();
     expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
   });
+  it("defers a recently used sandbox until its inventory is paused", async () => {
+    (assertFreshMiosaEnrollment as jest.Mock).mockImplementation(
+      async ({ onExisting }) =>
+        onExisting([
+          {
+            cluster: { cluster: "us", template: "template" },
+            info: {
+              sandboxId: "source",
+              templateId: "template",
+              state: "running",
+              metadata: { template: "template" },
+            },
+          },
+        ]),
+    );
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "source_active",
+    });
+    expect(claimCloudMigration).not.toHaveBeenCalled();
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+  });
+  it("releases its claim when the sandbox resumes before connection", async () => {
+    (Sandbox.getInfo as jest.Mock).mockResolvedValue({
+      sandboxId: "source",
+      templateId: "template",
+      state: "running",
+      metadata: { userID: "user", template: "template" },
+      lifecycle: { onTimeout: "pause" },
+    });
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "source_active",
+    });
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
+  it("retries a transient E2B connection timeout before exporting", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    (Sandbox.connect as jest.Mock).mockRejectedValueOnce(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "files_verified_and_committed",
+    });
+    expect(Sandbox.connect).toHaveBeenCalledTimes(2);
+    expect(claim.commit).toHaveBeenCalledWith("copied-id");
+  });
+  it("reports the exact E2B operation after connection retries are exhausted", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    (Sandbox.connect as jest.Mock).mockRejectedValue(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_connection",
+      failureOperation: "source_connect",
+      failureKind: "timeout",
+    });
+    expect(Sandbox.connect).toHaveBeenCalledTimes(3);
+    expect(ensureMiosaSandboxConnection).not.toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
+  it("reports command-list timeouts separately from E2B connection timeouts", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    source.commands.list.mockRejectedValue(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_connection",
+      failureOperation: "source_command_list",
+      failureKind: "timeout",
+    });
+    expect(source.commands.list).toHaveBeenCalledTimes(3);
+    expect(claim.abandon).toHaveBeenCalled();
+  });
+  it("retries and labels command-list timeouts during source verification", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    source.commands.list.mockResolvedValueOnce([]).mockRejectedValue(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_verification",
+      failureOperation: "source_command_list",
+      failureKind: "timeout",
+    });
+    expect(source.commands.list).toHaveBeenCalledTimes(4);
+    expect(destroy).toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
   it("keeps an interrupted checking claim fenced for recovery", async () => {
     (readCloudMigrationState as jest.Mock).mockResolvedValue({
       version: 1,
