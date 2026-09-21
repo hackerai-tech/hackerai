@@ -5,6 +5,7 @@ import {
 } from "@/lib/api/trigger-region";
 import { migrateE2BWorkspace } from "@/lib/ai/tools/utils/miosa-workspace-migration";
 import { phLogger } from "@/lib/posthog/server";
+import { wait } from "@trigger.dev/sdk";
 
 jest.mock("@trigger.dev/sdk", () => ({
   AbortTaskRunError: class AbortTaskRunError extends Error {
@@ -14,6 +15,7 @@ jest.mock("@trigger.dev/sdk", () => ({
     }
   },
   schemaTask: jest.fn((definition) => definition),
+  wait: { for: jest.fn().mockResolvedValue(undefined) },
 }));
 jest.mock("@/lib/api/trigger-region", () => ({
   assertTriggerRunRegion: jest.fn(),
@@ -90,6 +92,30 @@ describe("Miosa workspace migration task retries", () => {
     await expect(task.run(payload, context)).resolves.toEqual(result);
     expect(assertTriggerRunRegion).toHaveBeenCalled();
     expect(phLogger.flush).toHaveBeenCalled();
+  });
+
+  it("keeps a recently used workspace queued until it becomes idle", async () => {
+    (migrateE2BWorkspace as jest.Mock)
+      .mockResolvedValueOnce({ reason: "source_active" })
+      .mockResolvedValueOnce({ reason: "files_verified_and_committed" });
+
+    await expect(task.run(payload, context)).resolves.toEqual({
+      reason: "files_verified_and_committed",
+    });
+    expect(wait.for).toHaveBeenCalledWith({ minutes: 15 });
+    expect(migrateE2BWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds idle rechecks for a workspace that remains in use", async () => {
+    (migrateE2BWorkspace as jest.Mock).mockResolvedValue({
+      reason: "workspace_in_use",
+    });
+
+    await expect(task.run(payload, context)).resolves.toEqual({
+      reason: "workspace_in_use",
+    });
+    expect(wait.for).toHaveBeenCalledTimes(3);
+    expect(migrateE2BWorkspace).toHaveBeenCalledTimes(4);
   });
 
   it("aborts deterministic region mismatches without retrying", async () => {

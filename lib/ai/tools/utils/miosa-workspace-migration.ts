@@ -25,7 +25,7 @@ import { waitForMiosaReadiness } from "./miosa-readiness";
 
 const MAX_ARCHIVE_BYTES = 4 * 1024 ** 3;
 const CHUNK_BYTES = 4 * 1024 ** 2;
-const CHUNK_TRANSFER_ATTEMPTS = 3;
+const TRANSIENT_OPERATION_ATTEMPTS = 3;
 const digestPattern = /^[a-f0-9]{64}$/;
 const sourceExportRejections = [
   "changed",
@@ -56,14 +56,16 @@ const migrationStages = [
 ] as const;
 type MigrationStage = (typeof migrationStages)[number];
 type MigrationFailureKind = "invalid_response" | "operation_failed" | "timeout";
-const archiveTransferOperations = [
+const migrationOperations = [
+  "source_connect",
+  "source_command_list",
   "source_stream_open",
   "source_stream_read",
   "destination_chunk_upload",
   "destination_chunk_append",
   "archive_integrity",
 ] as const;
-type ArchiveTransferOperation = (typeof archiveTransferOperations)[number];
+type MigrationOperation = (typeof migrationOperations)[number];
 type Capture = {
   digest: string;
   homeDigest: string;
@@ -73,13 +75,13 @@ type Capture = {
   archiveBytes: number;
 };
 
-class ArchiveTransferError extends Error {
+class MigrationOperationError extends Error {
   constructor(
-    readonly operation: ArchiveTransferOperation,
+    readonly operation: MigrationOperation,
     options?: ErrorOptions,
   ) {
-    super(`Archive transfer failed during ${operation}`, options);
-    this.name = "ArchiveTransferError";
+    super(`Migration operation failed during ${operation}`, options);
+    this.name = "MigrationOperationError";
   }
 }
 
@@ -95,12 +97,34 @@ function isRetryableTransportError(error: unknown): boolean {
     candidate.name === "TimeoutError" ||
     candidate.name === "NetworkError" ||
     candidate.code === "TIMEOUT" ||
-    candidate.code === "NETWORK_ERROR"
+    candidate.code === "NETWORK_ERROR" ||
+    (error instanceof Error && /\b(?:timeout|timed out)\b/i.test(error.message))
   );
 }
 
 const retryDelay = (attempt: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+
+async function retryTransientOperation<T>(
+  operation: MigrationOperation,
+  callback: () => Promise<T>,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TRANSIENT_OPERATION_ATTEMPTS; attempt += 1) {
+    try {
+      return await callback();
+    } catch (error) {
+      lastError = error;
+      if (
+        attempt + 1 === TRANSIENT_OPERATION_ATTEMPTS ||
+        !isRetryableTransportError(error)
+      )
+        throw new MigrationOperationError(operation, { cause: error });
+      await retryDelay(attempt);
+    }
+  }
+  throw new MigrationOperationError(operation, { cause: lastError });
+}
 
 function parseSourceExportRejection(
   stdout: string,
@@ -115,7 +139,7 @@ function parseSourceExportRejection(
 }
 
 function migrationFailureKind(error: unknown): MigrationFailureKind {
-  if (error instanceof ArchiveTransferError && error.cause)
+  if (error instanceof MigrationOperationError && error.cause)
     return migrationFailureKind(error.cause);
   if (error instanceof SyntaxError) return "invalid_response";
   if (
@@ -176,15 +200,19 @@ export async function transferArchive(
     const expectedOffset = appendedBytes;
     const expectedSize = expectedOffset + used;
     let lastError: unknown;
-    for (let attempt = 0; attempt < CHUNK_TRANSFER_ATTEMPTS; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < TRANSIENT_OPERATION_ATTEMPTS;
+      attempt += 1
+    ) {
       try {
         await target.sdkSandbox.files.write(uploadPath, chunk);
       } catch (error) {
-        lastError = new ArchiveTransferError("destination_chunk_upload", {
+        lastError = new MigrationOperationError("destination_chunk_upload", {
           cause: error,
         });
         if (
-          attempt + 1 === CHUNK_TRANSFER_ATTEMPTS ||
+          attempt + 1 === TRANSIENT_OPERATION_ATTEMPTS ||
           !isRetryableTransportError(error)
         )
           throw lastError;
@@ -200,26 +228,26 @@ export async function transferArchive(
           { timeoutSec: 60 },
         );
         if (result.timedOut)
-          throw new ArchiveTransferError("destination_chunk_append", {
+          throw new MigrationOperationError("destination_chunk_append", {
             cause: new DOMException("Transfer timeout", "TimeoutError"),
           });
         if (result.exitCode !== 0)
-          throw new ArchiveTransferError("destination_chunk_append");
+          throw new MigrationOperationError("destination_chunk_append");
         appendedBytes = expectedSize;
         used = 0;
         pending = Buffer.alloc(CHUNK_BYTES);
         return;
       } catch (error) {
         const transferError =
-          error instanceof ArchiveTransferError
+          error instanceof MigrationOperationError
             ? error
-            : new ArchiveTransferError("destination_chunk_append", {
+            : new MigrationOperationError("destination_chunk_append", {
                 cause: error,
               });
         lastError = transferError;
         const cause = transferError.cause ?? transferError;
         if (
-          attempt + 1 === CHUNK_TRANSFER_ATTEMPTS ||
+          attempt + 1 === TRANSIENT_OPERATION_ATTEMPTS ||
           !isRetryableTransportError(cause)
         )
           throw transferError;
@@ -240,24 +268,26 @@ export async function transferArchive(
         })
       ).getReader();
     } catch (error) {
-      throw new ArchiveTransferError("source_stream_open", { cause: error });
+      throw new MigrationOperationError("source_stream_open", { cause: error });
     }
     while (true) {
       if (controller.signal.aborted)
-        throw new ArchiveTransferError("source_stream_read", {
+        throw new MigrationOperationError("source_stream_read", {
           cause: new DOMException("Transfer timeout", "TimeoutError"),
         });
       let read;
       try {
         read = await reader.read();
       } catch (error) {
-        throw new ArchiveTransferError("source_stream_read", { cause: error });
+        throw new MigrationOperationError("source_stream_read", {
+          cause: error,
+        });
       }
       const { done, value } = read;
       if (done) break;
       bytes += value.length;
       if (bytes > capture.archiveBytes || bytes > MAX_ARCHIVE_BYTES)
-        throw new ArchiveTransferError("archive_integrity");
+        throw new MigrationOperationError("archive_integrity");
       hash.update(value);
       let offset = 0;
       while (offset < value.length) {
@@ -273,7 +303,7 @@ export async function transferArchive(
       bytes !== capture.archiveBytes ||
       hash.digest("hex") !== capture.archiveDigest
     )
-      throw new ArchiveTransferError("archive_integrity");
+      throw new MigrationOperationError("archive_integrity");
   } finally {
     clearTimeout(timeout);
     await reader?.cancel().catch(() => undefined);
@@ -349,10 +379,10 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     workspaces[0].cluster.cluster !== "us" ||
     workspaces[0].info.sandboxId !== sourceId ||
     workspaces[0].info.metadata.template !== workspaces[0].cluster.template ||
-    workspaces[0].info.state !== "paused" ||
     workspaces[0].info.volumeMounts?.length
   )
     return report("unsupported_or_active_inventory");
+  if (workspaces[0].info.state !== "paused") return report("source_active");
   const claim = await claimCloudMigration(userId, sourceId, triggerRegion);
   if (!claim) return report("workspace_in_use");
   const stage = `/.hackerai-migration-${claim.token}`;
@@ -390,8 +420,8 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       ...connection,
       requestTimeoutMs: 5000,
     });
+    if (current.state !== "paused") return reportStage("source_active");
     if (
-      current.state !== "paused" ||
       current.metadata.userID !== userId ||
       current.metadata.template !== workspaces[0].cluster.template ||
       current.templateId !== workspaces[0].info.templateId ||
@@ -400,12 +430,23 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     )
       return reportStage("state_changed");
     startStage("source_connection");
-    source = await Sandbox.connect(sourceId, {
-      ...connection,
-      timeoutMs: 2 * 60 * 60 * 1000,
-      requestTimeoutMs: 10000,
-    });
-    if ((await source.commands.list()).length)
+    const connectedSource = await retryTransientOperation(
+      "source_connect",
+      () =>
+        Sandbox.connect(sourceId, {
+          ...connection,
+          timeoutMs: 2 * 60 * 60 * 1000,
+          requestTimeoutMs: 10000,
+        }),
+    );
+    source = connectedSource;
+    if (
+      (
+        await retryTransientOperation("source_command_list", () =>
+          connectedSource.commands.list(),
+        )
+      ).length
+    )
       return reportStage("active_commands");
     startStage("source_export");
     sourceStageCreated = true;
@@ -542,7 +583,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     finishStage();
     const failureKind = migrationFailureKind(error);
     const failureOperation =
-      error instanceof ArchiveTransferError ? error.operation : undefined;
+      error instanceof MigrationOperationError ? error.operation : undefined;
     return report(
       "transfer_unavailable",
       {

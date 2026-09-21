@@ -15,10 +15,14 @@ as preserving an arbitrary customized runtime unchanged.
 ## Eligibility and storage contract
 
 The existing paid-plan and Miosa assignment gates still apply. A server request
-selected by `miosa_e2b_file_migration_v1` schedules a Trigger task after 20 minutes
-and continues using E2B. Scheduling is deduplicated per user/source for one hour.
-The worker rechecks the flag, complete cross-cluster inventory, source ownership,
-paused lifecycle, region and the exclusive 15-minute activity fence. Source
+selected by `miosa_e2b_file_migration_v1` nominates only the E2B workspace used
+by that recent acquisition, schedules a Trigger task after 20 minutes and
+continues using E2B. There is no all-user scanner. Scheduling is deduplicated per
+user/source for one hour. If that recent workspace is still active or holds the
+activity fence, the same task waits 15 minutes and rechecks it up to three times;
+permanent incompatibilities complete without another attempt. The worker
+rechecks the flag, complete cross-cluster inventory, source ownership, paused
+lifecycle, region and the exclusive 15-minute activity fence. Source
 metadata must match the worker's configured E2B template alias because multiple
 environments may share an E2B account. Unknown or other-environment sources are
 deferred even if their user ID matches. Multiple
@@ -45,9 +49,10 @@ home's content/metadata fingerprint. It verifies the source again, pauses it,
 and tests destination pause/resume persistence before committing the destination
 ID. Oversized workspaces and insufficient destination storage stay on E2B.
 Two jobs may run concurrently. Tasks have a two-hour ceiling and up to three
-attempts with backoff; individual filesystem operations and transfers have
-shorter limits. A retained checking fence requires recovery before a retry can
-proceed.
+attempts with backoff; transient E2B connection and command-list checks also get
+three bounded attempts with operation-specific diagnostics before the task
+fails. Individual filesystem operations and transfers have shorter limits. A
+retained checking fence requires recovery before a retry can proceed.
 
 ## Cutover and recovery
 
