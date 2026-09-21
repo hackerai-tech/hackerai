@@ -557,10 +557,11 @@ describe("useAuthFromAuthKit", () => {
       mockRefreshAuth.mockResolvedValue({ error: "Network error" });
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      await Promise.all([
+      const tokens = await Promise.all([
         result.current.fetchAccessToken(),
         result.current.fetchAccessToken(),
       ]);
+      expect(tokens).toEqual(["current-token", "current-token"]);
       expect(mockRefreshAuth).toHaveBeenCalledTimes(1);
       expect(result.current.isAuthenticated).toBe(true);
 
@@ -569,6 +570,38 @@ describe("useAuthFromAuthKit", () => {
       act(() => jest.advanceTimersByTime(10_000));
       await result.current.fetchAccessToken();
       expect(mockRefreshAuth).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves a cached token when session recovery throws", async () => {
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockGetAccessToken.mockResolvedValue(undefined);
+      mockRefreshAuth.mockRejectedValue(new Error("Network error"));
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      expect(await result.current.fetchAccessToken()).toBe("current-token");
+      expect(result.current.isAuthenticated).toBe(true);
+    });
+
+    it("returns null when session recovery fails without a cached token", async () => {
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockDeps.useAccessToken = () => ({
+        getAccessToken: mockGetAccessToken,
+        accessToken: undefined,
+        refresh: mockRefresh,
+      });
+      mockGetAccessToken.mockResolvedValue(undefined);
+      mockRefreshAuth.mockResolvedValue({ error: "Network error" });
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      expect(await result.current.fetchAccessToken()).toBeNull();
     });
 
     it.each([false, true])(

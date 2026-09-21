@@ -63,7 +63,7 @@ export function useAuthFromAuthKit(
   const sessionRecoveryRef = useRef<{
     userId: string;
     startedAt: number;
-    pending: Promise<void>;
+    pending: Promise<boolean>;
   } | null>(null);
 
   const isCrossTabEnabled = useMemo(
@@ -97,15 +97,14 @@ export function useAuthFromAuthKit(
 
   const isAuthenticated = !!user;
 
-  const reconcileMissingToken = useCallback(async () => {
-    if (!user || !refreshAuth) return;
+  const reconcileMissingToken = useCallback(async (): Promise<boolean> => {
+    if (!user || !refreshAuth) return false;
     const previous = sessionRecoveryRef.current;
     if (
       previous?.userId === user.id &&
       Date.now() - previous.startedAt < 10_000
     ) {
-      await previous.pending;
-      return;
+      return previous.pending;
     }
 
     // Token refresh updates AuthKit's token store, but not its cached user.
@@ -113,9 +112,11 @@ export function useAuthFromAuthKit(
     // getAuth, refreshAuth preserves the user on transient request failures.
     const pending = (async () => {
       try {
-        await refreshAuth();
+        const result = await refreshAuth();
+        return result !== undefined;
       } catch {
         // A failed session check is not evidence that the user signed out.
+        return true;
       }
     })();
     sessionRecoveryRef.current = {
@@ -123,7 +124,7 @@ export function useAuthFromAuthKit(
       startedAt: Date.now(),
       pending,
     };
-    await pending;
+    return pending;
   }, [user, refreshAuth]);
 
   const fetchAccessToken = useCallback(
@@ -170,10 +171,13 @@ export function useAuthFromAuthKit(
         } else {
           token = await getAccessToken();
         }
-        accessTokenRef.current = token ?? undefined;
         if (!token) {
-          await reconcileMissingToken();
+          const cachedToken = accessTokenRef.current;
+          const recoveryFailed = await reconcileMissingToken();
+          if (recoveryFailed) return cachedToken ?? null;
+          accessTokenRef.current = undefined;
         } else {
+          accessTokenRef.current = token;
           sessionRecoveryRef.current = null;
         }
         return token ?? null;
