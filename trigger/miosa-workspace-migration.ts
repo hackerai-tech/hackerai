@@ -42,8 +42,16 @@ export const miosaWorkspaceMigration = schemaTask({
     }
     try {
       const result = await migrateE2BWorkspace(payload);
-      if (result.reason === "transfer_unavailable")
-        throw new Error("Miosa workspace transfer temporarily unavailable");
+      if (result.reason === "transfer_unavailable") {
+        const failure = result as Record<string, unknown>;
+        const diagnostic = ["failureStage", "failureOperation", "failureKind"]
+          .map((key) => failure[key])
+          .filter((value): value is string => typeof value === "string")
+          .join("/");
+        throw new Error(
+          `Miosa workspace transfer temporarily unavailable (${diagnostic})`,
+        );
+      }
       return result;
     } finally {
       await phLogger.flush().catch(() => undefined);

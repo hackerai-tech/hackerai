@@ -65,6 +65,9 @@ describe("Miosa workspace migration task retries", () => {
   it("retries transient transfer failures with a bounded backoff", async () => {
     (migrateE2BWorkspace as jest.Mock).mockResolvedValue({
       reason: "transfer_unavailable",
+      failureStage: "archive_transfer",
+      failureOperation: "destination_chunk_upload",
+      failureKind: "timeout",
     });
 
     expect(task.retry).toMatchObject({
@@ -72,7 +75,7 @@ describe("Miosa workspace migration task retries", () => {
       minTimeoutInMs: 5 * 60 * 1000,
     });
     await expect(task.run(payload, context)).rejects.toThrow(
-      "temporarily unavailable",
+      "temporarily unavailable (archive_transfer/destination_chunk_upload/timeout)",
     );
     expect(phLogger.flush).toHaveBeenCalled();
   });
