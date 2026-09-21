@@ -34,28 +34,37 @@ const miosaDiagnosticFingerprint = (value: string): string =>
   createHash("sha256").update(value).digest("hex").slice(0, 16);
 
 const failures = new WeakMap<object, MiosaAcquisitionDiagnostic>();
+
+export function miosaAcquisitionDiagnosticFields(
+  diagnostic: MiosaAcquisitionDiagnostic,
+) {
+  return {
+    acquisition_id: diagnostic.acquisition_id,
+    miosa_failure_stage: diagnostic.stage,
+    acquisition_outcome: diagnostic.outcome,
+    acquisition_stage_duration_ms: diagnostic.stage_duration_ms,
+    acquisition_duration_ms: diagnostic.acquisition_duration_ms,
+    workspace_fingerprint: diagnostic.workspace_fingerprint,
+    sandbox_id: diagnostic.sandbox_id,
+    sandbox_state: diagnostic.sandbox_state,
+    provider_operation_id: diagnostic.provider_operation_id,
+    provider_request_id: diagnostic.provider_request_id,
+    expected_sandbox_id: diagnostic.expected_sandbox_id,
+    recovery_trigger_code: diagnostic.recovery_trigger_code,
+    recovery_trigger_request_id: diagnostic.recovery_trigger_request_id,
+    error_name: diagnostic.error_name,
+    error_code: diagnostic.error_code,
+    error_http_status: diagnostic.error_http_status,
+    error_request_id: diagnostic.error_request_id,
+    error_retryable: diagnostic.error_retryable,
+    validation_fields: diagnostic.validation_fields,
+  };
+}
+
 export function miosaAcquisitionFailureDiagnostics(error: unknown) {
   const diagnostic =
     error && typeof error === "object" ? failures.get(error) : undefined;
-  return diagnostic
-    ? {
-        acquisition_id: diagnostic.acquisition_id,
-        miosa_failure_stage: diagnostic.stage,
-        sandbox_id: diagnostic.sandbox_id,
-        sandbox_state: diagnostic.sandbox_state,
-        provider_operation_id: diagnostic.provider_operation_id,
-        provider_request_id: diagnostic.provider_request_id,
-        ...(diagnostic.expected_sandbox_id && {
-          expected_sandbox_id: diagnostic.expected_sandbox_id,
-        }),
-        ...(diagnostic.recovery_trigger_code && {
-          recovery_trigger_code: diagnostic.recovery_trigger_code,
-        }),
-        ...(diagnostic.recovery_trigger_request_id && {
-          recovery_trigger_request_id: diagnostic.recovery_trigger_request_id,
-        }),
-      }
-    : {};
+  return diagnostic ? miosaAcquisitionDiagnosticFields(diagnostic) : {};
 }
 
 // Never serialize an SDK Error: message/details/cause/stack can include bodies,

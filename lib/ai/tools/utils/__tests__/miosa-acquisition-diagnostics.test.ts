@@ -27,13 +27,15 @@ describe("Miosa acquisition diagnostics", () => {
         throw error;
       }),
     ).rejects.toBe(error);
-    expect(miosaAcquisitionFailureDiagnostics(error)).toEqual({
+    expect(miosaAcquisitionFailureDiagnostics(error)).toMatchObject({
       acquisition_id: "acquisition-1",
       miosa_failure_stage: "get_or_create",
+      acquisition_outcome: "failure",
       sandbox_id: "sandbox-1",
       sandbox_state: "resuming",
       provider_operation_id: "operation-1",
       provider_request_id: "request-1",
+      error_name: "Error",
     });
     expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private");
   });

@@ -49,7 +49,10 @@ export const miosaWorkspaceMigration = schemaTask({
     }
     try {
       for (let recheck = 0; ; recheck += 1) {
-        const result = await migrateE2BWorkspace(payload);
+        const result = await migrateE2BWorkspace({
+          ...payload,
+          triggerRunId: ctx.run.id,
+        });
         if (
           shouldRecheckWhenIdle(result.reason) &&
           recheck < RECENT_IDLE_RECHECKS

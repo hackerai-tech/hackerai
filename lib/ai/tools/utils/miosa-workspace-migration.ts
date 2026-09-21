@@ -17,6 +17,12 @@ import {
   ensureMiosaSandboxConnection,
   type MiosaSandbox,
 } from "./miosa-sandbox";
+import {
+  miosaAcquisitionDiagnosticFields,
+  miosaAcquisitionFailureDiagnostics,
+  miosaErrorDiagnostics,
+  type MiosaAcquisitionDiagnostic,
+} from "./miosa-acquisition-diagnostics";
 import { miosaExternalUserId } from "./miosa-identity";
 import { isE2BFileMigrationEnabled } from "./miosa-workspace-migration-queue";
 import { transferCommand } from "./workspace-transfer-program";
@@ -316,10 +322,11 @@ export type E2BFileMigrationRequest = {
   sourceId: string;
   subscription: SubscriptionTier;
   triggerRegion: TriggerRunRegion;
+  triggerRunId?: string;
 };
 
 export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
-  const { userId, sourceId, triggerRegion } = request;
+  const { userId, sourceId, triggerRegion, triggerRunId } = request;
   const startedAt = Date.now();
   const report = (
     reason: string,
@@ -330,7 +337,8 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       userId,
       reason,
       duration_ms: Date.now() - startedAt,
-      migration_event_version: 3,
+      migration_event_version: 4,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
       ...properties,
     });
     return { reason, ...result };
@@ -391,6 +399,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   let sourceStageCreated = false;
   let commitStarted = false;
   let preparedName: string | undefined;
+  let destinationAcquisitionDiagnostic: MiosaAcquisitionDiagnostic | undefined;
   let migrationStage: MigrationStage = "source_inspection";
   let stageStartedAt = Date.now();
   const stageDurationsMs: Partial<Record<MigrationStage, number>> = {};
@@ -481,7 +490,31 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     preparedName = `${miosaExternalUserId(userId)}-migration-${claim.token}`;
     ({ sandbox: target } = await ensureMiosaSandboxConnection(
       { userID: userId, setSandbox: () => {} },
-      { migrationName: preparedName },
+      {
+        migrationName: preparedName,
+        onDiagnostic: (diagnostic) => {
+          destinationAcquisitionDiagnostic = diagnostic;
+          const fields = {
+            ...diagnostic,
+            ...(triggerRunId && { trigger_run_id: triggerRunId }),
+            trigger_region: triggerRegion,
+            migration_acquisition_event_version: 1,
+          };
+          phLogger.event("miosa_e2b_file_migration_acquisition_step", {
+            userId,
+            ...fields,
+          });
+          if (
+            diagnostic.outcome === "failure" ||
+            diagnostic.stage === "acquisition_reconciliation" ||
+            diagnostic.stage === "resume_conflict_refresh"
+          )
+            console.warn("MIOSA migration acquisition step", {
+              ...fields,
+              timestamp: new Date().toISOString(),
+            });
+        },
+      },
     ));
     if (target.runtime !== "native") throw new Error("Unsupported destination");
     const initialized = await target.sdkSandbox.exec.run(
@@ -588,12 +621,19 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     const failureKind = migrationFailureKind(error);
     const failureOperation =
       error instanceof MigrationOperationError ? error.operation : undefined;
+    const acquisitionFailure = {
+      ...(destinationAcquisitionDiagnostic
+        ? miosaAcquisitionDiagnosticFields(destinationAcquisitionDiagnostic)
+        : {}),
+      ...miosaAcquisitionFailureDiagnostics(error),
+    };
     return report(
       "transfer_unavailable",
       {
         failure_stage: migrationStage,
         failure_kind: failureKind,
         ...(failureOperation && { failure_operation: failureOperation }),
+        ...acquisitionFailure,
         failed_stage_duration_ms: stageDurationsMs[migrationStage],
         stage_durations_ms: stageDurationsMs,
       },
@@ -613,9 +653,50 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
         const { NotFoundError } = await import("@miosa/sdk");
         try {
           await (await client.sandboxes.getByName(preparedName)).destroy();
+          phLogger.event("miosa_e2b_file_migration_cleanup", {
+            userId,
+            outcome: "destroy_acknowledged",
+            acquisition_id: destinationAcquisitionDiagnostic?.acquisition_id,
+            workspace_fingerprint:
+              destinationAcquisitionDiagnostic?.workspace_fingerprint,
+            provider_operation_id:
+              destinationAcquisitionDiagnostic?.provider_operation_id,
+            provider_request_id:
+              destinationAcquisitionDiagnostic?.provider_request_id,
+            ...(triggerRunId && { trigger_run_id: triggerRunId }),
+            cleanup_event_version: 1,
+          });
         } catch (error) {
-          if (!(error instanceof NotFoundError))
+          const outcome =
+            error instanceof NotFoundError
+              ? "destination_not_found"
+              : "lookup_or_destroy_failed";
+          const fields = {
+            outcome,
+            acquisition_id: destinationAcquisitionDiagnostic?.acquisition_id,
+            workspace_fingerprint:
+              destinationAcquisitionDiagnostic?.workspace_fingerprint,
+            provider_operation_id:
+              destinationAcquisitionDiagnostic?.provider_operation_id,
+            provider_request_id:
+              destinationAcquisitionDiagnostic?.provider_request_id,
+            ...(triggerRunId && { trigger_run_id: triggerRunId }),
+            cleanup_event_version: 1,
+            ...(error instanceof NotFoundError
+              ? {}
+              : miosaErrorDiagnostics(error)),
+          };
+          phLogger.event("miosa_e2b_file_migration_cleanup", {
+            userId,
+            ...fields,
+          });
+          if (!(error instanceof NotFoundError)) {
+            console.warn("MIOSA migration cleanup", {
+              ...fields,
+              timestamp: new Date().toISOString(),
+            });
             throw new CloudMigrationUnavailableError();
+          }
         }
       }
       if (source && sourceStageCreated) {

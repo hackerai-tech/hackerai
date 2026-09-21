@@ -260,7 +260,7 @@ describe("file migration transaction", () => {
       failureKind: "timeout",
     });
     expect(target.sdkSandbox.files.write).toHaveBeenCalledTimes(3);
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.objectContaining({
         reason: "transfer_unavailable",
@@ -269,7 +269,7 @@ describe("file migration transaction", () => {
         failure_kind: "timeout",
       }),
     );
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.not.objectContaining({
         error: expect.anything(),
@@ -401,7 +401,7 @@ describe("file migration transaction", () => {
     await expect(migrateE2BWorkspace(request)).rejects.toBeInstanceOf(
       CloudMigrationUnavailableError,
     );
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.objectContaining({
         reason: "checking_claim_recovery_required",
@@ -427,11 +427,11 @@ describe("file migration transaction", () => {
       failureKind: "operation_failed",
       failedStageDurationMs: expect.any(Number),
     });
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.objectContaining({
         reason: "transfer_unavailable",
-        migration_event_version: 3,
+        migration_event_version: 4,
         failure_stage: "archive_transfer",
         failure_operation: "archive_integrity",
         failure_kind: "operation_failed",
@@ -463,12 +463,12 @@ describe("file migration transaction", () => {
       reason: "source_export_rejected",
       sourceExportReason: "external_symlink",
     });
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.objectContaining({
         reason: "source_export_rejected",
         source_export_reason: "external_symlink",
-        migration_event_version: 3,
+        migration_event_version: 4,
         stage_durations_ms: expect.objectContaining({
           source_export: expect.any(Number),
         }),
@@ -494,7 +494,7 @@ describe("file migration transaction", () => {
       failureStage: "source_export",
       failureKind: "operation_failed",
     });
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.not.objectContaining({
         source_export_reason: expect.anything(),
@@ -520,7 +520,7 @@ describe("file migration transaction", () => {
       failureStage: "source_export",
       failureKind: "operation_failed",
     });
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.not.objectContaining({
         source_export_reason: expect.anything(),
@@ -534,23 +534,124 @@ describe("file migration transaction", () => {
       "Request timed out for https://provider.invalid/private/path",
     );
     providerError.name = "TimeoutError";
-    (ensureMiosaSandboxConnection as jest.Mock).mockRejectedValue(
-      providerError,
+    (ensureMiosaSandboxConnection as jest.Mock).mockImplementation(
+      async (_context, options) => {
+        options.onDiagnostic({
+          acquisition_id: "acquisition-1",
+          stage: "get_or_create",
+          outcome: "failure",
+          stage_duration_ms: 144,
+          acquisition_duration_ms: 144,
+          requested_template: "hackerai-tools",
+          template_fingerprint: "template-fingerprint",
+          api_target: "default",
+          workspace_fingerprint: "workspace-fingerprint",
+          error_name: "TimeoutError",
+          error_code: "TIMEOUT",
+          error_request_id: "request-1",
+          error_retryable: true,
+        });
+        throw providerError;
+      },
     );
 
-    expect(await migrateE2BWorkspace(request)).toMatchObject({
+    expect(
+      await migrateE2BWorkspace({
+        ...request,
+        triggerRunId: "run-migration-1",
+      }),
+    ).toMatchObject({
       reason: "transfer_unavailable",
       failureStage: "destination_creation",
       failureKind: "timeout",
       failedStageDurationMs: expect.any(Number),
     });
-    expect(phLogger.event).toHaveBeenLastCalledWith(
-      "miosa_e2b_file_migration_checked",
-      expect.not.objectContaining({
-        error: expect.anything(),
-        error_message: expect.anything(),
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_acquisition_step",
+      expect.objectContaining({
+        acquisition_id: "acquisition-1",
+        stage: "get_or_create",
+        outcome: "failure",
+        error_request_id: "request-1",
+        trigger_run_id: "run-migration-1",
       }),
     );
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "transfer_unavailable",
+        migration_event_version: 4,
+        trigger_run_id: "run-migration-1",
+        acquisition_id: "acquisition-1",
+        miosa_failure_stage: "get_or_create",
+        error_code: "TIMEOUT",
+        error_request_id: "request-1",
+      }),
+    );
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_cleanup",
+      expect.objectContaining({
+        outcome: "destroy_acknowledged",
+        acquisition_id: "acquisition-1",
+        workspace_fingerprint: "workspace-fingerprint",
+        trigger_run_id: "run-migration-1",
+      }),
+    );
+    expect(
+      JSON.stringify((phLogger.event as jest.Mock).mock.calls),
+    ).not.toMatch(/provider\.invalid|private\/path/);
+  });
+  it("records when a failed create is not yet visible during cleanup", async () => {
+    const providerError = Object.assign(new Error("private provider body"), {
+      name: "MiosaOperationError",
+      code: "OPERATION_FAILED",
+      requestId: "request-2",
+    });
+    getByName.mockReset().mockRejectedValue(new NotFoundError("absent"));
+    (ensureMiosaSandboxConnection as jest.Mock).mockImplementation(
+      async (_context, options) => {
+        options.onDiagnostic({
+          acquisition_id: "acquisition-2",
+          stage: "get_or_create",
+          outcome: "failure",
+          stage_duration_ms: 200,
+          acquisition_duration_ms: 200,
+          requested_template: "hackerai-tools",
+          template_fingerprint: "template-fingerprint",
+          api_target: "default",
+          workspace_fingerprint: "workspace-fingerprint-2",
+          error_name: "MiosaOperationError",
+          error_code: "OPERATION_FAILED",
+          error_request_id: "request-2",
+          error_retryable: false,
+        });
+        throw providerError;
+      },
+    );
+
+    expect(
+      await migrateE2BWorkspace({
+        ...request,
+        triggerRunId: "run-migration-2",
+      }),
+    ).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "destination_creation",
+      failureKind: "operation_failed",
+    });
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_cleanup",
+      expect.objectContaining({
+        outcome: "destination_not_found",
+        acquisition_id: "acquisition-2",
+        workspace_fingerprint: "workspace-fingerprint-2",
+        trigger_run_id: "run-migration-2",
+      }),
+    );
+    expect(claim.abandon).toHaveBeenCalled();
+    expect(
+      JSON.stringify((phLogger.event as jest.Mock).mock.calls),
+    ).not.toContain("private provider body");
   });
   it("preserves the fence and destination when commit acknowledgement is lost", async () => {
     claim.commit.mockRejectedValue(new Error("lost acknowledgement"));
@@ -573,7 +674,7 @@ describe("file migration transaction", () => {
     expect(await migrateE2BWorkspace(request)).toEqual({
       reason: "rollout_stopped",
     });
-    expect(phLogger.event).toHaveBeenLastCalledWith(
+    expect(phLogger.event).toHaveBeenCalledWith(
       "miosa_e2b_file_migration_checked",
       expect.objectContaining({
         reason: "rollout_stopped",
