@@ -77,9 +77,18 @@ const subscriptionValidator = v.union(
   v.literal("team"),
 );
 
-const agentAutoReviewContextValidator = v.object({
+const agentAutoReviewAuthorizationContextValidator = v.object({
   text: v.string(),
   complete: v.boolean(),
+  omittedUserMessageCount: v.optional(v.number()),
+  truncatedUserMessageCount: v.optional(v.number()),
+});
+
+const agentAutoReviewConversationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedEntryCount: v.optional(v.number()),
+  truncatedEntryCount: v.optional(v.number()),
 });
 
 const candidateValidator = v.object({
@@ -267,8 +276,12 @@ export const reserveForBackend = mutation({
     autoReviewRolloutPhase: v.optional(
       v.union(v.literal("shadow"), v.literal("enforce")),
     ),
-    autoReviewAuthorizationContext: v.optional(agentAutoReviewContextValidator),
-    autoReviewConversationContext: v.optional(agentAutoReviewContextValidator),
+    autoReviewAuthorizationContext: v.optional(
+      agentAutoReviewAuthorizationContextValidator,
+    ),
+    autoReviewConversationContext: v.optional(
+      agentAutoReviewConversationContextValidator,
+    ),
     selectedModel: v.optional(v.string()),
     subscription: subscriptionValidator,
     freeQuotaSubject: v.optional(v.string()),

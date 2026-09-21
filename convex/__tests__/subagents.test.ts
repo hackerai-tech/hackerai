@@ -73,8 +73,18 @@ const args = {
   permissionMode: "auto_review",
   approvalSessionId: "approval-session-1",
   autoReviewRolloutPhase: "enforce" as const,
-  autoReviewAuthorizationContext: { text: "Authorized target", complete: true },
-  autoReviewConversationContext: { text: "Test the target", complete: true },
+  autoReviewAuthorizationContext: {
+    text: "Authorized target",
+    complete: true,
+    omittedUserMessageCount: 1,
+    truncatedUserMessageCount: 1,
+  },
+  autoReviewConversationContext: {
+    text: "Test the target",
+    complete: true,
+    omittedEntryCount: 1,
+    truncatedEntryCount: 1,
+  },
   selectedModel: "agent-model",
   subscription: "pro" as const,
 };
@@ -390,10 +400,14 @@ describe("subagent reservation", () => {
         auto_review_authorization_context: {
           text: "Authorized target",
           complete: true,
+          omittedUserMessageCount: 1,
+          truncatedUserMessageCount: 1,
         },
         auto_review_conversation_context: {
           text: "Test the target",
           complete: true,
+          omittedEntryCount: 1,
+          truncatedEntryCount: 1,
         },
         cost_limit_dollars: 1,
       }),

@@ -118,9 +118,18 @@ const validationConfidenceValidator = v.union(
   v.literal("high"),
 );
 
-const agentAutoReviewContextValidator = v.object({
+const agentAutoReviewAuthorizationContextValidator = v.object({
   text: v.string(),
   complete: v.boolean(),
+  omittedUserMessageCount: v.optional(v.number()),
+  truncatedUserMessageCount: v.optional(v.number()),
+});
+
+const agentAutoReviewConversationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedEntryCount: v.optional(v.number()),
+  truncatedEntryCount: v.optional(v.number()),
 });
 
 export default defineSchema({
@@ -1353,10 +1362,10 @@ export default defineSchema({
       v.union(v.literal("shadow"), v.literal("enforce")),
     ),
     auto_review_authorization_context: v.optional(
-      agentAutoReviewContextValidator,
+      agentAutoReviewAuthorizationContextValidator,
     ),
     auto_review_conversation_context: v.optional(
-      agentAutoReviewContextValidator,
+      agentAutoReviewConversationContextValidator,
     ),
     selected_model: v.optional(v.string()),
     subscription: v.union(

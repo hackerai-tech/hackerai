@@ -13,6 +13,10 @@ import { tool, type UIMessageStreamWriter } from "ai";
 
 import type { ToolContext } from "@/types";
 import type {
+  AgentAutoReviewAuthorizationContext,
+  AgentAutoReviewConversationContext,
+} from "@/lib/chat/agent-auto-review";
+import type {
   AgentPermissionMode,
   SandboxPreference,
   SubscriptionTier,
@@ -84,8 +88,8 @@ export type SubagentToolsRuntimeConfig = {
   triggerRegion?: TriggerRunRegion;
   approvalSessionId?: string;
   autoReviewAssignment?: AgentAutoReviewAssignment;
-  autoReviewAuthorizationContext?: { text: string; complete: boolean };
-  autoReviewConversationContext?: { text: string; complete: boolean };
+  autoReviewAuthorizationContext?: AgentAutoReviewAuthorizationContext;
+  autoReviewConversationContext?: AgentAutoReviewConversationContext;
 };
 
 const writeLifecycle = (
