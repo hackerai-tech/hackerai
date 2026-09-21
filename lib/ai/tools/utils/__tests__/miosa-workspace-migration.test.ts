@@ -371,6 +371,24 @@ describe("file migration transaction", () => {
     expect(source.commands.list).toHaveBeenCalledTimes(3);
     expect(claim.abandon).toHaveBeenCalled();
   });
+  it("retries and labels command-list timeouts during source verification", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    source.commands.list.mockResolvedValueOnce([]).mockRejectedValue(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "source_verification",
+      failureOperation: "source_command_list",
+      failureKind: "timeout",
+    });
+    expect(source.commands.list).toHaveBeenCalledTimes(4);
+    expect(destroy).toHaveBeenCalled();
+    expect(claim.abandon).toHaveBeenCalled();
+  });
   it("keeps an interrupted checking claim fenced for recovery", async () => {
     (readCloudMigrationState as jest.Mock).mockResolvedValue({
       version: 1,

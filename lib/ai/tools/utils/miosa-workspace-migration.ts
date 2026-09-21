@@ -513,7 +513,11 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       verified.exitCode !== 0 ||
       verified.stdout.length > 1024 ||
       JSON.parse(verified.stdout).digest !== capture.digest ||
-      (await source.commands.list()).length
+      (
+        await retryTransientOperation("source_command_list", () =>
+          connectedSource.commands.list(),
+        )
+      ).length
     )
       return reportStage("source_changed");
     if (!(await isE2BFileMigrationEnabled(userId)))
