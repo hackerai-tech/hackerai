@@ -665,6 +665,10 @@ describe("file migration transaction", () => {
     );
     destroy.mockRejectedValue(new Error("failed cleanup"));
     await expect(migrateE2BWorkspace(request)).rejects.toThrow();
+    expect(source.commands.run).toHaveBeenCalledWith(
+      expect.stringContaining("shutil.rmtree"),
+      expect.objectContaining({ user: "root" }),
+    );
     expect(claim.abandon).not.toHaveBeenCalled();
   });
   it("honors a rollout stop before cutover", async () => {

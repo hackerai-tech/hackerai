@@ -646,6 +646,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     );
   } finally {
     if (!commitStarted) {
+      let destinationCleanupError: CloudMigrationUnavailableError | undefined;
       // A failed or uncertain create may exist even without a returned SDK.
       // Do not release the fence until that exact private destination is gone.
       if (preparedName) {
@@ -695,7 +696,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
               ...fields,
               timestamp: new Date().toISOString(),
             });
-            throw new CloudMigrationUnavailableError();
+            destinationCleanupError = new CloudMigrationUnavailableError();
           }
         }
       }
@@ -711,6 +712,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
           throw new CloudMigrationUnavailableError();
         }
       }
+      if (destinationCleanupError) throw destinationCleanupError;
       await claim.abandon();
     }
   }
