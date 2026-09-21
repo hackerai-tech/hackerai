@@ -184,6 +184,99 @@ describe("file migration transaction", () => {
     expect(destroy).not.toHaveBeenCalled();
     expect(claim.abandon).not.toHaveBeenCalled();
   });
+  it("retries a transient destination chunk upload without duplicating the archive", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    target.sdkSandbox.files.write.mockRejectedValueOnce(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "files_verified_and_committed",
+    });
+    expect(target.sdkSandbox.files.write).toHaveBeenCalledTimes(2);
+    expect(
+      target.sdkSandbox.exec.run.mock.calls.filter(([command]) =>
+        command.includes("f.seek(0)"),
+      ),
+    ).toHaveLength(1);
+    expect(claim.commit).toHaveBeenCalledWith("copied-id");
+  });
+  it("retries an uncertain destination append using the expected byte offset", async () => {
+    const normal = target.sdkSandbox.exec.run.getMockImplementation()!;
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    let appendAttempts = 0;
+    target.sdkSandbox.exec.run.mockImplementation(async (command: string) => {
+      if (command.includes("f.seek(0)") && appendAttempts++ === 0)
+        throw timeout;
+      return normal(command);
+    });
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "files_verified_and_committed",
+    });
+    expect(target.sdkSandbox.files.write).toHaveBeenCalledTimes(2);
+    expect(appendAttempts).toBe(2);
+    expect(claim.commit).toHaveBeenCalledWith("copied-id");
+  });
+  it("retries when Miosa reports that the destination append timed out", async () => {
+    const normal = target.sdkSandbox.exec.run.getMockImplementation()!;
+    let appendAttempts = 0;
+    target.sdkSandbox.exec.run.mockImplementation(async (command: string) => {
+      if (command.includes("f.seek(0)") && appendAttempts++ === 0)
+        return {
+          stdout: "",
+          stderr: "",
+          exitCode: -1,
+          timedOut: true,
+        };
+      return normal(command);
+    });
+
+    expect(await migrateE2BWorkspace(request)).toEqual({
+      reason: "files_verified_and_committed",
+    });
+    expect(target.sdkSandbox.files.write).toHaveBeenCalledTimes(2);
+    expect(appendAttempts).toBe(2);
+    expect(claim.commit).toHaveBeenCalledWith("copied-id");
+  });
+  it("reports safe chunk diagnostics after transient upload retries are exhausted", async () => {
+    const timeout = Object.assign(new Error("private provider detail"), {
+      name: "TimeoutError",
+      code: "TIMEOUT",
+      retryable: true,
+    });
+    target.sdkSandbox.files.write.mockRejectedValue(timeout);
+
+    expect(await migrateE2BWorkspace(request)).toMatchObject({
+      reason: "transfer_unavailable",
+      failureStage: "archive_transfer",
+      failureOperation: "destination_chunk_upload",
+      failureKind: "timeout",
+    });
+    expect(target.sdkSandbox.files.write).toHaveBeenCalledTimes(3);
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "transfer_unavailable",
+        failure_stage: "archive_transfer",
+        failure_operation: "destination_chunk_upload",
+        failure_kind: "timeout",
+      }),
+    );
+    expect(phLogger.event).toHaveBeenLastCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.not.objectContaining({
+        error: expect.anything(),
+        error_message: expect.anything(),
+      }),
+    );
+  });
   it("leaves active work alone without acquiring or creating a VM", async () => {
     (claimCloudMigration as jest.Mock).mockResolvedValue(null);
     expect(await migrateE2BWorkspace(request)).toEqual({
@@ -226,6 +319,7 @@ describe("file migration transaction", () => {
     expect(await migrateE2BWorkspace(request)).toMatchObject({
       reason: "transfer_unavailable",
       failureStage: "archive_transfer",
+      failureOperation: "archive_integrity",
       failureKind: "operation_failed",
       failedStageDurationMs: expect.any(Number),
     });
@@ -235,6 +329,7 @@ describe("file migration transaction", () => {
         reason: "transfer_unavailable",
         migration_event_version: 3,
         failure_stage: "archive_transfer",
+        failure_operation: "archive_integrity",
         failure_kind: "operation_failed",
         failed_stage_duration_ms: expect.any(Number),
         stage_durations_ms: expect.objectContaining({

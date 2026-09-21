@@ -25,6 +25,7 @@ import { waitForMiosaReadiness } from "./miosa-readiness";
 
 const MAX_ARCHIVE_BYTES = 4 * 1024 ** 3;
 const CHUNK_BYTES = 4 * 1024 ** 2;
+const CHUNK_TRANSFER_ATTEMPTS = 3;
 const digestPattern = /^[a-f0-9]{64}$/;
 const sourceExportRejections = [
   "changed",
@@ -55,6 +56,14 @@ const migrationStages = [
 ] as const;
 type MigrationStage = (typeof migrationStages)[number];
 type MigrationFailureKind = "invalid_response" | "operation_failed" | "timeout";
+const archiveTransferOperations = [
+  "source_stream_open",
+  "source_stream_read",
+  "destination_chunk_upload",
+  "destination_chunk_append",
+  "archive_integrity",
+] as const;
+type ArchiveTransferOperation = (typeof archiveTransferOperations)[number];
 type Capture = {
   digest: string;
   homeDigest: string;
@@ -63,6 +72,35 @@ type Capture = {
   archiveDigest: string;
   archiveBytes: number;
 };
+
+class ArchiveTransferError extends Error {
+  constructor(
+    readonly operation: ArchiveTransferOperation,
+    options?: ErrorOptions,
+  ) {
+    super(`Archive transfer failed during ${operation}`, options);
+    this.name = "ArchiveTransferError";
+  }
+}
+
+function isRetryableTransportError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    code?: unknown;
+    name?: unknown;
+    retryable?: unknown;
+  };
+  return (
+    candidate.retryable === true ||
+    candidate.name === "TimeoutError" ||
+    candidate.name === "NetworkError" ||
+    candidate.code === "TIMEOUT" ||
+    candidate.code === "NETWORK_ERROR"
+  );
+}
+
+const retryDelay = (attempt: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
 
 function parseSourceExportRejection(
   stdout: string,
@@ -77,6 +115,8 @@ function parseSourceExportRejection(
 }
 
 function migrationFailureKind(error: unknown): MigrationFailureKind {
+  if (error instanceof ArchiveTransferError && error.cause)
+    return migrationFailureKind(error.cause);
   if (error instanceof SyntaxError) return "invalid_response";
   if (
     error instanceof Error &&
@@ -123,6 +163,7 @@ export async function transferArchive(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const hash = createHash("sha256");
   let bytes = 0;
+  let appendedBytes = 0;
   let pending = Buffer.alloc(CHUNK_BYTES);
   let used = 0;
   // The Miosa file API only accepts its supported upload roots. The destination
@@ -131,32 +172,92 @@ export async function transferArchive(
   const uploadPath = `${stage.replace(/^\/\./, "/tmp/")}-chunk`;
   const flush = async () => {
     if (!used) return;
-    await target.sdkSandbox.files.write(uploadPath, pending.subarray(0, used));
-    const result = await target.sdkSandbox.exec.run(
-      `umask 077; cat '${uploadPath}' >> '${stage}/source.tar.gz' && unlink '${uploadPath}'`,
-      { timeoutSec: 60 },
-    );
-    if (result.exitCode !== 0) throw new Error("Transfer failed");
-    used = 0;
-    pending = Buffer.alloc(CHUNK_BYTES);
+    const chunk = pending.subarray(0, used);
+    const expectedOffset = appendedBytes;
+    const expectedSize = expectedOffset + used;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < CHUNK_TRANSFER_ATTEMPTS; attempt += 1) {
+      try {
+        await target.sdkSandbox.files.write(uploadPath, chunk);
+      } catch (error) {
+        lastError = new ArchiveTransferError("destination_chunk_upload", {
+          cause: error,
+        });
+        if (
+          attempt + 1 === CHUNK_TRANSFER_ATTEMPTS ||
+          !isRetryableTransportError(error)
+        )
+          throw lastError;
+        await retryDelay(attempt);
+        continue;
+      }
+      try {
+        // A timed-out exec may have written some or all of the chunk. Retrying
+        // overwrites the same byte range and truncates to the expected size, so
+        // an uncertain result cannot duplicate or retain partial bytes.
+        const result = await target.sdkSandbox.exec.run(
+          `python3 -I -c 'import os; s="${uploadPath}"; d="${stage}/source.tar.gz"; data=open(s,"rb").read(); assert len(data)==${used}; f=open(d,"r+b" if os.path.exists(d) else "w+b"); f.seek(${expectedOffset}); f.write(data); f.truncate(${expectedSize}); f.flush(); os.fsync(f.fileno()); f.close(); os.unlink(s)'`,
+          { timeoutSec: 60 },
+        );
+        if (result.timedOut)
+          throw new ArchiveTransferError("destination_chunk_append", {
+            cause: new DOMException("Transfer timeout", "TimeoutError"),
+          });
+        if (result.exitCode !== 0)
+          throw new ArchiveTransferError("destination_chunk_append");
+        appendedBytes = expectedSize;
+        used = 0;
+        pending = Buffer.alloc(CHUNK_BYTES);
+        return;
+      } catch (error) {
+        const transferError =
+          error instanceof ArchiveTransferError
+            ? error
+            : new ArchiveTransferError("destination_chunk_append", {
+                cause: error,
+              });
+        lastError = transferError;
+        const cause = transferError.cause ?? transferError;
+        if (
+          attempt + 1 === CHUNK_TRANSFER_ATTEMPTS ||
+          !isRetryableTransportError(cause)
+        )
+          throw transferError;
+        await retryDelay(attempt);
+      }
+    }
+    throw lastError;
   };
   try {
-    reader = (
-      await source.files.read(`${stage}/source.tar.gz`, {
-        format: "stream",
-        user: "root",
-        signal: controller.signal,
-        requestTimeoutMs: 10000,
-        streamIdleTimeoutMs: 60000,
-      })
-    ).getReader();
+    try {
+      reader = (
+        await source.files.read(`${stage}/source.tar.gz`, {
+          format: "stream",
+          user: "root",
+          signal: controller.signal,
+          requestTimeoutMs: 10000,
+          streamIdleTimeoutMs: 60000,
+        })
+      ).getReader();
+    } catch (error) {
+      throw new ArchiveTransferError("source_stream_open", { cause: error });
+    }
     while (true) {
-      if (controller.signal.aborted) throw new Error("Transfer timeout");
-      const { done, value } = await reader.read();
+      if (controller.signal.aborted)
+        throw new ArchiveTransferError("source_stream_read", {
+          cause: new DOMException("Transfer timeout", "TimeoutError"),
+        });
+      let read;
+      try {
+        read = await reader.read();
+      } catch (error) {
+        throw new ArchiveTransferError("source_stream_read", { cause: error });
+      }
+      const { done, value } = read;
       if (done) break;
       bytes += value.length;
       if (bytes > capture.archiveBytes || bytes > MAX_ARCHIVE_BYTES)
-        throw new Error("Transfer size mismatch");
+        throw new ArchiveTransferError("archive_integrity");
       hash.update(value);
       let offset = 0;
       while (offset < value.length) {
@@ -172,7 +273,7 @@ export async function transferArchive(
       bytes !== capture.archiveBytes ||
       hash.digest("hex") !== capture.archiveDigest
     )
-      throw new Error("Transfer digest mismatch");
+      throw new ArchiveTransferError("archive_integrity");
   } finally {
     clearTimeout(timeout);
     await reader?.cancel().catch(() => undefined);
@@ -440,17 +541,21 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     if (commitStarted) throw new CloudMigrationUnavailableError();
     finishStage();
     const failureKind = migrationFailureKind(error);
+    const failureOperation =
+      error instanceof ArchiveTransferError ? error.operation : undefined;
     return report(
       "transfer_unavailable",
       {
         failure_stage: migrationStage,
         failure_kind: failureKind,
+        ...(failureOperation && { failure_operation: failureOperation }),
         failed_stage_duration_ms: stageDurationsMs[migrationStage],
         stage_durations_ms: stageDurationsMs,
       },
       {
         failureStage: migrationStage,
         failureKind,
+        ...(failureOperation && { failureOperation }),
         failedStageDurationMs: stageDurationsMs[migrationStage],
       },
     );
