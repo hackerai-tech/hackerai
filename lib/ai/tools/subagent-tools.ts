@@ -13,6 +13,10 @@ import { tool, type UIMessageStreamWriter } from "ai";
 
 import type { ToolContext } from "@/types";
 import type {
+  AgentAutoReviewAuthorizationContext,
+  AgentAutoReviewConversationContext,
+} from "@/lib/chat/agent-auto-review";
+import type {
   AgentPermissionMode,
   SandboxPreference,
   SubscriptionTier,
@@ -72,6 +76,7 @@ import { resolveDelegatedSubagentSkills } from "@/lib/ai/subagents/skills";
 import { cancelAgentTriggerRun } from "@/lib/api/agent-approval-session";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { phLogger } from "@/lib/posthog/server";
+import type { AgentAutoReviewAssignment } from "@/lib/experiments/agent-auto-review";
 
 export type SubagentToolsRuntimeConfig = {
   organizationId?: string;
@@ -81,6 +86,10 @@ export type SubagentToolsRuntimeConfig = {
   freeQuotaSubject?: string;
   regionalFreeLimits?: FreeLimitPolicy;
   triggerRegion?: TriggerRunRegion;
+  approvalSessionId?: string;
+  autoReviewAssignment?: AgentAutoReviewAssignment;
+  autoReviewAuthorizationContext?: AgentAutoReviewAuthorizationContext;
+  autoReviewConversationContext?: AgentAutoReviewConversationContext;
 };
 
 const writeLifecycle = (
@@ -111,7 +120,8 @@ export const createDelegateTaskTool = (
   config: SubagentToolsRuntimeConfig,
 ) =>
   tool({
-    description: `Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose capability labels that accurately describe the work so routing and task context match it; every child receives the same built-in subagent tools, and those tools never expand the delegated scope or user authorization. Give explicit success criteria and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. For clean-slate validation, set inherit_context=false and provide the bounded candidate without the parent's conclusion or known-working payload. When exact steps are supplied, describe the result as a separately executed reproduction. The child cannot delegate.`,
+    description:
+      "Delegate one named, bounded task to an asynchronous child. Up to two siblings may run at once and four may be created per parent run. Choose capability labels that accurately describe the work so routing and task context match it; every child inherits the current permission mode and each sensitive child action uses the same approval boundary as the parent. Give explicit success criteria and continue useful parent work while it runs. Skills are optional methodology and never grant authority. Omit skills unless you have exact ids returned by search_skills; unknown or ambiguous skills are ignored with a warning. For clean-slate validation, set inherit_context=false and provide the bounded candidate without the parent's conclusion or known-working payload. When exact steps are supplied, describe the result as a separately executed reproduction. The child cannot delegate.",
     inputSchema: delegateTaskInputSchema,
     execute: async (input, execution) => {
       const parsed = delegateTaskInputSchema.parse(input);
@@ -150,13 +160,6 @@ export const createDelegateTaskTool = (
           error: "delegate_task is only available inside a durable Agent run.",
         };
       }
-      if (config.permissionMode !== "full_access") {
-        return {
-          success: false,
-          error: "delegate_task requires Full access for the shared sandbox.",
-        };
-      }
-
       captureSubagentLifecycleEvent("subagent_create_attempted", {
         userId: context.userID,
         eventUuid: subagentCreateAttemptEventUuid(
@@ -242,6 +245,10 @@ export const createDelegateTaskTool = (
         sandboxPreference: config.sandboxPreference,
         sandboxIdentity,
         permissionMode: config.permissionMode,
+        approvalSessionId: config.approvalSessionId,
+        autoReviewRolloutPhase: config.autoReviewAssignment?.phase,
+        autoReviewAuthorizationContext: config.autoReviewAuthorizationContext,
+        autoReviewConversationContext: config.autoReviewConversationContext,
         capabilityBundles: parsed.capabilities,
         taskComplexity: parsed.complexity,
         expectedDurationMinutes: parsed.expected_duration_minutes,

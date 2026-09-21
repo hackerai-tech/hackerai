@@ -3,6 +3,7 @@ import { describe, expect, it } from "@jest/globals";
 import {
   getSubagentProfileDefinition,
   resolveSubagentAllowedToolNames,
+  resolveSubagentAllowedToolNamesForPermissionMode,
 } from "../profiles";
 
 describe("subagent profiles", () => {
@@ -96,4 +97,17 @@ describe("subagent profiles", () => {
       "<specialized_knowledge>",
     );
   });
+
+  it.each(["ask_approval", "auto_review", "full_access"] as const)(
+    "preserves the shared child tools in %s mode",
+    (permissionMode) => {
+      expect(
+        resolveSubagentAllowedToolNamesForPermissionMode(
+          "general",
+          ["code_write", "terminal", "browser_qa"],
+          permissionMode,
+        ),
+      ).toEqual(getSubagentProfileDefinition("general").allowedToolNames);
+    },
+  );
 });

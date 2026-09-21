@@ -17,6 +17,10 @@ import type {
   ValidationConfidence,
 } from "@/lib/ai/subagents/contracts";
 import type { SubscriptionTier } from "@/types/chat";
+import type {
+  AgentAutoReviewAuthorizationContext,
+  AgentAutoReviewConversationContext,
+} from "@/lib/chat/agent-auto-review";
 
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
@@ -49,6 +53,10 @@ export type PersistedSubagent = {
   sandbox_preference?: string;
   sandbox_identity?: string;
   permission_mode?: string;
+  approval_session_id?: string;
+  auto_review_rollout_phase?: "shadow" | "enforce";
+  auto_review_authorization_context?: AgentAutoReviewAuthorizationContext;
+  auto_review_conversation_context?: AgentAutoReviewConversationContext;
   selected_model?: string;
   subscription: SubscriptionTier;
   free_quota_subject?: string;
@@ -101,6 +109,10 @@ export const reserveSubagent = async (args: {
   sandboxPreference?: string;
   sandboxIdentity?: string;
   permissionMode?: string;
+  approvalSessionId?: string;
+  autoReviewRolloutPhase?: "shadow" | "enforce";
+  autoReviewAuthorizationContext?: AgentAutoReviewAuthorizationContext;
+  autoReviewConversationContext?: AgentAutoReviewConversationContext;
   selectedModel?: string;
   subscription: SubscriptionTier;
   freeQuotaSubject?: string;

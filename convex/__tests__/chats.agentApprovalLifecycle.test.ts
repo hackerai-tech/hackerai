@@ -57,6 +57,7 @@ const {
   deleteChatForBackend,
   fenceChatsForDeletion,
   getActiveTriggerRunsForUser,
+  setActiveAgentApprovalPending,
   setActiveTriggerRun,
 } = require("../chats") as typeof import("../chats");
 
@@ -84,6 +85,66 @@ const makeCtx = (
 describe("Agent approval lifecycle guards", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it("serializes parent and child approval prompts", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "parent-run",
+      active_agent_approval_session_id: "approval-session-1",
+      active_agent_approval_pending: true,
+      active_agent_approval_request: {
+        approvalId: "approval-parent",
+        toolCallId: "tool-parent",
+        sourceRunId: "parent-run",
+      },
+    });
+
+    await expect(
+      setActiveAgentApprovalPending.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        pending: true,
+        request: {
+          approvalId: "approval-child",
+          toolCallId: "tool-child",
+          sourceRunId: "child-run",
+          sourceAgentId: "subagent-1",
+        },
+        expectedRunId: "parent-run",
+        expectedApprovalSessionId: "approval-session-1",
+      }),
+    ).resolves.toBe("busy");
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("only releases the approval prompt owned by the caller", async () => {
+    const { ctx, patch } = makeCtx({
+      _id: "chat-doc-1",
+      id: "chat-1",
+      user_id: "user-1",
+      active_trigger_run_id: "parent-run",
+      active_agent_approval_session_id: "approval-session-1",
+      active_agent_approval_pending: true,
+      active_agent_approval_request: {
+        approvalId: "approval-child",
+        toolCallId: "tool-child",
+      },
+    });
+
+    await expect(
+      setActiveAgentApprovalPending.handler(ctx, {
+        serviceKey: "service-key",
+        chatId: "chat-1",
+        pending: false,
+        expectedRunId: "parent-run",
+        expectedApprovalSessionId: "approval-session-1",
+        expectedApprovalId: "approval-parent",
+      }),
+    ).resolves.toBe("stale");
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("refuses deletion when the active run/session snapshot changed", async () => {

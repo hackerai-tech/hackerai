@@ -169,6 +169,15 @@ export const getStoredAgentApprovalRequest = (
   return {
     approvalId,
     toolCallId,
+    ...(typeof approvalRequest.sourceRunId === "string"
+      ? { sourceRunId: approvalRequest.sourceRunId }
+      : {}),
+    ...(typeof approvalRequest.sourceAgentId === "string"
+      ? { sourceAgentId: approvalRequest.sourceAgentId }
+      : {}),
+    ...(typeof approvalRequest.sourceAgentName === "string"
+      ? { sourceAgentName: approvalRequest.sourceAgentName }
+      : {}),
     title,
     ...(operation ? { operation } : {}),
     ...(typeof approvalRequest.target === "string"

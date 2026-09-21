@@ -66,7 +66,7 @@ export type AgentAutoReviewDecision = z.infer<
   modelCostDollars?: number;
 };
 
-type AgentAutoReviewAuthorizationContext = {
+export type AgentAutoReviewAuthorizationContext = {
   text: string;
   complete: boolean;
   omittedUserMessageCount?: number;

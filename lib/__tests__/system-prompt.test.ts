@@ -60,6 +60,31 @@ describe("systemPrompt security instructions", () => {
     );
   });
 
+  it("explains inherited approval modes for delegated children", async () => {
+    for (const permissionMode of ["ask_approval", "auto_review"] as const) {
+      const prompt = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        "agent-model",
+        null,
+        null,
+        permissionMode,
+        true,
+      );
+
+      expect(prompt).toContain("<generic_delegation>");
+      expect(prompt).toContain(
+        permissionMode === "auto_review"
+          ? "Delegated children inherit Approve for me"
+          : "Delegated children inherit Ask for approval",
+      );
+      expect(prompt).toContain(
+        "Sensitive child actions cross the same per-action approval boundary",
+      );
+    }
+  });
+
   it("does not expose legacy security profiles through extra arguments", async () => {
     const prompt = await systemPrompt(
       "user_123",

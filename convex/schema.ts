@@ -30,6 +30,9 @@ const usageDeductionFailureReasonValidator = v.union(
 const activeAgentApprovalRequestValidator = v.object({
   approvalId: v.string(),
   toolCallId: v.string(),
+  sourceRunId: v.optional(v.string()),
+  sourceAgentId: v.optional(v.string()),
+  sourceAgentName: v.optional(v.string()),
   operation: v.optional(
     v.union(
       v.literal("terminal_execute"),
@@ -114,6 +117,20 @@ const validationConfidenceValidator = v.union(
   v.literal("medium"),
   v.literal("high"),
 );
+
+const agentAutoReviewAuthorizationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedUserMessageCount: v.optional(v.number()),
+  truncatedUserMessageCount: v.optional(v.number()),
+});
+
+const agentAutoReviewConversationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedEntryCount: v.optional(v.number()),
+  truncatedEntryCount: v.optional(v.number()),
+});
 
 export default defineSchema({
   influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
@@ -1340,6 +1357,16 @@ export default defineSchema({
     sandbox_preference: v.optional(v.string()),
     sandbox_identity: v.optional(v.string()),
     permission_mode: v.optional(v.string()),
+    approval_session_id: v.optional(v.string()),
+    auto_review_rollout_phase: v.optional(
+      v.union(v.literal("shadow"), v.literal("enforce")),
+    ),
+    auto_review_authorization_context: v.optional(
+      agentAutoReviewAuthorizationContextValidator,
+    ),
+    auto_review_conversation_context: v.optional(
+      agentAutoReviewConversationContextValidator,
+    ),
     selected_model: v.optional(v.string()),
     subscription: v.union(
       v.literal("free"),

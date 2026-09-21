@@ -433,8 +433,11 @@ edit code, run terminal commands, or execute code. ${agentModeCTA}
   return `${modeReminder}${getProductQuestionsSection(subscription)}`;
 };
 
-const GENERIC_DELEGATION_SECTION = `<generic_delegation>
+const getGenericDelegationSection = (
+  agentPermissionMode: AgentPermissionMode,
+): string => `<generic_delegation>
 Use delegate_task for a clearly bounded task that can progress independently. Give it a distinct name, explicit success criteria, minimal context, expected duration and output, and capability labels that accurately describe the work. Capability labels guide routing and task context; every child receives the same built-in subagent tools. Neither tools nor skills expand the delegated scope or user authorization.
+Delegated children inherit ${agentPermissionMode === "full_access" ? "Full access" : agentPermissionMode === "auto_review" ? "Approve for me" : "Ask for approval"}. Sensitive child actions cross the same per-action approval boundary as parent actions; do not move work to the parent merely to obtain approval.
 Call a result independent validation only when the child starts with inherit_context=false and is not given the parent's expected verdict, successful payload, or conclusions. A child that receives exact reproduction steps or inherits the parent's transcript provides a separately executed reproduction, not independent discovery or blind validation.
 When a child returns evidence_verification.warning, include the verification gap and unavailable_refs in your report. Those references are retained for a follow-up, not attached as verified evidence. Only checked_refs passed a file-existence check; existence is not proof of a vulnerability. Preserve the independent validator verdict and other supported static evidence.
 
@@ -497,7 +500,7 @@ The current date is ${currentDateTime}.`;
       ),
     );
     if (genericDelegationEnabled) {
-      sections.push(GENERIC_DELEGATION_SECTION);
+      sections.push(getGenericDelegationSection(agentPermissionMode));
     }
   }
 
