@@ -62,7 +62,9 @@ describe("pruneToolOutputs", () => {
                   "x".repeat(5000),
               },
             },
-            { command: "bounded command", session: "abcd1234" },
+            toolName === "run_terminal_cmd"
+              ? { command: "bounded command" }
+              : { action: "view", session: "abcd1234" },
           ),
         ]),
         makeAssistantMessage(
@@ -78,6 +80,11 @@ describe("pruneToolOutputs", () => {
       ];
       const result = pruneToolOutputs(messages, 1, NO_MIN);
       const placeholder = (result.messages[0].parts[0] as any).output;
+      expect(placeholder).toContain(
+        toolName === "run_terminal_cmd"
+          ? "ran 'bounded command'"
+          : "ran 'view abcd1234'",
+      );
       expect(placeholder).toContain("session abcd1234");
       expect(placeholder).toContain("status wait_expired");
       expect(placeholder).toContain("record /tmp/records/abcd1234.json");
@@ -1208,7 +1215,14 @@ describe("pruneModelMessages", () => {
         });
       const messages = [
         makeAssistantModelMsg([
-          { toolCallId: "old", toolName, args: { command: "bounded task" } },
+          {
+            toolCallId: "old",
+            toolName,
+            args:
+              toolName === "run_terminal_cmd"
+                ? { command: "bounded task" }
+                : { action: "wait", session: "abcd1234" },
+          },
         ]),
         makeToolModelMsg([
           { toolCallId: "old", toolName, output: { type: "text", value } },
@@ -1224,6 +1238,11 @@ describe("pruneModelMessages", () => {
       const pruned = pruneModelMessages(messages, 1, NO_MIN);
       const output = (pruned.messages[1].content as any)[0].output;
       expect(output.type).toBe("text");
+      expect(output.value).toContain(
+        toolName === "run_terminal_cmd"
+          ? "ran 'bounded task'"
+          : "ran 'wait abcd1234'",
+      );
       expect(output.value).toContain("session abcd1234");
       expect(output.value).toContain("status running");
       expect(output.value).toContain("record /tmp/record.json");

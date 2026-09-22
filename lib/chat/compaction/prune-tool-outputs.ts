@@ -95,7 +95,11 @@ const buildPlaceholderFromParts = (
   switch (toolName) {
     case "run_terminal_cmd":
     case "interact_terminal_session": {
-      const cmd = input?.command ?? "unknown";
+      const cmd =
+        input?.command ??
+        (input?.action
+          ? `${input.action} ${input.session ?? ""}`.trim()
+          : "unknown");
       const shortCmd = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
       const exitCode =
         output?.exitCode ??
