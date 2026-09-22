@@ -65,8 +65,12 @@ shared runtime again. Do not describe summed request costs as the exact vendor
 invoice or mix version 1 and version 2 measurements without labeling them.
 
 Production suppresses successful acquisition-step console logs unless
-`MIOSA_DEBUG_LOGS=true`. Failures remain warnings and PostHog retains the step
-events and the single acquisition-completion summary.
+`MIOSA_DEBUG_LOGS=true`. Failures remain warnings. PostHog step event version 3
+samples ordinary successful steps at 10%, deterministically by acquisition ID.
+All non-success outcomes and reconciliation/resume-conflict steps are retained.
+Retained steps carry `telemetry_sample_rate`; raw step counts are not comparable
+across versions or outcomes without weighting. Use the unsampled single
+acquisition-completion/failure events for reliability rates and latency.
 
 Review completion first, then acquisition/fallback, latency, persistence and
 economics. Include sample counts with percentiles; a handful of internal tests

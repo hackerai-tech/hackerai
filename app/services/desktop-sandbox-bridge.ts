@@ -1,5 +1,6 @@
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
 import {
   sandboxConnectionChannel,
   type SandboxMessage,
@@ -236,6 +237,9 @@ export class DesktopSandboxBridge {
   private consecutiveHeartbeatFailures = 0;
   private relayUnavailableAt: number | null = null;
   private successfulRelayConnections = 0;
+  private readonly relayTelemetry = new DesktopRelayTelemetry(
+    captureAuthenticatedEvent,
+  );
   constructor(config: DesktopBridgeConfig) {
     this.config = config;
   }
@@ -265,7 +269,7 @@ export class DesktopSandboxBridge {
     } else {
       console.warn("[desktop-bridge]", message);
     }
-    captureAuthenticatedEvent(
+    this.relayTelemetry.record(
       state === "error"
         ? "desktop_bridge_relay_error"
         : "desktop_bridge_relay_state_changed",
@@ -338,6 +342,7 @@ export class DesktopSandboxBridge {
     if (this.isStoppingOrStopped) return;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
+    this.relayTelemetry.flush();
     const client = this.client;
     const subscription = this.subscription;
     this.client = null;
@@ -1766,6 +1771,7 @@ export class DesktopSandboxBridge {
     this.startupGeneration += 1;
     this.isStoppingOrStopped = true;
     this.stopHeartbeat();
+    this.relayTelemetry.flush();
     this.publishQueue = null;
     if (this.connectionId) {
       try {

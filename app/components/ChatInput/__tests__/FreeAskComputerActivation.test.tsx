@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockCaptureUpgradeCtaImpression = jest.fn();
+const mockCaptureComputerActivationImpression = jest.fn();
 const mockRedirectToPricing = jest.fn();
 let mockIsTauri = false;
 let mockDetectedPlatform = {
@@ -16,6 +17,8 @@ let mockDetectedPlatform = {
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: (...args: unknown[]) =>
     mockCaptureAuthenticatedEvent(...args),
+  captureComputerActivationImpression: (...args: unknown[]) =>
+    mockCaptureComputerActivationImpression(...args),
   captureUpgradeCtaImpression: (...args: unknown[]) =>
     mockCaptureUpgradeCtaImpression(...args),
 }));
@@ -45,6 +48,7 @@ describe("FreeAskComputerActivation", () => {
       downloadUrl: "https://example.com/HackerAI.dmg",
     };
     mockCaptureAuthenticatedEvent.mockClear();
+    mockCaptureComputerActivationImpression.mockClear();
     mockCaptureUpgradeCtaImpression.mockClear();
     mockRedirectToPricing.mockClear();
   });
@@ -76,8 +80,7 @@ describe("FreeAskComputerActivation", () => {
     expect(label).not.toHaveClass("text-muted-foreground");
 
     await waitFor(() => {
-      expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
-        "computer_activation_cta_impressed",
+      expect(mockCaptureComputerActivationImpression).toHaveBeenCalledWith(
         expect.objectContaining({
           surface: "chat_input_computer_activation",
           subscription_tier: "free",
@@ -201,5 +204,6 @@ describe("FreeAskComputerActivation", () => {
       }),
     ).not.toBeInTheDocument();
     expect(mockCaptureAuthenticatedEvent).not.toHaveBeenCalled();
+    expect(mockCaptureComputerActivationImpression).not.toHaveBeenCalled();
   });
 });

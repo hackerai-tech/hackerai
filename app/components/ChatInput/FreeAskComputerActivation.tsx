@@ -13,6 +13,7 @@ import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { useTauri } from "@/app/hooks/useTauri";
 import {
   captureAuthenticatedEvent,
+  captureComputerActivationImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 
@@ -30,7 +31,7 @@ export function FreeAskComputerActivation() {
     if (isTauri || capturedImpressionRef.current) return;
 
     capturedImpressionRef.current = true;
-    captureAuthenticatedEvent("computer_activation_cta_impressed", {
+    captureComputerActivationImpression({
       surface: ANALYTICS_SURFACE,
       source: ANALYTICS_SOURCE,
       subscription_tier: "free",

@@ -33,6 +33,24 @@ export type MiosaAcquisitionDiagnostic = {
 const miosaDiagnosticFingerprint = (value: string): string =>
   createHash("sha256").update(value).digest("hex").slice(0, 16);
 
+/** Sample successful steps together by acquisition; retain all unusual paths. */
+export function miosaAcquisitionTelemetrySampleRate(
+  diagnostic: MiosaAcquisitionDiagnostic,
+): number {
+  if (
+    diagnostic.outcome !== "success" ||
+    diagnostic.stage === "acquisition_reconciliation" ||
+    diagnostic.stage === "resume_conflict_refresh"
+  )
+    return 1;
+  const bucket =
+    createHash("sha256")
+      .update(diagnostic.acquisition_id)
+      .digest()
+      .readUInt32BE(0) % 10;
+  return bucket === 0 ? 0.1 : 0;
+}
+
 const failures = new WeakMap<object, MiosaAcquisitionDiagnostic>();
 
 export function miosaAcquisitionDiagnosticFields(

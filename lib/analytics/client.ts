@@ -244,6 +244,27 @@ type CtaAnalyticsProperties = ClientAnalyticsProperties & {
 export function captureUpgradeCtaImpression(
   properties: CtaAnalyticsProperties,
 ) {
+  return captureDailyCtaImpression(
+    PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+    properties,
+  );
+}
+
+export function captureComputerActivationImpression(
+  properties: CtaAnalyticsProperties,
+) {
+  return captureDailyCtaImpression(
+    "computer_activation_cta_impressed",
+    properties,
+  );
+}
+
+function captureDailyCtaImpression(
+  event:
+    | typeof PAID_FUNNEL_EVENTS.upgradeCtaImpressed
+    | "computer_activation_cta_impressed",
+  properties: CtaAnalyticsProperties,
+) {
   const posthog = getReadyPostHogClient();
   if (!posthog) {
     void loadPostHogClient().catch(() => {});
@@ -252,6 +273,10 @@ export function captureUpgradeCtaImpression(
 
   const day = new Date().toISOString().slice(0, 10);
   const distinctId = posthog.get_distinct_id();
+  const storageKey =
+    event === PAID_FUNNEL_EVENTS.upgradeCtaImpressed
+      ? UPGRADE_IMPRESSION_STORAGE_KEY
+      : "hackerai:analytics:computer-activation-impressions:v1";
   const dedupeKey = [
     distinctId,
     properties.surface,
@@ -260,7 +285,7 @@ export function captureUpgradeCtaImpression(
 
   let state: UpgradeImpressionState = { day, keys: [] };
   try {
-    const stored = window.localStorage.getItem(UPGRADE_IMPRESSION_STORAGE_KEY);
+    const stored = window.localStorage.getItem(storageKey);
     const parsed = stored
       ? (JSON.parse(stored) as UpgradeImpressionState)
       : null;
@@ -278,7 +303,7 @@ export function captureUpgradeCtaImpression(
   }
 
   const captured = captureAuthenticatedEvent(
-    PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+    event,
     paidFunnelProperties({
       ...properties,
       impression_dedupe_scope: UPGRADE_CTA_IMPRESSION_DEDUPE.scope,
@@ -287,12 +312,21 @@ export function captureUpgradeCtaImpression(
     }),
     {
       uuid: uuidv5(
-        upgradeCtaImpressionInsertId({
-          distinctId,
-          surface: properties.surface,
-          source: properties.source,
-          utcDay: day,
-        }),
+        event === PAID_FUNNEL_EVENTS.upgradeCtaImpressed
+          ? upgradeCtaImpressionInsertId({
+              distinctId,
+              surface: properties.surface,
+              source: properties.source,
+              utcDay: day,
+            })
+          : JSON.stringify([
+              event,
+              1,
+              distinctId,
+              properties.surface,
+              properties.source ?? null,
+              day,
+            ]),
         uuidv5.URL,
       ),
     },
@@ -301,7 +335,7 @@ export function captureUpgradeCtaImpression(
 
   try {
     window.localStorage.setItem(
-      UPGRADE_IMPRESSION_STORAGE_KEY,
+      storageKey,
       JSON.stringify({ day, keys: [...state.keys, dedupeKey].slice(-100) }),
     );
   } catch {
