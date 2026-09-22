@@ -340,6 +340,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     };
     expect(terminate).toHaveBeenCalledTimes(1);
     expect(killed.result).toEqual({
+      session: session.sessionId,
       output: "Successfully killed non-interactive command session.",
       exitCode: null,
     });

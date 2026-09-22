@@ -93,7 +93,8 @@ const buildPlaceholderFromParts = (
   output: any,
 ): string => {
   switch (toolName) {
-    case "run_terminal_cmd": {
+    case "run_terminal_cmd":
+    case "interact_terminal_session": {
       const cmd = input?.command ?? "unknown";
       const shortCmd = cmd.length > 80 ? cmd.slice(0, 77) + "..." : cmd;
       const exitCode =
@@ -102,7 +103,42 @@ const buildPlaceholderFromParts = (
         output?.result?.exitCode ??
         output?.result?.exit_code ??
         "?";
-      return `[Terminal: ran '${shortCmd}', exit code ${exitCode}]`;
+      const result = output?.result ?? output ?? {};
+      const session = result.session ?? input?.session;
+      const status =
+        result.status ??
+        (result.exited
+          ? "exited"
+          : result.waitExpired || result.timedOut
+            ? "wait_expired"
+            : undefined);
+      const references = [
+        session && `session ${String(session).slice(0, 128)}`,
+        status && `status ${String(status).slice(0, 64)}`,
+        result.exitReason &&
+          `reason ${String(result.exitReason).slice(0, 128)}`,
+        result.recordPath &&
+          `record ${String(result.recordPath).slice(0, 4096)}`,
+        result.outputPath &&
+          `output ${String(result.outputPath).slice(0, 4096)}`,
+        result.recordPersistenceFailed && "record persistence failed",
+        result.resumable === false && "not resumable",
+      ].filter(Boolean);
+      if (Array.isArray(result.artifactPaths)) {
+        for (const path of result.artifactPaths.slice(0, 8)) {
+          if (typeof path === "string")
+            references.push(`artifact ${path.slice(0, 512)}`);
+        }
+      }
+      const savedPath =
+        typeof result.output === "string"
+          ? /\[(?:Full output \(\d+ chars\)|Output too large - first \d+ chars) saved to: ([^\]\n]+)\]/.exec(
+              result.output,
+            )?.[1]
+          : undefined;
+      if (savedPath)
+        references.push(`saved output ${savedPath.slice(0, 4096)}`);
+      return `[Terminal: ran '${shortCmd}', exit code ${result.exited?.exitCode ?? exitCode}${references.length ? `; ${references.join("; ")}` : ""}]`;
     }
 
     case "file": {

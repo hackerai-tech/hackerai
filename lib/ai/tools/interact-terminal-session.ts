@@ -24,6 +24,7 @@ import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
+import { createTerminalRecordStore } from "./utils/terminal-execution-record";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -541,7 +542,61 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       };
 
       const handler = handlers[action];
-      if (handler) return handler();
+      // Historical records are evidence only: never adopt their PIDs, replay
+      // commands, or perform send/kill without a live handle.
+      if (!ptySessionManager.get(ptyScopeId, sessionId)) {
+        try {
+          const { sandbox } = await getSandboxWithFallbackGuard({
+            sandboxManager: context.sandboxManager,
+          });
+          const store = createTerminalRecordStore(
+            sandbox as AnySandbox,
+            context.userID,
+            ptyScopeId,
+          );
+          const record = await store.read(sessionId);
+          if (record) {
+            return {
+              result: {
+                session: sessionId,
+                recordPath: store.pathFor(sessionId),
+                recovered: true,
+                resumable: false,
+                status: record.status === "running" ? "unknown" : record.status,
+                lastRecordedStatus: record.status,
+                exitCode: record.exitCode,
+                exitReason: record.exitReason,
+                sandboxInstance: record.sandboxInstance,
+                updatedAt: record.updatedAt,
+                output: capOutput(stripAnsi(record.output)),
+                outputTruncated: record.outputTruncated,
+                artifactPaths: record.artifactPaths,
+                note: "Historical execution record from the sandbox. No live handle is available. Inspect saved output and artifacts before deciding whether any work remains; this record does not authorize adopting a PID or automatically rerunning the command.",
+                ...(action === "send" || action === "kill"
+                  ? {
+                      error:
+                        "The requested action was not performed because this is a historical record, not a live session.",
+                    }
+                  : {}),
+              },
+            };
+          }
+        } catch {
+          /* Fall through to the normal missing-session result. */
+        }
+      }
+      if (handler) {
+        const session = ptySessionManager.get(ptyScopeId, sessionId);
+        const result = await handler();
+        if (session) {
+          await ptySessionManager.checkpoint(session);
+          result.result.session = sessionId;
+          if (session.recordPath) result.result.recordPath = session.recordPath;
+          if (session.recordPersistenceFailed)
+            result.result.recordPersistenceFailed = true;
+        }
+        return result;
+      }
 
       return errorResult(`Unknown action: ${action}`);
     },

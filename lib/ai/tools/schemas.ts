@@ -71,7 +71,7 @@ ${pagerGuidance}
 ${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
 9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout -> reduce scope, break into smaller operations.
+10. Choose scope and execution intensity from the user's objective, target behavior, and available resources. Adapt when errors, throttling, or diminishing returns appear. Preserve useful progress and inspect existing sessions, execution records, and artifacts before repeating work. A wait expiring is not a process failure: continue the returned session. Finish when the requested outcome is supported by evidence, and state any remaining uncertainty.
 11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
    - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
@@ -109,7 +109,7 @@ ${largeOutputGuidance}
         .optional()
         .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command output before returning. A quiet foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy that returned session exactly and never derive one from its PID. Noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Time in seconds to wait for command output before returning; reaching this limit does not terminate the process. A foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy it exactly and never derive one from a PID. Captured output is retained in a bounded execution record when available. Explicit cancellation and infrastructure resource limits can still stop execution. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
@@ -141,12 +141,13 @@ export const createInteractTerminalSessionToolSchema = ({
 </supported_actions>
 
 <instructions>
-- Only call this tool when the preceding \`run_terminal_cmd\` result contains an explicit \`session\` field; copy that value exactly
+- Use the exact \`session\` returned by \`run_terminal_cmd\`, including a session preserved in conversation context; never invent an ID
+- Across turns, \`view\` or \`wait\` can retrieve a historical execution record when the live session has closed. Check its status, saved output, and artifacts before repeating work. A historical record cannot accept input or be killed; a last-recorded running state does not prove the process is still alive.
 - A PID is not a session ID. Never derive a session from a PID (for example, never turn PID 1689 into \`cmd-1689\`)
 - Input-capable sessions are created with \`interactive=true\`; timed-out foreground commands may return non-interactive sessions that support wait/view/kill but not send
 - When using \`view\` action, ensure command has completed execution before using its output
 - Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
-- Processes are NEVER killed on timeout - they keep running in the session; \`timeout\` only controls how long to wait for output before returning
+- The output wait does not kill processes; explicit cancellation, response cleanup, and infrastructure resource limits can close live sessions. Saved records remain available while the original sandbox and retention allow.
 - Use \`wait\` action when a process needs additional time to complete and return
 - Only use \`wait\` after \`send\`, or after \`run_terminal_cmd\` returned without finishing and included an explicit \`session\` field; decide whether to wait based on the prior output
 - DO NOT use \`wait\` for long-running daemon processes

@@ -44,6 +44,48 @@ function makeToolPart(
 const NO_MIN = 0;
 
 describe("pruneToolOutputs", () => {
+  it.each(["run_terminal_cmd", "interact_terminal_session"])(
+    "preserves %s recovery and saved-output references",
+    (toolName) => {
+      const messages = [
+        makeAssistantMessage([
+          makeToolPart(
+            toolName,
+            {
+              result: {
+                session: "abcd1234",
+                exitCode: null,
+                waitExpired: true,
+                recordPath: "/tmp/records/abcd1234.json",
+                output:
+                  "[Full output (5000 chars) saved to: /tmp/evidence.txt]\n" +
+                  "x".repeat(5000),
+              },
+            },
+            { command: "bounded command", session: "abcd1234" },
+          ),
+        ]),
+        makeAssistantMessage(
+          [
+            makeToolPart(
+              "file",
+              { content: "recent" },
+              { path: "/tmp/recent" },
+            ),
+          ],
+          "new",
+        ),
+      ];
+      const result = pruneToolOutputs(messages, 1, NO_MIN);
+      const placeholder = (result.messages[0].parts[0] as any).output;
+      expect(placeholder).toContain("session abcd1234");
+      expect(placeholder).toContain("status wait_expired");
+      expect(placeholder).toContain("record /tmp/records/abcd1234.json");
+      expect(placeholder).toContain("saved output /tmp/evidence.txt");
+      expect(placeholder).not.toContain("x".repeat(100));
+    },
+  );
+
   it("returns messages unchanged when total tool output tokens are within budget", () => {
     const messages: UIMessage[] = [
       makeUserMessage("hello"),
