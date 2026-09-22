@@ -70,11 +70,15 @@ import {
   terminalInspectionMatches,
 } from "@/lib/chat/agent-auto-review-evidence";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import {
+  createTerminalRecordStore,
+  terminalSandboxInstance,
+} from "./utils/terminal-execution-record";
+import type { AnySandbox } from "@/types";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS =
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS;
 const MAX_TIMEOUT_SECONDS = RUN_TERMINAL_MAX_TIMEOUT_SECONDS;
-const NOISY_TIMEOUT_MIN_BUFFERED_CHARS = 256 * 1024;
 // Once an interactive PTY emits its first bytes, treat `quietMs` of silence
 // as "settled" (prompt drew, REPL banner finished, etc.). Lets `bash`/`python3`
 // return in ~half a second instead of blocking the user-supplied timeout
@@ -125,11 +129,6 @@ type E2BCommandHandle = {
   kill(): Promise<boolean>;
 };
 
-const TERMINATED_TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
-  pid
-    ? `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated (PID: ${pid}).`
-    : `\n\nCommand output paused after ${seconds} seconds and the noisy foreground process was terminated.`;
-
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
     sandboxManager,
@@ -139,6 +138,22 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     chatId,
   } = context;
   const ptyScopeId = context.ptyScopeId ?? chatId;
+  const executionRecord = (sandbox: AnySandbox, command: string) => ({
+    ...createTerminalRecordStore(sandbox, context.userID, ptyScopeId),
+    sandboxInstance: terminalSandboxInstance(sandbox),
+    artifactPaths: BackgroundProcessTracker.extractOutputFiles(command),
+  });
+  const recoveryFields = (session: PtySession | null) =>
+    session
+      ? {
+          session: session.sessionId,
+          ...(session.recordPath ? { recordPath: session.recordPath } : {}),
+          ...(session.outputPath ? { outputPath: session.outputPath } : {}),
+          ...(session.recordPersistenceFailed
+            ? { recordPersistenceFailed: true }
+            : {}),
+        }
+      : {};
   const measureTerminalWait = <T>(operation: () => Promise<T>): Promise<T> =>
     context.measureAgentActiveTime
       ? context.measureAgentActiveTime("terminal_wait", operation)
@@ -425,6 +440,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // that if the concurrency cap is hit, the factory is never called
           // and no PTY is spawned (see FIX 4).
           const session = await ptySessionManager.create(ptyScopeId, {
+            executionRecord: executionRecord(sandbox, command),
             cols,
             rows,
             sandboxIdentity: getAgentApprovalSandboxIdentity(sandbox),
@@ -504,9 +520,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // `echo … && whoami`), surface that so the agent doesn't try to
           // `interact_terminal_session send` against a dead session.
           const exited = await peekExited(session);
+          await ptySessionManager.checkpoint(session);
           return {
             result: {
-              session: session.sessionId,
+              ...recoveryFields(session),
               pid: session.pid,
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
               sessionSnapshot: snapshots.cleaned,
@@ -786,9 +803,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             }> | null = null;
             let resumableTimeoutObserved = false;
 
-            const forgetUnexposedCommandSession = () => {
+            const forgetUnexposedCommandSession = async () => {
               if (!commandSession || commandSessionExposed) return;
-              ptySessionManager.forget(ptyScopeId, commandSession.sessionId);
+              await ptySessionManager.forget(
+                ptyScopeId,
+                commandSession.sessionId,
+              );
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
@@ -830,59 +850,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               );
             };
 
-            const shouldTerminateNoisyTimedOutCommand = () => {
-              if (is_background || !handler) return false;
-              return (
-                handler.wasTruncated() ||
-                handler.wasFullOutputCapped() ||
-                handler.getBufferedCharCount() >=
-                  NOISY_TIMEOUT_MIN_BUFFERED_CHARS
-              );
-            };
-
-            const logNoisyTimeout = (fields: {
-              terminationAttempted: boolean;
-              terminationSucceeded: boolean;
-              processId: number | null;
-              terminationError?: unknown;
-            }) => {
-              const sandboxInfo = sandboxManager.getSandboxInfo();
-              console.warn(
-                JSON.stringify({
-                  timestamp: new Date().toISOString(),
-                  level: "warn",
-                  event: "agent_terminal_noisy_timeout",
-                  ...buildTerminalLogContext(),
-                  chat_id: chatId,
-                  user_id: context.userID,
-                  mode: context.mode,
-                  subscription: context.subscription,
-                  tool_call_id: toolCallId,
-                  timeout_seconds: effectiveStreamTimeout,
-                  output_chars_buffered: handler?.getBufferedCharCount() ?? 0,
-                  output_truncated: handler?.wasTruncated() ?? false,
-                  output_full_output_capped:
-                    handler?.wasFullOutputCapped() ?? false,
-                  ...(sandboxInfo?.type && {
-                    sandbox_type: sandboxInfo.type,
-                  }),
-                  ...(sandboxInfo?.provider && {
-                    sandbox_provider: sandboxInfo.provider,
-                  }),
-                  pid: fields.processId ?? undefined,
-                  termination_attempted: fields.terminationAttempted,
-                  termination_succeeded: fields.terminationSucceeded,
-                  termination_error_name:
-                    fields.terminationError instanceof Error
-                      ? fields.terminationError.name
-                      : null,
-                }),
-              );
-            };
-
             // Handle abort signal
             const onAbort = async () => {
-              if (resolved) {
+              if (resolved && !commandSessionExposed) {
                 return;
               }
 
@@ -893,6 +863,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               // Keep the session addressable until termination is confirmed.
               // runPromise may settle before this async handler resumes.
               commandSessionExposed = true;
+              if (commandSession)
+                void ptySessionManager.checkpoint(
+                  commandSession,
+                  "user_cancelled",
+                );
 
               let terminated = false;
 
@@ -954,11 +929,17 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
               if (terminated) {
                 commandSessionExposed = false;
-                forgetUnexposedCommandSession();
+                await forgetUnexposedCommandSession();
+              } else if (commandSession) {
+                await ptySessionManager.checkpoint(
+                  commandSession,
+                  "termination_unconfirmed",
+                );
               }
 
               resolve({
                 result: {
+                  ...recoveryFields(commandSession),
                   output: result.output,
                   exitCode: terminated ? 130 : null,
                   ...(terminated ? { processStarted: true } : {}),
@@ -1002,49 +983,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     processId = (execution as any).pid;
                   }
 
-                  const terminateNoisyCommand =
-                    shouldTerminateNoisyTimedOutCommand();
-
                   if (processId) commandHandle?.setPid(processId);
-
-                  let terminationAttempted = false;
-                  let terminationSucceeded = false;
-                  let terminationError: unknown;
-                  if (terminateNoisyCommand) {
-                    terminationAttempted = Boolean(
-                      commandHandle ||
-                      (execution && execution.kill) ||
-                      processId,
-                    );
-                    try {
-                      if (terminationAttempted) {
-                        terminationSucceeded = commandHandle
-                          ? await terminateManagedCommand()
-                          : await terminateProcessReliably(
-                              sandboxInstance,
-                              execution,
-                              processId,
-                            );
-                      }
-                    } catch (error) {
-                      terminationError = error;
-                    }
-                    logNoisyTimeout({
-                      terminationAttempted,
-                      terminationSucceeded,
-                      processId,
-                      terminationError,
-                    });
-                  }
-
-                  const commandTerminated =
-                    terminateNoisyCommand && terminationSucceeded;
-                  if (commandTerminated) {
-                    commandSessionExposed = false;
-                  }
-                  const resumableSession = commandTerminated
-                    ? undefined
-                    : commandSession?.sessionId;
+                  const resumableSession = commandSession?.sessionId;
                   if (resumableSession) commandSessionExposed = true;
                   resumableTimeoutObserved = Boolean(resumableSession);
                   const resourceFailureObservation = isE2BSandbox(
@@ -1057,35 +997,27 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         "terminal_command_timed_out",
                         {
                           timeoutSeconds: effectiveStreamTimeout,
-                          terminalTimeoutOutcome: commandTerminated
-                            ? "command_terminated"
-                            : resumableSession
-                              ? "session_resumable"
-                              : "wait_expired_untracked",
-                          terminationAttempted,
-                          terminationSucceeded,
+                          terminalTimeoutOutcome: resumableSession
+                            ? "session_resumable"
+                            : "wait_expired_untracked",
+                          terminationAttempted: false,
+                          terminationSucceeded: false,
                           sessionReturned: Boolean(resumableSession),
                           isBackground: is_background,
                         },
                       )
                     : Promise.resolve();
-                  const timeoutMessage = commandTerminated
-                    ? TERMINATED_TIMEOUT_MESSAGE(
-                        effectiveStreamTimeout,
-                        processId ?? undefined,
-                      )
-                    : TIMEOUT_MESSAGE(
-                        effectiveStreamTimeout,
-                        processId ?? undefined,
-                        resumableSession,
-                      );
+                  const timeoutMessage = TIMEOUT_MESSAGE(
+                    effectiveStreamTimeout,
+                    processId ?? undefined,
+                    resumableSession,
+                  );
 
                   await resourceFailureObservation.catch(() => {
                     // Analytics must never delay or mask terminal timeout handling
                   });
                   await createTerminalWriter(timeoutMessage);
 
-                  abortSignal?.removeEventListener("abort", onAbort);
                   const result = handler
                     ? handler.getResult(processId ?? undefined, {
                         timeoutMessage,
@@ -1094,18 +1026,33 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   if (handler) {
                     handler.cleanup();
                   }
+                  const savedOutput = handler
+                    ? await saveTruncatedOutput({
+                        handler,
+                        sandbox: sandboxInstance,
+                        terminalWriter: createTerminalWriter,
+                        scopeId: chatId,
+                        telemetry: buildTerminalOutputPersistenceTelemetry(),
+                        onSavedPath: (path) => {
+                          if (commandSession) commandSession.outputPath = path;
+                        },
+                      })
+                    : "";
+                  if (commandSession)
+                    await ptySessionManager.checkpoint(commandSession);
                   resolve({
                     result: {
-                      output: result.output,
-                      exitCode: commandTerminated ? 124 : null,
-                      ...(commandTerminated ? { processStarted: true } : {}),
+                      ...recoveryFields(commandSession),
+                      output: [savedOutput, result.output]
+                        .filter(Boolean)
+                        .join("\n"),
+                      exitCode: null,
+                      status: "running",
+                      waitExpired: true,
                       timedOut: true,
                       ...(resumableSession && {
                         session: resumableSession,
                         ...(processId ? { pid: processId } : {}),
-                      }),
-                      ...(commandTerminated && {
-                        terminatedOnTimeout: true,
                       }),
                     },
                   });
@@ -1124,6 +1071,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   });
                   return ptySessionManager
                     .create(ptyScopeId, {
+                      executionRecord: executionRecord(
+                        sandboxInstance,
+                        command,
+                      ),
                       cols,
                       rows,
                       kind: "command",
@@ -1300,6 +1251,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 
             runPromise
               .then(async (exec) => {
+                abortSignal?.removeEventListener("abort", onAbort);
                 execution = exec;
 
                 if (exec?.pid) {
@@ -1322,9 +1274,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 }
 
                 if (!resolved) {
-                  forgetUnexposedCommandSession();
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
+                  await forgetUnexposedCommandSession();
                   const finalResult = handler
                     ? handler.getResult(processId ?? undefined)
                     : { output: "" };
@@ -1356,10 +1308,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       terminalWriter: createTerminalWriter,
                       scopeId: chatId,
                       telemetry: buildTerminalOutputPersistenceTelemetry(),
+                      onSavedPath: (path) => {
+                        if (commandSession) commandSession.outputPath = path;
+                      },
                     });
                     if (saveMsg) {
                       outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
                     }
+                    if (commandSession)
+                      await ptySessionManager.checkpoint(commandSession);
                   }
 
                   resolve({
@@ -1370,6 +1327,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                           output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
                         }
                       : {
+                          ...recoveryFields(commandSession),
+                          status:
+                            (exec.exitCode ?? 0) === 0 ? "completed" : "failed",
                           processStarted: true,
                           exitCode: exec.exitCode ?? 0,
                           output: outputWithSaveInfo,
@@ -1380,14 +1340,15 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         },
                   });
                 } else {
-                  // Abort/noisy-timeout paths do not expose a resumable
+                  // Abort paths do not expose a resumable
                   // session, so discard their bookkeeping once execution
                   // eventually settles. Exposed timeout sessions stay
                   // available for wait/view until stream cleanup.
-                  forgetUnexposedCommandSession();
+                  await forgetUnexposedCommandSession();
                 }
               })
               .catch(async (error) => {
+                abortSignal?.removeEventListener("abort", onAbort);
                 if (resumableTimeoutObserved && isE2BSandbox(sandboxInstance)) {
                   observeTerminalTimeoutRecovery(
                     context.onSandboxResourceMetrics,
@@ -1404,9 +1365,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   handler.cleanup();
                 }
                 if (!resolved) {
-                  forgetUnexposedCommandSession();
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
+                  await forgetUnexposedCommandSession();
                   // Handle CommandExitError as a valid result (non-zero exit code)
                   if (error instanceof CommandExitError) {
                     const finalResult = handler
@@ -1422,15 +1383,22 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                         terminalWriter: createTerminalWriter,
                         scopeId: chatId,
                         telemetry: buildTerminalOutputPersistenceTelemetry(),
+                        onSavedPath: (path) => {
+                          if (commandSession) commandSession.outputPath = path;
+                        },
                       });
                       if (saveMsg) {
                         outputWithSaveInfo =
                           saveMsg + "\n" + outputWithSaveInfo;
                       }
+                      if (commandSession)
+                        await ptySessionManager.checkpoint(commandSession);
                     }
 
                     resolve({
                       result: {
+                        ...recoveryFields(commandSession),
+                        status: "failed",
                         processStarted: true,
                         exitCode: error.exitCode,
                         output: outputWithSaveInfo,
@@ -1441,7 +1409,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     reject(error);
                   }
                 } else {
-                  forgetUnexposedCommandSession();
+                  await forgetUnexposedCommandSession();
                 }
               });
           });

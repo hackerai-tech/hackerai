@@ -384,6 +384,7 @@ export async function saveTruncatedOutput(opts: {
   terminalWriter: (output: string) => Promise<void>;
   scopeId?: string;
   telemetry?: TerminalOutputPersistenceTelemetry;
+  onSavedPath?: (path: string) => void;
 }): Promise<string> {
   const { handler, sandbox, terminalWriter, scopeId, telemetry } = opts;
 
@@ -403,6 +404,7 @@ export async function saveTruncatedOutput(opts: {
     await terminalWriter(FULL_OUTPUT_SAVE_FAILED_MESSAGE);
     return FULL_OUTPUT_SAVE_FAILED_MESSAGE;
   }
+  opts.onSavedPath?.(savedPath);
 
   const saveMsg = FULL_OUTPUT_SAVED_MESSAGE(
     savedPath,

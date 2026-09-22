@@ -51,6 +51,8 @@ jest.mock("@/lib/posthog/server", () => ({
 import { phLogger } from "@/lib/posthog/server";
 import { InvalidArgumentError } from "@e2b/code-interpreter";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { createInteractTerminalSession } from "../interact-terminal-session";
+import { spawn } from "node:child_process";
 import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
@@ -263,6 +265,145 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
+  test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
+    const files = new Map<string, string>();
+    const children: ReturnType<typeof spawn>[] = [];
+    let closed: Promise<void> = Promise.resolve();
+    const sandbox = {
+      sandboxKind: "centrifugo" as const,
+      getConnectionId: () => "local-fixture",
+      isWindows: () => false,
+      files: {
+        write: async (path: string, data: string) => {
+          files.set(path, data);
+        },
+        read: async (path: string) => {
+          if (!files.has(path)) throw new Error("missing");
+          return files.get(path)!;
+        },
+        list: async (path: string) =>
+          [...files.keys()]
+            .filter((p) => p.startsWith(path + "/"))
+            .map((p) => ({ name: p.split("/").pop()! })),
+        remove: async (path: string) => {
+          files.delete(path);
+        },
+      },
+      commands: {
+        run: jest.fn(async (command: string, opts: any) => {
+          if (command.startsWith("mkdir -p"))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          const child = spawn(
+            process.execPath,
+            [
+              "-e",
+              command.includes("finite-fixture")
+                ? 'process.stdout.write("evidence line\\n".repeat(25000)); setTimeout(() => { console.log("FINAL_EVIDENCE"); }, 150);'
+                : 'console.log("PARTIAL_EVIDENCE"); setInterval(() => {}, 1000);',
+            ],
+            { stdio: ["ignore", "pipe", "pipe"] },
+          );
+          children.push(child);
+          let cancelled = false;
+          let finishClosed!: () => void;
+          closed = new Promise<void>((resolve) => {
+            finishClosed = resolve;
+          });
+          opts.onCancelReady?.(async () => {
+            cancelled = true;
+            child.kill();
+            await closed;
+            return true;
+          });
+          child.stdout.on("data", (chunk: Buffer) =>
+            opts.onStdout?.(chunk.toString()),
+          );
+          child.stderr.on("data", (chunk: Buffer) =>
+            opts.onStderr?.(chunk.toString()),
+          );
+          return new Promise<{
+            stdout: string;
+            stderr: string;
+            exitCode: number;
+            pid?: number;
+          }>((resolve, reject) => {
+            child.once("error", reject);
+            child.once("close", (code) => {
+              finishClosed();
+              resolve({
+                stdout: "",
+                stderr: "",
+                exitCode: cancelled ? 130 : (code ?? 1),
+                pid: child.pid,
+              });
+            });
+          });
+        }),
+      },
+    };
+    const { context } = makeContext({ sandbox });
+    try {
+      const running = (await runTool(createRunTerminalCmd(context), {
+        command: "finite-fixture",
+        timeout: 0.02,
+        is_background: false,
+      })) as any;
+      expect(running.result).toMatchObject({
+        waitExpired: true,
+        status: "running",
+      });
+      await closed;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await context.ptySessionManager.closeAll("chat-1");
+      const next = makeContext({ sandbox });
+      const countBeforeRecovery = sandbox.commands.run.mock.calls.length;
+      const recovered = await (
+        createInteractTerminalSession(next.context).execute as any
+      )(
+        { action: "view", session: running.result.session },
+        { toolCallId: "recovery", messages: [] },
+      );
+      expect(recovered.result).toMatchObject({
+        recovered: true,
+        resumable: false,
+        status: "completed",
+        exitCode: 0,
+      });
+      expect(recovered.result.output).toContain("FINAL_EVIDENCE");
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(countBeforeRecovery);
+
+      const abort = new AbortController();
+      const second = (await runTool(
+        createRunTerminalCmd(context),
+        {
+          command: "until-cancelled-fixture",
+          timeout: 0.1,
+          is_background: false,
+        },
+        abort.signal,
+      )) as any;
+      abort.abort();
+      await closed;
+      await context.ptySessionManager.closeAll("chat-1");
+      const cancelled = await (
+        createInteractTerminalSession(next.context).execute as any
+      )(
+        { action: "view", session: second.result.session },
+        { toolCallId: "recovery-stop", messages: [] },
+      );
+      expect(cancelled.result).toMatchObject({
+        recovered: true,
+        status: "stopped",
+        exitReason: "user_cancelled",
+      });
+      expect(cancelled.result.output).toContain("PARTIAL_EVIDENCE");
+    } finally {
+      for (const child of children)
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+      await context.ptySessionManager.closeAll("chat-1");
+    }
+  }, 10_000);
+
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
     mockCreateCentrifugoPtyHandle.mockReset();
@@ -1054,8 +1195,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     // Foreground non-background returns an exitCode (may be null on timeout paths,
     // but here the mock resolves with 0).
     expect(result.result.exitCode).toBe(0);
-    // The legacy foreground path must NOT return interactive-PTY fields.
-    expect(result.result.session).toBeUndefined();
+    // Completed commands expose an opaque ID for later record retrieval.
+    expect(result.result.session).toMatch(/^[a-f0-9]{8}$/);
     expect(result.result.pid).toBeUndefined();
     // commands.run was invoked exactly once with the command.
     expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
@@ -1416,7 +1557,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     }
   });
 
-  test("uses the exact E2B command handle to terminate noisy foreground work", async () => {
+  test("keeps noisy E2B work addressable until explicit cleanup", async () => {
     const noisyOutput = "line with repeated output\n".repeat(20_000);
     let rejectWait!: (error: Error) => void;
     const wait = new Promise<never>((_resolve, reject) => {
@@ -1443,6 +1584,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         if (calledCommand === "echo ready") {
           return { stdout: "ready\n", stderr: "", exitCode: 0 };
         }
+        if (calledCommand.startsWith("mkdir -p")) {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
         if (calledCommand === "ps -p 4321") {
           return { stdout: "", stderr: "", exitCode: 1 };
         }
@@ -1453,6 +1597,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     const e2b = {
       jupyterUrl: "http://fake",
+      files: {
+        write: jest.fn(async () => undefined),
+        list: jest.fn(async () => []),
+      },
       setTimeout: jest.fn(async () => undefined),
       commands: { run },
       isRunning: jest.fn(async () => true),
@@ -1483,12 +1631,16 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         output: string;
         exitCode: number | null;
         terminatedOnTimeout?: boolean;
+        session: string;
       };
     };
 
-    expect(started.kill).toHaveBeenCalledTimes(1);
-    expect(result.result.exitCode).toBe(124);
-    expect(result.result.terminatedOnTimeout).toBe(true);
+    expect(started.kill).not.toHaveBeenCalled();
+    expect(result.result.exitCode).toBeNull();
+    expect(result.result.terminatedOnTimeout).toBeUndefined();
+    expect(
+      context.ptySessionManager.get("chat-1", result.result.session),
+    ).toBeDefined();
     expect(result.result.output).toContain("PID: 4321");
     expect(
       run.mock.calls.some(([calledCommand]) =>
@@ -1500,16 +1652,79 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       source: "terminal_command_timeout",
       failureType: "terminal_command_timed_out",
       timeoutSeconds: 0.01,
-      terminalTimeoutOutcome: "command_terminated",
-      terminationAttempted: true,
-      terminationSucceeded: true,
-      sessionReturned: false,
+      terminalTimeoutOutcome: "session_resumable",
+      terminationAttempted: false,
+      terminationSucceeded: false,
+      sessionReturned: true,
       isBackground: false,
       metrics: {
         cpuPct: 100,
         memPct: expect.closeTo(94.9707, 3),
         diskPct: 40,
       },
+    });
+    await context.ptySessionManager.closeAll("chat-1");
+    expect(started.kill).toHaveBeenCalledTimes(1);
+  });
+
+  test("MIOSA noisy commands remain resumable until explicit cancellation", async () => {
+    const cancelled = jest.fn();
+    const files = new Map<string, string>();
+    const miosa = {
+      sandboxKind: "miosa" as const,
+      sandboxId: "miosa-recovery-test",
+      isRunning: jest.fn(async () => true),
+      files: {
+        write: async (path: string, content: string) => {
+          files.set(path, content);
+        },
+        read: async (path: string) => files.get(path) ?? "",
+        list: async () => [],
+      },
+      commands: {
+        run: jest.fn(
+          async (
+            command: string,
+            opts?: { onStdout?: (s: string) => void; signal?: AbortSignal },
+          ) => {
+            if (command === "echo ready" || command.startsWith("mkdir -p"))
+              return { stdout: "ready\n", stderr: "", exitCode: 0 };
+            opts?.onStdout?.("partial evidence\n".repeat(20_000));
+            return new Promise<never>((_, reject) => {
+              opts?.signal?.addEventListener(
+                "abort",
+                () => {
+                  cancelled();
+                  reject(
+                    Object.assign(new Error("cancelled"), {
+                      name: "AbortError",
+                    }),
+                  );
+                },
+                { once: true },
+              );
+            });
+          },
+        ),
+      },
+    };
+    const { context } = makeContext({ sandbox: miosa });
+    const response = (await runTool(createRunTerminalCmd(context), {
+      command: "bounded-test",
+      timeout: 0.01,
+      is_background: false,
+    })) as any;
+    expect(response.result).toMatchObject({
+      waitExpired: true,
+      status: "running",
+    });
+    expect(cancelled).not.toHaveBeenCalled();
+    await context.ptySessionManager.closeAll("chat-1");
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(files.get(response.result.recordPath)!)).toMatchObject({
+      sandboxInstance: "miosa:miosa-recovery-test",
+      status: "stopped",
+      exitReason: "response_cleanup",
     });
   });
 
@@ -1579,7 +1794,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     ).toContain("rm -rf /");
   });
 
-  test("cancels noisy foreground commands through their execution-specific token", async () => {
+  test("noisy local commands survive the wait and cancel only through their execution-specific token", async () => {
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
     const noisyOutput = "line with repeated output\n".repeat(20_000);
     const cancellationObserved = jest.fn();
@@ -1595,6 +1810,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
               signal?: AbortSignal;
             },
           ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+            if (_command.startsWith("mkdir -p"))
+              return { stdout: "", stderr: "", exitCode: 0 };
             opts?.onStdout?.(noisyOutput);
             return new Promise((resolve) => {
               opts?.signal?.addEventListener(
@@ -1628,11 +1845,11 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         };
       };
 
-      expect(result.result.exitCode).toBe(124);
-      expect(result.result.terminatedOnTimeout).toBe(true);
-      expect(result.result.output).toContain(
-        "noisy foreground process was terminated",
-      );
+      expect(result.result.exitCode).toBeNull();
+      expect(result.result.terminatedOnTimeout).toBeUndefined();
+      expect(result.result.output).toContain("session ID");
+      expect(cancellationObserved).not.toHaveBeenCalled();
+      await context.ptySessionManager.closeAll("chat-1");
       expect(cancellationObserved).toHaveBeenCalledTimes(1);
       expect(
         nonE2B.commands.run.mock.calls.some(([calledCommand]) =>
@@ -1650,16 +1867,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         })
         .find((line) => line?.event === "agent_terminal_noisy_timeout");
 
-      expect(noisyTimeoutLog).toMatchObject({
-        event: "agent_terminal_noisy_timeout",
-        chat_id: "chat-1",
-        user_id: "u1",
-        tool_call_id: "call-1",
-        output_truncated: true,
-        termination_attempted: true,
-        termination_succeeded: true,
-      });
-      expect(noisyTimeoutLog?.pid).toBeUndefined();
+      expect(noisyTimeoutLog).toBeUndefined();
     } finally {
       warnSpy.mockRestore();
     }
@@ -1822,7 +2030,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const result = (await runTool(tool, {
       command: "true",
     })) as { result: { session?: string; exitCode: number | null } };
-    expect(result.result.session).toBeUndefined();
+    expect(result.result.session).toMatch(/^[a-f0-9]{8}$/);
     expect(result.result.exitCode).toBe(0);
   });
 

@@ -1,10 +1,10 @@
 /**
  * Per-chat terminal session store.
  *
- * Lifetime model for M1: sessions live only for the duration of a single
- * assistant streaming response. `chat-handler.onFinish` calls `closeAll(chatId)`
- * to tear everything down. The real source of truth lives inside the E2B
- * sandbox — the Node-side object here is only a per-chat cache with ring
+ * Live handles belong to one assistant response. Cleanup closes those handles,
+ * but bounded execution records survive in the owning sandbox for later turns.
+ * Records are historical evidence, never authority to adopt or kill an old PID.
+ * The Node-side object here is a per-chat cache with ring
  * buffer, idle/lifetime timers and bookkeeping to compute deltas for
  * `action=wait` / `action=view`.
  *
@@ -17,6 +17,7 @@
 import type { PtyHandle } from "./e2b-pty-adapter";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 import type { AgentApprovalSandboxIdentity } from "@/types";
+import type { TerminalExecutionRecord } from "./terminal-execution-record";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -36,6 +37,8 @@ const CLOSE_EXIT_FALLBACK_MS = 2_000;
 const FAILED_COMMAND_CLEANUP_RETRY_BASE_MS = 5_000;
 const FAILED_COMMAND_CLEANUP_RETRY_MAX_MS = 30_000;
 const MAX_FAILED_COMMAND_CLEANUP_ATTEMPTS = 6;
+const RECORD_CHECKPOINT_INTERVAL_MS = 10_000;
+const RECORD_CHECKPOINT_WAIT_MS = 2_000;
 
 export interface PtySession {
   readonly sessionId: string;
@@ -66,6 +69,9 @@ export interface PtySession {
   readCursor: number;
   /** Flipped once when the ring first drops any bytes. Never reset. */
   bufferTruncated: boolean;
+  recordPath?: string;
+  recordPersistenceFailed?: boolean;
+  outputPath?: string;
 }
 
 export interface CreateSessionOpts {
@@ -80,6 +86,12 @@ export interface CreateSessionOpts {
   originalCommand: string;
   /** Working directory used when the originating command was started. */
   workingDirectory?: string;
+  executionRecord?: {
+    sandboxInstance: string;
+    artifactPaths: string[];
+    save: (record: TerminalExecutionRecord) => Promise<string | null>;
+    prune: () => Promise<void>;
+  };
 }
 
 interface InternalSession extends PtySession {
@@ -99,6 +111,12 @@ interface InternalSession extends PtySession {
   closing: boolean;
   /** Set when the process exits naturally — session stays around for view/wait. */
   exitedNaturally: { exitCode: number | null } | null;
+  executionRecord?: CreateSessionOpts["executionRecord"];
+  recordQueue: Promise<void>;
+  recordWriting: boolean;
+  recordDirty: boolean;
+  recordTimer: ReturnType<typeof setTimeout> | null;
+  exitReason: string | null;
 }
 
 /**
@@ -172,6 +190,12 @@ export class PtySessionManager {
         unsubscribe: null,
         closing: false,
         exitedNaturally: null,
+        executionRecord: opts.executionRecord,
+        recordQueue: Promise.resolve(),
+        recordWriting: false,
+        recordDirty: false,
+        recordTimer: null,
+        exitReason: null,
       };
 
       // Subscribe to handle output
@@ -192,9 +216,12 @@ export class PtySessionManager {
         .then(
           (info) => {
             session.exitedNaturally = { exitCode: info.exitCode };
+            void this.checkpoint(session);
           },
           () => {
             session.exitedNaturally = { exitCode: null };
+            session.exitReason ??= "transport_error";
+            void this.checkpoint(session);
           },
         )
         .catch((err) =>
@@ -208,6 +235,9 @@ export class PtySessionManager {
         this.chats.set(chatId, chatMap);
       }
       chatMap.set(sessionId, session);
+      void this.checkpoint(session);
+      // Keep retention outside the critical command launch path.
+      void opts.executionRecord?.prune();
 
       return session;
     } catch (wiringErr) {
@@ -285,27 +315,105 @@ export class PtySessionManager {
     await Promise.all(sessions.map((s) => this.killAndRemove(s, "closeAll")));
   }
 
+  /** Persist bounded evidence before a tool yields or live handles are removed. */
+  async checkpoint(session: PtySession, reason?: string): Promise<void> {
+    const internal = session as InternalSession;
+    if (reason) internal.exitReason = reason;
+    if (!internal.executionRecord) return;
+    internal.recordDirty = true;
+    if (!internal.recordWriting) {
+      internal.recordWriting = true;
+      internal.recordQueue = (async () => {
+        // Coalesce updates while the sandbox file transport is slow. Writes
+        // remain ordered, so a late running snapshot cannot replace a stop.
+        while (internal.recordDirty) {
+          internal.recordDirty = false;
+          const exit = internal.exitedNaturally;
+          const status =
+            internal.exitReason === "termination_unconfirmed"
+              ? "unknown"
+              : internal.exitReason && internal.exitReason !== "transport_error"
+                ? "stopped"
+                : exit
+                  ? exit.exitCode === 0
+                    ? "completed"
+                    : "failed"
+                  : "running";
+          const path = await internal.executionRecord!.save({
+            version: 1,
+            session: session.sessionId,
+            sandboxInstance: internal.executionRecord!.sandboxInstance,
+            command: (session.originalCommand ?? "").slice(0, 32_768),
+            workingDirectory: session.workingDirectory,
+            pid: session.pid,
+            status,
+            exitCode: exit?.exitCode ?? null,
+            exitReason: internal.exitReason ?? (exit ? "process_exit" : null),
+            createdAt: session.createdAt,
+            updatedAt: Date.now(),
+            output: new TextDecoder().decode(this.snapshot(session)),
+            outputTruncated: session.bufferTruncated,
+            artifactPaths: [
+              ...new Set([
+                ...(session.outputPath ? [session.outputPath] : []),
+                ...internal.executionRecord!.artifactPaths,
+              ]),
+            ]
+              .filter((path) => path.length <= 4096)
+              .slice(0, 32),
+          });
+          session.recordPersistenceFailed = !path;
+          if (path) session.recordPath = path;
+        }
+      })()
+        .catch(() => {
+          session.recordPersistenceFailed = true;
+        })
+        .finally(async () => {
+          internal.recordWriting = false;
+          if (internal.recordDirty) await this.checkpoint(session);
+        });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      internal.recordQueue,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          session.recordPersistenceFailed = true;
+          resolve();
+        }, RECORD_CHECKPOINT_WAIT_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
   /**
    * Remove a completed, unexposed session without sending a redundant kill.
    * Used for ordinary non-interactive commands that finish inside the initial
    * run_terminal_cmd wait window.
    */
-  forget(chatId: string, sessionId: string): void {
+  async forget(chatId: string, sessionId: string): Promise<void> {
     const session = this.chats.get(chatId)?.get(sessionId);
     if (!session) return;
+    await this.checkpoint(session);
     this.removeSession(session);
   }
 
   // ─── internals ──────────────────────────────────────────────────────────
 
   private onData(session: InternalSession, bytes: Uint8Array): void {
-    if (session.closing) return;
     // Copy into an owned Uint8Array so callers can recycle buffers
     const chunk = new Uint8Array(bytes);
     session.buffer.push(chunk);
     session.lastActivityAt = Date.now();
     this.enforceRing(session);
-    this.armIdleTimer(session);
+    if (!session.closing) this.armIdleTimer(session);
+    if (!session.closing && session.executionRecord && !session.recordTimer) {
+      session.recordTimer = setTimeout(() => {
+        session.recordTimer = null;
+        void this.checkpoint(session);
+      }, RECORD_CHECKPOINT_INTERVAL_MS);
+    }
   }
 
   private armIdleTimer(session: InternalSession): void {
@@ -318,14 +426,17 @@ export class PtySessionManager {
   private enforceRing(session: InternalSession): void {
     let total = session.buffer.reduce((n, c) => n + c.byteLength, 0);
     while (total > MAX_BUFFER_BYTES && session.buffer.length > 0) {
-      const dropped = session.buffer.shift()!;
-      total -= dropped.byteLength;
-      session.droppedBytes += dropped.byteLength;
+      const first = session.buffer[0];
+      const dropCount = Math.min(first.byteLength, total - MAX_BUFFER_BYTES);
+      if (dropCount === first.byteLength) session.buffer.shift();
+      else session.buffer[0] = first.slice(dropCount);
+      total -= dropCount;
+      session.droppedBytes += dropCount;
       session.bufferTruncated = true;
       // Adjust readCursor — if bytes we had not yet shown were dropped,
       // clamp to 0 relative to the new buffer start.
-      if (session.readCursor >= dropped.byteLength) {
-        session.readCursor -= dropped.byteLength;
+      if (session.readCursor >= dropCount) {
+        session.readCursor -= dropCount;
       } else {
         session.readCursor = 0;
       }
@@ -366,7 +477,7 @@ export class PtySessionManager {
 
   private async killAndRemove(
     session: InternalSession,
-    _reason: "close" | "closeAll" | "idle" | "lifetime",
+    reason: "close" | "closeAll" | "idle" | "lifetime",
   ): Promise<void> {
     if (session.closing) {
       // Another caller is already closing — wait for removal to finish.
@@ -380,6 +491,18 @@ export class PtySessionManager {
       return;
     }
     session.closing = true;
+    if (!session.exitedNaturally) {
+      if (
+        !session.exitReason ||
+        session.exitReason === "termination_unconfirmed"
+      )
+        session.exitReason =
+          reason === "closeAll"
+            ? "response_cleanup"
+            : reason === "close"
+              ? "user_cancelled"
+              : `${reason}_limit`;
+    }
 
     // Stop timers before kicking kill — avoids the timer re-entering kill.
     if (session.idleTimer) {
@@ -419,6 +542,7 @@ export class PtySessionManager {
     // way to retry cleanup. Natural exit or a later cleanup attempt can still
     // settle and remove it.
     if (unexpectedKillError && session.kind === "command") {
+      await this.checkpoint(session, "termination_unconfirmed");
       session.closing = false;
       session.cleanupFailureCount += 1;
       const lifetimeRemaining =
@@ -455,11 +579,12 @@ export class PtySessionManager {
         setTimeout(resolve, CLOSE_EXIT_FALLBACK_MS),
       ),
     ]);
-
+    await this.checkpoint(session);
     this.removeSession(session);
   }
 
   private removeSession(session: InternalSession): void {
+    if (session.recordTimer) clearTimeout(session.recordTimer);
     if (session.unsubscribe) {
       try {
         session.unsubscribe();
