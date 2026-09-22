@@ -47,6 +47,7 @@ export function createTerminalRecordStore(
   userId: string,
   scopeId: string,
 ) {
+  const lifecycleOnly = isMiosaSandbox(sandbox);
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
@@ -75,6 +76,16 @@ export function createTerminalRecordStore(
   };
 
   return {
+    // MIOSA implements a logical file operation with staged uploads/downloads
+    // plus guest exec calls. Startup checkpoints, ten-second output
+    // checkpoints, and a directory-wide prune on every terminal command
+    // multiplied ordinary Agent activity into thousands of provider requests.
+    // Explicit lifecycle checkpoints still retain evidence when the command
+    // yields, exits, or is cancelled; only the continuous maintenance is
+    // deferred for this high-overhead transport.
+    checkpointOnStart: !lifecycleOnly,
+    checkpointOnOutput: !lifecycleOnly,
+    pruneOnStart: !lifecycleOnly,
     pathFor,
     async save(record: TerminalExecutionRecord): Promise<string | null> {
       try {

@@ -54,6 +54,11 @@ function record(
 }
 
 describe("terminal execution records", () => {
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
   it("separates cloud providers and preserves local environment identity across relay reconnects", async () => {
     const { sandbox } = sandboxFixture();
     const miosa = { ...sandbox, sandboxKind: "miosa" };
@@ -89,6 +94,52 @@ describe("terminal execution records", () => {
     expect(
       await createTerminalRecordStore(miosa, "u", "reconnect").read("abcdef12"),
     ).toBeNull();
+  });
+
+  it("uses lifecycle-only record persistence for MIOSA", async () => {
+    jest.useFakeTimers();
+    const { sandbox, data } = sandboxFixture();
+    const miosa = { ...sandbox, sandboxKind: "miosa" };
+    const store = createTerminalRecordStore(miosa as any, "u", "c");
+    expect(store).toMatchObject({
+      checkpointOnStart: false,
+      checkpointOnOutput: false,
+      pruneOnStart: false,
+    });
+
+    const manager = new PtySessionManager();
+    const handle = createCommandSessionHandle({ kill: async () => true });
+    const session = await manager.create("c", {
+      createHandle: async () => handle,
+      cols: 120,
+      rows: 30,
+      kind: "command",
+      sandboxIdentity: "miosa",
+      originalCommand: "bounded test",
+      executionRecord: {
+        ...store,
+        sandboxInstance: "miosa:sandbox-one",
+        artifactPaths: [],
+      },
+    });
+
+    await jest.advanceTimersByTimeAsync(10_001);
+    expect(sandbox.files.write).not.toHaveBeenCalled();
+    expect(sandbox.files.list).not.toHaveBeenCalled();
+
+    handle.emitText("final evidence");
+    handle.resolveExit(0);
+    await Promise.resolve();
+    await manager.forget("c", session.sessionId);
+
+    expect(sandbox.files.list).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(data.get(store.pathFor(session.sessionId))!),
+    ).toMatchObject({
+      status: "completed",
+      exitCode: 0,
+      output: "final evidence",
+    });
   });
   it("recovers in a fresh store and isolates user, scope, and sandbox instance", async () => {
     const { sandbox } = sandboxFixture();

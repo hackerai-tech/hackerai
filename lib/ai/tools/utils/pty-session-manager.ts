@@ -91,6 +91,10 @@ export interface CreateSessionOpts {
     artifactPaths: string[];
     save: (record: TerminalExecutionRecord) => Promise<string | null>;
     prune: () => Promise<void>;
+    /** High-overhead transports may persist only at lifecycle boundaries. */
+    checkpointOnStart?: boolean;
+    checkpointOnOutput?: boolean;
+    pruneOnStart?: boolean;
   };
 }
 
@@ -235,9 +239,13 @@ export class PtySessionManager {
         this.chats.set(chatId, chatMap);
       }
       chatMap.set(sessionId, session);
-      void this.checkpoint(session);
-      // Keep retention outside the critical command launch path.
-      void opts.executionRecord?.prune();
+      if (opts.executionRecord?.checkpointOnStart !== false)
+        void this.checkpoint(session);
+      // Keep retention outside the critical command launch path. Some file
+      // transports expand one scan into many remote exec/file requests, so
+      // they defer retention instead of doing it for every command.
+      if (opts.executionRecord?.pruneOnStart !== false)
+        void opts.executionRecord?.prune();
 
       return session;
     } catch (wiringErr) {
@@ -408,7 +416,12 @@ export class PtySessionManager {
     session.lastActivityAt = Date.now();
     this.enforceRing(session);
     if (!session.closing) this.armIdleTimer(session);
-    if (!session.closing && session.executionRecord && !session.recordTimer) {
+    if (
+      !session.closing &&
+      session.executionRecord &&
+      session.executionRecord.checkpointOnOutput !== false &&
+      !session.recordTimer
+    ) {
       session.recordTimer = setTimeout(() => {
         session.recordTimer = null;
         void this.checkpoint(session);
