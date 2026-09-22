@@ -133,8 +133,15 @@ export const DeleteAccountDialog = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} modal={true}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!isDeleting) onOpenChange(nextOpen);
+      }}
+      modal={true}
+    >
       <DialogContent
+        showCloseButton={!isDeleting}
         data-testid="delete-account-dialog"
         className="sm:max-w-md max-h-[90vh] overflow-y-auto"
       >

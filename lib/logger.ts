@@ -8,6 +8,7 @@
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
+import type { ProviderModelHistoryEntry } from "@/lib/ai/provider-model-history";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
@@ -38,6 +39,11 @@ export interface ProviderRequestDiagnostics {
   fallback_model_slugs?: string[];
   has_user_attribution: boolean;
   has_multimodal_tool_results: boolean;
+  max_tool_calls_per_assistant?: number;
+  unmatched_tool_call_count?: number;
+  unmatched_tool_result_count?: number;
+  duplicate_tool_call_count?: number;
+  tool_call_batches_split?: number;
 }
 
 export interface ProviderRequestRetentionDiagnostics {
@@ -61,6 +67,7 @@ export interface ChatWideEvent {
 
   // Service context
   service: "chat-handler";
+  environment: string;
   endpoint: ChatApiEndpoint;
   version: string;
   region?: string;
@@ -107,6 +114,7 @@ export interface ChatWideEvent {
   // Model & generation
   model?: {
     configured: string;
+    history?: ProviderModelHistoryEntry[];
     actual?: string;
     provider_name?: string;
     openrouter_generation_id?: string;
@@ -167,9 +175,9 @@ export interface ChatWideEvent {
 
   // Sandbox execution
   sandbox?: {
-    type: "e2b" | "desktop" | "remote-connection";
+    type: "cloud" | "desktop" | "remote-connection";
     name?: string;
-    provider?: "e2b";
+    provider?: "miosa" | "e2b";
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done
@@ -241,6 +249,26 @@ export interface ChatWideEvent {
   };
 }
 
+export interface ChatDiagnosticContext {
+  request_id: string;
+  service: "chat-handler";
+  environment: string;
+  user_id?: string;
+  mode?: ChatMode;
+  subscription?: string;
+  selected_model?: string;
+  requested_model_slug?: string;
+  model_provider_slug?: string;
+  response_model?: string;
+  provider_name?: string;
+  provider_name_source?:
+    "openrouter_response_metadata" | "openrouter_error_metadata";
+  provider_attribution_available: boolean;
+  openrouter_generation_id?: string;
+  openrouter_request_id?: string;
+  openrouter_upstream_id?: string;
+}
+
 /**
  * Builder for constructing wide events throughout the request lifecycle
  */
@@ -258,6 +286,7 @@ export class WideEventBuilder {
       request_id: requestId,
       chat_id: chatId,
       service: "chat-handler",
+      environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
       endpoint,
       version: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) || "dev",
       region: process.env.VERCEL_REGION,
@@ -351,7 +380,16 @@ export class WideEventBuilder {
    * Set model info
    */
   setModel(configured: string): this {
-    this.event.model = { configured };
+    this.event.model = { configured, history: this.event.model?.history };
+    return this;
+  }
+
+  /** Retain live, content-free entries across stream restarts and route changes. */
+  recordProviderModelCall(entry: ProviderModelHistoryEntry): this {
+    this.event.model ??= { configured: entry.configured };
+    const history = (this.event.model.history ??= []);
+    entry.call_index = history.length + 1;
+    history.push(entry);
     return this;
   }
 
@@ -383,6 +421,55 @@ export class WideEventBuilder {
     };
 
     return this;
+  }
+
+  /**
+   * Return compact, content-free request/model context for correlated lifecycle
+   * logs that are emitted before the final wide event.
+   */
+  getDiagnosticContext(): ChatDiagnosticContext {
+    const model = this.event.model;
+    const providerError = this.event.provider_error;
+    const requestedModelSlug =
+      this.event.provider_request?.requested_model_slug ??
+      providerError?.requested_model_slug;
+    const providerName = model?.provider_name ?? providerError?.provider_name;
+    const providerNameSource = model?.provider_name
+      ? "openrouter_response_metadata"
+      : providerError?.provider_name_source === "openrouter_error_metadata"
+        ? "openrouter_error_metadata"
+        : undefined;
+
+    return {
+      request_id: this.event.request_id ?? "unknown",
+      service: "chat-handler",
+      environment:
+        this.event.environment ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      user_id: this.event.user?.id,
+      mode: this.event.mode,
+      subscription: this.event.user?.subscription,
+      selected_model: model?.configured,
+      requested_model_slug: requestedModelSlug,
+      model_provider_slug:
+        providerError?.model_provider_slug ??
+        (requestedModelSlug?.includes("/")
+          ? requestedModelSlug.split("/", 1)[0]
+          : undefined),
+      response_model: model?.actual ?? model?.openrouter_selected_model,
+      provider_name: providerName,
+      provider_name_source: providerNameSource,
+      provider_attribution_available: providerName !== undefined,
+      openrouter_generation_id:
+        model?.openrouter_generation_id ??
+        providerError?.openrouter_generation_id,
+      openrouter_request_id:
+        model?.openrouter_request_id ?? providerError?.openrouter_request_id,
+      openrouter_upstream_id:
+        model?.openrouter_upstream_id ?? providerError?.openrouter_upstream_id,
+    };
   }
 
   /**
@@ -780,7 +867,10 @@ export const logger = {
 export function createWideEventBuilder(
   chatId: string,
   endpoint: ChatApiEndpoint,
+  requestId?: string,
 ): WideEventBuilder {
-  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  return new WideEventBuilder(requestId, chatId, endpoint);
+  const resolvedRequestId =
+    requestId ??
+    `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return new WideEventBuilder(resolvedRequestId, chatId, endpoint);
 }

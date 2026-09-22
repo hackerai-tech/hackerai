@@ -11,6 +11,7 @@ import type { Doc } from "./_generated/dataModel";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
 import { convexLogger } from "./lib/logger";
+import { scheduleFileDeletion } from "./lib/fileDeletion";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
@@ -96,18 +97,11 @@ export const deleteFile = mutation({
       });
     }
 
-    // Delete from S3 storage when this row still has an object reference.
-    if (file.s3_key) {
-      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
-        s3Key: file.s3_key,
-        ...(file.s3_region ? { s3Region: file.s3_region } : {}),
-        ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
-      });
-    } else {
+    if (!file.s3_key)
       console.warn(
         `File ${args.fileId} has no s3_key, skipping storage deletion`,
       );
-    }
+    await scheduleFileDeletion(ctx, file);
 
     await fileCountAggregate.deleteIfExists(ctx, file);
 

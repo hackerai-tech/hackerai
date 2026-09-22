@@ -10,6 +10,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
+import { usePathname } from "next/navigation";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
@@ -33,6 +34,7 @@ import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   useSandboxPreference,
+  type SetSandboxPreference,
   type DesktopBridgeStatus,
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -60,6 +62,8 @@ import {
   normalizeAgentFirstSandboxType,
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
+import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import { environmentPreference } from "@/lib/sandbox/environment";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -139,7 +143,8 @@ interface GlobalStateType {
 
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  setSandboxPreference: SetSandboxPreference;
+  resetSandboxPreference: () => void;
 
   // Agent tool approval behavior
   agentPermissionMode: AgentPermissionMode;
@@ -148,6 +153,7 @@ interface GlobalStateType {
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
   desktopBridgeStatus: DesktopBridgeStatus;
+  desktopEnvironmentId?: string;
   retryDesktopBridge: () => void;
 
   // Whether a local sandbox (desktop or remote) is available
@@ -215,6 +221,8 @@ interface GlobalStateProviderProps {
 
 interface LocalSandboxConnection {
   connectionId: string;
+  environmentId?: string;
+  createdAt?: number;
   name: string;
   osInfo?: {
     platform: string;
@@ -443,6 +451,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     userId: string;
     count: number;
   } | null>(null);
+  const [entitlementRefreshFailure, setEntitlementRefreshFailure] = useState<{
+    userId: string;
+    count: number;
+  } | null>(null);
 
   // Rate limit warning dismissal state (persists across chat switches)
   const [
@@ -469,9 +481,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
     sandboxPreference,
+    hasExplicitSandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
   } = useSandboxPreference(!!user);
 
@@ -494,13 +509,16 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   const defaultLocalSandboxPreference =
     useMemo<SandboxPreference | null>(() => {
-      if (desktopBridgeActive) return "desktop";
+      if (desktopBridgeActive)
+        return desktopEnvironmentId
+          ? `desktop-environment:${desktopEnvironmentId}`
+          : "desktop";
       const firstRemote = localConnections?.find((c) => !c.isDesktop);
-      if (firstRemote) return firstRemote.connectionId;
+      if (firstRemote) return environmentPreference(firstRemote);
       const firstDesktop = localConnections?.find((c) => c.isDesktop);
-      if (firstDesktop) return "desktop";
+      if (firstDesktop) return environmentPreference(firstDesktop);
       return null;
-    }, [desktopBridgeActive, localConnections]);
+    }, [desktopBridgeActive, desktopEnvironmentId, localConnections]);
 
   const entitlementRefreshRequested =
     typeof window !== "undefined" &&
@@ -524,6 +542,16 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       entitlementApiResolvedUserId === user?.id) &&
     !entitlementRefreshRequested &&
     !automaticEntitlementRefreshPending;
+  const tokenFreeAutomaticRefreshExhausted =
+    subscriptionFromEntitlements === "free" &&
+    entitlementRefreshFailure?.userId === user?.id &&
+    (entitlementRefreshFailure?.count ?? 0) >
+      ENTITLEMENT_REFRESH_RETRY_DELAYS_MS.length;
+  const freeSubscriptionResolved =
+    subscriptionResolved &&
+    (!automaticEntitlementRefreshNeeded ||
+      entitlementApiResolvedUserId === user?.id ||
+      tokenFreeAutomaticRefreshExhausted);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -546,6 +574,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     if (!subscriptionResolved) return;
+    if (subscription === "free" && !freeSubscriptionResolved) return;
     const normalizedModel = normalizeSelectedModelForSubscription(
       selectedModel,
       subscription,
@@ -553,7 +582,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     if (normalizedModel !== selectedModel) {
       setSelectedModelRaw(normalizedModel);
     }
-  }, [selectedModel, subscription, subscriptionResolved]);
+  }, [
+    freeSubscriptionResolved,
+    selectedModel,
+    subscription,
+    subscriptionResolved,
+  ]);
 
   const setSelectedModelState = useCallback((model: SelectedModel) => {
     setSelectedModelRaw(model);
@@ -564,6 +598,10 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     subscriptionFromEntitlements !== "free"
       ? subscriptionFromEntitlements
       : subscription;
+  const agentFirstSubscriptionResolved =
+    paidAgentSubscription === "free"
+      ? freeSubscriptionResolved
+      : subscriptionResolved;
 
   useEffect(() => {
     if (agentFirstDefaultAppliedRef.current) return;
@@ -580,7 +618,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       isCheckingProPlan,
       isMobile,
       subscription: paidAgentSubscription,
-      subscriptionResolved,
+      subscriptionResolved: agentFirstSubscriptionResolved,
       userPresent: Boolean(user),
     });
 
@@ -588,12 +626,14 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       return;
     }
 
-    const localSandboxPreference = agentDefaultDecision.useDefaultLocalSandbox
-      ? defaultLocalSandboxPreference
-      : null;
+    const localSandboxPreference =
+      agentDefaultDecision.useDefaultLocalSandbox && sandboxPreference === "e2b"
+        ? defaultLocalSandboxPreference
+        : null;
 
     if (
       agentDefaultDecision.useDefaultLocalSandbox &&
+      sandboxPreference === "e2b" &&
       !localSandboxPreference
     ) {
       return;
@@ -608,7 +648,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     agentFirstDefaultAppliedRef.current = true;
     setChatModeState("agent");
     if (localSandboxPreference) {
-      setSandboxPreference(localSandboxPreference);
+      setSandboxPreference(localSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -617,7 +657,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     const now = new Date().toISOString();
     const agentFirstProperties = {
       experiment_key: agentDefaultDecision.experimentKey,
-      first_experience_event_version: 3,
+      first_experience_event_version: 4,
       variant: "agent_first",
       assignment_type: "deterministic_eligibility",
       assignment_unit: "authenticated_user",
@@ -630,7 +670,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       selection_reason: agentDefaultDecision.selectionReason,
       default_applied: true,
       has_local_sandbox: hasLocalSandbox,
-      sandbox_type: sandboxType,
+      sandbox_type: sandboxType === "e2b" ? "cloud" : sandboxType,
       sandbox_preference: sandboxType,
       surface: "new_chat",
       previous_saved_mode: savedModePresent,
@@ -649,6 +689,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     );
   }, [
     chatMode,
+    agentFirstSubscriptionResolved,
     defaultLocalSandboxPreference,
     hasLocalSandbox,
     isCheckingProPlan,
@@ -670,7 +711,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     paidAgentSubscription !== "free";
   const freeDesktopAgentOnlyActive =
     Boolean(user) &&
-    subscriptionResolved &&
+    freeSubscriptionResolved &&
     !isCheckingProPlan &&
     paidAgentSubscription === "free" &&
     isTauriEnvironment();
@@ -702,13 +743,29 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [agentOnlyActive],
   );
 
+  const pathname = usePathname();
+  useAutoSelectNewRemoteConnection({
+    connections: localConnections,
+    enabled: Boolean(user),
+    isNewChat: pathname === "/",
+    hasExplicitSandboxPreference,
+    chatMode: accessibleChatMode,
+    setChatMode,
+    subscription: paidAgentSubscription,
+    freeSubscriptionResolved,
+    sandboxPreference,
+    setSandboxPreference,
+    selectedModel,
+    setSelectedModel: setSelectedModelState,
+  });
+
   useEffect(() => {
     if (!agentOnlyActive) return;
     if (
       freeDesktopSandboxPreference &&
       sandboxPreference !== freeDesktopSandboxPreference
     ) {
-      setSandboxPreference(freeDesktopSandboxPreference);
+      setSandboxPreference(freeDesktopSandboxPreference, { remember: false });
     }
     if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -767,6 +824,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       setSubscription("free");
       entitlementRefreshUserRef.current = null;
       entitlementRefreshFailureRef.current = null;
+      setEntitlementRefreshFailure(null);
       setEntitlementApiResolvedUserId(null);
       return;
     }
@@ -829,6 +887,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
         setSubscriptionWithNormalize(tier);
         setEntitlementApiResolvedUserId(user.id);
         entitlementRefreshFailureRef.current = null;
+        setEntitlementRefreshFailure(null);
         // The API response is authoritative for the UI. Refresh AuthKit and the
         // shared access token in the background so a slow token refresh cannot
         // keep the free Ask/Agent selector hidden.
@@ -845,10 +904,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
               ? entitlementRefreshFailureRef.current.count
               : 0;
           const failureCount = previousFailureCount + 1;
-          entitlementRefreshFailureRef.current = {
+          const nextFailure = {
             userId: user.id,
             count: failureCount,
           };
+          entitlementRefreshFailureRef.current = nextFailure;
+          setEntitlementRefreshFailure(nextFailure);
           const retryDelay =
             ENTITLEMENT_REFRESH_RETRY_DELAYS_MS[failureCount - 1];
           if (retryDelay !== undefined) {
@@ -1121,7 +1182,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setActiveProjectId(null);
-  }, []);
+    resetSandboxPreference();
+  }, [resetSandboxPreference]);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1284,10 +1346,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
     hasLocalSandbox,
     localConnections,

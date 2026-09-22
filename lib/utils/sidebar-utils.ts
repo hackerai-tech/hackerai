@@ -166,7 +166,10 @@ export function extractSidebarContentFromMessage(
             : formatSendInput(sendInput)
           : "";
       const command =
-        part.input.command || part.input.brief || sendDisplay || action;
+        part.input.command ||
+        part.input.brief ||
+        sendDisplay ||
+        (action === "wait" ? "" : action);
 
       // Get streaming output from data-terminal parts
       const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";

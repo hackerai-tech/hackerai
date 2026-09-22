@@ -33,12 +33,35 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
   });
 
+  it("accepts every Agent permission mode and approval-gates child actions", () => {
+    const source = read("trigger/subagent.ts");
+    const tools = read("lib/ai/tools/subagent-tools.ts");
+    expect(source).toContain("isAgentPermissionMode(persistedPermissionMode)");
+    expect(source).toContain(
+      "resolveSubagentAllowedToolNamesForPermissionMode",
+    );
+    expect(source).toContain("buildAgentToolApprovalRequester");
+    expect(source).toContain("requestToolApproval");
+    expect(source).toContain("sourceAgentId");
+    expect(source).toContain("activeRuntimeBudget");
+    expect(tools).not.toContain('config.permissionMode !== "full_access"');
+    expect(tools).not.toContain(
+      "delegate_task requires Full access for the shared sandbox",
+    );
+  });
+
   it("loads only validated server-reviewed skills into focused task children", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const profiles = read("lib/ai/subagents/profiles.ts");
-    expect(tools).toContain("resolveSubagentSkills");
+    expect(tools).toContain("resolveDelegatedSubagentSkills");
     expect(tools).toContain("skills = resolvedSkills.skills.map");
     expect(tools).toContain("Skills are optional methodology");
+    expect(tools).toContain(
+      "For clean-slate validation, set inherit_context=false",
+    );
+    expect(tools).toContain(
+      "describe the result as a separately executed reproduction",
+    );
     expect(tools).not.toContain("1-3 normally");
     expect(tools).not.toContain(
       "security_task uses fixed server tools and does not accept skills",
@@ -84,12 +107,35 @@ describe("security validation subagent runtime contracts", () => {
       "expirationTime: `${SUBAGENT_TOKEN_TTL_SECONDS}s`",
     );
     const child = read("trigger/subagent.ts");
-    expect(child).toContain("triggerRegion: payload.triggerRegion");
+    expect(child).toContain("triggerRegion,");
+    expect(child).toContain("actualRegion: ctx.run.region");
+    expectMarkerOrder(
+      child,
+      "await assertSubagentRunRegion(",
+      "setConvexUrl(payload.convexUrl)",
+    );
     expectMarkerOrder(
       child,
       "setConvexUrl(payload.convexUrl)",
       "getSubagent(payload.subagentId)",
     );
+    expectMarkerOrder(
+      child,
+      "await assertSubagentRunRegion(",
+      "getSubagent(payload.subagentId)",
+    );
+    const regionGuard = child.slice(
+      child.indexOf("await assertSubagentRunRegion("),
+      child.indexOf("const row = await getSubagent(payload.subagentId)"),
+    );
+    expectMarkerOrder(
+      regionGuard,
+      "setConvexUrl(payload.convexUrl)",
+      "await finishSubagent({",
+    );
+    expect(regionGuard).toContain("subagentId: payload.subagentId");
+    expect(regionGuard).toContain("triggerRunId: ctx.run.id");
+    expect(regionGuard).toContain("...failure");
   });
 
   it("blocks parent completion until a claimed result reaches a successful synthesis step", () => {
@@ -153,14 +199,14 @@ describe("security validation subagent runtime contracts", () => {
     );
     expectMarkerOrder(
       acceptResult,
-      "await assertRuntimeAuthorized()",
+      "await verifyResultEvidence(",
       "await markSubagentFinalizing(",
     );
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
     );
     const guardedSandboxSetup = child.slice(
-      child.indexOf("const tools = guardSubagentToolExecutions("),
+      child.indexOf("const authorizedTools = guardSubagentToolExecutions("),
       child.indexOf("const provider = createTrackedProvider()"),
     );
     expectMarkerOrder(

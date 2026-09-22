@@ -15,8 +15,19 @@ function getClient(): PostHog | null {
 export async function getPostHogFeatureFlagForUser(
   flagKey: string,
   userId: string,
+  personProperties?: Record<string, string>,
 ): Promise<boolean> {
-  return (await getPostHogFeatureFlagValueForUser(flagKey, userId)) === true;
+  const client = getClient();
+  if (!client) return false;
+  try {
+    const flags = await client.evaluateFlags(userId, {
+      flagKeys: [flagKey],
+      ...(personProperties && { personProperties }),
+    });
+    return flags.getFlag(flagKey) === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function getPostHogFeatureFlagValueForUser(
@@ -28,6 +39,26 @@ export async function getPostHogFeatureFlagValueForUser(
   try {
     const value = await client.getFeatureFlag(flagKey, userId);
     return typeof value === "boolean" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Raw flag value: `true`/`false` for boolean flags, the variant key for
+ * multivariate flags, `null` when the client is missing or the lookup fails.
+ */
+export async function getPostHogFeatureFlagRawValueForUser(
+  flagKey: string,
+  userId: string,
+): Promise<boolean | string | null> {
+  const client = getClient();
+  if (!client) return null;
+  try {
+    const value = await client.getFeatureFlag(flagKey, userId);
+    return typeof value === "boolean" || typeof value === "string"
+      ? value
+      : null;
   } catch {
     return null;
   }

@@ -10,6 +10,7 @@ import { useChats } from "../hooks/useChats";
 import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
+import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import {
   loadSettingsDialog,
   onOpenSettingsDialog,
@@ -29,6 +30,14 @@ const SettingsDialog = dynamic(
  * Does NOT include the Computer Sidebar (right); that remains in ChatContent.
  */
 export function ChatLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <ConvexErrorBoundary>
+      <ChatLayoutContent>{children}</ChatLayoutContent>
+    </ConvexErrorBoundary>
+  );
+}
+
+function ChatLayoutContent({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile();
   const pathname = usePathname();
   const compactTaskSidebar = useCompactTaskSidebar();

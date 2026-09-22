@@ -20,7 +20,7 @@ describe("free desktop sandbox selection", () => {
     ).toBe("remote-kali");
   });
 
-  it("selects a healthy remote runner when the desktop bridge is unavailable", () => {
+  it("keeps the selected Desktop when its bridge is unavailable", () => {
     expect(
       resolveFreeDesktopSandboxPreference({
         sandboxPreference: "desktop",
@@ -30,7 +30,7 @@ describe("free desktop sandbox selection", () => {
           remoteConnection,
         ],
       }),
-    ).toBe("remote-kali");
+    ).toBe("desktop");
   });
 
   it("keeps the desktop sentinel while no local runner is available", () => {
@@ -51,6 +51,16 @@ describe("free desktop sandbox selection", () => {
         localConnections: undefined,
       }),
     ).toBe("remote-kali");
+  });
+
+  it("preserves a missing selected runner even when Desktop is connected", () => {
+    expect(
+      resolveFreeDesktopSandboxPreference({
+        sandboxPreference: "missing-runner",
+        desktopBridgeActive: true,
+        localConnections: [remoteConnection],
+      }),
+    ).toBe("missing-runner");
   });
 
   it("reports either a connected desktop bridge or selected remote runner as available", () => {

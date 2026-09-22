@@ -241,14 +241,24 @@ test.describe("Chat switching", () => {
     const scrollContainer = page.getByTestId(
       "sidebar-chat-list-scroll-container",
     );
+    // The observer root must be constrained to the visible sidebar, rather than
+    // expanding with every page while an ancestor handles the actual scrolling.
+    await expect
+      .poll(() =>
+        scrollContainer.evaluate((el) => el.scrollHeight > el.clientHeight),
+      )
+      .toBe(true);
+    const sentinel = page.getByTestId("sidebar-load-more-sentinel");
+    await expect(sentinel).not.toBeInViewport();
+
+    // Give the observer time to fire: no additional page should load at the top.
+    await page.waitForTimeout(1000);
+    expect(await sidebar.getChatCount()).toBe(initialCount);
+
     await scrollContainer.evaluate((el: Element) => {
       const div = el as HTMLDivElement;
       div.scrollTop = div.scrollHeight;
     });
-
-    // Ensure sentinel is in view so IntersectionObserver (viewport root) fires
-    const sentinel = page.getByTestId("sidebar-load-more-sentinel");
-    await sentinel.scrollIntoViewIfNeeded();
 
     await expect(async () => {
       const count = await sidebar.getChatCount();

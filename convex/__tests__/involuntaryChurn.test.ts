@@ -184,6 +184,7 @@ describe("involuntary churn lifecycle records", () => {
   it.each([
     ["customer.subscription.deleted", "churned", false],
     ["payment_method.attached", "payment_method_updated", true],
+    ["customer.subscription.updated", "payment_method_updated", true],
     ["invoice.paid", "ineligible_payment", true],
   ] as const)(
     "records %s as %s",
@@ -221,6 +222,37 @@ describe("involuntary churn lifecycle records", () => {
       });
     },
   );
+
+  it("records one customer update for each affected subscription and deduplicates replays", async () => {
+    const { rows, ctx } = createContext();
+    const { recordEvent } = await import("../involuntaryChurn");
+    for (const subscription of ["1", "2"]) {
+      await (recordEvent as any).handler(ctx, {
+        ...baseArgs,
+        stripeEventId: `evt-failure-${subscription}`,
+        stripeSubscriptionId: `sub-${subscription}`,
+        stripeInvoiceId: `in-${subscription}`,
+      });
+    }
+    for (const subscription of ["1", "2", "1"]) {
+      await (recordEvent as any).handler(ctx, {
+        ...baseArgs,
+        stripeEventId: "evt-customer-update",
+        stripeEventType: "customer.updated",
+        stripeSubscriptionId: `sub-${subscription}`,
+        stripeInvoiceId: `in-${subscription}`,
+        occurredAt: 200,
+      });
+    }
+    expect(
+      rows
+        .filter((row) => row.recovery_result === "payment_method_updated")
+        .map((row) => row.idempotency_key),
+    ).toEqual([
+      "evt-customer-update:sub-1:user-1",
+      "evt-customer-update:sub-2:user-1",
+    ]);
+  });
 
   it("returns the stored outcome without inserting on Stripe replay", async () => {
     const existing = {

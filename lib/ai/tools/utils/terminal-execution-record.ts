@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnySandbox } from "@/types";
-import { asCommonSandbox, isCentrifugoSandbox } from "./sandbox-types";
+import { localEnvironmentIdentity } from "@/lib/sandbox/environment";
+import {
+  asCommonSandbox,
+  isCentrifugoSandbox,
+  isMiosaSandbox,
+} from "./sandbox-types";
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
@@ -27,9 +32,14 @@ const recordSchema = z.object({
 export type TerminalExecutionRecord = z.infer<typeof recordSchema>;
 
 export function terminalSandboxInstance(sandbox: AnySandbox): string {
-  return isCentrifugoSandbox(sandbox)
-    ? `connection:${sandbox.getConnectionId()}`
-    : `e2b:${sandbox.sandboxId}`;
+  if (isCentrifugoSandbox(sandbox)) {
+    const connection =
+      typeof sandbox.getConnectionInfo === "function"
+        ? sandbox.getConnectionInfo()
+        : { connectionId: sandbox.getConnectionId() };
+    return `connection:${localEnvironmentIdentity(connection)}`;
+  }
+  return `${isMiosaSandbox(sandbox) ? "miosa" : "e2b"}:${sandbox.sandboxId}`;
 }
 
 export function createTerminalRecordStore(

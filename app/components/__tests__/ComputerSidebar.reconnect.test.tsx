@@ -15,7 +15,9 @@ const mockUseQuery = jest.fn<any>();
 const mockOpenSidebar = jest.fn();
 const mockCloseSidebar = jest.fn();
 const mockRetrySubagentRealtime = jest.fn();
-let mockSubagentRealtime = {
+let mockSubagentRealtime: ReturnType<
+  typeof import("@/app/hooks/useSubagentRealtime").useSubagentRealtime
+> = {
   message: null,
   state: "idle",
   retry: mockRetrySubagentRealtime,
@@ -86,8 +88,18 @@ jest.mock("../ComputerCodeBlock", () => ({
 }));
 
 jest.mock("../TerminalCodeBlock", () => ({
-  TerminalCodeBlock: ({ command }: { command: string }) => (
-    <pre data-testid="terminal-code-block">{command}</pre>
+  TerminalCodeBlock: ({
+    command,
+    output,
+  }: {
+    command: string;
+    output?: string;
+  }) => (
+    <pre data-testid="terminal-code-block">
+      {command}
+      {"\n"}
+      {output}
+    </pre>
   ),
 }));
 
@@ -369,5 +381,332 @@ describe("ComputerSidebar reconnect behavior", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
     expect(mockRetrySubagentRealtime).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins a historical subagent command through replay until Jump to live", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "echo command-2",
+      output: "selected output",
+      isExecuting: false,
+      toolCallId: "child-tool-2",
+      origin,
+    };
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? { status: "running", trigger_run_id: "run-child" }
+        : [],
+    );
+    mockOpenSidebar.mockImplementation((content) => {
+      mockSidebarContent = content as SidebarContent;
+    });
+    const { rerender } = render(<ComputerSidebar />);
+    const replay = (count: number, selectedOutput = "updated output") => {
+      mockSubagentRealtime = {
+        ...mockSubagentRealtime,
+        state: "live",
+        message: {
+          id: "child-message",
+          role: "assistant",
+          parts: Array.from({ length: count }, (_, index) => ({
+            type: "tool-shell" as const,
+            toolCallId: `child-tool-${index + 1}`,
+            state: "output-available" as const,
+            input: { action: "exec", command: `echo command-${index + 1}` },
+            output: { output: index === 1 ? selectedOutput : "other output" },
+          })),
+        },
+      };
+      rerender(<ComputerSidebar />);
+    };
+
+    // A fresh subscription first replays commands older than the selected one.
+    replay(1);
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-2",
+    );
+    replay(2);
+    replay(3);
+    replay(3, "new selected output");
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-2",
+    );
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "new selected output",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Jump to live" }));
+    rerender(<ComputerSidebar />);
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-3",
+    );
+    replay(4);
+    rerender(<ComputerSidebar />);
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-4",
+    );
+
+    // Browsing back pins history, while returning to the latest command resumes
+    // the same live-follow behavior as the normal Agent timeline.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Previous tool execution" }),
+    );
+    rerender(<ComputerSidebar />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Next tool execution" }),
+    );
+    rerender(<ComputerSidebar />);
+    mockOpenSidebar.mockClear();
+    replay(5);
+    expect(mockOpenSidebar).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "child-tool-5" }),
+    );
+    rerender(<ComputerSidebar />);
+    expect(screen.getByTestId("terminal-code-block")).toHaveTextContent(
+      "command-5",
+    );
+  });
+
+  it("follows the next subagent command when the latest selected command is complete", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      liveToolCallId: "child-tool-2",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "echo command-2",
+      output: "selected output",
+      isExecuting: false,
+      toolCallId: "child-tool-2",
+      origin,
+    };
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? { status: "running", trigger_run_id: "run-child" }
+        : [],
+    );
+    mockOpenSidebar.mockImplementation((content) => {
+      mockSidebarContent = content as SidebarContent;
+    });
+    const { rerender } = render(<ComputerSidebar />);
+    const replay = (count: number) => {
+      mockSubagentRealtime = {
+        ...mockSubagentRealtime,
+        state: "live",
+        message: {
+          id: "child-message",
+          role: "assistant",
+          parts: Array.from({ length: count }, (_, index) => ({
+            type: "tool-shell" as const,
+            toolCallId: `child-tool-${index + 1}`,
+            state: "output-available" as const,
+            input: { action: "exec", command: `echo command-${index + 1}` },
+            output: { output: "output" },
+          })),
+        },
+      };
+      rerender(<ComputerSidebar />);
+    };
+
+    // Replaying the prefix must not select an older command. Once a command
+    // arrives after the selected live edge, the sidebar follows it.
+    replay(1);
+    replay(2);
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+    replay(3);
+    expect(mockOpenSidebar).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "child-tool-3" }),
+    );
+  });
+
+  it("hands live following back to the parent after the subagent finishes", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      liveToolCallId: "child-tool-1",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+        selectedSubagentId: "sa_child",
+      },
+    };
+    mockSidebarContent = {
+      command: "npm test",
+      output: "passed",
+      isExecuting: false,
+      toolCallId: "child-tool-1",
+      origin,
+    };
+    let childStatus = "running";
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? { status: childStatus, trigger_run_id: "run-child" }
+        : [],
+    );
+    const delegatePart = {
+      type: "tool-delegate_task",
+      toolCallId: "delegate-tool",
+      state: "output-available",
+      input: { task: "test the change" },
+      output: { agent_id: "sa_child" },
+    };
+    const parentMessage = {
+      id: "parent-message",
+      role: "assistant",
+      parts: [delegatePart],
+    };
+    const { rerender } = render(
+      <ComputerSidebar messages={[parentMessage]} status="streaming" />,
+    );
+
+    childStatus = "completed";
+    rerender(<ComputerSidebar messages={[parentMessage]} status="streaming" />);
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+
+    rerender(
+      <ComputerSidebar
+        messages={[
+          {
+            ...parentMessage,
+            parts: [
+              delegatePart,
+              {
+                type: "tool-run_terminal_cmd",
+                toolCallId: "parent-tool-2",
+                state: "input-available",
+                input: { command: "git status" },
+              },
+            ],
+          },
+        ]}
+        status="streaming"
+      />,
+    );
+
+    expect(mockOpenSidebar).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: "parent-tool-2",
+        command: "git status",
+      }),
+    );
+    expect(mockOpenSidebar.mock.calls.at(-1)?.[0]).not.toHaveProperty("origin");
+  });
+
+  it("keeps a historical subagent command pinned after completion", () => {
+    const origin = {
+      kind: "subagent" as const,
+      subagentId: "sa_child",
+      returnContent: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "delegate-tool",
+      },
+    };
+    mockSidebarContent = {
+      command: "npm test",
+      output: "passed",
+      isExecuting: false,
+      toolCallId: "child-tool-1",
+      origin,
+    };
+    let childStatus = "running";
+    mockUseQuery.mockImplementation((query) =>
+      query === "getOwned"
+        ? { status: childStatus, trigger_run_id: "run-child" }
+        : [],
+    );
+    const parentMessage = {
+      id: "parent-message",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-delegate_task",
+          toolCallId: "delegate-tool",
+          state: "output-available",
+          input: { task: "test the change" },
+        },
+      ],
+    };
+    const { rerender } = render(
+      <ComputerSidebar messages={[parentMessage]} status="streaming" />,
+    );
+
+    childStatus = "completed";
+    rerender(
+      <ComputerSidebar
+        messages={[
+          {
+            ...parentMessage,
+            parts: [
+              ...parentMessage.parts,
+              {
+                type: "tool-run_terminal_cmd",
+                toolCallId: "parent-tool-2",
+                state: "input-available",
+                input: { command: "git status" },
+              },
+            ],
+          },
+        ]}
+        status="streaming"
+      />,
+    );
+
+    expect(mockOpenSidebar).not.toHaveBeenCalled();
+  });
+
+  it("still follows newly arriving tools in normal messages", () => {
+    const onNavigate = jest.fn();
+    const first = otherToolMessage.parts[0];
+    const props = {
+      sidebarOpen: true,
+      sidebarContent: {
+        command: "pwd",
+        output: "/tmp\n",
+        isExecuting: false,
+        toolCallId: first.toolCallId,
+      },
+      closeSidebar: jest.fn(),
+      onNavigate,
+      status: "streaming" as const,
+    };
+    const { rerender } = render(
+      <ComputerSidebarBase {...props} messages={[otherToolMessage]} />,
+    );
+    rerender(
+      <ComputerSidebarBase
+        {...props}
+        messages={[
+          {
+            ...otherToolMessage,
+            parts: [
+              first,
+              { ...first, toolCallId: "new-tool", input: { command: "date" } },
+            ],
+          },
+        ]}
+      />,
+    );
+    expect(onNavigate).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: "new-tool" }),
+    );
   });
 });

@@ -73,6 +73,7 @@ describe("useUpgrade checkout attempts", () => {
   });
 
   afterEach(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide"));
     window.history.replaceState(null, "", "/");
     window.sessionStorage.clear();
   });
@@ -320,6 +321,65 @@ describe("useUpgrade checkout attempts", () => {
       }),
     );
   });
+
+  it.each([
+    [
+      "http_error",
+      () =>
+        Promise.resolve(
+          response({
+            ok: false,
+            status: 503,
+            body: { error: "private server detail" },
+          }),
+        ),
+    ],
+    [
+      "invalid_json",
+      () =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new Error("private invalid JSON")),
+        }),
+    ],
+    [
+      "missing_checkout_url",
+      () => Promise.resolve(response({ ok: true, status: 200, body: {} })),
+    ],
+    [
+      "request_failed",
+      () => Promise.reject(new Error("private network detail")),
+    ],
+  ])(
+    "records %s with the attempt ID and allows another checkout",
+    async (reason, request) => {
+      global.fetch = jest
+        .fn()
+        .mockImplementation(request as () => Promise<Response>);
+      mockNewCheckoutAttemptId.mockReturnValue("ca_error_123");
+      const { result } = renderHook(() => useUpgrade());
+      await act(async () => {
+        await result.current.handleUpgrade("pro-monthly-plan");
+      });
+      expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+        "checkout_client_error",
+        expect.objectContaining({
+          reason,
+          checkout_attempt_id: "ca_error_123",
+        }),
+        { send_instantly: true, transport: "sendBeacon" },
+      );
+      expect(
+        JSON.stringify(mockCaptureAuthenticatedEvent.mock.calls),
+      ).not.toContain("private");
+      expect(result.current.upgradeLoading).toBe(false);
+      await act(async () => {
+        await result.current.handleUpgrade("pro-monthly-plan");
+      });
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("keeps the submit lock held once checkout navigation starts", async () => {
     global.fetch = jest.fn().mockResolvedValue(

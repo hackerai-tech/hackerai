@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom";
 import React from "react";
+import { evidenceWarningText } from "@/lib/ai/subagents/evidence-references";
 import {
   act,
   fireEvent,
@@ -176,6 +177,51 @@ describe("SubagentsSidebar", () => {
         },
       ];
     });
+  });
+
+  it("shows persisted evidence warnings after reopening a completed worker", () => {
+    const warning = evidenceWarningText({
+      evidence_verification: {
+        checked_refs: [],
+        unavailable_refs: ["/tmp/control.http"],
+        warning:
+          "Some saved evidence could not be checked because the sandbox metadata service was unavailable. The result is preserved, but those references are not attached as verified evidence. Retry them in a follow-up using the saved unverified references; existence checks do not establish vulnerability validity.",
+      },
+    })!;
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [doneChild];
+      if (query === "getOwned") return args === "skip" ? undefined : doneChild;
+      return [
+        {
+          message_id: "warning-message",
+          sequence: 9999,
+          role: "assistant",
+          parts: [{ type: "text", text: warning }],
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+    });
+    const props = {
+      content: {
+        kind: "subagents" as const,
+        parentMessageId: "parent-message",
+        toolCallId: "tool-1",
+        selectedSubagentId: doneChild.subagent_id,
+      },
+      closeSidebar: jest.fn(),
+    };
+    const first = render(<SubagentsSidebar {...props} />);
+    expect(screen.getByText(/^Evidence verification warning:/)).toBeVisible();
+    expect(
+      screen.getByText(/^Evidence verification warning:/),
+    ).toHaveTextContent("/tmp/control.http");
+    first.unmount();
+    render(<SubagentsSidebar {...props} />);
+    expect(screen.getByText(/^Evidence verification warning:/)).toBeVisible();
+    expect(
+      screen.getByText(/^Evidence verification warning:/),
+    ).toHaveTextContent("/tmp/control.http");
   });
 
   it("groups active and done children, then opens a live child detail", () => {

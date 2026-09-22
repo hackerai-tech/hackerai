@@ -1,3 +1,11 @@
+import {
+  freeMonthlyBudgetProperties,
+  type FreeMonthlyBudgetAssignment,
+} from "@/lib/experiments/free-monthly-budget";
+import {
+  regionalFreeLimitsProperties,
+  type RegionalFreeLimitsPolicy,
+} from "@/lib/rate-limit/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -35,6 +43,8 @@ import {
   type ExperimentAnalyticsContext,
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
+import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
+import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -69,6 +79,7 @@ import {
 } from "@/lib/limit-pressure";
 
 export const USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE = 0.005;
+export const AGENT_PERFORMANCE_LOG_SAMPLE_RATE = 0.01;
 export const USAGE_PRICING_VERSION = `request-${NORMAL_USAGE_MULTIPLIER.toFixed(2)}-extra-${EXTRA_USAGE_REQUEST_MULTIPLIER.toFixed(2)}-v2`;
 
 const usagePricingAnalyticsProperties = {
@@ -82,10 +93,10 @@ const usagePricingAnalyticsProperties = {
   ),
 } as const;
 
-const usageSettlementSampleBucket = (usageSettlementId: string): number => {
+const telemetrySampleBucket = (id: string): number => {
   let hash = 2166136261;
-  for (let index = 0; index < usageSettlementId.length; index += 1) {
-    hash ^= usageSettlementId.charCodeAt(index);
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0) % 10_000;
@@ -94,12 +105,17 @@ const usageSettlementSampleBucket = (usageSettlementId: string): number => {
 export const isUsageSettlementSuccessSampled = (
   usageSettlementId: string,
 ): boolean =>
-  usageSettlementSampleBucket(usageSettlementId) <
+  telemetrySampleBucket(usageSettlementId) <
   USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE * 10_000;
+
+export const isAgentPerformanceLogSampled = (runId: string): boolean =>
+  telemetrySampleBucket(`agent-performance:${runId}`) <
+  AGENT_PERFORMANCE_LOG_SAMPLE_RATE * 10_000;
 
 export interface ChatLoggerConfig {
   chatId: string;
   endpoint: ChatApiEndpoint;
+  requestId?: string;
 }
 
 export interface RequestDetails {
@@ -244,6 +260,12 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "upload_failure_cause",
   "upload_failure_transient_sandbox_command",
   "upload_failure_sandbox_readiness_reason",
+  "upload_failure_sandbox_provider",
+  "upload_failure_error_name",
+  "upload_failure_error_code",
+  "upload_failure_error_http_status",
+  "upload_failure_error_request_id",
+  "upload_failure_error_retryable",
   "upload_failure_protocol",
   "upload_failure_url_length",
   "upload_retried_with_fresh_sandbox",
@@ -541,7 +563,11 @@ const getAgentBillingStopReason = (
  * Creates a chat logger instance for tracking wide events
  */
 export function createChatLogger(config: ChatLoggerConfig) {
-  const builder = createWideEventBuilder(config.chatId, config.endpoint);
+  const builder = createWideEventBuilder(
+    config.chatId,
+    config.endpoint,
+    config.requestId,
+  );
 
   // Cache identity/context fields so emitChatError can fire discrete PostHog
   // events without forcing the call site to thread them through. Populated by
@@ -553,8 +579,30 @@ export function createChatLogger(config: ChatLoggerConfig) {
   let extraUsageTelemetry: ExtraUsageTelemetryContext | undefined;
   let lastProviderErrorCategory: ProviderErrorCategory | undefined;
   let lastProviderErrorStatusCode: number | undefined;
+  const setModelResponse = (
+    responseModel: string | undefined,
+    openRouterMetadata?: OpenRouterModelMetadata,
+  ) => {
+    if (responseModel) {
+      builder.setActualModel(responseModel);
+    }
+    if (openRouterMetadata) {
+      builder.setOpenRouterMetadata(openRouterMetadata);
+    }
+  };
 
   return {
+    /**
+     * Correlation/model fields safe to copy into lifecycle logs.
+     */
+    getDiagnosticContext() {
+      return builder.getDiagnosticContext();
+    },
+
+    getRequestId() {
+      return builder.getDiagnosticContext().request_id;
+    },
+
     /**
      * Set initial request details
      */
@@ -646,13 +694,20 @@ export function createChatLogger(config: ChatLoggerConfig) {
       usage: Record<string, unknown> | undefined,
       openRouterMetadata?: OpenRouterModelMetadata,
     ) {
-      if (responseModel) {
-        builder.setActualModel(responseModel);
-      }
-      if (openRouterMetadata) {
-        builder.setOpenRouterMetadata(openRouterMetadata);
-      }
+      setModelResponse(responseModel, openRouterMetadata);
       builder.setUsage(usage);
+    },
+
+    /**
+     * Preserve the latest completed model/provider attribution before the
+     * whole stream finishes, so abort and timeout logs can still identify it.
+     */
+    setModelResponse,
+
+    recordProviderModelCall: (
+      entry: Parameters<typeof builder.recordProviderModelCall>[0],
+    ) => {
+      builder.recordProviderModelCall(entry);
     },
 
     /**
@@ -801,6 +856,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       lastProviderErrorStatusCode = providerStatusCode;
 
       const logContext = {
+        ...builder.getDiagnosticContext(),
         event: providerErrorEventName(category),
         chat_id: config.chatId,
         endpoint: config.endpoint,
@@ -808,6 +864,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_attribution_available: attributedProviderName !== undefined,
         provider_diagnostic_message: diagnosticMessage,
         provider_error_fingerprint: providerErrorFingerprint,
         ...(providerStatusCode && { provider_status_code: providerStatusCode }),
@@ -826,6 +883,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
       }
 
       const phContext = {
+        ...builder.getDiagnosticContext(),
         event: providerErrorEventName(category),
         chatId: config.chatId,
         endpoint: config.endpoint,
@@ -833,6 +891,7 @@ export function createChatLogger(config: ChatLoggerConfig) {
         ...providerContext,
         ...details,
         ...normalizedProviderContext,
+        provider_attribution_available: attributedProviderName !== undefined,
         providerDiagnosticMessage: diagnosticMessage,
         providerErrorFingerprint,
         ...(providerStatusCode && { providerStatusCode }),
@@ -963,21 +1022,23 @@ export function createChatLogger(config: ChatLoggerConfig) {
               paidDailyFreeAllowance?.available,
             paid_daily_free_allowance_unavailable_reason:
               paidDailyFreeAllowance?.unavailableReason,
-            paid_daily_free_allowance_requests_remaining:
-              paidDailyFreeAllowance?.requestsRemaining,
-            paid_daily_free_allowance_request_limit:
-              paidDailyFreeAllowance?.requestLimit,
+            paid_daily_free_allowance_requests_today:
+              paidDailyFreeAllowance?.requestsUsed,
+            paid_daily_free_allowance_cost_used_today_dollars:
+              paidDailyFreeAllowance?.costUsedDollars,
             paid_daily_free_allowance_cost_remaining_dollars:
               paidDailyFreeAllowance?.costRemainingDollars,
             paid_daily_free_allowance_cost_limit_dollars:
               paidDailyFreeAllowance?.costLimitDollars,
-            paid_daily_free_allowance_rollout_percent:
-              paidDailyFreeAllowance?.rolloutPercent,
             chat_id: config.chatId,
             endpoint: config.endpoint,
             $set: {
               subscription_tier: subscription,
               last_limit_hit_at: new Date().toISOString(),
+              ...(pressure.paidMonthlyExhaustion && {
+                paid_monthly_last_exhausted_at: new Date().toISOString(),
+                paid_monthly_last_exhausted_tier: subscription,
+              }),
             },
           }),
         );
@@ -1171,11 +1232,13 @@ export function captureToolCalls({
   chatLogger,
   userId,
   mode,
+  triggerRunId,
 }: {
   posthog: PostHog | null;
   chatLogger: ChatLogger | undefined;
   userId: string;
   mode: ChatMode;
+  triggerRunId?: string;
 }) {
   if (!posthog || !chatLogger) return;
   const toolCalls = chatLogger.getToolCalls();
@@ -1206,6 +1269,7 @@ export function captureToolCalls({
       ),
       totalCount: toolCalls.length,
       distinctToolCount: tools.length,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
       tool_usage_event_version: 2,
       $process_person_profile: false,
     },
@@ -1247,6 +1311,10 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
+  // Every completion path must explicitly forward its request telemetry.
+  abliteratedProviderSummary:
+    ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
   posthog: PostHog | null;
   userId: string;
   chatId: string;
@@ -1255,6 +1323,7 @@ type AgentCompletionAnalyticsArgs = {
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  hasResponseContent: boolean;
   abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
@@ -1273,6 +1342,8 @@ type AgentCompletionAnalyticsArgs = {
   taskToFirstModelStartMs?: number;
   requestToFirstModelStartMs?: number;
   requestToFirstModelChunkMs?: number;
+  startupCompactionVariant?: import("@/lib/chat/summarization/startup-compaction").StartupCompactionVariant;
+  startupCompactionFallbackUsed?: boolean;
   startupSubphaseTimingVersion?: 1;
   startupSummaryGenerationDurationMs?: number;
   startupTranscriptSavingDurationMs?: number;
@@ -1283,6 +1354,7 @@ type AgentCompletionAnalyticsArgs = {
   activeModelStreamDurationMs?: number;
   activeTerminalWaitDurationMs?: number;
   activeSandboxRecoveryDurationMs?: number;
+  handledToolFailureCount?: number;
   messageCount?: number;
   estimatedInputTokens?: number;
   attachmentCount?: number;
@@ -1302,6 +1374,7 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  abliteratedProviderSummary,
   posthog,
   userId,
   chatId,
@@ -1326,6 +1399,8 @@ export function captureAgentRun({
   taskToFirstModelStartMs,
   requestToFirstModelStartMs,
   requestToFirstModelChunkMs,
+  startupCompactionVariant,
+  startupCompactionFallbackUsed,
   startupSubphaseTimingVersion,
   startupSummaryGenerationDurationMs,
   startupTranscriptSavingDurationMs,
@@ -1336,6 +1411,7 @@ export function captureAgentRun({
   activeModelStreamDurationMs,
   activeTerminalWaitDurationMs,
   activeSandboxRecoveryDurationMs,
+  handledToolFailureCount,
   messageCount,
   estimatedInputTokens,
   attachmentCount,
@@ -1345,6 +1421,7 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
+  monthlyFreeBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1352,7 +1429,14 @@ export function captureAgentRun({
   providerRecoveryAttempts,
   providerRecoveryModels,
   providerRecoverySucceeded,
-}: Omit<AgentCompletionAnalyticsArgs, "endpoint" | "chatLogger">) {
+}: Omit<
+  AgentCompletionAnalyticsArgs,
+  | "endpoint"
+  | "chatLogger"
+  | "abliteratedProviderSummary"
+  | "hasResponseContent"
+> &
+  Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
   if (mode !== "agent") return;
   const performanceDiagnostics = buildAgentPerformanceDiagnostics({
     triggerUsageDurationMs,
@@ -1396,12 +1480,18 @@ export function captureAgentRun({
       }
     : undefined;
 
+  // Keep complete percentile data on the existing completion event. Duplicate
+  // diagnostic logs retain errors and a stable 1% sample of other slow runs.
   if (
-    performanceDiagnostics?.firstOutputSlow ||
-    performanceDiagnostics?.runtimeSlow
+    (performanceDiagnostics?.firstOutputSlow ||
+      performanceDiagnostics?.runtimeSlow) &&
+    (outcome === "error" ||
+      isAgentPerformanceLogSampled(triggerRunId ?? chatId))
   ) {
     logger.warn("Slow agent run detected", {
       event: "agent_performance_diagnostic",
+      log_sample_rate:
+        outcome === "error" ? 1 : AGENT_PERFORMANCE_LOG_SAMPLE_RATE,
       service: "agent-long",
       chat_id: chatId,
       ...(triggerRunId && { trigger_run_id: triggerRunId }),
@@ -1423,6 +1513,10 @@ export function captureAgentRun({
       }),
       ...(triggerTaskStartLatencyMs !== undefined && {
         trigger_task_start_latency_ms: triggerTaskStartLatencyMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
       }),
       ...(startupSubphaseTimingVersion !== undefined && {
         startup_subphase_timing_version: startupSubphaseTimingVersion,
@@ -1485,6 +1579,9 @@ export function captureAgentRun({
     distinctId: userId,
     event: "hackerai-agent_run",
     properties: {
+      ...(handledToolFailureCount !== undefined && {
+        handled_tool_failure_count: handledToolFailureCount,
+      }),
       mode,
       subscription,
       subscription_tier: subscription,
@@ -1521,6 +1618,10 @@ export function captureAgentRun({
       }),
       ...(requestToFirstModelChunkMs !== undefined && {
         request_to_first_model_chunk_ms: requestToFirstModelChunkMs,
+      }),
+      ...(startupCompactionVariant !== undefined && {
+        startup_compaction_variant: startupCompactionVariant,
+        startup_compaction_fallback_used: startupCompactionFallbackUsed,
       }),
       ...(startupSubphaseTimingVersion !== undefined && {
         startup_subphase_timing_version: startupSubphaseTimingVersion,
@@ -1576,6 +1677,11 @@ export function captureAgentRun({
       ...(responseModel && { response_model: responseModel }),
       ...(responseModel &&
         fallbackServed !== undefined && { fallback_served: fallbackServed }),
+      // Versioned call-level evidence supersedes the old final-model flag.
+      ...abliteratedProviderSummary,
+      ...(abliteratedProviderSummary?.model_routing_telemetry_version === 1 && {
+        legacy_fallback_served: fallbackServed,
+      }),
       ...(sandboxInfo?.type && {
         sandbox_type: sandboxInfo.type,
       }),
@@ -1627,6 +1733,7 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }
@@ -1635,7 +1742,69 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
+  // A successful free response is activation evidence; metered cost alone also
+  // occurs on failed requests. Keep this separate from task-completion claims.
+  if (
+    subscription === "free" &&
+    outcome === "success" &&
+    args.hasResponseContent &&
+    !args.isAutoContinue
+  ) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "free_response_completed",
+        properties: {
+          ...freeMonthlyBudgetProperties(args.monthlyFreeBudget),
+          activation_definition_version: 1,
+          mode,
+          subscription_tier: subscription,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      // Analytics must never interrupt response persistence.
+    }
+  }
+
+  if (isAbliterationExperimentKey(args.experiment?.key)) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "abliterated_model_response_outcome",
+        properties: {
+          ...args.abliteratedProviderSummary,
+          ...getExperimentAnalyticsProperties(args.experiment),
+          chat_id: args.chatId,
+          mode,
+          subscription_tier: subscription,
+          outcome,
+          abort_source: args.abortSource,
+          finish_reason: args.finishReason,
+          configured_model: args.configuredModelId,
+          response_model: args.responseModel,
+          fallback_served:
+            args.abliteratedProviderSummary?.model_routing_telemetry_version ===
+            1
+              ? args.abliteratedProviderSummary.fallback_served
+              : args.fallbackServed,
+          ...(args.abliteratedProviderSummary
+            ?.model_routing_telemetry_version === 1 && {
+            legacy_fallback_served: args.fallbackServed,
+          }),
+          provider_recovery_attempts: args.providerRecoveryAttempts,
+          provider_recovery_succeeded: args.providerRecoverySucceeded,
+          budget_abort_cap_reason: args.budgetAbortDetails?.capReason,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      /* Analytics must never interrupt response persistence. */
+    }
+  }
   captureAgentRun({
+    monthlyFreeBudget: args.monthlyFreeBudget,
+    abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
     chatId: args.chatId,
@@ -1652,6 +1821,7 @@ export function captureAgentCompletionAnalytics(
     budgetAbortDetails: args.budgetAbortDetails,
     agentPermissionMode: args.agentPermissionMode,
     triggerRunId: args.triggerRunId,
+    handledToolFailureCount: args.handledToolFailureCount,
     triggerUsageDurationMs: args.triggerUsageDurationMs,
     triggerTotalCostUsd: args.triggerTotalCostUsd,
     startupTimingVersion: args.startupTimingVersion,
@@ -1660,6 +1830,8 @@ export function captureAgentCompletionAnalytics(
     taskToFirstModelStartMs: args.taskToFirstModelStartMs,
     requestToFirstModelStartMs: args.requestToFirstModelStartMs,
     requestToFirstModelChunkMs: args.requestToFirstModelChunkMs,
+    startupCompactionVariant: args.startupCompactionVariant,
+    startupCompactionFallbackUsed: args.startupCompactionFallbackUsed,
     startupSubphaseTimingVersion: args.startupSubphaseTimingVersion,
     startupSummaryGenerationDurationMs: args.startupSummaryGenerationDurationMs,
     startupTranscriptSavingDurationMs: args.startupTranscriptSavingDurationMs,
@@ -1716,6 +1888,9 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
+  regionalFreeLimits,
+  monthlyFreeBudget,
+  triggerRunId,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -1730,7 +1905,7 @@ export function captureUsageCost({
   paidDailyFreeAllowance?: {
     active: boolean;
     cutOff?: boolean;
-    requestLimit?: number;
+    requestsToday?: number;
     costLimitDollars?: number;
     resetTimestamp?: number;
   };
@@ -1743,6 +1918,9 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
+  regionalFreeLimits?: RegionalFreeLimitsPolicy;
+  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
+  triggerRunId?: string;
 }) {
   if (!posthog) return;
   const includedUsageValueDollars =
@@ -1761,6 +1939,7 @@ export function captureUsageCost({
     event: "hackerai-usage_cost",
     properties: {
       user_id: userId,
+      ...(triggerRunId && { trigger_run_id: triggerRunId }),
       subscription,
       subscription_tier: subscription,
       ...(organizationId && { organization_id: organizationId }),
@@ -1798,9 +1977,11 @@ export function captureUsageCost({
       model_cost_dollars: usage.modelCostDollars,
       non_model_cost_dollars: usage.nonModelCostDollars,
       ...(sandboxUsage && {
-        sandbox_cost_accounting_version: 1,
-        sandbox_cost_source: "configured_baseline_estimate",
+        sandbox_cost_accounting_version: 2,
+        sandbox_cost_source: "request_runtime_rate",
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
+        sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
+        sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,
         sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
         sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
       }),
@@ -1836,14 +2017,16 @@ export function captureUsageCost({
         paid_daily_free_allowance_active: true,
         paid_daily_free_allowance_cut_off:
           paidDailyFreeAllowance.cutOff === true,
-        paid_daily_free_allowance_request_limit:
-          paidDailyFreeAllowance.requestLimit,
+        paid_daily_free_allowance_requests_today:
+          paidDailyFreeAllowance.requestsToday,
         paid_daily_free_allowance_cost_limit_dollars:
           paidDailyFreeAllowance.costLimitDollars,
         paid_daily_free_allowance_reset_timestamp:
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...regionalFreeLimitsProperties(regionalFreeLimits),
+      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }

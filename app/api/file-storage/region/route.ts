@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
+import { getExecutionRegionForVercelRequest } from "@/lib/api/trigger-region";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: NextRequest) {
-  const region = getTriggerRegionForVercelRequest(request) ?? "us-east-1";
+  const region = getExecutionRegionForVercelRequest(request);
 
   return NextResponse.json(
     { region },

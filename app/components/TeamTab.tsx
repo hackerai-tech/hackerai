@@ -168,7 +168,7 @@ const TeamTab = () => {
     : 0;
 
   const handleRemove = async () => {
-    if (!memberToRemove) return;
+    if (!memberToRemove || removing) return;
 
     try {
       setRemoving(memberToRemove.id);
@@ -198,7 +198,7 @@ const TeamTab = () => {
   };
 
   const handleRevokeInvite = async () => {
-    if (!inviteToRevoke) return;
+    if (!inviteToRevoke || revokingInvite) return;
 
     try {
       setRevokingInvite(inviteToRevoke.id);
@@ -225,6 +225,7 @@ const TeamTab = () => {
   };
 
   const handleLeaveTeam = async () => {
+    if (leaving) return;
     try {
       setLeaving(true);
 

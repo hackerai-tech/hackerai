@@ -1,3 +1,14 @@
+import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
+import {
+  verifyResultEvidence,
+  evidenceWarningText,
+  type CheckedSubagentResult,
+} from "@/lib/ai/subagents/evidence-references";
+import {
+  loadObjectiveCheckpoint,
+  objectiveCheckpointEnabledForChild,
+} from "@/lib/db/objective-checkpoint";
+import type { FreeLimitPolicy } from "@/lib/rate-limit/free-config";
 import {
   logger as triggerLogger,
   metadata,
@@ -58,13 +69,17 @@ import {
 } from "@/lib/ai/subagents/runtime-recovery";
 import {
   getSubagentProfileDefinition,
-  resolveSubagentAllowedToolNames,
+  resolveSubagentAllowedToolNamesForPermissionMode,
 } from "@/lib/ai/subagents/profiles";
+import { isAgentPermissionMode, type AgentPermissionMode } from "@/types/chat";
 import {
   resolveSubagentModelForImageToolResults,
   resolveSubagentTextModel,
 } from "@/lib/ai/subagents/model-routing";
-import { assertSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
+import {
+  assertSubagentSandboxIdentity,
+  getSubagentSandboxIdentity,
+} from "@/lib/ai/subagents/sandbox-identity";
 import {
   assertSubagentRuntimeAuthorized,
   guardSubagentToolExecutions,
@@ -106,7 +121,12 @@ import {
   buildExtraUsageConfig,
   getContentFilterRetryModel,
 } from "@/lib/api/chat-stream-helpers";
-import { getUserCustomization } from "@/lib/db/actions";
+import {
+  getChatById,
+  getCurrentAgentEntitlementContext,
+  getUserCustomization,
+  persistAgentApprovalGrant,
+} from "@/lib/db/actions";
 import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 import {
   captureSubagentLifecycleEvent,
@@ -121,7 +141,31 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
-import type { TriggerRunRegion } from "@/lib/api/trigger-region";
+import {
+  DEFAULT_TRIGGER_RUN_REGION,
+  type TriggerRunRegion,
+} from "@/lib/api/trigger-region";
+import { assertSubagentRunRegion } from "@/lib/ai/subagents/region-guard";
+import {
+  createActiveRuntimeBudget,
+  type ActiveRuntimeBudget,
+} from "@/lib/chat/active-runtime-budget";
+import {
+  AgentAutoReviewEntitlementRevalidationUnavailableError,
+  buildAgentToolApprovalRequester,
+} from "@/lib/chat/agent-tool-approval-requester";
+import {
+  AgentApprovalAuthorizationError,
+  verifyAgentToolApprovalInputAuthorization,
+} from "@/lib/chat/agent-approval-authorization";
+import { getAgentApprovalSandboxIdentity } from "@/lib/ai/tools/utils/sandbox-fallback";
+import {
+  serializeSandboxScopedAgentApprovalTargetPrefix,
+  type AnySandbox,
+  type AgentToolApprovalInputRecord,
+} from "@/types";
+import type { PersistedAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
+import { assertUserCanMakeCostIncurringRequest } from "@/lib/suspensions";
 
 const loadPersistedTerminalOutput = async (
   subagentId: string,
@@ -137,6 +181,7 @@ const loadPersistedTerminalOutput = async (
 };
 
 type SubagentTaskPayload = {
+  regionalFreeLimits?: FreeLimitPolicy;
   subagentId: string;
   convexUrl?: string;
   triggerRegion?: TriggerRunRegion;
@@ -365,6 +410,23 @@ export const subagentTask = task({
     { ctx, signal: triggerSignal },
   ): Promise<SubagentTaskOutput> => {
     const startedAt = Date.now();
+    const triggerRegion = payload.triggerRegion ?? DEFAULT_TRIGGER_RUN_REGION;
+    await assertSubagentRunRegion(
+      {
+        requestedRegion: triggerRegion,
+        actualRegion: ctx.run.region,
+        environmentType: ctx.environment.type,
+      },
+      async (failure) => {
+        if (payload.convexUrl) setConvexUrl(payload.convexUrl);
+        await finishSubagent({
+          subagentId: payload.subagentId,
+          triggerRunId: ctx.run.id,
+          ...failure,
+        });
+      },
+    );
+
     // The parent Agent run may be using a branch-specific Convex deployment.
     // Trigger preview workers otherwise inherit the dashboard's main URL and
     // cannot see the reservation that the parent just created.
@@ -378,6 +440,7 @@ export const subagentTask = task({
     }
     const costLimitDollars = row.cost_limit_dollars;
     let profile!: ReturnType<typeof getSubagentProfileDefinition>;
+    let permissionMode!: AgentPermissionMode;
 
     cancellationCleanup.set(ctx.run.id, {
       subagentId: row.subagent_id,
@@ -408,13 +471,15 @@ export const subagentTask = task({
       if (attachOutcome !== "updated") {
         throw new Error(`Subagent attachment failed: ${attachOutcome}`);
       }
+      const persistedPermissionMode = row.permission_mode;
       if (
         row.depth !== 1 ||
         (row.status !== "queued" && row.status !== "running") ||
-        row.permission_mode !== "full_access"
+        !isAgentPermissionMode(persistedPermissionMode)
       ) {
         throw new Error("Unsupported subagent profile or depth");
       }
+      permissionMode = persistedPermissionMode;
       profile = getSubagentProfileDefinition(row.profile);
       await tags.add([
         `subagent_${row.subagent_id}`,
@@ -468,13 +533,16 @@ export const subagentTask = task({
     let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
-    const timeout = setTimeout(() => {
-      activeTimedOut = true;
-      activeAbort.abort();
-    }, SUBAGENT_MAX_ACTIVE_SECONDS * 1_000);
+    const activeRuntimeBudget: ActiveRuntimeBudget = createActiveRuntimeBudget({
+      maxDurationMs: SUBAGENT_MAX_ACTIVE_SECONDS * 1_000,
+      onExceeded: () => {
+        activeTimedOut = true;
+        activeAbort.abort();
+      },
+    });
 
     const usageTracker = new UsageTracker();
-    let resultValue: SubagentStructuredResult | undefined;
+    let resultValue: CheckedSubagentResult | undefined;
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -608,6 +676,7 @@ export const subagentTask = task({
         organizationId: row.organization_id,
         subscription: row.subscription,
         freeQuotaSubject: row.free_quota_subject,
+        freeLimits: payload.regionalFreeLimits,
         extraUsageConfig,
         modelName: selectedModel,
       });
@@ -643,6 +712,22 @@ export const subagentTask = task({
               runtimeStage = "result_validation";
               resultSubmissionAttempts += 1;
               const parsed = profile.finalResultTool.schema.parse(input);
+              if (objectiveCheckpoint?.state.blocker) {
+                if ("task_status" in parsed) {
+                  parsed.task_status =
+                    objectiveCheckpoint.state.lastObservation ||
+                    objectiveCheckpoint.state.actions.some(
+                      (a) => a.state === "completed",
+                    )
+                      ? "partial"
+                      : "blocked";
+                }
+                parsed.limitations = [
+                  ...parsed.limitations.slice(0, 7),
+                  objectiveCheckpoint.state.blocker.slice(0, 500),
+                ];
+              }
+
               if (
                 Buffer.byteLength(JSON.stringify(parsed), "utf8") >
                 profile.finalResultTool.maxBytes
@@ -658,8 +743,15 @@ export const subagentTask = task({
                   error: "A structured result was already accepted.",
                 };
               }
-              runtimeStage = "authorization";
-              await assertRuntimeAuthorized();
+              runtimeStage = "evidence_verification";
+              const evidence = await verifyResultEvidence({
+                result: parsed,
+                sandbox,
+                expectedSandboxIdentity: row.sandbox_identity,
+                signal: activeAbort.signal,
+                authorize: assertRuntimeAuthorized,
+              });
+              if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
               const finalizing = await markSubagentFinalizing(
                 row.subagent_id,
@@ -679,9 +771,15 @@ export const subagentTask = task({
                   error: "This subagent is no longer accepting results.",
                 };
               }
-              resultValue = parsed;
+              resultValue = evidence.result;
               return {
                 accepted: true,
+                ...(evidence.result.evidence_verification
+                  ? {
+                      evidence_verification:
+                        evidence.result.evidence_verification,
+                    }
+                  : {}),
                 ...(row.profile === "security_validation" && "verdict" in parsed
                   ? { verdict: parsed.verdict }
                   : "task_status" in parsed
@@ -730,10 +828,197 @@ export const subagentTask = task({
                 return { updated };
               },
             });
-            const allowedToolNames = resolveSubagentAllowedToolNames(
-              row.profile,
-              row.capability_bundles,
-            );
+            const approvalSessionId = row.approval_session_id;
+            const approvalChat = approvalSessionId
+              ? await getChatById({ id: row.chat_id })
+              : null;
+            const initialTargetGrants =
+              (approvalChat?.agent_approval_grants as PersistedAgentApprovalTargetGrant[]) ??
+              [];
+            let approvalEnsureSandbox: (() => Promise<AnySandbox>) | undefined;
+            const revalidateCurrentAuthorization = async ({
+              autoReview,
+              approvalId,
+              toolCallId,
+            }: {
+              autoReview: boolean;
+              approvalId?: string;
+              toolCallId?: string;
+            }) => {
+              await assertSubagentRuntimeAuthorized({
+                subagentId: row.subagent_id,
+                childTriggerRunId: ctx.run.id,
+                parentTriggerRunId: row.parent_trigger_run_id,
+                loadChild: getSubagent,
+                retrieveParent: async (parentTriggerRunId) =>
+                  await runs.retrieve(parentTriggerRunId),
+              });
+              await assertUserCanMakeCostIncurringRequest(row.user_id);
+
+              let currentEntitlement;
+              try {
+                currentEntitlement = await getCurrentAgentEntitlementContext({
+                  userId: row.user_id,
+                  organizationId: row.organization_id,
+                });
+              } catch (error) {
+                if (autoReview) {
+                  throw new AgentAutoReviewEntitlementRevalidationUnavailableError();
+                }
+                throw error;
+              }
+              if (
+                currentEntitlement.subscription !== row.subscription ||
+                currentEntitlement.organizationId !== row.organization_id
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The current entitlement context differs from the subagent start.",
+                );
+              }
+
+              const currentChat = await getChatById({ id: row.chat_id });
+              const pendingRequest = currentChat?.active_agent_approval_request;
+              if (
+                !currentChat ||
+                currentChat.user_id !== row.user_id ||
+                currentChat.active_trigger_run_id !==
+                  row.parent_trigger_run_id ||
+                currentChat.active_agent_approval_session_id !==
+                  approvalSessionId ||
+                (!autoReview &&
+                  (pendingRequest?.approvalId !== approvalId ||
+                    pendingRequest?.toolCallId !== toolCallId ||
+                    pendingRequest?.sourceRunId !== ctx.run.id ||
+                    pendingRequest?.sourceAgentId !== row.subagent_id))
+              ) {
+                throw new AgentApprovalAuthorizationError(
+                  "authorization_mismatch",
+                  "The chat is no longer waiting for this subagent approval.",
+                );
+              }
+
+              const currentCustomization = await getUserCustomization({
+                userId: row.user_id,
+              });
+              const currentExtraUsageConfig = await buildExtraUsageConfig({
+                userId: row.user_id,
+                subscription: currentEntitlement.subscription,
+                userCustomization: currentCustomization,
+                organizationId: currentEntitlement.organizationId,
+                failClosedOnLookupError: true,
+              });
+              await checkSubagentBillingCapacity({
+                userId: row.user_id,
+                organizationId: currentEntitlement.organizationId,
+                subscription: currentEntitlement.subscription,
+                freeQuotaSubject: row.free_quota_subject,
+                freeLimits: payload.regionalFreeLimits,
+                extraUsageConfig: currentExtraUsageConfig,
+                modelName: selectedModel,
+              });
+            };
+            const requestToolApproval = buildAgentToolApprovalRequester({
+              agentPermissionMode: permissionMode,
+              approvalSessionId,
+              writer,
+              chatId: row.chat_id,
+              userId: row.user_id,
+              runId: row.parent_trigger_run_id,
+              source: {
+                runId: ctx.run.id,
+                agentId: row.subagent_id,
+                agentName: row.name ?? "Subagent",
+              },
+              signal: activeAbort.signal,
+              activeRuntimeBudget,
+              initialTargetGrants,
+              persistTargetGrant: (grant, sandboxIdentity) =>
+                persistAgentApprovalGrant({
+                  chatId: row.chat_id,
+                  userId: row.user_id,
+                  grant: {
+                    ...grant,
+                    targetPrefix:
+                      serializeSandboxScopedAgentApprovalTargetPrefix({
+                        sandboxIdentity,
+                        targetPrefix: grant.targetPrefix,
+                      }),
+                  },
+                }),
+              resolveSandboxIdentity: async () => {
+                if (!approvalEnsureSandbox) {
+                  throw new Error(
+                    "Sandbox is unavailable for subagent approval",
+                  );
+                }
+                return getAgentApprovalSandboxIdentity(
+                  await approvalEnsureSandbox(),
+                );
+              },
+              revalidateAfterSuspend: async (
+                input: AgentToolApprovalInputRecord,
+              ) => {
+                const authorization = verifyAgentToolApprovalInputAuthorization(
+                  {
+                    input,
+                    expected: {
+                      userId: row.user_id,
+                      chatId: row.chat_id,
+                      runId: row.parent_trigger_run_id,
+                      approvalSessionId: approvalSessionId!,
+                      approvalId: input.approvalId,
+                      toolCallId: input.toolCallId,
+                    },
+                  },
+                );
+                if (
+                  authorization.subscription !== row.subscription ||
+                  authorization.organizationId !== row.organization_id
+                ) {
+                  throw new AgentApprovalAuthorizationError(
+                    "authorization_mismatch",
+                    "The approval entitlement differs from the subagent start.",
+                  );
+                }
+                await revalidateCurrentAuthorization({
+                  autoReview: false,
+                  approvalId: input.approvalId,
+                  toolCallId: input.toolCallId,
+                });
+              },
+              revalidateAfterAutoReview: async ({ approvalId, toolCallId }) =>
+                await revalidateCurrentAuthorization({
+                  autoReview: true,
+                  approvalId,
+                  toolCallId,
+                }),
+              autoReviewAssignment: row.auto_review_rollout_phase
+                ? { phase: row.auto_review_rollout_phase }
+                : undefined,
+              autoReviewAuthorizationContext:
+                row.auto_review_authorization_context ?? {
+                  text: "",
+                  complete: false,
+                },
+              autoReviewConversationContext:
+                row.auto_review_conversation_context ?? {
+                  text: "",
+                  complete: false,
+                },
+              onAutoReviewCost: (costDollars) => {
+                usageTracker.providerCost += costDollars;
+                usageTracker.nonModelCost += costDollars;
+              },
+              onAutoReviewCircuitBreaker: () => activeAbort.abort(),
+              onPostWaitAuthorizationDenied: () => activeAbort.abort(),
+            });
+            const allowedToolNames =
+              resolveSubagentAllowedToolNamesForPermissionMode(
+                row.profile,
+                row.capability_bundles ?? [],
+                permissionMode,
+              );
             const {
               tools: unguardedTools,
               ensureSandbox,
@@ -758,8 +1043,9 @@ export const subagentTask = task({
               undefined,
               selectedModel,
               undefined,
-              undefined,
-              undefined,
+              requestToolApproval,
+              permissionMode === "auto_review" &&
+                row.auto_review_rollout_phase !== undefined,
               undefined,
               undefined,
               ctx.run.id,
@@ -778,29 +1064,37 @@ export const subagentTask = task({
                 }),
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
-                triggerRegion: payload.triggerRegion,
+                triggerRegion,
               },
             );
-            const tools = guardSubagentToolExecutions(
+            approvalEnsureSandbox = ensureSandbox;
+            const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
               assertRuntimeAuthorized,
-              {
-                canWriteFiles:
-                  row.profile !== "general" ||
-                  (row.capability_bundles ?? []).includes("code_write"),
-                browserCommandsOnly:
-                  row.profile === "general" &&
-                  (row.capability_bundles ?? []).includes("browser_qa") &&
-                  !(row.capability_bundles ?? []).some((capability) =>
-                    ["terminal", "code_write"].includes(capability),
-                  ),
-              },
             );
             runtimeStage = "sandbox_acquisition";
             await assertRuntimeAuthorized();
             const sandbox = await ensureSandbox();
             runtimeStage = "sandbox_identity_validation";
             assertSubagentSandboxIdentity(sandbox, row.sandbox_identity);
+            const checkpointOwner = {
+              userId: row.user_id,
+              chatId: row.chat_id,
+              triggerRunId: ctx.run.id,
+              subagentId: row.subagent_id,
+            };
+            const objectiveCheckpoint =
+              (await objectiveCheckpointEnabledForChild(checkpointOwner))
+                ? await loadObjectiveCheckpoint({
+                    ...checkpointOwner,
+                    environment: async () =>
+                      getSubagentSandboxIdentity(await ensureSandbox()),
+                    signal: activeAbort.signal,
+                    allowFollowUp: !!row.continuation_count,
+                  })
+                : undefined;
+            const tools =
+              objectiveCheckpoint?.wrap(authorizedTools) ?? authorizedTools;
 
             const provider = createTrackedProvider();
             const getGuardedLanguageModel = (
@@ -1135,7 +1429,17 @@ export const subagentTask = task({
                     12_000,
                     2_000,
                   );
+                  const checkpointRestriction =
+                    objectiveCheckpoint?.restriction(tools);
+                  if (checkpointRestriction)
+                    compacted.messages.push({
+                      role: "user",
+                      content: checkpointRestriction.instruction,
+                    });
                   return {
+                    ...(checkpointRestriction && !structuredResultRecovery
+                      ? { activeTools: checkpointRestriction.activeTools }
+                      : {}),
                     model: getGuardedLanguageModel(
                       activeModelName,
                       generationAttempt,
@@ -1177,6 +1481,14 @@ export const subagentTask = task({
                     spendCapExceeded = true;
                     activeAbort.abort();
                   }
+                  await objectiveCheckpoint?.recordSpend(
+                    usageTracker.computeCostDollars(
+                      selectedModel,
+                      responseModel,
+                    ) +
+                      resolveTriggerRunCost(triggerUsage.getCurrent())
+                        .totalCostDollars,
+                  );
                 },
               });
 
@@ -1192,6 +1504,7 @@ export const subagentTask = task({
                 }
               } else {
                 const attemptStream = generation.toUIMessageStream({
+                  onError: formatToolStreamError,
                   generateMessageId: () =>
                     `${row.subagent_id}-attempt-${generationAttempt}`,
                   sendReasoning: true,
@@ -1370,6 +1683,24 @@ export const subagentTask = task({
               if (!(await beginStructuredResultRecovery("missing_result"))) {
                 break;
               }
+            }
+            const warningText = resultValue && evidenceWarningText(resultValue);
+            if (warningText) {
+              const warningId = `${row.subagent_id}-evidence-warning-${row.continuation_count ?? 0}`;
+              await saveSubagentMessage({
+                subagentId: row.subagent_id,
+                userId: row.user_id,
+                sequence: (row.continuation_count ?? 0) * 10_000 + 9_999,
+                role: "assistant",
+                parts: [{ type: "text", text: warningText }],
+              });
+              writer.write({ type: "text-start", id: warningId });
+              writer.write({
+                type: "text-delta",
+                id: warningId,
+                delta: warningText,
+              });
+              writer.write({ type: "text-end", id: warningId });
             }
           } catch (error) {
             runtimeFailure = error;
@@ -1781,7 +2112,7 @@ export const subagentTask = task({
         .set("runtimeErrorCategory", outerRuntimeDiagnostics.category);
       throw error;
     } finally {
-      clearTimeout(timeout);
+      activeRuntimeBudget.dispose();
       triggerSignal.removeEventListener("abort", abortFromParent);
       cancellationCleanup.delete(ctx.run.id);
       await ptySessionManager.closeAll(row.subagent_id).catch(() => undefined);

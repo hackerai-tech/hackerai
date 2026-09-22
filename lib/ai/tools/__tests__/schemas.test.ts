@@ -7,6 +7,7 @@ import {
   createRunTerminalCmdToolSchema,
   createWebSearchToolSchema,
   runTerminalCmdTool,
+  todoWriteTool,
 } from "../schemas";
 
 const getDescription = (value: unknown): string =>
@@ -86,6 +87,25 @@ describe("agent tool schema descriptions", () => {
     );
     expect(getDescription(fullAccessTool)).toContain(
       "automatically routes subsequent Agent steps to a vision-capable model",
+    );
+  });
+
+  test("keeps inline line-number parsing guidance with the file tool", () => {
+    const fileTool = createFileToolSchema({ supportsView: true });
+
+    expect(getDescription(fileTool)).toContain("LINE_NUMBER|LINE_CONTENT");
+    expect(getDescription(fileTool)).toContain(
+      "Treat LINE_NUMBER| as metadata, not as part of the file content.",
+    );
+  });
+
+  test("keeps task-management completion guidance with the todo tool", () => {
+    expect(getDescription(todoWriteTool)).toContain(
+      "### When to Use This Tool",
+    );
+    expect(getDescription(todoWriteTool)).toContain("### When NOT to Use");
+    expect(getDescription(todoWriteTool)).toContain(
+      "Before finishing your turn, complete every todo or cancel it if it is no longer relevant",
     );
   });
 

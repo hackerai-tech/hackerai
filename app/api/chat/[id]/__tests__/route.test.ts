@@ -122,9 +122,9 @@ describe("DELETE /api/chat/[id]", () => {
     const response = await DELETE(request, paramsFor());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(body).toEqual({
-      deleted: true,
+      accepted: true,
       canceledTriggerRun: true,
       closedApprovalSession: true,
     });
@@ -157,7 +157,7 @@ describe("DELETE /api/chat/[id]", () => {
 
     const response = await DELETE(request, paramsFor());
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("run-1");
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith("child-run-1");
     expect(
@@ -205,7 +205,7 @@ describe("DELETE /api/chat/[id]", () => {
 
     const response = await DELETE(request, paramsFor());
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(mockCancelAgentTriggerRun).toHaveBeenCalledWith(undefined);
     expect(mockCloseAgentApprovalSession).toHaveBeenCalledWith(
       undefined,
@@ -235,7 +235,7 @@ describe("DELETE /api/chat/[id]", () => {
 
     const response = await DELETE(request, paramsFor());
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(mockCancelAgentTriggerRun).toHaveBeenNthCalledWith(1, "run-1");
     expect(mockCancelAgentTriggerRun).toHaveBeenNthCalledWith(2, "run-2");
     expect(mockCloseAgentApprovalSession).toHaveBeenNthCalledWith(
@@ -290,8 +290,8 @@ describe("DELETE /api/chat/[id]", () => {
     const response = await DELETE(request, paramsFor());
     const body = await response.json();
 
-    expect(response.status).toBe(200);
-    expect(body).toEqual({ deleted: true, reason: "not_found" });
+    expect(response.status).toBe(202);
+    expect(body).toEqual({ accepted: true, reason: "not_found" });
     expect(mockCancelAgentTriggerRun).not.toHaveBeenCalled();
     expect(mockCloseAgentApprovalSession).not.toHaveBeenCalled();
     expect(mockDeleteChatForBackend).not.toHaveBeenCalled();

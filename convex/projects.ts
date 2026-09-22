@@ -363,18 +363,20 @@ export const getProjectThreads = query({
 
     return {
       ...result,
-      page: result.page.map((chat) => ({
-        ...chat,
-        ...(chat.branched_from_chat_id
-          ? {
-              branched_from_title: resolveBranchedFromTitle(
-                chat,
-                branchedChatMap.get(chat.branched_from_chat_id),
-                identity.subject,
-              ),
-            }
-          : {}),
-      })),
+      page: result.page.map(
+        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => ({
+          ...chat,
+          ...(chat.branched_from_chat_id
+            ? {
+                branched_from_title: resolveBranchedFromTitle(
+                  chat,
+                  branchedChatMap.get(chat.branched_from_chat_id),
+                  identity.subject,
+                ),
+              }
+            : {}),
+        }),
+      ),
     };
   },
 });

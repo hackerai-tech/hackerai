@@ -55,10 +55,17 @@ jest.mock("../SidebarUserNav", () => ({
   default: () => <div>Footer</div>,
 }));
 jest.mock("../SidebarChatSections", () => ({
-  SidebarChatSections: ({ projects }: { projects?: unknown[] }) => (
+  SidebarChatSections: ({
+    projects,
+    loadMore,
+  }: {
+    projects?: unknown[];
+    loadMore?: unknown;
+  }) => (
     <div
       data-testid="sidebar-chat-sections"
       data-project-count={projects?.length}
+      data-pagination-enabled={typeof loadMore === "function"}
     >
       Task sections
     </div>
@@ -88,6 +95,10 @@ describe("MainSidebar", () => {
     expect(expandedContent).toHaveClass("visible", "opacity-100", "delay-200");
     expect(expandedContent).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByTestId("sidebar-chat-sections")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-pagination-enabled",
+      "true",
+    );
 
     mockSidebarState = "collapsed";
     rerender(<MainSidebar chatListData={chatListData} />);
@@ -101,6 +112,17 @@ describe("MainSidebar", () => {
     expect(collapsedContent).toHaveAttribute("aria-hidden", "true");
     expect(collapsedContent).toHaveAttribute("inert");
     expect(screen.getByTestId("sidebar-chat-sections")).toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-pagination-enabled",
+      "false",
+    );
+
+    mockSidebarState = "expanded";
+    rerender(<MainSidebar chatListData={chatListData} />);
+    expect(screen.getByTestId("sidebar-chat-sections")).toHaveAttribute(
+      "data-pagination-enabled",
+      "true",
+    );
   });
 
   it("adds consistent side gutters to the mobile sidebar", () => {

@@ -22,6 +22,43 @@ import {
 } from "../contracts";
 
 describe("subagent contracts", () => {
+  it.each([
+    {
+      tool: "delegate_task",
+      schema: delegateTaskInputSchema,
+      input: { name: "Reproducer", task: "Reproduce the supplied candidate." },
+    },
+    {
+      tool: "create_agent",
+      schema: createAgentInputSchema,
+      input: { name: "Reproducer", task: "Reproduce the supplied candidate." },
+    },
+    {
+      tool: "continue_agent",
+      schema: continueAgentInputSchema,
+      input: {
+        target_agent_id: "sa_123",
+        follow_up: "Check the other branch.",
+      },
+    },
+  ])(
+    "$tool accepts optional brief metadata without relaxing validation",
+    ({ schema, input }) => {
+      const brief = "Delegating independent reproduction to a subagent.";
+      const withoutBrief = schema.parse(input);
+
+      expect(schema.parse({ ...input, brief })).toEqual({
+        ...withoutBrief,
+        brief,
+      });
+      expect(schema.safeParse({ ...input, brief: 123 }).success).toBe(false);
+      expect(schema.safeParse({ ...input, unexpected: true }).success).toBe(
+        false,
+      );
+      expect(schema.safeParse({ brief }).success).toBe(false);
+    },
+  );
+
   it("reserves time to submit a structured result before hard timeout", () => {
     expect(SUBAGENT_RESULT_DEADLINE_SECONDS).toBeLessThan(
       SUBAGENT_MAX_ACTIVE_SECONDS,

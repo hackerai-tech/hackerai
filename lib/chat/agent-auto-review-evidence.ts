@@ -8,7 +8,7 @@ import type {
 } from "@/types";
 import {
   isCentrifugoSandbox,
-  isE2BSandbox,
+  isCloudSandbox,
 } from "@/lib/ai/tools/utils/sandbox-types";
 
 const MAX_DELETE_TARGETS = 8;
@@ -344,7 +344,7 @@ const inspectPath = async ({
     let modifiedTime: string | undefined;
     let symlinkTarget: string | undefined;
 
-    if (isE2BSandbox(sandbox)) {
+    if (isCloudSandbox(sandbox)) {
       const files = sandbox.files as typeof sandbox.files & {
         exists?: (candidate: string) => Promise<boolean>;
         getInfo?: (candidate: string) => Promise<{
@@ -576,7 +576,7 @@ const readBoundedText = async ({
     }
     return result.content ?? "";
   }
-  if (isE2BSandbox(sandbox)) {
+  if (isCloudSandbox(sandbox)) {
     const files = sandbox.files as typeof sandbox.files & {
       exists?: (candidate: string) => Promise<boolean>;
       getInfo?: (candidate: string) => Promise<{

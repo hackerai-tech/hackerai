@@ -9,6 +9,7 @@ import {
   POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import type { SelectedModel } from "@/types/chat";
+import { BudgetExhaustedNotice } from "./BudgetExhaustedNotice";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
@@ -38,6 +39,12 @@ export const FinishReasonNotice = ({
 
   if (isAutoResuming) return null;
   if (hasContinued) return null;
+
+  if (finishReason === BUDGET_EXHAUSTION_FINISH_REASON) {
+    // A manual attempt goes through normal server admission and resumes the
+    // existing task. It does not regenerate completed work or bypass billing.
+    return <BudgetExhaustedNotice onContinue={onContinue} />;
+  }
 
   const getNoticeContent = () => {
     if (finishReason === "tool-calls") {
@@ -80,10 +87,6 @@ export const FinishReasonNotice = ({
       return <>Paused at a legacy Pro Agent per-run safety cap.</>;
     }
 
-    if (finishReason === BUDGET_EXHAUSTION_FINISH_REASON) {
-      return <>You&apos;ve reached your usage limit, so this run stopped.</>;
-    }
-
     return null;
   };
 
@@ -91,10 +94,7 @@ export const FinishReasonNotice = ({
 
   if (!content) return null;
 
-  const showContinue =
-    onContinue &&
-    !hasContinued &&
-    finishReason !== BUDGET_EXHAUSTION_FINISH_REASON;
+  const showContinue = onContinue && !hasContinued;
   const continuationModel = undefined;
   const continueButtonLabel = "Continue";
 

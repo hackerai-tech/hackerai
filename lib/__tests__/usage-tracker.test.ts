@@ -130,7 +130,7 @@ describe("UsageTracker", () => {
       expect(tracker.cacheHitRate).toBeNull();
     });
 
-    it("should compute hit rate as reads / (reads + writes)", () => {
+    it("should compute hit rate as cache reads / all input tokens", () => {
       tracker.accumulateStep({
         inputTokens: 100,
         inputTokenDetails: { cacheReadTokens: 80, cacheWriteTokens: 20 },
@@ -146,12 +146,12 @@ describe("UsageTracker", () => {
       expect(tracker.cacheHitRate).toBe(0);
     });
 
-    it("should return 1 when all reads and no writes", () => {
+    it("should not treat missing cache-write tokens as a 100% hit", () => {
       tracker.accumulateStep({
         inputTokens: 100,
-        inputTokenDetails: { cacheReadTokens: 100, cacheWriteTokens: 0 },
+        inputTokenDetails: { cacheReadTokens: 80, cacheWriteTokens: 0 },
       });
-      expect(tracker.cacheHitRate).toBe(1);
+      expect(tracker.cacheHitRate).toBe(0.8);
     });
 
     it("should accumulate across steps", () => {
@@ -163,8 +163,29 @@ describe("UsageTracker", () => {
         inputTokens: 100,
         inputTokenDetails: { cacheReadTokens: 40, cacheWriteTokens: 10 },
       });
-      // total: reads=100, writes=50 → rate = 100/150 ≈ 0.667
-      expect(tracker.cacheHitRate).toBeCloseTo(0.667, 2);
+      // total: reads=100, input=200 → rate = 100/200 = 0.5
+      expect(tracker.cacheHitRate).toBe(0.5);
+    });
+
+    it("should return 0 when the provider reports cache telemetry with no hit", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 0 },
+      });
+      expect(tracker.cacheHitRate).toBe(0);
+    });
+
+    it("should ignore malformed cache telemetry", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: {
+          cacheReadTokens: null as unknown as number,
+          cacheWriteTokens: Number.NaN,
+        },
+      });
+      expect(tracker.cacheReadTokens).toBe(0);
+      expect(tracker.cacheWriteTokens).toBe(0);
+      expect(tracker.cacheHitRate).toBeNull();
     });
   });
 
@@ -185,6 +206,14 @@ describe("UsageTracker", () => {
       tracker.accumulateStep({
         inputTokens: 100,
         inputTokenDetails: { cacheWriteTokens: 10 },
+      });
+      expect(tracker.hasCacheData).toBe(true);
+    });
+
+    it("should return true when the provider explicitly reports zero cache tokens", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 0 },
       });
       expect(tracker.hasCacheData).toBe(true);
     });

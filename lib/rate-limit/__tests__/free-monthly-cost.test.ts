@@ -6,6 +6,7 @@ import {
   afterEach,
   jest,
 } from "@jest/globals";
+import { getRegionalFreeLimits } from "../regional-free-limits";
 
 describe("free monthly cost limit", () => {
   const mockCreateRedisClient = jest.fn();
@@ -57,6 +58,49 @@ describe("free monthly cost limit", () => {
     expect(snapshot.monthlyRemainingAtStart).toBe(1250);
     expect(snapshot.extraUsageBalanceAtStart).toBe(0);
     expect(snapshot.extraUsageAutoReload).toBe(false);
+  });
+
+  it("enforces the permanent regional cap against existing spend without clearing it", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockGet.mockResolvedValue(1000);
+    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
+    await expect(
+      checkFreeMonthlyCostLimit(
+        "quota",
+        getRegionalFreeLimits({
+          userId: "quota",
+          subscription: "free",
+          country: "NG",
+        }),
+      ),
+    ).rejects.toMatchObject({ type: "rate_limit" });
+    const control = await checkFreeMonthlyCostLimit("quota");
+    expect(control.monthlyRemainingAtStart).toBe(1500);
+    expect(mockGet.mock.calls[0]).toEqual(mockGet.mock.calls[1]);
+    expect(mockEval).not.toHaveBeenCalled();
+  });
+
+  it("uses existing spend for $0.50 treatment and restores $0.25 without clearing usage", async () => {
+    mockCreateRedisClient.mockReturnValue({ get: mockGet, eval: mockEval });
+    mockGet.mockResolvedValue(3000);
+    const { checkFreeMonthlyCostLimit } = getIsolatedModule();
+    await expect(checkFreeMonthlyCostLimit("quota")).rejects.toMatchObject({
+      type: "rate_limit",
+    });
+    const treatment = await checkFreeMonthlyCostLimit("quota", {
+      dailyRequests: 10,
+      monthlyCostDollars: 0.5,
+      monthlyBudgetExperiment: "free_monthly_budget_v1",
+    });
+    expect(treatment.monthlyRemainingAtStart).toBe(2000);
+    expect(treatment.monthlyLimitPoints).toBe(5000);
+    await expect(checkFreeMonthlyCostLimit("quota")).rejects.toMatchObject({
+      type: "rate_limit",
+    });
+    expect(
+      mockGet.mock.calls.every((call) => call[0] === mockGet.mock.calls[0][0]),
+    ).toBe(true);
+    expect(mockEval).not.toHaveBeenCalled();
   });
 
   it("throws a rate-limit error when the monthly free cost cap is exhausted", async () => {

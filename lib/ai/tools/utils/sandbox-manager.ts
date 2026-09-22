@@ -5,6 +5,11 @@ import type {
   SandboxManager,
   SandboxType,
 } from "@/types";
+import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
+import {
+  assertCloudWorkspaceAvailable,
+  registerE2BMigrationLease,
+} from "./cloud-migration-state";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import {
@@ -12,7 +17,11 @@ import {
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
-import { isE2BSandbox } from "./sandbox-types";
+import {
+  getCloudSandboxProviderForInstance,
+  isCentrifugoSandbox,
+  isE2BSandbox,
+} from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
 // One failed initial readiness check plus one failed reconnect is enough to
@@ -24,6 +33,8 @@ export class DefaultSandboxManager implements SandboxManager {
   private sandbox: AnySandbox | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
+  private activeCloudProvider: CloudSandboxProvider;
+  private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
 
   constructor(
     private userID: string,
@@ -33,6 +44,12 @@ export class DefaultSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    if (this.sandbox && isE2BSandbox(this.sandbox))
+      registerE2BMigrationLease(this.sandbox, userID);
+    this.activeCloudProvider =
+      getCloudSandboxProviderForInstance(this.sandbox) ??
+      cloudSandboxContext?.provider ??
+      getCloudSandboxProvider();
   }
 
   recordHealthFailure(): boolean {
@@ -54,8 +71,8 @@ export class DefaultSandboxManager implements SandboxManager {
 
   getSandboxInfo(): SandboxInfo | null {
     return {
-      type: "e2b",
-      provider: this.cloudSandboxContext?.provider ?? getCloudSandboxProvider(),
+      type: "cloud",
+      provider: this.activeCloudProvider,
     };
   }
 
@@ -67,14 +84,16 @@ export class DefaultSandboxManager implements SandboxManager {
     if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
       return undefined;
     }
-    return "e2b";
+    return "cloud";
   }
 
   async getSandbox(): Promise<{
     sandbox: AnySandbox;
   }> {
+    if (this.acquisition) return this.acquisition;
     if (this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
+        await assertCloudWorkspaceAvailable(this.userID, "e2b");
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
           source: "default_manager_cache",
         });
@@ -82,14 +101,26 @@ export class DefaultSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox };
     }
 
+    this.acquisition = this.acquireSandbox().finally(() => {
+      this.acquisition = null;
+    });
+    return this.acquisition;
+  }
+
+  private async acquireSandbox(): Promise<{ sandbox: AnySandbox }> {
     const result = await ensureCloudSandboxConnection({
       userId: this.userID,
       setSandbox: this.setSandboxCallback,
       onBoot: this.onBoot,
       initialSandbox: this.sandbox,
-      context: this.cloudSandboxContext,
+      // Reconnect to the provider that actually supplied this run's files.
+      context: {
+        ...this.cloudSandboxContext,
+        provider: this.activeCloudProvider,
+      },
     });
     this.sandbox = result.sandbox;
+    this.activeCloudProvider = result.provider;
 
     if (!this.sandbox) {
       throw new Error("Failed to initialize sandbox");
@@ -99,17 +130,22 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: AnySandbox): void {
+    if (isE2BSandbox(sandbox)) registerE2BMigrationLease(sandbox, this.userID);
     this.sandbox = sandbox;
+    this.activeCloudProvider =
+      getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
     this.setSandboxCallback(sandbox);
   }
 
   async resetSandbox(_reason?: string): Promise<void> {
+    // Do not let an in-flight acquisition repopulate the cache after reset.
+    await this.acquisition?.catch(() => undefined);
     // E2B is shared per user, so recovery only forgets its SDK connection.
     // Relay sandboxes own a websocket client, which is safe to close while the
     // underlying sandbox continues running.
     const sandbox = this.sandbox;
     this.sandbox = null;
-    if (sandbox && !isE2BSandbox(sandbox)) {
+    if (sandbox && isCentrifugoSandbox(sandbox)) {
       await sandbox.close().catch((error) => {
         if (isExpectedAlreadyGoneCleanupError(error)) {
           console.debug(`[${this.userID}] Sandbox relay was already closed`);
@@ -121,5 +157,9 @@ export class DefaultSandboxManager implements SandboxManager {
         }
       });
     }
+  }
+
+  async supportsInteractivePty(): Promise<boolean> {
+    return true;
   }
 }

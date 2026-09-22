@@ -79,6 +79,33 @@ const isOpenUrlNetworkError = (error: unknown): boolean => {
   );
 };
 
+const isOpenUrlCancellation = (
+  error: unknown,
+  abortSignal?: AbortSignal,
+): boolean => {
+  if (abortSignal?.aborted) return true;
+  if (isRecord(error) && error.name === "AbortError") return true;
+
+  const message = error instanceof Error ? error.message : error;
+  return (
+    typeof message === "string" &&
+    [
+      "run cancelled",
+      "run canceled",
+      "cancelled by user",
+      "canceled by user",
+    ].includes(message.toLowerCase())
+  );
+};
+
+const toDiagnosticError = (error: unknown, message: string): Error => {
+  if (error instanceof Error) return error;
+
+  const diagnosticError = new Error(message);
+  diagnosticError.name = getErrorName(error);
+  return diagnosticError;
+};
+
 /**
  * Open URL tool using Jina AI for content retrieval
  * Retrieves and returns the full contents of a webpage
@@ -129,7 +156,7 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
         return truncated;
       } catch (error) {
         // Handle abort errors gracefully without logging
-        if (error instanceof Error && error.name === "AbortError") {
+        if (isOpenUrlCancellation(error, abortSignal)) {
           return "Error: Operation aborted";
         }
 
@@ -147,8 +174,13 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           error_name: getErrorName(error),
           error_message: errorMessage,
         };
+        const { error_name, error_message, ...failureContext } =
+          toolFailureFields;
         const logFields = {
-          ...toolFailureFields,
+          ...failureContext,
+          // phLogger reserves error_name/error_message for the captured summary.
+          tool_error_name: stringifyRedactedError(error_name).slice(0, 128),
+          tool_error_message: error_message.slice(0, 2_000),
           ...(context?.chatId && { chat_id: context.chatId }),
           ...(context?.userID && { userId: context.userID }),
         };
@@ -162,7 +194,10 @@ export const createOpenUrlTool = (context?: OpenUrlLogContext) => {
           return "Error opening URL: The URL reader timed out or could not reach the page. Do not retry the same URL unless the user asks.";
         }
 
-        phLogger.error("Open URL tool error", logFields);
+        phLogger.error("Open URL tool error", {
+          ...logFields,
+          error: toDiagnosticError(error, errorMessage),
+        });
         return `Error opening URL: ${errorMessage}`;
       }
     },

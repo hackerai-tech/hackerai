@@ -1,3 +1,4 @@
+import type { FreeLimitPolicy } from "./free-config";
 /**
  * Fixed Window Rate Limiting (Free Users)
  *
@@ -199,10 +200,11 @@ export const grantFreeReferralBonusUnits = async (
 export const checkFreeUserRateLimit = async (
   userId: string,
   requestCost = FREE_ASK_REQUEST_COST,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
-  const requestLimit = getFreeRequestLimit();
+  const requestLimit = getFreeRequestLimit(freeLimits);
   const cost = Math.max(1, Math.trunc(requestCost));
   const { bucket, reset, ttlMs } = getCurrentUtcDayWindow();
 
@@ -269,16 +271,18 @@ export const checkFreeUserRateLimit = async (
  */
 export const checkFreeAgentRateLimit = async (
   userId: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
-  return checkFreeUserRateLimit(userId, FREE_AGENT_REQUEST_COST);
+  return checkFreeUserRateLimit(userId, FREE_AGENT_REQUEST_COST, freeLimits);
 };
 
 export const checkFreeUserRateLimitCapacity = async (
   userId: string,
   requestCost = FREE_ASK_REQUEST_COST,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
-  const requestLimit = getFreeRequestLimit();
+  const requestLimit = getFreeRequestLimit(freeLimits);
   const cost = Math.max(1, Math.trunc(requestCost));
   const { bucket, reset } = getCurrentUtcDayWindow();
 
@@ -343,5 +347,6 @@ export const checkFreeUserRateLimitCapacity = async (
 
 export const checkFreeAgentRateLimitCapacity = async (
   userId: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> =>
-  checkFreeUserRateLimitCapacity(userId, FREE_AGENT_REQUEST_COST);
+  checkFreeUserRateLimitCapacity(userId, FREE_AGENT_REQUEST_COST, freeLimits);

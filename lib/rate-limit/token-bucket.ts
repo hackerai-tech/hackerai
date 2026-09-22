@@ -1,3 +1,11 @@
+import {
+  ABLITERATION_MODEL_ID,
+  ABLITERATION_MODEL_KEY,
+  ABLITERATION_BASE_PRICING,
+  ABLITERATION_LARGE_V2_MODEL_ID,
+  ABLITERATION_LARGE_V2_MODEL_KEY,
+  ABLITERATION_LARGE_V2_PRICING,
+} from "@/lib/ai/abliteration";
 import { randomUUID } from "node:crypto";
 import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
@@ -19,10 +27,7 @@ import {
   getLimitPressureContext,
   type LimitCapReason,
 } from "@/lib/limit-pressure";
-import {
-  isFreeQuotaSubjectRateLimitKey,
-  isUserRateLimitKey,
-} from "./key-cleanup";
+import { isUserRateLimitKey } from "./key-cleanup";
 import {
   NORMAL_USAGE_MULTIPLIER,
   EXTRA_USAGE_REQUEST_MULTIPLIER,
@@ -120,6 +125,13 @@ const DEEPSEEK_V4_FLASH_VISION_PRICING: ModelPricing = {
   cacheRead: 0.014,
   cacheWrite: 0.44,
 };
+// Use the weekday peak ceiling from OpenRouter, including cached input.
+const DEEPSEEK_V4_1_FLASH_PRICING: ModelPricing = {
+  input: 0.3,
+  output: 1.2,
+  cacheRead: 0.006,
+  cacheWrite: 0.3,
+};
 const KIMI_K3_PRICING: ModelPricing = {
   input: 3.0,
   output: 15.0,
@@ -130,6 +142,10 @@ const KIMI_K3_PRICING: ModelPricing = {
 /** Model pricing: $/1M tokens per model, including provider cache rates. */
 const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   default: DEFAULT_PRICING,
+  [ABLITERATION_MODEL_KEY]: ABLITERATION_BASE_PRICING,
+  [ABLITERATION_MODEL_ID]: ABLITERATION_BASE_PRICING,
+  [ABLITERATION_LARGE_V2_MODEL_KEY]: ABLITERATION_LARGE_V2_PRICING,
+  [ABLITERATION_LARGE_V2_MODEL_ID]: ABLITERATION_LARGE_V2_PRICING,
   // Grok 4.6 shares the $2/$6 base rate, with a 2x tier from 200k prompt
   // tokens handled by getModelPricing when the input size is available.
   "model-grok-4.6": GROK_4_6_BASE_PRICING,
@@ -140,17 +156,18 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_6_BASE_PRICING,
   "fallback-agent-model": GROK_4_6_BASE_PRICING,
   "fallback-ask-model": GROK_4_6_BASE_PRICING,
-  // Both free routes use the 0731 revision. Provider fallbacks are reconciled
-  // against their served model.
+  // The paid daily free Ask rescue retains DeepSeek 0731, while free Agent
+  // uses DeepSeek V4.1 Flash. Provider fallbacks reconcile against their
+  // served model.
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
-  "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
+  "ask-model-free-glm": GLM_5_3_FLASH_PRICING,
+  "agent-model-free": DEEPSEEK_V4_1_FLASH_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
-  "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
-  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_VISION_PRICING,
-  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_FLASH_VISION_PRICING,
+  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_1_FLASH_PRICING,
+  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_1_FLASH_PRICING,
   // Persisted Max compatibility key; the active provider route is Kimi K3.
   "model-opus-4.6": KIMI_K3_PRICING,
   // Baseline OpenRouter rates: $0.76 in / $2.42 out per 1M tokens.
@@ -173,6 +190,8 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "deepseek/deepseek-v4-flash-20260731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "deepseek/deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "deepseek/deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
+  "deepseek/deepseek-v4.1-flash": DEEPSEEK_V4_1_FLASH_PRICING,
+  "deepseek/deepseek-v4.1-flash-20260910": DEEPSEEK_V4_1_FLASH_PRICING,
   "deepseek/deepseek-v4-flash-vision-exp": DEEPSEEK_V4_FLASH_VISION_PRICING,
   "anthropic/claude-opus-4.6": OPUS_4_6_PRICING,
   "z-ai/glm-5.2": GLM_5_2_PRICING,
@@ -1755,30 +1774,14 @@ export const capCurrentCycleAllocation = async (
 };
 
 /**
- * Delete Redis keys associated with a user across every rate-limit namespace
- * written by this codebase. Called during account deletion so orphaned
- * buckets, stashes, sliding-window counters, and seat-debt flags are purged
- * immediately rather than waiting on the 30-day TTL. Best-effort — returns
- * the number of keys deleted, never throws.
- *
- * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
- *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
- *   - upgrade:carryover:<userId>:*   — tier-change stash, claim, and completion keys
- *   - free_limit:<quotaSubject>:*    — free-tier shared ask/agent sliding window
- *   - free_referral_bonus:<quotaSubject> — one-time free request units from referral signup
- *   - free_referral_bonus_grant:*:<quotaSubject> — referral bonus grant idempotency marker
- *   - free_agent_limit:<quotaSubject>:* — legacy free-tier agent sliding window
- *   - free_monthly_cost:<quotaSubject>:* — free-tier monthly provider/tool cost cap
- *   - free_usage_budget_started:v1:<quotaSubject> — retired experiment marker cleanup
- *   - free_run_lock:<quotaSubject>   — free-tier active-run concurrency lock
- *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
- *
- * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
- * user-scoped) and any extra-usage balance records (stored in Convex, not Redis).
+ * Remove account-scoped rate-limit state after deletion. Email-scoped quotas
+ * survive until their normal expiry so deleting and recreating an account
+ * cannot reset its free usage.
+ * Best-effort: returns the number of deleted keys, never throws.
  */
 export const deleteUserRateLimitKeys = async (
   userId: string,
-  freeQuotaSubject?: string,
+  _freeQuotaSubject?: string,
 ): Promise<number> => {
   const redis = createRedisClient();
   if (!redis) return 0;
@@ -1787,13 +1790,9 @@ export const deleteUserRateLimitKeys = async (
     const userKeys = (await scanRedisKeys(redis, `*${userId}*`)).filter((key) =>
       isUserRateLimitKey(key, userId),
     );
-    const freeQuotaKeys =
-      freeQuotaSubject && freeQuotaSubject !== userId
-        ? (await scanRedisKeys(redis, `*${freeQuotaSubject}*`)).filter((key) =>
-            isFreeQuotaSubjectRateLimitKey(key, freeQuotaSubject),
-          )
-        : [];
-    const keys = Array.from(new Set([...userKeys, ...freeQuotaKeys]));
+    // Identity-scoped quotas outlive account deletion until their own TTLs.
+    // Recreating an account must not reset the allowance of the same email.
+    const keys = Array.from(new Set(userKeys));
     if (keys.length === 0) return 0;
     await deleteRedisKeys(redis, keys);
     return keys.length;

@@ -19,13 +19,20 @@ is the internal Convex/WorkOS user ID because the application identifies users
 with their WorkOS ID. Select `distinct_id AS user_id` directly; do not require a
 duplicate person property or infer the mapping from email. Produce those
 internal user IDs for the restricted gateway payload, not emails or billing
-customer IDs.
+customer IDs. A run accepts 1-20 unique users; one user is enough for a
+sanitized summary. State the sample size and treat a single-user result as an
+individual observation with a provisional low-confidence avatar, without
+generalizing to other users.
 
 Record `posthogProjectId`, the cohort selection timestamp, a SHA-256 fingerprint
 of the selection query, and short limitations that affect interpretation. Never
 send the raw query. For event-based research such as churn, select the event
 timestamp beside each user ID and provide it as that member's evidence anchor.
 Use a bounded pre-event window; do not use one cohort-wide timestamp.
+For comparative research, retain 2-4 PostHog-selected group labels and their
+internal user IDs. Each group must contain at least three users and every cohort
+user must belong to exactly one group. Labels may describe a model, rollout, or
+funnel treatment, but must not identify a person or organization.
 
 ## 2. Run through Codex
 
@@ -37,8 +44,21 @@ Ask Codex:
 
 Codex should proceed from the authorized PM's request without checking for
 another approval. It should use the skill's `scripts/run-research.mjs` gateway
-runner and wait for completion. The PM's Codex environment must contain the scoped
-`HACKERAI_PM_USER_RESEARCH_KEY`; it must not contain Trigger or Convex service
+runner and wait for completion. The runner reads the scoped PM key directly from
+`~/.config/hackerai/pm-research.key` first. The opened target must be a regular
+file with no group or other permission bits (mode 600 recommended), containing
+the key alone; a trailing newline is allowed. The
+runner keeps it in memory, without exporting it into Codex or copying it into
+a checkout. If the file is absent, it falls back to
+`HACKERAI_PM_USER_RESEARCH_KEY` for environments such as Slack. An unreadable,
+overly permissive, empty, or malformed local file is an error, not a reason to
+silently use another credential.
+
+Do not conclude that research access is missing from an unset environment
+variable alone. Let the runner check the stored file. If both sources are absent,
+ask for the existing key's storage location or secure provisioning; do not search
+chat history, print secret contents, or request a key pasted into chat. Report
+only the source path and availability. Never substitute Trigger or Convex service
 keys. The runner always calls the production gateway at
 `https://hackerai.co/api/internal/user-research`; no Preview URL or Preview PM
 gateway key is required. The gateway can start and read only
@@ -46,6 +66,8 @@ gateway key is required. The gateway can start and read only
 task runs one parallel worker per user and a final cohort synthesis. Both calls use
 `x-ai/grok-4.6` with OpenRouter reasoning set to low
 and zero-data-retention routing required.
+Comparison membership is converted to sanitized labels and pseudonyms before
+the final Grok 4.6 synthesis; internal user IDs are not sent to the model.
 
 Create the temporary request JSON outside the repository with mode 600, pass its
 path to the runner, then remove it. Never commit the request file. User IDs from
@@ -67,13 +89,15 @@ event-based research, include one event timestamp beside every user ID and the
 event label or reason when known. State that the timestamp is the per-user
 evidence anchor, specify the pre-event window, and require the same privacy
 boundary as the gateway workflow.
+For comparisons, include each labeled group's complete user list instead of
+flattening the users into one unlabeled cohort.
 
 Do not send a Slack request that merely says to analyze churn, refers to a cohort
 "above," or expects Slack Codex to discover the IDs. Do not ask Slack Codex to
 read messages directly. The request must tell it to use this skill and run the
-bounded gateway workflow. If the Slack Codex environment lacks the scoped PM
-gateway key, it must report that configuration blocker rather than browse
-customer messages manually.
+bounded gateway workflow. If neither the local key file nor the environment
+fallback supplies the scoped PM gateway key, report that configuration blocker
+rather than browse customer messages manually.
 
 A minimal event-based handoff has this shape:
 

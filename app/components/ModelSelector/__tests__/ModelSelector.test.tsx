@@ -113,7 +113,7 @@ describe("ModelSelector", () => {
     );
     await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
     expect(
-      await screen.findAllByText("Powered by DeepSeek V4 Pro 0813"),
+      await screen.findAllByText("Powered by DeepSeek V4.1 Flash"),
     ).not.toHaveLength(0);
   });
 

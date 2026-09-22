@@ -23,6 +23,7 @@ import {
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
+import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -37,9 +38,11 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid Agent Auto and Standard use DeepSeek V4 Flash 0731. Ask Ultra Auto
- *   and explicit Pro use DeepSeek V4 Pro 0813, while Max uses Grok 4.6.
- *   Eligible image turns use DeepSeek V4 Flash Vision before fallbacks.
+ *   Pro Plus Auto and Agent Pro use DeepSeek V4.1 Flash. Other paid Agent
+ *   Auto and Standard requests use DeepSeek V4 Flash 0731. Ask Ultra Auto
+ *   and Ask Pro use DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
+ *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
+ *   image turns use DeepSeek V4 Flash Vision before fallbacks.
  * @returns Model name to use
  */
 export function selectModel(
@@ -60,8 +63,8 @@ export function selectModel(
     subscription,
     options,
   );
-  // Paid Standard/Pro image prompts use DeepSeek Vision directly, with GLM
-  // Flash configured as its first provider fallback. The auxiliary treatment
+  // Pro/Pro+ Standard and Auto use GLM Flash for lower-cost direct vision.
+  // Other paid image routes retain DeepSeek Vision. The auxiliary treatment
   // is reserved for MiniMax summary recovery after direct routes fail.
   // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
   const isFreeAsk = !isAgent && subscription === "free";
@@ -71,9 +74,20 @@ export function selectModel(
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const paidStandardTextModel: ModelName = "model-deepseek-v4-flash-0731";
   const paidAutoTextModel: ModelName =
-    !isAgent && subscription === "ultra"
-      ? "model-deepseek-v4-pro-0813"
-      : paidStandardTextModel;
+    subscription === "pro-plus"
+      ? "model-deepseek-v4-flash-vision-pro"
+      : !isAgent && subscription === "ultra"
+        ? "model-deepseek-v4-pro-0813"
+        : paidStandardTextModel;
+  // Paid Agent Pro accepts original images without a separate vision route.
+  // Ask and paid Agent Auto/Standard retain their existing model selection.
+  if (
+    isAgent &&
+    subscription !== "free" &&
+    allowedSelectedModel === "hackerai-pro"
+  ) {
+    return "model-deepseek-v4-flash-vision-pro";
+  }
   const directVisionModel: ModelName =
     allowedSelectedModel === "hackerai-pro" ||
     ((!allowedSelectedModel || allowedSelectedModel === "auto") &&
@@ -85,6 +99,9 @@ export function selectModel(
     hasImageAttachment &&
     allowedSelectedModel !== "hackerai-max"
   ) {
+    if (usesGlmFlashForStandardVision(subscription, allowedSelectedModel)) {
+      return "model-glm-5.3-flash";
+    }
     return directVisionModel;
   }
   const paidAskMediaModel: ModelName = hasAskImage
@@ -98,7 +115,7 @@ export function selectModel(
         ? "model-grok-4.5"
         : paidAutoTextModel
     : isFreeAsk
-      ? "ask-model-free"
+      ? "ask-model-free-glm"
       : paidAskMediaModel;
 
   // Free users always route through the auto router; paid users may pick an
@@ -121,6 +138,13 @@ export function selectModel(
     return hasProviderImage
       ? "model-grok-4.5-pro"
       : "model-deepseek-v4-pro-0813";
+  }
+
+  // GLM 5.3 is the Max text model. Keep image requests on the existing
+  // multimodal route because the retired experiment intentionally excluded
+  // image inputs.
+  if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
+    return "model-grok-4.6";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -788,5 +812,7 @@ export async function processChatMessages({
     selectedModel,
     sandboxFiles,
     platformAuthorized: moderationResult.shouldUncensorResponse,
+    allowsAbliterationContinuation:
+      moderationResult.allowsAbliterationContinuation,
   };
 }

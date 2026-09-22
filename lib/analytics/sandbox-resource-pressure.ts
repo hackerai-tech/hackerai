@@ -8,7 +8,7 @@ import type {
 
 export const E2B_CPU_SATURATION_THRESHOLD_PCT = 99;
 export const E2B_MEMORY_PRESSURE_THRESHOLD_PCT = 90;
-export const E2B_RESOURCE_PRESSURE_EVENT_VERSION = 2;
+export const E2B_RESOURCE_PRESSURE_EVENT_VERSION = 3;
 const E2B_FAILURE_RECOVERY_EVENT_VERSION = 1;
 
 const roundPercentage = (value: number): number =>
@@ -71,7 +71,8 @@ export function createE2BResourcePressureObserver(args: {
     chat_id: args.chatId,
     mode: args.mode,
     subscription_tier: args.subscription ?? "unknown",
-    sandbox_type: "e2b",
+    sandbox_type: "cloud",
+    sandbox_provider: "e2b",
     ...(args.triggerRunId && { trigger_run_id: args.triggerRunId }),
     ...(args.ptyScopeId && { pty_scope_id: args.ptyScopeId }),
     cpu_saturation_threshold_pct: E2B_CPU_SATURATION_THRESHOLD_PCT,

@@ -154,7 +154,25 @@ describe("cancelSubscriptionAction", () => {
                 price: {
                   id: "price_pro",
                   lookup_key: "pro-monthly-plan",
+                  unit_amount: 2500,
+                  recurring: {
+                    interval: "month",
+                    interval_count: 1,
+                  },
                 },
+                quantity: 2,
+              },
+              {
+                price: {
+                  id: "price_addon",
+                  lookup_key: "agent-addon-yearly",
+                  unit_amount: 12000,
+                  recurring: {
+                    interval: "year",
+                    interval_count: 1,
+                  },
+                },
+                quantity: 1,
               },
             ],
           },
@@ -203,6 +221,16 @@ describe("cancelSubscriptionAction", () => {
       PAID_FUNNEL_EVENTS.cancellationCompleted,
       expect.objectContaining({
         $insert_id: cancellationCompletionInsertId("sub_123"),
+        cancellation_reason: "cancellation_requested",
+        churn_type: "voluntary",
+        voluntary_churn: true,
+        involuntary_churn: false,
+        billing_interval: undefined,
+        billing_interval_count: undefined,
+        subscription_item_count: 2,
+        subscription_mrr_dollars: 60,
+        attributed_mrr_dollars: 60,
+        at_risk_mrr_dollars: 60,
       }),
     );
   });

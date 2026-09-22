@@ -3,6 +3,70 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "../reasoning";
 
 describe("Reasoning", () => {
+  function renderScrollableReasoning(isActive = true) {
+    const onScroll = jest.fn();
+    const reasoning = (text: string) => (
+      <Reasoning open isStreaming={isActive}>
+        <ReasoningContent onScroll={onScroll}>{text}</ReasoningContent>
+      </Reasoning>
+    );
+    const { rerender } = render(reasoning("Initial reasoning"));
+    const content = screen.getByText("Initial reasoning");
+    let height = 600;
+    let top = 0;
+    // jsdom has no layout; model the browser's scroll range and clamping.
+    Object.defineProperties(content, {
+      clientHeight: { get: () => 240 },
+      scrollHeight: { get: () => height },
+      scrollTop: {
+        get: () => top,
+        set: (value: number) => {
+          top = Math.max(0, Math.min(value, height - 240));
+        },
+      },
+    });
+    const append = () => {
+      height += 100;
+      rerender(reasoning(`Reasoning expanded to ${height}`));
+    };
+    return { content, append, onScroll };
+  }
+
+  it("follows incoming reasoning while the reader stays at the bottom", () => {
+    const { content, append } = renderScrollableReasoning();
+
+    append();
+    expect(content.scrollTop).toBe(460);
+    fireEvent.scroll(content);
+    append();
+    expect(content.scrollTop).toBe(560);
+  });
+
+  it("preserves the reader's position across streaming updates until they return to the bottom", () => {
+    const { content, append, onScroll } = renderScrollableReasoning();
+    append();
+
+    fireEvent.scroll(content, { target: { scrollTop: 300 } });
+    expect(onScroll).toHaveBeenCalledTimes(1);
+    append();
+    append();
+    expect(content.scrollTop).toBe(300);
+
+    // Fractional scroll positions within one pixel count as the bottom.
+    fireEvent.scroll(content, {
+      target: { scrollTop: content.scrollHeight - content.clientHeight - 0.5 },
+    });
+    append();
+    expect(content.scrollTop).toBe(760);
+  });
+
+  it("does not follow content updates when reasoning is inactive", () => {
+    const { content, append } = renderScrollableReasoning(false);
+
+    append();
+    expect(content.scrollTop).toBe(0);
+  });
+
   it("keeps expanded-content spacing off the collapsible row wrapper", () => {
     render(
       <Reasoning open>

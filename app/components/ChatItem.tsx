@@ -1,5 +1,6 @@
 "use client";
 
+import { useDeletionConfirmation } from "@/app/hooks/useDeletionConfirmation";
 import React, { useEffect, useId, useState, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { ConvexError } from "convex/values";
@@ -257,6 +258,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     router.push(`/c/${id}`);
   };
 
+  const confirmDeletion = useDeletionConfirmation();
   const [isDeleting, setIsDeleting] = useState(false);
 
   const handleDeleteClick = (e: React.MouseEvent) => {
@@ -274,14 +276,18 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setIsDeleting(true);
 
     try {
-      const response = await fetch(`/api/chat/${encodeURIComponent(id)}`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "");
-        throw new Error(errorText || "Failed to delete task");
-      }
+      await confirmDeletion(
+        async () => {
+          const response = await fetch(`/api/chat/${encodeURIComponent(id)}`, {
+            method: "DELETE",
+          });
+          if (!response.ok)
+            throw new Error((await response.text()) || "Failed to delete task");
+        },
+        { chatId: id },
+        "Deleting task…",
+      );
+      setShowDeleteDialog(false);
 
       // Remove draft from localStorage immediately after successful deletion
       removeDraft(id);
@@ -302,24 +308,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
             ? error.message
             : String(error?.message || error);
 
-      // Treat not found as success, and show other errors
-      if (
-        errorMessage.includes("Chat not found") ||
-        errorMessage.includes("Task not found")
-      ) {
-        // Even if chat not found in DB, still clean up draft
-        removeDraft(id);
-        if (isCurrentlyActive) {
-          initializeNewChat();
-          router.push("/");
-        }
-      } else {
-        console.error("Failed to delete chat:", error);
-        toast.error(formatTaskUiCopy(errorMessage));
-      }
+      console.error("Failed to delete chat:", error);
+      toast.error(formatTaskUiCopy(errorMessage));
     } finally {
       setIsDeleting(false);
-      setShowDeleteDialog(false);
     }
   };
 
@@ -460,6 +452,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
   return (
     <div
       ref={setDraggableNodeRef}
+      style={
+        isDropdownOpen ||
+        showRenameDialog ||
+        showShareDialog ||
+        showMoveProjectDialog ||
+        showCreateProjectDialog ||
+        showDeleteDialog ||
+        isDragging
+          ? undefined
+          : { contentVisibility: "auto", containIntrinsicSize: "auto 20px" }
+      }
       className={`group relative flex w-full cursor-pointer select-none items-center rounded-lg py-2 pe-0.5 ${rowStartPaddingClass} hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -777,13 +780,15 @@ const ChatItem: React.FC<ChatItemProps> = ({
       </Dialog>
 
       {/* Share Dialog */}
-      <ShareDialog
-        open={showShareDialog}
-        onOpenChange={setShowShareDialog}
-        chatId={id}
-        chatTitle={taskTitle}
-        existingShareId={shareId}
-      />
+      {showShareDialog && (
+        <ShareDialog
+          open={showShareDialog}
+          onOpenChange={setShowShareDialog}
+          chatId={id}
+          chatTitle={taskTitle}
+          existingShareId={shareId}
+        />
+      )}
 
       {showMoveProjectDialog ? (
         <MoveChatToProjectDialog
@@ -806,7 +811,11 @@ const ChatItem: React.FC<ChatItemProps> = ({
       ) : null}
 
       {/* Delete Confirmation Dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+      <AlertDialog
+        pending={isDeleting}
+        open={showDeleteDialog}
+        onOpenChange={setShowDeleteDialog}
+      >
         <AlertDialogContent onClick={(e) => e.stopPropagation()}>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete task?</AlertDialogTitle>
@@ -820,6 +829,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
                   <button
                     type="button"
                     className="underline hover:text-foreground"
+                    disabled={isDeleting}
                     onClick={() => {
                       setShowDeleteDialog(false);
                       openSettingsDialog();
@@ -835,7 +845,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteConfirm}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteConfirm();
+              }}
               disabled={isDeleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
@@ -848,4 +861,4 @@ const ChatItem: React.FC<ChatItemProps> = ({
   );
 };
 
-export default ChatItem;
+export default React.memo(ChatItem);

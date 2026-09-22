@@ -12,6 +12,66 @@ export { EXTRA_USAGE_MULTIPLIER };
 const errorName = (error: unknown) =>
   error instanceof Error ? error.name : "UnknownError";
 
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_ABORTED",
+  "ABORT_ERR",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+
+/** Fetch hides network failures in cause/AggregateError. Inspect at most 16
+ * nodes in total and emit only known codes, never nested messages or addresses. */
+function networkErrorCodes(error: unknown): string[] | undefined {
+  const pending: unknown[] = [error];
+  const seen = new Set<object>();
+  const codes = new Set<string>();
+  for (let index = 0; index < pending.length; index++) {
+    const value = pending[index];
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    try {
+      const entry = value as Record<string, unknown>;
+      const code = entry.code;
+      if (typeof code === "string" && NETWORK_ERROR_CODES.has(code)) {
+        codes.add(code);
+      }
+      if (pending.length < 16) {
+        const cause = entry.cause;
+        if (cause != null) pending.push(cause);
+      }
+      if (pending.length < 16) {
+        const errors = entry.errors;
+        if (Array.isArray(errors)) {
+          for (
+            let child = 0;
+            child < errors.length && pending.length < 16;
+            child++
+          ) {
+            pending.push(errors[child]);
+          }
+        }
+      }
+    } catch {
+      // Best-effort telemetry must not replace the original billing failure.
+    }
+  }
+  return codes.size ? [...codes].sort() : undefined;
+}
+
 const logExtraUsageConvexFailure = ({
   event,
   message,
@@ -45,8 +105,10 @@ const logExtraUsageConvexFailure = ({
     operation,
     component: "extra_usage",
     duration_ms: Date.now() - startedAt,
-    error_name: errorName(error),
-    error_message: stringifyRedactedError(error),
+    // phLogger reserves error_name/error_message for the captured summary.
+    convex_error_name: stringifyRedactedError(errorName(error)).slice(0, 128),
+    convex_error_message: stringifyRedactedError(error).slice(0, 2_000),
+    convex_network_error_codes: networkErrorCodes(error),
   });
 };
 

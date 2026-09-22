@@ -147,9 +147,9 @@ export const TeamDialogs = ({
       {/* Remove Member Confirmation Dialog */}
       <Dialog
         open={!!memberToRemove}
-        onOpenChange={(open) => !open && setMemberToRemove(null)}
+        onOpenChange={(open) => !open && !removing && setMemberToRemove(null)}
       >
-        <DialogContent>
+        <DialogContent showCloseButton={!removing}>
           <DialogHeader>
             <DialogTitle>Remove team member</DialogTitle>
             <DialogDescription>
@@ -189,9 +189,11 @@ export const TeamDialogs = ({
       {/* Revoke Invitation Confirmation Dialog */}
       <Dialog
         open={!!inviteToRevoke}
-        onOpenChange={(open) => !open && setInviteToRevoke(null)}
+        onOpenChange={(open) =>
+          !open && !revokingInvite && setInviteToRevoke(null)
+        }
       >
-        <DialogContent>
+        <DialogContent showCloseButton={!revokingInvite}>
           <DialogHeader>
             <DialogTitle>Revoke invitation</DialogTitle>
             <DialogDescription>
@@ -234,9 +236,9 @@ export const TeamDialogs = ({
       {/* Leave Team Dialog */}
       <Dialog
         open={showLeaveDialog}
-        onOpenChange={(open) => !open && setShowLeaveDialog(false)}
+        onOpenChange={(open) => !open && !leaving && setShowLeaveDialog(false)}
       >
-        <DialogContent>
+        <DialogContent showCloseButton={!leaving}>
           <DialogHeader>
             <DialogTitle>Leave team</DialogTitle>
             <DialogDescription>

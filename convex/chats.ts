@@ -1,3 +1,4 @@
+import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -47,6 +48,9 @@ const CHAT_SUMMARY_TELEMETRY_FIELDS = [
 const activeAgentApprovalRequestValidator = v.object({
   approvalId: v.string(),
   toolCallId: v.string(),
+  sourceRunId: v.optional(v.string()),
+  sourceAgentId: v.optional(v.string()),
+  sourceAgentName: v.optional(v.string()),
   operation: v.optional(
     v.union(
       v.literal("terminal_execute"),
@@ -248,38 +252,19 @@ async function deleteMessageForChatDeletion(
   ctx: MutationCtx,
   message: Doc<"messages">,
 ) {
-  // Skip deleting files for copied messages (they reference original chat files)
+  // Copied messages reference the original task's files.
   if (!message.source_message_id && message.file_ids?.length) {
     for (const fileId of message.file_ids) {
-      try {
-        const file = await ctx.db.get(fileId);
-        if (file) {
-          if (file.s3_key) {
-            await ctx.scheduler.runAfter(
-              0,
-              internal.s3Cleanup.deleteS3ObjectAction,
-              {
-                s3Key: file.s3_key,
-                ...(file.s3_region ? { s3Region: file.s3_region } : {}),
-                ...(file.s3_bucket ? { s3Bucket: file.s3_bucket } : {}),
-              },
-            );
-          }
-          await fileCountAggregate.deleteIfExists(ctx, file);
-          await ctx.db.delete(file._id);
-        }
-      } catch (error) {
-        console.error(`Failed to delete file ${fileId}:`, error);
+      const file = await ctx.db.get(fileId);
+      if (file) {
+        await scheduleFileDeletion(ctx, file, message.chat_id);
+        await fileCountAggregate.deleteIfExists(ctx, file);
+        await ctx.db.delete(file._id);
       }
     }
   }
-
-  if (message.feedback_id) {
-    try {
-      await ctx.db.delete(message.feedback_id);
-    } catch (error) {
-      console.error(`Failed to delete feedback ${message.feedback_id}:`, error);
-    }
+  if (message.feedback_id && (await ctx.db.get(message.feedback_id))) {
+    await ctx.db.delete(message.feedback_id);
   }
 
   await ctx.db.delete(message._id);
@@ -371,13 +356,8 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
   }
 
   if (chat.latest_summary_id) {
-    try {
+    if (await ctx.db.get(chat.latest_summary_id)) {
       await ctx.db.delete(chat.latest_summary_id);
-    } catch (error) {
-      console.error(
-        `Failed to delete summary ${chat.latest_summary_id}:`,
-        error,
-      );
     }
     await ctx.db.patch(chat._id, { latest_summary_id: undefined });
   }
@@ -392,12 +372,7 @@ async function deleteChatDocument(ctx: MutationCtx, chat: Doc<"chats">) {
     0,
     DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE,
   )) {
-    try {
-      await ctx.db.delete(summary._id);
-    } catch (error) {
-      console.error(`Failed to delete summary ${summary._id}:`, error);
-      // Continue with deletion even if summary cleanup fails
-    }
+    await ctx.db.delete(summary._id);
   }
 
   if (summaries.length > DELETE_ALL_CHATS_SUMMARY_BATCH_SIZE) {
@@ -442,11 +417,7 @@ async function deleteNextUserChatBatch(ctx: MutationCtx, userId: string) {
 
   if (summaries.length > 0) {
     for (const summary of summaries) {
-      try {
-        await ctx.db.delete(summary._id);
-      } catch (error) {
-        console.error(`Failed to delete summary ${summary._id}:`, error);
-      }
+      await ctx.db.delete(summary._id);
     }
 
     await scheduleDeleteAllChatsBatch(ctx, userId);
@@ -544,6 +515,7 @@ export const getChatByIdFromClient = query({
       const {
         codex_thread_id: _legacy,
         agent_approval_grants: _privateApprovalGrants,
+        objective_checkpoint: _privateObjectiveCheckpoint,
         ...chatPublic
       } = chat;
 
@@ -569,7 +541,7 @@ export const getChatByIdFromClient = query({
       return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id:", error);
-      return null;
+      throw error;
     }
   },
 });
@@ -646,7 +618,11 @@ export const getChatById = query({
 
       // Drop legacy codex_thread_id from the response — preserved on the row
       // for old data but not exposed to callers.
-      const { codex_thread_id: _legacy, ...chatPublic } = chat;
+      const {
+        codex_thread_id: _legacy,
+        objective_checkpoint: _privateObjectiveCheckpoint,
+        ...chatPublic
+      } = chat;
       return chatPublic;
     } catch (error) {
       console.error("Failed to get chat by id (backend):", error);
@@ -1117,22 +1093,24 @@ export const getUserChats = query({
       );
 
       // Step 4: Enhance chats using the map
-      const enhancedChats = combinedPage.map((chat) => {
-        if (chat.branched_from_chat_id) {
-          const branchedFromChat = branchedChatMap.get(
-            chat.branched_from_chat_id,
-          );
-          return {
-            ...chat,
-            branched_from_title: resolveBranchedFromTitle(
-              chat,
-              branchedFromChat,
-              identity.subject,
-            ),
-          };
-        }
-        return chat;
-      });
+      const enhancedChats = combinedPage.map(
+        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => {
+          if (chat.branched_from_chat_id) {
+            const branchedFromChat = branchedChatMap.get(
+              chat.branched_from_chat_id,
+            );
+            return {
+              ...chat,
+              branched_from_title: resolveBranchedFromTitle(
+                chat,
+                branchedFromChat,
+                identity.subject,
+              ),
+            };
+          }
+          return chat;
+        },
+      );
 
       return {
         ...result,
@@ -1148,7 +1126,8 @@ export const getUserChats = query({
             ? { name: error.name, message: error.message }
             : String(error),
       });
-      return emptyChatsPage();
+      // A failed query is not an empty account. Let the client offer recovery.
+      throw error;
     }
   },
 });
@@ -1714,32 +1693,60 @@ export const setActiveAgentApprovalPending = mutation({
     request: v.optional(activeAgentApprovalRequestValidator),
     expectedRunId: v.optional(v.string()),
     expectedApprovalSessionId: v.optional(v.string()),
+    expectedApprovalId: v.optional(v.string()),
   },
-  returns: v.null(),
+  returns: v.union(
+    v.literal("acquired"),
+    v.literal("released"),
+    v.literal("busy"),
+    v.literal("stale"),
+    v.literal("not_found"),
+  ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const chat = await ctx.db
       .query("chats")
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
-    if (!chat) return null;
+    if (!chat) return "not_found" as const;
     if (
       args.expectedRunId !== undefined &&
       chat.active_trigger_run_id !== args.expectedRunId
     ) {
-      return null;
+      return "stale" as const;
     }
     if (
       args.expectedApprovalSessionId !== undefined &&
       chat.active_agent_approval_session_id !== args.expectedApprovalSessionId
     ) {
-      return null;
+      return "stale" as const;
+    }
+    if (args.pending) {
+      if (!args.request) return "stale" as const;
+      const activeApprovalId = chat.active_agent_approval_request?.approvalId;
+      if (
+        chat.active_agent_approval_pending === true &&
+        activeApprovalId !== args.request.approvalId
+      ) {
+        return "busy" as const;
+      }
+      await ctx.db.patch(chat._id, {
+        active_agent_approval_pending: true,
+        active_agent_approval_request: args.request,
+      });
+      return "acquired" as const;
+    }
+    if (
+      args.expectedApprovalId !== undefined &&
+      chat.active_agent_approval_request?.approvalId !== args.expectedApprovalId
+    ) {
+      return "stale" as const;
     }
     await ctx.db.patch(chat._id, {
-      active_agent_approval_pending: args.pending ? true : undefined,
-      active_agent_approval_request: args.pending ? args.request : undefined,
+      active_agent_approval_pending: undefined,
+      active_agent_approval_request: undefined,
     });
-    return null;
+    return "released" as const;
   },
 });
 

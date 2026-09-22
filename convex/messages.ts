@@ -1,3 +1,7 @@
+import {
+  getAbliterationHistoryEntry,
+  stripClientAbliterationRouting,
+} from "../lib/experiments/abliteration-history";
 import { query, mutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
@@ -640,6 +644,13 @@ export const saveMessage = mutation({
         // Update usage if provided and not already set (e.g., on abort)
         if (args.usage && !existingMessage.usage) {
           patch.usage = args.usage;
+        } else if (args.usage?.abliterationRouting) {
+          // A client stop-save may precede server completion. Only this
+          // service-key mutation can add or replace routing provenance.
+          patch.usage = {
+            ...existingMessage.usage,
+            abliterationRouting: args.usage.abliterationRouting,
+          };
         }
 
         // Update metrics if provided and not already set
@@ -1211,7 +1222,7 @@ export const saveAssistantMessage = mutation({
         generation_started_at: args.generationStartedAt,
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
-        usage: args.usage,
+        usage: stripClientAbliterationRouting(args.usage),
       });
 
       return null;
@@ -1258,14 +1269,14 @@ export const deleteLastAssistantMessage = mutation({
       // Walk backwards from newest message and collect the entire trailing chain:
       // assistant messages + hidden (auto-continue) user messages.
       // Stop at the first non-hidden user message so regenerate targets the original request.
-      const trailingMessages = await ctx.db
+      const trailingMessages = ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("desc")
-        .collect();
+        .order("desc");
 
-      const messagesToDelete: typeof trailingMessages = [];
-      for (const msg of trailingMessages) {
+      // Do not load the rest of a long conversation just to regenerate its tail.
+      const messagesToDelete: Doc<"messages">[] = [];
+      for await (const msg of trailingMessages) {
         if (msg.role === "assistant") {
           messagesToDelete.push(msg);
         } else if (msg.role === "user" && msg.is_hidden) {
@@ -1465,6 +1476,13 @@ export const getMessagesPageForBackend = query({
         parts: v.array(v.any()),
       }),
     ),
+    abliterationHistory: v.array(
+      v.object({
+        id: v.string(),
+        completed: v.boolean(),
+        independent: v.boolean(),
+      }),
+    ),
     fileTokens: v.array(
       v.object({
         fileId: v.id("files"),
@@ -1487,7 +1505,13 @@ export const getMessagesPageForBackend = query({
     );
 
     if (!chatExists) {
-      return { page: [], fileTokens: [], isDone: true, continueCursor: "" };
+      return {
+        page: [],
+        abliterationHistory: [],
+        fileTokens: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
 
     const result = await ctx.db
@@ -1517,6 +1541,9 @@ export const getMessagesPageForBackend = query({
         role: message.role,
         parts: stripUnownedFileParts(message.parts, ownedFileIds),
       })),
+      abliterationHistory: visiblePage
+        .filter((message) => message.role === "assistant")
+        .map(getAbliterationHistoryEntry),
       fileTokens,
       isDone: result.isDone,
       continueCursor: result.continueCursor,

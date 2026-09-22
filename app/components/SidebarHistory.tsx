@@ -4,6 +4,7 @@ import React, { useRef, useEffect } from "react";
 import { MessageSquare } from "lucide-react";
 import ChatItem from "./ChatItem";
 import Loading from "@/components/ui/loading";
+import { SlowLoadingNotice } from "./SlowLoadingNotice";
 
 export type SidebarPaginationStatus =
   "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted";
@@ -21,6 +22,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   chats,
   paginationStatus,
   loadMore,
+  containerRef,
   showEmptyState = true,
   testId = "sidebar-chat-list",
 }) => {
@@ -37,7 +39,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
 
     if (paginationStatus === "CanLoadMore" && loadMore) {
       const options: IntersectionObserverInit = {
-        root: null,
+        root: containerRef?.current ?? null,
         rootMargin: "50px",
         threshold: 0.1,
       };
@@ -45,6 +47,8 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       observerRef.current = new IntersectionObserver((entries) => {
         const [entry] = entries;
         if (entry.isIntersecting && statusRef.current === "CanLoadMore") {
+          // Lock synchronously: observers can fire again before React commits.
+          statusRef.current = "LoadingMore";
           loadMore(28);
         }
       }, options);
@@ -60,12 +64,13 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
         observerRef.current.disconnect();
       }
     };
-  }, [paginationStatus, loadMore, chats.length]);
+  }, [paginationStatus, loadMore, chats.length, containerRef]);
 
   if (paginationStatus === "LoadingFirstPage") {
     // Loading state
     return (
       <div className="p-2">
+        <SlowLoadingNotice label="Loading task history…" />
         <div className="space-y-3">
           {[...Array(5)].map((_, i) => (
             <div key={i} className="animate-pulse">

@@ -1,5 +1,6 @@
 import {
   createTerminalRecordStore,
+  terminalSandboxInstance,
   TERMINAL_RECORD_RETENTION_MS,
   type TerminalExecutionRecord,
 } from "../terminal-execution-record";
@@ -53,6 +54,42 @@ function record(
 }
 
 describe("terminal execution records", () => {
+  it("separates cloud providers and preserves local environment identity across relay reconnects", async () => {
+    const { sandbox } = sandboxFixture();
+    const miosa = { ...sandbox, sandboxKind: "miosa" };
+    expect(terminalSandboxInstance(miosa)).toBe("miosa:sandbox-one");
+    const local = {
+      ...sandbox,
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "relay-one",
+      getConnectionInfo: () => ({
+        connectionId: "relay-one",
+        environmentId: "installation-one",
+        isDesktop: true,
+      }),
+    };
+    const localRecord = record({
+      sandboxInstance: terminalSandboxInstance(local),
+    });
+    await createTerminalRecordStore(local, "u", "reconnect").save(localRecord);
+    const reconnected = {
+      ...local,
+      getConnectionId: () => "relay-two",
+      getConnectionInfo: () => ({
+        connectionId: "relay-two",
+        environmentId: "installation-one",
+        isDesktop: true,
+      }),
+    };
+    expect(
+      await createTerminalRecordStore(reconnected, "u", "reconnect").read(
+        "abcdef12",
+      ),
+    ).toMatchObject({ status: "completed" });
+    expect(
+      await createTerminalRecordStore(miosa, "u", "reconnect").read("abcdef12"),
+    ).toBeNull();
+  });
   it("recovers in a fresh store and isolates user, scope, and sandbox instance", async () => {
     const { sandbox } = sandboxFixture();
     const store = createTerminalRecordStore(sandbox, "user-one", "chat-one");

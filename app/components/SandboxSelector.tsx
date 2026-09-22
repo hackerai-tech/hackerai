@@ -21,12 +21,21 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { useTauri } from "@/app/hooks/useTauri";
 import { detectPlatform } from "@/app/download/DownloadSection";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useInitialConnectionPending } from "@/app/hooks/useInitialConnectionPending";
+
+import type { SetSandboxPreference } from "@/app/hooks/useSandboxPreference";
+import {
+  connectionMatchesPreference,
+  environmentPreference,
+  isDesktopPreference,
+} from "@/lib/sandbox/environment";
 
 interface SandboxSelectorProps {
   value: string;
-  onChange?: (value: string) => void;
+  onChange?: SetSandboxPreference;
   disabled?: boolean;
   size?: "sm" | "toolbar" | "md";
+  triggerLabel?: string;
 }
 
 interface ConnectionOption {
@@ -42,6 +51,7 @@ export function SandboxSelector({
   onChange,
   disabled = false,
   size = "sm",
+  triggerLabel,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -50,8 +60,28 @@ export function SandboxSelector({
     subscription,
     localConnections: connections,
     desktopBridgeStatus,
+    desktopEnvironmentId,
   } = useGlobalState();
   const isFreeUser = subscription === "free";
+
+  const selectedConnectionKnown = Boolean(
+    connections?.some((connection) =>
+      connectionMatchesPreference(connection, value),
+    ),
+  );
+  const initialConnectionPending = useInitialConnectionPending({
+    connected: selectedConnectionKnown,
+    connectionCount: connections?.length,
+    preference: value,
+  });
+  const selectedNativeDesktop =
+    isTauri &&
+    (value === "desktop" ||
+      (desktopEnvironmentId !== undefined &&
+        value === `desktop-environment:${desktopEnvironmentId}`));
+  const computerConnectionPending = selectedNativeDesktop
+    ? desktopBridgeStatus === "idle" || desktopBridgeStatus === "connecting"
+    : initialConnectionPending;
 
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -68,21 +98,44 @@ export function SandboxSelector({
     isTauri && desktopBridgeStatus !== "connected"
       ? desktopBridgeStatus === "connecting"
         ? "Local reconnecting"
-        : "Local unavailable"
+        : computerConnectionPending
+          ? "Local"
+          : "Local unavailable"
       : "Local";
-  const desktopConnection = connections?.find((conn) => conn.isDesktop);
+  const desktopConnection = connections?.find(
+    (conn) =>
+      conn.isDesktop &&
+      (!isTauri ||
+        !desktopEnvironmentId ||
+        conn.environmentId === desktopEnvironmentId),
+  );
   const desktopIsSelectable = !isTauri || desktopBridgeStatus === "connected";
-  const desktopOptions: ConnectionOption[] = desktopConnection
-    ? [
-        {
-          id: "desktop",
-          label: desktopLabel,
-          shortLabel: desktopLabel,
-          icon: Monitor,
-          disabled: !desktopIsSelectable,
-        },
-      ]
-    : [];
+  const desktopOptions: ConnectionOption[] = (connections ?? [])
+    .filter(
+      (conn, index, all) =>
+        conn.isDesktop &&
+        all.findIndex(
+          (candidate) =>
+            environmentPreference(candidate) === environmentPreference(conn),
+        ) === index,
+    )
+    .map((conn) => {
+      const isCurrentDesktop = isTauri && conn === desktopConnection;
+      const label =
+        isCurrentDesktop || !conn.environmentId
+          ? desktopLabel
+          : conn.osInfo?.hostname || conn.name;
+      return {
+        id:
+          value === "desktop" && conn === desktopConnection
+            ? "desktop"
+            : environmentPreference(conn),
+        label,
+        shortLabel: label,
+        icon: Monitor,
+        disabled: isCurrentDesktop && !desktopIsSelectable,
+      };
+    });
   const remoteConnections = useMemo(
     () => connections?.filter((conn) => !conn.isDesktop) ?? [],
     [connections],
@@ -123,14 +176,20 @@ export function SandboxSelector({
         : remoteConnections,
     [onlineRemoteConnectionIds, remoteConnections, shouldVerifyRemotePresence],
   );
-  const remoteOptions: ConnectionOption[] = liveRemoteConnections.map(
-    (conn) => ({
-      id: conn.connectionId,
+  const remoteOptions: ConnectionOption[] = liveRemoteConnections
+    .filter(
+      (conn, index, all) =>
+        all.findIndex(
+          (candidate) =>
+            environmentPreference(candidate) === environmentPreference(conn),
+        ) === index,
+    )
+    .map((conn) => ({
+      id: value === conn.connectionId ? value : environmentPreference(conn),
       label: conn.osInfo?.hostname || conn.name,
       shortLabel: conn.osInfo?.hostname || conn.name,
       icon: Laptop,
-    }),
-  );
+    }));
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
 
   // A connected Convex row can briefly exist before the command relay has
@@ -179,28 +238,10 @@ export function SandboxSelector({
     }
   }, [open]);
 
-  // Auto-correct stale sandbox preference
+  // Availability must never replace the user's selected computer.
   const valueMatchesOption = options.some((opt) => opt.id === value);
-  useEffect(() => {
-    if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
-      // Free users can't fall back to Cloud — leave preference as-is,
-      // the ChatInput effect will switch them to ask mode
-      if (isFreeUser) return;
-
-      onChange?.("e2b");
-      // Only show toast for remote disconnects, not when Desktop is hidden
-      const wasHiddenDesktop = value === "desktop";
-      if (!wasHiddenDesktop) {
-        toast.info("Local sandbox disconnected. Switched to Cloud.", {
-          duration: 5000,
-        });
-      }
-    }
-  }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
-
-  // Keep free users on a usable local connection. A stale Desktop presence can
-  // outlive the embedded bridge, so prefer a healthy remote runner while the
-  // bridge reconnects instead of repeatedly selecting the unavailable bridge.
+  // Choose an initial local default for free users, without replacing a
+  // previously selected computer when it disconnects.
   useEffect(() => {
     if (!isFreeUser || !connections?.length) return;
 
@@ -211,14 +252,14 @@ export function SandboxSelector({
       : remoteConnections[0];
     const preferredLocal =
       desktopConnection && desktopIsSelectable
-        ? "desktop"
-        : firstRemote?.connectionId;
+        ? environmentPreference(desktopConnection)
+        : firstRemote
+          ? environmentPreference(firstRemote)
+          : undefined;
     if (!preferredLocal) return;
 
-    const desktopUnavailable =
-      isTauri && value === "desktop" && !desktopIsSelectable;
-    if (value === "e2b" || desktopUnavailable) {
-      onChange?.(preferredLocal);
+    if (value === "e2b") {
+      onChange?.(preferredLocal, { remember: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -239,16 +280,20 @@ export function SandboxSelector({
       ? {
           id: value,
           label:
-            value === "desktop" && desktopBridgeStatus === "connecting"
+            selectedNativeDesktop && desktopBridgeStatus === "connecting"
               ? "Local reconnecting"
-              : "Local unavailable",
-          shortLabel:
-            value === "desktop" && desktopBridgeStatus === "connecting"
-              ? "Local reconnecting"
-              : value === "desktop" && desktopBridgeStatus === "connected"
+              : computerConnectionPending
                 ? "Local"
                 : "Local unavailable",
-          icon: value === "desktop" ? Monitor : Laptop,
+          shortLabel:
+            selectedNativeDesktop && desktopBridgeStatus === "connecting"
+              ? "Local reconnecting"
+              : computerConnectionPending
+                ? "Local"
+                : selectedNativeDesktop && desktopBridgeStatus === "connected"
+                  ? "Local"
+                  : "Local unavailable",
+          icon: isDesktopPreference(value) ? Monitor : Laptop,
         }
       : null;
   const selectedOption =
@@ -259,10 +304,10 @@ export function SandboxSelector({
 
   const buttonClassName =
     size === "md"
-      ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
       : size === "toolbar"
-        ? "h-7 max-w-44 px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-        : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-44"
+        : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
 
@@ -270,15 +315,16 @@ export function SandboxSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
+          type="button"
           variant="ghost"
           size={size === "md" ? "default" : "sm"}
           disabled={disabled}
           className={buttonClassName}
-          title={selectedOption?.label}
+          title={triggerLabel ?? selectedOption?.label}
         >
           <Icon className={iconClassName} />
           <span className="min-w-0 flex-1 truncate text-left">
-            {selectedOption?.shortLabel}
+            {triggerLabel ?? selectedOption?.shortLabel}
           </span>
           <ChevronDown
             className={
@@ -333,7 +379,11 @@ export function SandboxSelector({
                 disabled={option.disabled}
                 onClick={() => {
                   if (option.disabled) return;
-                  onChange?.(option.id);
+                  onChange?.(
+                    option.id === "desktop" && desktopConnection
+                      ? environmentPreference(desktopConnection)
+                      : option.id,
+                  );
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${

@@ -22,6 +22,7 @@ type PreemptiveTimeoutOptions = {
   requestId?: string;
   userId?: string;
   safetyBuffer?: number;
+  getLogContext?: () => Record<string, unknown>;
 };
 
 type CancellationSubscriberResult = {
@@ -247,6 +248,7 @@ export const createPreemptiveTimeout = ({
   requestId,
   userId,
   safetyBuffer = 60,
+  getLogContext,
 }: PreemptiveTimeoutOptions) => {
   // Use endpoint-specific max duration based on Vercel function limits
   const maxDuration = endpoint === "/api/chat" ? 420 : 800;
@@ -260,7 +262,16 @@ export const createPreemptiveTimeout = ({
     triggerTime = Date.now();
     isPreemptive = true;
 
+    let logContext: Record<string, unknown> = {};
+    try {
+      logContext = getLogContext?.() ?? {};
+    } catch {
+      // Observability enrichment must never prevent the protective abort.
+      logContext = { log_context_resolution_failed: true };
+    }
+
     const fields = {
+      ...logContext,
       event: "chat.preemptive_timeout_triggered",
       request_id: requestId ?? "unknown",
       service: "hackerai-web",

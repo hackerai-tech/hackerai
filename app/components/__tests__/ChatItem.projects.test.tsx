@@ -48,6 +48,7 @@ jest.mock("@/hooks/use-mobile", () => ({
   useIsMobile: () => mockUseIsMobile(),
 }));
 jest.mock("convex/react", () => ({
+  useConvex: () => ({ query: jest.fn().mockResolvedValue("complete") }),
   useMutation: () => mockRenameChat,
 }));
 jest.mock("@/app/hooks/useChats", () => ({
@@ -62,6 +63,8 @@ jest.mock("@/app/contexts/SidebarProjectList", () => ({
 }));
 jest.mock("sonner", () => ({
   toast: {
+    loading: jest.fn(),
+    dismiss: jest.fn(),
     success: mockToastSuccess,
     info: mockToastInfo,
     error: jest.fn(),

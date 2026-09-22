@@ -110,6 +110,129 @@ describe("SubagentToolHandler", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps the same visual while an agent transitions from starting to started", () => {
+    const startingPart = {
+      type: "tool-create_agent",
+      toolCallId: "tool-create-stable-visual",
+      state: "input-available",
+      input: { name: "Stored XSS validator", task: "Validate XSS" },
+    };
+    const message = {
+      id: "parent-run",
+      role: "assistant",
+      parts: [],
+    } as any;
+    const { rerender } = render(
+      <SubagentToolHandler
+        message={message}
+        status="streaming"
+        part={startingPart}
+      />,
+    );
+    const startingVisual = screen.getByTitle("Stored XSS validator").dataset
+      .subagentVisual;
+    expect(startingVisual).toBeDefined();
+
+    rerender(
+      <SubagentToolHandler
+        message={message}
+        status="ready"
+        part={{
+          ...startingPart,
+          state: "output-available",
+          output: {
+            success: true,
+            agent_id: "sa_xss",
+            name: "Stored XSS validator",
+            status: "queued",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByTitle("Stored XSS validator").dataset.subagentVisual,
+    ).toBe(startingVisual);
+  });
+
+  it("keeps the same visual when a later tool call reports the agent finished", () => {
+    const fullAgentId = "sa_1234567890abcdef1234567890abcdef";
+    const agentHandle = "sa_12345678";
+    const startPart = {
+      type: "tool-delegate_task",
+      toolCallId: "tool-delegate-1",
+      state: "output-available",
+      input: {
+        name: "Independent login-bypass reproduction",
+        task: "Reproduce the login bypass",
+      },
+      output: {
+        success: true,
+        agent_id: agentHandle,
+        name: "Independent login-bypass reproduction",
+        status: "queued",
+      },
+    };
+    const waitPart = {
+      type: "tool-wait_for_agents",
+      toolCallId: "tool-wait-1",
+      state: "output-available",
+      input: { target_agent_ids: [agentHandle] },
+      output: {
+        success: true,
+        wait_outcome: "agent_finished",
+        agent_id: agentHandle,
+        agent_name: "Independent login-bypass reproduction",
+        result: { status: "completed" },
+      },
+    };
+    const message = {
+      id: "parent-run",
+      role: "assistant",
+      parts: [
+        startPart,
+        {
+          type: "data-subagent-lifecycle",
+          data: {
+            subagent_id: fullAgentId,
+            parent_message_id: "parent-run",
+            parent_tool_call_id: "tool-delegate-1",
+            agent_name: "Independent login-bypass reproduction",
+            status: "running",
+          },
+        },
+        waitPart,
+        {
+          type: "data-subagent-lifecycle",
+          data: {
+            subagent_id: fullAgentId,
+            parent_message_id: "parent-run",
+            parent_tool_call_id: "tool-wait-1",
+            agent_name: "Independent login-bypass reproduction",
+            status: "completed",
+          },
+        },
+      ],
+    } as any;
+
+    render(
+      <>
+        <SubagentToolHandler
+          message={message}
+          status="ready"
+          part={startPart}
+        />
+        <SubagentToolHandler message={message} status="ready" part={waitPart} />
+      </>,
+    );
+
+    const chips = screen.getAllByTitle("Independent login-bypass reproduction");
+    expect(chips).toHaveLength(2);
+    expect(chips[1].dataset.subagentVisual).toBe(
+      chips[0].dataset.subagentVisual,
+    );
+  });
+
   it("names and opens the exact agent when it is updated", () => {
     render(
       <SubagentToolHandler

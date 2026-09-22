@@ -1,6 +1,7 @@
 import { config } from "dotenv";
 import { defineConfig } from "@trigger.dev/sdk";
 import { additionalPackages } from "@trigger.dev/build/extensions/core";
+import packageJson from "./package.json";
 
 if (process.env.NODE_ENV !== "production") {
   config({ path: ".env.local" });
@@ -38,7 +39,13 @@ export default defineConfig({
     external: ["node-pty", "sharp"],
     extensions: [
       additionalPackages({
-        packages: ["node-pty", "sharp"],
+        // AI SDK's guarded download uses createRequire("undici"), which the
+        // bundler cannot discover. Install the same pinned version as the app.
+        packages: [
+          "node-pty",
+          "sharp",
+          `undici@${packageJson.dependencies.undici}`,
+        ],
       }),
     ],
   },

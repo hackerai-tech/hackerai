@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   useComposerActions,
@@ -12,7 +13,10 @@ import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
 import { ScrollToBottomButton } from "../ScrollToBottomButton";
 import { useFileUpload } from "@/app/hooks/useFileUpload";
-import { readGeneratedTextAttachment } from "@/app/hooks/useTauri";
+import {
+  isTauriEnvironment,
+  readGeneratedTextAttachment,
+} from "@/app/hooks/useTauri";
 import {
   getDraftAttachmentsById,
   removeDraft,
@@ -45,9 +49,14 @@ import {
   reconnectOnlineStatus,
   useOnlineStatus,
 } from "@/app/hooks/useOnlineStatus";
+import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
+import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
+import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -266,8 +275,10 @@ export const ChatInput = ({
     localConnections,
     freeDesktopAgentOnlyActive,
     desktopBridgeStatus,
+    retryDesktopBridge,
     defaultLocalSandboxPreference,
   } = useGlobalState();
+  const { user } = useAuth();
   const input = useComposerInput();
   const { setInput } = useComposerActions();
   const isOnline = useOnlineStatus();
@@ -304,7 +315,8 @@ export const ChatInput = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
-  const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
+  const showAgentApprovalPrompt =
+    !!user && !!approvalRequest && !isStoppingAgent;
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -633,7 +645,11 @@ export const ChatInput = ({
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
-    !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
+    !!user &&
+    !isCheckingProPlan &&
+    subscription === "free" &&
+    isAgentMode(chatMode) &&
+    (!isTauriEnvironment() || freeDesktopAgentOnlyActive);
   const freeAgentSandboxAvailable = freeDesktopAgentOnlyActive
     ? isFreeDesktopSandboxAvailable({
         sandboxPreference,
@@ -642,18 +658,30 @@ export const ChatInput = ({
       })
     : hasLocalSandbox;
 
-  const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
+  const prevFreeAgentSandboxRef = useRef({
+    sandboxPreference,
+    available: freeAgentSandboxAvailable,
+    isFreeAgent,
+  });
   useEffect(() => {
-    const wasConnected = prevFreeAgentSandboxAvailableRef.current;
-    prevFreeAgentSandboxAvailableRef.current = freeAgentSandboxAvailable;
+    const previous = prevFreeAgentSandboxRef.current;
+    const wasConnected =
+      previous.isFreeAgent &&
+      previous.sandboxPreference === sandboxPreference &&
+      previous.available;
+    prevFreeAgentSandboxRef.current = {
+      sandboxPreference,
+      available: freeAgentSandboxAvailable,
+      isFreeAgent,
+    };
 
     if (!isFreeAgent) return;
-    // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where sandbox availability starts as false.
+    // Only warn when the same selected sandbox loses availability. Restoring a
+    // different task or resolving plan access is not a connection lifecycle event.
     if (!freeAgentSandboxAvailable) {
-      if (freeDesktopAgentOnlyActive) {
+      if (freeDesktopAgentOnlyActive || sandboxPreference !== "e2b") {
         if (wasConnected) {
-          const selectedDesktop = sandboxPreference === "desktop";
+          const selectedDesktop = isDesktopPreference(sandboxPreference);
           toast.info(
             selectedDesktop
               ? "Desktop sandbox disconnected."
@@ -691,7 +719,7 @@ export const ChatInput = ({
       (!sandboxPreference || sandboxPreference === "e2b") &&
       defaultLocalSandboxPreference
     ) {
-      setSandboxPreference(defaultLocalSandboxPreference);
+      setSandboxPreference(defaultLocalSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModel("auto");
@@ -701,7 +729,7 @@ export const ChatInput = ({
 
   const freeDesktopSandboxUnavailableReason =
     freeDesktopAgentOnlyActive && !freeAgentSandboxAvailable
-      ? sandboxPreference === "desktop"
+      ? isDesktopPreference(sandboxPreference)
         ? desktopBridgeStatus === "connecting"
           ? "Desktop sandbox is reconnecting"
           : "Reconnect the Desktop sandbox to use Agent"
@@ -709,8 +737,17 @@ export const ChatInput = ({
           ? "Select a local sandbox to use Agent"
           : "Reconnect the selected local sandbox to use Agent"
       : undefined;
+  const {
+    selectedNativeDesktop,
+    computerConnectionPending,
+    selectedComputerUnavailable,
+    sendDisabledReason: computerSendDisabledReason,
+  } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
-    sendDisabledReason ?? freeDesktopSandboxUnavailableReason;
+    sendDisabledReason ??
+    (user
+      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+      : undefined);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -783,7 +820,7 @@ export const ChatInput = ({
   };
 
   if (isResolvingInitialState) {
-    return <ChatInputLoadingState showAgentControls={isAgent} />;
+    return <ChatInputLoadingState showAgentControls={!!user && isAgent} />;
   }
 
   return (
@@ -823,29 +860,54 @@ export const ChatInput = ({
           </div>
         )}
 
-        {rateLimitWarning && onDismissRateLimitWarning && (
+        {user && selectedComputerUnavailable && !computerConnectionPending && (
+          <DisconnectedComputerNotice
+            isNewChat={isNewChat}
+            sandboxPreference={sandboxPreference}
+            onSelect={setSandboxPreference}
+            reconnectInstructions={
+              isDesktopPreference(sandboxPreference) && !selectedNativeDesktop
+                ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
+                : undefined
+            }
+            reconnecting={
+              selectedNativeDesktop && desktopBridgeStatus === "connecting"
+            }
+            onReconnect={() => {
+              if (selectedNativeDesktop) retryDesktopBridge();
+              else {
+                requestRemoteConnectionSelection(sandboxPreference);
+                openSettingsDialog("Remote Control");
+              }
+            }}
+          />
+        )}
+
+        {user && rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
             data={rateLimitWarning}
             onDismiss={onDismissRateLimitWarning}
           />
         )}
 
-        <div className="flex flex-col [&>*+*]:rounded-t-none">
-          <TodoPanel status={status} />
+        {user && (
+          <div className="flex flex-col [&>*+*]:rounded-t-none">
+            <TodoPanel status={status} />
 
-          {messageQueue.length > 0 && (
-            <QueuedMessagesPanel
-              messages={messageQueue}
-              onSendNow={onSendNow}
-              onEdit={updateQueuedMessage}
-              onEditingMessageChange={setEditingQueuedMessageId}
-              onDelete={removeQueuedMessage}
-              isStreaming={status === "streaming"}
-              queueBehavior={queueBehavior}
-              onQueueBehaviorChange={setQueueBehavior}
-            />
-          )}
-        </div>
+            {messageQueue.length > 0 && (
+              <QueuedMessagesPanel
+                messages={messageQueue}
+                onSendNow={onSendNow}
+                onEdit={updateQueuedMessage}
+                onEditingMessageChange={setEditingQueuedMessageId}
+                onDelete={removeQueuedMessage}
+                isStreaming={status === "streaming"}
+                queueBehavior={queueBehavior}
+                onQueueBehaviorChange={setQueueBehavior}
+              />
+            )}
+          </div>
+        )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
@@ -897,7 +959,7 @@ export const ChatInput = ({
               isUploadingFiles={isUploadingFiles}
               input={input}
               uploadedFiles={uploadedFiles}
-              chatMode={chatMode}
+              chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
               sendDisabledReason={effectiveSendDisabledReason}
             />
@@ -906,18 +968,23 @@ export const ChatInput = ({
 
         {/* Compact Agent controls below the input. The composer switches to
             this strip whenever its own width is constrained, even on desktop. */}
-        {isAgent && !showAgentApprovalPrompt && (
+        {user && isAgent && !showAgentApprovalPrompt && (
           <div
             className={`chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
           >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
             <div
-              className={`ml-auto min-w-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              className="min-w-0 flex-1"
+              data-testid="chat-input-mobile-sandbox"
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+            <div
+              className={`ml-auto min-w-0 max-w-[56%] shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />

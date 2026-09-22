@@ -2,6 +2,7 @@
 
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { deleteS3Object, getStoredS3Location } from "./s3Utils";
 import { convexLogger } from "./lib/logger";
 
@@ -104,6 +105,25 @@ export const deleteS3ObjectsBatchAction = internalAction({
             : String(failed[0].reason),
       });
     }
+    return null;
+  },
+});
+
+// Failed jobs retain their receipt and fail visibly instead of claiming success.
+export const deleteTrackedS3Object = internalAction({
+  args: { deletionId: v.id("pendingFileDeletions") },
+  returns: v.null(),
+  handler: async (ctx, { deletionId }) => {
+    const deletion = await ctx.runQuery(internal.deletions.getPendingFile, {
+      deletionId,
+    });
+    if (!deletion) return null;
+    await deleteStoredS3Object(
+      deletion.s3Key,
+      deletion.s3Region,
+      deletion.s3Bucket,
+    );
+    await ctx.runMutation(internal.deletions.completeFile, { deletionId });
     return null;
   },
 });

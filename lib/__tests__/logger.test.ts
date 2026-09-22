@@ -1,4 +1,117 @@
-import { logger } from "../logger";
+import { createWideEventBuilder, logger } from "../logger";
+import type { ProviderModelHistoryEntry } from "@/lib/ai/provider-model-history";
+
+it("retains chronological provider history and live outcomes across stream restarts", () => {
+  const builder = createWideEventBuilder("chat", "/api/agent").setModel(
+    "model-abliterated",
+  );
+  const entry: ProviderModelHistoryEntry = {
+    timestamp: "2026-09-16T16:57:49.280Z",
+    generation_step: 1,
+    configured: "model-abliterated",
+    requested: "abliterated-model",
+    provider: "abliteration.chat",
+    outcome: "pending",
+  };
+  builder.recordProviderModelCall(entry);
+  entry.outcome = "error";
+  builder.setModel("baseline");
+  builder.recordProviderModelCall({
+    ...entry,
+    configured: "baseline",
+    requested: "served",
+    outcome: "completed",
+  });
+  builder.setActualModel("served");
+  builder.setOpenRouterMetadata({ provider_name: "DeepInfra" });
+  const model = builder.build().model;
+  expect(
+    model?.history?.map(({ call_index, outcome }) => ({ call_index, outcome })),
+  ).toEqual([
+    { call_index: 1, outcome: "error" },
+    { call_index: 2, outcome: "completed" },
+  ]);
+  expect(model).toMatchObject({
+    configured: "baseline",
+    actual: "served",
+    provider_name: "DeepInfra",
+  });
+});
+
+describe("sandbox logging", () => {
+  it("records Miosa as a cloud sandbox without labeling its type as E2B", () => {
+    const event = createWideEventBuilder("chat_123", "/api/agent-long")
+      .setSandbox({ type: "cloud", provider: "miosa" })
+      .build();
+
+    expect(event.sandbox).toEqual({
+      type: "cloud",
+      provider: "miosa",
+    });
+  });
+});
+
+describe("diagnostic logging context", () => {
+  it("reuses an upstream request id and exposes model/provider attribution", () => {
+    const builder = createWideEventBuilder(
+      "chat_123",
+      "/api/chat",
+      "fra1::request-123",
+    );
+    builder.setRequestDetails({ mode: "ask", isRegenerate: false });
+    builder.setUser({ id: "user_123", subscription: "pro" });
+    builder.setModel("model-opus-4.6");
+    builder.setProviderRequestDiagnostics({
+      model: "model-opus-4.6",
+      requested_model_slug: "anthropic/claude-opus-4.6",
+      step_index: 0,
+      source: "initial",
+      message_count: 1,
+      role_counts: { user: 1 },
+      content_part_counts: { text: 1 },
+      context_used_tokens: 10,
+      context_max_tokens: 100,
+      context_used_percent: 10,
+      system_tokens: 5,
+      max_output_tokens: 100,
+      tool_count: 0,
+      active_tool_count: 0,
+      active_tools_mode: "all",
+      fallback_model_count: 0,
+      has_user_attribution: true,
+      has_multimodal_tool_results: false,
+    });
+    builder.setActualModel("anthropic/claude-opus-4.6");
+    builder.setOpenRouterMetadata({
+      provider_name: "Google Vertex",
+      openrouter_generation_id: "gen-123",
+      openrouter_request_id: "or-req-123",
+    });
+
+    expect(builder.getDiagnosticContext()).toEqual({
+      request_id: "fra1::request-123",
+      service: "chat-handler",
+      environment: expect.any(String),
+      user_id: "user_123",
+      mode: "ask",
+      subscription: "pro",
+      selected_model: "model-opus-4.6",
+      requested_model_slug: "anthropic/claude-opus-4.6",
+      model_provider_slug: "anthropic",
+      response_model: "anthropic/claude-opus-4.6",
+      provider_name: "Google Vertex",
+      provider_name_source: "openrouter_response_metadata",
+      provider_attribution_available: true,
+      openrouter_generation_id: "gen-123",
+      openrouter_request_id: "or-req-123",
+      openrouter_upstream_id: undefined,
+    });
+    expect(builder.build()).toMatchObject({
+      request_id: "fra1::request-123",
+      environment: expect.any(String),
+    });
+  });
+});
 
 describe("logger error redaction", () => {
   it("redacts presigned URLs from runtime error messages and stacks", () => {

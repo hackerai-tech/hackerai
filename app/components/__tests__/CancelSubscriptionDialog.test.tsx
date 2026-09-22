@@ -1,9 +1,15 @@
 import "@testing-library/jest-dom";
-import { describe, expect, it, jest } from "@jest/globals";
+import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { PAID_FUNNEL_EVENTS } from "@/lib/analytics/paid-funnel";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const mockCancelSubscription = jest.fn();
+const mockGetRetentionOffers = jest.fn();
+const mockPauseSubscription = jest.fn();
+const mockDowngradeSubscription = jest.fn();
+const mockReloadWithEntitlementRefresh = jest.fn();
+const mockCaptureAuthenticatedEvent = jest.fn();
 const mockToastSuccess = jest.fn();
 
 jest.mock("@/app/contexts/GlobalState", () => ({
@@ -14,10 +20,17 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 
 jest.mock("@/lib/billing/client", () => ({
   cancelSubscription: mockCancelSubscription,
+  getRetentionOffers: mockGetRetentionOffers,
+  pauseSubscription: mockPauseSubscription,
+  downgradeSubscription: mockDowngradeSubscription,
+}));
+
+jest.mock("@/lib/auth/entitlement-refresh-navigation", () => ({
+  reloadWithEntitlementRefresh: mockReloadWithEntitlementRefresh,
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureAuthenticatedEvent: mockCaptureAuthenticatedEvent,
 }));
 
 jest.mock("sonner", () => ({
@@ -30,7 +43,66 @@ jest.mock("sonner", () => ({
 const CancelSubscriptionDialog = require("../CancelSubscriptionDialog")
   .default as typeof import("../CancelSubscriptionDialog").default;
 
+const PAUSE_EFFECTIVE_AT = Date.UTC(2026, 9, 1, 12);
+const PAUSE_RESUME_AT = Date.UTC(2026, 11, 1, 12);
+
+function retentionOffers(
+  overrides: { pause?: boolean; downgrade?: boolean } = {},
+) {
+  const pause = overrides.pause ?? true;
+  const downgrade = overrides.downgrade ?? false;
+  return {
+    downgrade: downgrade
+      ? {
+          eligible: true,
+          targetTier: "pro",
+          targetPlan: "pro-monthly-plan",
+          targetAmountDollars: 25,
+          currentAmountDollars: 60,
+          currency: "usd",
+          effectiveAt: PAUSE_EFFECTIVE_AT,
+        }
+      : { eligible: false, reason: "no_downgrade_target" },
+    offersEnabled: true,
+    subscriptionTier: "pro-plus",
+    plan: "pro-plus-monthly-plan",
+    pause: {
+      eligible: pause,
+      pauseEffectiveAt: PAUSE_EFFECTIVE_AT,
+      options: pause
+        ? [
+            { months: 1, resumeAt: Date.UTC(2026, 10, 1, 12) },
+            { months: 2, resumeAt: PAUSE_RESUME_AT },
+            { months: 3, resumeAt: Date.UTC(2027, 0, 1, 12) },
+          ]
+        : [],
+    },
+  };
+}
+
+async function completeSurvey(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("radio", { name: /not using it enough/i }));
+  await user.click(screen.getByRole("button", { name: "Next" }));
+  await user.click(
+    screen.getByRole("radio", {
+      name: /too expensive for how often i use it/i,
+    }),
+  );
+  await user.type(
+    screen.getByLabelText("Tell us a little more"),
+    "Busy with a contract for a while",
+  );
+  await user.click(screen.getByRole("button", { name: "Next" }));
+}
+
 describe("CancelSubscriptionDialog", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ pause: false }) as never,
+    );
+  });
+
   it("shows usage limits as a cancellation reason", () => {
     render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
 
@@ -114,5 +186,196 @@ describe("CancelSubscriptionDialog", () => {
       currentPeriodEnd: undefined,
       alreadyScheduled: false,
     });
+  });
+
+  it("offers a pause and schedules it for the selected duration", async () => {
+    mockGetRetentionOffers.mockResolvedValue(retentionOffers() as never);
+    mockPauseSubscription.mockResolvedValue({
+      paused: true,
+      months: 2,
+      pauseEffectiveAt: PAUSE_EFFECTIVE_AT,
+      resumeAt: PAUSE_RESUME_AT,
+      alreadyScheduled: false,
+    } as never);
+    const onPauseScheduled = jest.fn();
+    const user = userEvent.setup();
+
+    render(
+      <CancelSubscriptionDialog
+        open={true}
+        onOpenChange={jest.fn()}
+        onPauseScheduled={onPauseScheduled}
+      />,
+    );
+
+    await completeSurvey(user);
+
+    expect(
+      await screen.findByRole("heading", { name: "Pause your plan instead?" }),
+    ).toBeVisible();
+    expect(mockGetRetentionOffers).toHaveBeenCalledWith({
+      reasonCategory: "not_using_enough",
+    });
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionOfferImpressed,
+      expect.objectContaining({
+        offers_shown: ["pause"],
+        reason_category: "not_using_enough",
+      }),
+    );
+    expect(mockCancelSubscription).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("radio", { name: "2 months" }));
+    await user.click(
+      screen.getByRole("button", { name: "Pause for 2 months" }),
+    );
+
+    expect(mockPauseSubscription).toHaveBeenCalledWith({
+      months: 2,
+      cancellationReason: {
+        reasonCategory: "not_using_enough",
+        reasonSubcategory: "too_expensive_low_frequency",
+        reasonDetails: "Busy with a contract for a while",
+      },
+    });
+    expect(
+      await screen.findByRole("heading", { name: "Pause scheduled" }),
+    ).toBeVisible();
+    expect(onPauseScheduled).toHaveBeenCalledWith(
+      expect.objectContaining({ months: 2, resumeAt: PAUSE_RESUME_AT }),
+    );
+    expect(mockToastSuccess).toHaveBeenCalledWith("Pause scheduled");
+  });
+
+  it("continues to the cancellation confirmation when offers are declined", async () => {
+    mockGetRetentionOffers.mockResolvedValue(retentionOffers() as never);
+    const user = userEvent.setup();
+
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await completeSurvey(user);
+    await screen.findByRole("heading", { name: "Pause your plan instead?" });
+    await user.click(
+      screen.getByRole("button", { name: "No thanks, continue to cancel" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Are you sure you want to cancel?",
+      }),
+    ).toBeVisible();
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionOfferDeclined,
+      expect.objectContaining({ offers_shown: ["pause"] }),
+    );
+  });
+
+  it("skips the offer step when offers cannot be loaded", async () => {
+    mockGetRetentionOffers.mockRejectedValue(new Error("offline") as never);
+    const user = userEvent.setup();
+
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await completeSurvey(user);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Are you sure you want to cancel?",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: "Pause your plan instead?" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers a downgrade next to the pause and switches the plan", async () => {
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ downgrade: true }) as never,
+    );
+    mockDowngradeSubscription.mockResolvedValue({
+      scheduled: true,
+      effectiveAt: PAUSE_EFFECTIVE_AT,
+      fromTier: "pro-plus",
+      toTier: "pro",
+      toPlan: "pro-monthly-plan",
+      targetAmountDollars: 25,
+      currency: "usd",
+    } as never);
+    const onDowngradeApplied = jest.fn();
+    const user = userEvent.setup();
+
+    render(
+      <CancelSubscriptionDialog
+        open={true}
+        onOpenChange={jest.fn()}
+        onDowngradeApplied={onDowngradeApplied}
+      />,
+    );
+
+    await completeSurvey(user);
+
+    expect(
+      await screen.findByRole("heading", { name: "Keep your setup for less?" }),
+    ).toBeVisible();
+    expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.retentionOfferImpressed,
+      expect.objectContaining({ offers_shown: ["downgrade", "pause"] }),
+    );
+    // Downgrade is listed first and preselected.
+    expect(
+      screen.getByRole("radio", { name: /switch to pro/i }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByText(/Keep Pro until .*, then renew as Pro\./),
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Switch to Pro" }));
+
+    expect(mockDowngradeSubscription).toHaveBeenCalledWith({
+      cancellationReason: {
+        reasonCategory: "not_using_enough",
+        reasonSubcategory: "too_expensive_low_frequency",
+        reasonDetails: "Busy with a contract for a while",
+      },
+    });
+    expect(mockPauseSubscription).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("heading", { name: "Switching to Pro" }),
+    ).toBeVisible();
+    expect(screen.getByText(/Nothing is charged today/)).toBeVisible();
+    expect(onDowngradeApplied).toHaveBeenCalledWith(
+      expect.objectContaining({ toTier: "pro" }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(mockReloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  });
+
+  it("lets the user pick the pause instead of the downgrade", async () => {
+    mockGetRetentionOffers.mockResolvedValue(
+      retentionOffers({ downgrade: true }) as never,
+    );
+    mockPauseSubscription.mockResolvedValue({
+      paused: true,
+      months: 3,
+      pauseEffectiveAt: PAUSE_EFFECTIVE_AT,
+      resumeAt: Date.UTC(2027, 0, 1, 12),
+      alreadyScheduled: false,
+    } as never);
+    const user = userEvent.setup();
+
+    render(<CancelSubscriptionDialog open={true} onOpenChange={jest.fn()} />);
+
+    await completeSurvey(user);
+    await screen.findByRole("heading", { name: "Keep your setup for less?" });
+    await user.click(screen.getByRole("radio", { name: "3 months" }));
+    await user.click(
+      screen.getByRole("button", { name: "Pause for 3 months" }),
+    );
+
+    expect(mockPauseSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ months: 3 }),
+    );
+    expect(mockDowngradeSubscription).not.toHaveBeenCalled();
   });
 });

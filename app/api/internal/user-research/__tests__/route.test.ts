@@ -208,6 +208,20 @@ describe("PM user research gateway", () => {
     infoSpy.mockRestore();
   });
 
+  it.each([1, 2])("starts research for %i users", async (userCount) => {
+    const { POST } = await import("../route");
+    const userIds = validPayload.userIds.slice(0, userCount);
+    const response = await POST(
+      request({ body: { ...validPayload, userIds } }),
+    );
+    expect(response.status).toBe(202);
+    expect(triggerTask).toHaveBeenCalledWith(
+      "pm-user-research",
+      expect.objectContaining({ userIds }),
+      expect.anything(),
+    );
+  });
+
   it("accepts an optional Linear issue reference for tracking", async () => {
     const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
     const { POST } = await import("../route");
@@ -228,6 +242,67 @@ describe("PM user research gateway", () => {
     );
     expect(infoSpy).toHaveBeenCalledWith(
       expect.stringContaining('"linear_issue_id":"HAC-65"'),
+    );
+    infoSpy.mockRestore();
+  });
+
+  it("normalizes PostHog timestamps and SHA-256 field names for comparisons", async () => {
+    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    const { POST } = await import("../route");
+    const userIds = [
+      "user-1",
+      "user-2",
+      "user-3",
+      "user-4",
+      "user-5",
+      "user-6",
+    ];
+    const comparisonGroups = [
+      { label: "Model A", userIds: userIds.slice(0, 3) },
+      { label: "Model B", userIds: userIds.slice(3) },
+    ];
+    const evidenceAnchors = userIds.map((userId, index) => ({
+      userId,
+      anchorAt: new Date(
+        validPayload.cohortSelectedAt - (index + 1) * 60_000,
+      ).toISOString(),
+    }));
+    const normalizedEvidenceAnchors = evidenceAnchors.map((anchor) => ({
+      ...anchor,
+      anchorAt: Date.parse(anchor.anchorAt),
+    }));
+    const { selectionQueryFingerprint, ...payloadWithoutFingerprint } =
+      validPayload;
+
+    const response = await POST(
+      request({
+        body: {
+          ...payloadWithoutFingerprint,
+          userIds,
+          cohortSelectedAt: new Date(
+            validPayload.cohortSelectedAt,
+          ).toISOString(),
+          selectionQuerySha256: selectionQueryFingerprint,
+          comparisonGroups,
+          evidenceWindowDays: 30,
+          evidenceAnchors,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(triggerTask).toHaveBeenCalledWith(
+      "pm-user-research",
+      {
+        ...validTriggeredPayload,
+        userIds,
+        comparisonGroups,
+        samplingMode: "pre_event",
+        evidenceWindowDays: 30,
+        evidenceAnchors: normalizedEvidenceAnchors,
+        requestedBy: "pm-gateway",
+      },
+      expect.any(Object),
     );
     infoSpy.mockRestore();
   });
@@ -257,9 +332,17 @@ describe("PM user research gateway", () => {
     expect(missingKey.status).toBe(400);
 
     const invalidCohort = await POST(
-      request({ body: { ...validPayload, userIds: ["user-1", "user-2"] } }),
+      request({ body: { ...validPayload, userIds: [] } }),
     );
     expect(invalidCohort.status).toBe(400);
+    await expect(invalidCohort.json()).resolves.toEqual(
+      expect.objectContaining({
+        error: "invalid_payload",
+        issues: expect.arrayContaining([
+          expect.objectContaining({ path: ["userIds"] }),
+        ]),
+      }),
+    );
     expect(triggerTask).not.toHaveBeenCalled();
   });
 
@@ -307,26 +390,102 @@ describe("PM user research gateway", () => {
     expect(triggerTask).not.toHaveBeenCalled();
   });
 
-  it("returns the validated result with cohort user IDs", async () => {
+  it.each([1, 2, 3])(
+    "returns a validated result for %i users",
+    async (userCount) => {
+      const result = {
+        ...validResult,
+        userIds: validResult.userIds.slice(0, userCount),
+        usersAnalyzed: userCount,
+        report: {
+          ...validResult.report,
+          avatars: validResult.report.avatars.map((avatar) => ({
+            ...avatar,
+            evidenceUserCount: userCount,
+            confidence: userCount === 1 ? "low" : avatar.confidence,
+          })),
+          crossCohortPatterns:
+            userCount === 1
+              ? []
+              : validResult.report.crossCohortPatterns.map((pattern) => ({
+                  ...pattern,
+                  evidenceUserCount: userCount,
+                })),
+          unknowns:
+            userCount === 1
+              ? ["Sample size is one user; wider applicability is unknown."]
+              : validResult.report.unknowns,
+          coverage: {
+            ...validResult.report.coverage,
+            usersRequested: userCount,
+            usersAnalyzed: userCount,
+          },
+        },
+      };
+      retrieveRun.mockResolvedValue({
+        taskIdentifier: "pm-user-research",
+        tags: ["pm-user-research-gateway"],
+        isSuccess: true,
+        isFailed: false,
+        isCancelled: false,
+        output: result,
+      });
+      const { GET } = await import("../route");
+
+      const response = await GET(request({ runId: "run_gateway123" }));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        runId: "run_gateway123",
+        status: "completed",
+        result,
+      });
+    },
+  );
+
+  it.each([
+    "evidence count",
+    "confidence",
+    "cross-user patterns",
+    "multiple avatars",
+    "mismatched coverage",
+  ])("rejects single-user output with invalid %s", async (invalidField) => {
+    const avatar = {
+      ...validResult.report.avatars[0],
+      evidenceUserCount: 1,
+      confidence: "low",
+    };
+    const report = {
+      ...validResult.report,
+      avatars: [avatar],
+      crossCohortPatterns: [] as typeof validResult.report.crossCohortPatterns,
+      coverage: {
+        ...validResult.report.coverage,
+        usersRequested: 1,
+        usersAnalyzed: 1,
+      },
+    };
+    if (invalidField === "evidence count") avatar.evidenceUserCount = 3;
+    if (invalidField === "confidence") avatar.confidence = "high";
+    if (invalidField === "cross-user patterns")
+      report.crossCohortPatterns = validResult.report.crossCohortPatterns;
+    if (invalidField === "multiple avatars")
+      report.avatars.push({ ...avatar, name: "Another avatar" });
+    if (invalidField === "mismatched coverage")
+      report.coverage.usersAnalyzed = 3;
     retrieveRun.mockResolvedValue({
       taskIdentifier: "pm-user-research",
       tags: ["pm-user-research-gateway"],
       isSuccess: true,
-      isFailed: false,
-      isCancelled: false,
-      output: validResult,
+      output: { ...validResult, userIds: ["user-1"], usersAnalyzed: 1, report },
     });
     const { GET } = await import("../route");
-
     const response = await GET(request({ runId: "run_gateway123" }));
-    const body = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(body).toEqual({
-      runId: "run_gateway123",
-      status: "completed",
-      result: validResult,
-    });
+    expect(response.status).toBe(502);
+    expect(JSON.stringify(await response.json())).not.toContain(
+      "Independent security practitioner",
+    );
   });
 
   it("does not expose unrelated Trigger runs", async () => {

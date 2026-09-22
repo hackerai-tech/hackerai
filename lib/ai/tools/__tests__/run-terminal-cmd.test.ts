@@ -80,11 +80,20 @@ jest.mock("../utils/centrifugo-pty-adapter", () => ({
   createCentrifugoPtyHandle: jest.fn(),
 }));
 
+jest.mock("../utils/miosa-pty-adapter", () => ({
+  createMiosaPtyHandle: jest.fn(),
+}));
+
 import { createCentrifugoPtyHandle } from "../utils/centrifugo-pty-adapter";
 const mockCreateCentrifugoPtyHandle =
   createCentrifugoPtyHandle as jest.MockedFunction<
     typeof createCentrifugoPtyHandle
   >;
+
+import { createMiosaPtyHandle } from "../utils/miosa-pty-adapter";
+const mockCreateMiosaPtyHandle = createMiosaPtyHandle as jest.MockedFunction<
+  typeof createMiosaPtyHandle
+>;
 
 // ── Fake PTY handle factory ──────────────────────────────────────────
 
@@ -398,6 +407,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
     mockCreateCentrifugoPtyHandle.mockReset();
+    mockCreateMiosaPtyHandle.mockReset();
     mockPhEvent.mockClear();
   });
 
@@ -1022,6 +1032,125 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
+  test("injects the idle timeout into MIOSA browser commands", async () => {
+    const miosa = {
+      sandboxKind: "miosa" as const,
+      sandboxId: "miosa-browser-env",
+      commands: {
+        run: jest.fn(
+          async (
+            command: string,
+            opts?: { onStdout?: (value: string) => void },
+          ) => {
+            if (command !== "echo ready") opts?.onStdout?.("done\n");
+            return {
+              stdout: command === "echo ready" ? "ready\n" : "done\n",
+              stderr: "",
+              exitCode: 0,
+            };
+          },
+        ),
+      },
+    };
+    const { context } = makeContext({ sandbox: miosa });
+
+    await runTool(createRunTerminalCmd(context), {
+      command: "agent-browser open https://example.com",
+      brief: "open a browser page",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+
+    const browserCall = miosa.commands.run.mock.calls.find(([command]) =>
+      command.includes("agent-browser open"),
+    );
+    expect(browserCall?.[1]).toMatchObject({
+      envVars: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      cwd: "/home/user",
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  test("confirms MIOSA request cancellation using the execution signal", async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const start = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let executionSignal: AbortSignal | undefined;
+    const sandbox = {
+      sandboxKind: "miosa" as const,
+      commands: {
+        run: jest.fn(
+          async (command: string, opts?: { signal?: AbortSignal }) => {
+            if (command === "echo ready")
+              return { stdout: "ready\n", stderr: "", exitCode: 0 };
+            executionSignal = opts?.signal;
+            started();
+            return new Promise<never>((_, reject) =>
+              opts?.signal?.addEventListener(
+                "abort",
+                () => reject(new DOMException("Aborted", "AbortError")),
+                { once: true },
+              ),
+            );
+          },
+        ),
+      },
+    };
+    const { context } = makeContext({ sandbox });
+    const pending = runTool(
+      createRunTerminalCmd(context),
+      {
+        command: "sleep 60",
+        brief: "wait",
+        is_background: false,
+        interactive: false,
+        timeout: 30,
+      },
+      controller.signal,
+    ) as Promise<{ result: { exitCode: number; error: string } }>;
+    await start;
+    controller.abort();
+    const result = await pending;
+    expect(executionSignal?.aborted).toBe(true);
+    expect(result.result.exitCode).toBe(130);
+    expect(result.result.error).toBe("Command execution aborted by user");
+    expect(
+      sandbox.commands.run.mock.calls.filter(
+        ([command]) => command !== "echo ready",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("injects the idle timeout into MIOSA interactive browser shells", async () => {
+    const fakeHandle = makeFakeHandle();
+    const miosa = {
+      sandboxKind: "miosa" as const,
+      sandboxId: "miosa-browser-pty-env",
+      commands: { run: jest.fn() },
+    };
+    mockCreateMiosaPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: miosa });
+
+    setTimeout(() => fakeHandle.resolveExit(0), 10);
+    await runTool(createRunTerminalCmd(context), {
+      command: "agent-browser snapshot -i",
+      brief: "inspect the browser page",
+      is_background: false,
+      timeout: 5,
+      interactive: true,
+    });
+
+    expect(mockCreateMiosaPtyHandle).toHaveBeenCalledWith(
+      miosa,
+      expect.objectContaining({
+        envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      }),
+    );
+  });
+
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
     // Use a non-E2B sandbox (sandboxKind !== "centrifugo" is NOT enough after
     // the isE2BSandbox hardening — a sandbox with sandboxKind: "centrifugo" is
@@ -1538,6 +1667,67 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(started.kill).toHaveBeenCalledTimes(1);
   });
 
+  test("MIOSA noisy commands remain resumable until explicit cancellation", async () => {
+    const cancelled = jest.fn();
+    const files = new Map<string, string>();
+    const miosa = {
+      sandboxKind: "miosa" as const,
+      sandboxId: "miosa-recovery-test",
+      isRunning: jest.fn(async () => true),
+      files: {
+        write: async (path: string, content: string) => {
+          files.set(path, content);
+        },
+        read: async (path: string) => files.get(path) ?? "",
+        list: async () => [],
+      },
+      commands: {
+        run: jest.fn(
+          async (
+            command: string,
+            opts?: { onStdout?: (s: string) => void; signal?: AbortSignal },
+          ) => {
+            if (command === "echo ready" || command.startsWith("mkdir -p"))
+              return { stdout: "ready\n", stderr: "", exitCode: 0 };
+            opts?.onStdout?.("partial evidence\n".repeat(20_000));
+            return new Promise<never>((_, reject) => {
+              opts?.signal?.addEventListener(
+                "abort",
+                () => {
+                  cancelled();
+                  reject(
+                    Object.assign(new Error("cancelled"), {
+                      name: "AbortError",
+                    }),
+                  );
+                },
+                { once: true },
+              );
+            });
+          },
+        ),
+      },
+    };
+    const { context } = makeContext({ sandbox: miosa });
+    const response = (await runTool(createRunTerminalCmd(context), {
+      command: "bounded-test",
+      timeout: 0.01,
+      is_background: false,
+    })) as any;
+    expect(response.result).toMatchObject({
+      waitExpired: true,
+      status: "running",
+    });
+    expect(cancelled).not.toHaveBeenCalled();
+    await context.ptySessionManager.closeAll("chat-1");
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(files.get(response.result.recordPath)!)).toMatchObject({
+      sandboxInstance: "miosa:miosa-recovery-test",
+      status: "stopped",
+      exitReason: "response_cleanup",
+    });
+  });
+
   test("marks detached background PIDs as non-resumable", async () => {
     const nonE2B = {
       sandboxKind: "centrifugo" as const,
@@ -1808,7 +1998,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         used_via_npx: false,
         interactive: false,
         is_background: false,
-        agent_browser_usage_event_version: 1,
+        agent_browser_usage_event_version: 2,
       }),
     );
     expect(mockPhEvent.mock.calls[0]?.[1]).not.toHaveProperty("user_id");

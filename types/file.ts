@@ -71,7 +71,7 @@ export interface FilePartRendererProps {
 // File upload preview interfaces
 export interface FileUploadPreviewProps {
   uploadedFiles: UploadedFileState[];
-  onRemoveFile: (index: number) => void;
+  onRemoveFile: (index: number) => void | Promise<void>;
   onUpdateGeneratedTextFile?: (index: number, content: string) => void;
   onShowGeneratedTextInField?: (index: number, content: string) => void;
   generatedTextAttachmentsAvailable?: boolean;

@@ -25,9 +25,14 @@ const AUTHKIT_BYPASS_PATHS = new Set([
   "/api/health/connectivity",
   "/api/health/core",
   "/api/health/trigger-agent-mode",
+  "/api/health/trigger-reports",
   "/api/cron/platform-costs/convex",
   "/api/cron/platform-costs/vercel",
+  "/api/cron/subscription-pauses",
+  "/api/cron/trigger-health",
+  "/api/cron/influencer-analytics",
   "/api/internal/user-research",
+  "/api/internal/influencers/partners",
   "/robots.txt",
   "/sitemap.xml",
 ]);
@@ -46,6 +51,7 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/api/extra-usage/webhook",
   "/api/fraud/webhook",
   "/api/subscription/webhook",
+  "/api/influencers/webhook",
   "/api/workos/webhook",
   "/callback",
   "/desktop-login",
@@ -79,7 +85,7 @@ function isUnauthenticatedPath(pathname: string): boolean {
   if (pathname.startsWith("/share/")) {
     return true;
   }
-  if (pathname.startsWith("/invite/")) {
+  if (pathname.startsWith("/invite/") || pathname.startsWith("/r/")) {
     return true;
   }
   return false;

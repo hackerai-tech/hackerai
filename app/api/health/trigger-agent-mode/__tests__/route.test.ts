@@ -1,259 +1,103 @@
+import { GET } from "../route";
+import { GET as reportsGET } from "../../trigger-reports/route";
+import { GET as collectGET } from "../../../cron/trigger-health/route";
 import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  jest,
-} from "@jest/globals";
+  readTriggerHealth,
+  refreshTriggerHealth,
+} from "@/lib/health/trigger-health";
 
 jest.mock("next/server", () => ({
-  NextResponse: class MockNextResponse {
-    status: number;
-    headers?: HeadersInit;
-    private body: unknown;
-
-    constructor(body?: unknown, init?: ResponseInit) {
-      this.body = body;
-      this.status = init?.status ?? 200;
-      this.headers = init?.headers;
-    }
-
-    static json(body: unknown, init?: ResponseInit) {
-      return new MockNextResponse(body, init);
-    }
-
-    async json() {
-      return this.body;
-    }
+  NextResponse: {
+    json: (body: unknown, init?: ResponseInit) => ({
+      status: init?.status ?? 200,
+      headers: new Headers(init?.headers),
+      json: async () => body,
+    }),
   },
 }));
-
-const mockFetch = jest.fn();
-
-const triggerFeed = (
-  statuses: Partial<Record<"8931867" | "8931869" | "8649602", string>> = {},
-) => ({
-  included: [
-    {
-      id: "8931867",
-      type: "status_page_resource",
-      attributes: {
-        public_name: "Task execution",
-        status: statuses["8931867"] ?? "operational",
-      },
-    },
-    {
-      id: "8931869",
-      type: "status_page_resource",
-      attributes: {
-        public_name: "Task execution",
-        status: statuses["8931869"] ?? "operational",
-      },
-    },
-    {
-      id: "8649602",
-      type: "status_page_resource",
-      attributes: {
-        public_name: "Realtime",
-        status: statuses["8649602"] ?? "operational",
-      },
-    },
-    {
-      id: "8416312",
-      type: "status_page_resource",
-      attributes: {
-        public_name: "Dashboard",
-        status: "degraded",
-      },
-    },
-    {
-      id: "8416313",
-      type: "status_page_resource",
-      attributes: {
-        public_name: "API",
-        status: "degraded",
-      },
-    },
-  ],
+jest.mock("@/lib/health/trigger-health", () => ({
+  readTriggerHealth: jest.fn(),
+  refreshTriggerHealth: jest.fn(),
+}));
+function requestWithHeaders(_url: string, init?: RequestInit): Request {
+  return { headers: new Headers(init?.headers) } as Request;
+}
+const read = jest.mocked(readTriggerHealth);
+const refresh = jest.mocked(refreshTriggerHealth);
+const originalSecret = process.env.CRON_SECRET;
+afterEach(() => {
+  jest.resetAllMocks();
+  if (originalSecret === undefined) delete process.env.CRON_SECRET;
+  else process.env.CRON_SECRET = originalSecret;
 });
 
-const fetchResponse = ({
-  ok = true,
-  status = 200,
-  body = triggerFeed(),
-}: {
-  ok?: boolean;
-  status?: number;
-  body?: unknown;
-} = {}) => ({
-  ok,
-  status,
-  json: async () => body,
+it("keeps successful execution up when reporting times out", async () => {
+  read.mockResolvedValue({
+    probe: { status: "healthy", checkedAt: "2026-09-14T12:00:00Z" },
+    report: { status: "unknown", error: "trigger_report_timeout" },
+  });
+  const response = await GET();
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    source: "trigger_probe",
+  });
+  expect((await reportsGET()).status).toBe(503);
+  expect(refresh).not.toHaveBeenCalled();
 });
 
-describe("GET /api/health/trigger-agent-mode", () => {
-  let warnSpy: jest.SpiedFunction<typeof console.warn>;
-
-  beforeEach(() => {
-    jest.resetModules();
-    jest.clearAllMocks();
-    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-    global.fetch = mockFetch as unknown as typeof fetch;
-    mockFetch.mockResolvedValue(fetchResponse() as never);
-  });
-
-  afterEach(() => {
-    warnSpy.mockRestore();
-  });
-
-  it("returns 200 when the Agent-relevant Trigger resources are operational", async () => {
-    const { GET } = await import("../route");
-
+it.each(["failing", "unknown"] as const)(
+  "does not hide %s execution behind a healthy report",
+  async (status) => {
+    read.mockResolvedValue({
+      probe: { status, checkedAt: "2026-09-14T12:00:00Z" },
+      report: { status: "healthy" },
+    });
     const response = await GET();
-    const body = await response.json();
+    expect(response.status).toBe(503);
+    expect(JSON.stringify(await response.json())).not.toContain('"ok":true');
+  },
+);
 
-    expect(response.status).toBe(200);
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://status.trigger.dev/index.json",
-      expect.objectContaining({
-        cache: "no-store",
-        signal: expect.anything(),
-        headers: { accept: "application/json" },
+it.each([undefined, "", "wrong", "Bearer wrong", "Bearer undefined"])(
+  "rejects unauthorized collection (%s)",
+  async (authorization) => {
+    process.env.CRON_SECRET = "test-cron-secret";
+    const response = await collectGET(
+      requestWithHeaders("http://localhost/api/cron/trigger-health", {
+        headers: authorization ? { authorization } : {},
       }),
     );
-    expect(body).toMatchObject({
-      ok: true,
-      source: "https://status.trigger.dev/index.json",
-      resources: [
-        {
-          id: "8931867",
-          name: "US East task execution",
-          status: "operational",
-          operational: true,
-        },
-        {
-          id: "8931869",
-          name: "EU Central task execution",
-          status: "operational",
-          operational: true,
-        },
-        {
-          id: "8649602",
-          name: "Global realtime",
-          status: "operational",
-          operational: true,
-        },
-      ],
-    });
+    expect(response.status).toBe(401);
+    expect(refresh).not.toHaveBeenCalled();
+  },
+);
+
+it("fails closed without a configured cron secret", async () => {
+  delete process.env.CRON_SECRET;
+  expect(
+    (
+      await collectGET(
+        requestWithHeaders("http://localhost", {
+          headers: { authorization: "Bearer undefined" },
+        }),
+      )
+    ).status,
+  ).toBe(401);
+  expect(refresh).not.toHaveBeenCalled();
+});
+
+it("runs authorized collection and propagates storage failure", async () => {
+  process.env.CRON_SECRET = "test-cron-secret";
+  const request = requestWithHeaders("http://localhost", {
+    headers: { authorization: "Bearer test-cron-secret" },
   });
-
-  it("ignores unrelated degraded API and Dashboard resources", async () => {
-    const { GET } = await import("../route");
-    mockFetch.mockResolvedValueOnce(
-      fetchResponse({
-        body: triggerFeed(),
-      }) as never,
-    );
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(body.ok).toBe(true);
+  refresh.mockResolvedValueOnce({
+    ok: false,
+    error: "health_store_unavailable",
   });
-
-  it("returns 503 when a required Trigger resource is degraded", async () => {
-    const { GET } = await import("../route");
-    mockFetch.mockResolvedValueOnce(
-      fetchResponse({
-        body: triggerFeed({ "8931867": "degraded" }),
-      }) as never,
-    );
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      resources: expect.arrayContaining([
-        {
-          id: "8931867",
-          name: "US East task execution",
-          status: "degraded",
-          operational: false,
-        },
-      ]),
-    });
-  });
-
-  it("returns 503 when a required Trigger resource is missing", async () => {
-    const { GET } = await import("../route");
-    mockFetch.mockResolvedValueOnce(
-      fetchResponse({
-        body: {
-          included: triggerFeed().included.filter(
-            (resource) => resource.id !== "8931869",
-          ),
-        },
-      }) as never,
-    );
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      resources: expect.arrayContaining([
-        {
-          id: "8931869",
-          name: "EU Central task execution",
-          status: "missing",
-          operational: false,
-        },
-      ]),
-    });
-  });
-
-  it("returns 503 when Trigger's status feed is unavailable", async () => {
-    const { GET } = await import("../route");
-    mockFetch.mockResolvedValueOnce(
-      fetchResponse({ ok: false, status: 502 }) as never,
-    );
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      error: "trigger_status_unavailable",
-      sourceStatus: 502,
-    });
-  });
-
-  it("returns 503 when Trigger's status feed cannot be fetched", async () => {
-    const { GET } = await import("../route");
-    mockFetch.mockRejectedValueOnce(new Error("network failure") as never);
-
-    const response = await GET();
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body).toMatchObject({
-      ok: false,
-      error: "trigger_status_fetch_failed",
-      message: "Failed to fetch Trigger status feed.",
-    });
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(
-        '"event":"trigger_agent_health_status_fetch_failed"',
-      ),
-    );
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('"error_message":"network failure"'),
-    );
-  });
+  expect((await collectGET(request)).status).toBe(503);
+  refresh.mockResolvedValueOnce({ ok: true });
+  expect((await collectGET(request)).status).toBe(200);
 });

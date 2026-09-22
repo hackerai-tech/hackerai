@@ -17,6 +17,7 @@ const customJestConfig = {
   workerIdleMemoryLimit: "1GB",
   testEnvironment: "jest-environment-jsdom",
   moduleNameMapper: {
+    "^@miosa/sdk$": "<rootDir>/node_modules/@miosa/sdk/dist/index.js",
     "^jose$": "<rootDir>/__mocks__/jose.ts",
     "^@workos-inc/node$": "<rootDir>/__mocks__/workos-node.ts",
     "^@workos-inc/authkit-nextjs$": "<rootDir>/__mocks__/workos-authkit.ts",
@@ -41,7 +42,7 @@ const customJestConfig = {
     "^convex/browser$": "<rootDir>/__mocks__/convex/browser.ts",
   },
   transformIgnorePatterns: [
-    "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop|superjson)/)",
+    "node_modules/(?!(uuid|@miosa/sdk|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop|superjson)/)",
   ],
   testMatch: ["**/__tests__/**/*.[jt]s?(x)", "**/?(*.)+(spec|test).[jt]s?(x)"],
   testPathIgnorePatterns: ["/node_modules/", "/.next/", "/e2e/", "/dist/"],

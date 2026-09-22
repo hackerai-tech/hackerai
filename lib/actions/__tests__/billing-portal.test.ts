@@ -4,6 +4,7 @@ const mockCreateBillingPortalSession = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogEvent = jest.fn();
+const mockAssertUserCanStartBillingTransaction = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -17,6 +18,11 @@ jest.mock("@/app/api/stripe", () => ({
 
 jest.mock("@/lib/actions/billing-context", () => ({
   getBillingActionContext: mockGetBillingActionContext,
+}));
+
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanStartBillingTransaction:
+    mockAssertUserCanStartBillingTransaction,
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -35,6 +41,7 @@ describe("redirectToBillingPortal", () => {
       user: { id: "user_123" },
       stripeCustomerId: "cus_123",
     } as never);
+    mockAssertUserCanStartBillingTransaction.mockResolvedValue(undefined);
   });
 
   it("returns the Stripe billing portal URL", async () => {
@@ -170,4 +177,49 @@ describe("redirectToBillingPortal", () => {
       }),
     );
   });
+});
+
+describe("blocked-chat payment portal return", () => {
+  it("returns to the same chat with an actual entitlement refresh", async () => {
+    process.env.NEXT_PUBLIC_BASE_URL = "https://preview.example.com";
+    mockGetBillingActionContext.mockResolvedValue({
+      organizationId: "org_test",
+      user: { id: "user_test" },
+      stripeCustomerId: "cus_test",
+    } as never);
+    mockCreateBillingPortalSession.mockResolvedValue({
+      id: "bps_test",
+      url: "https://billing.stripe.com/test",
+    } as never);
+    const { default: openPortal } = await import("../billing-portal");
+    await openPortal("payment_method", {
+      surface: "blocked_chat",
+      returnPath: "/c/test-chat",
+    });
+    expect(mockCreateBillingPortalSession).toHaveBeenLastCalledWith({
+      customer: "cus_test",
+      return_url:
+        "https://preview.example.com/c/test-chat?refresh=entitlements",
+      flow_data: { type: "payment_method_update" },
+    });
+    expect(mockPostHogEvent).toHaveBeenLastCalledWith(
+      "payment_update_opened",
+      expect.objectContaining({ surface: "blocked_chat" }),
+    );
+  });
+  it.each(["//evil.example", "/\\evil.example", "https://evil.example"])(
+    "does not redirect to an external return path %s",
+    async (returnPath) => {
+      const { default: openPortal } = await import("../billing-portal");
+      await openPortal("payment_method", {
+        surface: "blocked_chat",
+        returnPath,
+      });
+      expect(mockCreateBillingPortalSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          return_url: "https://preview.example.com/?refresh=entitlements",
+        }),
+      );
+    },
+  );
 });

@@ -21,6 +21,7 @@ import {
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
 import type { ToolSet, UIMessageStreamWriter } from "ai";
+import type { Sandbox } from "@e2b/code-interpreter";
 import type {
   ChatMode,
   ToolContext,
@@ -40,14 +41,22 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { ptySessionManager } from "./utils/pty-session-manager";
 import { createPtyParserLogBudget } from "./utils/pty-output-formatter";
-import { isE2BSandbox } from "./utils/sandbox-types";
+import {
+  getCloudSandboxProviderForInstance,
+  isE2BSandbox,
+} from "./utils/sandbox-types";
 import { getSandboxWithFallbackGuard } from "./utils/sandbox-fallback";
 import { createE2BResourcePressureObserver } from "@/lib/analytics/sandbox-resource-pressure";
 import { E2B_COST_PER_MS } from "./utils/e2b-cost";
+import { MIOSA_COST_PER_MS } from "./utils/miosa-cost";
 import { phLogger } from "@/lib/posthog/server";
+import { MIOSA_NATIVE_TEMPLATE_ID } from "./utils/miosa-runtime";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import type { CloudSandboxAcquisitionContext } from "./utils/cloud-sandbox";
-import type { CloudSandboxProvider } from "./utils/cloud-sandbox-provider";
+import type {
+  CloudSandboxProvider,
+  CloudSandboxSelectionReason,
+} from "./utils/cloud-sandbox-provider";
 import {
   releaseE2BSandboxIdleLeaseBestEffort,
   startE2BSandboxLeaseHeartbeat,
@@ -62,17 +71,21 @@ export type CreateToolsRuntimePolicy = {
   ptyScopeId?: string;
   chargeSandboxRuntime?: boolean;
   cloudSandboxProvider?: CloudSandboxProvider;
+  cloudSandboxSelectionReason?: CloudSandboxSelectionReason;
   triggerRegion?: TriggerRunRegion;
   keepE2BLeaseAliveForRun?: boolean;
 };
 
 export type SandboxSessionUsage = {
   totalCostDollars: number;
+  miosaRuntimeMs: number;
+  miosaCostDollars: number;
   e2bRuntimeMs: number;
   e2bCostDollars: number;
 };
 
 const emptySandboxRuntimeMs = (): Record<CloudSandboxProvider, number> => ({
+  miosa: 0,
   e2b: 0,
 });
 
@@ -108,7 +121,7 @@ export const createTools = (
   const sandboxAccumulatedRuntimeMs = emptySandboxRuntimeMs();
   let providerSelectionRecorded = false;
   let sandboxBootInfo: SandboxBootInfo | null = null;
-  let lastE2BSandbox: Extract<AnySandbox, { sandboxId: string }> | null = null;
+  let lastE2BSandbox: Sandbox | null = null;
   let runLeaseHeartbeat: E2BSandboxLeaseHeartbeat | null = null;
   let currentModelName = modelName;
   let sandboxOperationQueue: Promise<void> = Promise.resolve();
@@ -121,6 +134,7 @@ export const createTools = (
 
   const cloudSandboxContext: CloudSandboxAcquisitionContext = {
     provider: runtimePolicy.cloudSandboxProvider,
+    selectionReason: runtimePolicy.cloudSandboxSelectionReason,
     subscription,
     chatId,
     triggerRunId,
@@ -131,7 +145,7 @@ export const createTools = (
 
   const trackSandboxUsage = (newSandbox: AnySandbox) => {
     sandbox = newSandbox;
-    const provider = isE2BSandbox(newSandbox) ? "e2b" : null;
+    const provider = getCloudSandboxProviderForInstance(newSandbox);
     if (isE2BSandbox(newSandbox)) {
       lastE2BSandbox = newSandbox;
       if (runtimePolicy.keepE2BLeaseAliveForRun && !runLeaseHeartbeat) {
@@ -141,7 +155,7 @@ export const createTools = (
         );
       }
     }
-    const now = Date.now();
+    const now = performance.now();
     if (
       sandboxCostSegmentStartedAt !== null &&
       sandboxCostProvider !== null &&
@@ -162,16 +176,25 @@ export const createTools = (
         chat_id: chatId,
         trigger_run_id: triggerRunId,
         provider,
-        provider_selection_reason: "configured",
-        cloud_sandbox_transport: "e2b_sdk",
+        sandbox_type: "cloud",
+        sandbox_provider: provider,
+        provider_selection_reason:
+          provider === runtimePolicy.cloudSandboxProvider
+            ? (runtimePolicy.cloudSandboxSelectionReason ?? "configured")
+            : "provider_fallback",
+        cloud_sandbox_transport: provider === "miosa" ? "miosa_sdk" : "e2b_sdk",
         subscription,
         subscription_tier: subscription,
         agent_run_kind: cloudSandboxContext.runKind,
+        trigger_region: cloudSandboxContext.triggerRegion,
         sandbox_boot_path: sandboxBootInfo?.path,
         sandbox_acquisition_duration_ms: sandboxBootInfo?.duration_ms,
         sandbox_create_attempts: sandboxBootInfo?.create_attempts,
-        image_version: process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox",
-        cloud_sandbox_provider_event_version: 6,
+        image_version:
+          provider === "miosa"
+            ? process.env.MIOSA_TEMPLATE_ID?.trim() || MIOSA_NATIVE_TEMPLATE_ID
+            : (process.env.E2B_TEMPLATE ?? "terminal-agent-sandbox"),
+        cloud_sandbox_provider_event_version: 8,
       });
     }
   };
@@ -358,10 +381,12 @@ export const createTools = (
     return buildTools();
   };
 
-  const getSandboxSessionUsage = (): SandboxSessionUsage => {
+  const getSandboxSessionUsage = async (): Promise<SandboxSessionUsage> => {
     if (runtimePolicy.chargeSandboxRuntime === false) {
       return {
         totalCostDollars: 0,
+        miosaRuntimeMs: 0,
+        miosaCostDollars: 0,
         e2bRuntimeMs: 0,
         e2bCostDollars: 0,
       };
@@ -370,18 +395,22 @@ export const createTools = (
     const runtimeMs = { ...sandboxAccumulatedRuntimeMs };
     if (sandboxCostSegmentStartedAt !== null && sandboxCostProvider !== null) {
       runtimeMs[sandboxCostProvider] +=
-        Date.now() - sandboxCostSegmentStartedAt;
+        performance.now() - sandboxCostSegmentStartedAt;
     }
     const e2bCostDollars = runtimeMs.e2b * E2B_COST_PER_MS;
+    const miosaCostDollars = runtimeMs.miosa * MIOSA_COST_PER_MS;
     return {
-      totalCostDollars: e2bCostDollars,
+      totalCostDollars: e2bCostDollars + miosaCostDollars,
+      miosaRuntimeMs: runtimeMs.miosa,
+      miosaCostDollars,
       e2bRuntimeMs: runtimeMs.e2b,
       e2bCostDollars,
     };
   };
 
-  const getSandboxSessionCost = (): number =>
-    getSandboxSessionUsage().totalCostDollars;
+  const getSandboxSessionCost = async (): Promise<number> => {
+    return (await getSandboxSessionUsage()).totalCostDollars;
+  };
 
   const releaseE2BSandboxIdleLease = async (): Promise<boolean> => {
     if (!lastE2BSandbox) return false;

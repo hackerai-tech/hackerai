@@ -90,7 +90,10 @@ describe("billing API routes", () => {
     const response = await POST(request({ flow: "payment_method" }) as never);
 
     expect(response.status).toBe(200);
-    expect(mockRedirectToBillingPortal).toHaveBeenCalledWith("payment_method");
+    expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
+      "payment_method",
+      {},
+    );
   });
 
   it("rejects unsupported billing portal flows", async () => {
@@ -194,5 +197,41 @@ describe("billing API routes", () => {
       error: "Please select the main cancellation reason",
     });
     expect(mockCancelSubscription).not.toHaveBeenCalled();
+  });
+});
+
+describe("billing portal recovery options", () => {
+  beforeEach(() => jest.clearAllMocks());
+  it("forwards a blocked-chat return path", async () => {
+    mockRedirectToBillingPortal.mockResolvedValue(
+      "https://billing.stripe.com/test" as never,
+    );
+    const { POST } = await import("../portal/route");
+    expect(
+      (
+        await POST(
+          request({
+            flow: "payment_method",
+            surface: "blocked_chat",
+            returnPath: "/c/test",
+          }) as never,
+        )
+      ).status,
+    ).toBe(200);
+    expect(mockRedirectToBillingPortal).toHaveBeenCalledWith("payment_method", {
+      surface: "blocked_chat",
+      returnPath: "/c/test",
+    });
+  });
+  it.each([
+    { surface: "arbitrary" },
+    { returnPath: "https://evil.example" },
+    { returnPath: "//evil.example" },
+    { returnPath: 123 },
+    { returnPath: "/" + "a".repeat(401) },
+  ])("rejects invalid options %j", async (body) => {
+    const { POST } = await import("../portal/route");
+    expect((await POST(request(body) as never)).status).toBe(400);
+    expect(mockRedirectToBillingPortal).not.toHaveBeenCalled();
   });
 });

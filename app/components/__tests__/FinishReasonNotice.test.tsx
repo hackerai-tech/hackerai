@@ -1,13 +1,39 @@
+jest.mock("../BlockedChatBillingRecovery", () => ({
+  BlockedChatBillingRecovery: ({
+    children,
+  }: {
+    children: import("react").ReactNode;
+  }) => children,
+}));
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest } from "@jest/globals";
 import React from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
 
-import { FinishReasonNotice } from "../FinishReasonNotice";
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 import { POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { ChatMode, SelectedModel } from "@/types/chat";
+
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ subscription: "pro", isCheckingProPlan: false }),
+}));
+jest.mock("convex/react", () => ({
+  useQuery: () => ({
+    extraUsageAvailable: false,
+    reason: "empty",
+    hasBalance: false,
+    autoReloadEnabled: false,
+  }),
+}));
+jest.mock("@/app/hooks/usePricingDialog", () => ({
+  redirectToPricing: jest.fn(),
+}));
+jest.mock("@/lib/utils/settings-dialog", () => ({
+  openSettingsDialog: jest.fn(),
+}));
+
+const { FinishReasonNotice } = require("../FinishReasonNotice");
 
 function DataStreamSetter({
   isAutoResuming,
@@ -308,7 +334,7 @@ describe("FinishReasonNotice", () => {
       expect(onContinue).toHaveBeenCalledWith(undefined);
     });
 
-    it("renders a usage limit notice without a Continue button for budget exhaustion", () => {
+    it("offers recovery and resumes through the normal continuation handler after budget exhaustion", () => {
       const onContinue = jest.fn();
       renderNotice(
         {
@@ -327,6 +353,12 @@ describe("FinishReasonNotice", () => {
       expect(
         screen.queryByRole("button", { name: /continue/i }),
       ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Add credits" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+      expect(onContinue).toHaveBeenCalledTimes(1);
+      expect(onContinue).toHaveBeenCalledWith();
+      // A rejected attempt must not permanently hide the recovery actions.
+      expect(screen.getByRole("button", { name: "Add credits" })).toBeEnabled();
     });
   });
 

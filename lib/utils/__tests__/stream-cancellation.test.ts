@@ -127,6 +127,13 @@ describe("createPreemptiveTimeout", () => {
       abortController,
       requestId: "iad1::request-1",
       userId: "user-1",
+      getLogContext: () => ({
+        mode: "ask",
+        selected_model: "model-opus-4.6",
+        requested_model_slug: "anthropic/claude-opus-4.6",
+        provider_name: "Google Vertex",
+        provider_attribution_available: true,
+      }),
     });
 
     jest.advanceTimersByTime(359_999);
@@ -142,6 +149,11 @@ describe("createPreemptiveTimeout", () => {
         user_id: "user-1",
         chat_id: "chat-1",
         endpoint: "/api/chat",
+        mode: "ask",
+        selected_model: "model-opus-4.6",
+        requested_model_slug: "anthropic/claude-opus-4.6",
+        provider_name: "Google Vertex",
+        provider_attribution_available: true,
         max_duration_seconds: 420,
         safety_buffer_seconds: 60,
         max_stream_time_ms: 360_000,
@@ -153,9 +165,37 @@ describe("createPreemptiveTimeout", () => {
         event: "chat.preemptive_timeout_triggered",
         request_id: "iad1::request-1",
         userId: "user-1",
+        selected_model: "model-opus-4.6",
+        provider_name: "Google Vertex",
       }),
     );
 
     timeout.clear();
+  });
+
+  it("still aborts when diagnostic context resolution fails", async () => {
+    const { createPreemptiveTimeout } = await import("../stream-cancellation");
+    const abortController = new AbortController();
+
+    createPreemptiveTimeout({
+      chatId: "chat-1",
+      endpoint: "/api/chat",
+      abortController,
+      requestId: "iad1::request-1",
+      getLogContext: () => {
+        throw new Error("context unavailable");
+      },
+    });
+
+    jest.advanceTimersByTime(360_000);
+
+    expect(abortController.signal.aborted).toBe(true);
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Preemptive timeout triggered",
+      expect.objectContaining({
+        request_id: "iad1::request-1",
+        log_context_resolution_failed: true,
+      }),
+    );
   });
 });

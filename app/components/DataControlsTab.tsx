@@ -21,7 +21,10 @@ import {
   useAnalyticsConsentPreferencesAvailable,
 } from "@/app/components/AnalyticsConsentManager";
 
+import { useDeletionConfirmation } from "@/app/hooks/useDeletionConfirmation";
+
 const DataControlsTab = () => {
+  const confirmDeletion = useDeletionConfirmation();
   const { subscription } = useGlobalState();
   const analyticsPreferencesAvailable =
     useAnalyticsConsentPreferencesAvailable();
@@ -35,14 +38,18 @@ const DataControlsTab = () => {
     if (isDeletingChats) return;
     setIsDeletingChats(true);
     try {
-      const response = await fetch("/api/chats", {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const errorMessage = await response.text();
-        throw new Error(errorMessage || "Failed to delete all tasks");
-      }
+      await confirmDeletion(
+        async () => {
+          const response = await fetch("/api/chats", { method: "DELETE" });
+          if (!response.ok) {
+            throw new Error(
+              (await response.text()) || "Failed to delete all tasks",
+            );
+          }
+        },
+        {},
+        "Deleting all tasks…",
+      );
 
       setShowDeleteChats(false);
       window.location.href = "/";
@@ -51,7 +58,6 @@ const DataControlsTab = () => {
       const errorMessage =
         error instanceof Error ? error.message : "Failed to delete all tasks";
       toast.error(formatTaskUiCopy(errorMessage));
-      setShowDeleteChats(false);
     } finally {
       setIsDeletingChats(false);
     }
@@ -71,11 +77,11 @@ const DataControlsTab = () => {
       }
 
       toast.success("Terminal sandbox deleted");
+      setShowDeleteSandboxes(false);
     } catch (error) {
       console.error("Failed to delete sandbox:", error);
       toast.error("Failed to delete terminal sandbox");
     } finally {
-      setShowDeleteSandboxes(false);
       setIsDeletingSandboxes(false);
     }
   };
@@ -188,7 +194,11 @@ const DataControlsTab = () => {
       </div>
 
       {/* Delete All Chats Confirmation Dialog */}
-      <AlertDialog open={showDeleteChats} onOpenChange={setShowDeleteChats}>
+      <AlertDialog
+        pending={isDeletingChats}
+        open={showDeleteChats}
+        onOpenChange={setShowDeleteChats}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
@@ -196,7 +206,8 @@ const DataControlsTab = () => {
             </AlertDialogTitle>
             <AlertDialogDescription>
               This action cannot be undone. This will permanently delete all
-              your tasks and remove all associated data from our servers.
+              your tasks, messages, and their attachments. Saved notes are
+              managed separately.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -204,7 +215,10 @@ const DataControlsTab = () => {
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteAllChats}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteAllChats();
+              }}
               disabled={isDeletingChats}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
@@ -216,6 +230,7 @@ const DataControlsTab = () => {
 
       {/* Delete Terminal Sandbox Confirmation Dialog */}
       <AlertDialog
+        pending={isDeletingSandboxes}
         open={showDeleteSandboxes}
         onOpenChange={setShowDeleteSandboxes}
       >
@@ -235,7 +250,10 @@ const DataControlsTab = () => {
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteSandboxes}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeleteSandboxes();
+              }}
               disabled={isDeletingSandboxes}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >

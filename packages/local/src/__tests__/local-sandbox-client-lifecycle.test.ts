@@ -1,6 +1,10 @@
 const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
 
+jest.mock("../environment-identity", () => ({
+  getEnvironmentId: jest.fn().mockResolvedValue("test-environment"),
+}));
+
 jest.mock("../process-runner", () => ({
   ProcessRunner: jest.fn().mockImplementation(() => ({
     on: jest.fn(),
@@ -132,17 +136,18 @@ describe("LocalSandboxClient cleanup", () => {
     });
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const client = new LocalSandboxClient(config);
-    (
-      client as unknown as {
-        convexHttp: { mutation: jest.Mock };
-      }
-    ).convexHttp.mutation = jest.fn().mockResolvedValue({
+    const mutation = jest.fn().mockResolvedValue({
       success: true,
       userId: "user-1",
       connectionId: "connection-1",
       centrifugoToken: "relay-token",
       centrifugoWsUrl: "wss://relay.example.test/connection/websocket",
     });
+    (
+      client as unknown as {
+        convexHttp: { mutation: jest.Mock };
+      }
+    ).convexHttp.mutation = mutation;
     (
       client as unknown as {
         setupCentrifugo: () => Promise<void>;
@@ -159,12 +164,21 @@ describe("LocalSandboxClient cleanup", () => {
 
     const start = client.start();
     await setupStarted;
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(mutation).toHaveBeenCalledWith(
+      "localSandbox:connect",
+      expect.objectContaining({ environmentId: "test-environment" }),
+    );
     expect(logSpy.mock.calls.flat().join("\n")).not.toContain(
       "Local sandbox is ready",
     );
 
     markRelayReady();
     await start;
+    expect(mutation).toHaveBeenNthCalledWith(2, "localSandbox:ready", {
+      token: config.token,
+      connectionId: "connection-1",
+    });
     expect(logSpy.mock.calls.flat().join("\n")).toContain(
       "Local sandbox is ready",
     );

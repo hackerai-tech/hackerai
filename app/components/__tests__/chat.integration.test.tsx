@@ -8,6 +8,7 @@ import {
   jest,
 } from "@jest/globals";
 import {
+  act,
   fireEvent,
   render,
   renderHook,
@@ -15,7 +16,6 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { useEffect, useRef } from "react";
-import { useGlobalState } from "@/app/contexts/GlobalState";
 
 jest.mock("uuid", () => ({
   v4: () => "queued-message-id",
@@ -25,14 +25,69 @@ jest.mock("uuid", () => ({
 // These mocks are hoisted by Jest
 
 // Mock @ai-sdk/react
-const mockSendMessage = jest.fn();
+const mockSendMessage = jest
+  .fn<() => Promise<void>>()
+  .mockResolvedValue(undefined);
 const mockSetMessages = jest.fn();
 const mockStop = jest.fn();
+const mockHandleSubmit = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
+const mockResumeAgentLongStream =
+  jest.fn<
+    typeof import("@/lib/chat/agent-long-transport").resumeAgentLongStream
+  >();
+jest.mock("@/lib/chat/agent-long-transport", () => ({
+  ...jest.requireActual<typeof import("@/lib/chat/agent-long-transport")>(
+    "@/lib/chat/agent-long-transport",
+  ),
+  resumeAgentLongStream: (
+    ...args: Parameters<typeof mockResumeAgentLongStream>
+  ) => mockResumeAgentLongStream(...args),
+}));
 let mockRouteParams: Record<string, string> = {};
 let mockComputerOverlayMedia = false;
 const originalMatchMedia = window.matchMedia;
+
+let mockUseRealChatHandlers = false;
+let mockLocalConnections:
+  Array<{ connectionId: string; isDesktop: boolean }> | undefined;
+let mockChatHandlerArgs: Parameters<
+  typeof import("@/app/hooks/useChatHandlers").useChatHandlers
+>[0];
+let mockRestoredChat:
+  { id: string; sandbox_type?: string; default_model_slug: string } | undefined;
+let mockDesktopState: Partial<
+  ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
+> = {};
+jest.mock("@/app/contexts/GlobalState", () => {
+  const original = jest.requireActual<
+    typeof import("@/app/contexts/GlobalState")
+  >("@/app/contexts/GlobalState");
+  return {
+    ...original,
+    useGlobalState: () => ({
+      ...original.useGlobalState(),
+      ...mockDesktopState,
+    }),
+  };
+});
+jest.mock("convex/react", () => {
+  const original =
+    jest.requireActual<typeof import("convex/react")>("convex/react");
+  return {
+    ...original,
+    useQuery: (query: any, ...args: any[]) => {
+      const { getFunctionName } = require("convex/server");
+      if (getFunctionName(query) === "localSandbox:listConnections")
+        return mockLocalConnections;
+      return getFunctionName(query) === "chats:getChatByIdFromClient" &&
+        mockRestoredChat
+        ? mockRestoredChat
+        : original.useQuery(query, ...args);
+    },
+  };
+});
 
 jest.mock("@ai-sdk/react", () => ({
   useChat: jest.fn(() => ({
@@ -49,7 +104,9 @@ jest.mock("@ai-sdk/react", () => ({
 
 jest.mock("next/navigation", () => ({
   useParams: jest.fn(() => mockRouteParams),
-  usePathname: jest.fn(() => "/"),
+  usePathname: jest.fn(() =>
+    mockRouteParams.id ? `/c/${mockRouteParams.id}` : "/",
+  ),
   useRouter: jest.fn(() => ({
     push: jest.fn(),
     replace: jest.fn(),
@@ -69,6 +126,9 @@ jest.mock("@/hooks/use-mobile", () => ({
 }));
 
 jest.mock("@/lib/utils/client-storage", () => ({
+  ...jest.requireActual<typeof import("@/lib/utils/client-storage")>(
+    "@/lib/utils/client-storage",
+  ),
   NULL_THREAD_DRAFT_ID: "null-thread",
   getDraftContentById: jest.fn(() => null),
   getDraftAttachmentsById: jest.fn(() => []),
@@ -109,13 +169,23 @@ jest.mock("../../hooks/useChats", () => ({
 }));
 
 jest.mock("../../hooks/useChatHandlers", () => ({
-  useChatHandlers: () => ({
-    handleSubmit: jest.fn(),
-    handleStop: jest.fn(),
-    handleRegenerate: jest.fn(),
-    handleRetry: jest.fn(),
-    handleEditMessage: jest.fn(),
-  }),
+  useChatHandlers: (args: typeof mockChatHandlerArgs) => {
+    mockChatHandlerArgs = args;
+    if (mockUseRealChatHandlers) {
+      return jest
+        .requireActual<typeof import("@/app/hooks/useChatHandlers")>(
+          "@/app/hooks/useChatHandlers",
+        )
+        .useChatHandlers(args);
+    }
+    return {
+      handleSubmit: mockHandleSubmit,
+      handleStop: jest.fn(),
+      handleRegenerate: jest.fn(),
+      handleRetry: jest.fn(),
+      handleEditMessage: jest.fn(),
+    };
+  },
 }));
 
 jest.mock("../../hooks/useMessageScroll", () => ({
@@ -201,15 +271,62 @@ jest.mock("@/components/ui/sidebar", () => ({
 }));
 
 // ===== NOW import components =====
-import {
+const {
   Chat,
   getExistingChatLoadState,
   getStoredAgentApprovalRequest,
   useStreamedChatTitle,
   useServerMessages,
-} from "../chat";
-import { ChatLayout } from "../ChatLayout";
-import { TestWrapper } from "../testUtils";
+} = jest.requireActual<typeof import("../chat")>("../chat");
+const { ChatLayout } =
+  jest.requireActual<typeof import("../ChatLayout")>("../ChatLayout");
+const { TestWrapper } =
+  jest.requireActual<typeof import("../testUtils")>("../testUtils");
+const { useGlobalState } = jest.requireActual<
+  typeof import("@/app/contexts/GlobalState")
+>("@/app/contexts/GlobalState");
+
+const { useComposerActions } = jest.requireActual<
+  typeof import("@/app/contexts/ComposerState")
+>("@/app/contexts/ComposerState");
+const ForkDraftSetter = () => {
+  const { setInput } = useComposerActions();
+  useEffect(() => setInput("continue"), [setInput]);
+  return null;
+};
+
+const SelectedComputerProbe = () => {
+  const { sandboxPreference, initializeNewChat } = useGlobalState();
+  return (
+    <>
+      <output data-testid="selected-computer">{sandboxPreference}</output>
+      <button onClick={initializeNewChat}>Start fresh chat</button>
+    </>
+  );
+};
+
+const ComputerSelectionHistory = ({ selections }: { selections: string[] }) => {
+  const { sandboxPreference } = useGlobalState();
+  useEffect(() => {
+    selections.push(sandboxPreference);
+  }, [sandboxPreference, selections]);
+  return <SelectedComputerProbe />;
+};
+
+const DisconnectedQueueHarness = () => {
+  const { setChatMode, setSandboxPreference, queueMessage, messageQueue } =
+    useGlobalState();
+  useEffect(() => {
+    setChatMode("agent");
+    setSandboxPreference("desktop");
+  }, [setChatMode, setSandboxPreference]);
+  return (
+    <>
+      <button onClick={() => queueMessage("continue")}>Queue continue</button>
+      <output data-testid="pending-queue">{messageQueue.length}</output>
+    </>
+  );
+};
 
 const QueueEditingHarness = () => {
   const {
@@ -305,6 +422,11 @@ describe("Chat Component Integration", () => {
     convexReact.resetMockConvexAuth?.();
     convexReact.resetMockConvexQueries?.();
     mockRouteParams = {};
+    mockRestoredChat = undefined;
+    mockDesktopState = {};
+    mockLocalConnections = undefined;
+    mockUseRealChatHandlers = false;
+    window.localStorage.clear();
     mockComputerOverlayMedia = false;
     window.matchMedia = jest.fn(
       (query: string) =>
@@ -369,6 +491,185 @@ describe("Chat Component Integration", () => {
 
       expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
     });
+
+    it.each(["desktop", "tauri", "missing-remote"])(
+      "restores %s from a reopened task without waiting for connections or selecting Cloud",
+      async (sandboxType) => {
+        mockRouteParams = { id: "reopened-task" };
+        mockRestoredChat = {
+          id: "reopened-task",
+          sandbox_type: sandboxType,
+          default_model_slug: "agent",
+        };
+        render(
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <SelectedComputerProbe />
+          </TestWrapper>,
+        );
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            sandboxType === "tauri" ? "desktop" : sandboxType,
+          ),
+        );
+      },
+    );
+
+    it.each([undefined, "", "e2b", "desktop", "tauri", "missing-remote"])(
+      "restores a free Desktop task (%s) without a transient Cloud selection",
+      async (sandboxType) => {
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockDesktopState = {
+          freeDesktopAgentOnlyActive: true,
+          desktopBridgeActive: true,
+          localConnections: [],
+        };
+        mockRouteParams = { id: "first-desktop-task" };
+        mockRestoredChat = {
+          id: "first-desktop-task",
+          sandbox_type: "desktop",
+          default_model_slug: "agent",
+        };
+        const selections: string[] = [];
+        const ui = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <ComputerSelectionHistory selections={selections} />
+          </TestWrapper>
+        );
+        const { rerender } = render(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "desktop",
+          ),
+        );
+
+        mockRouteParams = { id: "second-task" };
+        mockRestoredChat = {
+          id: "second-task",
+          sandbox_type: sandboxType,
+          default_model_slug: "agent",
+        };
+        rerender(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            sandboxType === "missing-remote" ? "missing-remote" : "desktop",
+          ),
+        );
+        expect(selections).not.toContain("e2b");
+        expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
+      },
+    );
+
+    it.each([undefined, "e2b", "desktop", "missing-remote"])(
+      "restores free Desktop sandbox %s across pending connection discovery",
+      async (sandboxType) => {
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockDesktopState = {
+          freeDesktopAgentOnlyActive: true,
+          desktopBridgeActive: false,
+          localConnections: undefined,
+        };
+        mockRouteParams = { id: "discovery-task" };
+        mockRestoredChat = {
+          id: "discovery-task",
+          sandbox_type: sandboxType,
+          default_model_slug: "agent",
+        };
+        const selections: string[] = [];
+        const ui = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <ComputerSelectionHistory selections={selections} />
+          </TestWrapper>
+        );
+        const { rerender } = render(ui());
+        expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+          sandboxType === "missing-remote" ? "missing-remote" : "desktop",
+        );
+
+        mockDesktopState = {
+          ...mockDesktopState,
+          localConnections: [
+            { connectionId: "available-remote", isDesktop: false },
+          ],
+        };
+        rerender(ui());
+        const expectedPreference =
+          !sandboxType || sandboxType === "e2b"
+            ? "available-remote"
+            : sandboxType;
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            expectedPreference,
+          ),
+        );
+        expect(selections).not.toContain("e2b");
+        expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
+      },
+    );
+
+    it.each(["button", "route"])(
+      "keeps the new-chat default after visiting Desktop and Cloud tasks (%s)",
+      async (navigation) => {
+        window.localStorage.setItem(
+          "sandbox-preference",
+          "my-default-computer",
+        );
+        mockLocalConnections = [];
+        mockRouteParams = { id: "desktop-task" };
+        mockRestoredChat = {
+          id: "desktop-task",
+          sandbox_type: "desktop",
+          default_model_slug: "agent",
+        };
+        const ui = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+            <SelectedComputerProbe />
+          </TestWrapper>
+        );
+        const { rerender } = render(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "desktop",
+          ),
+        );
+        expect(localStorage.getItem("sandbox-preference")).toBe(
+          "my-default-computer",
+        );
+        mockRouteParams = { id: "cloud-task" };
+        mockRestoredChat = {
+          id: "cloud-task",
+          sandbox_type: "e2b",
+          default_model_slug: "agent",
+        };
+        rerender(ui());
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "e2b",
+          ),
+        );
+        expect(localStorage.getItem("sandbox-preference")).toBe(
+          "my-default-computer",
+        );
+        if (navigation === "button")
+          fireEvent.click(
+            screen.getByRole("button", { name: "Start fresh chat" }),
+          );
+        else {
+          mockRouteParams = {};
+          mockRestoredChat = undefined;
+          rerender(ui());
+        }
+        await waitFor(() =>
+          expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+            "my-default-computer",
+          ),
+        );
+        expect(mockSendMessage).not.toHaveBeenCalled();
+      },
+    );
 
     it("should render with provided chatId", () => {
       mockRouteParams = { id: "test-chat-123" };
@@ -533,6 +834,121 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("waits for restored preferences before auto-sending a fork loaded after its draft", async () => {
+      mockRouteParams = { id: "late-fork" };
+      mockLocalConnections = [];
+      sessionStorage.setItem("autoSendChatId", "late-fork");
+      const view = () => (
+        <TestWrapper>
+          <ForkDraftSetter />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      mockRestoredChat = {
+        id: "late-fork",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "original",
+            role: "user",
+            parts: [{ type: "text", text: "original task" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+        error: null,
+        regenerate: mockRegenerate,
+        resumeStream: mockResumeStream,
+      });
+      rerender(view());
+      expect(mockHandleSubmit).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem("autoSendChatId")).toBe("late-fork");
+      sessionStorage.removeItem("autoSendChatId");
+    });
+
+    it("preserves a fork's pending send until its selected computer reconnects", async () => {
+      mockUseRealChatHandlers = true;
+      mockRouteParams = { id: "fork-task" };
+      mockRestoredChat = {
+        id: "fork-task",
+        sandbox_type: "desktop",
+        default_model_slug: "agent",
+      };
+      mockLocalConnections = [];
+      sessionStorage.setItem("autoSendChatId", "fork-task");
+      mockUseChat.mockReturnValue({
+        messages: [
+          {
+            id: "original",
+            role: "user",
+            parts: [{ type: "text", text: "original task" }],
+          },
+        ],
+        sendMessage: mockSendMessage,
+        setMessages: mockSetMessages,
+        status: "ready",
+        stop: mockStop,
+        error: null,
+        regenerate: mockRegenerate,
+        resumeStream: mockResumeStream,
+      });
+      const view = () => (
+        <TestWrapper>
+          <ForkDraftSetter />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      expect(mockHandleSubmit).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem("autoSendChatId")).toBe("fork-task");
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      rerender(view());
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "continue" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ sandboxPreference: "desktop" }),
+          }),
+        ),
+      );
+      expect(sessionStorage.getItem("autoSendChatId")).toBeNull();
+    });
+
+    it("holds queued sends and rejects direct dispatch until the selected computer reconnects", async () => {
+      mockLocalConnections = [];
+      const view = () => (
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      const { rerender } = render(view());
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      await expect(
+        mockChatHandlerArgs.sendMessage({ text: "bypass" }),
+      ).rejects.toThrow("Reconnect your computer");
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      rerender(view());
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "continue" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ sandboxPreference: "desktop" }),
+          }),
+        ),
+      );
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
+    });
+
     it("keeps an edited queued message pending, then resumes with updated text", async () => {
       render(
         <TestWrapper>
@@ -552,7 +968,10 @@ describe("Chat Component Integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "Save queued edit" }));
 
       await waitFor(() => {
-        expect(screen.getByText("updated queued message")).toBeInTheDocument();
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "updated queued message" }),
+          expect.anything(),
+        );
         expect(screen.getByTestId("queue-state")).toHaveTextContent(
           "Queued: 0",
         );
@@ -587,6 +1006,44 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Streaming State", () => {
+    it("keeps the local cancellation target when an older stream finishes before persisted state catches up", async () => {
+      render(
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        onData: (part: unknown) => void;
+        onFinish: (result: { isAbort: boolean }) => void;
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockResumeAgentLongStream.mockResolvedValueOnce({} as Response);
+      await options.transport.fetch(
+        "/api/agent/resume?chatId=queued-message-id",
+        { method: "GET" },
+      );
+      const onRunClosed = mockResumeAgentLongStream.mock.calls.at(-1)![2]!;
+      act(() =>
+        options.onData({
+          type: "data-agent-run-correlation",
+          data: { runId: "run-local-before-query", token: "synthetic" },
+        }),
+      );
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBe(
+        "run-local-before-query",
+      );
+      act(() => options.onFinish({ isAbort: true }));
+      act(() => onRunClosed("run-previous"));
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBe(
+        "run-local-before-query",
+      );
+      act(() => onRunClosed("run-local-before-query"));
+      expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
+    });
+
     it("should handle streaming status", () => {
       mockUseChat.mockReturnValue({
         messages: [{ id: "1", role: "assistant", content: "Streaming..." }],

@@ -1,3 +1,4 @@
+import { objectiveCheckpointSchema } from "../lib/chat/objective-checkpoint";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import {
@@ -5,6 +6,7 @@ import {
   mutation,
   query,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import {
@@ -75,6 +77,20 @@ const subscriptionValidator = v.union(
   v.literal("team"),
 );
 
+const agentAutoReviewAuthorizationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedUserMessageCount: v.optional(v.number()),
+  truncatedUserMessageCount: v.optional(v.number()),
+});
+
+const agentAutoReviewConversationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedEntryCount: v.optional(v.number()),
+  truncatedEntryCount: v.optional(v.number()),
+});
+
 const candidateValidator = v.object({
   title: v.string(),
   affected_asset: v.string(),
@@ -131,6 +147,7 @@ const ACTIVE_SUBAGENT_STATUSES = ["queued", "running", "finalizing"] as const;
 const SUBAGENT_DELETION_CANCELLATION_BATCH_SIZE = 100;
 const MAX_SUBAGENT_PROGRESS_EVENTS = 32;
 const workLedgerSummaryValidator = v.object({
+  objective_checkpoint: v.optional(v.string()),
   subagent_id: v.string(),
   owner: v.string(),
   status: v.union(
@@ -255,6 +272,16 @@ export const reserveForBackend = mutation({
     sandboxPreference: v.optional(v.string()),
     sandboxIdentity: v.optional(v.string()),
     permissionMode: v.optional(v.string()),
+    approvalSessionId: v.optional(v.string()),
+    autoReviewRolloutPhase: v.optional(
+      v.union(v.literal("shadow"), v.literal("enforce")),
+    ),
+    autoReviewAuthorizationContext: v.optional(
+      agentAutoReviewAuthorizationContextValidator,
+    ),
+    autoReviewConversationContext: v.optional(
+      agentAutoReviewConversationContextValidator,
+    ),
     selectedModel: v.optional(v.string()),
     subscription: subscriptionValidator,
     freeQuotaSubject: v.optional(v.string()),
@@ -406,6 +433,10 @@ export const reserveForBackend = mutation({
       sandbox_preference: args.sandboxPreference,
       sandbox_identity: args.sandboxIdentity,
       permission_mode: args.permissionMode,
+      approval_session_id: args.approvalSessionId,
+      auto_review_rollout_phase: args.autoReviewRolloutPhase,
+      auto_review_authorization_context: args.autoReviewAuthorizationContext,
+      auto_review_conversation_context: args.autoReviewConversationContext,
       selected_model: args.selectedModel,
       subscription: args.subscription,
       free_quota_subject: args.freeQuotaSubject,
@@ -1883,6 +1914,7 @@ export const listWorkLedgerForParentBackend = query({
       .map((item) => ({
         subagent_id: item.subagent_id,
         owner: item.owner,
+        objective_checkpoint: item.objective_checkpoint,
         status: item.status,
         dependencies: item.dependencies,
         refs: item.refs,
@@ -1971,5 +2003,117 @@ export const resumeForBackend = mutation({
       { subagentId: row.subagent_id, expectedCreatedAt: row.created_at },
     );
     return { outcome: "resumed" as const, subagentId: row.subagent_id };
+  },
+});
+
+// Stored with existing private task records, never analytics or public sharing.
+const checkpointOwnerArgs = {
+  serviceKey: v.string(),
+  userId: v.string(),
+  chatId: v.string(),
+  triggerRunId: v.string(),
+  subagentId: v.optional(v.string()),
+};
+async function checkpointOwner(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    serviceKey: string;
+    userId: string;
+    chatId: string;
+    triggerRunId: string;
+    subagentId?: string;
+  },
+) {
+  validateServiceKey(args.serviceKey);
+  if (await isUserDeletionFenced(ctx.db, args.userId))
+    throw new Error("Task unavailable");
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+    .first();
+  if (
+    !chat ||
+    chat.user_id !== args.userId ||
+    chat.deletion_started_at !== undefined ||
+    chat.canceled_at !== undefined
+  )
+    throw new Error("Task unavailable");
+  if (!args.subagentId) {
+    if (chat.active_trigger_run_id !== args.triggerRunId)
+      throw new Error("Task ownership changed");
+    return chat;
+  }
+  const run = await ctx.db
+    .query("subagent_runs")
+    .withIndex("by_subagent_id", (q) => q.eq("subagent_id", args.subagentId!))
+    .first();
+  if (
+    !run ||
+    run.user_id !== args.userId ||
+    run.chat_id !== args.chatId ||
+    run.trigger_run_id !== args.triggerRunId ||
+    !isActiveStatus(run.status) ||
+    chat.active_trigger_run_id !== run.parent_trigger_run_id
+  )
+    throw new Error("Task ownership changed");
+  const item = await ctx.db
+    .query("subagent_work_items")
+    .withIndex("by_subagent", (q) => q.eq("subagent_id", args.subagentId!))
+    .first();
+  if (!item || item.user_id !== args.userId)
+    throw new Error("Task unavailable");
+  return item;
+}
+
+export const getObjectiveCheckpointForBackend = query({
+  args: checkpointOwnerArgs,
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) =>
+    (await checkpointOwner(ctx, args)).objective_checkpoint ?? null,
+});
+
+export const saveObjectiveCheckpointForBackend = mutation({
+  args: {
+    ...checkpointOwnerArgs,
+    checkpoint: v.string(),
+    expectedRevision: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const owner = await checkpointOwner(ctx, args);
+    if (args.checkpoint.length > 200_000)
+      throw new Error("Checkpoint exceeds size limit");
+    const next = objectiveCheckpointSchema.parse(JSON.parse(args.checkpoint));
+    const previous = owner.objective_checkpoint
+      ? objectiveCheckpointSchema.parse(JSON.parse(owner.objective_checkpoint))
+      : undefined;
+    if (
+      (previous?.revision ?? 0) !== args.expectedRevision ||
+      next.revision !== args.expectedRevision + 1 ||
+      next.runId !== args.triggerRunId
+    )
+      throw new Error("Checkpoint ownership or revision changed");
+    await ctx.db.patch(owner._id, {
+      objective_checkpoint: JSON.stringify(next),
+    });
+    return null;
+  },
+});
+
+export const objectiveCheckpointEnabledForChildBackend = query({
+  args: checkpointOwnerArgs,
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    await checkpointOwner(ctx, args);
+    if (!args.subagentId) return false;
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+    if (!chat?.objective_checkpoint) return false;
+    return (
+      objectiveCheckpointSchema.parse(JSON.parse(chat.objective_checkpoint))
+        .runId === chat.active_trigger_run_id
+    );
   },
 });

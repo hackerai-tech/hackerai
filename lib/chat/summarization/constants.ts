@@ -7,7 +7,7 @@ export const SUMMARIZATION_RESERVED_MAX_TOKENS = 20_000;
 export const SUMMARIZATION_RESERVED_TOKEN_PERCENTAGE = 0.1;
 export const DEV_SUMMARIZATION_THRESHOLD_TOKENS_ENV =
   "NEXT_PUBLIC_DEV_SUMMARIZATION_THRESHOLD_TOKENS";
-export const SUMMARY_PROMPT_VERSION = "2026-07-27.agent-state-preservation-v3";
+export const SUMMARY_PROMPT_VERSION = "2026-09-10.source-quotes-v6";
 
 const getDevSummarizationThresholdTokens = (
   maxTokens: number,

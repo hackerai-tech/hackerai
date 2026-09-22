@@ -48,10 +48,7 @@ export async function DELETE(req: NextRequest) {
     );
     await deleteAllChatsForBackend({ userId });
 
-    return NextResponse.json({
-      deleted: true,
-      ...cleanup,
-    });
+    return NextResponse.json({ accepted: true, ...cleanup }, { status: 202 });
   } catch (error) {
     if (error instanceof ChatSDKError) return error.toResponse();
     console.error("[DELETE /api/chats] failed:", error);

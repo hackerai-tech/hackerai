@@ -175,6 +175,19 @@ const getOpenRouterProviderInfo = (
     const nested = isRecord(payload.error) ? payload.error : undefined;
     if (!nested) continue;
 
+    // Parameter paths can otherwise echo arbitrary request data. Retain only
+    // known schema paths and normalize numeric indices to avoid cardinality.
+    if (typeof nested.param === "string") {
+      const param = nested.param.replace(/\[\d+\]/g, "[]");
+      if (
+        /^(?:model|messages(?:\[\])?(?:\.(?:role|content|tool_calls|tool_call_id|type|image_url|url|function|name|arguments)(?:\[\])?)*|tools(?:\[\])?(?:\.function(?:\.(?:name|parameters))?)?|tool_choice|max_tokens|temperature|reasoning)$/.test(
+          param,
+        )
+      ) {
+        details.providerErrorParam ??= param;
+      }
+    }
+
     if (
       details.providerErrorCode === undefined &&
       (typeof nested.code === "number" || typeof nested.code === "string")
@@ -507,6 +520,12 @@ export const isRetriableProviderStreamDisconnectError = (
 ): boolean => {
   const details = extractErrorDetails(error);
   const category = getProviderErrorCategory(details);
+  // SSE errors use `code`, while HTTP errors use `statusCode`. Preserve the
+  // stable error category, but honor an upstream 5xx regardless of wording.
+  // A bare AbortError still must not turn user cancellation into a retry.
+  const statusCode = getProviderStatusCode(details);
+  if (category === "content_blocked") return false;
+  if (statusCode != null && statusCode >= 500 && statusCode <= 599) return true;
   if (category === "timeout" || category === "provider_5xx") return true;
   return (
     category === "stream_terminated" &&

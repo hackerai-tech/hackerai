@@ -1,5 +1,8 @@
 import { ChatSDKError } from "@/lib/errors";
-import { getFreeMonthlyCostLimitDollars } from "./free-config";
+import {
+  type FreeLimitPolicy,
+  getFreeMonthlyCostLimitDollars,
+} from "./free-config";
 import { POINTS_PER_DOLLAR } from "./token-bucket";
 import { createRedisClient } from "./redis";
 import { getLimitPressureContext } from "@/lib/limit-pressure";
@@ -64,8 +67,11 @@ const getLimitMessage = (reset: number) =>
 /** Enforce the configured monthly cost cap for a free quota subject. */
 export async function checkFreeMonthlyCostLimit(
   quotaSubject: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<FreeMonthlyCostSnapshot> {
-  const limitPoints = dollarsToPoints(getFreeMonthlyCostLimitDollars());
+  const limitPoints = dollarsToPoints(
+    getFreeMonthlyCostLimitDollars(freeLimits),
+  );
   const { bucket, reset } = getCurrentUtcMonthWindow();
   const redis = createRedisClient();
 

@@ -28,40 +28,38 @@ type SuspensionCategory =
 // =============================================================================
 
 /**
- * Cancel Stripe subscriptions that existed at the time of the originating
- * fraud event. Subs created after `asOfUnix` are skipped: they're a different
- * customer action (e.g. a re-subscribe after a non-fraudulent dispute) and
- * must not be affected by a webhook replay. This is what makes the handler
- * safe to re-run against drifted Stripe state.
+ * Cancel every Stripe subscription while the account hold is active. A replay
+ * intentionally cleans up post-event drift too: suspended accounts may not
+ * re-subscribe until support resolves the hold.
  */
-async function cancelAllSubscriptions(
-  customerId: string,
-  asOfUnix: number,
-): Promise<void> {
-  let subs: Stripe.ApiList<Stripe.Subscription>;
-  try {
-    subs = await stripe.subscriptions.list({
-      customer: customerId,
-      status: "all",
-      limit: 100,
-    });
-  } catch (err) {
-    if (isTerminalStripeResourceError(err)) {
-      console.log(
-        `[Fraud Webhook] Subscription cleanup skipped for customer ${customerId}: resource_missing`,
-      );
-      return;
-    }
-    throw err;
-  }
+async function cancelAllSubscriptions(customerId: string): Promise<void> {
+  let startingAfter: string | undefined;
+  const subscriptions: Stripe.Subscription[] = [];
 
-  for (const sub of subs.data) {
-    if (sub.created > asOfUnix) {
-      console.log(
-        `[Fraud Webhook] Cancel skipped for subscription ${sub.id}: created ${sub.created} > event ${asOfUnix} (post-event)`,
-      );
-      continue;
+  do {
+    let page: Stripe.ApiList<Stripe.Subscription>;
+    try {
+      page = await stripe.subscriptions.list({
+        customer: customerId,
+        status: "all",
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+      });
+    } catch (err) {
+      if (isTerminalStripeResourceError(err)) {
+        console.log(
+          `[Fraud Webhook] Subscription cleanup skipped for customer ${customerId}: resource_missing`,
+        );
+        return;
+      }
+      throw err;
     }
+
+    subscriptions.push(...page.data);
+    startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+  } while (startingAfter);
+
+  for (const sub of subscriptions) {
     try {
       await stripe.subscriptions.cancel(sub.id as string);
     } catch (err) {
@@ -81,37 +79,36 @@ async function cancelAllSubscriptions(
 }
 
 /**
- * Detach payment methods that existed at the time of the originating fraud
- * event. Payment methods added after `asOfUnix` are skipped — same reasoning
- * as cancelAllSubscriptions: a replay must not reach into post-event state.
+ * Detach every payment method while the account hold is active. This prevents
+ * a replacement card from becoming a path around the dispute suspension.
  */
-async function detachAllPaymentMethods(
-  customerId: string,
-  asOfUnix: number,
-): Promise<void> {
-  let paymentMethods: Stripe.ApiList<Stripe.PaymentMethod>;
-  try {
-    paymentMethods = await stripe.paymentMethods.list({
-      customer: customerId,
-      limit: 100,
-    });
-  } catch (err) {
-    if (isTerminalStripeResourceError(err)) {
-      console.log(
-        `[Fraud Webhook] Payment method cleanup skipped for customer ${customerId}: resource_missing`,
-      );
-      return;
-    }
-    throw err;
-  }
+async function detachAllPaymentMethods(customerId: string): Promise<void> {
+  let startingAfter: string | undefined;
+  const paymentMethods: Stripe.PaymentMethod[] = [];
 
-  for (const pm of paymentMethods.data) {
-    if (pm.created > asOfUnix) {
-      console.log(
-        `[Fraud Webhook] Detach skipped for payment method ${pm.id}: created ${pm.created} > event ${asOfUnix} (post-event)`,
-      );
-      continue;
+  do {
+    let page: Stripe.ApiList<Stripe.PaymentMethod>;
+    try {
+      page = await stripe.paymentMethods.list({
+        customer: customerId,
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+      });
+    } catch (err) {
+      if (isTerminalStripeResourceError(err)) {
+        console.log(
+          `[Fraud Webhook] Payment method cleanup skipped for customer ${customerId}: resource_missing`,
+        );
+        return;
+      }
+      throw err;
     }
+
+    paymentMethods.push(...page.data);
+    startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
+  } while (startingAfter);
+
+  for (const pm of paymentMethods) {
     try {
       await stripe.paymentMethods.detach(pm.id);
     } catch (err) {
@@ -125,6 +122,51 @@ async function detachAllPaymentMethods(
         `[Fraud Webhook] Failed to detach payment method ${pm.id}:`,
         err,
       );
+      throw err;
+    }
+  }
+}
+
+/** Expire every open Checkout session while the account hold is active. */
+async function expireOpenCheckoutSessions(customerId: string): Promise<void> {
+  let startingAfter: string | undefined;
+  const openSessions: Stripe.Checkout.Session[] = [];
+
+  do {
+    let sessions: Stripe.ApiList<Stripe.Checkout.Session>;
+    try {
+      sessions = await stripe.checkout.sessions.list({
+        customer: customerId,
+        status: "open",
+        limit: 100,
+        ...(startingAfter && { starting_after: startingAfter }),
+      });
+    } catch (err) {
+      if (isTerminalStripeResourceError(err)) {
+        console.log(
+          `[Fraud Webhook] Checkout cleanup skipped for customer ${customerId}: resource_missing`,
+        );
+        return;
+      }
+      throw err;
+    }
+
+    openSessions.push(...sessions.data);
+    startingAfter = sessions.has_more ? sessions.data.at(-1)?.id : undefined;
+  } while (startingAfter);
+
+  // Fetch every page before mutating the result set. Expiring sessions while
+  // cursoring through only open sessions can otherwise skip later pages.
+  for (const session of openSessions) {
+    try {
+      await stripe.checkout.sessions.expire(session.id);
+    } catch (err) {
+      if (isTerminalStripeResourceError(err)) {
+        console.log(
+          `[Fraud Webhook] Checkout expiration skipped for session ${session.id}: resource_missing`,
+        );
+        continue;
+      }
       throw err;
     }
   }
@@ -233,7 +275,7 @@ async function blockFraudulentUser(
     sourceId: string;
     sourceReason?: string;
   },
-  asOfUnix: number,
+  sourceCreatedUnix: number,
 ): Promise<void> {
   // Suspend first so a customer deleted during Stripe cleanup cannot prevent
   // the local safety control from being applied. The upsert is replay-safe.
@@ -243,10 +285,11 @@ async function blockFraudulentUser(
     sourceId: suspension.sourceId,
     sourceReason: suspension.sourceReason,
     chargeId,
-    sourceCreatedUnix: asOfUnix,
+    sourceCreatedUnix,
   });
-  await cancelAllSubscriptions(customerId, asOfUnix);
-  await detachAllPaymentMethods(customerId, asOfUnix);
+  await expireOpenCheckoutSessions(customerId);
+  await cancelAllSubscriptions(customerId);
+  await detachAllPaymentMethods(customerId);
   await markCustomerBlocked(customerId, metadataReason);
   if (chargeId) {
     await reportChargeFraudulent(chargeId);
@@ -361,9 +404,9 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     // The customer may be legitimate but a chargeback still costs us the
     // dispute fee + ratio impact, and the disputed card is likely to file
     // again. Stop all future charges on this card: cancel subscriptions
-    // AND detach payment methods. Don't mark blocked — the customer can
-    // still re-subscribe with a different card, while app usage remains paused
-    // until support resolves the suspension.
+    // AND detach payment methods. Don't mark the Stripe customer as a fraud
+    // actor, but keep the Convex billing hold authoritative: every app billing
+    // path rejects new transactions until support resolves the suspension.
     await suspendCustomerUsers({
       customerId,
       category: "dispute_billing_hold",
@@ -372,8 +415,9 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
       chargeId,
       sourceCreatedUnix: dispute.created,
     });
-    await cancelAllSubscriptions(customerId, dispute.created);
-    await detachAllPaymentMethods(customerId, dispute.created);
+    await expireOpenCheckoutSessions(customerId);
+    await cancelAllSubscriptions(customerId);
+    await detachAllPaymentMethods(customerId);
     console.log(
       `[Fraud Webhook] Processed billing hold for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
     );
@@ -495,11 +539,10 @@ export async function POST(req: NextRequest) {
 
   // Finalize the claim. If this write itself fails, log and continue:
   // a duplicate Stripe retry would re-run the handler operations, but the
-  // handlers filter Stripe state by the originating event's `created`
-  // timestamp (see cancelAllSubscriptions / detachAllPaymentMethods), so a
-  // replay can only act on subs/payment methods that already existed when
-  // the fraud signal arrived. Replacement subs and new cards added after
-  // the event are skipped.
+  // cleanup operations are idempotent and re-read current Stripe state. A
+  // replay therefore removes any subscription, card, or open Checkout session
+  // that drifted in after the original dispute event while the hold remained
+  // active.
   try {
     await getConvexClient().mutation(api.extraUsage.finalizeWebhookProcessing, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,

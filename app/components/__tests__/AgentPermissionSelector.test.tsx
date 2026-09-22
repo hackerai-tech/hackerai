@@ -45,6 +45,18 @@ describe("AgentPermissionSelector", () => {
     expect(resolveAgentAutoReviewAvailability).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the trigger contents within constrained mobile toolbars", () => {
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    const trigger = screen.getByRole("button", { name: /full access/i });
+    expect(trigger).toHaveClass("max-w-full", "min-w-0", "shrink");
+    expect(screen.getByText("Full access")).toHaveClass(
+      "min-w-0",
+      "flex-1",
+      "truncate",
+    );
+  });
+
   it("captures permission mode changes before updating the selection", () => {
     render(<AgentPermissionSelector analyticsSurface="chat_input" />);
 

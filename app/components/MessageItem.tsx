@@ -74,6 +74,7 @@ interface MessageItemProps {
   summarizationStatus?: {
     status: "started" | "completed";
     message: string;
+    startedAt?: number;
   } | null;
   // Callbacks
   onStartEdit: (messageId: string) => void;
@@ -116,6 +117,12 @@ function areMessageItemPropsEqual(
     return false;
   if (prev.workPresentation !== next.workPresentation) return false;
   if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
+    return false;
+  if (prev.summarizationStatus?.message !== next.summarizationStatus?.message)
+    return false;
+  if (
+    prev.summarizationStatus?.startedAt !== next.summarizationStatus?.startedAt
+  )
     return false;
   if (prev.tempChatFileDetails !== next.tempChatFileDetails) return false;
 
@@ -662,6 +669,7 @@ export const MessageItem = memo(function MessageItem({
             <SummarizationStatusDivider
               status={summarizationStatus.status}
               message={summarizationStatus.message}
+              startedAt={summarizationStatus.startedAt}
               className="mb-1 mt-3"
             />
           )}

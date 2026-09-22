@@ -31,11 +31,16 @@ export async function DELETE(
     for (let attempt = 0; attempt < MAX_DELETE_SNAPSHOT_ATTEMPTS; attempt++) {
       const chat = await getChatById({ id: chatId });
       if (!chat) {
-        return NextResponse.json({
-          deleted: true,
-          ...(attempt === 0 ? { reason: "not_found" } : {}),
-          ...(attempt > 0 ? { canceledTriggerRun, closedApprovalSession } : {}),
-        });
+        return NextResponse.json(
+          {
+            accepted: true,
+            ...(attempt === 0 ? { reason: "not_found" } : {}),
+            ...(attempt > 0
+              ? { canceledTriggerRun, closedApprovalSession }
+              : {}),
+          },
+          { status: 202 },
+        );
       }
 
       if (chat.user_id !== userId) {
@@ -71,11 +76,14 @@ export async function DELETE(
         expectedApprovalSessionId: approvalSessionId ?? null,
       });
       if (deleteResult !== "stale") {
-        return NextResponse.json({
-          deleted: true,
-          canceledTriggerRun,
-          closedApprovalSession,
-        });
+        return NextResponse.json(
+          {
+            accepted: true,
+            canceledTriggerRun,
+            closedApprovalSession,
+          },
+          { status: 202 },
+        );
       }
     }
 

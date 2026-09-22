@@ -259,7 +259,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
           action={
             isStoppedByUser
               ? "Stopped command"
-              : getTerminalFailureAction(errorText)
+              : getTerminalFailureAction(errorText, shellAction)
           }
           target={blockTarget}
           isClickable={!!sidebarContent}

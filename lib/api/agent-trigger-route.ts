@@ -1,3 +1,5 @@
+import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
+import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
@@ -22,7 +24,7 @@ import {
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
 import { handleAgentRouteError } from "@/lib/api/agent-route-errors";
-import { getTriggerRegionForVercelRequest } from "@/lib/api/trigger-region";
+import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   coerceAgentPermissionMode,
   coerceSelectedModel,
@@ -35,6 +37,7 @@ import {
 } from "@/lib/api/chat-request-validation";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import type {
   Todo,
   LimitRescueRequest,
@@ -69,7 +72,6 @@ import {
   DEFAULT_AGENT_AUTO_REVIEW_ASSIGNMENT,
   type AgentAutoReviewAssignment,
 } from "@/lib/experiments/agent-auto-review";
-import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
 
 type AgentTriggerMachinePreset = "small-1x" | "small-2x";
 
@@ -454,8 +456,13 @@ export const createAgentTriggerPost =
         projectId: requestedProjectId,
       } = parsedBody.body;
 
-      const { userId, subscription, organizationId, freeQuotaSubject } =
-        await getUserIDAndPro(req);
+      const {
+        userId,
+        subscription,
+        organizationId,
+        freeQuotaSubject,
+        emailVerified,
+      } = await getUserIDAndPro(req);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
@@ -463,12 +470,9 @@ export const createAgentTriggerPost =
         );
       await assertUserCanMakeCostIncurringRequest(userId);
       const userLocation = geolocation(req);
-      const triggerRegion =
-        getTriggerRegionForVercelRequest(req, userLocation) ?? "us-east-1";
-      const genericDelegationFlagPromise =
-        agentPermissionMode === "full_access"
-          ? getPostHogFeatureFlagForUser("agent-generic-delegation-v1", userId)
-          : Promise.resolve(false);
+      const { triggerRegion, requestRegionClass } =
+        getRegionalExecutionContextForVercelRequest(req, userLocation);
+      const genericDelegationEnabled = true;
 
       assertFreeAgentGates({
         mode: "agent",
@@ -503,12 +507,10 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
-      const [existingChat, userCustomization, genericDelegationEnabled] =
-        await Promise.all([
-          getChatById({ id: chatId }),
-          getUserCustomization({ userId }),
-          genericDelegationFlagPromise,
-        ]);
+      const [existingChat, userCustomization] = await Promise.all([
+        getChatById({ id: chatId }),
+        getUserCustomization({ userId }),
+      ]);
 
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
@@ -547,7 +549,7 @@ export const createAgentTriggerPost =
       let localDesktopAttachmentsPrepared = false;
 
       if (hasLocalDesktopSourcePaths(requestMessages)) {
-        if (sandboxPreference !== "desktop") {
+        if (!isDesktopPreference(sandboxPreference ?? "e2b")) {
           throw new ChatSDKError(
             "bad_request:api",
             "Desktop-local attachments can only be used with the desktop sandbox.",
@@ -563,7 +565,7 @@ export const createAgentTriggerPost =
           const sandboxManager = new HybridSandboxManager(
             userId,
             () => {},
-            "desktop",
+            sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY!,
             null,
             subscription,
@@ -690,6 +692,15 @@ export const createAgentTriggerPost =
         subscription,
         organizationId,
         freeQuotaSubject,
+        emailVerified,
+        monthlyBudgetCountry:
+          subscription === "free"
+            ? monthlyBudgetCountryFromRequest(req)
+            : undefined,
+        regionalFreeCountry:
+          subscription === "free"
+            ? regionalFreeCountryFromRequest(req)
+            : undefined,
         messages: messagesForPayload,
         localDesktopAttachmentsPrepared,
         baseTodos: Array.isArray(todos) ? todos : [],
@@ -701,6 +712,7 @@ export const createAgentTriggerPost =
         autoReviewAssignment,
         userLocation,
         triggerRegion,
+        requestRegionClass,
         isAutoContinue,
         isAutomaticContinuation,
         regenerate,

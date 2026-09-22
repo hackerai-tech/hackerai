@@ -6,8 +6,7 @@ type ModelAwareToolSchemaOptions = {
 };
 
 const usesDeepSeekToolBrief = (modelName?: string): boolean =>
-  modelName?.includes("deepseek") === true ||
-  modelName === "agent-auto-review-model";
+  modelName?.includes("deepseek") === true;
 
 export const createToolBriefSchema = ({
   modelName,
@@ -63,7 +62,7 @@ Commands run in the selected sandbox environment.${approvalGated ? " The platfor
 ${approvalGated ? "For every approval-gated command, provide a concise, user-facing justification describing the intended outcome; HackerAI displays it in the approval prompt, so do not merely repeat the command. prefix_rule is optional: provide it only for a narrow, useful category of similar commands the user can safely approve for this conversation. It must be an exact argv prefix represented as separate array elements. Prefer a stable safe prefix over copying the complete command, and omit it when no reusable scope is appropriate. Never provide prefix_rule for destructive commands, shell wrappers, compound commands, redirects, substitutions, environment assignments, wildcards, or other dynamic shell syntax." : ""}
 In using these tools, adhere to the following guidelines:
 ${commandCompositionGuidance}
-2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
+2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file. If the file tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. A timeout or lost response may hide a completed write: inspect the file before retrying, especially before append.
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 ${pagerGuidance}
 5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
@@ -292,11 +291,12 @@ export const createFileToolSchema = ({
           "Use 'read' for text-based or line-oriented formats.",
           "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
-    "Code MUST be saved to a file using this tool before execution via the shell tool.",
+    "Save code with this tool before execution via the shell tool. If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown.",
     "DO NOT write partial or truncated content; always output the full content.",
     "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
     "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
     "Under read action, the range parameter represents line number ranges (1-indexed, -1 for end of file).",
+    "Text content returned by this tool may prefix each line using the right-aligned, six-character LINE_NUMBER|LINE_CONTENT format. Treat LINE_NUMBER| as metadata, not as part of the file content.",
     "If the range parameter is not specified, the entire file will be read by default.",
     "Oversized files are not loaded in full; read will return file metadata and range guidance instead.",
     "DO NOT use the range parameter when reading a file for the first time; if the content is too long and gets truncated, the result will include range hints.",
@@ -490,6 +490,7 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   - Mark complete IMMEDIATELY after finishing
   - Only ONE task in_progress at a time
   - Complete current tasks before starting new ones
+  - Before finishing your turn, complete every todo or cancel it if it is no longer relevant
 
 3. **Task Breakdown:**
   - Create specific, actionable security tests

@@ -1,6 +1,7 @@
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
+import { phLogger } from "@/lib/posthog/server";
 import {
   collectSandboxFiles,
   getSandboxUploadFailureMetadata,
@@ -16,6 +17,67 @@ const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
   "[deadline_exceeded] the operation timed out: This error is likely due to exceeding 'timeoutMs' - the total time a long running request (like command execution or directory watch) can be active.";
 const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
   "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
+
+it("records safe validation fields for a Miosa attachment rejection without retrying it", async () => {
+  const error = Object.assign(new Error("Provider rejected the request"), {
+    name: "ValidationError",
+    status: 422,
+    code: "UNKNOWN_ERROR",
+    requestId: "request-attachment",
+    retryable: false,
+    details: {
+      errors: [
+        {
+          loc: ["body", "command"],
+          input: "private command",
+          msg: "private message",
+        },
+      ],
+    },
+  });
+  const run = jest.fn().mockRejectedValue(error);
+  const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const result = await uploadSandboxFiles(
+      [
+        {
+          kind: "url",
+          url: "https://example.com/file?token=private-token",
+          localPath: "/home/user/upload/private-file",
+        },
+      ],
+      async () => ({ sandboxKind: "miosa", commands: { run } }),
+      {
+        logContext: {
+          service: "agent-long",
+          requestId: "run-test",
+          userId: "user-test",
+        },
+      },
+    );
+    expect(result.failedCount).toBe(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_failed",
+      expect.objectContaining({
+        error_request_id: "request-attachment",
+        validation_fields: ["command"],
+        failure_stage: "transfer",
+        transfer_operation: "download_url",
+      }),
+    );
+    expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+      upload_failure_validation_fields: ["command"],
+    });
+    expect(JSON.stringify(eventSpy.mock.calls)).not.toMatch(
+      /private-token|private-file|private command|private message/,
+    );
+  } finally {
+    eventSpy.mockRestore();
+    errorSpy.mockRestore();
+  }
+});
 
 const makeLocalMessage = (): UIMessage =>
   ({
@@ -337,6 +399,65 @@ describe("desktop-local sandbox file helpers", () => {
         { displayName: "" },
       );
     } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it("logs the final copy exit status when the fallback upload path also fails", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const copyLocal = jest
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error("Failed to prepare local file: permission denied"),
+          { exitCode: 1 },
+        ),
+      )
+      .mockRejectedValueOnce(
+        Object.assign(
+          new Error("Failed to prepare local file: source missing"),
+          { exitCode: 2 },
+        ),
+      );
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "localPath",
+            path: "/private/report.pdf",
+            localPath: "/tmp/hackerai-upload/report.pdf",
+          },
+        ],
+        async () => ({
+          files: { copyLocal },
+          commands: {
+            run: jest.fn().mockResolvedValue({
+              exitCode: 0,
+              stdout: "/home/alice/hackerai-upload/fallback/report.pdf",
+              stderr: "",
+            }),
+          },
+        }),
+      );
+      expect(copyLocal).toHaveBeenCalledTimes(2);
+      expect(result.failedCount).toBe(1);
+      expect(result.pathRewrites).toEqual([]);
+      expect(
+        JSON.parse(String(consoleErrorSpy.mock.calls[0]?.[0])),
+      ).toMatchObject({
+        event: "sandbox_attachment_staging_failed",
+        failure_exit_code: 2,
+      });
+      expect(JSON.stringify(consoleErrorSpy.mock.calls)).not.toContain(
+        "report.pdf",
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
       consoleWarnSpy.mockRestore();
     }
   });
@@ -806,6 +927,80 @@ describe("desktop-local sandbox file helpers", () => {
     },
   );
 
+  it("records safe Miosa diagnostics for attachment staging failures", async () => {
+    const consoleErrorSpy = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    const providerError = Object.assign(
+      new Error("Sandbox transport failed for private attachment content"),
+      {
+        name: "MiosaError",
+        code: "FILE_TRANSPORT_UNAVAILABLE",
+        status: 503,
+        requestId: "request-safe-123",
+        retryable: true,
+      },
+    );
+
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/private-report.pdf?signature=secret",
+            localPath: "/home/user/upload/private-report.pdf",
+          },
+        ],
+        async () => ({
+          sandboxKind: "miosa",
+          commands: { run: jest.fn().mockRejectedValue(providerError) },
+        }),
+        {
+          logContext: {
+            service: "agent-long",
+            requestId: "run-safe-123",
+            userId: "user-safe-123",
+            chatId: "chat-safe-123",
+          },
+        },
+      );
+
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_sandbox_provider: "miosa",
+        upload_failure_error_name: "MiosaError",
+        upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
+        upload_failure_error_http_status: 503,
+        upload_failure_error_request_id: "request-safe-123",
+        upload_failure_error_retryable: true,
+      });
+      const structuredLog = JSON.parse(
+        String(consoleErrorSpy.mock.calls[0]?.[0]),
+      );
+      expect(structuredLog).toMatchObject({
+        event: "sandbox_attachment_staging_failed",
+        sandbox_provider: "miosa",
+        error_code: "FILE_TRANSPORT_UNAVAILABLE",
+        error_http_status: 503,
+        error_request_id: "request-safe-123",
+        error_retryable: true,
+      });
+      expect(JSON.stringify(structuredLog)).not.toContain("private-report");
+      expect(JSON.stringify(structuredLog)).not.toContain("signature=secret");
+      expect(eventSpy).toHaveBeenCalledWith(
+        "sandbox_attachment_staging_failed",
+        expect.objectContaining({
+          sandbox_provider: "miosa",
+          error_code: "FILE_TRANSPORT_UNAVAILABLE",
+          error_request_id: "request-safe-123",
+        }),
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+      eventSpy.mockRestore();
+    }
+  });
+
   it("does not refresh non-retryable sandbox acquisition failures", async () => {
     const consoleErrorSpy = jest
       .spyOn(console, "error")
@@ -1217,7 +1412,12 @@ describe("desktop-local sandbox file helpers", () => {
             copyLocal: jest
               .fn()
               .mockRejectedValue(
-                new Error("Failed to prepare local file: exit status 1"),
+                Object.assign(
+                  new Error(
+                    `Failed to prepare local file: cannot read ${sourcePath}`,
+                  ),
+                  { exitCode: 1 },
+                ),
               ),
           },
         }),

@@ -123,9 +123,9 @@ describe("DELETE /api/chats", () => {
     const response = await DELETE(request);
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(body).toEqual({
-      deleted: true,
+      accepted: true,
       canceledTriggerRuns: 2,
       closedApprovalSessions: 2,
     });
@@ -166,9 +166,9 @@ describe("DELETE /api/chats", () => {
     const response = await DELETE(request);
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(body).toEqual({
-      deleted: true,
+      accepted: true,
       canceledTriggerRuns: 0,
       closedApprovalSessions: 1,
     });
@@ -255,9 +255,9 @@ describe("DELETE /api/chats", () => {
     const response = await DELETE(request);
     const body = await response.json();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(202);
     expect(body).toEqual({
-      deleted: true,
+      accepted: true,
       canceledTriggerRuns: 0,
       closedApprovalSessions: 0,
     });

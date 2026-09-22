@@ -5,7 +5,7 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 
 ## What it does
 
-1. Accepts an authorized PM's research question and 3-20 internal user IDs
+1. Accepts an authorized PM's research question and 1-20 internal user IDs
    selected entirely from PostHog. The scoped PM gateway key establishes access;
    no separate per-run approval record is required. A Linear issue is optional
    tracking metadata and does not authorize or block a run.
@@ -18,6 +18,8 @@ called through the repo-owned Codex skill `$hackerai-user-research`.
 4. Redacts direct identifiers, targets, secrets, paths, code blocks, and command
    arguments before sending evidence to the model.
 5. Runs one profile worker per user in parallel, then synthesizes the cohort.
+   Comparative runs preserve 2-4 PostHog-selected groups, but expose only
+   sanitized labels and pseudonyms to synthesis.
 6. Stores the audit record, bounded PostHog cohort provenance, structured
    per-user profiles keyed by internal user ID, aggregate report, evidence
    coverage, token usage, and provider cost in Convex. The audit stores only a
@@ -31,9 +33,12 @@ required. The task fails closed if no ZDR-capable endpoint is available.
 ## Retention and deletion
 
 Raw excerpts are not stored. Account deletion removes that user's
-`research_user_profiles` and `research_run_members` records. Cohort-only
-`research_runs` and `research_reports` remain retained; reports can be created
-only after at least three user profiles are available.
+`research_user_profiles` and `research_run_members` records.
+`research_runs` and sanitized `research_reports` remain retained, including
+single-user reports. Reports require at least one available user profile.
+A single-user report states that its sample size is one and describes
+individual observations with a provisional low-confidence avatar; it does not establish cross-user patterns or
+population-level conclusions.
 
 ## Convex functions
 
@@ -83,8 +88,11 @@ direct Stripe access. If the available PostHog data has accounting or mapping
 limitations, label them in the aggregate output instead of blocking the run. Do
 not add PMs to the Trigger organization or give them Trigger/Convex credentials.
 
-`HACKERAI_PM_USER_RESEARCH_KEY` authenticates the scoped runner; it is not a
-per-run approval mechanism and is unrelated to Linear.
+The scoped runner reads `~/.config/hackerai/pm-research.key` first, with
+`HACKERAI_PM_USER_RESEARCH_KEY` as a fallback when the file is absent. See the
+[PM runbook](../../.agents/skills/hackerai-user-research/references/pm-runbook.md)
+for storage requirements. The key authenticates access; it is not a per-run
+approval mechanism and is unrelated to Linear.
 
 For event-based questions such as churn, pass `samplingMode: "pre_event"`, a
 bounded `evidenceWindowDays`, and exactly one `{ userId, anchorAt }` entry in
@@ -93,6 +101,14 @@ milliseconds. Behavioral evidence remains low-confidence for causal
 attribution even when it immediately precedes the event; combine it with an
 explicit survey or experiment before treating a friction pattern as the reason
 for churn.
+
+For comparative research, pass `comparisonGroups` with 2-4 labeled groups of
+at least three users. Every cohort user must be assigned exactly once. The
+gateway accepts ISO or epoch-millisecond cohort/evidence timestamps and accepts
+`selectionQuerySha256` as a boundary alias for the canonical
+`selectionQueryFingerprint` field. It also infers `pre_event` sampling when an
+evidence window or anchors are supplied. Invalid payload responses include
+bounded, non-sensitive schema issues, which the runner prints for correction.
 
 ### PostHog identity and revenue contract
 

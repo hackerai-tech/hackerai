@@ -40,6 +40,7 @@ import {
 } from "@/lib/ai/subagents/contracts";
 import { toSubagentHandle } from "@/lib/ai/subagents/agent-handle";
 import { extractMessageText } from "@/lib/utils/message-utils";
+import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import {
   projectAgentWorkParts,
   projectAgentWorkTimelineItems,
@@ -528,16 +529,24 @@ const Transcript = memo(function Transcript({
       ),
     [messages],
   );
+  const liveToolCallId = useMemo(
+    () =>
+      active
+        ? extractAllSidebarContent(visibleMessages).at(-1)?.toolCallId
+        : undefined,
+    [active, visibleMessages],
+  );
   const toolSidebarOrigin = useMemo<SidebarSubagentOrigin>(
     () => ({
       kind: "subagent",
       subagentId: child.subagent_id,
+      liveToolCallId,
       returnContent: {
         ...sidebarContent,
         selectedSubagentId: child.subagent_id,
       },
     }),
-    [child.subagent_id, sidebarContent],
+    [child.subagent_id, liveToolCallId, sidebarContent],
   );
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
 

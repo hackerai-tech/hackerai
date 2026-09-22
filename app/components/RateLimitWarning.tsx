@@ -1,5 +1,8 @@
+import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
@@ -137,7 +140,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
         return `You've reached your extra usage spending limit and this response was cut off. Increase your limit to continue. Resets ${timeString}.`;
       }
       if (data.capReason === "paid_daily_free_allowance_cut_off") {
-        return `Today's free Ask allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;
+        return `Today's free allowance was used up and this response was cut off. Add credits to continue. Resets ${timeString}.`;
       }
       return `You've reached your monthly limit and this response was cut off. Add credits or upgrade to continue. Resets ${timeString}.`;
     }
@@ -172,10 +175,39 @@ const getUpgradeCtaText = (
 
 const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 
-export const RateLimitWarning = ({
+export const RateLimitWarning = (props: RateLimitWarningProps) => {
+  const isBlocked =
+    props.data.warningType === "token-bucket" &&
+    props.data.remainingPercent === 0;
+  return isBlocked ? (
+    <BlockedChatBillingRecovery>
+      <RateLimitWarningContent {...props} />
+    </BlockedChatBillingRecovery>
+  ) : (
+    <RateLimitWarningContent {...props} />
+  );
+};
+
+const RateLimitWarningContent = ({
   data,
   onDismiss,
 }: RateLimitWarningProps) => {
+  const isPersonalMonthlyWarning =
+    data.warningType === "token-bucket" &&
+    ["pro", "pro-plus", "ultra"].includes(data.subscription) &&
+    !data.cutOff &&
+    (data.capReason === "monthly_near_limit" ||
+      (!data.capReason && data.remainingPercent > 0));
+  // Reuse the live personal-wallet entitlement so an already visible warning
+  // reacts to purchases, the Extra Usage toggle, and spending-cap changes.
+  const extraUsage = useQuery(
+    api.extraUsage.getMaxModelExtraUsageEntitlement,
+    isPersonalMonthlyWarning ? {} : "skip",
+  );
+  const hideMonthlyWarning =
+    isPersonalMonthlyWarning &&
+    (extraUsage === undefined ||
+      (extraUsage?.extraUsageAvailable === true && extraUsage.hasBalance));
   const capturedUpgradeImpressionRef = useRef(false);
   const capturedAddCreditImpressionRef = useRef(false);
   const timeString = formatTimeUntil(data.resetTime);
@@ -187,7 +219,7 @@ export const RateLimitWarning = ({
       ? undefined
       : data.capReason;
   const extraUsageCta =
-    data.warningType === "token-bucket"
+    data.warningType === "token-bucket" && !hideMonthlyWarning
       ? getExtraUsageLimitCta({
           subscription: data.subscription,
           capReason,
@@ -197,6 +229,7 @@ export const RateLimitWarning = ({
     data.warningType === "extra-usage-active" ||
     data.warningType === "paid-daily-free-allowance";
   const showUpgrade =
+    !hideMonthlyWarning &&
     data.warningType !== "agent-run-spend-cap" &&
     data.warningType !== "extra-usage-active" &&
     data.warningType !== "paid-daily-free-allowance" &&
@@ -254,6 +287,8 @@ export const RateLimitWarning = ({
       cta_text: extraUsageCta.analyticsText,
     });
   }, [capReason, data.subscription, extraUsageCta, limitSeverity, limitType]);
+
+  if (hideMonthlyWarning) return null;
 
   return (
     <div

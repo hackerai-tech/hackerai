@@ -34,8 +34,10 @@ import {
 import {
   AGENT_SUMMARIZATION_PROMPT,
   ASK_SUMMARIZATION_PROMPT,
+  INCREMENTAL_SUMMARIZATION_INSTRUCTIONS,
 } from "./prompts";
 import type { RetainedTailMetadata } from "./retained-tail";
+import { InvalidCompactionSummaryError } from "./startup-compaction";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -718,6 +720,7 @@ const getLanguageModelIdentifier = (
   return undefined;
 };
 
+/** Generates a checkpoint and rejects empty or incomplete provider output. */
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
@@ -729,11 +732,15 @@ export const generateSummaryText = async (
   abortSignal?: AbortSignal,
   modelMessages?: ModelMessage[],
   summaryInputMaxTokens: number = SUMMARY_INPUT_MAX_TOKENS,
+  generationOptions?: {
+    timeout?: number;
+    maxRetries?: number;
+  },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
 
   const incrementalNote = hasExistingSummary
-    ? `\n\nIMPORTANT: You are performing an INCREMENTAL summarization. The conversation above contains a <context_summary> message with a previous summary of earlier conversation. Produce a single, unified summary that merges the previous summary with the NEW messages that follow it. Do NOT summarize the summary — integrate new information into a comprehensive updated summary.`
+    ? `\n\n${INCREMENTAL_SUMMARIZATION_INSTRUCTIONS}`
     : "";
 
   // Tools are included solely to match the main streamText prefix for provider
@@ -769,6 +776,12 @@ export const generateSummaryText = async (
 
   const result = await generateText({
     model: languageModel,
+    ...(generationOptions?.timeout !== undefined && {
+      timeout: generationOptions.timeout,
+    }),
+    ...(generationOptions?.maxRetries !== undefined && {
+      maxRetries: generationOptions.maxRetries,
+    }),
     system: chatSystemPrompt,
     tools: nopTools,
     abortSignal,
@@ -782,6 +795,13 @@ export const generateSummaryText = async (
       },
     ],
   });
+
+  // A provider may finish concurrently with Stop without rejecting its call.
+  // Do not turn that late result into a persisted checkpoint or continuation.
+  abortSignal?.throwIfAborted();
+  if (!result.text.trim() || result.finishReason !== "stop") {
+    throw new InvalidCompactionSummaryError();
+  }
 
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (

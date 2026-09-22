@@ -1,5 +1,8 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { mockMutation as mockConvexMutation } from "convex/browser";
+import {
+  mockQuery as mockConvexQuery,
+  mockMutation as mockConvexMutation,
+} from "convex/browser";
 import { ChatSDKError } from "@/lib/errors";
 
 const mockGetUserIDAndPro = jest.fn();
@@ -9,6 +12,7 @@ const mockCreateOrganizationMembership = jest.fn();
 const mockGetOrganization = jest.fn();
 const mockCreateOrganization = jest.fn();
 const mockUpdateOrganization = jest.fn();
+const mockListSubscriptions = jest.fn();
 const mockListPrices = jest.fn();
 const mockListCustomers = jest.fn();
 const mockCreateCustomer = jest.fn();
@@ -59,6 +63,7 @@ jest.mock("@/app/api/workos", () => ({
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
+    subscriptions: { list: mockListSubscriptions },
     prices: {
       list: mockListPrices,
     },
@@ -113,6 +118,8 @@ describe("POST /api/subscribe", () => {
     mockGetPostHogFeatureFlagVariant.mockResolvedValue("control");
 
     mockConvexMutation.mockResolvedValue(null);
+    mockConvexQuery.mockResolvedValue(null);
+    mockListSubscriptions.mockResolvedValue({ data: [] } as never);
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",
@@ -163,6 +170,25 @@ describe("POST /api/subscribe", () => {
           metadata: params.metadata ?? {},
         }) as never,
     );
+  });
+
+  it("blocks checkout creation while the account has an active dispute hold", async () => {
+    mockConvexQuery.mockResolvedValueOnce({
+      status: "active",
+      category: "dispute_billing_hold",
+    });
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error:
+        "Billing is disabled while this account has an active payment dispute or fraud hold. Contact support before making another payment.",
+    });
+    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(mockCreateCustomer).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("rejects existing organization members who are not billing admins", async () => {
@@ -1092,5 +1118,50 @@ describe("POST /api/subscribe", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+  it("binds an influencer customer before creating the checkout session", async () => {
+    const { POST } = await import("../route");
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user_123",
+      subscription: "free",
+      organizationId: "org_team",
+      freeQuotaSubject: "free_quota:v1:customer",
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      name: "Team",
+      stripeCustomerId: "cus_existing",
+    } as never);
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [
+        {
+          id: "membership_1",
+          userId: "user_123",
+          organizationId: "org_team",
+          role: { slug: "admin" },
+        },
+      ],
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockConvexQuery.mockResolvedValue({ _id: "attribution_1" });
+    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    expect(response.status).toBe(200);
+    expect(mockListSubscriptions).toHaveBeenCalledWith({
+      customer: "cus_existing",
+      status: "all",
+      limit: 1,
+    });
+    const binding = mockConvexMutation.mock.calls.findIndex(
+      (call: any[]) =>
+        call[1]?.identity === "free_quota:v1:customer" &&
+        call[1]?.customerId === "cus_existing",
+    );
+    expect(binding).toBeGreaterThanOrEqual(0);
+    expect(mockConvexMutation.mock.invocationCallOrder[binding]).toBeLessThan(
+      mockCreateCheckoutSession.mock.invocationCallOrder[0],
+    );
   });
 });

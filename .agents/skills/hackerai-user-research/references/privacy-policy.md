@@ -14,7 +14,9 @@ Linear status or comments. A Linear issue is optional tracking metadata only.
   updates; do not hide or replace them with pseudonyms.
 - Restricted Convex records retain the internal user ID needed for deletion and
   lifecycle handling.
-- Cohort-level avatars, confidence, unknowns, and testable hypotheses.
+- Sanitized research summaries from 1-20 users, with confidence, unknowns, and
+  testable hypotheses. Single-user summaries must state their sample size and
+  must not be presented as established customer segments.
 
 ## Prohibited
 
@@ -37,5 +39,6 @@ request. Model calls require an OpenRouter zero-data-retention route and fail
 closed if no eligible Grok 4.6 endpoint is available. Convex stores the run
 audit, structured per-user profiles keyed by internal user ID, and the aggregate
 report. Account deletion removes that user's stored profile and run-membership
-linkage; runs and reports are retained only as cohort-level outputs from cohorts
-of at least three.
+linkage; runs and sanitized reports are retained, including reports based on
+one user. Raw evidence and restricted profile records are never returned in
+these reports.

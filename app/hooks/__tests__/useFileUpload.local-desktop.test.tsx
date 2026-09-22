@@ -3,6 +3,7 @@ import { ConvexError } from "convex/values";
 import { useFileUpload } from "../useFileUpload";
 import {
   getLocalFileMetadata,
+  isTauriEnvironment,
   pickLocalFiles,
   readLocalFile,
   removeGeneratedTextAttachment,
@@ -20,6 +21,7 @@ const generateS3UploadUrlAction = jest.fn();
 let globalState: any;
 
 jest.mock("convex/react", () => ({
+  useConvex: () => ({ query: jest.fn().mockResolvedValue("complete") }),
   useMutation: () => deleteFile,
   useAction: (action: unknown) =>
     String(action).includes("generateS3UploadUrlAction")
@@ -29,6 +31,7 @@ jest.mock("convex/react", () => ({
 
 jest.mock("@/convex/_generated/api", () => ({
   api: {
+    deletions: { getStatusForUser: "getStatusForUser" },
     fileStorage: { deleteFile: "deleteFile" },
     fileActions: { saveFile: "saveFile" },
     s3Actions: { generateS3UploadUrlAction: "generateS3UploadUrlAction" },
@@ -50,6 +53,8 @@ jest.mock("@/app/hooks/useTauri", () => ({
 
 jest.mock("sonner", () => ({
   toast: {
+    loading: jest.fn(),
+    dismiss: jest.fn(),
     error: jest.fn(),
     info: jest.fn(),
     warning: jest.fn(),
@@ -76,6 +81,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (isTauriEnvironment as jest.Mock).mockReturnValue(true);
     global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
     globalState = {
       uploadedFiles: [],
@@ -108,6 +114,61 @@ describe("useFileUpload desktop-local agent attachments", () => {
   afterAll(() => {
     global.fetch = originalFetch;
   });
+
+  it("keeps an attachment visible when deletion fails", async () => {
+    const file = new File(["test"], "test.txt", { type: "text/plain" });
+    globalState.uploadedFiles = [
+      { file, fileId: "file_123", storage: "s3", uploaded: true },
+    ];
+    deleteFile.mockRejectedValueOnce(new Error("Storage unavailable"));
+    const { result } = renderHook(() => useFileUpload("agent"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    await act(async () => {
+      await result.current.handleRemoveFile(0);
+    });
+    expect(removeUploadedFile).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith("Storage unavailable");
+    errorSpy.mockRestore();
+  });
+
+  it.each([true, false])(
+    "handles a false local cleanup result with Tauri available: %s",
+    async (available) => {
+      (isTauriEnvironment as jest.Mock).mockReturnValue(available);
+      (removeGeneratedTextAttachment as jest.Mock).mockResolvedValue(false);
+      globalState.uploadedFiles = [
+        {
+          file: new File(["test"], "Pasted text.txt", { type: "text/plain" }),
+          storage: "local-desktop",
+          generatedSource: "pasted-text",
+          generatedTextAttachmentId: "paste-1",
+          uploaded: true,
+        },
+      ];
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const { result } = renderHook(() => useFileUpload("agent"));
+      await act(async () => {
+        await result.current.handleRemoveFile(0);
+      });
+      if (available) {
+        expect(removeGeneratedTextAttachment).toHaveBeenCalledWith(
+          "paste-1",
+          "Pasted text.txt",
+        );
+        expect(removeUploadedFile).not.toHaveBeenCalled();
+        expect(toast.error).toHaveBeenCalledWith(
+          "Failed to remove pasted text attachment",
+        );
+      } else {
+        expect(removeGeneratedTextAttachment).not.toHaveBeenCalled();
+        expect(removeUploadedFile).toHaveBeenCalledWith(0);
+        expect(toast.error).not.toHaveBeenCalled();
+      }
+      errorSpy.mockRestore();
+    },
+  );
 
   it("uses Tauri file paths for large files without calling S3 in desktop Agent mode", async () => {
     (pickLocalFiles as jest.Mock).mockResolvedValue([

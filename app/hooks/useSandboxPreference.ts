@@ -1,22 +1,31 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
 import { toast } from "sonner";
 import type { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import { isEnvironmentPreference } from "@/lib/sandbox/environment";
 
 export type DesktopBridgeStatus =
   "idle" | "connecting" | "connected" | "failed";
 
+export type SetSandboxPreference = (
+  preference: SandboxPreference,
+  options?: { remember?: boolean },
+) => void;
+
 interface SandboxPreferenceState {
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  hasExplicitSandboxPreference: boolean;
+  setSandboxPreference: SetSandboxPreference;
+  resetSandboxPreference: () => void;
   desktopBridgeActive: boolean;
   desktopBridgeStatus: DesktopBridgeStatus;
+  desktopEnvironmentId?: string;
   retryDesktopBridge: () => void;
 }
 
@@ -26,7 +35,6 @@ let bridgeStartPromise: Promise<DesktopSandboxBridge | null> | null = null;
 let bridgeGeneration = 0;
 let bridgeStateListener:
   ((active: boolean, status: DesktopBridgeStatus) => void) | null = null;
-const PERSISTABLE_SANDBOX_PREFERENCES = new Set(["e2b", "desktop"]);
 const DESKTOP_BRIDGE_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000, 16_000];
 const DESKTOP_BRIDGE_MAX_RECOVERY_ATTEMPTS = 6;
 const DESKTOP_BRIDGE_STABLE_RESET_MS = 60_000;
@@ -82,14 +90,60 @@ export function useSandboxPreference(
   const [desktopBridgeStatus, setDesktopBridgeStatus] =
     useState<DesktopBridgeStatus>("idle");
   const [desktopBridgeRetryAttempt, setDesktopBridgeRetryAttempt] = useState(0);
+  const [desktopEnvironmentId, setDesktopEnvironmentId] = useState<string>();
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
-      if (stored && stored !== "tauri") return stored as SandboxPreference;
+      if (stored)
+        return stored === "tauri" ? "desktop" : (stored as SandboxPreference);
       return isTauriEnvironment() ? "desktop" : "e2b";
     });
+
+  const [hasExplicitSandboxPreference, setHasExplicitSandboxPreference] =
+    useState(
+      () =>
+        typeof window !== "undefined" &&
+        Boolean(localStorage.getItem("sandbox-preference")),
+    );
+  const newChatPreferenceRef = useRef(sandboxPreference);
+  const resolvedPreference = useQuery(
+    api.localSandbox.resolveEnvironmentPreference,
+    isAuthenticated &&
+      sandboxPreference !== "desktop" &&
+      sandboxPreference !== "e2b" &&
+      !isEnvironmentPreference(sandboxPreference)
+      ? { preference: sandboxPreference }
+      : "skip",
+  );
+  const upgradedPreference =
+    sandboxPreference === "desktop" && desktopEnvironmentId
+      ? `desktop-environment:${desktopEnvironmentId}`
+      : resolvedPreference;
+  useEffect(() => {
+    if (
+      typeof upgradedPreference !== "string" ||
+      !isEnvironmentPreference(upgradedPreference)
+    )
+      return;
+    if (newChatPreferenceRef.current === sandboxPreference) {
+      newChatPreferenceRef.current = upgradedPreference;
+      if (localStorage.getItem("sandbox-preference") === sandboxPreference) {
+        localStorage.setItem("sandbox-preference", upgradedPreference);
+      }
+    }
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSandboxPreferenceState((current) =>
+        current === sandboxPreference ? upgradedPreference : current,
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [upgradedPreference, sandboxPreference]);
 
   const connectDesktopMutation = useMutation(api.localSandbox.connectDesktop);
   const refreshTokenMutation = useMutation(
@@ -127,6 +181,11 @@ export function useSandboxPreference(
     const syncBridgeState = (active: boolean, status: DesktopBridgeStatus) => {
       queueMicrotask(() => {
         updateBridgeState(active, status);
+      });
+    };
+    const syncDesktopEnvironmentId = (environmentId: string | undefined) => {
+      queueMicrotask(() => {
+        if (!cancelled) setDesktopEnvironmentId(environmentId);
       });
     };
     const scheduleBridgeRecovery = (
@@ -184,6 +243,7 @@ export function useSandboxPreference(
     };
 
     if (!isAuthenticated || !isTauriEnvironment()) {
+      syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
       bridgeGeneration += 1;
       bridgeStartPromise = null;
@@ -201,6 +261,7 @@ export function useSandboxPreference(
 
     // Already running — just sync bridge active state.
     if (activeBridge?.getConnectionId()) {
+      syncDesktopEnvironmentId(activeBridge.getEnvironmentId?.());
       syncBridgeState(true, "connected");
       // setSandboxPreferenceState(activeBridge.getConnectionId()!);
       return () => {
@@ -276,6 +337,7 @@ export function useSandboxPreference(
         if (cancelled || !bridge) return;
 
         setDesktopBridgeActive(true);
+        setDesktopEnvironmentId(bridge.getEnvironmentId?.());
         setDesktopBridgeStatus("connected");
       } catch (error) {
         if (cancelled) return;
@@ -322,22 +384,22 @@ export function useSandboxPreference(
     };
   }, [desktopBridgeRetryAttempt, isAuthenticated]);
 
-  const isFirstRender = useRef(true);
-  useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
-    if (
-      typeof window !== "undefined" &&
-      PERSISTABLE_SANDBOX_PREFERENCES.has(sandboxPreference)
-    ) {
-      localStorage.setItem("sandbox-preference", sandboxPreference);
-    }
-  }, [sandboxPreference]);
+  // Restoring a task or applying an availability/plan default must not change
+  // the user's default for new chats. Only an explicit choice is remembered.
+  const setSandboxPreference: SetSandboxPreference = useCallback(
+    (preference, { remember = true } = {}) => {
+      setSandboxPreferenceState(preference);
+      if (remember) {
+        setHasExplicitSandboxPreference(true);
+        newChatPreferenceRef.current = preference;
+        localStorage.setItem("sandbox-preference", preference);
+      }
+    },
+    [],
+  );
 
-  const setSandboxPreference = useCallback((preference: SandboxPreference) => {
-    setSandboxPreferenceState(preference);
+  const resetSandboxPreference = useCallback(() => {
+    setSandboxPreferenceState(newChatPreferenceRef.current);
   }, []);
 
   const retryDesktopBridge = useCallback(() => {
@@ -351,10 +413,17 @@ export function useSandboxPreference(
   }, [isAuthenticated]);
 
   return {
-    sandboxPreference,
+    sandboxPreference:
+      typeof upgradedPreference === "string" &&
+      isEnvironmentPreference(upgradedPreference)
+        ? upgradedPreference
+        : sandboxPreference,
+    hasExplicitSandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
   };
 }

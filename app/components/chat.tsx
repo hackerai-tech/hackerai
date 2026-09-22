@@ -30,6 +30,7 @@ import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useComposerInput } from "../contexts/ComposerState";
 import { useChatRoutePresentation } from "../contexts/ChatRoutePresentationContext";
 import {
@@ -95,12 +96,14 @@ import { coerceSelectedModel } from "@/types/chat";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { SlowLoadingNotice } from "./SlowLoadingNotice";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { findActiveTimelineAnchorMessageId } from "./message-timeline-rows";
-import { useLatestRef } from "../hooks/useLatestRef";
+import { useCommittedRef, useLatestRef } from "../hooks/useLatestRef";
 import { useDataStreamDispatch } from "./DataStreamProvider";
 import { useBatchedDataStreamAppend } from "@/app/hooks/useBatchedDataStreamAppend";
 import {
@@ -166,6 +169,15 @@ export const getStoredAgentApprovalRequest = (
   return {
     approvalId,
     toolCallId,
+    ...(typeof approvalRequest.sourceRunId === "string"
+      ? { sourceRunId: approvalRequest.sourceRunId }
+      : {}),
+    ...(typeof approvalRequest.sourceAgentId === "string"
+      ? { sourceAgentId: approvalRequest.sourceAgentId }
+      : {}),
+    ...(typeof approvalRequest.sourceAgentName === "string"
+      ? { sourceAgentName: approvalRequest.sourceAgentName }
+      : {}),
     title,
     ...(operation ? { operation } : {}),
     ...(typeof approvalRequest.target === "string"
@@ -314,6 +326,7 @@ interface StreamingEphemeralState {
   summarizationStatus: {
     status: "started" | "completed";
     message: string;
+    startedAt?: number;
   } | null;
   rateLimitWarning: RateLimitWarningData | null;
 }
@@ -426,7 +439,9 @@ function StreamEffects({
   selectedModel,
   resetRef,
   hasActiveStream,
+  sendDisabledReason,
 }: {
+  sendDisabledReason?: string;
   chatId: string;
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -466,6 +481,7 @@ function StreamEffects({
     sandboxPreference,
     agentPermissionMode,
     selectedModel,
+    sendDisabledReason,
   });
 
   // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
@@ -485,7 +501,9 @@ function ForkAutoSendEffect({
   isExistingChat,
   messageCount,
   onSubmit,
+  sendDisabledReason,
 }: {
+  sendDisabledReason?: string;
   chatId: string;
   status: UseChatHelpers<ChatMessage>["status"];
   isExistingChat: boolean;
@@ -496,7 +514,7 @@ function ForkAutoSendEffect({
   const autoSendFiredRef = useRef(false);
 
   useEffect(() => {
-    if (autoSendFiredRef.current) return;
+    if (autoSendFiredRef.current || sendDisabledReason) return;
     try {
       const pendingChatId = sessionStorage.getItem("autoSendChatId");
       if (pendingChatId !== chatId) return;
@@ -509,12 +527,30 @@ function ForkAutoSendEffect({
     autoSendFiredRef.current = true;
     sessionStorage.removeItem("autoSendChatId");
     void onSubmit(new Event("submit") as unknown as React.FormEvent);
-  }, [chatId, input, isExistingChat, messageCount, onSubmit, status]);
+  }, [
+    chatId,
+    input,
+    isExistingChat,
+    messageCount,
+    onSubmit,
+    status,
+    sendDisabledReason,
+  ]);
 
   return null;
 }
 
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
+  return (
+    <ConvexErrorBoundary>
+      <ChatContent autoResume={autoResume} />
+    </ConvexErrorBoundary>
+  );
+};
+
+const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
+  const { sendDisabledReason: connectionSendDisabledReason } =
+    useSelectedComputerConnection();
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
@@ -555,11 +591,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeActive,
+    localConnections,
     agentPermissionMode,
     selectedModel,
     setSelectedModel,
     subscription,
-    localConnections,
     activeProjectId,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
@@ -685,9 +724,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
-  // Track whether sandbox preference has been initialized from chat for this chat id
-  const hasInitializedSandboxRef = useRef(false);
-  // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
+  // Keep automatic sends blocked until the task's saved environment is applied.
+  const [initializedSandboxChatId, setInitializedSandboxChatId] = useState<
+    string | null
+  >(null);
+  const computerSendDisabledReason =
+    isExistingChat && initializedSandboxChatId !== chatId
+      ? "Loading the task's computer selection"
+      : connectionSendDisabledReason;
+  const computerSendDisabledReasonRef = useCommittedRef(
+    computerSendDisabledReason,
+  );
   const hasInitializedModelRef = useRef(false);
   // Snapshot of the last picker values successfully persisted to the chat doc.
   // Seeded after init from chatData; subsequent picker toggles trigger a debounced patch.
@@ -725,11 +772,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setIsExistingChat(true);
     } else {
       // Navigated to "/" (new chat) — reset to fresh state
+      resetSandboxPreference();
       setChatId(uuidv4());
       setIsExistingChat(false);
       wasNewChatRef.current = true;
     }
-  }, [routeChatId, setStreamedTitle]);
+  }, [routeChatId, setStreamedTitle, resetSandboxPreference]);
 
   useEffect(() => {
     if (!loadedChatDocumentId) return;
@@ -800,9 +848,37 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     token: string;
   } | null>(null);
   const [agentLongRunId, setAgentLongRunId] = useState<string | null>(null);
+  const agentLongRequestGenerationRef = useRef(0);
+  const [agentLongSubmissionGeneration, setAgentLongSubmissionGeneration] =
+    useState(0);
+  const [terminalAgentRunUiState, setTerminalAgentRunUiState] = useState<{
+    chatId: string;
+    submissionGeneration: number;
+    runId?: string;
+  } | null>(null);
+  const lastPersistedAgentRunRef = useRef<{
+    chatId: string;
+    runId?: string;
+  }>({ chatId });
   const agentLongHasVisibleProgressRef = useRef(false);
   const agentLongRunFallbackAllowedRef = useRef(true);
-  const agentLongSubmissionGenerationRef = useRef(0);
+
+  const markAgentRunUiTerminal = useCallback(
+    (runId: string | undefined, requestGeneration: number | undefined) => {
+      if (
+        requestGeneration !== undefined &&
+        requestGeneration !== agentLongRequestGenerationRef.current
+      ) {
+        return;
+      }
+      setTerminalAgentRunUiState({
+        chatId,
+        submissionGeneration: agentLongSubmissionGeneration,
+        ...(runId ? { runId } : {}),
+      });
+    },
+    [agentLongSubmissionGeneration, chatId],
+  );
 
   useLayoutEffect(() => {
     activeChatIdRef.current = chatId;
@@ -818,6 +894,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
+  const handleAgentLongRunClosed = (runId: string) => {
+    setAgentLongRunId((current) => (current === runId ? null : current));
+  };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
   const transportRef = useRef(
@@ -844,13 +923,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             return resumeAgentLongStream(
               typeof input === "string" ? input : input.toString(),
               init,
+              handleAgentLongRunClosed,
             );
           }
           // Reset the previous run before starting the request. Doing this in
           // the passive `submitted` effect can race with onRunStarted and
           // erase the new run metadata before completion reconciliation sees it.
-          const submissionGeneration =
-            ++agentLongSubmissionGenerationRef.current;
+          const requestGeneration = ++agentLongRequestGenerationRef.current;
+          setAgentLongSubmissionGeneration((generation) => generation + 1);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -861,26 +941,30 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               messagesRef.current,
             ),
           };
-          return fetchAgentLongStream(init, (run) => {
-            if (
-              submissionGeneration !==
-                agentLongSubmissionGenerationRef.current ||
-              (run.chatId !== undefined &&
-                run.chatId !== activeChatIdRef.current)
-            ) {
-              return;
-            }
-            setAgentLongRunId(run.runId);
-            if (run.runCorrelationToken) {
-              agentLongRunCorrelationRef.current = {
-                runId: run.runId,
-                token: run.runCorrelationToken,
-              };
-            }
-          });
+          return fetchAgentLongStream(
+            init,
+            (run) => {
+              if (
+                requestGeneration !== agentLongRequestGenerationRef.current ||
+                (run.chatId !== undefined &&
+                  run.chatId !== activeChatIdRef.current)
+              ) {
+                return;
+              }
+              setAgentLongRunId(run.runId);
+              if (run.runCorrelationToken) {
+                agentLongRunCorrelationRef.current = {
+                  runId: run.runId,
+                  token: run.runCorrelationToken,
+                };
+              }
+            },
+            handleAgentLongRunClosed,
+          );
         }
         if (init?.method !== "GET") {
-          agentLongSubmissionGenerationRef.current += 1;
+          agentLongRequestGenerationRef.current += 1;
+          setAgentLongSubmissionGeneration((generation) => generation + 1);
           agentLongRunCorrelationRef.current = null;
           agentLongRunFallbackAllowedRef.current = false;
           setAgentLongRunId(null);
@@ -900,6 +984,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           return resumeAgentLongStream(
             typeof input === "string" ? input : input.toString(),
             init,
+            handleAgentLongRunClosed,
           );
         }
         return fetchWithErrorHandlers(input, init);
@@ -968,12 +1053,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const {
     messages,
-    sendMessage,
+    sendMessage: sendMessageUnchecked,
     setMessages,
     status,
     stop,
     error,
-    regenerate,
+    regenerate: regenerateUnchecked,
     resumeStream,
   } = useChat({
     id: chatId,
@@ -1045,6 +1130,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           const summaryData = dataPart.data as {
             status: "started" | "completed";
             message: string;
+            startedAt?: number;
           };
           dispatchStreaming({
             type: "SET_SUMMARIZATION_STATUS",
@@ -1111,7 +1197,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           }
 
           // Update sandbox preference to match actual sandbox used
-          setSandboxPreference(fallbackData.actualSandbox);
+          setSandboxPreference(fallbackData.actualSandbox, { remember: false });
 
           // Show toast notification
           const message =
@@ -1130,7 +1216,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;
-      setAgentLongRunId(null);
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -1153,7 +1238,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       browserStreamFinishedRef.current = true;
       agentLongRunCorrelationRef.current = null;
       agentLongRunFallbackAllowedRef.current = false;
-      setAgentLongRunId(null);
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
@@ -1174,6 +1258,25 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
   });
+
+  // Guard the shared dispatch boundary as well as the UI. Forks, retries,
+  // auto-continue, and queued sends must retain the selected environment.
+  const sendMessage = useCallback<typeof sendMessageUnchecked>(
+    (...args) => {
+      const reason = computerSendDisabledReasonRef.current;
+      if (reason) return Promise.reject(new Error(reason));
+      return sendMessageUnchecked(...args);
+    },
+    [sendMessageUnchecked, computerSendDisabledReasonRef],
+  );
+  const regenerate = useCallback<typeof regenerateUnchecked>(
+    (...args) => {
+      const reason = computerSendDisabledReasonRef.current;
+      if (reason) return Promise.reject(new Error(reason));
+      return regenerateUnchecked(...args);
+    },
+    [regenerateUnchecked, computerSendDisabledReasonRef],
+  );
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -1336,6 +1439,24 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [chatId, shouldUseAgentLongForCurrentChat, status]);
 
   useEffect(() => {
+    if (lastPersistedAgentRunRef.current.chatId !== chatId) {
+      lastPersistedAgentRunRef.current = { chatId };
+    }
+
+    if (activeTriggerRunId) {
+      lastPersistedAgentRunRef.current = {
+        chatId,
+        runId: activeTriggerRunId,
+      };
+      return;
+    }
+
+    if (status !== "streaming" && status !== "submitted") {
+      lastPersistedAgentRunRef.current = { chatId };
+    }
+  }, [activeTriggerRunId, chatId, status]);
+
+  useEffect(() => {
     const isAgentLongDoubleCloseNoise = (message: unknown) =>
       shouldUseAgentLongForCurrentChatRef.current &&
       typeof message === "string" &&
@@ -1386,7 +1507,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, []);
 
   useEffect(() => {
-    agentLongSubmissionGenerationRef.current += 1;
+    agentLongRequestGenerationRef.current += 1;
     agentLongRunCorrelationRef.current = null;
     agentLongRunFallbackAllowedRef.current = true;
     setAgentLongRunId(null);
@@ -1435,11 +1556,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // the app's authenticated resume endpoint so the first message in a new
   // chat can leave "Working..." even before chatData is subscribed.
   useEffect(() => {
+    const requestGeneration = agentLongRequestGenerationRef.current;
     const trackedAgentLongRunId =
       agentLongRunId ??
       agentLongRunCorrelationRef.current?.runId ??
       (agentLongRunFallbackAllowedRef.current
-        ? activeTriggerRunRef.current
+        ? (activeTriggerRunRef.current ??
+          (lastPersistedAgentRunRef.current.chatId === chatId
+            ? lastPersistedAgentRunRef.current.runId
+            : null))
         : null);
     if (
       (status !== "streaming" && status !== "submitted") ||
@@ -1479,6 +1604,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     const scheduleFinishLocally = () => {
       if (stopped || finishTimeout !== undefined) return;
+      markAgentRunUiTerminal(
+        trackedAgentLongRunId ?? undefined,
+        requestGeneration,
+      );
       saveAgentLongPartialSnapshot("resume_terminal_204");
 
       // The transport also polls the status endpoint and can deliver a
@@ -1559,7 +1688,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         );
       }, delayMs);
     };
-    scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
+    const persistedRunDetached =
+      !activeTriggerRunId &&
+      lastPersistedAgentRunRef.current.chatId === chatId &&
+      lastPersistedAgentRunRef.current.runId === trackedAgentLongRunId;
+    if (persistedRunDetached) {
+      scheduleFinishLocally();
+    } else {
+      scheduleCompletionCheck(AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS);
+    }
 
     return () => {
       stopped = true;
@@ -1573,9 +1710,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     };
   }, [
     activeTriggerRunRef,
+    activeTriggerRunId,
+    agentLongSubmissionGeneration,
     agentLongRunId,
     chatId,
     isExistingChatRef,
+    markAgentRunUiTerminal,
     setIsAutoResuming,
     saveAgentLongPartialSnapshot,
     shouldUseAgentLongForCurrentChat,
@@ -1619,7 +1759,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
-    hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
     persistedPrefsRef.current = null;
   }, [chatId]);
@@ -1676,58 +1815,56 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
 
-  // Initialize sandbox preference from chat data, validated against available connections.
-  // Separate from the main chatData effect so it can re-run when localConnections loads.
+  // Restore the task's environment independently of connection availability.
+  // A missing computer must reconnect or be explicitly replaced by the user.
   useEffect(() => {
-    if (hasInitializedSandboxRef.current || !isExistingChat) return;
+    if (initializedSandboxChatId === chatId || !isExistingChat) return;
 
     const dataId = (chatData as any)?.id as string | undefined;
     if (!chatData || dataId !== chatId) return;
 
-    if (!storedSandboxType) {
-      if (wasNewChatRef.current) {
-        // Chat was just created — keep the user's current sandboxPreference
-        // (it was already sent in the request body). Don't reset to cloud.
-      } else {
-        // Navigated to an existing chat with no stored sandbox type — reset to cloud
-        // so a stale local preference from a previous chat doesn't persist.
-        setSandboxPreference("e2b");
-      }
-      hasInitializedSandboxRef.current = true;
+    if (!storedSandboxType && wasNewChatRef.current) {
+      // The newly created chat already sent the current environment in its request.
+      setInitializedSandboxChatId(chatId);
       return;
     }
 
-    if (storedSandboxType === "e2b") {
-      setSandboxPreference("e2b");
-      hasInitializedSandboxRef.current = true;
-    } else if (storedSandboxType === "tauri") {
-      // "tauri" is a legacy preference — desktop now uses "desktop"
-      setSandboxPreference("e2b");
-      hasInitializedSandboxRef.current = true;
-    } else if (storedSandboxType === "desktop") {
-      // Desktop preference — validate that a desktop connection exists
-      if (localConnections !== undefined) {
-        const desktopExists = localConnections.some((conn) => conn.isDesktop);
-        setSandboxPreference(desktopExists ? "desktop" : "e2b");
-        hasInitializedSandboxRef.current = true;
-      }
-      // If localConnections is still loading, wait for next render
-    } else if (localConnections !== undefined) {
-      // For remote connectionIds, validate the connection still exists
-      const connectionExists = localConnections.some(
-        (conn) => conn.connectionId === storedSandboxType,
-      );
-      if (connectionExists) {
-        setSandboxPreference(storedSandboxType);
-      } else {
-        // Stale connection — fall back to cloud
-        setSandboxPreference("e2b");
-      }
-      hasInitializedSandboxRef.current = true;
+    const restoredPreference =
+      storedSandboxType === "tauri" ? "desktop" : storedSandboxType || "e2b";
+    // Only an unspecified/Cloud default needs discovery. Saved computers must
+    // restore immediately, even when unavailable or still being discovered.
+    if (
+      freeDesktopAgentOnlyActive &&
+      restoredPreference === "e2b" &&
+      !desktopBridgeActive &&
+      localConnections === undefined
+    ) {
+      return;
     }
-    // If localConnections is still loading (undefined), wait for next render
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId]);
+    // Resolve free Desktop's local default before committing the selection.
+    // Restoring Cloud first creates a false unavailable → available transition.
+    setSandboxPreference(
+      freeDesktopAgentOnlyActive
+        ? resolveFreeDesktopSandboxPreference({
+            sandboxPreference: restoredPreference,
+            desktopBridgeActive,
+            localConnections,
+          })
+        : restoredPreference,
+      { remember: false },
+    );
+    setInitializedSandboxChatId(chatId);
+  }, [
+    chatData,
+    storedSandboxType,
+    isExistingChat,
+    chatId,
+    initializedSandboxChatId,
+    setSandboxPreference,
+    freeDesktopAgentOnlyActive,
+    desktopBridgeActive,
+    localConnections,
+  ]);
 
   // Initialize model selection from chat data
   useEffect(() => {
@@ -1940,6 +2077,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       status === "ready" &&
+      !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
@@ -1982,6 +2120,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     messageQueue,
     editingQueuedMessageId,
+    computerSendDisabledReason,
     isProcessingQueue,
     removeQueuedMessage,
     sendMessage,
@@ -1991,6 +2130,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     agentPermissionModeRef,
     requestSelectedModelRef,
   ]);
+
+  // The start response can arrive before the Convex subscription catches up.
+  // Keep that exact local run available to Stop after the pending POST settles.
+  const cancellationTriggerRunRef = useCommittedRef(
+    agentLongRunId ?? activeTriggerRunId,
+  );
 
   // Chat handlers
   const {
@@ -2012,12 +2157,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
-    activeTriggerRunRef,
+    activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
+    getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
+    onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {
       dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
+    sendDisabledReason: computerSendDisabledReason,
   });
 
   const handleScrollToBottom = useCallback(() => {
@@ -2114,10 +2262,24 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     lastMessage?.role === "assistant" &&
     hasVisibleAssistantContent([lastMessage]) &&
     messages.some((message) => message.role === "user");
+  const currentAgentRunUiId =
+    agentLongRunId ??
+    activeTriggerRunId ??
+    (terminalAgentRunUiState?.chatId === chatId
+      ? terminalAgentRunUiState.runId
+      : undefined);
+  const isAgentRunUiTerminal =
+    terminalAgentRunUiState?.chatId === chatId &&
+    terminalAgentRunUiState.submissionGeneration ===
+      agentLongSubmissionGeneration &&
+    (terminalAgentRunUiState.runId
+      ? terminalAgentRunUiState.runId === currentAgentRunUiId
+      : !currentAgentRunUiId);
 
   return (
-    <ConvexErrorBoundary>
+    <>
       <StreamEffects
+        sendDisabledReason={computerSendDisabledReason}
         key={chatId}
         chatId={chatId}
         autoResume={autoResume}
@@ -2141,6 +2303,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         }
       />
       <ForkAutoSendEffect
+        sendDisabledReason={computerSendDisabledReason}
         key={`fork-auto-send:${chatId}`}
         chatId={chatId}
         status={status}
@@ -2198,7 +2361,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       role="status"
                       data-testid="chat-timeline-loading"
                     >
-                      Loading task…
+                      <SlowLoadingNotice key={chatId} label="Loading task…" />
                     </div>
                   ) : (
                     <Messages
@@ -2253,6 +2416,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onReconnect={resumeStream}
                             onSendNow={handleSendNow}
                             status={status}
+                            hideStop={isAgentRunUiTerminal}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -2291,11 +2455,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onReconnect={resumeStream}
                     onSendNow={handleSendNow}
                     status={status}
+                    hideStop={isAgentRunUiTerminal}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}
                     isNewChat={!isExistingChat}
                     chatId={chatId}
+                    sendDisabledReason={computerSendDisabledReason}
                     isResolvingInitialState={isApprovalPresentationLoading}
                     rateLimitWarning={
                       rateLimitWarning ? rateLimitWarning : undefined
@@ -2348,6 +2514,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           </div>
         )}
       </div>
-    </ConvexErrorBoundary>
+    </>
   );
 };

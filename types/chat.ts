@@ -1,5 +1,4 @@
 import { UIMessage } from "ai";
-import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails, FilePart } from "./file";
 
@@ -391,6 +390,8 @@ export interface SidebarSubagents {
 export interface SidebarSubagentOrigin {
   kind: "subagent";
   subagentId: string;
+  /** Latest sidebar-compatible child tool when the transcript was clicked. */
+  liveToolCallId?: string;
   returnContent: SidebarSubagents;
 }
 
@@ -483,16 +484,14 @@ export interface TodoWriteInput {
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
-export const messageMetadataSchema = z.object({
-  feedbackType: z.enum(["positive", "negative"]).optional(),
-  isAutoContinue: z.boolean().optional(),
-  mode: z.enum(["agent", "ask"]).optional(),
-  createdAt: z.number().optional(),
-  generationStartedAt: z.number().optional(),
-  generationTimeMs: z.number().optional(),
-});
-
-export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
+export type MessageMetadata = {
+  feedbackType?: "positive" | "negative";
+  isAutoContinue?: boolean;
+  mode?: "agent" | "ask";
+  createdAt?: number;
+  generationStartedAt?: number;
+  generationTimeMs?: number;
+};
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
   createdAt?: number;
@@ -541,8 +540,13 @@ export interface QueuedMessage {
 
 export type QueueBehavior = "queue" | "stop-and-send";
 
-// "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
-// Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
+/**
+ * Persisted sandbox selection: legacy `e2b` means any managed cloud sandbox,
+ * `desktop` is the legacy Desktop alias; `environment:<uuid>` and
+ * `desktop-environment:<uuid>` identify persistent installations.
+ * Other strings are legacy connection IDs. Runtime
+ * telemetry identifies the concrete cloud provider separately.
+ */
 export type SandboxPreference = "e2b" | "desktop" | (string & {});
 
 /**

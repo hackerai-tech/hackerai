@@ -7,6 +7,7 @@ import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 import { extraUsageDollarsToPoints } from "./lib/extraUsagePricing";
+import { BILLING_ERRORS } from "../lib/billing/billing-errors";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -299,6 +300,7 @@ export const createTeamPurchaseSession = action({
   args: {
     serviceKey: v.string(),
     organizationId: v.string(),
+    userId: v.string(),
     amountDollars: v.number(),
     baseUrl: v.string(),
     checkoutAttemptId: v.optional(v.string()),
@@ -311,6 +313,17 @@ export const createTeamPurchaseSession = action({
   handler: async (_ctx, args) => {
     if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
       return { url: null, error: "Invalid service key" };
+    }
+
+    const activeSuspension = await _ctx.runQuery(
+      api.userSuspensions.getActiveByUser,
+      {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+      },
+    );
+    if (activeSuspension?.status === "active") {
+      return { url: null, error: BILLING_ERRORS.accountSuspended };
     }
 
     if (!Number.isInteger(args.amountDollars)) {
@@ -435,6 +448,30 @@ export const deductWithAutoReloadForTeam = action({
   handler: async (ctx, args) => {
     if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
       throw new Error("Invalid service key");
+    }
+
+    const activeSuspension = await ctx.runQuery(
+      api.userSuspensions.getActiveByUser,
+      {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+      },
+    );
+    if (activeSuspension?.status === "active") {
+      return {
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        memberCapExceeded: false,
+        memberDisabled: false,
+        poolDisabled: true,
+        autoReloadTriggered: false,
+        autoReloadResult: {
+          success: false,
+          reason: "account_suspended",
+        },
+      };
     }
 
     if (args.amountPoints <= 0) {

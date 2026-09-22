@@ -14,6 +14,7 @@ import {
   isExplicitDeepSeekProSelectionForRetry,
   isProviderApiError,
   resolveServedModelForCostAccounting,
+  shouldRetryAbliterationError,
 } from "@/lib/api/chat-stream-helpers";
 
 jest.mock("@/lib/db/actions", () => ({
@@ -32,7 +33,7 @@ const KIMI_K3_SLUG = "moonshotai/kimi-k3";
 const GLM_5_2_SLUG = "z-ai/glm-5.2";
 const GLM_SLUG = "z-ai/glm-5.3";
 const GLM_FLASH_SLUG = "z-ai/glm-5.3-flash";
-const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4-flash-vision-exp";
+const DEEPSEEK_VISION_SLUG = "deepseek/deepseek-v4.1-flash";
 const DEEPSEEK_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 const DEEPSEEK_FLASH_CANONICAL_SLUG = "deepseek/deepseek-v4-flash-20260731";
 const DEEPSEEK_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
@@ -57,6 +58,98 @@ const HIGH_REASONING_ROUTES = [
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
+  it.each(["ask-model-free", "ask-model-free-glm"] as const)(
+    "preserves free Ask low reasoning on retries from %s",
+    (primaryModel) => {
+      for (const retryModel of [
+        getRetryFallbackModel(primaryModel, "ask"),
+        getContentFilterRetryModel(primaryModel, "ask", GLM_FLASH_SLUG),
+      ]) {
+        const opts = buildProviderOptions(true, "user-1", retryModel, "ask", {
+          isFreeAskRequest: true,
+          reasoningOverride: { enabled: true, effort: "high" },
+        });
+        expect(opts.openrouter.reasoning).toEqual({
+          enabled: true,
+          effort: "low",
+        });
+      }
+    },
+  );
+  it("keeps the free Ask default at low reasoning with billed, retryable fallbacks", () => {
+    const opts = buildProviderOptions(
+      true,
+      "user-1",
+      "ask-model-free-glm",
+      "ask",
+      {
+        reasoningOverride: { enabled: true, effort: "high" },
+      },
+    );
+    expect(opts.openrouter.reasoning).toEqual({ enabled: true, effort: "low" });
+    expect(opts.openrouter.models).toEqual([
+      DEEPSEEK_FLASH_SLUG,
+      DEEPSEEK_V4_PRO_0813_SLUG,
+      GLM_SLUG,
+    ]);
+    expect(opts.openrouter.provider).toEqual({
+      sort: "latency",
+      data_collection: "deny",
+    });
+    expect(getRetryFallbackModel("ask-model-free-glm", "ask")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel: "ask-model-free-glm",
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "ask-model-free-glm",
+        responseModel: DEEPSEEK_FLASH_SLUG,
+      }),
+    ).toBe("model-deepseek-v4-flash-0731");
+  });
+
+  it("isolates Abliteration from OpenRouter and retries through the standard route", () => {
+    expect(
+      buildProviderOptions(true, "private-user", "model-abliterated", "agent", {
+        hasPdfAttachments: true,
+      }),
+    ).toEqual({});
+    expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(getRetryFallbackModel("model-abliterated", "agent")).toBe(
+      "model-deepseek-v4-flash-0731",
+    );
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-abliterated",
+        responseModel: "abliterated-model",
+      }),
+    ).toBe("model-abliterated");
+    expect(
+      buildProviderOptions(
+        true,
+        "private-user",
+        "model-abliterated-large-v2",
+        "agent",
+      ),
+    ).toEqual({});
+    expect(getRetryFallbackModel("model-abliterated-large-v2", "agent")).toBe(
+      "model-deepseek-v4-pro-0813",
+    );
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: "model-abliterated-large-v2",
+        responseModel: "abliterated-model-large-v2",
+      }),
+    ).toBe("model-abliterated-large-v2");
+  });
+
   it("keeps title generation on a non-reasoning route", () => {
     const opts = buildProviderOptions(
       false,
@@ -269,10 +362,10 @@ describe("buildProviderOptions fallback chain", () => {
     });
   });
 
-  it("runs free Ask on non-reasoning DeepSeek V4 Flash 0731", () => {
+  it("runs free Ask with low reasoning across its fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter).toMatchObject({
-      reasoning: { enabled: false },
+      reasoning: { enabled: true, effort: "low" },
       models: [GLM_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
@@ -364,6 +457,26 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
+  it("adds a sticky cache session only to DeepSeek requests", () => {
+    const deepSeek = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-flash-0731",
+      "agent",
+      { cacheSessionId: "hackerai-cache-v1-test" },
+    );
+    expect(deepSeek.openrouter.session_id).toBe("hackerai-cache-v1-test");
+
+    const grok = buildProviderOptions(
+      false,
+      "user-1",
+      "model-grok-4.6",
+      "agent",
+      { cacheSessionId: "hackerai-cache-v1-test" },
+    );
+    expect(grok.openrouter).not.toHaveProperty("session_id");
+  });
+
   it("can keep later PDF steps on the Cloudflare parser", () => {
     const opts = buildProviderOptions(
       false,
@@ -440,10 +553,11 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("models");
   });
 
-  it("disables reasoning for free Ask across its fallback chain", () => {
+  it("uses low reasoning for free Ask across its fallback chain", () => {
     const opts = buildProviderOptions(false, "user-1", "ask-model-free", "ask");
     expect(opts.openrouter.reasoning).toEqual({
-      enabled: false,
+      enabled: true,
+      effort: "low",
     });
     expect(opts.openrouter.models).toEqual([
       GLM_FLASH_SLUG,
@@ -452,7 +566,7 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it("keeps free Ask reasoning disabled over a scoped override", () => {
+  it("keeps free Ask reasoning low over a scoped override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -464,7 +578,8 @@ describe("buildProviderOptions fallback chain", () => {
     );
 
     expect(opts.openrouter.reasoning).toEqual({
-      enabled: false,
+      enabled: true,
+      effort: "low",
     });
     expect(opts.openrouter.models).toEqual([
       GLM_FLASH_SLUG,
@@ -473,7 +588,7 @@ describe("buildProviderOptions fallback chain", () => {
     ]);
   });
 
-  it("keeps free Ask reasoning disabled over an explicit high override", () => {
+  it("keeps free Ask reasoning low over an explicit high override", () => {
     const opts = buildProviderOptions(
       false,
       "user-1",
@@ -485,7 +600,8 @@ describe("buildProviderOptions fallback chain", () => {
     );
 
     expect(opts.openrouter.reasoning).toEqual({
-      enabled: false,
+      enabled: true,
+      effort: "low",
     });
   });
 
@@ -723,10 +839,10 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(true);
   });
 
-  it("keeps explicitly selected HackerAI Max Grok 4.6 retryable", () => {
+  it("keeps explicitly selected HackerAI Max GLM 5.3 retryable", () => {
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-grok-4.6",
+        selectedModel: "model-glm-5.3",
         selectedModelOverride: "hackerai-max",
       }),
     ).toBe(true);
@@ -789,6 +905,23 @@ describe("isProviderApiError", () => {
 });
 
 describe("isExplicitDeepSeekProSelectionForRetry", () => {
+  it.each([
+    ["ask", false],
+    ["agent", true],
+    [undefined, false],
+  ] as const)(
+    "limits native Pro retry to Agent (mode=%s)",
+    (mode, expected) => {
+      expect(
+        isExplicitDeepSeekProSelectionForRetry({
+          selectedModel: "model-deepseek-v4-flash-vision-pro",
+          selectedModelOverride: "hackerai-pro",
+          mode,
+        }),
+      ).toBe(expected);
+    },
+  );
+
   it.each(["model-deepseek-v4-pro", "model-deepseek-v4-pro-0813"])(
     "recognizes explicit HackerAI Pro on %s",
     (selectedModel) => {
@@ -924,6 +1057,58 @@ describe("getRetryFallbackModel", () => {
   });
 });
 
+describe("shouldRetryAbliterationError", () => {
+  it.each([
+    "model-abliterated",
+    "model-abliterated-large-v2",
+    "abliterated-model",
+    "abliterated-model-large-v2",
+  ])("allows every failure of active treatment %s", (model) => {
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        model,
+        new AbortController().signal,
+      ),
+    ).toBe(true);
+  });
+
+  it("does not recover a later OpenRouter step under the treatment assignment", () => {
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        "model-grok-4.6",
+        new AbortController().signal,
+      ),
+    ).toBe(false);
+  });
+
+  it("respects cancellation", () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect(
+      shouldRetryAbliterationError(
+        { variant: "test" },
+        "model-abliterated",
+        controller.signal,
+      ),
+    ).toBe(false);
+  });
+
+  it.each([undefined, { variant: "control" as const }])(
+    "preserves non-treatment behavior",
+    (assignment) => {
+      expect(
+        shouldRetryAbliterationError(
+          assignment,
+          "model-abliterated",
+          new AbortController().signal,
+        ),
+      ).toBe(false);
+    },
+  );
+});
+
 describe("getContentFilterRetryModel", () => {
   it("restarts the configured chain when free Ask unexpectedly served Grok", () => {
     expect(getContentFilterRetryModel("ask-model-free", "ask", GROK_SLUG)).toBe(
@@ -969,6 +1154,22 @@ describe("getContentFilterRetryModel", () => {
 });
 
 describe("resolveServedModelForCostAccounting", () => {
+  it.each([
+    "deepseek/deepseek-v4.1-flash",
+    "deepseek/deepseek-v4.1-flash-20260910",
+  ])(
+    "maps DeepSeek V4.1 vision response %s to its cost key",
+    (responseModel) => {
+      expect(
+        resolveServedModelForCostAccounting({
+          modelName: "model-glm-5.3-flash",
+          responseModel,
+          mode: "agent",
+        }),
+      ).toBe("model-deepseek-v4-flash-vision");
+    },
+  );
+
   it("preserves the previous DeepSeek Flash slug for legacy route pricing", () => {
     expect(
       resolveServedModelForCostAccounting({
@@ -989,11 +1190,11 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe(DEEPSEEK_FLASH_PREVIOUS_SLUG);
   });
 
-  it("maps the free Agent DeepSeek primary slug to its route key", () => {
+  it("maps the free Agent DeepSeek V4.1 primary slug to its route key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "agent-model-free",
-        responseModel: DEEPSEEK_FLASH_SLUG,
+        responseModel: DEEPSEEK_VISION_SLUG,
         mode: "agent",
       }),
     ).toBe("agent-model-free");

@@ -7,7 +7,8 @@ import {
 } from "@/lib/ai/providers";
 import {
   AUXILIARY_VISION_MAX_CONCURRENCY,
-  AUXILIARY_VISION_MAX_IMAGES_PER_TURN,
+  AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS,
+  AUXILIARY_VISION_RECOVERY_TIMEOUT_MS,
   AUXILIARY_VISION_PROVIDER_OPTIONS,
   createVisionSummaryRecoveryController,
   describeImageAttachmentsWithAuxiliaryVision,
@@ -23,6 +24,7 @@ describe("auxiliary vision", () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    jest.useRealTimers();
   });
 
   it("uses MiniMax only for the final vision-summary recovery", () => {
@@ -385,31 +387,244 @@ describe("auxiliary vision", () => {
     expect(maxActive).toBeLessThanOrEqual(AUXILIARY_VISION_MAX_CONCURRENCY);
   });
 
-  it("rejects turns that exceed the bounded new-image count", async () => {
-    const modelRunner = jest.fn(async () => ({ text: "Description" }));
-
-    await expect(
-      describeImageAttachmentsWithAuxiliaryVision({
-        messages: [
+  it.each([10, 11, 23])(
+    "describes all %i images across history without changing stored messages",
+    async (count) => {
+      const original = Array.from({ length: count }, (_, index) => ({
+        id: `message-${index}`,
+        role: "user" as const,
+        parts: [
+          { type: "text" as const, text: `Check screenshot ${index}` },
           {
-            id: "message-1",
-            role: "user",
-            parts: Array.from(
-              { length: AUXILIARY_VISION_MAX_IMAGES_PER_TURN + 1 },
-              (_, index) => ({
-                type: "file" as const,
-                mediaType: "image/png",
-                url: `https://files.example/image-${index}.png`,
-              }),
-            ),
+            type: "file" as const,
+            mediaType: "image/png",
+            filename: `screen-${index}.png`,
+            url: `https://files.example/image-${index}.png`,
           },
         ],
+      }));
+      const modelRunner = jest.fn(async ({ filename }) => ({
+        text: `Exact OCR for ${filename}: status=403 & retry=0`,
+        usage: { raw: { cost: 0.001 } },
+      })) as jest.MockedFunction<AuxiliaryVisionModelRunner>;
+      const onCost = jest.fn();
+      const messages = await describeImageAttachmentsWithAuxiliaryVision({
+        messages: original,
         modelRunner,
+        onCost,
+      });
+
+      expect(modelRunner).toHaveBeenCalledTimes(count);
+      expect(messages).toHaveLength(count);
+      messages.forEach((message, index) => {
+        expect(message.parts).toEqual([
+          original[index].parts[0],
+          {
+            type: "text",
+            text: `<image_description filename="screen-${index}.png" trust="untrusted">\nExact OCR for screen-${index}.png: status=403 &amp; retry=0\n</image_description>`,
+          },
+        ]);
+        expect(original[index].parts[1].type).toBe("file");
+      });
+      expect(onCost).toHaveBeenCalledTimes(1);
+      expect(onCost.mock.calls[0][0]).toBeCloseTo(count * 0.001);
+    },
+  );
+
+  const imageHistory = (count: number) => [
+    {
+      id: "image-history",
+      role: "user" as const,
+      parts: Array.from({ length: count }, (_, index) => ({
+        type: "file" as const,
+        mediaType: "image/png",
+        filename: `image-${index}.png`,
+        url: `https://files.example/image-${index}.png`,
+      })),
+    },
+  ];
+
+  it("describes repeated images once and preserves every occurrence", async () => {
+    const messages = imageHistory(23);
+    messages[0].parts = messages[0].parts.map((part) => ({
+      ...part,
+      url: "https://files.example/shared.png",
+    }));
+    const modelRunner = jest.fn(async () => ({
+      text: "Shared screenshot",
+      usage: { raw: { cost: 0.004 } },
+    }));
+    const onCost = jest.fn();
+    const result = await describeImageAttachmentsWithAuxiliaryVision({
+      messages,
+      modelRunner,
+      onCost,
+    });
+    expect(modelRunner).toHaveBeenCalledTimes(1);
+    expect(onCost).toHaveBeenCalledWith(0.004);
+    expect(result[0].parts).toHaveLength(23);
+    expect(result[0].parts.every((part) => part.type === "text")).toBe(true);
+  });
+
+  it("does not start provider work for an already cancelled request", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const modelRunner = jest.fn();
+    await expect(
+      describeImageAttachmentsWithAuxiliaryVision({
+        messages: imageHistory(23),
+        modelRunner,
+        abortSignal: controller.signal,
       }),
-    ).rejects.toThrow(
-      `at most ${AUXILIARY_VISION_MAX_IMAGES_PER_TURN} new images`,
-    );
+    ).rejects.toMatchObject({ name: "AbortError" });
     expect(modelRunner).not.toHaveBeenCalled();
+  });
+
+  it("counts distinct failed images once even when several workers share them", async () => {
+    const messages = imageHistory(3);
+    messages[0].parts[1].url = messages[0].parts[0].url;
+    const modelRunner = jest.fn(async () => {
+      throw new Error("Provider failed");
+    });
+    await expect(
+      describeImageAttachmentsWithAuxiliaryVision({ messages, modelRunner }),
+    ).rejects.toMatchObject({
+      message: "Auxiliary vision failed for 2 image request(s)",
+      errors: [expect.any(Error), expect.any(Error)],
+    });
+    expect(modelRunner).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not describe file-view tool results as attachments", async () => {
+    const toolPart = {
+      type: "dynamic-tool",
+      toolName: "file",
+      toolCallId: "call-1",
+      state: "output-available",
+      input: { action: "view" },
+      output: { type: "image", data: "aW1hZ2U=" },
+    } as const;
+    const modelRunner = jest.fn();
+    const result = await describeImageAttachmentsWithAuxiliaryVision({
+      messages: [{ id: "tool-message", role: "assistant", parts: [toolPart] }],
+      modelRunner,
+    });
+    expect(modelRunner).not.toHaveBeenCalled();
+    expect(result[0].parts).toEqual([toolPart]);
+  });
+
+  it.each([undefined, "run-1"])(
+    "attributes descriptor success and failure to the caller with run %s",
+    async (triggerRunId) => {
+      const args = {
+        image: "aW1hZ2U=",
+        mediaType: "image/png",
+        source: "file_view" as const,
+        triggerRunId,
+      };
+      await describeImageWithAuxiliaryVision({
+        ...args,
+        modelRunner: async () => ({ text: "Description" }),
+      });
+      await expect(
+        describeImageWithAuxiliaryVision({
+          ...args,
+          modelRunner: async () => {
+            throw new Error("Provider failed");
+          },
+        }),
+      ).rejects.toThrow("Provider failed");
+      for (const log of [console.info, console.warn]) {
+        expect(
+          JSON.parse((log as jest.Mock).mock.calls.at(-1)[0]),
+        ).toMatchObject({
+          service: triggerRunId ? "agent-long" : "chat-handler",
+          source: "file_view",
+        });
+      }
+    },
+  );
+
+  it("cancels in-flight work and stops dispatching queued images", async () => {
+    const controller = new AbortController();
+    const modelRunner = jest.fn(
+      ({ abortSignal }) =>
+        new Promise<never>((_, reject) => {
+          abortSignal.addEventListener(
+            "abort",
+            () => reject(abortSignal.reason),
+            { once: true },
+          );
+        }),
+    ) as jest.MockedFunction<AuxiliaryVisionModelRunner>;
+    const pending = describeImageAttachmentsWithAuxiliaryVision({
+      messages: imageHistory(23),
+      modelRunner,
+      abortSignal: controller.signal,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    controller.abort();
+    await rejection;
+    expect(modelRunner).toHaveBeenCalledTimes(AUXILIARY_VISION_MAX_CONCURRENCY);
+    expect(
+      modelRunner.mock.calls.every(([args]) => args.abortSignal.aborted),
+    ).toBe(true);
+  });
+
+  it("bounds the whole queue even when each image finishes within its own timeout", async () => {
+    jest.useFakeTimers();
+    const onCost = jest.fn();
+    const modelRunner = jest.fn(
+      ({ abortSignal }) =>
+        new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            abortSignal.removeEventListener("abort", abort);
+            resolve({ text: "Description", usage: { raw: { cost: 0.001 } } });
+          }, 15_000);
+          const abort = () => {
+            clearTimeout(timer);
+            reject(abortSignal.reason);
+          };
+          abortSignal.addEventListener("abort", abort, { once: true });
+        }),
+    ) as jest.MockedFunction<AuxiliaryVisionModelRunner>;
+    const pending = describeImageAttachmentsWithAuxiliaryVision({
+      messages: imageHistory(40),
+      modelRunner,
+      onCost,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      name: "TimeoutError",
+    });
+    await jest.advanceTimersByTimeAsync(AUXILIARY_VISION_RECOVERY_TIMEOUT_MS);
+    await rejection;
+    expect(modelRunner).toHaveBeenCalledTimes(24);
+    expect(onCost).toHaveBeenCalledTimes(1);
+    expect(onCost.mock.calls[0][0]).toBeCloseTo(0.021);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("stops new calls at the spend threshold but accounts for all in-flight results", async () => {
+    const onCost = jest.fn();
+    const modelRunner = jest.fn(async () => ({
+      text: "Description",
+      usage: { raw: { cost: AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS } },
+    }));
+    await expect(
+      describeImageAttachmentsWithAuxiliaryVision({
+        messages: imageHistory(23),
+        modelRunner,
+        onCost,
+      }),
+    ).rejects.toThrow("Auxiliary vision failed");
+    expect(modelRunner).toHaveBeenCalledTimes(AUXILIARY_VISION_MAX_CONCURRENCY);
+    expect(onCost).toHaveBeenCalledTimes(1);
+    expect(onCost.mock.calls[0][0]).toBeCloseTo(
+      AUXILIARY_VISION_MAX_CONCURRENCY *
+        AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS,
+    );
   });
 
   it("settles all calls and caches successes before reporting a partial failure", async () => {
@@ -462,7 +677,8 @@ describe("auxiliary vision", () => {
     expect(cacheDescription).toHaveBeenCalledWith(
       expect.objectContaining({ fileId: "file-good" }),
     );
-    expect(onCost).not.toHaveBeenCalled();
+    expect(onCost).toHaveBeenCalledTimes(1);
+    expect(onCost).toHaveBeenCalledWith(0.004);
     const failedEvent = (console.warn as jest.Mock).mock.calls
       .map(([line]) => JSON.parse(String(line)) as Record<string, unknown>)
       .find(
@@ -477,14 +693,20 @@ describe("auxiliary vision", () => {
     });
   });
 
-  it("fails explicitly when the auxiliary model returns no description", async () => {
+  it("accounts for a billed response even when its description is empty", async () => {
+    const onCost = jest.fn();
     await expect(
       describeImageWithAuxiliaryVision({
         image: "data:image/png;base64,aW1hZ2U=",
         mediaType: "image/png",
         source: "attachment",
-        modelRunner: async () => ({ text: "   " }),
+        onCost,
+        modelRunner: async () => ({
+          text: "   ",
+          usage: { raw: { cost: 0.004 } },
+        }),
       }),
     ).rejects.toThrow("empty description");
+    expect(onCost).toHaveBeenCalledWith(0.004);
   });
 });

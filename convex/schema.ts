@@ -1,5 +1,13 @@
+import { analyticsFields } from "./lib/influencerAnalytics";
 import { defineSchema, defineTable } from "convex/server";
+import {
+  partnerFields,
+  attributionFields,
+  invoiceFields,
+  payoutFields,
+} from "./influencerValidators";
 import { v } from "convex/values";
+import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
 import {
   researchCohortReportValidator,
@@ -22,6 +30,9 @@ const usageDeductionFailureReasonValidator = v.union(
 const activeAgentApprovalRequestValidator = v.object({
   approvalId: v.string(),
   toolCallId: v.string(),
+  sourceRunId: v.optional(v.string()),
+  sourceAgentId: v.optional(v.string()),
+  sourceAgentName: v.optional(v.string()),
   operation: v.optional(
     v.union(
       v.literal("terminal_execute"),
@@ -107,7 +118,53 @@ const validationConfidenceValidator = v.union(
   v.literal("high"),
 );
 
+const agentAutoReviewAuthorizationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedUserMessageCount: v.optional(v.number()),
+  truncatedUserMessageCount: v.optional(v.number()),
+});
+
+const agentAutoReviewConversationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedEntryCount: v.optional(v.number()),
+  truncatedEntryCount: v.optional(v.number()),
+});
+
 export default defineSchema({
+  influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
+    "by_visitor",
+    ["visitor_id"],
+  ),
+  influencer_analytics: defineTable(analyticsFields)
+    .index("by_key", ["key"])
+    .index("by_delivered", ["delivered"]),
+  influencer_partners: defineTable(partnerFields).index("by_code", ["code"]),
+  influencer_attributions: defineTable(attributionFields)
+    .index("by_identity", ["identity"])
+    .index("by_customer_id", ["customer_id"])
+    .index("by_partner_id", ["partner_id"]),
+  influencer_invoices: defineTable(invoiceFields)
+    .index("by_invoice_id", ["invoice_id"])
+    .index("by_partner_id", ["partner_id"]),
+  influencer_payouts: defineTable(payoutFields)
+    .index("by_key", ["key"])
+    .index("by_reference", ["reference"])
+    .index("by_partner_id_and_status", ["partner_id", "status"]),
+  pendingFileDeletions: defineTable({
+    s3_region: v.optional(v.string()),
+    s3_bucket: v.optional(v.string()),
+    user_id: v.string(),
+    chat_id: v.optional(v.string()),
+    file_id: v.id("files"),
+    s3_key: v.string(),
+    scheduled_function_id: v.optional(v.id("_scheduled_functions")),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_user_chat", ["user_id", "chat_id"])
+    .index("by_file", ["file_id"]),
+
   projects: defineTable({
     user_id: v.string(),
     name: v.string(),
@@ -129,6 +186,7 @@ export default defineSchema({
     last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    objective_checkpoint: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),
     active_agent_approval_pending: v.optional(v.boolean()),
     active_agent_approval_request: v.optional(
@@ -167,6 +225,8 @@ export default defineSchema({
     share_id: v.optional(v.string()),
     share_date: v.optional(v.number()),
     pinned_at: v.optional(v.number()),
+    // Persisted user preference (`e2b` means managed cloud), not the runtime
+    // telemetry `sandbox_type`. Cloud provider selection happens per run.
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
     project_id: v.optional(v.id("projects")),
@@ -237,6 +297,9 @@ export default defineSchema({
     file_ids: v.optional(v.array(v.id("files"))),
     feedback_id: v.optional(v.id("feedback")),
     source_message_id: v.optional(v.string()),
+    // Legacy Preview data from the superseded conversation-turn rollout.
+    // New writes and routing do not read or populate this field.
+    conversation_turn: v.optional(v.number()),
     update_time: v.number(),
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
@@ -273,6 +336,11 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_is_attached", ["is_attached"])
     .index("by_s3_key", ["s3_key"]),
+
+  task_outcome_surveys: defineTable(taskOutcomeFields)
+    .index("by_user_id", ["user_id"])
+    .index("by_user_id_and_survey_kind", ["user_id", "survey_kind"])
+    .index("by_request_id", ["request_id"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),
@@ -320,7 +388,16 @@ export default defineSchema({
       ),
     ),
     reason_details_id: v.optional(v.id("cancellation_reason_details")),
-    status: v.union(v.literal("started"), v.literal("completed")),
+    // "retained" means the user accepted an offer that keeps them paying
+    // (downgrade). A pause keeps "started" until Stripe ends the subscription.
+    status: v.union(
+      v.literal("started"),
+      v.literal("completed"),
+      v.literal("retained"),
+    ),
+    retention_offer_accepted: v.optional(
+      v.union(v.literal("pause"), v.literal("downgrade")),
+    ),
     source: v.union(v.literal("in_app"), v.literal("billing_portal")),
     started_at: v.number(),
     completed_at: v.optional(v.number()),
@@ -364,6 +441,59 @@ export default defineSchema({
       "created_at",
     ]),
 
+  // Retention "pause" offers. A pause schedules the Stripe subscription to end
+  // at its paid-through date and re-creates it automatically on resume_at with
+  // the same price and the saved payment method.
+  subscription_pauses: defineTable({
+    user_id: v.string(),
+    organization_id: v.optional(v.string()),
+    stripe_customer_id: v.string(),
+    stripe_subscription_id: v.string(),
+    stripe_price_id: v.string(),
+    stripe_price_lookup_key: v.optional(v.string()),
+    subscription_tier: v.optional(
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("pro-plus"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
+    ),
+    quantity: v.number(),
+    stripe_payment_method_id: v.optional(v.string()),
+    reason_category: v.optional(v.string()),
+    pause_months: v.number(),
+    requested_at: v.number(),
+    pause_effective_at: v.number(),
+    resume_at: v.number(),
+    status: v.union(
+      v.literal("scheduled"),
+      v.literal("paused"),
+      v.literal("resuming"),
+      v.literal("resumed"),
+      v.literal("resume_failed"),
+      v.literal("canceled"),
+      v.literal("superseded"),
+    ),
+    paused_at: v.optional(v.number()),
+    resume_attempt_count: v.number(),
+    resume_claimed_at: v.optional(v.number()),
+    resume_claim_version: v.optional(v.number()),
+    resume_side_effect_authorized_at: v.optional(v.number()),
+    last_resume_attempt_at: v.optional(v.number()),
+    last_resume_error: v.optional(v.string()),
+    resumed_at: v.optional(v.number()),
+    resumed_stripe_subscription_id: v.optional(v.string()),
+    canceled_at: v.optional(v.number()),
+    updated_at: v.number(),
+  })
+    .index("by_user_requested", ["user_id", "requested_at"])
+    .index("by_user_status", ["user_id", "status"])
+    .index("by_organization_requested", ["organization_id", "requested_at"])
+    .index("by_stripe_subscription_id", ["stripe_subscription_id"])
+    .index("by_status_resume_at", ["status", "resume_at"]),
+
   // Privacy-safe Stripe lifecycle facts for involuntary churn and recovery.
   // User-selected cancellation survey answers and free text intentionally stay
   // in cancellation_reasons / cancellation_reason_details.
@@ -376,6 +506,7 @@ export default defineSchema({
       v.literal("customer.subscription.deleted"),
       v.literal("payment_method.attached"),
       v.literal("customer.updated"),
+      v.literal("customer.subscription.updated"),
     ),
     user_id: v.string(),
     organization_id: v.optional(v.string()),
@@ -444,6 +575,8 @@ export default defineSchema({
     user_id: v.string(),
     nickname: v.optional(v.string()),
     occupation: v.optional(v.string()),
+    // Legacy field retained so historical rows remain schema-valid. The
+    // application no longer reads, returns, writes, or applies this value.
     personality: v.optional(v.string()),
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
@@ -773,6 +906,11 @@ export default defineSchema({
   })
     .index("by_note_id", ["note_id"])
     .index("by_user_and_category", ["user_id", "category"])
+    .index("by_user_and_category_and_updated", [
+      "user_id",
+      "category",
+      "updated_at",
+    ])
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .searchIndex("search_notes", {
       searchField: "content",
@@ -792,6 +930,9 @@ export default defineSchema({
   local_sandbox_connections: defineTable({
     user_id: v.string(),
     connection_id: v.string(),
+    environment_id: v.optional(v.string()),
+    // New clients publish readiness after subscribing to the command relay.
+    ready: v.optional(v.boolean()),
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
@@ -986,9 +1127,15 @@ export default defineSchema({
     stripe_subscription_id: v.optional(v.string()),
     stripe_invoice_id: v.optional(v.string()),
     stripe_price_id: v.optional(v.string()),
+    billing_period_end: v.optional(v.number()),
     created_at: v.number(),
   })
     .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_entity_type_and_entity_id_and_occurred_at", [
+      "entity_type",
+      "entity_id",
+      "occurred_at",
+    ])
     .index("by_entity_day", ["entity_type", "entity_id", "day"])
     .index("by_day", ["day"])
     .index("by_user_day", ["user_id", "day"])
@@ -1132,6 +1279,7 @@ export default defineSchema({
     user_id: v.string(),
     pseudonym: v.string(),
     evidence_anchor_at: v.optional(v.number()),
+    comparison_group_label: v.optional(v.string()),
     created_at: v.number(),
   })
     .index("by_analysis_and_user", ["analysis_id", "user_id"])
@@ -1209,6 +1357,16 @@ export default defineSchema({
     sandbox_preference: v.optional(v.string()),
     sandbox_identity: v.optional(v.string()),
     permission_mode: v.optional(v.string()),
+    approval_session_id: v.optional(v.string()),
+    auto_review_rollout_phase: v.optional(
+      v.union(v.literal("shadow"), v.literal("enforce")),
+    ),
+    auto_review_authorization_context: v.optional(
+      agentAutoReviewAuthorizationContextValidator,
+    ),
+    auto_review_conversation_context: v.optional(
+      agentAutoReviewConversationContextValidator,
+    ),
     selected_model: v.optional(v.string()),
     subscription: v.union(
       v.literal("free"),
@@ -1353,6 +1511,7 @@ export default defineSchema({
     ]),
 
   subagent_work_items: defineTable({
+    objective_checkpoint: v.optional(v.string()),
     subagent_id: v.string(),
     user_id: v.string(),
     parent_trigger_run_id: v.string(),

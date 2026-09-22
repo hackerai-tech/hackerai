@@ -8,6 +8,7 @@ const stripeEventTypeValidator = v.union(
   v.literal("customer.subscription.deleted"),
   v.literal("payment_method.attached"),
   v.literal("customer.updated"),
+  v.literal("customer.subscription.updated"),
 );
 
 const subscriptionTierValidator = v.union(
@@ -77,7 +78,13 @@ export const recordEvent = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    const idempotencyKey = `${args.stripeEventId}:${args.userId}`;
+    const isPaymentMethodEvent =
+      args.stripeEventType === "payment_method.attached" ||
+      args.stripeEventType === "customer.updated" ||
+      args.stripeEventType === "customer.subscription.updated";
+    const idempotencyKey = isPaymentMethodEvent
+      ? `${args.stripeEventId}:${args.stripeSubscriptionId}:${args.userId}`
+      : `${args.stripeEventId}:${args.userId}`;
     const existing = await ctx.db
       .query("involuntary_churn_events")
       .withIndex("by_idempotency_key", (q) =>
@@ -112,9 +119,6 @@ export const recordEvent = mutation({
         event.stripe_event_type === "customer.subscription.deleted",
     );
 
-    const isPaymentMethodEvent =
-      args.stripeEventType === "payment_method.attached" ||
-      args.stripeEventType === "customer.updated";
     if (
       (args.stripeEventType === "invoice.paid" || isPaymentMethodEvent) &&
       !priorFailureSeen &&

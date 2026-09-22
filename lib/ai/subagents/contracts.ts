@@ -151,8 +151,16 @@ export const subagentContextRefSchema = z.discriminatedUnion("kind", [
 
 export type SubagentContextRef = z.infer<typeof subagentContextRefSchema>;
 
+const subagentBriefSchema = z
+  .string()
+  .optional()
+  .describe(
+    "Optional concise description of this operation. Metadata only; does not change the delegated task or its instructions.",
+  );
+
 export const createAgentInputSchema = z
   .object({
+    brief: subagentBriefSchema,
     profile: subagentProfileSchema.optional(),
     name: z.string().trim().min(1).max(120),
     task: z.string().trim().min(1).max(4_000),
@@ -181,6 +189,7 @@ export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
 
 export const delegateTaskInputSchema = z
   .object({
+    brief: subagentBriefSchema,
     name: z.string().trim().min(1).max(120),
     task: z.string().trim().min(1).max(4_000),
     success_criteria: z
@@ -202,7 +211,10 @@ export const delegateTaskInputSchema = z
       .array(subagentCapabilityBundleSchema)
       .min(1)
       .max(6)
-      .default(["code_read"]),
+      .default(["code_read"])
+      .describe(
+        "Labels describing the delegated work for routing and task context. They do not limit the child's built-in subagent tools.",
+      ),
     complexity: subagentTaskComplexitySchema.default("medium"),
     expected_duration_minutes: z.number().int().min(1).max(15).default(8),
     output_kind: subagentOutputKindSchema.default("answer"),
@@ -212,6 +224,7 @@ export type DelegateTaskInput = z.infer<typeof delegateTaskInputSchema>;
 
 export const continueAgentInputSchema = z
   .object({
+    brief: subagentBriefSchema,
     target_agent_id: z.string().trim().min(1).max(100),
     follow_up: z.string().trim().min(1).max(2_000),
   })
@@ -385,12 +398,27 @@ export type SecurityTaskResult = z.infer<typeof securityTaskResultSchema>;
 export type SubagentStructuredResult =
   SecurityValidationResult | SecurityTaskResult;
 
+// Server-owned metadata; deliberately absent from model submission schemas.
+export const evidenceVerificationSchema = z.object({
+  checked_refs: z.array(z.string().trim().min(1).max(500)).max(40),
+  unavailable_refs: z.array(z.string().trim().min(1).max(500)).max(40),
+  warning: z.string().trim().min(1).max(500).optional(),
+});
+export type EvidenceVerification = z.infer<typeof evidenceVerificationSchema>;
+export const persistedCoverageEntrySchema =
+  securityTaskCoverageEntrySchema.extend({
+    evidence_refs: z
+      .array(z.string().trim().min(1).max(500))
+      .max(MAX_SECURITY_TASK_COVERAGE_EVIDENCE_REFS),
+  });
+
 export const agentValidationResultSchema = z.object({
   profile: z.literal(SECURITY_VALIDATION_SUBAGENT_PROFILE),
   status: z.enum(["completed", "failed", "canceled", "timed_out"]),
   verdict: subagentVerdictSchema.nullable(),
   confidence: validationConfidenceSchema.nullable(),
   summary: z.string().max(2_000),
+  evidence_verification: evidenceVerificationSchema.optional(),
   observed_impact: z.string().max(2_000).optional(),
   reproduction_steps: z.array(z.string().max(500)).max(12).optional(),
   evidence_refs: z.array(z.string().max(500)).max(8),
@@ -400,28 +428,47 @@ export const agentValidationResultSchema = z.object({
 
 export type AgentValidationResult = z.infer<typeof agentValidationResultSchema>;
 
-export const agentSecurityTaskResultSchema = z.object({
-  profile: z.literal(SECURITY_TASK_SUBAGENT_PROFILE),
-  status: z.enum(["completed", "failed", "canceled", "timed_out"]),
-  task_status: securityTaskStatusSchema.nullable(),
-  summary: z.string().max(2_000),
-  evidence_refs: z.array(z.string().max(500)).max(8),
-  artifacts: z.array(securityTaskArtifactSchema).max(8),
-  limitations: z.array(z.string().max(500)).max(8),
-  next_steps: z.array(z.string().max(500)).max(8),
-  coverage: z
-    .array(securityTaskCoverageEntrySchema)
-    .max(MAX_SECURITY_TASK_COVERAGE_ITEMS)
-    .optional(),
-});
+const coverageHasEvidenceOrVerificationGap = (value: {
+  coverage?: Array<{ evidence_refs: string[] }>;
+  evidence_verification?: EvidenceVerification;
+}) =>
+  value.coverage?.every((entry) => entry.evidence_refs.length > 0) !== false ||
+  (Boolean(value.evidence_verification?.warning) &&
+    (value.evidence_verification?.unavailable_refs.length ?? 0) > 0);
+
+export const agentSecurityTaskResultSchema = z
+  .object({
+    profile: z.literal(SECURITY_TASK_SUBAGENT_PROFILE),
+    status: z.enum(["completed", "failed", "canceled", "timed_out"]),
+    task_status: securityTaskStatusSchema.nullable(),
+    summary: z.string().max(2_000),
+    evidence_verification: evidenceVerificationSchema.optional(),
+    evidence_refs: z.array(z.string().max(500)).max(8),
+    artifacts: z.array(securityTaskArtifactSchema).max(8),
+    limitations: z.array(z.string().max(500)).max(8),
+    next_steps: z.array(z.string().max(500)).max(8),
+    coverage: z
+      .array(persistedCoverageEntrySchema)
+      .max(MAX_SECURITY_TASK_COVERAGE_ITEMS)
+      .optional(),
+  })
+  .refine(
+    coverageHasEvidenceOrVerificationGap,
+    "Coverage without attached evidence requires a server-recorded verification gap.",
+  );
 export type AgentSecurityTaskResult = z.infer<
   typeof agentSecurityTaskResultSchema
 >;
 
-export const agentGeneralTaskResultSchema =
-  agentSecurityTaskResultSchema.extend({
+export const agentGeneralTaskResultSchema = z
+  .object({
+    ...agentSecurityTaskResultSchema.shape,
     profile: z.literal(GENERAL_SUBAGENT_PROFILE),
-  });
+  })
+  .refine(
+    coverageHasEvidenceOrVerificationGap,
+    "Coverage without attached evidence requires a server-recorded verification gap.",
+  );
 
 export const agentSubagentResultSchema = z.discriminatedUnion("profile", [
   agentValidationResultSchema,

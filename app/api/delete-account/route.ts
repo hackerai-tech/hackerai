@@ -12,6 +12,11 @@ import { closeAndCancelAgentResources } from "@/lib/api/agent-deletion-cleanup";
 import { cancelSubagentsForUserDeletion } from "@/lib/db/subagents";
 import { terminateCloudSandboxesForUser } from "@/lib/ai/tools/utils/cloud-sandbox";
 import { ACCOUNT_CLEANUP_IN_PROGRESS_CODE } from "@/lib/account-deletion";
+import {
+  acquireTeamInvitationLock,
+  TeamInvitationLockUnavailableError,
+  type TeamInvitationLock,
+} from "@/lib/billing/team-invitation-lock";
 
 type OrganizationMembership = Awaited<
   ReturnType<typeof workos.userManagement.listOrganizationMemberships>
@@ -23,7 +28,10 @@ type MembershipDeletionPlan = {
   blockReason?: string;
 };
 
+import { waitForDeletion } from "@/lib/utils/wait-for-deletion";
+
 const MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES = 50;
+const MAX_CONVEX_ORGANIZATION_CLEANUP_BATCHES = 50;
 
 type ConvexCleanupProgress = {
   deletedDocuments: number;
@@ -89,26 +97,30 @@ function parseConvexCleanupResult(result: unknown): ParsedConvexCleanupResult {
 }
 
 async function removeMembership(membership: OrganizationMembership) {
-  try {
-    await workos.userManagement.deleteOrganizationMembership(membership.id);
-  } catch (memErr) {
-    console.error(
-      "Failed to delete organization membership:",
-      membership.id,
-      memErr,
-    );
-  }
+  await workos.userManagement.deleteOrganizationMembership(membership.id);
 }
 
 async function getMembershipDeletionPlan(
   membership: OrganizationMembership,
 ): Promise<MembershipDeletionPlan> {
   try {
+    // Read invitations first. If one is accepted between these two reads, it
+    // remains represented either as pending here or as active below. The
+    // shared organization lock prevents a new invitation from being sent
+    // after this snapshot begins.
+    const invitationsPage = await workos.userManagement.listInvitations({
+      organizationId: membership.organizationId,
+      limit: 100,
+    });
     const activeMembershipsPage =
       await workos.userManagement.listOrganizationMemberships({
         organizationId: membership.organizationId,
         statuses: ["active"],
+        limit: 100,
       });
+    const hasPendingInvitation = invitationsPage.data.some(
+      (invitation) => invitation.state === "pending",
+    );
     const activeMemberships = activeMembershipsPage.data;
     const activeCallerMembership = activeMemberships.find(
       (activeMembership) => activeMembership.id === membership.id,
@@ -123,7 +135,11 @@ async function getMembershipDeletionPlan(
       (activeMembership) => activeMembership.role?.slug === "admin",
     ).length;
 
-    if (!isSoleActiveMember && isAdmin && activeAdminCount <= 1) {
+    if (
+      isAdmin &&
+      activeAdminCount <= 1 &&
+      (!isSoleActiveMember || hasPendingInvitation)
+    ) {
       return {
         membership,
         deleteOrganization: false,
@@ -134,15 +150,14 @@ async function getMembershipDeletionPlan(
 
     return {
       membership,
-      deleteOrganization: isSoleActiveMember && isAdmin,
+      deleteOrganization:
+        isSoleActiveMember && isAdmin && !hasPendingInvitation,
     };
   } catch (e) {
-    console.warn(
-      "Failed to verify organization membership count; removing membership only:",
-      membership.organizationId,
-      e,
+    throw new Error(
+      "Could not verify organization membership. Please try again.",
+      { cause: e },
     );
-    return { membership, deleteOrganization: false };
   }
 }
 
@@ -172,6 +187,8 @@ async function deleteConvexUserData(
   userId: string,
   serviceKey: string,
   requestId: string,
+  preservedOrganizationIds: string[],
+  assertMembershipLocksOwned: () => Promise<void>,
 ): Promise<boolean> {
   const convex = getConvexClient();
   let progressStatsBatches = 0;
@@ -182,11 +199,13 @@ async function deleteConvexUserData(
   let lastProgress: ConvexCleanupProgress | undefined;
 
   for (let batch = 0; batch < MAX_CONVEX_ACCOUNT_CLEANUP_BATCHES; batch++) {
+    await assertMembershipLocksOwned();
     const result = await convex.mutation(
       api.userDeletion.deleteAllUserDataByService,
       {
         serviceKey,
         userId,
+        preservedOrganizationIds,
       },
     );
 
@@ -206,6 +225,14 @@ async function deleteConvexUserData(
     }
 
     if (!parsedResult.hasMore) {
+      await waitForDeletion(
+        () =>
+          convex.query(api.deletions.getStatusForBackend, {
+            serviceKey,
+            userId,
+          }),
+        20_000,
+      );
       return true;
     }
   }
@@ -231,12 +258,42 @@ async function deleteConvexUserData(
   return false;
 }
 
+async function deleteDeletedOrganizationPauseRows(
+  organizationId: string,
+  serviceKey: string,
+  assertMembershipLocksOwned: () => Promise<void>,
+) {
+  for (
+    let batch = 0;
+    batch < MAX_CONVEX_ORGANIZATION_CLEANUP_BATCHES;
+    batch++
+  ) {
+    await assertMembershipLocksOwned();
+    const result = await getConvexClient().mutation(
+      api.subscriptionPauses.deleteForDeletedOrganization,
+      { serviceKey, organizationId },
+    );
+    if (!result.hasMore) return;
+  }
+
+  throw new Error(
+    "Organization cleanup exceeded its safety bound. Please retry account deletion.",
+  );
+}
+
 export const POST = async (req: NextRequest) => {
   let stage = "authenticate";
   let userIdForLog: string | undefined;
   let membershipCount: number | undefined;
   let freeQuotaSubjectPresent: boolean | undefined;
   const requestId = req.headers.get("x-vercel-id") ?? "unknown";
+  const membershipLocks: TeamInvitationLock[] = [];
+
+  const assertMembershipLocksOwned = async () => {
+    for (const lock of membershipLocks) {
+      await lock.assertOwned();
+    }
+  };
 
   try {
     // Enforce recent login (10-minute window) before any destructive action
@@ -255,6 +312,23 @@ export const POST = async (req: NextRequest) => {
     );
     membershipCount = memberships.data.length;
 
+    stage = "coordinate_membership_deletions";
+    const organizationIds = [
+      ...new Set(
+        memberships.data.map((membership) => membership.organizationId),
+      ),
+    ].sort();
+    for (const organizationId of organizationIds) {
+      const lock = await acquireTeamInvitationLock(organizationId);
+      if (!lock) {
+        return NextResponse.json(
+          { code: ACCOUNT_CLEANUP_IN_PROGRESS_CODE },
+          { status: 409 },
+        );
+      }
+      membershipLocks.push(lock);
+    }
+
     stage = "plan_membership_deletions";
     const membershipDeletionPlans = await Promise.all(
       memberships.data.map(getMembershipDeletionPlan),
@@ -269,16 +343,33 @@ export const POST = async (req: NextRequest) => {
         { status: 400 },
       );
     }
+    // Keep all organization-owned pause rows until the organization has been
+    // deleted. This makes cleanup continuation safe even if team membership
+    // changes between requests; solo-organization rows are purged below while
+    // the same membership snapshot and lock are still authoritative.
+    const preservedOrganizationIds = membershipDeletionPlans.map(
+      (plan) => plan.membership.organizationId,
+    );
 
     const serviceKey = getConvexServiceKey();
     stage = "begin_user_data_deletion";
-    await getConvexClient().mutation(
+    await assertMembershipLocksOwned();
+    const deletionFenceStarted = await getConvexClient().mutation(
       api.userDeletion.beginUserDataDeletionByService,
       {
         serviceKey,
         userId,
       },
     );
+    // A resume that has already crossed its Stripe side-effect barrier must
+    // finish before deletion can safely own the account. Older deployments
+    // returned null, so only an explicit false is treated as contention.
+    if (deletionFenceStarted === false) {
+      return NextResponse.json(
+        { code: ACCOUNT_CLEANUP_IN_PROGRESS_CODE },
+        { status: 409 },
+      );
+    }
     stage = "mark_account_identity_deleted";
     await markAccountIdentityDeleted(userId, freeQuotaSubject, serviceKey);
 
@@ -314,7 +405,7 @@ export const POST = async (req: NextRequest) => {
     );
 
     stage = "terminate_cloud_sandboxes";
-    await terminateCloudSandboxesForUser(userId);
+    await terminateCloudSandboxesForUser(userId, { permanent: true });
 
     // Own app-data cleanup on the server so account deletion does not depend
     // on the browser successfully running a Convex mutation before this route.
@@ -323,6 +414,8 @@ export const POST = async (req: NextRequest) => {
       userId,
       serviceKey,
       requestId,
+      preservedOrganizationIds,
+      assertMembershipLocksOwned,
     );
     if (!cleanupComplete) {
       return NextResponse.json(
@@ -334,7 +427,8 @@ export const POST = async (req: NextRequest) => {
     // Process each organization from memberships. Only delete org-level billing
     // and identity resources after proving this user is the sole active admin.
     stage = "delete_memberships_and_organizations";
-    await Promise.all(
+    await assertMembershipLocksOwned();
+    const organizationResults = await Promise.allSettled(
       membershipDeletionPlans.map(
         async ({ membership, deleteOrganization }) => {
           const orgId = membership.organizationId;
@@ -344,63 +438,49 @@ export const POST = async (req: NextRequest) => {
             return;
           }
 
-          // Load organization to get Stripe customer ID if present
-          let org: any = null;
-          try {
-            org = await workos.organizations.getOrganization(orgId);
-          } catch (e) {
-            console.warn("Failed to load organization:", orgId, e);
-          }
-
-          const stripeCustomerId: string | undefined = org?.stripeCustomerId;
-
-          // Cancel all subscriptions for the Stripe customer (no status checks), then delete the customer
+          // Confirm owned billing and identity deletion before reporting success.
+          const org = await workos.organizations.getOrganization(orgId);
+          const stripeCustomerId = org.stripeCustomerId;
           if (stripeCustomerId) {
-            const subs = await stripe.subscriptions.list({
-              customer: stripeCustomerId,
-              status: "all",
-              limit: 100,
-            });
-
-            // Cancel subscriptions, continue on failures
-            for (const sub of subs.data) {
-              try {
-                await stripe.subscriptions.cancel(sub.id as string);
-              } catch (subErr) {
-                console.warn(
-                  "Failed to cancel subscription, continuing:",
-                  sub.id,
-                  subErr,
-                );
+            // Deleting a customer can precede a failed org deletion. Retrieval
+            // distinguishes that completed stage when the user retries.
+            const customer = await stripe.customers.retrieve(stripeCustomerId);
+            if (!customer.deleted) {
+              const subs = await stripe.subscriptions.list({
+                customer: stripeCustomerId,
+                status: "all",
+                limit: 100,
+              });
+              for (const sub of subs.data) {
+                if (
+                  sub.status === "canceled" ||
+                  sub.status === "incomplete_expired"
+                )
+                  continue;
+                await stripe.subscriptions.cancel(sub.id);
               }
-            }
-
-            // Delete the Stripe customer after cancellations
-            try {
               await stripe.customers.del(stripeCustomerId);
-            } catch (custErr) {
-              console.error(
-                "Failed to delete Stripe customer:",
-                stripeCustomerId,
-                custErr,
-              );
             }
           }
 
-          // Delete the WorkOS organization only for verified single-member orgs.
-          try {
-            await workos.organizations.deleteOrganization(orgId);
-          } catch (orgDeleteErr) {
-            console.warn(
-              "Failed to delete organization, removing membership instead:",
-              orgId,
-              orgDeleteErr,
-            );
-            await removeMembership(membership);
-          }
+          await deleteDeletedOrganizationPauseRows(
+            orgId,
+            serviceKey,
+            assertMembershipLocksOwned,
+          );
+
+          await workos.organizations.deleteOrganization(orgId);
         },
       ),
     );
+
+    // Keep membership locks held until every concurrent cleanup has stopped.
+    const organizationFailure = organizationResults.find(
+      (result) => result.status === "rejected",
+    );
+    if (organizationFailure?.status === "rejected") {
+      throw organizationFailure.reason;
+    }
 
     // Purge Redis rate-limit keys. Best-effort: WorkOS user deletion proceeds
     // even if this fails so the account is not left in a half-deleted state.
@@ -425,6 +505,12 @@ export const POST = async (req: NextRequest) => {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    if (error instanceof TeamInvitationLockUnavailableError) {
+      return NextResponse.json(
+        { error: "Account deletion coordination is temporarily unavailable" },
+        { status: 503 },
+      );
+    }
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
@@ -450,5 +536,20 @@ export const POST = async (req: NextRequest) => {
       },
     );
     return NextResponse.json({ error: message }, { status: 500 });
+  } finally {
+    for (const lock of membershipLocks.reverse()) {
+      try {
+        await lock.release();
+      } catch (error) {
+        logger.warn("account_deletion_membership_lock_release_failed", {
+          event: "account_deletion_membership_lock_release_failed",
+          service: "hackerai-web",
+          environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV,
+          request_id: requestId,
+          user_id: userIdForLog,
+          error_name: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+    }
   }
 };

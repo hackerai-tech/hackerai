@@ -1,3 +1,4 @@
+import type { FreeLimitPolicy } from "./free-config";
 /**
  * Rate Limiting Module
  *
@@ -96,16 +97,13 @@ export {
 } from "./free-monthly-cost";
 export {
   getPaidDailyFreeAllowanceStatus,
+  hasPaidDailyFreeAllowanceConsent,
   reservePaidDailyFreeAllowanceRequest,
   recordPaidDailyFreeAllowanceCost,
   paidDailyFreeAllowanceStatusToMetadata,
   getPaidDailyFreeAllowanceKeys,
-  getPaidDailyFreeAllowanceRolloutPercent,
-  getPaidDailyFreeAllowanceRequestsPerDay,
   getPaidDailyFreeAllowanceCostLimitDollars,
   PAID_DAILY_FREE_ALLOWANCE_COST_LIMIT_USD_DEFAULT,
-  PAID_DAILY_FREE_ALLOWANCE_REQUESTS_PER_DAY_DEFAULT,
-  PAID_DAILY_FREE_ALLOWANCE_ROLLOUT_PERCENT_DEFAULT,
   type PaidDailyFreeAllowanceMetadata,
   type PaidDailyFreeAllowanceReservation,
   type PaidDailyFreeAllowanceStatus,
@@ -145,15 +143,16 @@ export const checkRateLimit = async (
   modelName?: string,
   organizationId?: string,
   freeQuotaSubject?: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
   // Free users: fixed daily window
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
     if (isAgentMode(mode)) {
       // Free agent mode shares the daily free budget and consumes 1 unit.
-      return checkFreeAgentRateLimit(quotaSubject);
+      return checkFreeAgentRateLimit(quotaSubject, freeLimits);
     }
-    return checkFreeUserRateLimit(quotaSubject);
+    return checkFreeUserRateLimit(quotaSubject, undefined, freeLimits);
   }
 
   // Paid users: token bucket (same budget for both modes)
@@ -179,12 +178,13 @@ export const checkRateLimitCapacity = async (
   modelName?: string,
   organizationId?: string,
   freeQuotaSubject?: string,
+  freeLimits?: FreeLimitPolicy,
 ): Promise<RateLimitInfo> => {
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
     return isAgentMode(mode)
-      ? checkFreeAgentRateLimitCapacity(quotaSubject)
-      : checkFreeUserRateLimitCapacity(quotaSubject);
+      ? checkFreeAgentRateLimitCapacity(quotaSubject, freeLimits)
+      : checkFreeUserRateLimitCapacity(quotaSubject, undefined, freeLimits);
   }
 
   const current = await checkTokenBucketLimit(

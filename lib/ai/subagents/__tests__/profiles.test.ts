@@ -1,27 +1,68 @@
 import { describe, expect, it } from "@jest/globals";
 
-import { getSubagentProfileDefinition } from "../profiles";
+import {
+  getSubagentProfileDefinition,
+  resolveSubagentAllowedToolNames,
+  resolveSubagentAllowedToolNamesForPermissionMode,
+} from "../profiles";
 
 describe("subagent profiles", () => {
-  it("defines a generic profile whose tools come from server capability bundles", () => {
+  it.each(["general", "security_validation", "security_task"] as const)(
+    "allows evidence correction without duplicate accepted results in %s",
+    (name) => {
+      const profile = getSubagentProfileDefinition(name);
+      const instructions = [
+        profile.buildSystemPrompt({ objective: "Test" }),
+        profile.buildPrompt({ objective: "Test" }, []),
+        profile.finalResultTool.description,
+      ].join("\n");
+      expect(instructions).toContain("retry once");
+      expect(instructions).toContain("never resubmit after acceptance");
+      expect(instructions).not.toContain("exactly once");
+    },
+  );
+  it("gives every profile the same built-in subagent tools", () => {
     const profile = getSubagentProfileDefinition("general");
     expect(profile.finalResultTool.name).toBe("submit_task_result");
     expect(profile.systemPrompt).toContain("durable work ledger");
     expect(profile.systemPrompt).toContain("Never delegate another worker");
+    expect(profile.systemPrompt).toContain(
+      "Every child receives the same built-in subagent tools",
+    );
+
+    for (const name of [
+      "general",
+      "security_validation",
+      "security_task",
+    ] as const) {
+      expect(resolveSubagentAllowedToolNames(name, ["code_read"])).toEqual(
+        profile.allowedToolNames,
+      );
+      expect(resolveSubagentAllowedToolNames(name, ["code_write"])).toEqual(
+        profile.allowedToolNames,
+      );
+    }
+    expect(profile.allowedToolNames).toEqual([
+      "run_terminal_cmd",
+      "interact_terminal_session",
+      "get_terminal_files",
+      "file",
+      "todo_write",
+      "web_search",
+      "open_url",
+      "search_skills",
+      "load_skill",
+      "report_to_parent",
+      "update_work_ledger",
+    ]);
   });
   it("defines a generic security task with fixed tools and assigned skills", () => {
     const profile = getSubagentProfileDefinition("security_task");
 
     expect(profile.finalResultTool.name).toBe("submit_task_result");
-    expect(profile.allowedToolNames).toEqual([
-      "run_terminal_cmd",
-      "interact_terminal_session",
-      "file",
-      "web_search",
-      "open_url",
-      "search_skills",
-      "load_skill",
-    ]);
+    expect(profile.allowedToolNames).toEqual(
+      getSubagentProfileDefinition("general").allowedToolNames,
+    );
     expect(profile.systemPrompt).toContain("Never delegate another agent");
     expect(profile.systemPrompt).toContain(
       "No specialist skill content is loaded automatically",
@@ -56,4 +97,17 @@ describe("subagent profiles", () => {
       "<specialized_knowledge>",
     );
   });
+
+  it.each(["ask_approval", "auto_review", "full_access"] as const)(
+    "preserves the shared child tools in %s mode",
+    (permissionMode) => {
+      expect(
+        resolveSubagentAllowedToolNamesForPermissionMode(
+          "general",
+          ["code_write", "terminal", "browser_qa"],
+          permissionMode,
+        ),
+      ).toEqual(getSubagentProfileDefinition("general").allowedToolNames);
+    },
+  );
 });

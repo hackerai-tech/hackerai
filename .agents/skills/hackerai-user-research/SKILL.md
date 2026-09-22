@@ -5,7 +5,7 @@ description: Run privacy-safe HackerAI customer research from an authorized PM q
 
 # HackerAI User Research
 
-Turn a research question and 3-20 internal user IDs into restricted per-user
+Turn a research question and 1-20 internal user IDs into restricted per-user
 profiles and an aggregated cohort report. The deployed task samples messages,
 redacts sensitive data, and uses Grok 4.6 with low reasoning.
 
@@ -34,17 +34,25 @@ Read [references/privacy-policy.md](references/privacy-policy.md) and
    relationships before triggering analysis. For authenticated HackerAI users,
    select PostHog `distinct_id` as the internal Convex/WorkOS user ID; do not
    require a duplicate person property or infer identity from email. Stop unless
-   3-20 unique internal user IDs remain after filtering.
+   1-20 unique internal user IDs remain after filtering.
+   For comparisons, preserve membership in `comparisonGroups`; use 2-4 groups
+   with at least three users each, and assign every `userIds` entry exactly
+   once. Group labels may describe the selected model, rollout, or funnel
+   treatment, but must not identify a person or organization.
    For event-based questions, also select the PostHog event timestamp for each
    user. Use it as that user's evidence anchor; do not substitute one shared
    timestamp for the cohort.
 4. Create a mode-600 temporary JSON request outside the repository using the
    gateway payload below. Run
    `node .agents/skills/hackerai-user-research/scripts/run-research.mjs --payload <path>`.
-   The runner requires `HACKERAI_PM_USER_RESEARCH_KEY` in the PM's Codex
-   environment and always calls the production HackerAI gateway. Never print
-   the key, put it in the request, or use Trigger
-   dashboard access. Remove the temporary request after the command reads it.
+   The runner first reads the machine's `~/.config/hackerai/pm-research.key`
+   (an owner-only file; mode 600 recommended), then falls back to
+   `HACKERAI_PM_USER_RESEARCH_KEY` only when that file is absent. Run the runner
+   before declaring credentials missing; an unset Codex environment variable
+   does not prove the key is unavailable. See the runbook for key discovery.
+   It always calls the production HackerAI gateway. Never print the key, put it
+   in the request or command arguments, or use Trigger dashboard access. Remove
+   the temporary request after the command reads it.
 5. Wait for the runner to return a completed result. Keep the returned
    `analysisId`; it is the audit and lookup key for the restricted Convex
    records. Do not substitute direct Trigger access if the gateway fails.
@@ -99,6 +107,48 @@ For churn or another event-based question, add:
 }
 ```
 
+For a comparison, also add group membership selected in PostHog:
+
+```json
+{
+  "userIds": [
+    "internal-user-id-1",
+    "internal-user-id-2",
+    "internal-user-id-3",
+    "internal-user-id-4",
+    "internal-user-id-5",
+    "internal-user-id-6"
+  ],
+  "comparisonGroups": [
+    {
+      "label": "Model rollout A",
+      "userIds": [
+        "internal-user-id-1",
+        "internal-user-id-2",
+        "internal-user-id-3"
+      ]
+    },
+    {
+      "label": "Model rollout B",
+      "userIds": [
+        "internal-user-id-4",
+        "internal-user-id-5",
+        "internal-user-id-6"
+      ]
+    }
+  ]
+}
+```
+
+The gateway accepts `cohortSelectedAt` and `anchorAt` as epoch milliseconds or
+ISO timestamps. It also accepts the PostHog handoff name
+`selectionQuerySha256` and stores it canonically as
+`selectionQueryFingerprint`. The Trigger task and Convex audit always receive
+canonical millisecond timestamps and the canonical fingerprint field.
+When evidence anchors or an evidence-window length are present and
+`samplingMode` is omitted, the gateway canonicalizes the request to
+`pre_event` sampling.
+
 `evidenceAnchors` must contain exactly one PostHog event timestamp for every
 cohort user. Omit sampling fields for ordinary representative-history research.
 
@@ -116,14 +166,20 @@ payload. `userIds` must be the internal Convex/WorkOS user IDs.
   confidence is low.
 - Verify `usersAnalyzed`, `chatsReviewed`, and `messagesReviewed` before using a
   conclusion.
-- Do not turn one-off requests into an avatar. Prefer patterns supported across
-  multiple chats and users.
+- A single-user run is valid. Present a sanitized summary of that user's
+  observed product behavior, state that the sample is one user, and treat its
+  avatar as provisional and low confidence. Do not claim cross-user patterns or
+  population-level conclusions. For larger cohorts, prefer patterns supported
+  across multiple chats and users.
 - Keep observed product behavior separate from acquisition or messaging
   hypotheses.
 - Treat behavioral explanations of churn or conversion as low-confidence
   causal evidence even when pre-event sampling is used. Compare them with
   explicit survey reasons or a controlled experiment before making causal
   claims.
+- Comparison synthesis fails closed if fewer than three readable profiles
+  remain in any group. Grok 4.6 receives only pseudonyms and sanitized group
+  labels, never the internal ID-to-group mapping.
 - Say `unknown` when the evidence does not establish context. Never infer a
   company or occupation from an email address.
 - A failed or partial run is not permission to inspect messages manually. Fix

@@ -3,13 +3,15 @@
 import { useConvexAuth } from "convex/react";
 import { ChatLayout } from "@/app/components/ChatLayout";
 import Loading from "@/components/ui/loading";
+import { SlowLoadingNotice } from "@/app/components/SlowLoadingNotice";
 import { useHasAuthenticatedBefore } from "@/app/hooks/useHasAuthenticatedBefore";
 import { ChatRoutePresentationProvider } from "@/app/contexts/ChatRoutePresentationContext";
 
 const fullWidthShell = (
   <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
-    <div className="flex-1 flex items-center justify-center min-h-0">
+    <div className="flex-1 flex flex-col items-center justify-center min-h-0">
       <Loading />
+      <SlowLoadingNotice label="Connecting…" />
     </div>
   </div>
 );

@@ -31,10 +31,19 @@ type AgentApprovalPromptProps = {
 };
 
 const getApprovalCategory = (request: ActiveAgentToolApprovalRequest) => {
-  if (request.operation === "terminal_execute") return "Terminal command";
-  if (request.operation === "terminal_interact") return "Terminal access";
-  if (request.kind === "file") return "File change";
-  return request.kind === "terminal" ? "Terminal command" : "Agent action";
+  const action =
+    request.operation === "terminal_execute"
+      ? "Terminal command"
+      : request.operation === "terminal_interact"
+        ? "Terminal access"
+        : request.kind === "file"
+          ? "File change"
+          : request.kind === "terminal"
+            ? "Terminal command"
+            : "Agent action";
+  return request.sourceAgentName
+    ? `${request.sourceAgentName} · ${action}`
+    : action;
 };
 
 const getReusableApprovalDescription = (

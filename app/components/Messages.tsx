@@ -1,3 +1,4 @@
+import { TaskOutcomeFeedback } from "./TaskOutcomeFeedback";
 import {
   useState,
   useEffect,
@@ -263,6 +264,7 @@ interface MessagesProps {
   summarizationStatus?: {
     status: "started" | "completed";
     message: string;
+    startedAt?: number;
   } | null;
   mode?: import("@/types").ChatMode;
   agentRunSpendCapWarning?: Extract<
@@ -820,41 +822,56 @@ export const Messages = ({
           );
       } else {
         content = (
-          <MessageItem
-            message={row.message}
-            index={row.messageIndex}
-            messagesLength={visibleMessages.length}
-            lastAssistantMessageIndex={lastAssistantMessageIndex}
-            status={status}
-            canEdit={row.messageIndex === lastUserMessageIndex}
-            isEditing={
-              editingMessageId === lastUserMessageId &&
-              editingMessageId === row.message.id
-            }
-            isMobile={isMobile}
-            feedbackInputMessageId={feedbackInputMessageId}
-            tempChatFileDetails={tempChatFileDetails}
-            finishReason={finishReason}
-            mode={mode}
-            agentRunSpendCapWarning={agentRunSpendCapWarning}
-            branchedFromChatId={branchedFromChatId}
-            branchedFromChatTitle={branchedFromChatTitle}
-            branchBoundaryIndex={branchBoundaryIndex}
-            onStartEdit={handleStartEdit}
-            onSaveEdit={handleSaveEdit}
-            onCancelEdit={handleCancelEdit}
-            onRegenerate={onRegenerate}
-            onContinue={onContinue}
-            onBranchMessage={onBranchMessage ? handleBranchMessage : undefined}
-            onFeedback={handleFeedback}
-            onFeedbackSubmit={handleFeedbackSubmit}
-            onFeedbackCancel={handleFeedbackCancel}
-            onShowAllFiles={handleShowAllFiles}
-            getCachedUrl={getCachedUrl}
-            showingLoadingIndicator={showingLoadingIndicator}
-            summarizationStatus={summarizationStatus}
-            workPresentation={row.workPresentation}
-          />
+          <>
+            <MessageItem
+              message={row.message}
+              index={row.messageIndex}
+              messagesLength={visibleMessages.length}
+              lastAssistantMessageIndex={lastAssistantMessageIndex}
+              status={status}
+              canEdit={row.messageIndex === lastUserMessageIndex}
+              isEditing={
+                editingMessageId === lastUserMessageId &&
+                editingMessageId === row.message.id
+              }
+              isMobile={isMobile}
+              feedbackInputMessageId={feedbackInputMessageId}
+              tempChatFileDetails={tempChatFileDetails}
+              finishReason={finishReason}
+              mode={mode}
+              agentRunSpendCapWarning={agentRunSpendCapWarning}
+              branchedFromChatId={branchedFromChatId}
+              branchedFromChatTitle={branchedFromChatTitle}
+              branchBoundaryIndex={branchBoundaryIndex}
+              onStartEdit={handleStartEdit}
+              onSaveEdit={handleSaveEdit}
+              onCancelEdit={handleCancelEdit}
+              onRegenerate={onRegenerate}
+              onContinue={onContinue}
+              onBranchMessage={
+                onBranchMessage ? handleBranchMessage : undefined
+              }
+              onFeedback={handleFeedback}
+              onFeedbackSubmit={handleFeedbackSubmit}
+              onFeedbackCancel={handleFeedbackCancel}
+              onShowAllFiles={handleShowAllFiles}
+              getCachedUrl={getCachedUrl}
+              showingLoadingIndicator={showingLoadingIndicator}
+              summarizationStatus={summarizationStatus}
+              workPresentation={row.workPresentation}
+            />
+            {row.message.role === "assistant" &&
+              row.messageIndex === lastAssistantMessageIndex &&
+              row.messageIndex > (lastUserMessageIndex ?? -1) &&
+              !isAutoResuming &&
+              (status === "ready" || status === "error") && (
+                <TaskOutcomeFeedback
+                  key={row.message.id}
+                  chatId={chatId}
+                  messageId={row.message.id}
+                />
+              )}
+          </>
         );
       }
 
@@ -895,6 +912,8 @@ export const Messages = ({
       handleToggleAgentWork,
       handleToolGroupMount,
       isMobile,
+      isAutoResuming,
+      chatId,
       lastAssistantMessageIndex,
       lastUserMessageId,
       lastUserMessageIndex,
@@ -930,6 +949,7 @@ export const Messages = ({
           <SummarizationStatusDivider
             status={summarizationStatus?.status}
             message={summarizationStatus?.message}
+            startedAt={summarizationStatus?.startedAt}
             className="mb-1 mt-0"
           />
         )}
