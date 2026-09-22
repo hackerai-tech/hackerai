@@ -3585,6 +3585,19 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              onAgentGuardrail: (observation) =>
+                phLogger.warn("Agent guardrail observed", {
+                  event: "agent_guardrail_observed",
+                  configured_model: selectedModel,
+                  userId,
+                  user_id: userId,
+                  request_id: ctx.run.id,
+                  trigger_run_id: ctx.run.id,
+                  chat_id: chatId,
+                  endpoint,
+                  mode,
+                  ...observation,
+                }),
               objectiveCheckpoint,
               providerStreamTimeout: {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
@@ -5112,6 +5125,7 @@ export const agentLongTask = task({
                       // explicitly decide whether to continue.
                       const autoContinueStopSource =
                         getAgentAutoContinueStopSource({
+                          stoppedDueToStepLimit: state.stoppedDueToStepLimit,
                           finishReason: state.streamFinishReason,
                           stoppedDueToTokenExhaustion:
                             state.stoppedDueToTokenExhaustion,

@@ -2,6 +2,7 @@ import type { StopCondition } from "ai";
 import {
   detectDoomLoop,
   type MinimalStep,
+  type DoomLoopResult,
 } from "@/lib/chat/doom-loop-detection";
 export { AGENT_RUN_SPEND_CAP_FINISH_REASON } from "@/lib/chat/agent-run-spend-cap";
 
@@ -10,6 +11,7 @@ export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 export const OUTPUT_LIMIT_FINISH_REASON = "length";
 
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
+export const STEP_LIMIT_FINISH_REASON = "step-limit";
 
 export function stepLimitReached(state: {
   maxSteps: number;
@@ -40,7 +42,14 @@ export function getAgentAutoContinueStopSource(state: {
   stoppedDueToTokenExhaustion: boolean;
   stoppedDueToElapsedTimeout?: boolean;
   stoppedDueToPostSummarizationIncomplete: boolean;
+  stoppedDueToStepLimit?: boolean;
 }): AgentAutoContinueStopSource | null {
+  // A hard step ceiling must win over overlapping context/compaction flags.
+  if (
+    state.stoppedDueToStepLimit ||
+    state.finishReason === STEP_LIMIT_FINISH_REASON
+  )
+    return null;
   if (state.stoppedDueToTokenExhaustion) {
     return "post_summarization_token_exhaustion";
   }
@@ -105,12 +114,12 @@ export const POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON =
   "compaction-incomplete";
 
 export function doomLoopDetected(state: {
-  onFired: () => void;
+  onFired: (result: DoomLoopResult) => void;
 }): StopCondition<any> {
   return ({ steps }) => {
     const result = detectDoomLoop(steps as unknown as MinimalStep[]);
     if (result.severity === "halt") {
-      state.onFired();
+      state.onFired(result);
       return true;
     }
     return false;

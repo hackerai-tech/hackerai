@@ -101,7 +101,10 @@ jest.mock("@/lib/ai/providers", () => ({
   PDF_PARSER_RECOVERY_HEADER: "x-hackerai-openrouter-pdf-parser-recovery",
 }));
 jest.mock("@/lib/ai/tools/utils/pty-session-manager", () => ({
-  ptySessionManager: { closeAllSessions: jest.fn() },
+  ptySessionManager: {
+    closeAllSessions: jest.fn(),
+    closeAll: jest.fn(async () => undefined),
+  },
 }));
 jest.mock("@/lib/ai/tools/prompt-serialization", () => ({
   createPromptSerializationTools: () => ({}),
@@ -117,6 +120,8 @@ jest.mock("@/lib/provider-usage-cost", () => ({
 }));
 jest.mock("@/lib/utils/error-utils", () => ({
   classifyProviderOverflowError: () => null,
+  isProviderContentBlockedFinishReasonError: () => false,
+  isProviderContentFilterFinishReason: () => false,
 }));
 
 const {
@@ -1063,7 +1068,7 @@ describe("createAgentStream repeated compaction", () => {
           hasSummarized: false,
           summarizationCount: 0,
         },
-        usageTracker: {},
+        usageTracker: { setAuthoritativeModelCostForStep: jest.fn() },
         onProviderRequestDiagnostics,
       }) as any,
       state,
@@ -1099,6 +1104,79 @@ describe("createAgentStream repeated compaction", () => {
       }),
     ).toBe(true);
     expect(state.stoppedDueToStepLimit).toBe(true);
+    state.stoppedDueToTokenExhaustion = true;
+    await stream.onFinish({
+      finishReason: "tool-calls",
+      usage: {},
+      response: { modelId: "test-model" },
+    });
+    expect(state.streamFinishReason).toBe("step-limit");
+  });
+
+  it("observes unchanged results across provider replacement without affecting settlement", async () => {
+    const onAgentGuardrail = jest.fn();
+    const settleUsageAfterStep = jest.fn();
+    const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const context = createTestStreamContext({
+      tools: { file: {} },
+      onAgentGuardrail,
+      settleUsageAfterStep,
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      usageTracker: {
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: () => 0.5,
+      },
+    }) as any;
+    const step = {
+      response: { modelId: "test-model" },
+      toolCalls: [
+        { toolCallId: "read", toolName: "file", input: { path: "/private" } },
+      ],
+      toolResults: [
+        { toolCallId: "read", toolName: "file", output: "private output" },
+      ],
+    };
+    const first = (await createAgentStream(
+      "test-model",
+      context,
+      state,
+    )) as any;
+    await first.onStepFinish(step);
+    await first.onStepFinish(step);
+    const replacement = (await createAgentStream(
+      "test-model",
+      context,
+      state,
+    )) as any;
+    await replacement.onStepFinish(step);
+    expect(onAgentGuardrail).toHaveBeenCalledWith({
+      reason: "repeated_tool_result_cycle",
+      action: "observe",
+      tool_names: ["file"],
+      repeat_count: 3,
+      cycle_length: 1,
+      step_count: 3,
+      configured_max_steps: 500,
+      run_cost_dollars: 0.5,
+    });
+    expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toContain(
+      "private",
+    );
+    onAgentGuardrail.mockImplementation(() => {
+      throw new Error("Telemetry unavailable");
+    });
+    await replacement.onStepFinish(step);
+    await expect(replacement.onStepFinish(step)).resolves.toBeUndefined();
+    expect(settleUsageAfterStep).toHaveBeenCalledTimes(5);
+    expect(context.abortController.signal.aborted).toBe(false);
+    jest.spyOn(state.toolLoopObserver, "observe").mockImplementation(() => {
+      throw new Error("Invalid result");
+    });
+    await expect(replacement.onStepFinish(step)).resolves.toBeUndefined();
+    expect(settleUsageAfterStep).toHaveBeenCalledTimes(6);
   });
 
   it("reports the first provider chunk to startup timing", async () => {

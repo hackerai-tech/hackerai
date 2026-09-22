@@ -11,6 +11,7 @@ import {
   elapsedTimeExceeds,
   getAgentAutoContinueStopSource,
   stepLimitReached,
+  STEP_LIMIT_FINISH_REASON,
 } from "../stop-conditions";
 
 describe("stepLimitReached", () => {
@@ -199,6 +200,30 @@ describe("tokenExhaustedAfterSummarization", () => {
 });
 
 describe("getAgentAutoContinueStopSource", () => {
+  it.each(["tool-calls", "context-limit", "length", STEP_LIMIT_FINISH_REASON])(
+    "never auto-continues a hard step stop with overlapping flags (%s)",
+    (finishReason) => {
+      expect(
+        getAgentAutoContinueStopSource({
+          finishReason,
+          stoppedDueToStepLimit: true,
+          stoppedDueToTokenExhaustion: true,
+          stoppedDueToElapsedTimeout: true,
+          stoppedDueToPostSummarizationIncomplete: true,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("honors the explicit finish reason even without the stop flag", () => {
+    expect(
+      getAgentAutoContinueStopSource({
+        finishReason: STEP_LIMIT_FINISH_REASON,
+        stoppedDueToTokenExhaustion: true,
+        stoppedDueToPostSummarizationIncomplete: true,
+      }),
+    ).toBeNull();
+  });
   const baseState = {
     finishReason: "stop",
     stoppedDueToTokenExhaustion: false,
@@ -233,7 +258,7 @@ describe("getAgentAutoContinueStopSource", () => {
       expected: "output_limit_finish_reason",
     },
     {
-      scenario: "tool-call step limit",
+      scenario: "provider tool-calls without an explicit hard step stop",
       overrides: { finishReason: "tool-calls" },
       expected: "tool_calls_finish_reason",
     },
