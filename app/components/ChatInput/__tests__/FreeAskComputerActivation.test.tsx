@@ -1,7 +1,14 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 const mockCaptureAuthenticatedEvent = jest.fn();
 const mockCaptureUpgradeCtaImpression = jest.fn();
@@ -48,9 +55,41 @@ describe("FreeAskComputerActivation", () => {
       downloadUrl: "https://example.com/HackerAI.dmg",
     };
     mockCaptureAuthenticatedEvent.mockClear();
-    mockCaptureComputerActivationImpression.mockClear();
+    mockCaptureComputerActivationImpression.mockReset().mockReturnValue(true);
     mockCaptureUpgradeCtaImpression.mockClear();
     mockRedirectToPricing.mockClear();
+  });
+
+  afterEach(() => jest.useRealTimers());
+
+  it("retries until capture is ready and stops after the impression is handled", () => {
+    jest.useFakeTimers();
+    mockCaptureComputerActivationImpression
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(false);
+    render(<FreeAskComputerActivation />);
+    act(() => jest.advanceTimersByTime(2000));
+    expect(mockCaptureComputerActivationImpression).toHaveBeenCalledTimes(3);
+    act(() => jest.advanceTimersByTime(10000));
+    expect(mockCaptureComputerActivationImpression).toHaveBeenCalledTimes(3);
+  });
+
+  it("cancels pending impression retries on unmount", () => {
+    jest.useFakeTimers();
+    mockCaptureComputerActivationImpression.mockReturnValue(false);
+    const { unmount } = render(<FreeAskComputerActivation />);
+    unmount();
+    act(() => jest.advanceTimersByTime(10000));
+    expect(mockCaptureComputerActivationImpression).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds retry work when analytics remains unavailable", () => {
+    jest.useFakeTimers();
+    mockCaptureComputerActivationImpression.mockReturnValue(false);
+    render(<FreeAskComputerActivation />);
+    act(() => jest.advanceTimersByTime(120000));
+    expect(mockCaptureComputerActivationImpression).toHaveBeenCalledTimes(60);
+    expect(jest.getTimerCount()).toBe(0);
   });
 
   it("renders an accessible responsive trigger and captures exposure", async () => {

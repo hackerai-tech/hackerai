@@ -244,18 +244,23 @@ type CtaAnalyticsProperties = ClientAnalyticsProperties & {
 export function captureUpgradeCtaImpression(
   properties: CtaAnalyticsProperties,
 ) {
-  return captureDailyCtaImpression(
-    PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
-    properties,
+  return (
+    captureDailyCtaImpression(
+      PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+      properties,
+    ) === "captured"
   );
 }
 
 export function captureComputerActivationImpression(
   properties: CtaAnalyticsProperties,
 ) {
-  return captureDailyCtaImpression(
-    "computer_activation_cta_impressed",
-    properties,
+  // Already recorded today is also handled; only unavailable capture needs retry.
+  return (
+    captureDailyCtaImpression(
+      "computer_activation_cta_impressed",
+      properties,
+    ) !== "unavailable"
   );
 }
 
@@ -264,11 +269,11 @@ function captureDailyCtaImpression(
     | typeof PAID_FUNNEL_EVENTS.upgradeCtaImpressed
     | "computer_activation_cta_impressed",
   properties: CtaAnalyticsProperties,
-) {
+): "captured" | "duplicate" | "unavailable" {
   const posthog = getReadyPostHogClient();
   if (!posthog) {
     void loadPostHogClient().catch(() => {});
-    return false;
+    return "unavailable";
   }
 
   const day = new Date().toISOString().slice(0, 10);
@@ -296,7 +301,7 @@ function captureDailyCtaImpression(
     ) {
       state = parsed;
     }
-    if (state.keys.includes(dedupeKey)) return false;
+    if (state.keys.includes(dedupeKey)) return "duplicate";
   } catch {
     // Storage can be unavailable in privacy-restricted browsers. Capture the
     // event normally rather than dropping a legitimate impression.
@@ -331,7 +336,7 @@ function captureDailyCtaImpression(
       ),
     },
   );
-  if (!captured) return false;
+  if (!captured) return "unavailable";
 
   try {
     window.localStorage.setItem(
@@ -341,7 +346,7 @@ function captureDailyCtaImpression(
   } catch {
     // Best-effort dedupe only.
   }
-  return true;
+  return "captured";
 }
 
 export function captureUpgradeCtaClick(properties: CtaAnalyticsProperties) {

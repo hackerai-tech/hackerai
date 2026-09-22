@@ -4,7 +4,8 @@ type RelayEvent =
 type Bucket = {
   event: RelayEvent;
   properties: Properties;
-  suppressed: number;
+  pending: number;
+  firstCaptured: boolean;
   firstSeen: number;
   lastSeen: number;
 };
@@ -24,7 +25,7 @@ export class DesktopRelayTelemetry {
     private readonly capture: (
       event: RelayEvent,
       properties: Properties,
-    ) => unknown,
+    ) => boolean,
   ) {}
 
   record(event: RelayEvent, properties: Properties): void {
@@ -42,40 +43,57 @@ export class DesktopRelayTelemetry {
     ]);
     const bucket = this.buckets.get(key);
     if (bucket) {
-      bucket.suppressed += 1;
+      bucket.pending += 1;
       bucket.lastSeen = now;
       bucket.properties = properties;
+      if (!bucket.firstCaptured) this.capturePending(bucket);
       return;
     }
     if (this.buckets.size >= MAX_SIGNATURES) this.flush();
+    if (this.buckets.size >= MAX_SIGNATURES) {
+      // Keep this best-effort buffer bounded even while capture is unavailable.
+      const oldest = this.buckets.keys().next().value;
+      if (oldest !== undefined) this.buckets.delete(oldest);
+    }
     if (this.buckets.size === 0) this.windowStartedAt = now;
-    this.buckets.set(key, {
+    const nextBucket: Bucket = {
       event,
       properties,
-      suppressed: 0,
+      pending: 1,
+      firstCaptured: false,
       firstSeen: now,
       lastSeen: now,
-    });
-    this.capture(event, {
-      ...properties,
-      telemetry_version: 1,
-      telemetry_occurrences: 1,
-      telemetry_summary: false,
-    });
+    };
+    this.buckets.set(key, nextBucket);
+    this.capturePending(nextBucket);
+  }
+
+  private capturePending(bucket: Bucket): boolean {
+    try {
+      if (
+        !this.capture(bucket.event, {
+          ...bucket.properties,
+          telemetry_version: 1,
+          telemetry_occurrences: bucket.pending,
+          telemetry_summary: bucket.firstCaptured,
+          telemetry_window_started_at: new Date(bucket.firstSeen).toISOString(),
+          telemetry_last_seen_at: new Date(bucket.lastSeen).toISOString(),
+        })
+      )
+        return false;
+    } catch {
+      return false;
+    }
+    bucket.pending = 0;
+    bucket.firstCaptured = true;
+    return true;
   }
 
   flush(): void {
-    for (const bucket of this.buckets.values()) {
-      if (bucket.suppressed === 0) continue;
-      this.capture(bucket.event, {
-        ...bucket.properties,
-        telemetry_version: 1,
-        telemetry_occurrences: bucket.suppressed,
-        telemetry_summary: true,
-        telemetry_window_started_at: new Date(bucket.firstSeen).toISOString(),
-        telemetry_last_seen_at: new Date(bucket.lastSeen).toISOString(),
-      });
+    for (const [key, bucket] of this.buckets) {
+      if (bucket.pending === 0 || this.capturePending(bucket)) {
+        this.buckets.delete(key);
+      }
     }
-    this.buckets.clear();
   }
 }

@@ -122,7 +122,7 @@ describe("client analytics", () => {
       source: "free_ask_computer_activation",
     };
     expect(captureComputerActivationImpression(properties)).toBe(true);
-    expect(captureComputerActivationImpression(properties)).toBe(false);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
     const uuid = mockCapture.mock.calls[0]?.[2]?.uuid;
     expect(captureUpgradeCtaImpression(properties)).toBe(true);
     expect(mockCapture.mock.calls[1]?.[2]?.uuid).not.toBe(uuid);
@@ -146,7 +146,18 @@ describe("client analytics", () => {
     });
     expect(captureComputerActivationImpression(properties)).toBe(false);
     expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+  });
+
+  it("waits for SDK initialization before handling a computer impression", () => {
+    mockPostHog.__loaded = false;
+    const properties = { surface: "chat_input_computer_activation" };
     expect(captureComputerActivationImpression(properties)).toBe(false);
+    expect(mockCapture).not.toHaveBeenCalled();
+    mockPostHog.__loaded = true;
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 
   it("captures content-free initial message feedback with a stable UUID", () => {

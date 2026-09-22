@@ -7,7 +7,7 @@ describe("desktop relay telemetry", () => {
   afterEach(() => jest.useRealTimers());
 
   it("preserves first errors and recovery while counting repeated callbacks exactly", () => {
-    const capture = jest.fn();
+    const capture = jest.fn().mockReturnValue(true);
     const telemetry = new DesktopRelayTelemetry(capture);
     for (let i = 0; i < 100; i++) {
       telemetry.record("desktop_bridge_relay_error", {
@@ -48,7 +48,7 @@ describe("desktop relay telemetry", () => {
   });
 
   it("keeps new error signatures and resumes first-event capture in the next window", () => {
-    const capture = jest.fn();
+    const capture = jest.fn().mockReturnValue(true);
     const telemetry = new DesktopRelayTelemetry(capture);
     const error = { state: "error", errorType: "transport", code: 2 };
     telemetry.record("desktop_bridge_relay_error", error);
@@ -66,5 +66,57 @@ describe("desktop relay telemetry", () => {
       telemetry_occurrences: 1,
       telemetry_summary: false,
     });
+  });
+  it("retries failed first captures and summaries without losing or double-counting callbacks", () => {
+    const capture = jest.fn().mockReturnValue(false);
+    const telemetry = new DesktopRelayTelemetry(capture);
+    const error = { state: "error", code: 2 };
+    telemetry.record("desktop_bridge_relay_error", error);
+    capture.mockReturnValue(true);
+    telemetry.record("desktop_bridge_relay_error", error);
+    expect(capture).toHaveBeenLastCalledWith(
+      "desktop_bridge_relay_error",
+      expect.objectContaining({
+        telemetry_occurrences: 2,
+        telemetry_summary: false,
+      }),
+    );
+    telemetry.record("desktop_bridge_relay_error", error);
+    capture.mockReturnValue(false);
+    telemetry.flush();
+    capture.mockReturnValue(true);
+    telemetry.flush();
+    expect(capture).toHaveBeenLastCalledWith(
+      "desktop_bridge_relay_error",
+      expect.objectContaining({
+        telemetry_occurrences: 1,
+        telemetry_summary: true,
+      }),
+    );
+    const successfulOccurrences = capture.mock.calls.reduce(
+      (total, [, properties], index) =>
+        total +
+        (capture.mock.results[index].value
+          ? properties.telemetry_occurrences
+          : 0),
+      0,
+    );
+    expect(successfulOccurrences).toBe(3);
+    const calls = capture.mock.calls.length;
+    telemetry.flush();
+    expect(capture).toHaveBeenCalledTimes(calls);
+  });
+
+  it("bounds pending signatures when capture stays unavailable", () => {
+    const capture = jest.fn().mockReturnValue(false);
+    const telemetry = new DesktopRelayTelemetry(capture);
+    for (let code = 0; code < 40; code++) {
+      telemetry.record("desktop_bridge_relay_error", { code });
+    }
+    capture.mockClear().mockReturnValue(true);
+    telemetry.flush();
+    expect(capture).toHaveBeenCalledTimes(32);
+    expect(capture.mock.calls[0][1].code).toBe(8);
+    expect(capture.mock.calls[31][1].code).toBe(39);
   });
 });

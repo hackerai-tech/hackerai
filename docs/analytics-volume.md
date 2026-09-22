@@ -9,10 +9,16 @@ per UTC day, matching upgrade-impression granularity. Browser storage prevents
 repeat sends across mounts and reloads; a stable ingestion UUID deduplicates
 devices and storage failures. Click and download events remain unsampled.
 Compare distinct exposed users, not old mount counts, across this boundary.
+The mounted computer CTA retries unavailable capture for up to one minute,
+stopping after capture or daily deduplication, and cancels retries on unmount.
 
 Desktop relay telemetry retains the first occurrence of each bounded
-state/source/error-code signature in a five-minute window. Later identical
+event/state/source/errorType/code/transport/recovered signature in a five-minute
+window. Callbacks are identical when all seven values match; other properties,
+including reason and retry counts, do not affect aggregation. Later identical
 callbacks are summarized on the next event after the window or on bridge teardown.
+Failed captures remain pending for the next callback or flush. The buffer holds
+at most 32 signatures, evicting the oldest if capture remains unavailable.
 Sum `coalesce(properties.telemetry_occurrences, 1)` to count callbacks; summary
 events carry `telemetry_summary=true` and the first/last observation times.
 An abrupt process exit can lose a pending summary, so this remains best-effort

@@ -42,7 +42,7 @@ jest.mock("centrifuge", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
 }));
 
 // Mock Tauri IPC
