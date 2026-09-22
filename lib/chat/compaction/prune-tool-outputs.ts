@@ -103,7 +103,21 @@ const buildPlaceholderFromParts = (
         output?.result?.exitCode ??
         output?.result?.exit_code ??
         "?";
-      const result = output?.result ?? output ?? {};
+      let terminalOutput = output;
+      // The live model loop receives toModelOutput text, while persisted chat
+      // parts carry objects. run_terminal_cmd prefixes its JSON with a status
+      // line; interact_terminal_session emits plain JSON.
+      if (typeof terminalOutput === "string") {
+        const json = terminalOutput.startsWith("Process ")
+          ? terminalOutput.slice(terminalOutput.indexOf("\n") + 1)
+          : terminalOutput;
+        try {
+          terminalOutput = JSON.parse(json);
+        } catch {
+          terminalOutput = { output: terminalOutput };
+        }
+      }
+      const result = terminalOutput?.result ?? terminalOutput ?? {};
       const session = result.session ?? input?.session;
       const status =
         result.status ??
@@ -138,7 +152,7 @@ const buildPlaceholderFromParts = (
           : undefined;
       if (savedPath)
         references.push(`saved output ${savedPath.slice(0, 4096)}`);
-      return `[Terminal: ran '${shortCmd}', exit code ${result.exited?.exitCode ?? exitCode}${references.length ? `; ${references.join("; ")}` : ""}]`;
+      return `[Terminal: ran '${shortCmd}', exit code ${result.exited?.exitCode ?? result.exitCode ?? exitCode}${references.length ? `; ${references.join("; ")}` : ""}]`;
     }
 
     case "file": {

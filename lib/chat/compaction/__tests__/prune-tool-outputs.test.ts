@@ -1190,6 +1190,48 @@ describe("limitModelImageToolResults", () => {
 });
 
 describe("pruneModelMessages", () => {
+  it.each(["run_terminal_cmd", "interact_terminal_session"])(
+    "preserves recovery references from serialized %s model output",
+    (toolName) => {
+      const value =
+        (toolName === "run_terminal_cmd"
+          ? "Process running with session ID abcd1234\n"
+          : "") +
+        JSON.stringify({
+          result: {
+            session: "abcd1234",
+            status: "running",
+            recordPath: "/tmp/record.json",
+            outputPath: "/tmp/output.txt",
+            output: "evidence\n".repeat(1000),
+          },
+        });
+      const messages = [
+        makeAssistantModelMsg([
+          { toolCallId: "old", toolName, args: { command: "bounded task" } },
+        ]),
+        makeToolModelMsg([
+          { toolCallId: "old", toolName, output: { type: "text", value } },
+        ]),
+        makeToolModelMsg([
+          {
+            toolCallId: "new",
+            toolName: "file",
+            output: { type: "text", value: "recent" },
+          },
+        ]),
+      ];
+      const pruned = pruneModelMessages(messages, 1, NO_MIN);
+      const output = (pruned.messages[1].content as any)[0].output;
+      expect(output.type).toBe("text");
+      expect(output.value).toContain("session abcd1234");
+      expect(output.value).toContain("status running");
+      expect(output.value).toContain("record /tmp/record.json");
+      expect(output.value).toContain("output /tmp/output.txt");
+      expect(output.value).not.toContain("evidence");
+    },
+  );
+
   it("returns messages unchanged when within budget", () => {
     const messages = [
       makeAssistantModelMsg([
