@@ -58,6 +58,7 @@ import {
   doomLoopDetected,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
   TOKEN_EXHAUSTION_FINISH_REASON,
+  STEP_LIMIT_FINISH_REASON,
   DOOM_LOOP_FINISH_REASON,
   BUDGET_EXHAUSTION_FINISH_REASON,
   AGENT_RUN_SPEND_CAP_FINISH_REASON,
@@ -67,6 +68,10 @@ import {
   detectDoomLoop,
   generateDoomLoopNudge,
 } from "@/lib/chat/doom-loop-detection";
+import {
+  ToolLoopObserver,
+  type AgentGuardrailObservation,
+} from "@/lib/chat/tool-loop-observer";
 import {
   createAssistantContentLoopMonitor,
   type AssistantContentLoopDetection,
@@ -102,6 +107,7 @@ import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractSubagentDeliveryClaims,
   requiresSubagentParentGate,
@@ -364,6 +370,8 @@ export type AgentStreamState = {
   configuredMaxSteps: number;
   /** Total completed model steps across provider attempts in this request. */
   agentStepCount: number;
+  /** Observation history survives provider retries, but never retains tool content. */
+  toolLoopObserver: ToolLoopObserver;
   /** True only when the final provider attempt stopped at the step condition. */
   stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
@@ -398,6 +406,7 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
+    toolLoopObserver: new ToolLoopObserver(),
     stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
@@ -647,6 +656,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
   objectiveCheckpoint?: ObjectiveCheckpointRuntime;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
@@ -755,6 +765,34 @@ export async function createAgentStream(
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;
+  const reportGuardrail = (
+    observation: Omit<
+      AgentGuardrailObservation,
+      "step_count" | "configured_max_steps"
+    >,
+  ) => {
+    if (
+      !state.toolLoopObserver.shouldReport(
+        observation.reason,
+        observation.action,
+        observation.repeat_count,
+      )
+    )
+      return;
+    try {
+      ctx.onAgentGuardrail?.({
+        ...observation,
+        // Provider-supplied unknown tool names may contain user content.
+        tool_names: observation.tool_names.map((name) =>
+          Object.hasOwn(ctx.tools, name) ? name : "unknown",
+        ),
+        step_count: state.agentStepCount,
+        configured_max_steps: configuredMaxSteps,
+      });
+    } catch {
+      // Observability must never interrupt the model stream or usage settlement.
+    }
+  };
   const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
   let pendingDeliveryClaims: SubagentDeliveryClaim[] = [];
@@ -995,6 +1033,13 @@ export async function createAgentStream(
     if (loopCheck.severity !== "warning") {
       return {};
     }
+
+    reportGuardrail({
+      reason: loopCheck.reason ?? "repeated_tool_call",
+      action: loopCheck.activeToolExclusions?.length ? "exclude" : "nudge",
+      tool_names: loopCheck.toolNames,
+      repeat_count: loopCheck.consecutiveCount,
+    });
 
     const recovery: DoomLoopRecovery = {
       nudge: generateDoomLoopNudge(loopCheck),
@@ -1829,6 +1874,12 @@ export async function createAgentStream(
           }
         }
         state.stoppedDueToStepLimit = true;
+        reportGuardrail({
+          reason: "step_limit",
+          action: "halt",
+          tool_names: [],
+          repeat_count: 1,
+        });
         return true;
       },
       tokenExhaustedAfterSummarization({
@@ -1851,8 +1902,14 @@ export async function createAgentStream(
         },
       }),
       doomLoopDetected({
-        onFired: () => {
+        onFired: (result) => {
           state.stoppedDueToDoomLoop = true;
+          reportGuardrail({
+            reason: result.reason ?? "repeated_tool_call",
+            action: "halt",
+            tool_names: result.toolNames,
+            repeat_count: result.consecutiveCount,
+          });
         },
       }),
     ],
@@ -1902,7 +1959,13 @@ export async function createAgentStream(
       }
     },
 
-    onStepFinish: async ({ usage, response, providerMetadata }) => {
+    onStepFinish: async ({
+      usage,
+      response,
+      providerMetadata,
+      toolCalls,
+      toolResults,
+    }) => {
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
       const responsePdfParserEngine = getResponseHeader(
@@ -1989,6 +2052,26 @@ export async function createAgentStream(
         ctx.usageTracker.computeCostDollars(activeStepModelName) +
         sandboxCostDollars +
         triggerRunCostDollars;
+      if (isAgentMode(ctx.mode)) {
+        try {
+          const observation = state.toolLoopObserver.observe(
+            toolCalls ?? [],
+            toolResults ?? [],
+            new Set(Object.keys(ctx.tools)),
+          );
+          if (observation)
+            reportGuardrail({
+              reason: "repeated_tool_result_cycle",
+              action: "observe",
+              tool_names: observation.toolNames,
+              repeat_count: observation.repeatCount,
+              cycle_length: observation.cycleLength,
+              run_cost_dollars: currentCostDollars,
+            });
+        } catch {
+          // Diagnostic inspection must not prevent settlement of completed work.
+        }
+      }
       const budgetDecision =
         ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
       await ctx.settleUsageAfterStep?.({
@@ -2048,6 +2131,8 @@ export async function createAgentStream(
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
         state.streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
+      } else if (state.stoppedDueToStepLimit) {
+        state.streamFinishReason = STEP_LIMIT_FINISH_REASON;
       } else if (state.stoppedDueToTokenExhaustion) {
         state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
       } else if (state.stoppedDueToDoomLoop) {

@@ -1630,6 +1630,18 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              onAgentGuardrail: (observation) =>
+                phLogger.warn("Agent guardrail observed", {
+                  event: "agent_guardrail_observed",
+                  configured_model: selectedModel,
+                  userId,
+                  user_id: userId,
+                  request_id: requestId,
+                  chat_id: chatId,
+                  endpoint,
+                  mode,
+                  ...observation,
+                }),
               abliteratedTelemetry,
               ...(activeAbliteratedExperiment?.variant === "test" && {
                 abliteratedStepRouting: {
@@ -2992,6 +3004,7 @@ export const createChatHandler = () => {
 
                     const autoContinueStopSource =
                       getAgentAutoContinueStopSource({
+                        stoppedDueToStepLimit: state.stoppedDueToStepLimit,
                         finishReason: state.streamFinishReason,
                         stoppedDueToTokenExhaustion:
                           state.stoppedDueToTokenExhaustion,
