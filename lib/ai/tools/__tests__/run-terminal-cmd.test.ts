@@ -298,7 +298,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
             [
               "-e",
               command.includes("finite-fixture")
-                ? 'process.stdout.write("x".repeat(300000)); setTimeout(() => { console.log("FINAL_EVIDENCE"); }, 150);'
+                ? 'process.stdout.write("evidence line\\n".repeat(25000)); setTimeout(() => { console.log("FINAL_EVIDENCE"); }, 150);'
                 : 'console.log("PARTIAL_EVIDENCE"); setInterval(() => {}, 1000);',
             ],
             { stdio: ["ignore", "pipe", "pipe"] },
