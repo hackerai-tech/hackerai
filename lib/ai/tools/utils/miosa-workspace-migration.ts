@@ -83,6 +83,7 @@ type Capture = {
   archiveBytes: number;
 };
 
+/** Keep migration names within Miosa's 36-character sandbox-name limit. */
 export const miosaMigrationDestinationName = (
   userId: string,
   claimToken: string,
