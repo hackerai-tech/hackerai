@@ -33,6 +33,7 @@ jest.doMock("@/lib/db/actions", () => ({
   attachChatSummaryTranscript: async () => true,
 }));
 jest.doMock("@/lib/ai/providers", () => ({
+  KIMI_K3_SLUG: "synthetic-fallback",
   myProvider: { languageModel: (name: string) => models.get(name) },
 }));
 const { checkAndSummarizeIfNeeded } =

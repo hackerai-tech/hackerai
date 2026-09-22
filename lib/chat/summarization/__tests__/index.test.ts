@@ -42,6 +42,7 @@ jest.doMock("@/lib/db/actions", () => ({
 }));
 jest.doMock("@/lib/ai/providers", () => ({
   GROK_4_5_SLUG: "x-ai/grok-4.6",
+  KIMI_K3_SLUG: "moonshotai/kimi-k3",
   myProvider: {
     languageModel: mockProviderLanguageModel,
   },
@@ -383,7 +384,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect(result.summarizedMessages).toBe(fourMessagesAboveThreshold);
       expect(result.summaryText).toBeNull();
       expect(mockSaveChatSummary).not.toHaveBeenCalled();
-      expect(mockGenerateText).toHaveBeenCalledTimes(3);
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1395,16 +1396,18 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect(mockGenerateText).not.toHaveBeenCalled();
     });
 
-    it("uses the same bounded primary for Ask compaction", async () => {
+    it("keeps Ask outside the startup route", async () => {
       mockGenerateText.mockResolvedValue({
         finishReason: "stop",
         text: "Ask summary",
       });
       await start({ mode: "ask" });
-      expect(mockGenerateText.mock.calls[0][0] as any).toMatchObject({
-        timeout: 30_000,
-        maxRetries: 0,
-      });
+      expect(
+        (mockGenerateText.mock.calls[0][0] as any).timeout,
+      ).toBeUndefined();
+      expect(
+        (mockGenerateText.mock.calls[0][0] as any).maxRetries,
+      ).toBeUndefined();
     });
   });
 
@@ -1432,7 +1435,6 @@ describe("checkAndSummarizeIfNeeded", () => {
         providerOptions: {
           openrouter: {
             reasoning: { enabled: true, effort: "low" },
-            provider: { sort: "throughput", data_collection: "deny" },
           },
         },
       }),
@@ -1621,7 +1623,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
-  it("retries malformed provider JSON with low reasoning on DeepSeek V4.1 Flash", async () => {
+  it("retries malformed provider JSON with low reasoning on the fallback summarization model", async () => {
     const malformedJsonError = Object.assign(
       new Error("Invalid JSON response"),
       {
@@ -1674,22 +1676,19 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summaryText).toContain("Fallback summary");
     expect(mockGenerateText).toHaveBeenCalledTimes(2);
     expect(mockProviderLanguageModel).toHaveBeenCalledWith(
-      "model-deepseek-v4-flash-vision-pro",
+      "fallback-ask-model",
     );
 
     const retryCall = mockGenerateText.mock.calls[1][0];
-    expect(retryCall.model).toMatchObject({
-      modelId: "model-deepseek-v4-flash-vision-pro",
-    });
+    expect(retryCall.model).toMatchObject({ modelId: "fallback-ask-model" });
     expect(retryCall.tools).toBeUndefined();
     expect(retryCall.providerOptions).toEqual({
       openrouter: {
         user: "user_123",
         reasoning: { enabled: true, effort: "low" },
-        provider: { sort: "throughput", data_collection: "deny" },
+        models: ["moonshotai/kimi-k3"],
       },
     });
-    expect(retryCall).toMatchObject({ timeout: 30_000, maxRetries: 0 });
 
     const retryLogCall = (console.warn as jest.Mock).mock.calls.find((call) =>
       String(call[0]).includes('"event":"chat_context_compaction_retrying"'),
@@ -1705,7 +1704,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       mode: "ask",
       subscription: "free",
       summarization_attempt: "primary",
-      retry_model_name: "model-deepseek-v4-flash-vision-pro",
+      retry_model_name: "fallback-ask-model",
       retry_without_tools: true,
       provider_status_code: 200,
       openrouter_generation_id: "gen-primary",
@@ -1716,7 +1715,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect.objectContaining({
         chatId: "chat-retry",
         metadata: expect.objectContaining({
-          model: "model-deepseek-v4-flash-vision-pro",
+          model: "fallback-ask-model",
         }),
       }),
     );
@@ -1764,7 +1763,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summaryText).toContain("Nested fallback summary");
     expect(mockGenerateText).toHaveBeenCalledTimes(2);
     expect(mockProviderLanguageModel).toHaveBeenCalledWith(
-      "model-deepseek-v4-flash-vision-pro",
+      "fallback-ask-model",
     );
   });
 
@@ -1814,7 +1813,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       mode: "ask",
       subscription: "free",
       summarization_attempt: "fallback",
-      model_id: "model-deepseek-v4-flash-vision-pro",
+      model_id: "fallback-ask-model",
       fallback_result: "no_summarization",
       error_message: "Fallback provider unavailable",
     });
