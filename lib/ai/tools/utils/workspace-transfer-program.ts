@@ -33,36 +33,14 @@ def attrs(path):
     return [(key, base64.b64encode(os.getxattr(path, key, follow_symlinks=False)).decode())
             for key in sorted(os.listxattr(path, follow_symlinks=False))]
 
-def generated_log(name):
-    # Preserve the captured bytes, but do not demand that journald stop logging
-    # our own inspection. No certificate, configuration or user-file exemption.
-    pieces = name.split('/')
-    return name in ('run/systemd/journal/seqnum', 'run/systemd/journal/kernel-seqnum') or (
-        len(pieces) == 5 and pieces[:3] == ['var', 'log', 'journal'] and
-        (pieces[4] == 'system.journal' or (pieces[4].startswith('system@') and pieces[4].endswith('.journal'))))
-
 def paths():
     if os.path.abspath(root) == '/':
-        allowed = {'/', '/run', '/tmp', '/etc/ssl/certs', '/run/rpc_pipefs',
-            '/run/credentials/getty@tty1.service', '/run/credentials/systemd-journald.service',
-            '/run/credentials/systemd-networkd.service'}
         with open('/proc/self/mountinfo') as mounts:
-            virtual_types = {}
             for line in mounts:
                 fields = line.split()
                 mount = fields[4]
-                # Destination verification scans only the installed home. Its
-                # OS has different runtime mounts from the E2B source image.
-                if operation == 'verify-home':
-                    if mount == '/home' or mount == '/' + home or mount.startswith('/' + home + '/'):
-                        raise ValueError('workspace_mount')
-                    continue
-                if mount in ('/proc', '/sys'):
-                    virtual_types[mount] = fields[fields.index('-') + 1]
-                if mount not in allowed and not any(mount == p or mount.startswith(p + '/') for p in ('/proc', '/sys', '/dev')):
-                    raise ValueError('mount')
-            if operation != 'verify-home' and virtual_types != {'/proc': 'proc', '/sys': 'sysfs'}:
-                raise ValueError('virtual_mount')
+                if mount == '/home' or mount == '/' + home or mount.startswith('/' + home + '/'):
+                    raise ValueError('workspace_mount')
     def walk(path, name):
         check()
         if name in ('proc', 'sys') or os.path.abspath(path) == os.path.abspath(stage): return
@@ -73,16 +51,18 @@ def paths():
             for child in before:
                 yield from walk(os.path.join(path, child), name + '/' + child if name else child)
             if before != sorted(os.listdir(path)): raise ValueError('changed')
-    if operation == 'verify-home':
-        yield from walk(os.path.join(root, home), home)
-    else:
-        yield from walk(root, '')
+    # Agent-created and user-provided workspace state lives under /home/user.
+    # Never copy the E2B base image, runtime logs, certificates, or other OS
+    # files into a Miosa workspace.
+    yield from walk(os.path.join(root, home), home)
 
 def scan(archive=None):
     digest = hashlib.sha256()
     home_digest = hashlib.sha256()
     count = total = 0
     links = {}
+    link_counts = {}
+    expected_link_counts = {}
     for path, name, info in paths():
         if not name: continue
         count += 1
@@ -98,9 +78,10 @@ def scan(archive=None):
         if stat.S_ISREG(info.st_mode):
             total += info.st_size
             if total > MAX_BYTES: raise ValueError('limit')
-            metadata += [info.st_size, file_hash(path), links.setdefault((info.st_dev, info.st_ino), name)]
-            if in_home and not (metadata[-1] == home or metadata[-1].startswith(home + '/')):
-                raise ValueError('external_hardlink')
+            identity = (info.st_dev, info.st_ino)
+            link_counts[identity] = link_counts.get(identity, 0) + 1
+            expected_link_counts[identity] = info.st_nlink
+            metadata += [info.st_size, file_hash(path), links.setdefault(identity, name)]
         elif stat.S_ISLNK(info.st_mode):
             target = os.readlink(path)
             metadata.append(target)
@@ -118,18 +99,16 @@ def scan(archive=None):
                 with open(path, 'rb') as source: archive.addfile(member, source)
             else: archive.addfile(member)
         after = os.lstat(path)
-        if not generated_log(name) and stat.S_ISREG(info.st_mode) and (
+        if stat.S_ISREG(info.st_mode) and (
             info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
             after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise ValueError('changed')
-        if generated_log(name):
-            # Compare only stable identity on the same source, never against a
-            # pristine baseline. The archive still contains this file's bytes.
-            metadata = metadata[:5]
         encoded = json.dumps(metadata, separators=(',', ':'), ensure_ascii=True).encode() + b'\n'
         digest.update(encoded)
         if in_home: home_digest.update(encoded)
         if archive and os.path.getsize(os.path.join(stage, 'source.tar.gz')) > MAX_ARCHIVE: raise ValueError('limit')
+    if any(link_counts[identity] != expected for identity, expected in expected_link_counts.items()):
+        raise ValueError('external_hardlink')
     return {'version': 1, 'digest': digest.hexdigest(), 'homeDigest': home_digest.hexdigest(), 'entries': count, 'bytes': total}
 
 def safe_parent(path, boundary):

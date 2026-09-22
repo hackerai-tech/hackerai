@@ -57,7 +57,7 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         Buffer.from([0, 255, 1, 2, 3]),
       );
       writeFileSync(join(source, "home/user/empty"), "");
-      writeFileSync(join(source, "etc/custom.conf"), "preserve in archive");
+      writeFileSync(join(source, "etc/custom.conf"), "do not migrate");
       chmodSync(join(source, "home/user/.secret"), 0o600);
     });
     afterEach(() => rmSync(directory, { recursive: true, force: true }));
@@ -96,7 +96,13 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         ],
         { encoding: "utf8" },
       );
-      expect(names).toContain("etc/custom.conf");
+      const archivedNames = JSON.parse(names) as string[];
+      expect(archivedNames).not.toContain("etc/custom.conf");
+      expect(
+        archivedNames.every(
+          (name) => name === "home/user" || name.startsWith("home/user/"),
+        ),
+      ).toBe(true);
     });
     it("preserves hardlink topology and internal symlinks", () => {
       linkSync(
@@ -116,12 +122,20 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         readFileSync(join(source, "home/user/.secret")),
       );
     });
-    it("detects changed system files and user files after export", () => {
+    it("ignores base-image changes and detects workspace changes after export", () => {
       const capture = run("export");
       writeFileSync(join(source, "etc/custom.conf"), "edited later");
-      expect(run("verify-source").digest).not.toBe(capture.digest);
+      expect(run("verify-source").digest).toBe(capture.digest);
       writeFileSync(join(source, "home/user/new.txt"), "new");
+      expect(run("verify-source").digest).not.toBe(capture.digest);
       expect(run("verify-home").homeDigest).not.toBe(capture.homeDigest);
+    });
+    it("defers workspaces with hardlinks outside the user workspace", () => {
+      linkSync(
+        join(source, "etc/custom.conf"),
+        join(source, "home/user/external-hardlink"),
+      );
+      expect(() => run("export")).toThrow();
     });
     it("defers workspaces whose links depend on un-restored files", () => {
       symlinkSync("/etc/custom.conf", join(source, "home/user/external"));
