@@ -956,6 +956,7 @@ export const createChatHandler = () => {
                 cloudSandboxProvider: cloudSandboxSelection.provider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion: executionRegion,
+                environment: process.env.VERCEL_ENV ?? "development",
               },
             );
 

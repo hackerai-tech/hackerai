@@ -122,6 +122,11 @@ const taskSrc = fs.readFileSync(
   "utf8",
 );
 
+const subagentSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../trigger/subagent.ts"),
+  "utf8",
+);
+
 const approvalRequesterSrc = fs.readFileSync(
   path.resolve(__dirname, "../../chat/agent-tool-approval-requester.ts"),
   "utf8",
@@ -2449,6 +2454,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
+    );
+  });
+
+  test("the web chat and subagent tool paths preserve their runtime environment", () => {
+    expect(chatHandlerSrc).toMatch(
+      /cloudSandboxSelectionReason: cloudSandboxSelection\.reason,[\s\S]{0,200}environment: process\.env\.VERCEL_ENV \?\? "development"/,
+    );
+    expect(subagentSrc).toMatch(
+      /chargeSandboxRuntime: false,[\s\S]{0,200}environment: ctx\.environment\.type/,
     );
   });
 
