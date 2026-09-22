@@ -39,7 +39,7 @@ type TaskDefinition = {
     },
     context: {
       ctx: {
-        run: { region: "us-east-1" };
+        run: { id: string; region: "us-east-1" };
         environment: { type: "PRODUCTION" };
       };
     },
@@ -56,7 +56,7 @@ const payload = {
 };
 const context = {
   ctx: {
-    run: { region: "us-east-1" as const },
+    run: { id: "run-migration-1", region: "us-east-1" as const },
     environment: { type: "PRODUCTION" as const },
   },
 };
@@ -80,6 +80,10 @@ describe("Miosa workspace migration task retries", () => {
       "temporarily unavailable (archive_transfer/destination_chunk_upload/timeout)",
     );
     expect(phLogger.flush).toHaveBeenCalled();
+    expect(migrateE2BWorkspace).toHaveBeenCalledWith({
+      ...payload,
+      triggerRunId: "run-migration-1",
+    });
   });
 
   it("completes policy rejections without retrying them", async () => {
