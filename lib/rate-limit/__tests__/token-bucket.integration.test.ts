@@ -438,11 +438,11 @@ describe("token-bucket async functions", () => {
       }
     });
 
-    it("should use extra usage when limits exceeded and balance available", async () => {
+    it("uses extra usage when the exhausted allowance peek is unsuccessful", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
       mockLimitFn.mockResolvedValue({
-        success: true,
+        success: false,
         remaining: 0,
         reset: Date.now() + 3600000,
         limit: 250000,
@@ -455,7 +455,11 @@ describe("token-bucket async functions", () => {
       });
 
       expect(mockDeductFromBalance).toHaveBeenCalled();
+      expect(mockRefundToBalance).not.toHaveBeenCalled();
+      expect(mockLimitFn).toHaveBeenCalledTimes(1);
+      expect(result.pointsDeducted).toBe(0);
       expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
+      expect(result.remaining).toBe(0);
     });
 
     it("charges the full request to extra usage without consuming included credits", async () => {

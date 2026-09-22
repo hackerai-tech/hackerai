@@ -1052,12 +1052,17 @@ export const checkTokenBucketLimit = async (
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
           const bucketDeduct = estimatedCost - shortfall;
 
-          const monthlyResult =
-            bucketDeduct > 0
-              ? await monthly.limiter.limit(monthly.key, {
-                  rate: bucketDeduct,
-                })
-              : monthlyCheck;
+          // An exhausted bucket reports success: false even for the zero-rate
+          // peek above. When Extra Usage covers the whole request there is no
+          // subscription debit to validate, so that failed peek must not block
+          // an otherwise successful paid request.
+          if (bucketDeduct <= 0) {
+            return buildResult(monthlyCheck, 0, extraUsageShortfall);
+          }
+
+          const monthlyResult = await monthly.limiter.limit(monthly.key, {
+            rate: bucketDeduct,
+          });
 
           if (!monthlyResult.success) {
             try {
