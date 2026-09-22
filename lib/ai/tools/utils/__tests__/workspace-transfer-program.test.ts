@@ -141,7 +141,7 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
       symlinkSync("/etc/custom.conf", join(source, "home/user/external"));
       expect(() => run("export")).toThrow();
       expect(readFileSync(join(source, "etc/custom.conf"), "utf8")).toBe(
-        "preserve in archive",
+        "do not migrate",
       );
     });
     it("refuses archive path traversal before it can escape staging", () => {
