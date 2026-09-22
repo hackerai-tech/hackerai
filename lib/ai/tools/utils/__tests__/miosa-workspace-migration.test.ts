@@ -656,6 +656,15 @@ describe("file migration transaction", () => {
   it("preserves the fence and destination when commit acknowledgement is lost", async () => {
     claim.commit.mockRejectedValue(new Error("lost acknowledgement"));
     await expect(migrateE2BWorkspace(request)).rejects.toThrow();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({
+        reason: "transfer_unavailable",
+        migration_event_version: 4,
+        failure_stage: "commit",
+        failure_kind: "operation_failed",
+      }),
+    );
     expect(destroy).not.toHaveBeenCalled();
     expect(claim.abandon).not.toHaveBeenCalled();
   });

@@ -616,7 +616,6 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       stage_durations_ms: stageDurationsMs,
     });
   } catch (error) {
-    if (commitStarted) throw new CloudMigrationUnavailableError();
     finishStage();
     const failureKind = migrationFailureKind(error);
     const failureOperation =
@@ -627,23 +626,24 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
         : {}),
       ...miosaAcquisitionFailureDiagnostics(error),
     };
-    return report(
-      "transfer_unavailable",
-      {
-        failure_stage: migrationStage,
-        failure_kind: failureKind,
-        ...(failureOperation && { failure_operation: failureOperation }),
-        ...acquisitionFailure,
-        failed_stage_duration_ms: stageDurationsMs[migrationStage],
-        stage_durations_ms: stageDurationsMs,
-      },
-      {
-        failureStage: migrationStage,
-        failureKind,
-        ...(failureOperation && { failureOperation }),
-        failedStageDurationMs: stageDurationsMs[migrationStage],
-      },
-    );
+    const properties = {
+      failure_stage: migrationStage,
+      failure_kind: failureKind,
+      ...(failureOperation && { failure_operation: failureOperation }),
+      ...acquisitionFailure,
+      failed_stage_duration_ms: stageDurationsMs[migrationStage],
+      stage_durations_ms: stageDurationsMs,
+    };
+    if (commitStarted) {
+      report("transfer_unavailable", properties);
+      throw new CloudMigrationUnavailableError();
+    }
+    return report("transfer_unavailable", properties, {
+      failureStage: migrationStage,
+      failureKind,
+      ...(failureOperation && { failureOperation }),
+      failedStageDurationMs: stageDurationsMs[migrationStage],
+    });
   } finally {
     if (!commitStarted) {
       let destinationCleanupError: CloudMigrationUnavailableError | undefined;
