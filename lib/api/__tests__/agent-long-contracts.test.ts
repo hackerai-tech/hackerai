@@ -2444,6 +2444,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
       "cloudSandboxSelectionReason: cloudSandboxSelection.reason",
     );
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "environment: ctx.environment.type",
+    );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
     );

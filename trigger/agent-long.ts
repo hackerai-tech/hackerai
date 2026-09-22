@@ -2717,6 +2717,7 @@ export const agentLongTask = task({
                 cloudSandboxProvider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
+                environment: ctx.environment.type,
                 keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
                   ? {

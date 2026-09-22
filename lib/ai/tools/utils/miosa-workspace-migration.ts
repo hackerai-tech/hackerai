@@ -335,6 +335,7 @@ export type E2BFileMigrationRequest = {
   subscription: SubscriptionTier;
   triggerRegion: TriggerRunRegion;
   triggerRunId?: string;
+  environment?: string;
 };
 
 export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
@@ -357,7 +358,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   };
   if (
     triggerRegion === "eu-central-1" ||
-    !(await isE2BFileMigrationEnabled(userId))
+    !(await isE2BFileMigrationEnabled(userId, request.environment))
   )
     return report("not_selected");
   // Only native destinations have matching filesystem/command paths.
@@ -565,7 +566,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       ).length
     )
       return reportStage("source_changed");
-    if (!(await isE2BFileMigrationEnabled(userId)))
+    if (!(await isE2BFileMigrationEnabled(userId, request.environment)))
       return reportStage("rollout_stopped");
     startStage("cutover_preparation");
     const installed = await target.sdkSandbox.exec.run(
@@ -616,7 +617,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
       { timeoutSec: 60 },
     );
     if (cleaned.exitCode !== 0) throw new Error("Destination cleanup failed");
-    if (!(await isE2BFileMigrationEnabled(userId)))
+    if (!(await isE2BFileMigrationEnabled(userId, request.environment)))
       return reportStage("rollout_stopped");
     startStage("commit");
     commitStarted = true;

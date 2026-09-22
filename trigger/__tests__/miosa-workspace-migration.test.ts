@@ -83,6 +83,7 @@ describe("Miosa workspace migration task retries", () => {
     expect(migrateE2BWorkspace).toHaveBeenCalledWith({
       ...payload,
       triggerRunId: "run-migration-1",
+      environment: "PRODUCTION",
     });
   });
 
