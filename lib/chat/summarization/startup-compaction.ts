@@ -1,30 +1,19 @@
-import { getPostHogFeatureFlagVariantForUser } from "@/lib/posthog/server";
+export const STARTUP_COMPACTION_VARIANT =
+  "glm53_flash_deepseek_v41_glm53_v1" as const;
+export const STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS = 30_000;
+export const STARTUP_COMPACTION_FALLBACK_MODELS = [
+  "model-deepseek-v4-flash-vision-pro",
+  "model-glm-5.3",
+] as const;
 
-export const STARTUP_COMPACTION_FLAG = "agent_startup_compaction_v1";
-export const STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS = 30_000;
-export const STARTUP_COMPACTION_FALLBACK_MODEL = "model-deepseek-v4-flash-0731";
-
-export type StartupCompactionVariant = "control" | "bounded_glm_v1";
+export type StartupCompactionVariant = typeof STARTUP_COMPACTION_VARIANT;
 export type StartupCompactionAttempt = {
   variant: StartupCompactionVariant;
   fallbackUsed: boolean;
 };
 export type StartupCompactionContext = {
-  userId: string;
   onAttempt?: (attempt: StartupCompactionAttempt) => void;
 };
-
-export async function getStartupCompactionVariant(
-  userId: string,
-): Promise<StartupCompactionVariant> {
-  if (!userId) return "control";
-  const variant = await getPostHogFeatureFlagVariantForUser(
-    STARTUP_COMPACTION_FLAG,
-    userId,
-    { sendFeatureFlagEvents: false },
-  );
-  return variant === "bounded_glm_v1" ? variant : "control";
-}
 
 export class InvalidCompactionSummaryError extends Error {
   constructor() {

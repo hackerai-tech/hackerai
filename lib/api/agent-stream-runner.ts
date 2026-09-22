@@ -1391,7 +1391,6 @@ export async function createAgentStream(
               ...(generationStepIndex === 0 &&
                 ctx.mode === "agent" && {
                   startupCompaction: {
-                    userId: ctx.userId,
                     onAttempt: ctx.onStartupCompactionAttempt,
                   },
                 }),

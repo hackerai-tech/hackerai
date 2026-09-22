@@ -28,20 +28,16 @@ afterAll(() => {
 const models = new Map<string, MockLanguageModelV3>();
 const saveSummary = jest.fn(async (_args: unknown) => undefined);
 jest.doMock("server-only", () => ({}));
-jest.doMock("@/lib/posthog/server", () => ({
-  getPostHogFeatureFlagVariantForUser: async () => "bounded_glm_v1",
-}));
 jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: saveSummary,
   attachChatSummaryTranscript: async () => true,
 }));
 jest.doMock("@/lib/ai/providers", () => ({
-  KIMI_K3_SLUG: "synthetic-fallback",
   myProvider: { languageModel: (name: string) => models.get(name) },
 }));
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
-const { STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS } =
+const { STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS } =
   require("../startup-compaction") as typeof import("../startup-compaction");
 
 const summary = () => ({
@@ -77,6 +73,7 @@ const messages: UIMessage[] = Array.from({ length: 6 }, (_, index) => ({
 describe("startup compaction through the real AI SDK", () => {
   let primary: MockLanguageModelV3;
   let fallback: MockLanguageModelV3;
+  let finalFallback: MockLanguageModelV3;
   let writer: UIMessageStreamWriter;
   const start = (signal?: AbortSignal) =>
     checkAndSummarizeIfNeeded({
@@ -87,7 +84,7 @@ describe("startup compaction through the real AI SDK", () => {
       writer,
       chatId: "synthetic-sdk-acceptance",
       abortSignal: signal,
-      startupCompaction: { userId: "synthetic-internal" },
+      startupCompaction: {},
       providerPromptPressure: {
         reason: "message_count",
         reasons: ["message_count"],
@@ -107,8 +104,13 @@ describe("startup compaction through the real AI SDK", () => {
       modelId: "synthetic-fallback",
       doGenerate: async () => summary(),
     });
+    finalFallback = new MockLanguageModelV3({
+      modelId: "synthetic-final-fallback",
+      doGenerate: async () => summary(),
+    });
     models.set("model-glm-5.3-flash", primary);
-    models.set("model-deepseek-v4-flash-0731", fallback);
+    models.set("model-deepseek-v4-flash-vision-pro", fallback);
+    models.set("model-glm-5.3", finalFallback);
     writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
   });
 
@@ -127,7 +129,7 @@ describe("startup compaction through the real AI SDK", () => {
     const started = Date.now();
     const result = await start();
     expect(Date.now() - started).toBeGreaterThanOrEqual(
-      STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS - 100,
+      STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS - 100,
     );
     expect(primarySignal?.aborted).toBe(true);
     expect(result.needsSummarization).toBe(true);

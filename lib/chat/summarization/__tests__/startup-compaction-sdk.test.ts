@@ -1,16 +1,9 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { APICallError } from "ai";
 import { generateSummaryText } from "../helpers";
-import {
-  getStartupCompactionVariant,
-  isRecoverableStartupCompactionError,
-} from "../startup-compaction";
-import { getPostHogFeatureFlagVariantForUser } from "@/lib/posthog/server";
+import { isRecoverableStartupCompactionError } from "../startup-compaction";
 
 jest.mock("@/lib/db/actions", () => ({}));
-jest.mock("@/lib/posthog/server", () => ({
-  getPostHogFeatureFlagVariantForUser: jest.fn(),
-}));
 
 const generate = (model: MockLanguageModelV3, signal?: AbortSignal) =>
   generateSummaryText(
@@ -100,25 +93,5 @@ describe("startup compaction SDK boundary", () => {
     await expect(generate(model)).rejects.toThrow("rate limited");
     expect(model.doGenerateCalls).toHaveLength(1);
     expect(isRecoverableStartupCompactionError(error)).toBe(true);
-  });
-
-  it.each([undefined, "control", "unknown"])(
-    "defaults an unrecognized assignment to control: %s",
-    async (value) => {
-      jest.mocked(getPostHogFeatureFlagVariantForUser).mockResolvedValue(value);
-      await expect(getStartupCompactionVariant("user-test")).resolves.toBe(
-        "control",
-      );
-      expect(getPostHogFeatureFlagVariantForUser).toHaveBeenCalledWith(
-        "agent_startup_compaction_v1",
-        "user-test",
-        { sendFeatureFlagEvents: false },
-      );
-    },
-  );
-
-  it("does not evaluate a missing identity", async () => {
-    await expect(getStartupCompactionVariant("")).resolves.toBe("control");
-    expect(getPostHogFeatureFlagVariantForUser).not.toHaveBeenCalled();
   });
 });

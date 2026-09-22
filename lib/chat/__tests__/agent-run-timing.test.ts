@@ -7,20 +7,20 @@ describe("AgentRunTimingTracker", () => {
     const tracker = new AgentRunTimingTracker();
     expect(tracker.snapshot().startupCompactionVariant).toBeUndefined();
     tracker.recordStartupCompactionAttempt({
-      variant: "bounded_glm_v1",
+      variant: "glm53_flash_deepseek_v41_glm53_v1",
       fallbackUsed: false,
     });
     tracker.recordStartupCompactionAttempt({
-      variant: "bounded_glm_v1",
+      variant: "glm53_flash_deepseek_v41_glm53_v1",
       fallbackUsed: true,
     });
     tracker.startModelStream();
     tracker.recordStartupCompactionAttempt({
-      variant: "control",
+      variant: "glm53_flash_deepseek_v41_glm53_v1",
       fallbackUsed: false,
     });
     expect(tracker.snapshot()).toMatchObject({
-      startupCompactionVariant: "bounded_glm_v1",
+      startupCompactionVariant: "glm53_flash_deepseek_v41_glm53_v1",
       startupCompactionFallbackUsed: true,
     });
   });

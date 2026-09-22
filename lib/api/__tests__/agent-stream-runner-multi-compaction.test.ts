@@ -712,7 +712,6 @@ describe("createAgentStream repeated compaction", () => {
       const options = mockRunSummarizationStep.mock.calls.at(-1)[0];
       if (eligible)
         expect(options.startupCompaction).toEqual({
-          userId: "user",
           onAttempt: onStartupCompactionAttempt,
         });
       else expect(options.startupCompaction).toBeUndefined();
