@@ -20,7 +20,6 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
   isRecoverableStartupCompactionError,
-  STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS,
   STARTUP_COMPACTION_FALLBACK_MODELS,
   STARTUP_COMPACTION_VARIANT,
   type StartupCompactionContext,
@@ -620,10 +619,7 @@ const generateSummaryTextWithRetry = async ({
           abortSignal,
           modelMessages,
           summaryInputMaxTokens,
-          {
-            timeout: STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS,
-            maxRetries: 0,
-          },
+          { maxRetries: 0 },
         );
 
         return { ...result, languageModel, attempt };

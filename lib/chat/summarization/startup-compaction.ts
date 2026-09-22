@@ -1,6 +1,5 @@
 export const STARTUP_COMPACTION_VARIANT =
   "glm53_flash_deepseek_v41_glm53_v1" as const;
-export const STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS = 30_000;
 export const STARTUP_COMPACTION_FALLBACK_MODELS = [
   "model-deepseek-v4-flash-vision-pro",
   "model-glm-5.3",

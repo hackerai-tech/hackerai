@@ -28,37 +28,11 @@ const generate = (model: MockLanguageModelV3, signal?: AbortSignal) =>
     signal,
     undefined,
     1000,
-    { timeout: 30, maxRetries: 0 },
+    { maxRetries: 0 },
   );
 
 describe("startup compaction SDK boundary", () => {
-  it("aborts the actual provider operation at the deadline without retrying", async () => {
-    let providerSignal: AbortSignal | undefined;
-    const model = new MockLanguageModelV3({
-      doGenerate: ({ abortSignal }) => {
-        providerSignal = abortSignal;
-        return new Promise((_resolve, reject) => {
-          abortSignal?.addEventListener(
-            "abort",
-            () => reject(abortSignal.reason),
-            { once: true },
-          );
-        });
-      },
-    });
-    let failure: unknown;
-    try {
-      await generate(model);
-    } catch (error) {
-      failure = error;
-    }
-    expect(failure).toBeDefined();
-    expect(providerSignal?.aborted).toBe(true);
-    expect(isRecoverableStartupCompactionError(failure)).toBe(true);
-    expect(model.doGenerateCalls).toHaveLength(1);
-  });
-
-  it("passes cancellation into the provider independently of the deadline", async () => {
+  it("passes user cancellation into the provider", async () => {
     const controller = new AbortController();
     const model = new MockLanguageModelV3({
       doGenerate: ({ abortSignal }) =>
@@ -93,5 +67,13 @@ describe("startup compaction SDK boundary", () => {
     await expect(generate(model)).rejects.toThrow("rate limited");
     expect(model.doGenerateCalls).toHaveLength(1);
     expect(isRecoverableStartupCompactionError(error)).toBe(true);
+  });
+
+  it("still classifies provider timeouts as recoverable", () => {
+    expect(
+      isRecoverableStartupCompactionError(
+        Object.assign(new Error("provider timeout"), { name: "TimeoutError" }),
+      ),
+    ).toBe(true);
   });
 });

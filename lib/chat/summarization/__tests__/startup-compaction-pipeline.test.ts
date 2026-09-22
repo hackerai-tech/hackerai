@@ -38,8 +38,6 @@ jest.doMock("@/lib/ai/providers", () => ({
 }));
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
-const { STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS } =
-  require("../startup-compaction") as typeof import("../startup-compaction");
 
 const summary = () => ({
   content: [
@@ -115,28 +113,24 @@ describe("startup compaction through the real AI SDK", () => {
     writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
   });
 
-  it("aborts a stalled primary at the real deadline and persists one fallback", async () => {
+  it("persists one fallback after a recoverable primary failure", async () => {
     let primarySignal: AbortSignal | undefined;
     primary.doGenerate = async ({ abortSignal }) => {
       primarySignal = abortSignal;
-      return new Promise((_resolve, reject) => {
-        abortSignal?.addEventListener(
-          "abort",
-          () => reject(abortSignal.reason),
-          { once: true },
-        );
+      throw new APICallError({
+        message: "Synthetic 503",
+        url: "https://synthetic.invalid",
+        requestBodyValues: {},
+        statusCode: 503,
+        isRetryable: true,
       });
     };
-    const started = Date.now();
     const result = await start();
-    expect(Date.now() - started).toBeGreaterThanOrEqual(
-      STARTUP_COMPACTION_ATTEMPT_TIMEOUT_MS - 100,
-    );
-    expect(primarySignal?.aborted).toBe(true);
+    expect(primarySignal).toBeUndefined();
     expect(result.needsSummarization).toBe(true);
     expect(fallback.doGenerateCalls).toHaveLength(1);
     expect(saveSummary).toHaveBeenCalledTimes(1);
-  }, 40_000);
+  });
 
   it.each(["primary", "fallback"] as const)(
     "cancels during active %s generation without persisting",

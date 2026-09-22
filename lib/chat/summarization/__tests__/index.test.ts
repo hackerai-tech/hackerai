@@ -1225,13 +1225,12 @@ describe("checkAndSummarizeIfNeeded", () => {
         (call) => call[0] as any,
       );
       expect(primary).toMatchObject({
-        timeout: 30_000,
         maxRetries: 0,
         model: { modelId: "model-glm-5.3-flash" },
       });
+      expect(primary.timeout).toBeUndefined();
       expect(fallback).toMatchObject({
         model: { modelId: "model-deepseek-v4-flash-vision-pro" },
-        timeout: 30_000,
         maxRetries: 0,
         providerOptions: {
           openrouter: {
@@ -1241,6 +1240,7 @@ describe("checkAndSummarizeIfNeeded", () => {
           },
         },
       });
+      expect(fallback.timeout).toBeUndefined();
       expect(fallback.messages).toEqual(primary.messages);
       expect(onAttempt.mock.calls).toEqual([
         [
