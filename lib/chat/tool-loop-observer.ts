@@ -69,6 +69,7 @@ export class ToolLoopObserver {
   private history: Step[] = [];
   private reported = new Set<string>();
 
+  /** Share report suppression across fallback streams to bound per-request log volume. */
   shouldReport(reason: string, action: string, repeatCount: number): boolean {
     const key = `${reason}:${action}:${repeatCount}`;
     if (this.reported.size >= 16 || this.reported.has(key)) return false;
@@ -76,6 +77,7 @@ export class ToolLoopObserver {
     return true;
   }
 
+  /** Incomplete or unsupported steps break the chain; never infer progress across a gap. */
   observe(
     calls: readonly ToolCall[],
     results: readonly ToolResult[],
@@ -102,7 +104,7 @@ export class ToolLoopObserver {
       const input =
         call.input &&
         typeof call.input === "object" &&
-        !Array.isArray(call.input)
+        Object.getPrototypeOf(call.input) === Object.prototype
           ? Object.fromEntries(
               Object.entries(call.input).filter(
                 ([key]) => key !== "brief" && key !== "explanation",

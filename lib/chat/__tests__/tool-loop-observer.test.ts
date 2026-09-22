@@ -150,6 +150,19 @@ describe("ToolLoopObserver", () => {
     expect(observe(observer, {}, { a: 1 })).toBeUndefined();
   });
 
+  it.each([new Date(0), new Map(), new Set(), Object.create(null)])(
+    "breaks observation for non-plain inputs instead of converting them to empty objects",
+    (input) => {
+      const observer = new ToolLoopObserver();
+      observe(observer, {});
+      observe(observer, {});
+      expect(observe(observer, input)).toBeUndefined();
+      expect(observe(observer, {})).toBeUndefined();
+      expect(observe(observer, {})).toBeUndefined();
+      expect(observe(observer, {})?.repeatCount).toBe(3);
+    },
+  );
+
   it("caps telemetry and retained history over long runs", () => {
     const observer = new ToolLoopObserver();
     for (let i = 0; i < 1_000; i++) observe(observer, { i }, "output");
