@@ -29,9 +29,32 @@ def file_hash(path):
             digest.update(block)
     return digest.hexdigest()
 
-def attrs(path):
-    return [(key, base64.b64encode(os.getxattr(path, key, follow_symlinks=False)).decode())
-            for key in sorted(os.listxattr(path, follow_symlinks=False))]
+def file_hash_fd(handle):
+    digest = hashlib.sha256()
+    os.lseek(handle, 0, os.SEEK_SET)
+    with os.fdopen(os.dup(handle), 'rb') as source:
+        while True:
+            check()
+            block = source.read(1024 * 1024)
+            if not block: break
+            digest.update(block)
+    os.lseek(handle, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+def attrs(handle):
+    return [(key, base64.b64encode(os.getxattr(handle, key)).decode())
+            for key in sorted(os.listxattr(handle))]
+
+def fingerprint(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
+
+def open_directory(name, parent=None):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        return os.open(name, flags) if parent is None else os.open(name, flags, dir_fd=parent)
+    except OSError as error:
+        raise ValueError('changed') from error
 
 def paths():
     if os.path.abspath(root) == '/':
@@ -41,20 +64,48 @@ def paths():
                 mount = fields[4]
                 if mount == '/home' or mount == '/' + home or mount.startswith('/' + home + '/'):
                     raise ValueError('workspace_mount')
-    def walk(path, name):
+    def walk(handle, name, info):
         check()
-        if name in ('proc', 'sys') or os.path.abspath(path) == os.path.abspath(stage): return
-        info = os.lstat(path)
-        yield path, name, info
-        if stat.S_ISDIR(info.st_mode):
-            before = sorted(os.listdir(path))
-            for child in before:
-                yield from walk(os.path.join(path, child), name + '/' + child if name else child)
-            if before != sorted(os.listdir(path)): raise ValueError('changed')
+        yield handle, None, None, name, info
+        before = sorted(os.listdir(handle))
+        for child in before:
+            check()
+            child_name = name + '/' + child
+            child_info = os.stat(child, dir_fd=handle, follow_symlinks=False)
+            if stat.S_ISDIR(child_info.st_mode):
+                child_handle = open_directory(child, handle)
+                try:
+                    opened = os.fstat(child_handle)
+                    if fingerprint(opened) != fingerprint(child_info): raise ValueError('changed')
+                    yield from walk(child_handle, child_name, opened)
+                finally: os.close(child_handle)
+            elif stat.S_ISREG(child_info.st_mode):
+                try:
+                    child_handle = os.open(child, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=handle)
+                except OSError as error:
+                    raise ValueError('changed') from error
+                try:
+                    opened = os.fstat(child_handle)
+                    if fingerprint(opened) != fingerprint(child_info): raise ValueError('changed')
+                    yield child_handle, None, None, child_name, opened
+                finally: os.close(child_handle)
+            else:
+                yield None, handle, child, child_name, child_info
+        if before != sorted(os.listdir(handle)) or fingerprint(os.fstat(handle)) != fingerprint(info):
+            raise ValueError('changed')
     # Agent-created and user-provided workspace state lives under /home/user.
     # Never copy the E2B base image, runtime logs, certificates, or other OS
     # files into a Miosa workspace.
-    yield from walk(os.path.join(root, home), home)
+    root_handle = open_directory(root)
+    try:
+        home_handle = open_directory('home', root_handle)
+        try:
+            user_handle = open_directory('user', home_handle)
+            try:
+                yield from walk(user_handle, home, os.fstat(user_handle))
+            finally: os.close(user_handle)
+        finally: os.close(home_handle)
+    finally: os.close(root_handle)
 
 def scan(archive=None):
     digest = hashlib.sha256()
@@ -63,7 +114,7 @@ def scan(archive=None):
     links = {}
     link_counts = {}
     expected_link_counts = {}
-    for path, name, info in paths():
+    for handle, parent, entry, name, info in paths():
         if not name: continue
         count += 1
         if count > MAX_ENTRIES: raise ValueError('limit')
@@ -74,16 +125,17 @@ def scan(archive=None):
         if stat.S_ISSOCK(info.st_mode):
             if not name.startswith(('run/', 'dev/')): raise ValueError('socket')
             continue
-        metadata = [name, info.st_mode, info.st_uid, info.st_gid, info.st_nlink, attrs(path)]
+        metadata = [name, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+                    attrs(handle) if handle is not None else []]
         if stat.S_ISREG(info.st_mode):
             total += info.st_size
             if total > MAX_BYTES: raise ValueError('limit')
             identity = (info.st_dev, info.st_ino)
             link_counts[identity] = link_counts.get(identity, 0) + 1
             expected_link_counts[identity] = info.st_nlink
-            metadata += [info.st_size, file_hash(path), links.setdefault(identity, name)]
+            metadata += [info.st_size, file_hash_fd(handle), links.setdefault(identity, name)]
         elif stat.S_ISLNK(info.st_mode):
-            target = os.readlink(path)
+            target = os.readlink(entry, dir_fd=parent)
             metadata.append(target)
             if in_home:
                 resolved = os.path.normpath(os.path.join('/' + os.path.dirname(name), target))
@@ -93,16 +145,34 @@ def scan(archive=None):
         elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISFIFO(info.st_mode)):
             raise ValueError('unsupported_entry')
         if archive:
-            member = archive.gettarinfo(path, arcname=name)
+            member = tarfile.TarInfo(name)
+            member.mode = stat.S_IMODE(info.st_mode)
+            member.uid = info.st_uid
+            member.gid = info.st_gid
+            member.mtime = info.st_mtime
             member.pax_headers['HACKERAI.xattrs'] = json.dumps(metadata[5], separators=(',', ':'))
-            if member.isreg():
-                with open(path, 'rb') as source: archive.addfile(member, source)
-            else: archive.addfile(member)
-        after = os.lstat(path)
-        if stat.S_ISREG(info.st_mode) and (
-            info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (
-            after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            if stat.S_ISDIR(info.st_mode):
+                member.type = tarfile.DIRTYPE
+                archive.addfile(member)
+            elif stat.S_ISLNK(info.st_mode):
+                member.type = tarfile.SYMTYPE
+                member.linkname = target
+                archive.addfile(member)
+            elif metadata[8] != name:
+                member.type = tarfile.LNKTYPE
+                member.linkname = metadata[8]
+                archive.addfile(member)
+            else:
+                member.type = tarfile.REGTYPE
+                member.size = info.st_size
+                os.lseek(handle, 0, os.SEEK_SET)
+                with os.fdopen(os.dup(handle), 'rb') as source: archive.addfile(member, source)
+        if handle is not None and fingerprint(os.fstat(handle)) != fingerprint(info):
             raise ValueError('changed')
+        if stat.S_ISLNK(info.st_mode):
+            after = os.stat(entry, dir_fd=parent, follow_symlinks=False)
+            if fingerprint(after) != fingerprint(info) or os.readlink(entry, dir_fd=parent) != target:
+                raise ValueError('changed')
         encoded = json.dumps(metadata, separators=(',', ':'), ensure_ascii=True).encode() + b'\n'
         digest.update(encoded)
         if in_home: home_digest.update(encoded)

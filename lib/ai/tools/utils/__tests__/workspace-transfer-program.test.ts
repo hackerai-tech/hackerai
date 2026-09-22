@@ -144,6 +144,42 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         "do not migrate",
       );
     });
+    it("does not follow a directory swapped for a symlink during traversal", () => {
+      const workspace = join(source, "home/user");
+      const outside = join(directory, "outside");
+      mkdirSync(join(workspace, "victim"));
+      mkdirSync(outside);
+      writeFileSync(join(outside, "private"), "must not be archived");
+      const harness = `import os
+original_stat = os.stat
+swapped = False
+def race_stat(path, *args, **kwargs):
+    global swapped
+    result = original_stat(path, *args, **kwargs)
+    if not swapped and path == 'victim' and kwargs.get('dir_fd') is not None and kwargs.get('follow_symlinks') is False:
+        parent = os.readlink('/proc/self/fd/' + str(kwargs['dir_fd']))
+        os.rename(os.path.join(parent, 'victim'), os.path.join(parent, 'victim-original'))
+        os.symlink(${JSON.stringify(outside)}, os.path.join(parent, 'victim'))
+        swapped = True
+    return result
+os.stat = race_stat
+`;
+      const result = spawnSync(
+        "python3",
+        [
+          "-I",
+          "-B",
+          "-c",
+          harness + WORKSPACE_TRANSFER_PROGRAM,
+          "export",
+          stage,
+          source,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toEqual({ failure: "changed" });
+    });
     it("refuses archive path traversal before it can escape staging", () => {
       mkdirSync(destinationStage);
       execFileSync("python3", [
