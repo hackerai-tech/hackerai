@@ -32,6 +32,8 @@ import { waitForMiosaReadiness } from "./miosa-readiness";
 const MAX_ARCHIVE_BYTES = 4 * 1024 ** 3;
 const CHUNK_BYTES = 4 * 1024 ** 2;
 const TRANSIENT_OPERATION_ATTEMPTS = 3;
+const MIOSA_MIGRATION_NAME_PREFIX = "hackerai-mig-";
+const MIOSA_MIGRATION_NAME_HASH_LENGTH = 22;
 const digestPattern = /^[a-f0-9]{64}$/;
 const sourceExportRejections = [
   "changed",
@@ -80,6 +82,15 @@ type Capture = {
   archiveDigest: string;
   archiveBytes: number;
 };
+
+export const miosaMigrationDestinationName = (
+  userId: string,
+  claimToken: string,
+): string =>
+  `${MIOSA_MIGRATION_NAME_PREFIX}${createHash("sha256")
+    .update(`${miosaExternalUserId(userId)}:${claimToken}`)
+    .digest("hex")
+    .slice(0, MIOSA_MIGRATION_NAME_HASH_LENGTH)}`;
 
 class MigrationOperationError extends Error {
   constructor(
@@ -487,7 +498,7 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
     }
     const capture = parseCapture(exported.stdout);
     startStage("destination_creation");
-    preparedName = `${miosaExternalUserId(userId)}-migration-${claim.token}`;
+    preparedName = miosaMigrationDestinationName(userId, claim.token);
     ({ sandbox: target } = await ensureMiosaSandboxConnection(
       { userID: userId, setSandbox: () => {} },
       {
