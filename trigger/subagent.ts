@@ -1065,6 +1065,7 @@ export const subagentTask = task({
                 ptyScopeId: row.subagent_id,
                 chargeSandboxRuntime: false,
                 triggerRegion,
+                environment: ctx.environment.type,
               },
             );
             approvalEnsureSandbox = ensureSandbox;

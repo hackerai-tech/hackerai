@@ -48,6 +48,19 @@ describe("migration scheduling", () => {
       { hackerai_environment: "preview" },
     );
   });
+  it("uses the explicit Trigger environment when worker env variables are unavailable", async () => {
+    delete process.env.TRIGGER_ENV;
+    delete process.env.VERCEL_ENV;
+
+    await queueE2BFileMigration({ ...options, environment: "PREVIEW" });
+
+    expect(getPostHogFeatureFlagForUser).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_v1",
+      "user",
+      { hackerai_environment: "preview" },
+    );
+    expect(tasks.trigger).toHaveBeenCalled();
+  });
   it("does not schedule users outside the independent rollout", async () => {
     (getPostHogFeatureFlagForUser as jest.Mock).mockResolvedValue(false);
     expect(await queueE2BFileMigration(options)).toBe(false);

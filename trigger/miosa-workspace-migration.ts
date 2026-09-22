@@ -52,6 +52,7 @@ export const miosaWorkspaceMigration = schemaTask({
         const result = await migrateE2BWorkspace({
           ...payload,
           triggerRunId: ctx.run.id,
+          environment: ctx.environment.type,
         });
         if (
           shouldRecheckWhenIdle(result.reason) &&

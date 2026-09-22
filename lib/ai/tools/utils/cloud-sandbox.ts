@@ -39,6 +39,7 @@ export type CloudSandboxAcquisitionContext = {
   triggerRunId?: string;
   runKind?: "parent" | "subagent";
   triggerRegion?: TriggerRunRegion;
+  environment?: string;
 };
 
 const ensureE2BCloudSandboxConnection = (options: {
@@ -109,6 +110,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
                 subscription: options.context?.subscription,
                 workspaces,
                 triggerRegion: options.context?.triggerRegion,
+                environment: options.context?.environment,
               }),
           });
         },

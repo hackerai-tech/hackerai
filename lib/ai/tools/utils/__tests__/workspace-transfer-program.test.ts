@@ -57,7 +57,7 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         Buffer.from([0, 255, 1, 2, 3]),
       );
       writeFileSync(join(source, "home/user/empty"), "");
-      writeFileSync(join(source, "etc/custom.conf"), "preserve in archive");
+      writeFileSync(join(source, "etc/custom.conf"), "do not migrate");
       chmodSync(join(source, "home/user/.secret"), 0o600);
     });
     afterEach(() => rmSync(directory, { recursive: true, force: true }));
@@ -96,7 +96,13 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         ],
         { encoding: "utf8" },
       );
-      expect(names).toContain("etc/custom.conf");
+      const archivedNames = JSON.parse(names) as string[];
+      expect(archivedNames).not.toContain("etc/custom.conf");
+      expect(
+        archivedNames.every(
+          (name) => name === "home/user" || name.startsWith("home/user/"),
+        ),
+      ).toBe(true);
     });
     it("preserves hardlink topology and internal symlinks", () => {
       linkSync(
@@ -116,19 +122,63 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         readFileSync(join(source, "home/user/.secret")),
       );
     });
-    it("detects changed system files and user files after export", () => {
+    it("ignores base-image changes and detects workspace changes after export", () => {
       const capture = run("export");
       writeFileSync(join(source, "etc/custom.conf"), "edited later");
-      expect(run("verify-source").digest).not.toBe(capture.digest);
+      expect(run("verify-source").digest).toBe(capture.digest);
       writeFileSync(join(source, "home/user/new.txt"), "new");
+      expect(run("verify-source").digest).not.toBe(capture.digest);
       expect(run("verify-home").homeDigest).not.toBe(capture.homeDigest);
+    });
+    it("defers workspaces with hardlinks outside the user workspace", () => {
+      linkSync(
+        join(source, "etc/custom.conf"),
+        join(source, "home/user/external-hardlink"),
+      );
+      expect(() => run("export")).toThrow();
     });
     it("defers workspaces whose links depend on un-restored files", () => {
       symlinkSync("/etc/custom.conf", join(source, "home/user/external"));
       expect(() => run("export")).toThrow();
       expect(readFileSync(join(source, "etc/custom.conf"), "utf8")).toBe(
-        "preserve in archive",
+        "do not migrate",
       );
+    });
+    it("does not follow a directory swapped for a symlink during traversal", () => {
+      const workspace = join(source, "home/user");
+      const outside = join(directory, "outside");
+      mkdirSync(join(workspace, "victim"));
+      mkdirSync(outside);
+      writeFileSync(join(outside, "private"), "must not be archived");
+      const harness = `import os
+original_stat = os.stat
+swapped = False
+def race_stat(path, *args, **kwargs):
+    global swapped
+    result = original_stat(path, *args, **kwargs)
+    if not swapped and path == 'victim' and kwargs.get('dir_fd') is not None and kwargs.get('follow_symlinks') is False:
+        parent = os.readlink('/proc/self/fd/' + str(kwargs['dir_fd']))
+        os.rename(os.path.join(parent, 'victim'), os.path.join(parent, 'victim-original'))
+        os.symlink(${JSON.stringify(outside)}, os.path.join(parent, 'victim'))
+        swapped = True
+    return result
+os.stat = race_stat
+`;
+      const result = spawnSync(
+        "python3",
+        [
+          "-I",
+          "-B",
+          "-c",
+          harness + WORKSPACE_TRANSFER_PROGRAM,
+          "export",
+          stage,
+          source,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(1);
+      expect(JSON.parse(result.stdout)).toEqual({ failure: "changed" });
     });
     it("refuses archive path traversal before it can escape staging", () => {
       mkdirSync(destinationStage);
