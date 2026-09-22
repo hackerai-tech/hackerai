@@ -12,7 +12,10 @@ import {
   ensureMiosaSandboxConnection,
 } from "../miosa-sandbox";
 import { isE2BFileMigrationEnabled } from "../miosa-workspace-migration-queue";
-import { migrateE2BWorkspace } from "../miosa-workspace-migration";
+import {
+  migrateE2BWorkspace,
+  miosaMigrationDestinationName,
+} from "../miosa-workspace-migration";
 
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
@@ -171,6 +174,16 @@ describe("file migration transaction", () => {
         };
       return ok();
     });
+  });
+  it("uses a deterministic provider-safe destination name", () => {
+    const name = miosaMigrationDestinationName("user", claim.token);
+
+    expect(name).toMatch(/^hackerai-mig-[a-f0-9]{22}$/);
+    expect(name.length).toBeLessThanOrEqual(36);
+    expect(miosaMigrationDestinationName("user", claim.token)).toBe(name);
+    expect(miosaMigrationDestinationName("other-user", claim.token)).not.toBe(
+      name,
+    );
   });
   it("commits the exact copied destination only after transfer and pause/resume verification", async () => {
     expect(await migrateE2BWorkspace(request)).toEqual({
@@ -649,6 +662,10 @@ describe("file migration transaction", () => {
       }),
     );
     expect(claim.abandon).toHaveBeenCalled();
+    const migrationName = (ensureMiosaSandboxConnection as jest.Mock).mock
+      .calls[0][1].migrationName;
+    expect(migrationName).toMatch(/^hackerai-mig-[a-f0-9]{22}$/);
+    expect(getByName).toHaveBeenCalledWith(migrationName);
     expect(
       JSON.stringify((phLogger.event as jest.Mock).mock.calls),
     ).not.toContain("private provider body");
