@@ -45,6 +45,44 @@ describe("cloud sandbox provider routing", () => {
     mockMigrationAssert.mockResolvedValue(undefined);
   });
 
+  it("drops unsampled successful steps but retains failures and acquisition completion", async () => {
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      const step = createMiosaAcquisitionDiagnostics({
+        templateId: "hackerai-tools",
+        workspaceName: "private-user",
+        acquisitionId: "acquisition-1",
+        onDiagnostic: options.onDiagnostic,
+      });
+      await step("readiness", async () => undefined);
+      await step("resume_conflict_refresh", async () => undefined);
+      await expect(
+        step("get_or_create", async () => {
+          throw new Error("unavailable");
+        }),
+      ).rejects.toThrow();
+      return { sandbox: { sandboxKind: "miosa", sandboxId: "miosa-1" } };
+    });
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { provider: "miosa" },
+    });
+    const steps = mockPostHogEvent.mock.calls.filter(
+      ([event]) => event === "miosa_sandbox_acquisition_step",
+    );
+    expect(steps.map(([, fields]) => fields.stage)).toEqual([
+      "resume_conflict_refresh",
+      "get_or_create",
+    ]);
+    expect(
+      steps.every(([, fields]) => fields.telemetry_sample_rate === 1),
+    ).toBe(true);
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_completed",
+      expect.objectContaining({ outcome: "success" }),
+    );
+  });
+
   it("keeps migrated files on Miosa when the rollout now selects E2B", async () => {
     mockMigrationRead.mockResolvedValue({
       phase: "miosa",
@@ -237,6 +275,7 @@ describe("cloud sandbox provider routing", () => {
         const step = createMiosaAcquisitionDiagnostics({
           templateId: "hackerai-tools",
           workspaceName: "private-user",
+          acquisitionId: "acquisition-8",
           onDiagnostic: options.onDiagnostic,
         });
         await step("readiness", async () => undefined);
@@ -515,6 +554,7 @@ describe("cloud sandbox provider routing", () => {
         const step = createMiosaAcquisitionDiagnostics({
           templateId: "hackerai-tools",
           workspaceName: "private-user",
+          acquisitionId: "acquisition-8",
           onDiagnostic: options.onDiagnostic,
         });
         await step("get_or_create", async () => {

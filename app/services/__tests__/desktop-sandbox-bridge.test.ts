@@ -42,7 +42,7 @@ jest.mock("centrifuge", () => ({
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
-  captureAuthenticatedEvent: jest.fn(),
+  captureAuthenticatedEvent: jest.fn().mockReturnValue(true),
 }));
 
 // Mock Tauri IPC
@@ -468,6 +468,30 @@ it("requests a fresh bridge after a terminal transport disconnect", async () => 
     "desktop_bridge_relay_state_changed",
     expect.objectContaining({ state: "disconnected", code: 3500 }),
   );
+});
+
+it("summarizes repeated relay errors on stop without changing recovery callbacks", async () => {
+  const bridge = new DesktopSandboxBridge(buildConfig());
+  await bridge.start();
+  const error = getClientHandler("error");
+  for (let i = 0; i < 20; i++)
+    error({ type: "transport", error: { code: 2, message: "offline" } });
+  const captures = jest.mocked(captureAuthenticatedEvent);
+  expect(
+    captures.mock.calls.filter(
+      ([event]) => event === "desktop_bridge_relay_error",
+    ),
+  ).toHaveLength(1);
+  await bridge.stop();
+  const errors = captures.mock.calls.filter(
+    ([event]) => event === "desktop_bridge_relay_error",
+  );
+  expect(errors).toHaveLength(2);
+  expect(errors[1][1]).toMatchObject({
+    telemetry_summary: true,
+    telemetry_occurrences: 19,
+  });
+  expect(mockClient.disconnect).toHaveBeenCalled();
 });
 
 describe("terminal connection state", () => {

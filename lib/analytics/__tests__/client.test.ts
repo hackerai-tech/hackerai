@@ -21,6 +21,7 @@ jest.mock("posthog-js", () => ({
 }));
 
 const {
+  captureComputerActivationImpression,
   captureMessageFeedback,
   captureUpgradeCtaImpression,
   confirmAuthenticatedAnalyticsUserId,
@@ -113,6 +114,50 @@ describe("client analytics", () => {
       "x-posthog-session-id": "session_123",
     });
     expect(mockPostHog.get_distinct_id).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates computer impressions across mounts without suppressing upgrade impressions", () => {
+    const properties = {
+      surface: "chat_input_computer_activation",
+      source: "free_ask_computer_activation",
+    };
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    const uuid = mockCapture.mock.calls[0]?.[2]?.uuid;
+    expect(captureUpgradeCtaImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[1]?.[2]?.uuid).not.toBe(uuid);
+    window.localStorage.clear();
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[2]?.[2]?.uuid).toBe(uuid);
+    mockPostHog.get_distinct_id.mockReturnValue("another-user");
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[3]?.[2]?.uuid).not.toBe(uuid);
+    jest.setSystemTime(new Date("2026-07-15T00:00:01Z"));
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[4]?.[2]?.uuid).not.toBe(
+      mockCapture.mock.calls[3]?.[2]?.uuid,
+    );
+  });
+
+  it("can retry a computer impression after capture fails", () => {
+    const properties = { surface: "chat_input_computer_activation" };
+    mockCapture.mockImplementationOnce(() => {
+      throw new Error("unavailable");
+    });
+    expect(captureComputerActivationImpression(properties)).toBe(false);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+  });
+
+  it("waits for SDK initialization before handling a computer impression", () => {
+    mockPostHog.__loaded = false;
+    const properties = { surface: "chat_input_computer_activation" };
+    expect(captureComputerActivationImpression(properties)).toBe(false);
+    expect(mockCapture).not.toHaveBeenCalled();
+    mockPostHog.__loaded = true;
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 
   it("captures content-free initial message feedback with a stable UUID", () => {

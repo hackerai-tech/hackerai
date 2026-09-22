@@ -13,6 +13,7 @@ import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { useTauri } from "@/app/hooks/useTauri";
 import {
   captureAuthenticatedEvent,
+  captureComputerActivationImpression,
   captureUpgradeCtaImpression,
 } from "@/lib/analytics/client";
 
@@ -29,13 +30,24 @@ export function FreeAskComputerActivation() {
   useEffect(() => {
     if (isTauri || capturedImpressionRef.current) return;
 
-    capturedImpressionRef.current = true;
-    captureAuthenticatedEvent("computer_activation_cta_impressed", {
-      surface: ANALYTICS_SURFACE,
-      source: ANALYTICS_SOURCE,
-      subscription_tier: "free",
-      chat_mode: "ask",
-    });
+    let attempts = 0;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const capture = () => {
+      attempts += 1;
+      capturedImpressionRef.current = captureComputerActivationImpression({
+        surface: ANALYTICS_SURFACE,
+        source: ANALYTICS_SOURCE,
+        subscription_tier: "free",
+        chat_mode: "ask",
+      });
+      // The import can resolve before PostHog initializes. Retry the capture
+      // itself (which checks __loaded), with bounded work and unmount cleanup.
+      if (!capturedImpressionRef.current && attempts < 60) {
+        retry = setTimeout(capture, 1000);
+      }
+    };
+    capture();
+    return () => clearTimeout(retry);
   }, [isTauri]);
 
   useEffect(() => {

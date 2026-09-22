@@ -31,10 +31,52 @@ const row = {
   release: "test",
 };
 describe("survey selection", () => {
+  it("evaluates both eligible survey flags once without automatic exposure", async () => {
+    const posthog = {
+      getAllFlags: jest.fn().mockResolvedValue({
+        [PAID_TASK_OUTCOME_FLAG]: true,
+        [TASK_OUTCOME_FLAG]: true,
+      }),
+      getFeatureFlag: jest.fn(),
+      capture: jest.fn(),
+    };
+    mutation.mockResolvedValueOnce(null).mockResolvedValueOnce(row);
+    const selected = await selectTaskOutcomeSurvey({ ...base, posthog });
+    expect(selected).toBeDefined();
+    expect(posthog.getAllFlags).toHaveBeenCalledTimes(1);
+    expect(posthog.getAllFlags).toHaveBeenCalledWith("user", {
+      flagKeys: [PAID_TASK_OUTCOME_FLAG, TASK_OUTCOME_FLAG],
+      personProperties: { subscription_tier: "pro" },
+    });
+    expect(posthog.getFeatureFlag).not.toHaveBeenCalled();
+    expect(mutation).toHaveBeenCalledTimes(2);
+    expect(mutation.mock.calls[0][1]).toMatchObject({
+      survey_kind: "new_paid",
+    });
+    expect(mutation.mock.calls[1][1]).not.toHaveProperty("survey_kind");
+    expect(posthog.capture).toHaveBeenCalledTimes(1);
+    expect(posthog.capture.mock.calls[0][0].event).toBe(
+      "task_outcome_survey_selected",
+    );
+  });
+
+  it("fails closed for absent batch flags without repeating evaluation", async () => {
+    const posthog = {
+      getAllFlags: jest.fn().mockResolvedValue({}),
+      getFeatureFlag: jest.fn(),
+      capture: jest.fn(),
+    };
+    await expect(
+      selectTaskOutcomeSurvey({ ...base, posthog }),
+    ).resolves.toBeUndefined();
+    expect(posthog.getFeatureFlag).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
+  });
   it("stores the free Ask assignment key and emits matching selection metadata", async () => {
     const key = "abliterated_free_ask_moderated_v1" as const;
     mutation.mockResolvedValue({ ...row, experiment_key: key });
     const posthog = {
+      getAllFlags: jest.fn().mockRejectedValue(new Error("batch unavailable")),
       getFeatureFlag: jest.fn(async () => true),
       capture: jest.fn(),
     };
@@ -68,6 +110,7 @@ describe("survey selection", () => {
   });
   it("fails closed without an explicit independent or legacy flag", async () => {
     const posthog = {
+      getAllFlags: jest.fn().mockRejectedValue(new Error("batch unavailable")),
       getFeatureFlag: jest.fn(async () => false),
       capture: jest.fn(),
     };
@@ -82,6 +125,7 @@ describe("survey selection", () => {
   });
   it("keeps control and test equally eligible and retains original attribution through fallback", async () => {
     const posthog = {
+      getAllFlags: jest.fn().mockRejectedValue(new Error("batch unavailable")),
       getFeatureFlag: jest.fn(async (key: string) => key === TASK_OUTCOME_FLAG),
       capture: jest.fn(),
     };
@@ -118,6 +162,7 @@ describe("survey selection", () => {
   });
   it("keeps legacy selection available when the independent flag rejects", async () => {
     const posthog = {
+      getAllFlags: jest.fn().mockRejectedValue(new Error("batch unavailable")),
       getFeatureFlag: jest.fn(async (key: string) => {
         if (key === PAID_TASK_OUTCOME_FLAG) throw Error("flag unavailable");
         return key === TASK_OUTCOME_FLAG;
@@ -139,6 +184,7 @@ describe("survey selection", () => {
   });
   it("does not interrupt chat when the flag or database is unavailable", async () => {
     const posthog = {
+      getAllFlags: jest.fn().mockRejectedValue(new Error("batch unavailable")),
       getFeatureFlag: jest.fn(async () => {
         throw Error("offline");
       }),
@@ -165,6 +211,7 @@ it("samples independently without inventing model attribution", async () => {
     ...context,
   }));
   const posthog = {
+    getAllFlags: jest.fn().mockRejectedValue(new Error("batch unavailable")),
     getFeatureFlag: jest.fn(
       async (key: string) => key === PAID_TASK_OUTCOME_FLAG,
     ),

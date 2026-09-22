@@ -2,9 +2,36 @@ import {
   createMiosaAcquisitionDiagnostics,
   miosaErrorDiagnostics,
   miosaAcquisitionFailureDiagnostics,
+  miosaAcquisitionTelemetrySampleRate,
 } from "../miosa-acquisition-diagnostics";
 
 describe("Miosa acquisition diagnostics", () => {
+  it("samples an acquisition's successful stages together and keeps every non-success", async () => {
+    for (const [id, expectedRate] of [
+      ["acquisition-8", 0.1],
+      ["acquisition-1", 0],
+    ] as const) {
+      const onDiagnostic = jest.fn();
+      const step = createMiosaAcquisitionDiagnostics({
+        templateId: "hackerai-tools",
+        workspaceName: "private",
+        acquisitionId: id,
+        onDiagnostic,
+      });
+      await step("readiness", async () => undefined);
+      await step("initialize_runtime", async () => undefined);
+      for (const [diagnostic] of onDiagnostic.mock.calls) {
+        expect(miosaAcquisitionTelemetrySampleRate(diagnostic)).toBe(
+          expectedRate,
+        );
+        for (const outcome of ["failure", "denied", "not_found"] as const) {
+          expect(
+            miosaAcquisitionTelemetrySampleRate({ ...diagnostic, outcome }),
+          ).toBe(1);
+        }
+      }
+    }
+  });
   it("correlates frozen acquisition errors with safe provider operation and sandbox identifiers", async () => {
     const onDiagnostic = jest.fn();
     const sdk = {

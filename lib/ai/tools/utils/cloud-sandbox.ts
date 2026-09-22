@@ -19,6 +19,7 @@ import {
 } from "./miosa-enrollment";
 import {
   miosaErrorDiagnostics,
+  miosaAcquisitionTelemetrySampleRate,
   miosaAcquisitionFailureDiagnostics,
 } from "./miosa-acquisition-diagnostics";
 import { queueE2BFileMigration } from "./miosa-workspace-migration-queue";
@@ -123,7 +124,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
             trigger_region: options.context?.triggerRegion,
             sandbox_provider: "miosa",
             sandbox_type: "cloud",
-            miosa_sandbox_acquisition_step_event_version: 2,
+            miosa_sandbox_acquisition_step_event_version: 3,
           };
           const logFields = {
             ...fields,
@@ -131,7 +132,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
           };
           // Keep failures visible without flooding production traces with every
           // successful lookup/readiness/initialization step. PostHog retains all
-          // step events independently of this troubleshooting switch.
+          // sampled step events independently of this troubleshooting switch.
           if (
             diagnostic.outcome === "failure" ||
             diagnostic.stage === "acquisition_reconciliation" ||
@@ -144,10 +145,14 @@ const ensureMiosaCloudSandboxConnection = (options: {
           ) {
             console.debug("MIOSA sandbox acquisition step", logFields);
           }
-          phLogger.event("miosa_sandbox_acquisition_step", {
-            ...fields,
-            userId: options.userId,
-          });
+          const sampleRate = miosaAcquisitionTelemetrySampleRate(diagnostic);
+          if (sampleRate > 0) {
+            phLogger.event("miosa_sandbox_acquisition_step", {
+              ...fields,
+              telemetry_sample_rate: sampleRate,
+              userId: options.userId,
+            });
+          }
         },
       },
     );
