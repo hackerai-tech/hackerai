@@ -1728,6 +1728,11 @@ export async function createAgentStream(
                         model: historyRoute,
                         variant: "v1",
                       }),
+                    onDiscardedUsage: (usage) =>
+                      ctx.summarizationTracker.recordSummarizationUsage(
+                        usage,
+                        ctx.usageTracker,
+                      ),
                   },
                 }),
             });

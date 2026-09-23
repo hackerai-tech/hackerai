@@ -45,7 +45,7 @@ import {
   persistSummaryTranscript,
   resolveSummarizationMaxTokens,
 } from "./helpers";
-import type { SummarizationResult } from "./helpers";
+import type { SummarizationResult, SummarizationUsage } from "./helpers";
 import {
   getRetainedTailBudgetTokens,
   selectRetainedTailForSummarization,
@@ -746,6 +746,7 @@ export interface CompactModelMessagesInRunOptions {
     system: string;
     providerOptions: Record<string, Record<string, unknown>>;
     onUsed?: () => void;
+    onDiscardedUsage?: (usage: SummarizationUsage) => void;
   };
   onPhaseDuration?: ContextCompactionPhaseReporter;
   registerBackgroundWork?: BackgroundWorkRegistrar;
@@ -899,6 +900,7 @@ export const compactModelMessagesInRun = async ({
             maxRetries: 0,
             timeout: 60_000,
             maxOutputTokens: 8192,
+            onDiscardedUsage: cacheAlignedSummary.onDiscardedUsage,
           },
         )
           .then((result) => {

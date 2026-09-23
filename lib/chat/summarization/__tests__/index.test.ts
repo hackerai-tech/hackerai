@@ -346,13 +346,18 @@ describe("checkAndSummarizeIfNeeded", () => {
     "recovers warm summary %s failures unless cancelled",
     async (failure) => {
       const controller = new AbortController();
+      const onDiscardedUsage = jest.fn();
       const warmModel = {
         modelId: "deepseek/deepseek-v4.1-flash",
       } as LanguageModel;
       mockGenerateText
         .mockImplementationOnce(async () => {
           if (failure === "truncated")
-            return { text: "Partial", finishReason: "length" };
+            return {
+              text: "Partial",
+              finishReason: "length",
+              usage: { inputTokens: 100, outputTokens: 10 },
+            };
           if (failure === "cancelled") controller.abort(new Error("stopped"));
           throw new Error(failure);
         })
@@ -375,6 +380,7 @@ describe("checkAndSummarizeIfNeeded", () => {
           system: "Frozen prompt",
           tools: {},
           providerOptions: {},
+          onDiscardedUsage,
         },
       });
       if (failure === "cancelled") {
@@ -389,6 +395,16 @@ describe("checkAndSummarizeIfNeeded", () => {
         expect((mockGenerateText.mock.calls[1][0] as any).model).not.toBe(
           warmModel,
         );
+        if (failure === "truncated") {
+          expect(onDiscardedUsage).toHaveBeenCalledTimes(1);
+          expect(onDiscardedUsage).toHaveBeenCalledWith(
+            expect.objectContaining({
+              inputTokens: 100,
+              outputTokens: 10,
+              model: "deepseek/deepseek-v4.1-flash",
+            }),
+          );
+        } else expect(onDiscardedUsage).not.toHaveBeenCalled();
       }
     },
   );

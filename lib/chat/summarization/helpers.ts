@@ -737,6 +737,7 @@ export const generateSummaryText = async (
     maxRetries?: number;
     preservePrefix?: boolean;
     maxOutputTokens?: number;
+    onDiscardedUsage?: (usage: SummarizationUsage) => void;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
@@ -810,13 +811,6 @@ export const generateSummaryText = async (
     ],
   });
 
-  // A provider may finish concurrently with Stop without rejecting its call.
-  // Do not turn that late result into a persisted checkpoint or continuation.
-  abortSignal?.throwIfAborted();
-  if (!result.text.trim() || result.finishReason !== "stop") {
-    throw new InvalidCompactionSummaryError();
-  }
-
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (
     result.usage as {
@@ -826,23 +820,32 @@ export const generateSummaryText = async (
       };
     }
   )?.inputTokenDetails;
-  return {
-    text: result.text,
-    usage: {
-      inputTokens: result.usage?.inputTokens ?? 0,
-      outputTokens: result.usage?.outputTokens ?? 0,
-      estimatedCompactedInputTokens,
-      ...(details?.cacheReadTokens
-        ? { cacheReadTokens: details.cacheReadTokens }
-        : undefined),
-      ...(details?.cacheWriteTokens
-        ? { cacheWriteTokens: details.cacheWriteTokens }
-        : undefined),
-      ...(providerCost ? { cost: providerCost } : undefined),
-      model:
-        result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
-    },
+  const usage: SummarizationUsage = {
+    inputTokens: result.usage?.inputTokens ?? 0,
+    outputTokens: result.usage?.outputTokens ?? 0,
+    estimatedCompactedInputTokens,
+    ...(details?.cacheReadTokens
+      ? { cacheReadTokens: details.cacheReadTokens }
+      : undefined),
+    ...(details?.cacheWriteTokens
+      ? { cacheWriteTokens: details.cacheWriteTokens }
+      : undefined),
+    ...(providerCost ? { cost: providerCost } : undefined),
+    model:
+      result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
   };
+  // A discarded warm attempt can still be billable. Account for its reported
+  // usage separately before trying a differently priced bounded fallback.
+  if (
+    abortSignal?.aborted ||
+    !result.text.trim() ||
+    result.finishReason !== "stop"
+  ) {
+    generationOptions?.onDiscardedUsage?.(usage);
+    abortSignal?.throwIfAborted();
+    throw new InvalidCompactionSummaryError();
+  }
+  return { text: result.text, usage };
 };
 
 export const buildSummaryPersistenceMetadata = ({
