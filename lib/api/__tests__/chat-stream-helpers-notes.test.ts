@@ -10,6 +10,7 @@ import {
   injectNotesIntoMessages,
   replaceNotesBlock,
   refreshNotesInModelMessages,
+  getAppendedNotesUpdate,
 } from "@/lib/api/chat-stream-helpers";
 
 // ── Mock external dependencies used by refreshNotesInModelMessages ──────────
@@ -41,6 +42,39 @@ function buildNotesReminder(noteTitle: string): string {
 
 const RESUME_REMINDER =
   "<system-reminder>\n<resume_context>Your previous response was interrupted.</resume_context>\n</system-reminder>";
+
+describe("appended notes snapshots", () => {
+  const opts = {
+    userId: "user",
+    subscription: "pro" as const,
+    shouldIncludeNotes: true,
+  };
+  beforeEach(() => mockGetNotes.mockReset());
+  it("explicitly clears deleted notes without rewriting old context", async () => {
+    mockGetNotes.mockResolvedValue([]);
+    expect(
+      await getAppendedNotesUpdate([{ toolName: "delete_note" }], opts),
+    ).toContain("No saved notes remain.");
+  });
+  it("does not turn a failed lookup into a deletion or fetch after unrelated tools", async () => {
+    expect(
+      await getAppendedNotesUpdate([{ toolName: "file" }], opts),
+    ).toBeUndefined();
+    expect(mockGetNotes).not.toHaveBeenCalled();
+    mockGetNotes.mockRejectedValue(new Error("unavailable"));
+    expect(await getAppendedNotesUpdate([], opts, true)).toBeUndefined();
+  });
+  it("honors the current notes opt-out even during resume", async () => {
+    expect(
+      await getAppendedNotesUpdate(
+        [],
+        { ...opts, shouldIncludeNotes: false },
+        true,
+      ),
+    ).toBeUndefined();
+    expect(mockGetNotes).not.toHaveBeenCalled();
+  });
+});
 
 // ── replaceNotesBlock ───────────────────────────────────────────────────────
 

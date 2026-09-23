@@ -735,6 +735,8 @@ export const generateSummaryText = async (
   generationOptions?: {
     timeout?: number;
     maxRetries?: number;
+    preservePrefix?: boolean;
+    maxOutputTokens?: number;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
@@ -764,18 +766,30 @@ export const generateSummaryText = async (
     (await convertToModelMessages(messagesToSummarize, {
       tools: tools ? createPromptSerializationTools(tools) : undefined,
     }));
-  const compactedModelMessages = compactModelMessagesForSummarization(
-    sourceModelMessages as ModelMessage[],
-  );
-  const summaryModelMessages = boundModelMessagesForSummarization(
-    compactedModelMessages,
-    { maxInputTokens: summaryInputMaxTokens },
-  );
+  const compactedModelMessages = generationOptions?.preservePrefix
+    ? sourceModelMessages
+    : compactModelMessagesForSummarization(
+        sourceModelMessages as ModelMessage[],
+      );
+  const summaryModelMessages = generationOptions?.preservePrefix
+    ? compactedModelMessages
+    : boundModelMessagesForSummarization(compactedModelMessages, {
+        maxInputTokens: summaryInputMaxTokens,
+      });
   const estimatedCompactedInputTokens =
     estimateSummaryInputTokens(summaryModelMessages);
+  if (
+    generationOptions?.preservePrefix &&
+    estimatedCompactedInputTokens > summaryInputMaxTokens
+  ) {
+    throw new Error("Cache-aligned summary exceeds its input budget");
+  }
 
   const result = await generateText({
     model: languageModel,
+    ...(generationOptions?.maxOutputTokens !== undefined && {
+      maxOutputTokens: generationOptions.maxOutputTokens,
+    }),
     ...(generationOptions?.timeout !== undefined && {
       timeout: generationOptions.timeout,
     }),

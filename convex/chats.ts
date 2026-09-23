@@ -1,4 +1,5 @@
 import { scheduleFileDeletion } from "./lib/fileDeletion";
+import { deleteModelHistory } from "./modelHistory";
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -222,6 +223,7 @@ async function publishDeletionCancellation(ctx: MutationCtx, chatId: string) {
 }
 
 async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
+  await deleteModelHistory(ctx, chat.id);
   if (
     chat.active_stream_id === undefined &&
     chat.active_trigger_run_id === undefined &&
@@ -1966,6 +1968,7 @@ export const deleteAllChatsForUser = mutation({
       while (await deleteSubagentDataForChat(ctx, chat.id)) {
         // Test-hygiene helper intentionally drains the whole chat in one call.
       }
+      await deleteModelHistory(ctx, chat.id);
       await ctx.db.delete(chat._id);
     }
 

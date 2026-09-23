@@ -288,6 +288,60 @@ describe("checkAndSummarizeIfNeeded", () => {
     jest.restoreAllMocks();
   });
 
+  it.each([true, false])(
+    "uses the warm prefix only when its full request fits (fits=%s)",
+    async (fits) => {
+      const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
+      const warmModel = {
+        modelId: "deepseek/deepseek-v4.1-flash",
+      } as LanguageModel;
+      const onUsed = jest.fn();
+      const messages: ModelMessage[] = [
+        { role: "user", content: "Original evidence" },
+      ];
+      const tools = {
+        lookup: {
+          description: "stable",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+        },
+      };
+      mockGenerateText.mockResolvedValue({
+        text: "Complete checkpoint",
+        finishReason: "stop",
+      });
+      const result = await compactModelMessagesInRun({
+        modelMessages: messages,
+        subscription: "pro",
+        mode: "agent",
+        writer: mockWriter,
+        chatId: null,
+        maxTokens: fits ? 128_000 : 1000,
+        compactionIndex: 1,
+        hasExistingSummary: false,
+        cacheAlignedSummary: {
+          languageModel: warmModel,
+          system: "Frozen prompt",
+          tools,
+          providerOptions: { openrouter: { session_id: "test-session" } },
+          onUsed,
+        },
+      });
+      expect(result?.summaryText).toContain("Complete checkpoint");
+      const call = mockGenerateText.mock.calls[0][0] as any;
+      if (fits) {
+        expect(call.model).toBe(warmModel);
+        expect(call.messages.slice(0, messages.length)).toEqual(messages);
+        expect(call.system).toBe("Frozen prompt");
+        expect(call.tools.lookup.inputSchema).toBe(tools.lookup.inputSchema);
+        expect(call.maxOutputTokens).toBe(8192);
+        expect(onUsed).toHaveBeenCalledTimes(1);
+      } else {
+        expect(call.model).not.toBe(warmModel);
+        expect(onUsed).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   it("persists source runtime records and shares the retained-tail budget", async () => {
     const source: UIMessage[] = [
       createMessage("user", "user"),

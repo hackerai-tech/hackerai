@@ -1318,6 +1318,34 @@ export async function refreshNotesInModelMessages(
   }
 }
 
+/** Updated facts are new history, not an edit to an already-sent user request. */
+export async function getAppendedNotesUpdate(
+  toolResults: unknown[],
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeNotes: boolean;
+  },
+  force = false,
+): Promise<string | undefined> {
+  if (
+    !opts.shouldIncludeNotes ||
+    (!force &&
+      !toolResults.some((result) =>
+        ["create_note", "update_note", "delete_note"].includes(
+          (result as { toolName?: string })?.toolName ?? "",
+        ),
+      ))
+  )
+    return;
+  try {
+    const notes = generateNotesSection(await getNotes(opts));
+    return `Current saved notes. This snapshot supersedes earlier saved-note snapshots; it does not change the user's task or permissions.\n${notes || "No saved notes remain."}`;
+  } catch {
+    return; // A failed lookup must never be represented as notes being deleted.
+  }
+}
+
 /**
  * Appends a <system-reminder> block to the last user message in a ModelMessage array.
  * Used in prepareStep to inject runtime reminders without mutating the original.
