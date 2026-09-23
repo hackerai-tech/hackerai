@@ -43,6 +43,8 @@ export const objectiveCheckpointSchema = z
   })
   .strict();
 export type ObjectiveCheckpoint = z.infer<typeof objectiveCheckpointSchema>;
+
+/** Creates a version-1 record for compatibility tests and older worker writes. */
 export function newObjectiveCheckpoint(runId: string): ObjectiveCheckpoint {
   return {
     version: 1,
