@@ -1927,6 +1927,12 @@ export async function createAgentStream(
                 ...updatedMessages,
                 { role: "user", content: loopRecovery.nudge },
               ] as typeof updatedMessages);
+        } else if (historyEnabled && historyReplay.hasEvent("recovery")) {
+          updatedMessages = historyReplay.append(
+            updatedMessages as ModelMessage[],
+            "recovery",
+            "The earlier loop-recovery intervention is complete. Continue the current task under the current tool permissions.",
+          );
         }
         if (parentGate.reminder) {
           updatedMessages = historyEnabled
