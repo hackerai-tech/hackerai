@@ -1,4 +1,3 @@
-import type { ObjectiveCheckpointRuntime } from "@/lib/ai/objective-checkpoint-runtime";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
@@ -657,7 +656,6 @@ const buildProviderRequestDiagnostics = (args: {
 
 export type AgentStreamContext = {
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
-  objectiveCheckpoint?: ObjectiveCheckpointRuntime;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
@@ -1308,7 +1306,7 @@ export async function createAgentStream(
       initialModelInfo.modelName,
     ),
     messages: initialModelMessages,
-    tools: ctx.objectiveCheckpoint?.wrap(ctx.tools) ?? ctx.tools,
+    tools: ctx.tools,
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
@@ -1338,37 +1336,6 @@ export async function createAgentStream(
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
         [];
       const parentGate = await resolveParentGate(toolResults);
-      const checkpointRestriction = ctx.objectiveCheckpoint?.restriction(
-        ctx.tools,
-      );
-      if (checkpointRestriction) {
-        abortSignal.throwIfAborted();
-        return {
-          activeTools: parentGate.blocked
-            ? [
-                ...new Set([
-                  ...checkpointRestriction.activeTools,
-                  "wait_for_agents",
-                ]),
-              ]
-            : checkpointRestriction.activeTools,
-          ...(parentGate.toolChoice
-            ? { toolChoice: parentGate.toolChoice }
-            : {}),
-          ...(!parentGate.blocked &&
-          checkpointRestriction.activeTools.length === 0
-            ? { toolChoice: "none" as const }
-            : {}),
-          messages: [
-            ...rollingModelMessages,
-            {
-              role: "user" as const,
-              content: checkpointRestriction.instruction,
-            },
-          ],
-        };
-      }
-
       const enforceParentGateTool = (
         activeTools: Array<keyof typeof ctx.tools> | undefined,
       ): Array<keyof typeof ctx.tools> | undefined => {
@@ -2099,7 +2066,6 @@ export async function createAgentStream(
           console.error("[agent-stream] onBudgetAbort failed:", error);
         }
       }
-      await ctx.objectiveCheckpoint?.recordSpend(currentCostDollars);
     },
 
     onFinish: async (finishResult) => {

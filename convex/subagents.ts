@@ -1,4 +1,4 @@
-import { objectiveCheckpointSchema } from "../lib/chat/objective-checkpoint";
+import { objectiveCheckpointSchema } from "../lib/chat/legacy-objective-checkpoint";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import {

@@ -5,9 +5,6 @@ import {
   captureFreeMonthlyBudgetExposure,
 } from "@/lib/experiments/free-monthly-budget";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import { loadObjectiveCheckpoint } from "@/lib/db/objective-checkpoint";
-import { OBJECTIVE_CHECKPOINT_FLAG } from "@/lib/chat/objective-checkpoint";
-import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
@@ -169,7 +166,7 @@ import {
   LEGACY_AGENT_API_ENDPOINT,
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
-import { phLogger, getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import {
   captureDeepSeekV4Pro0813ExperimentExposure,
   evaluateDeepSeekV4Pro0813Experiment,
@@ -2762,23 +2759,6 @@ export const agentLongTask = task({
                   : {}),
               },
             );
-            const objectiveCheckpointEnabled =
-              await getPostHogFeatureFlagForUser(
-                OBJECTIVE_CHECKPOINT_FLAG,
-                userId,
-              );
-            const objectiveCheckpoint = objectiveCheckpointEnabled
-              ? await loadObjectiveCheckpoint({
-                  userId,
-                  chatId,
-                  triggerRunId: ctx.run.id,
-                  signal: userStopSignal.signal,
-                  environment: async () =>
-                    getSubagentSandboxIdentity(await ensureSandbox()),
-                  allowFollowUp:
-                    !isAutomaticContinuation && !isAutoContinue && !regenerate,
-                })
-              : undefined;
             finishE2BIdleLeaseRelease = async () => {
               await stopE2BSandboxRunLeaseHeartbeat();
               await releaseE2BSandboxIdleLease();
@@ -3598,7 +3578,6 @@ export const agentLongTask = task({
                   mode,
                   ...observation,
                 }),
-              objectiveCheckpoint,
               providerStreamTimeout: {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
                 onTimeout: ({ phase, timeoutMs, modelId }) => {

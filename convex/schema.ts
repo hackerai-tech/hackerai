@@ -186,6 +186,7 @@ export default defineSchema({
     last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    // Legacy checkpoint data remains readable until existing rows are migrated.
     objective_checkpoint: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),
     active_agent_approval_pending: v.optional(v.boolean()),
@@ -1511,6 +1512,7 @@ export default defineSchema({
     ]),
 
   subagent_work_items: defineTable({
+    // Legacy checkpoint data remains readable until existing rows are migrated.
     objective_checkpoint: v.optional(v.string()),
     subagent_id: v.string(),
     user_id: v.string(),
