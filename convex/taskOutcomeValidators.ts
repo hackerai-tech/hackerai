@@ -1,18 +1,11 @@
 import { v } from "convex/values";
-import {
-  ABLITERATED_EXPERIMENT_KEY,
-  FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
-} from "../lib/experiments/abliteration-keys";
 export const taskOutcomeAnswer = v.union(
   v.literal("solved"),
   v.literal("helpful"),
-  v.literal("yes"),
-  v.literal("partly"),
   v.literal("no"),
   v.literal("not_checked"),
 );
 export const taskOutcomeReason = v.union(
-  v.literal("solved_task"),
   v.literal("useful_next_step"),
   v.literal("clear_explanation"),
   v.literal("incorrect"),
@@ -24,36 +17,21 @@ export const taskOutcomeReason = v.union(
   v.literal("other"),
 );
 export const taskOutcomeContext = {
-  survey_kind: v.optional(v.literal("new_paid")),
+  survey_kind: v.literal("new_paid"),
   request_id: v.string(),
   chat_id: v.string(),
   message_id: v.string(),
-  // Older reservations belong to the original paid/free Agent experiment.
-  experiment_key: v.optional(
-    v.union(
-      v.literal(ABLITERATED_EXPERIMENT_KEY),
-      v.literal(FREE_ASK_ABLITERATED_EXPERIMENT_KEY),
-    ),
-  ),
-  experiment_variant: v.optional(
-    v.union(v.literal("control"), v.literal("test")),
-  ),
-  baseline_model: v.optional(v.string()),
-  assigned_model: v.optional(v.string()),
   mode: v.union(v.literal("ask"), v.literal("agent")),
   subscription_tier: v.string(),
   release: v.string(),
-  // Optional for surveys reserved by older deployed clients/workers.
-  routing_version: v.optional(v.string()),
-  generation_step_limit: v.optional(v.number()),
 };
 export const taskOutcomeFields = {
   ...taskOutcomeContext,
   user_id: v.string(),
-  paid_start_event_id: v.optional(v.id("paid_start_events")),
-  paid_started_at: v.optional(v.number()),
-  stripe_subscription_id: v.optional(v.string()),
-  paid_start_invoice_id: v.optional(v.string()),
+  paid_start_event_id: v.id("paid_start_events"),
+  paid_started_at: v.number(),
+  stripe_subscription_id: v.string(),
+  paid_start_invoice_id: v.string(),
   baseline_renewal_at: v.optional(v.number()),
   billing_interval: v.optional(v.string()),
   selected_at: v.number(),

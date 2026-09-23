@@ -55,7 +55,7 @@ It is a prepared query, not a deployed dashboard or evidence of a live result.
 - Primary task metric: solved / (solved + helpful + no). Also report solved /
   selected and response rate; not checked and nonresponse are unassessed.
   Include user counts, uncertainty intervals and missing-delivery rate. Do not
-  compare this scale directly with legacy Yes/Partly/No.
+  compare this scale directly with the retired Yes/Partly/No survey.
 - `chat_user_submission` version 1 records accepted manual composer submissions,
   including queuing. Rejected drafts, retries, auto-continuation and later queue
   dispatch do not emit this event. It measures user intent, not completion.
@@ -96,8 +96,8 @@ Owner Ross Manko; first review 2026-09-22, renewal review after cohort due+7
 maturity. No automatic public ramp. Roll back on repeat prompts, attribution or
 privacy defects, or disrupted chat. After the readout, explicitly retain or end
 this measurement; disable both flags, drain invitations and remove its selection
-path when ending. HAC-101 removes the legacy model-experiment cohort only;
-shared UI/storage must remain while this independent cohort still uses them.
+path when ending. HAC-101 removed the model-experiment cohort; shared UI and
+storage remain while this independent cohort still uses them.
 
 ## Preview acceptance
 

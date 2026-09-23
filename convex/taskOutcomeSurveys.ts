@@ -1,6 +1,5 @@
 import { v, ConvexError } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
-import { internal } from "./_generated/api";
+import { mutation, query } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
@@ -48,74 +47,65 @@ export const reserve = mutation({
       return null;
     // Paid cohort enrollment is derived from durable billing evidence inside
     // this transaction, not from browser properties or model assignment.
-    let paidContext = {};
-    if (args.survey_kind === "new_paid") {
-      if (!["pro", "pro-plus", "ultra"].includes(args.subscription_tier))
-        return null;
-      const paidStarts = () =>
-        ctx.db
-          .query("paid_start_events")
-          .withIndex("by_entity_type_and_entity_id_and_occurred_at", (q) =>
-            q.eq("entity_type", "user").eq("entity_id", args.user_id),
-          );
-      const first = await paidStarts().order("asc").first();
-      if (
-        !first ||
-        first.organization_id ||
-        !["pro", "pro-plus", "ultra"].includes(first.tier) ||
-        !first.stripe_subscription_id ||
-        !first.stripe_invoice_id ||
-        first.occurred_at > now ||
-        now - first.occurred_at >= NEW_PAID_SURVEY_WINDOW_MS
-      )
-        return null;
-      const latest = await paidStarts().order("desc").first();
-      if (latest?._id !== first._id) return null;
-      const payment = await ctx.db
-        .query("revenue_events")
-        .withIndex("by_idempotency_key", (q) =>
-          q.eq(
-            "idempotency_key",
-            `subscription:${first.stripe_invoice_id}:user:${args.user_id}`,
-          ),
-        )
-        .unique();
-      if (
-        !payment ||
-        payment.source !== "subscription" ||
-        payment.gross_revenue_dollars <= 0 ||
-        payment.stripe_subscription_id !== first.stripe_subscription_id ||
-        payment.entity_type !== "user" ||
-        payment.entity_id !== args.user_id ||
-        payment.stripe_invoice_id !== first.stripe_invoice_id
-      )
-        return null;
-      const enrolled = await ctx.db
-        .query("task_outcome_surveys")
-        .withIndex("by_user_id_and_survey_kind", (q) =>
-          q.eq("user_id", args.user_id).eq("survey_kind", "new_paid"),
-        )
-        .first();
-      if (enrolled) return null;
-      paidContext = {
-        paid_start_event_id: first._id,
-        paid_started_at: first.occurred_at,
-        stripe_subscription_id: first.stripe_subscription_id,
-        paid_start_invoice_id: first.stripe_invoice_id,
-        ...(first.billing_period_end !== undefined && {
-          baseline_renewal_at: first.billing_period_end,
-        }),
-        ...(first.billing_interval && {
-          billing_interval: first.billing_interval,
-        }),
-      };
-    } else if (
-      !args.experiment_variant ||
-      !args.baseline_model ||
-      !args.assigned_model
-    ) {
+    if (!["pro", "pro-plus", "ultra"].includes(args.subscription_tier))
       return null;
-    }
+    const paidStarts = () =>
+      ctx.db
+        .query("paid_start_events")
+        .withIndex("by_entity_type_and_entity_id_and_occurred_at", (q) =>
+          q.eq("entity_type", "user").eq("entity_id", args.user_id),
+        );
+    const first = await paidStarts().order("asc").first();
+    if (
+      !first ||
+      first.organization_id ||
+      !["pro", "pro-plus", "ultra"].includes(first.tier) ||
+      !first.stripe_subscription_id ||
+      !first.stripe_invoice_id ||
+      first.occurred_at > now ||
+      now - first.occurred_at >= NEW_PAID_SURVEY_WINDOW_MS
+    )
+      return null;
+    const latest = await paidStarts().order("desc").first();
+    if (latest?._id !== first._id) return null;
+    const payment = await ctx.db
+      .query("revenue_events")
+      .withIndex("by_idempotency_key", (q) =>
+        q.eq(
+          "idempotency_key",
+          `subscription:${first.stripe_invoice_id}:user:${args.user_id}`,
+        ),
+      )
+      .unique();
+    if (
+      !payment ||
+      payment.source !== "subscription" ||
+      payment.gross_revenue_dollars <= 0 ||
+      payment.stripe_subscription_id !== first.stripe_subscription_id ||
+      payment.entity_type !== "user" ||
+      payment.entity_id !== args.user_id ||
+      payment.stripe_invoice_id !== first.stripe_invoice_id
+    )
+      return null;
+    const enrolled = await ctx.db
+      .query("task_outcome_surveys")
+      .withIndex("by_user_id_and_survey_kind", (q) =>
+        q.eq("user_id", args.user_id).eq("survey_kind", "new_paid"),
+      )
+      .first();
+    if (enrolled) return null;
+    const paidContext = {
+      paid_start_event_id: first._id,
+      paid_started_at: first.occurred_at,
+      stripe_subscription_id: first.stripe_subscription_id,
+      paid_start_invoice_id: first.stripe_invoice_id,
+      ...(first.billing_period_end !== undefined && {
+        baseline_renewal_at: first.billing_period_end,
+      }),
+      ...(first.billing_interval && {
+        billing_interval: first.billing_interval,
+      }),
+    };
     const id = await ctx.db.insert("task_outcome_surveys", {
       ...args,
       ...paidContext,
@@ -223,12 +213,7 @@ export const record = mutation({
       });
     } else if (args.action === "answered") {
       if (!row.shown_at || !args.answer) return null;
-      if (
-        row.survey_kind === "new_paid"
-          ? !(args.answer in PAID_TASK_OUTCOME_ANSWERS)
-          : args.answer === "solved" || args.answer === "helpful"
-      )
-        return null;
+      if (!(args.answer in PAID_TASK_OUTCOME_ANSWERS)) return null;
       if (row.answer) return row.answer === args.answer ? row : null;
       await ctx.db.patch(row._id, {
         answer: args.answer,
@@ -246,73 +231,5 @@ export const record = mutation({
       await ctx.db.patch(row._id, { reason: args.reason });
     }
     return await ctx.db.get(row._id);
-  },
-});
-
-/**
- * Deletes only the retired model-experiment survey rows. Run in bounded
- * batches and remove this migration after every deployment reports no matches.
- */
-export const cleanupLegacyBatch = internalMutation({
-  args: {
-    cursor: v.union(v.string(), v.null()),
-    batchSize: v.number(),
-    dryRun: v.optional(v.boolean()),
-    scannedSoFar: v.optional(v.number()),
-    matchedSoFar: v.optional(v.number()),
-    deletedSoFar: v.optional(v.number()),
-  },
-  returns: v.object({
-    scanned: v.number(),
-    matched: v.number(),
-    deleted: v.number(),
-    totalScanned: v.number(),
-    totalMatched: v.number(),
-    totalDeleted: v.number(),
-    isDone: v.boolean(),
-    continueCursor: v.string(),
-  }),
-  handler: async (ctx, args) => {
-    const batchSize = Math.max(1, Math.min(Math.floor(args.batchSize), 500));
-    const result = await ctx.db
-      .query("task_outcome_surveys")
-      .order("asc")
-      .paginate({ numItems: batchSize, cursor: args.cursor });
-    let matched = 0;
-    let deleted = 0;
-    for (const row of result.page) {
-      if (row.survey_kind === "new_paid") continue;
-      matched++;
-      if (args.dryRun === true) continue;
-      await ctx.db.delete(row._id);
-      deleted++;
-    }
-    const totalScanned = (args.scannedSoFar ?? 0) + result.page.length;
-    const totalMatched = (args.matchedSoFar ?? 0) + matched;
-    const totalDeleted = (args.deletedSoFar ?? 0) + deleted;
-    if (!result.isDone) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.taskOutcomeSurveys.cleanupLegacyBatch,
-        {
-          cursor: result.continueCursor,
-          batchSize,
-          dryRun: args.dryRun === true,
-          scannedSoFar: totalScanned,
-          matchedSoFar: totalMatched,
-          deletedSoFar: totalDeleted,
-        },
-      );
-    }
-    return {
-      scanned: result.page.length,
-      matched,
-      deleted,
-      totalScanned,
-      totalMatched,
-      totalDeleted,
-      isDone: result.isDone,
-      continueCursor: result.continueCursor,
-    };
   },
 });
