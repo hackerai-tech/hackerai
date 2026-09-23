@@ -1,8 +1,9 @@
 # Model-experiment task outcome feedback (HAC-99)
 
 The independent new-paid cohort is owned by [HAC-119](new-paid-task-feedback.md).
-This document describes the legacy model-experiment cohort only; its removal
-must preserve shared infrastructure while the independent cohort uses it.
+This document describes the retired model-experiment cohort. New selection was
+disabled in both PostHog projects on 2026-09-23. HAC-101 removes its remaining
+attribution and rows while preserving the shared infrastructure used by HAC-119.
 
 Measures user-reported task success for the **whole assigned routing policy**,
 including its baseline continuation and recovery. It cannot isolate the quality

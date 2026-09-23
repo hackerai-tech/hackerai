@@ -1,4 +1,5 @@
 import {
+  cleanupLegacyBatch,
   reserve,
   record,
   getForMessage,
@@ -6,6 +7,7 @@ import {
 } from "../taskOutcomeSurveys";
 import { TASK_OUTCOME_COOLDOWN_MS } from "../../lib/feedback/task-outcome";
 jest.mock("../_generated/server", () => ({
+  internalMutation: (x: unknown) => x,
   mutation: (x: unknown) => x,
   query: (x: unknown) => x,
 }));
@@ -351,5 +353,41 @@ describe("new paid cohort", () => {
         answer: "helpful",
       }),
     ).toBeNull();
+  });
+});
+
+describe("legacy cleanup", () => {
+  it("deletes only model-experiment rows from a bounded page", async () => {
+    const legacy = { _id: "legacy", request_id: "old" };
+    const paid = { _id: "paid", request_id: "new", survey_kind: "new_paid" };
+    const deleteRow = jest.fn();
+    const ctx = {
+      db: {
+        query: () => ({
+          order: () => ({
+            paginate: async () => ({
+              page: [legacy, paid],
+              isDone: true,
+              continueCursor: "done",
+            }),
+          }),
+        }),
+        delete: deleteRow,
+      },
+    };
+
+    await expect(
+      invoke(cleanupLegacyBatch, ctx, {
+        paginationOpts: { numItems: 100, cursor: null },
+      }),
+    ).resolves.toEqual({
+      scanned: 2,
+      matched: 1,
+      deleted: 1,
+      isDone: true,
+      continueCursor: "done",
+    });
+    expect(deleteRow).toHaveBeenCalledWith("legacy");
+    expect(deleteRow).not.toHaveBeenCalledWith("paid");
   });
 });

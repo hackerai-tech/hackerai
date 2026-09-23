@@ -1,14 +1,11 @@
 import type { PostHog } from "posthog-node";
-import type { AbliteratedAssignment } from "../experiments/abliterated-model";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "../db/convex-client";
 import { taskOutcomeProperties } from "../analytics/task-outcome";
-import { ABLITERATION_MAX_GENERATION_STEPS } from "../experiments/abliterated-model-steps";
-import { PAID_TASK_OUTCOME_FLAG, TASK_OUTCOME_FLAG } from "./task-outcome";
+import { PAID_TASK_OUTCOME_FLAG } from "./task-outcome";
 
 export async function selectTaskOutcomeSurvey(args: {
-  posthog: Pick<PostHog, "getFeatureFlag" | "getAllFlags" | "capture"> | null;
-  assignment?: AbliteratedAssignment;
+  posthog: Pick<PostHog, "getFeatureFlag" | "capture"> | null;
   userId: string;
   chatId: string;
   messageId: string;
@@ -16,7 +13,7 @@ export async function selectTaskOutcomeSurvey(args: {
   subscription: string;
   release?: string;
 }) {
-  const { posthog, assignment } = args;
+  const { posthog } = args;
   if (!posthog || !process.env.CONVEX_SERVICE_ROLE_KEY) return;
   try {
     const flagOptions = {
@@ -26,23 +23,6 @@ export async function selectTaskOutcomeSurvey(args: {
     const paidEligible = ["pro", "pro-plus", "ultra"].includes(
       args.subscription,
     );
-    let flags: Awaited<ReturnType<PostHog["getAllFlags"]>> | undefined;
-    if (paidEligible && assignment) {
-      try {
-        // Both checks use the same identity/properties. getAllFlags does not
-        // emit exposure, unlike evaluateFlags().getFlag() in our pinned SDK.
-        flags = await posthog.getAllFlags(args.userId, {
-          flagKeys: [PAID_TASK_OUTCOME_FLAG, TASK_OUTCOME_FLAG],
-          personProperties: flagOptions.personProperties,
-        });
-      } catch {
-        // Preserve independent/legacy failover when the batch is unavailable.
-      }
-    }
-    const getFlag = (key: string) =>
-      flags
-        ? Promise.resolve(flags[key])
-        : posthog.getFeatureFlag(key, args.userId, flagOptions);
     const context = {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY,
       user_id: args.userId,
@@ -56,32 +36,20 @@ export async function selectTaskOutcomeSurvey(args: {
         process.env.VERCEL_GIT_COMMIT_SHA ||
         process.env.GITHUB_SHA ||
         "unknown",
-      ...(assignment && {
-        experiment_key: assignment.key,
-        experiment_variant: assignment.variant,
-        baseline_model: assignment.baselineModel,
-        assigned_model: assignment.modelKey,
-        routing_version: `generation_steps_${ABLITERATION_MAX_GENERATION_STEPS}_v1`,
-        generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
-      }),
     };
-    let row = null;
-    try {
-      if (paidEligible && (await getFlag(PAID_TASK_OUTCOME_FLAG)) === true) {
-        row = await getConvexClient().mutation(api.taskOutcomeSurveys.reserve, {
-          ...context,
-          survey_kind: "new_paid",
-        });
-      }
-    } catch {
-      // Independent enrollment failures must not suppress the legacy sample.
-    }
-    if (!row && assignment && (await getFlag(TASK_OUTCOME_FLAG)) === true) {
-      row = await getConvexClient().mutation(
-        api.taskOutcomeSurveys.reserve,
-        context,
-      );
-    }
+    if (!paidEligible) return;
+    if (
+      (await posthog.getFeatureFlag(
+        PAID_TASK_OUTCOME_FLAG,
+        args.userId,
+        flagOptions,
+      )) !== true
+    )
+      return;
+    const row = await getConvexClient().mutation(
+      api.taskOutcomeSurveys.reserve,
+      { ...context, survey_kind: "new_paid" },
+    );
     if (!row) return;
     try {
       posthog.capture({

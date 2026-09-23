@@ -1,5 +1,6 @@
 import { v, ConvexError } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
@@ -245,5 +246,45 @@ export const record = mutation({
       await ctx.db.patch(row._id, { reason: args.reason });
     }
     return await ctx.db.get(row._id);
+  },
+});
+
+/**
+ * Deletes only the retired model-experiment survey rows. Run in bounded
+ * batches and remove this migration after every deployment reports no matches.
+ */
+export const cleanupLegacyBatch = internalMutation({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    matched: v.number(),
+    deleted: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const result = await ctx.db
+      .query("task_outcome_surveys")
+      .order("asc")
+      .paginate(args.paginationOpts);
+    let matched = 0;
+    let deleted = 0;
+    for (const row of result.page) {
+      if (row.survey_kind === "new_paid") continue;
+      matched++;
+      if (args.dryRun === true) continue;
+      await ctx.db.delete(row._id);
+      deleted++;
+    }
+    return {
+      scanned: result.page.length,
+      matched,
+      deleted,
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
   },
 });
