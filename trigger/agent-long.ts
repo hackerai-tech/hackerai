@@ -2036,7 +2036,6 @@ export const agentLongTask = task({
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
         release: ctx.deployment?.version,
         posthog,
-        assignment: abliteratedExperiment,
         userId,
         chatId,
         messageId: assistantMessageId,

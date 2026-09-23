@@ -20,14 +20,13 @@ first-ever payment or first-ever task; ledger history may be incomplete.
 One independent invitation per user, with the existing cross-survey 72-hour
 cooldown and 48-hour expiry. It is reserved before generation outcomes are
 known. Failed/no-message runs stay selected even if no question can display.
-If independent enrollment is unavailable, existing model-experiment selection
-can still run under its own flag and assignment requirements.
+The retired model-experiment survey no longer provides a fallback path.
 
 The existing inline question offers **Solved my task**, **Helpful, still
 working**, **Didn’t help**, and **Haven’t checked**. Answers save immediately;
 helpful/negative answers may add a structured optional reason. Solved needs no
-second click. Dismissal is not an answer. Legacy invitations keep their original
-choices and attribution. No prompts, findings, targets or free text are captured.
+second click. Dismissal is not an answer. No prompts, findings, targets or free
+text are captured.
 
 `shown_at` is the atomic cross-device display claim. `viewed_at` separately
 records the visible rendered question (at least 50% in view in a visible tab).
@@ -35,7 +34,7 @@ PostHog `_shown` is emitted at that same visibility boundary. Navigation between
 claim and render can leave a claim without an observed view. Authenticated
 `_answered`, `_reason`, `_dismissed` and server `_selected` retain the frozen
 `survey_request_id`, `survey_kind: new_paid`, and baseline billing fields.
-Independent invitations use `survey_version: 2`, UI version 4; legacy uses 1/3.
+Independent invitations use `survey_version: 2` and UI version 4.
 
 ## Measurement and readout
 

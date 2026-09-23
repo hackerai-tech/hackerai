@@ -1,4 +1,5 @@
 import {
+  cleanupLegacyBatch,
   reserve,
   record,
   getForMessage,
@@ -6,8 +7,14 @@ import {
 } from "../taskOutcomeSurveys";
 import { TASK_OUTCOME_COOLDOWN_MS } from "../../lib/feedback/task-outcome";
 jest.mock("../_generated/server", () => ({
+  internalMutation: (x: unknown) => x,
   mutation: (x: unknown) => x,
   query: (x: unknown) => x,
+}));
+jest.mock("../_generated/api", () => ({
+  internal: {
+    taskOutcomeSurveys: { cleanupLegacyBatch: "cleanupLegacyBatch" },
+  },
 }));
 jest.mock("../lib/utils", () => ({
   validateServiceKey: (key: string) => {
@@ -351,5 +358,83 @@ describe("new paid cohort", () => {
         answer: "helpful",
       }),
     ).toBeNull();
+  });
+});
+
+describe("legacy cleanup", () => {
+  it("deletes only model-experiment rows from a bounded page", async () => {
+    const legacy = { _id: "legacy", request_id: "old" };
+    const paid = { _id: "paid", request_id: "new", survey_kind: "new_paid" };
+    const deleteRow = jest.fn();
+    const ctx = {
+      scheduler: { runAfter: jest.fn() },
+      db: {
+        query: () => ({
+          order: () => ({
+            paginate: async () => ({
+              page: [legacy, paid],
+              isDone: true,
+              continueCursor: "done",
+            }),
+          }),
+        }),
+        delete: deleteRow,
+      },
+    };
+
+    await expect(
+      invoke(cleanupLegacyBatch, ctx, {
+        batchSize: 100,
+        cursor: null,
+      }),
+    ).resolves.toEqual({
+      scanned: 2,
+      matched: 1,
+      deleted: 1,
+      totalScanned: 2,
+      totalMatched: 1,
+      totalDeleted: 1,
+      isDone: true,
+      continueCursor: "done",
+    });
+    expect(deleteRow).toHaveBeenCalledWith("legacy");
+    expect(deleteRow).not.toHaveBeenCalledWith("paid");
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
+
+  it("schedules the next bounded batch with cumulative totals", async () => {
+    const runAfter = jest.fn();
+    const ctx = {
+      scheduler: { runAfter },
+      db: {
+        query: () => ({
+          order: () => ({
+            paginate: async () => ({
+              page: [{ _id: "legacy" }],
+              isDone: false,
+              continueCursor: "next",
+            }),
+          }),
+        }),
+        delete: jest.fn(),
+      },
+    };
+
+    await invoke(cleanupLegacyBatch, ctx, {
+      batchSize: 10_000,
+      cursor: null,
+      scannedSoFar: 5,
+      matchedSoFar: 4,
+      deletedSoFar: 3,
+    });
+
+    expect(runAfter).toHaveBeenCalledWith(0, "cleanupLegacyBatch", {
+      cursor: "next",
+      batchSize: 500,
+      dryRun: false,
+      scannedSoFar: 6,
+      matchedSoFar: 5,
+      deletedSoFar: 4,
+    });
   });
 });
