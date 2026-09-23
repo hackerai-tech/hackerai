@@ -48,6 +48,12 @@ export type AgentWorkTimelineItem =
       kind: "tool-group";
       id: string;
       activities: AgentWorkActivity[];
+      /**
+       * True once every tool in the run is terminal and the run is closed by a
+       * later step boundary or the settled message. A settled multi-tool run
+       * collapses into its summary; an unsettled run stays expanded in place.
+       */
+      settled: boolean;
       summary: string;
     };
 
@@ -406,9 +412,12 @@ function firstSeenExplicitStepByActivityId(
 }
 
 /**
- * Collapses closed multi-tool runs once every tool is terminal. Failed,
- * denied, and stopped details remain available inside the expandable group;
- * in-flight tools remain independent rows. `step-start` is the preferred
+ * Projects each run of consecutive tool calls in a step into one stable
+ * `tool-group` item from the first tool call onward. The item id derives from
+ * the step and the first tool, so the same timeline row survives while more
+ * tools stream into the run and when the run later settles; the collapse is an
+ * in-place transition instead of a row swap. Failed, denied, and stopped
+ * details remain available inside the group. `step-start` is the preferred
  * boundary; consecutive tools are the compatibility fallback for older
  * messages without step markers.
  */
@@ -458,23 +467,17 @@ export function projectAgentWorkTimelineItems({
     const hasLaterBoundary =
       cursor < activities.length ||
       (explicitStep !== undefined && explicitStep < highestStep);
-    const canCollapse =
-      run.length > 1 &&
+    const settled =
       (messageSettled || hasLaterBoundary) &&
       run.every(({ part }) => isTerminalToolPart(part));
 
-    if (canCollapse) {
-      items.push({
-        kind: "tool-group",
-        id: `tool-group:${explicitStep ?? "legacy"}:${run[0]?.id}`,
-        activities: run,
-        summary: summarizeCompletedToolActivities(run),
-      });
-    } else {
-      items.push(
-        ...run.map((activity) => ({ kind: "activity" as const, ...activity })),
-      );
-    }
+    items.push({
+      kind: "tool-group",
+      id: `tool-group:${explicitStep ?? "legacy"}:${first.id}`,
+      activities: run,
+      settled,
+      summary: summarizeCompletedToolActivities(run),
+    });
 
     index = cursor - 1;
   }

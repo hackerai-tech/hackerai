@@ -335,6 +335,49 @@
   animation: worked-for-content-close 360ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/*
+ * Tool run rows live from the first tool call, so their details are already
+ * on screen when the run settles. Only the fold (and any later reopen) is
+ * animated; the summary header slides in above the details as they fold.
+ */
+@keyframes agent-tool-group-header-in {
+  from {
+    height: 0;
+    margin-bottom: 0;
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+  to {
+    height: 1.25rem;
+    margin-bottom: 0.5rem;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.agent-tool-group-header {
+  margin-bottom: 0.5rem;
+}
+
+.agent-tool-group-header[data-entering="true"] {
+  animation: agent-tool-group-header-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.agent-tool-group-content {
+  overflow: hidden;
+  transform-origin: top;
+}
+
+.agent-tool-group-content[data-state="open"][data-animate-open="true"] {
+  animation: worked-for-content-open 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: height, opacity, transform;
+}
+
+.agent-tool-group-content[data-state="closed"] {
+  animation: worked-for-content-close 360ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: height, opacity, transform;
+}
+
 .message-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 180px;
@@ -342,7 +385,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .worked-for-content[data-state="open"],
-  .worked-for-content[data-state="closed"] {
+  .worked-for-content[data-state="closed"],
+  .agent-tool-group-header[data-entering="true"],
+  .agent-tool-group-content[data-state="open"][data-animate-open="true"],
+  .agent-tool-group-content[data-state="closed"] {
     animation-duration: 1ms;
     transform: none;
   }

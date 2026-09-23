@@ -144,13 +144,16 @@ describe("deriveChatTimelineRows", () => {
     ]);
   });
 
-  it("creates independently virtualizable rows for every live activity", () => {
-    const tools = Array.from({ length: 100 }, (_, index) => ({
-      type: "tool-shell",
-      toolCallId: `tool-${index}`,
-      input: { command: `command ${index}` },
-      state: "output-available",
-    }));
+  it("creates independently virtualizable rows for every live step", () => {
+    const tools = Array.from({ length: 100 }, (_, index) => [
+      { type: "step-start" },
+      {
+        type: "tool-shell",
+        toolCallId: `tool-${index}`,
+        input: { command: `command ${index}` },
+        state: "output-available",
+      },
+    ]).flat();
     const message = agentMessage(
       [
         ...tools,
@@ -172,12 +175,82 @@ describe("deriveChatTimelineRows", () => {
       expanded: true,
       isTiming: true,
     });
-    expect(rows.filter((row) => row.kind === "agent-activity")).toHaveLength(
+    expect(rows.filter((row) => row.kind === "agent-tool-group")).toHaveLength(
       100,
     );
     expect(rows.at(-1)).toMatchObject({
       kind: "message",
       workPresentation: "timeline-shell",
+    });
+  });
+
+  it("keeps a live multi-tool step in one stable row as tools stream in", () => {
+    const stepStart = { type: "step-start" };
+    const read = (toolCallId: string, state: string) => ({
+      type: "tool-read_file",
+      toolCallId,
+      input: { path: `${toolCallId}.ts` },
+      state,
+    });
+    const derive = (parts: unknown[]) =>
+      deriveChatTimelineRows({
+        messages: [
+          agentMessage(parts as ChatMessage["parts"], {
+            generationStartedAt: Date.now(),
+          }),
+        ],
+        status: "streaming",
+        lastAssistantMessageIndex: 0,
+        expandedAgentMessageIds: new Set(),
+      });
+
+    const firstToolRows = derive([
+      stepStart,
+      read("read-1", "input-streaming"),
+    ]);
+    const fourToolRows = derive([
+      stepStart,
+      read("read-1", "output-available"),
+      read("read-2", "output-available"),
+      read("read-3", "output-available"),
+      read("read-4", "input-available"),
+    ]);
+    const settledRows = derive([
+      stepStart,
+      read("read-1", "output-available"),
+      read("read-2", "output-available"),
+      read("read-3", "output-available"),
+      read("read-4", "output-available"),
+      stepStart,
+      { type: "reasoning", text: "Now I understand the code" },
+    ]);
+    const expectedId = "work:assistant-1:tool-group:0:tool:read-1";
+
+    expect(firstToolRows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-tool-group",
+      "message",
+    ]);
+    expect(firstToolRows[1]).toMatchObject({
+      id: expectedId,
+      settled: false,
+      activities: [expect.objectContaining({ id: "tool:read-1" })],
+    });
+    expect(fourToolRows[1]).toMatchObject({ id: expectedId, settled: false });
+    expect(
+      fourToolRows[1].kind === "agent-tool-group" && fourToolRows[1].activities,
+    ).toHaveLength(4);
+    expect(settledRows.map((row) => row.kind)).toEqual([
+      "agent-work-header",
+      "agent-tool-group",
+      "agent-activity",
+      "message",
+    ]);
+    expect(settledRows[1]).toMatchObject({
+      id: expectedId,
+      restored: false,
+      settled: true,
+      summary: "Read files",
     });
   });
 
@@ -251,12 +324,12 @@ describe("deriveChatTimelineRows", () => {
     ]);
     expect(expandedRows.map((row) => row.kind)).toEqual([
       "agent-work-header",
-      "agent-activity",
+      "agent-tool-group",
       "message",
     ]);
   });
 
-  it("replaces a completed prior tool step with one animated group", () => {
+  it("settles a completed prior tool step into its summary group", () => {
     const message = agentMessage([
       { type: "step-start" },
       {
@@ -295,13 +368,14 @@ describe("deriveChatTimelineRows", () => {
       "message",
     ]);
     expect(group).toMatchObject({
-      animateOnMount: true,
+      restored: false,
+      settled: true,
       summary: "Read a file, ran a command",
     });
     expect(group?.activities).toHaveLength(2);
   });
 
-  it("animates only tool groups introduced after the initial timeline commit", () => {
+  it("flags tool groups of restored Agent messages", () => {
     const message = agentMessage([
       { type: "step-start" },
       {
@@ -317,46 +391,20 @@ describe("deriveChatTimelineRows", () => {
       { type: "step-start" },
       { type: "reasoning", text: "Next step" },
     ] as ChatMessage["parts"]);
-    const deriveGroup = (
-      animateNewToolGroups: boolean,
-      seenToolGroupIds = new Set<string>(),
-      seenAgentMessageIds: ReadonlySet<string> | undefined = undefined,
-      restoredAgentMessageIds = new Set<string>(),
-    ) =>
+    const deriveGroup = (restoredAgentMessageIds = new Set<string>()) =>
       deriveChatTimelineRows({
         messages: [message],
         status: "streaming",
         lastAssistantMessageIndex: 0,
         expandedAgentMessageIds: new Set(),
-        animateNewToolGroups,
-        seenAgentMessageIds,
-        seenToolGroupIds,
         restoredAgentMessageIds,
       }).find((row) => row.kind === "agent-tool-group");
 
-    const initialGroup = deriveGroup(false);
-    expect(initialGroup).toMatchObject({ animateOnMount: false });
-
-    const hydratedGroup = deriveGroup(true, new Set(), new Set());
-    expect(hydratedGroup).toMatchObject({ animateOnMount: false });
-
-    const liveGroup = deriveGroup(true, new Set(), new Set([message.id]));
-    expect(liveGroup).toMatchObject({ animateOnMount: true });
-
-    const restoredGroup = deriveGroup(
-      true,
-      new Set(),
-      new Set([message.id]),
-      new Set([message.id]),
-    );
-    expect(restoredGroup).toMatchObject({ animateOnMount: false });
-
-    const seenGroup = deriveGroup(
-      true,
-      new Set([liveGroup?.id ?? ""]),
-      new Set([message.id]),
-    );
-    expect(seenGroup).toMatchObject({ animateOnMount: false });
+    expect(deriveGroup()).toMatchObject({ restored: false, settled: true });
+    expect(deriveGroup(new Set([message.id]))).toMatchObject({
+      restored: true,
+      settled: true,
+    });
   });
 
   it("groups a settled run containing a failed tool", () => {
@@ -456,17 +504,19 @@ describe("deriveChatTimelineRows", () => {
       lastAssistantMessageIndex: 0,
       expandedAgentMessageIds: new Set(),
     });
-    const activityRows = rows.filter(
-      (row): row is AgentActivityTimelineRow => row.kind === "agent-activity",
+    const toolRows = rows.filter(
+      (row): row is AgentToolGroupTimelineRow =>
+        row.kind === "agent-tool-group",
     );
 
-    expect(activityRows).toHaveLength(1);
-    expect(activityRows[0].part).toMatchObject({
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0].activities).toHaveLength(1);
+    expect(toolRows[0].activities[0].part).toMatchObject({
       toolCallId: "tool-1",
       output: "done",
       state: "output-available",
     });
-    expect(activityRows[0].terminalChunksByToolCallId.get("tool-1")).toEqual([
+    expect(toolRows[0].terminalChunksByToolCallId.get("tool-1")).toEqual([
       "first ",
       "second",
     ]);
@@ -491,7 +541,10 @@ describe("deriveChatTimelineRows", () => {
       expandedAgentMessageIds: new Set(),
     });
 
-    expect(rows.filter((row) => row.kind === "agent-activity")).toHaveLength(2);
+    expect(rows.filter((row) => row.kind === "agent-activity")).toHaveLength(1);
+    expect(rows.filter((row) => row.kind === "agent-tool-group")).toHaveLength(
+      1,
+    );
   });
 
   it("reuses every row when derivation produces equivalent data", () => {
