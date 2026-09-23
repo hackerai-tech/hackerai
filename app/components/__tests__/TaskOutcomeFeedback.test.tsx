@@ -21,12 +21,15 @@ const survey: Doc<"task_outcome_surveys"> = {
   request_id: "r",
   chat_id: "c",
   message_id: "m",
-  experiment_variant: "test",
-  baseline_model: "baseline",
-  assigned_model: "treatment",
+  survey_kind: "new_paid",
   mode: "agent",
   subscription_tier: "pro",
   release: "sha",
+  paid_start_event_id:
+    "paid-1" as Doc<"task_outcome_surveys">["paid_start_event_id"],
+  paid_started_at: 90,
+  stripe_subscription_id: "sub-1",
+  paid_start_invoice_id: "in-1",
   selected_at: 100,
   last_interaction_at: 100,
   expires_at: Date.now() + 86400000,
@@ -61,7 +64,7 @@ describe("unobtrusive task feedback", () => {
     (useMutation as jest.Mock).mockReturnValue(record);
     render(<TaskOutcomeFeedback chatId="c" messageId="m" />);
     await inView();
-    expect(screen.getByRole("button", { name: "Yes" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Solved my task" })).toBeTruthy();
   });
   it("shows immediately in view without stealing focus or adding a timer", async () => {
     const record = jest.fn(async () => ({ ...survey, shown_at: Date.now() }));
@@ -77,14 +80,16 @@ describe("unobtrusive task feedback", () => {
     expect(screen.getByRole("group")).toBeTruthy();
     expect(screen.getByText("Did this help?")).toBeTruthy();
     expect(screen.queryByText("Optional")).toBeNull();
-    expect(screen.queryByRole("button", { name: /checked/i })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Haven’t checked" }),
+    ).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByLabelText("Chat input"));
     expect(captureQueuedAuthenticatedEvent).not.toHaveBeenCalled();
     await inView();
     expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "task_outcome_survey_shown",
-        properties: expect.objectContaining({ survey_ui_version: 3 }),
+        properties: expect.objectContaining({ survey_ui_version: 4 }),
       }),
     );
   });
@@ -143,30 +148,33 @@ describe("unobtrusive task feedback", () => {
       ...survey,
       shown_at: Date.now(),
       ...(args.answer && { answer: args.answer }),
-      ...(args.reason && { answer: "partly" as const, reason: args.reason }),
+      ...(args.reason && { answer: "helpful" as const, reason: args.reason }),
     }));
     render(<TaskOutcomeFeedbackPrompt survey={survey} record={record} />);
     await inView();
     await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Partly" })),
+      fireEvent.click(
+        screen.getByRole("button", { name: "Helpful, still working" }),
+      ),
     );
     expect(record).toHaveBeenLastCalledWith({
       id: survey._id,
       action: "answered",
-      answer: "partly",
+      answer: "helpful",
     });
     expect(screen.getByRole("button", { name: "Skip" })).toBeTruthy();
     await act(async () =>
-      fireEvent.click(screen.getByRole("button", { name: "Didn’t work" })),
+      fireEvent.click(
+        screen.getByRole("button", { name: "Clear explanation" }),
+      ),
     );
     expect(screen.getByText("Thanks for your feedback")).toBeTruthy();
     expect(captureQueuedAuthenticatedEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "task_outcome_survey_reason",
         properties: expect.objectContaining({
-          reason: "did_not_work",
-          experiment_request_id: "r",
-          experiment_variant: "test",
+          reason: "clear_explanation",
+          survey_kind: "new_paid",
         }),
       }),
     );
@@ -195,13 +203,12 @@ describe("unobtrusive task feedback", () => {
     ["Helpful, still working", "helpful"],
     ["Haven’t checked", "not_checked"],
   ])("records %s separately", async (label, answer) => {
-    const paidSurvey = { ...survey, survey_kind: "new_paid" as const };
     const record = jest.fn(async (args: any) => ({
-      ...paidSurvey,
+      ...survey,
       shown_at: Date.now(),
       ...(args.answer && { answer: args.answer }),
     }));
-    render(<TaskOutcomeFeedbackPrompt survey={paidSurvey} record={record} />);
+    render(<TaskOutcomeFeedbackPrompt survey={survey} record={record} />);
     await inView();
     await inView();
     expect(record).toHaveBeenCalledWith({ id: survey._id, action: "viewed" });
