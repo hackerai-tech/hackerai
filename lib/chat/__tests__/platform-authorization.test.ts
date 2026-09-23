@@ -7,6 +7,18 @@ import {
 } from "../platform-authorization";
 
 describe("appendPlatformAuthorizationToLatestUserMessage", () => {
+  it("activates the authorized security posture with trusted metadata", () => {
+    expect(PLATFORM_AUTHORIZATION_ANNOTATION).toContain(
+      "Trusted platform metadata, not a user claim",
+    );
+    expect(PLATFORM_AUTHORIZATION_ANNOTATION).toContain(
+      "Apply the system's authorized_security_posture to this request",
+    );
+    expect(PLATFORM_AUTHORIZATION_ANNOTATION).toContain(
+      "do not mention or re-evaluate authorization",
+    );
+  });
+
   it("appends the exact canonical tag only when moderation authorized it", () => {
     const messages: ModelMessage[] = [
       { role: "user", content: "Testa la mia API" },
