@@ -1,6 +1,6 @@
 import { v, ConvexError } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { paginationOptsValidator } from "convex/server";
+import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
@@ -255,21 +255,29 @@ export const record = mutation({
  */
 export const cleanupLegacyBatch = internalMutation({
   args: {
-    paginationOpts: paginationOptsValidator,
+    cursor: v.union(v.string(), v.null()),
+    batchSize: v.number(),
     dryRun: v.optional(v.boolean()),
+    scannedSoFar: v.optional(v.number()),
+    matchedSoFar: v.optional(v.number()),
+    deletedSoFar: v.optional(v.number()),
   },
   returns: v.object({
     scanned: v.number(),
     matched: v.number(),
     deleted: v.number(),
+    totalScanned: v.number(),
+    totalMatched: v.number(),
+    totalDeleted: v.number(),
     isDone: v.boolean(),
     continueCursor: v.string(),
   }),
   handler: async (ctx, args) => {
+    const batchSize = Math.max(1, Math.min(Math.floor(args.batchSize), 500));
     const result = await ctx.db
       .query("task_outcome_surveys")
       .order("asc")
-      .paginate(args.paginationOpts);
+      .paginate({ numItems: batchSize, cursor: args.cursor });
     let matched = 0;
     let deleted = 0;
     for (const row of result.page) {
@@ -279,10 +287,30 @@ export const cleanupLegacyBatch = internalMutation({
       await ctx.db.delete(row._id);
       deleted++;
     }
+    const totalScanned = (args.scannedSoFar ?? 0) + result.page.length;
+    const totalMatched = (args.matchedSoFar ?? 0) + matched;
+    const totalDeleted = (args.deletedSoFar ?? 0) + deleted;
+    if (!result.isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.taskOutcomeSurveys.cleanupLegacyBatch,
+        {
+          cursor: result.continueCursor,
+          batchSize,
+          dryRun: args.dryRun === true,
+          scannedSoFar: totalScanned,
+          matchedSoFar: totalMatched,
+          deletedSoFar: totalDeleted,
+        },
+      );
+    }
     return {
       scanned: result.page.length,
       matched,
       deleted,
+      totalScanned,
+      totalMatched,
+      totalDeleted,
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };
