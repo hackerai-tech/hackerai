@@ -8,6 +8,8 @@ import {
 } from "../worked-for-parts";
 import type { ChatMessage } from "@/types";
 
+type MessagePart = ChatMessage["parts"][number];
+
 const part = (
   type: string,
   extra: Record<string, unknown> = {},
@@ -126,12 +128,13 @@ describe("projectAgentWorkTimelineItems", () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toMatchObject({
       kind: "tool-group",
+      settled: true,
       summary: "Read a file, ran a command",
     });
     expect(items[1]).toMatchObject({ kind: "activity" });
   });
 
-  it("keeps the current step as separate activities while streaming", () => {
+  it("keeps the current step in one unsettled group while streaming", () => {
     const parts = [
       part("step-start"),
       part("tool-read_file", {
@@ -153,7 +156,71 @@ describe("projectAgentWorkTimelineItems", () => {
       workPartIndexes,
     });
 
-    expect(items.map((item) => item.kind)).toEqual(["activity", "activity"]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: "tool-group", settled: false });
+    expect(items[0]?.kind === "tool-group" && items[0].activities).toHaveLength(
+      2,
+    );
+  });
+
+  it("keeps the same group id from the first tool call through settlement", () => {
+    const firstTool = part("tool-read_file", {
+      toolCallId: "read-1",
+      state: "input-streaming",
+    });
+    const project = (parts: MessagePart[], messageSettled: boolean) => {
+      const { workPartIndexes } = splitWorkedForParts(parts);
+      const projection = projectAgentWorkParts(parts, workPartIndexes);
+      return projectAgentWorkTimelineItems({
+        activities: projection.activities,
+        messageSettled,
+        parts,
+        workPartIndexes,
+      });
+    };
+
+    const streamingFirstTool = project([part("step-start"), firstTool], false);
+    const streamingSecondTool = project(
+      [
+        part("step-start"),
+        { ...firstTool, state: "output-available" },
+        part("tool-read_file", {
+          toolCallId: "read-2",
+          state: "input-available",
+        }),
+      ] as MessagePart[],
+      false,
+    );
+    const settledRun = project(
+      [
+        part("step-start"),
+        { ...firstTool, state: "output-available" },
+        part("tool-read_file", {
+          toolCallId: "read-2",
+          state: "output-available",
+        }),
+        part("step-start"),
+        part("reasoning", { text: "next step" }),
+      ] as MessagePart[],
+      false,
+    );
+
+    expect(streamingFirstTool[0]).toMatchObject({
+      kind: "tool-group",
+      id: "tool-group:0:tool:read-1",
+      settled: false,
+    });
+    expect(streamingSecondTool[0]).toMatchObject({
+      kind: "tool-group",
+      id: "tool-group:0:tool:read-1",
+      settled: false,
+    });
+    expect(settledRun[0]).toMatchObject({
+      kind: "tool-group",
+      id: "tool-group:0:tool:read-1",
+      settled: true,
+      summary: "Read files",
+    });
   });
 
   it("summarizes a closed mixed-outcome step", () => {
@@ -217,7 +284,7 @@ describe("projectAgentWorkTimelineItems", () => {
     ).toEqual(["tool-group"]);
   });
 
-  it("keeps a closed run separate while any tool is still in flight", () => {
+  it("keeps a closed run unsettled while any tool is still in flight", () => {
     const parts = [
       part("tool-read_file", {
         toolCallId: "read-1",
@@ -237,8 +304,10 @@ describe("projectAgentWorkTimelineItems", () => {
         messageSettled: true,
         parts,
         workPartIndexes,
-      }).map((item) => item.kind),
-    ).toEqual(["activity", "activity"]);
+      }),
+    ).toEqual([
+      expect.objectContaining({ kind: "tool-group", settled: false }),
+    ]);
   });
 
   it("uses concise plural summaries for repeated tool categories", () => {
