@@ -38,11 +38,11 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Pro Plus Auto and Agent Pro use DeepSeek V4.1 Flash. Other paid Agent
- *   Auto and Standard requests use DeepSeek V4 Flash 0731. Ask Ultra Auto
- *   and Ask Pro use DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
+ *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
+ *   DeepSeek V4.1 Flash. Explicit Standard uses DeepSeek V4 Flash 0731.
+ *   Ask Pro uses DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
  *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
- *   image turns use DeepSeek V4 Flash Vision before fallbacks.
+ *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
  */
 export function selectModel(
@@ -73,12 +73,9 @@ export function selectModel(
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const paidStandardTextModel: ModelName = "model-deepseek-v4-flash-0731";
-  const paidAutoTextModel: ModelName =
-    subscription === "pro-plus"
-      ? "model-deepseek-v4-flash-vision-pro"
-      : !isAgent && subscription === "ultra"
-        ? "model-deepseek-v4-pro-0813"
-        : paidStandardTextModel;
+  // Paid Auto text and PDF turns use DeepSeek V4.1 Flash on every plan.
+  // Explicit Standard keeps the 0731 model so that tier stays distinct.
+  const paidAutoTextModel: ModelName = "model-deepseek-v4-flash-vision-pro";
   // Paid Agent Pro accepts original images without a separate vision route.
   // Ask and paid Agent Auto/Standard retain their existing model selection.
   if (
@@ -88,10 +85,13 @@ export function selectModel(
   ) {
     return "model-deepseek-v4-flash-vision-pro";
   }
+  // Direct image routes are unchanged by the Auto text routing: explicit Pro
+  // and Ask Ultra Auto keep Pro vision reasoning, other routes use Standard.
+  const isAutoSelection =
+    !allowedSelectedModel || allowedSelectedModel === "auto";
   const directVisionModel: ModelName =
     allowedSelectedModel === "hackerai-pro" ||
-    ((!allowedSelectedModel || allowedSelectedModel === "auto") &&
-      paidAutoTextModel === "model-deepseek-v4-pro-0813")
+    (isAutoSelection && !isAgent && subscription === "ultra")
       ? "model-deepseek-v4-flash-vision-pro"
       : "model-deepseek-v4-flash-vision";
   if (
@@ -120,15 +120,11 @@ export function selectModel(
 
   // Free users always route through the auto router; paid users may pick an
   // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
-  if (
-    !allowedSelectedModel ||
-    allowedSelectedModel === "auto" ||
-    subscription === "free"
-  ) {
+  if (isAutoSelection || subscription === "free") {
     return autoModel;
   }
 
-  // Explicit Standard remains on Flash even when Ultra Auto uses Pro.
+  // Explicit Standard remains on V4 Flash 0731 while Auto uses V4.1 Flash.
   // Keep an explicit key so model display surfaces show the selected tier.
   if (allowedSelectedModel === "hackerai-standard") {
     return hasProviderImage ? "model-grok-4.5" : paidStandardTextModel;
