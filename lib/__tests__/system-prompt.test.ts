@@ -37,6 +37,7 @@ describe("systemPrompt security instructions", () => {
         "requested outcome is sufficiently supported, stop",
       );
       expect(agent).toContain("resolve a specific uncertainty");
+      expect(agent).toContain("Finish required cleanup before completion");
       expect(agent).toContain("preserve a restoration path when practical");
       expect(agent).toContain("Do not make unrelated mutations");
       expect(agent).toContain("disclose changes that could not be restored");

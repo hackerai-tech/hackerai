@@ -813,6 +813,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               pid?: number;
             }> | null = null;
             let resumableTimeoutObserved = false;
+            let backgroundLaunchAttempted = false;
 
             const forgetUnexposedCommandSession = async () => {
               if (!commandSession || commandSessionExposed) return;
@@ -1214,11 +1215,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 // Start it through the SDK's background handle, retain that
                 // exact handle/PID for lifecycle operations, then wait here
                 // to preserve foreground behavior for the caller.
-                const start = () =>
-                  sandboxInstance.commands.run(effectiveCommand, {
+                const start = () => {
+                  if (is_background) backgroundLaunchAttempted = true;
+                  return sandboxInstance.commands.run(effectiveCommand, {
                     ...runOptions,
                     background: true,
                   });
+                };
                 // A lost background-start response may hide a launched process;
                 // never retry it automatically and risk duplicating the work.
                 const started = (await (is_background
@@ -1424,7 +1427,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     });
                   } else {
                     reject(
-                      is_background
+                      is_background && backgroundLaunchAttempted
                         ? new Error(
                             `Background launch could not be confirmed; no usable process handle was returned. Do not automatically rerun the command. ${resolveToolErrorMessage(error)}`,
                           )

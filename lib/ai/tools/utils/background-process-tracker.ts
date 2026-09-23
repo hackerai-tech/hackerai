@@ -37,6 +37,7 @@ export class BackgroundProcessTracker {
       });
   }
 
+  /** Guard unfinished artifacts using owned sessions, without probing reusable OS PIDs. */
   async hasActiveProcessesForFiles(
     _sandbox: AnySandbox,
     filePaths: string[],

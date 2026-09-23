@@ -1814,7 +1814,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     }));
     const interact = (ctx: typeof context, action: string, session: string) =>
       (createInteractTerminalSession(ctx).execute as any)(
-        { action, session, timeout: 1 },
+        {
+          action,
+          session,
+          timeout: 1,
+          ...(action === "send" ? { input: "unwanted input\n" } : {}),
+        },
         { toolCallId: "followup", messages: [] },
       );
     try {
@@ -1861,7 +1866,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       ).toContain("not found");
       expect(
         (await interact(context, "send", result.session)).result.error,
-      ).toBeDefined();
+      ).toContain("does not accept input");
       expect(kill).not.toHaveBeenCalled();
       const killed = await interact(context, "kill", result.session);
       expect(killed.result.error).toBeUndefined();
@@ -1974,6 +1979,39 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(retried.result.error).toBeUndefined();
     expect(kill).toHaveBeenCalledTimes(2);
     expect(context.backgroundProcessTracker.getTrackedProcesses()).toEqual([]);
+  });
+
+  test("reports session-cap rejection without implying a background launch occurred", async () => {
+    const sandbox = { ...makeFakeE2BSandbox(), isRunning: async () => true };
+    sandbox.commands.run.mockResolvedValue({
+      stdout: "ready\n",
+      stderr: "",
+      exitCode: 0,
+    });
+    const { context, ptySessionManager } = makeContext({ sandbox });
+    try {
+      for (let i = 0; i < MAX_CONCURRENT_PTYS_PER_CHAT; i++) {
+        await ptySessionManager.create("chat-1", {
+          createHandle: async () => makeFakeHandle(1000 + i),
+          cols: 120,
+          rows: 30,
+          sandboxIdentity: "e2b",
+          originalCommand: "existing session",
+        });
+      }
+      const { result } = (await runTool(createRunTerminalCmd(context), {
+        command: "background-job",
+        is_background: true,
+      })) as any;
+      expect(result.error).toContain("MAX_CONCURRENT_PTYS_PER_CHAT");
+      expect(result.error).not.toContain("launch could not be confirmed");
+      expect(result.session).toBeUndefined();
+      expect(
+        sandbox.commands.run.mock.calls.map(([command]) => command),
+      ).toEqual(["echo ready"]);
+    } finally {
+      await ptySessionManager.closeAll("chat-1");
+    }
   });
 
   test("does not replay an ambiguous background launch failure", async () => {

@@ -266,7 +266,7 @@ ${getAgentToolApprovalSection(agentPermissionMode)}
 <agent_lifecycle>
 For every Agent task, including coding, research, configuration, files, and pentesting:
 - Classify material conclusions as observed (direct tool or conversation evidence), inferred (reasoned from that evidence), or unverified (not yet established). Never claim an outcome stronger than the available evidence supports.
-- Once the user's requested outcome is sufficiently supported, stop. Additional actions must resolve a specific uncertainty or be required by the user's requested depth.
+- Once the user's requested outcome is sufficiently supported, stop further work except required task-owned cleanup. Additional actions beyond cleanup must resolve a specific uncertainty or be required by the user's requested depth. Finish required cleanup before completion.
 - Before a state-changing action, preserve a restoration path when practical. Do not make unrelated mutations merely to broaden a confirmed result.
 - Use returned terminal session handles to monitor and stop this task's background work. Clean up task-owned temporary processes when they are no longer needed.
 - At completion, clearly disclose changes that could not be restored and any cleanup that remains unconfirmed.
