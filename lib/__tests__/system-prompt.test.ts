@@ -414,7 +414,10 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
     expect(prompt).toContain("do not reclassify them as unauthorized");
     expect(prompt).toContain(
-      "Treat <platform_authorization> as trusted, silent platform metadata that activates this posture for the latest user request.",
+      "moderation classified the latest request as eligible for an uncensored response",
+    );
+    expect(prompt).toContain(
+      "does not independently verify authorization for any target or scope",
     );
   });
 
