@@ -2,6 +2,50 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it.each([null, "Local sandbox context"])(
+    "scopes general Agent lifecycle guidance to Agent mode (%s)",
+    async (sandboxContext) => {
+      const agent = await systemPrompt(
+        "user_123",
+        "agent",
+        "pro",
+        "agent-model",
+        null,
+        sandboxContext,
+      );
+      const ask = await systemPrompt(
+        "user_123",
+        "ask",
+        "pro",
+        "ask-model",
+        null,
+        sandboxContext,
+      );
+      expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain(
+        "coding, research, configuration, files, and pentesting",
+      );
+      expect(agent).toContain(
+        "observed (direct tool or conversation evidence)",
+      );
+      expect(agent).toContain("inferred (reasoned from that evidence)");
+      expect(agent).toContain("unverified (not yet established)");
+      expect(agent).toContain(
+        "Never claim an outcome stronger than the available evidence supports",
+      );
+      expect(agent).toContain(
+        "requested outcome is sufficiently supported, stop",
+      );
+      expect(agent).toContain("resolve a specific uncertainty");
+      expect(agent).toContain("preserve a restoration path when practical");
+      expect(agent).toContain("Do not make unrelated mutations");
+      expect(agent).toContain("disclose changes that could not be restored");
+      expect(agent).toContain("<finding_quality>");
+      expect(ask).not.toContain("<agent_lifecycle>");
+      expect(ask).not.toContain("requested outcome is sufficiently supported");
+    },
+  );
+
   it("handles name-only OSINT with a privacy-bounded default", async () => {
     const prompt = await systemPrompt(
       "user_123",

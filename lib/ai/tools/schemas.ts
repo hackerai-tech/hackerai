@@ -65,7 +65,7 @@ ${commandCompositionGuidance}
 2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file. If the file tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. A timeout or lost response may hide a completed write: inspect the file before retrying, especially before append.
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 ${pagerGuidance}
-5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
+5. For long-running work, use the exact returned \`session\` with \`interact_terminal_session\` to view output, wait/check status, or kill that task-owned process. Set \`is_background=true\` to return after launch on E2B; other transports must use foreground timeout recovery or a supported interactive PTY. Do not use nohup, pgrep, pkill, or invent sessions from PIDs for lifecycle management. Clean up through the returned session when the work is no longer needed.
 6. Dont include any newlines in the command.
 ${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
@@ -101,7 +101,7 @@ ${largeOutputGuidance}
         .optional()
         .default(false)
         .describe(
-          "Run the command as a detached background process. Only meaningful when interactive=false; ignored otherwise. Detached processes return a PID but no reusable terminal session, so never pass that PID to interact_terminal_session. Use FALSE if you need output or a resumable session; TRUE only for long-running processes whose output you do not need to poll.",
+          "Start a managed background command and return an opaque task-owned session for wait/view/kill (not send). Supported on E2B only; other transports return an unsupported error without starting the command. Only meaningful when interactive=false; ignored otherwise. Use the exact returned session for monitoring and cleanup, never the diagnostic PID.",
         ),
       timeout: z
         .number()
@@ -143,8 +143,8 @@ export const createInteractTerminalSessionToolSchema = ({
 - Use the exact \`session\` returned by \`run_terminal_cmd\`, including a session preserved in conversation context; never invent an ID
 - Across turns, \`view\` or \`wait\` can retrieve a historical execution record when the live session has closed. Check its status, saved output, and artifacts before repeating work. A historical record cannot accept input or be killed; a last-recorded running state does not prove the process is still alive.
 - A PID is not a session ID. Never derive a session from a PID (for example, never turn PID 1689 into \`cmd-1689\`)
-- Input-capable sessions are created with \`interactive=true\`; timed-out foreground commands may return non-interactive sessions that support wait/view/kill but not send
-- When using \`view\` action, ensure command has completed execution before using its output
+- Input-capable sessions are created with \`interactive=true\`; background commands and timed-out foreground commands may return non-interactive sessions that support wait/view/kill but not send
+- Use \`view\` for current output/status, including background services. Partial output is not proof of completion
 - Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
 - The output wait does not kill processes; explicit cancellation, response cleanup, and infrastructure resource limits can close live sessions. Saved records remain available while the original sandbox and retention allow.
 - Use \`wait\` action when a process needs additional time to complete and return

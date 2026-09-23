@@ -49,10 +49,11 @@ jest.mock("@/lib/posthog/server", () => ({
 }));
 
 import { phLogger } from "@/lib/posthog/server";
-import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { CommandExitError, InvalidArgumentError } from "@e2b/code-interpreter";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { spawn } from "node:child_process";
+import { BackgroundProcessTracker } from "../utils/background-process-tracker";
 import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
@@ -206,9 +207,7 @@ function makeContext(opts: {
     chatId: opts.chatId ?? "chat-1",
     triggerRunId: "run-test",
     fileAccumulator: {} as never,
-    backgroundProcessTracker: {
-      addProcess: jest.fn(),
-    } as never,
+    backgroundProcessTracker: new BackgroundProcessTracker(),
     ptySessionManager,
     mode: "agent",
     modelName: "configured-model",
@@ -1728,41 +1727,315 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
-  test("marks detached background PIDs as non-resumable", async () => {
-    const nonE2B = {
-      sandboxKind: "centrifugo" as const,
-      isWindows: () => false,
-      commands: {
-        run: jest.fn().mockResolvedValue({
-          stdout: "",
-          stderr: "",
-          exitCode: 0,
-          pid: 1689,
-        }),
+  test.each(["centrifugo", "miosa"])(
+    "rejects background launch without a real handle on %s",
+    async (sandboxKind) => {
+      const sandbox = {
+        sandboxKind,
+        isWindows: () => false,
+        commands: { run: jest.fn() },
+      };
+      const { context } = makeContext({ sandbox });
+      const result = (await runTool(createRunTerminalCmd(context), {
+        command: "sleep 30",
+        is_background: true,
+        interactive: false,
+      })) as any;
+      expect(result.result.error).toContain("No command was started");
+      expect(result.result.resumable).toBe(false);
+      expect(result.result.session).toBeUndefined();
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+    },
+  );
+
+  test("background handle streams, stays task-owned, kills the exact process, and recovers history", async () => {
+    const files = new Map<string, string>();
+    let child: ReturnType<typeof spawn> | undefined;
+    let closed:
+      Promise<{ stdout: string; stderr: string; exitCode: number }> | undefined;
+    const kill = jest.fn(async () => {
+      child!.kill();
+      await closed;
+      return true;
+    });
+    const sandbox = {
+      ...makeFakeE2BSandbox(),
+      sandboxId: "background-test",
+      isRunning: async () => true,
+      files: {
+        write: async (path: string, data: string) => {
+          files.set(path, data);
+        },
+        read: async (path: string) => {
+          if (!files.has(path)) throw new Error("missing");
+          return files.get(path)!;
+        },
+        list: async () => [],
       },
     };
-
-    const { context } = makeContext({ sandbox: nonE2B });
-    const result = (await runTool(createRunTerminalCmd(context), {
-      command: "sleep 30",
-      is_background: true,
-      timeout: 5,
-      interactive: false,
-    })) as {
-      result: {
-        output: string;
-        pid?: number;
-        session?: string;
-        resumable?: boolean;
-      };
-    };
-
-    expect(result.result.pid).toBe(1689);
-    expect(result.result.session).toBeUndefined();
-    expect(result.result.resumable).toBe(false);
-    expect(result.result.output).toContain(
-      "do not pass this PID to interact_terminal_session",
+    sandbox.commands.run.mockImplementation(
+      async (command: string, options: any) => {
+        if (command === "echo ready")
+          return { stdout: "ready\n", stderr: "", exitCode: 0 };
+        child = spawn(
+          process.execPath,
+          [
+            "-e",
+            'console.log("BACKGROUND_READY"); setInterval(() => {}, 1000);',
+          ],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        child.stdout!.on("data", (chunk: Buffer) =>
+          options.onStdout(chunk.toString()),
+        );
+        child.stderr!.on("data", (chunk: Buffer) =>
+          options.onStderr(chunk.toString()),
+        );
+        closed = new Promise((resolve, reject) => {
+          child!.once("error", reject);
+          child!.once("close", (code) =>
+            resolve({ stdout: "", stderr: "", exitCode: code ?? 137 }),
+          );
+        });
+        return {
+          pid: child.pid,
+          stdout: "",
+          stderr: "",
+          kill,
+          wait: () => closed,
+        };
+      },
     );
+    const { context, ptySessionManager } = makeContext({ sandbox });
+    context.ptyScopeId = "task-owner";
+    context.requestToolApproval = jest.fn(async () => ({
+      approved: true,
+      approvalSource: "auto_review",
+    }));
+    const interact = (ctx: typeof context, action: string, session: string) =>
+      (createInteractTerminalSession(ctx).execute as any)(
+        { action, session, timeout: 1 },
+        { toolCallId: "followup", messages: [] },
+      );
+    try {
+      const { result } = (await runTool(createRunTerminalCmd(context), {
+        command: "background-fixture > result.txt",
+        is_background: true,
+        interactive: false,
+      })) as any;
+      expect(result).toMatchObject({ status: "running", resumable: true });
+      expect(result.session).toMatch(/^[a-f0-9]{8}$/);
+      expect(result.session).not.toBe(String(child!.pid));
+      expect(ptySessionManager.get("task-owner", result.session)?.kind).toBe(
+        "command",
+      );
+      expect(context.backgroundProcessTracker.getTrackedProcesses()).toEqual([
+        expect.objectContaining({ session: result.session, pid: child!.pid }),
+      ]);
+      expect(
+        await context.backgroundProcessTracker.hasActiveProcessesForFiles(
+          sandbox as any,
+          ["/home/user/result.txt"],
+        ),
+      ).toMatchObject({
+        active: true,
+        processes: [expect.objectContaining({ session: result.session })],
+      });
+      await interact(context, "wait", result.session);
+      expect(
+        (await interact(context, "view", result.session)).result.output,
+      ).toContain("BACKGROUND_READY");
+      for (const invalid of [String(child!.pid), `cmd-${child!.pid}`]) {
+        expect(
+          (await interact(context, "kill", invalid)).result.error,
+        ).toContain("a PID is not a session ID");
+      }
+      expect(
+        (
+          await interact(
+            { ...context, ptyScopeId: "other-task" },
+            "kill",
+            result.session,
+          )
+        ).result.error,
+      ).toContain("not found");
+      expect(
+        (await interact(context, "send", result.session)).result.error,
+      ).toBeDefined();
+      expect(kill).not.toHaveBeenCalled();
+      const killed = await interact(context, "kill", result.session);
+      expect(killed.result.error).toBeUndefined();
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(child!.signalCode).toBe("SIGTERM");
+      expect(context.backgroundProcessTracker.getTrackedProcesses()).toEqual(
+        [],
+      );
+      const recovered = await interact(context, "view", result.session);
+      expect(recovered.result).toMatchObject({
+        recovered: true,
+        resumable: false,
+        status: "stopped",
+      });
+      expect(recovered.result.output).toContain("BACKGROUND_READY");
+      expect(
+        (await interact(context, "kill", result.session)).result.error,
+      ).toContain("historical record");
+      expect(kill).toHaveBeenCalledTimes(1);
+      expect(
+        sandbox.commands.run.mock.calls.map(([command]) => command),
+      ).toEqual(["echo ready", "background-fixture > result.txt"]);
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null)
+        child.kill();
+      await closed;
+      await ptySessionManager.closeAll("task-owner");
+    }
+  }, 10000);
+
+  test.each([0, 7])(
+    "retains final background output and exit code %i",
+    async (exitCode) => {
+      let finish!: (value: any) => void;
+      let fail!: (error: Error) => void;
+      const pending = new Promise((resolve, reject) => {
+        finish = resolve;
+        fail = reject;
+      });
+      let emit!: (text: string) => void;
+      const kill = jest.fn(async () => true);
+      const sandbox = { ...makeFakeE2BSandbox(), isRunning: async () => true };
+      sandbox.commands.run.mockImplementation(
+        async (command: string, options: any) => {
+          if (command === "echo ready")
+            return { stdout: "ready\n", stderr: "", exitCode: 0 };
+          emit = options.onStdout;
+          return { pid: 1234, kill, wait: () => pending };
+        },
+      );
+      const { context, ptySessionManager } = makeContext({ sandbox });
+      const { result } = (await runTool(createRunTerminalCmd(context), {
+        command: "finite-job",
+        is_background: true,
+      })) as any;
+      emit("FINAL_OUTPUT\n");
+      if (exitCode) fail(new (CommandExitError as any)("failed", exitCode));
+      else finish({ stdout: "FINAL_OUTPUT\n", stderr: "", exitCode });
+      const session = ptySessionManager.get("chat-1", result.session)!;
+      await session.handle.exited;
+      const viewed = await (
+        createInteractTerminalSession(context).execute as any
+      )(
+        { action: "view", session: result.session },
+        { toolCallId: "view", messages: [] },
+      );
+      expect(viewed.result).toMatchObject({
+        output: "FINAL_OUTPUT\n",
+        exited: { exitCode },
+      });
+      await ptySessionManager.closeAll("chat-1");
+      expect(kill).not.toHaveBeenCalled();
+    },
+  );
+
+  test("keeps a background handle after monitoring or kill failure for safe cleanup retry", async () => {
+    let rejectWait!: (error: Error) => void;
+    const pending = new Promise((_, reject) => {
+      rejectWait = reject;
+    });
+    const kill = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const sandbox = { ...makeFakeE2BSandbox(), isRunning: async () => true };
+    sandbox.commands.run.mockImplementation(async (command: string) =>
+      command === "echo ready"
+        ? { stdout: "ready\n", stderr: "", exitCode: 0 }
+        : { pid: 1234, kill, wait: () => pending },
+    );
+    const { context, ptySessionManager } = makeContext({ sandbox });
+    const { result } = (await runTool(createRunTerminalCmd(context), {
+      command: "background-job > result.txt",
+      is_background: true,
+    })) as any;
+    rejectWait(new Error("transport disconnected"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const interact = (action: string) =>
+      (createInteractTerminalSession(context).execute as any)(
+        { action, session: result.session },
+        { toolCallId: "retry", messages: [] },
+      );
+    const view = await interact("view");
+    expect(view.result.output).toContain("process status is unverified");
+    expect(view.result.exited).toBeUndefined();
+    const failed = await interact("kill");
+    expect(failed.result.error).toContain("retained so cleanup can be retried");
+    expect(ptySessionManager.get("chat-1", result.session)).toBeDefined();
+    expect(context.backgroundProcessTracker.getTrackedProcesses()).toHaveLength(
+      1,
+    );
+    const retried = await interact("kill");
+    expect(retried.result.error).toBeUndefined();
+    expect(kill).toHaveBeenCalledTimes(2);
+    expect(context.backgroundProcessTracker.getTrackedProcesses()).toEqual([]);
+  });
+
+  test("does not replay an ambiguous background launch failure", async () => {
+    const sandbox = { ...makeFakeE2BSandbox(), isRunning: async () => true };
+    sandbox.commands.run.mockImplementation(async (command: string) => {
+      if (command === "echo ready")
+        return { stdout: "ready\n", stderr: "", exitCode: 0 };
+      throw new Error("lost launch response");
+    });
+    const { context } = makeContext({ sandbox });
+    const { result } = (await runTool(createRunTerminalCmd(context), {
+      command: "background-job",
+      is_background: true,
+    })) as any;
+    expect(result.error).toContain("lost launch response");
+    expect(result.session).toBeUndefined();
+    expect(
+      sandbox.commands.run.mock.calls.filter(
+        ([command]) => command === "background-job",
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("cancels the exact background handle when cancellation races with launch", async () => {
+    let launched!: () => void;
+    const starting = new Promise<void>((resolve) => {
+      launched = resolve;
+    });
+    let release!: (handle: any) => void;
+    const launch = new Promise((resolve) => {
+      release = resolve;
+    });
+    let finish!: (value: any) => void;
+    const pending = new Promise((resolve) => {
+      finish = resolve;
+    });
+    const kill = jest.fn(async () => {
+      finish({ stdout: "", stderr: "", exitCode: 137 });
+      return true;
+    });
+    const sandbox = { ...makeFakeE2BSandbox(), isRunning: async () => true };
+    sandbox.commands.run.mockImplementation(async (command: string) => {
+      if (command === "echo ready")
+        return { stdout: "ready\n", stderr: "", exitCode: 0 };
+      launched();
+      return launch;
+    });
+    const { context, ptySessionManager } = makeContext({ sandbox });
+    const abort = new AbortController();
+    const running = runTool(
+      createRunTerminalCmd(context),
+      { command: "background-job", is_background: true },
+      abort.signal,
+    );
+    await starting;
+    abort.abort();
+    await running;
+    release({ pid: 1234, kill, wait: () => pending });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(kill).toHaveBeenCalledTimes(1);
+    await ptySessionManager.closeAll("chat-1");
+    expect(kill).toHaveBeenCalledTimes(1);
   });
 
   test("does not block destructive-looking commands", async () => {

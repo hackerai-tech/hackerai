@@ -1,6 +1,7 @@
 import type { AnySandbox } from "@/types";
 
 export interface BackgroundProcess {
+  session: string;
   pid: number;
   command: string;
   outputFiles: string[];
@@ -8,71 +9,44 @@ export interface BackgroundProcess {
 }
 
 export class BackgroundProcessTracker {
-  private processes: Map<number, BackgroundProcess>;
+  private processes = new Map<string, BackgroundProcess>();
 
-  constructor() {
-    this.processes = new Map();
-  }
-
-  /**
-   * Add a background process to track
-   */
-  addProcess(pid: number, command: string, outputFiles: string[]): void {
-    this.processes.set(pid, {
+  /** Track the owned handle's lifetime, never infer ownership from a PID. */
+  addProcess(
+    session: string,
+    pid: number,
+    command: string,
+    outputFiles: string[],
+    exited: Promise<{ exitCode: number | null }>,
+  ): void {
+    const process = {
+      session,
       pid,
       command,
       outputFiles,
       startTime: Date.now(),
-    });
+    };
+    this.processes.set(session, process);
+    void exited
+      .then(() => {
+        if (this.processes.get(session) === process)
+          this.processes.delete(session);
+      })
+      .catch(() => {
+        // A monitoring failure is not proof of exit; retain the file guard.
+      });
   }
 
-  /**
-   * Remove a completed process from tracking
-   */
-  removeProcess(pid: number): void {
-    this.processes.delete(pid);
-  }
-
-  /**
-   * Check if a process is still running
-   */
-  async checkProcessStatus(sandbox: AnySandbox, pid: number): Promise<boolean> {
-    try {
-      const result = await sandbox.commands.run(`ps -p ${pid}`, {});
-
-      const isRunning = result.stdout.includes(pid.toString());
-
-      if (!isRunning) {
-        this.removeProcess(pid);
-      }
-
-      return isRunning;
-    } catch (error) {
-      this.removeProcess(pid);
-      return false;
-    }
-  }
-
-  /**
-   * Check if any tracked processes are writing to the requested files
-   * Uses batch checking for efficiency
-   */
   async hasActiveProcessesForFiles(
-    sandbox: AnySandbox,
+    _sandbox: AnySandbox,
     filePaths: string[],
   ): Promise<{ active: boolean; processes: BackgroundProcess[] }> {
-    const activeProcesses: BackgroundProcess[] = [];
-
-    // Check each process individually
-    for (const [pid, process] of this.processes.entries()) {
-      const isRunning = await this.checkProcessStatus(sandbox, pid);
-
-      if (isRunning) {
-        const hasMatchingFile = process.outputFiles.some((outputFile) =>
+    const activeProcesses = Array.from(this.processes.values()).filter(
+      (process) =>
+        process.outputFiles.some((outputFile) =>
           filePaths.some((requestedFile) => {
             const normalizedOutput = this.normalizePath(outputFile);
             const normalizedRequested = this.normalizePath(requestedFile);
-
             return (
               normalizedOutput === normalizedRequested ||
               normalizedOutput.endsWith("/" + normalizedRequested) ||
@@ -81,13 +55,8 @@ export class BackgroundProcessTracker {
               normalizedRequested.endsWith(normalizedOutput)
             );
           }),
-        );
-
-        if (hasMatchingFile) {
-          activeProcesses.push(process);
-        }
-      }
-    }
+        ),
+    );
 
     return {
       active: activeProcesses.length > 0,
