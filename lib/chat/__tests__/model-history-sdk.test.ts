@@ -10,6 +10,7 @@ import {
   type UIMessage,
 } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
+import { convexToJson, jsonToConvex } from "convex/values";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   ModelHistoryReplay,
@@ -60,7 +61,7 @@ it("round-trips real SDK tool steps through persisted UI history while retaining
                 type: "tool-call",
                 toolCallId: "lookup-1",
                 toolName: "lookup",
-                input: "{}",
+                input: '{"z":2,"a":1}',
               },
               {
                 type: "finish",
@@ -145,11 +146,16 @@ it("round-trips real SDK tool steps through persisted UI history while retaining
     role: "user",
     parts: [{ type: "text", text: "Continue" }],
   };
-  const persisted = stripOpenRouterReasoningMetadataFromMessages([
+  const persistedSource = stripOpenRouterReasoningMetadataFromMessages([
     user,
     assistant!,
     next,
   ]);
+  // Convex canonicalizes object key order in UI history, but not the private
+  // serialized replay string. Model-source matching must survive that boundary.
+  const persisted = jsonToConvex(
+    convexToJson(JSON.parse(JSON.stringify(persistedSource))),
+  ) as unknown as UIMessage[];
   const reconstructed = await convertToModelMessages(persisted, {
     tools: createPromptSerializationTools(tools),
   });

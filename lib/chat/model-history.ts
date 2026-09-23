@@ -57,9 +57,21 @@ export function sourceMessageDigests(messages: ModelMessage[]): string[] {
                 part as typeof part & { providerOptions?: unknown };
               return rest;
             });
-    return content.length
-      ? [historyDigest({ role: message.role, content })]
-      : [];
+    if (!content.length) return [];
+    // Convex sorts object keys when it stores UI parts. Canonicalize source
+    // identity only; never reorder the replay bytes or ordered content arrays.
+    const canonical = JSON.stringify(
+      { role: message.role, content },
+      (_key, value) =>
+        value && typeof value === "object" && !Array.isArray(value)
+          ? Object.fromEntries(
+              Object.keys(value)
+                .sort()
+                .map((key) => [key, value[key]]),
+            )
+          : value,
+    );
+    return [createHash("sha256").update(canonical).digest("hex")];
   });
 }
 
