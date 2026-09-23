@@ -141,6 +141,48 @@ describe("model-facing history", () => {
     ]);
   });
 
+  it("normalizes terminal structural JSON but detects changed stdout and status", () => {
+    const terminal = (value: string): ModelMessage[] => [
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolName: "run_terminal_cmd",
+            toolCallId: "1",
+            output: { type: "text", value },
+          },
+        ],
+      },
+    ];
+    const original = terminal(
+      'Process exited with code 0\n{"result":{"output":"first","exitCode":0}}',
+    );
+    const reordered = terminal(
+      'Process exited with code 0\n{"result":{"exitCode":0,"output":"first"}}',
+    );
+    expect(sourceMessageDigests(original)).toEqual(
+      sourceMessageDigests(reordered),
+    );
+    expect(sourceMessageDigests(original)).not.toEqual(
+      sourceMessageDigests(
+        terminal(
+          'Process exited with code 0\n{"result":{"exitCode":0,"output":"changed"}}',
+        ),
+      ),
+    );
+    expect(sourceMessageDigests(original)).not.toEqual(
+      sourceMessageDigests(
+        terminal(
+          'Process exited with code 1\n{"result":{"exitCode":0,"output":"first"}}',
+        ),
+      ),
+    );
+    expect((original[0].content as any)[0].output.value).toBe(
+      'Process exited with code 0\n{"result":{"output":"first","exitCode":0}}',
+    );
+  });
+
   it("rejects corrupt/oversized snapshots and multimodal replay", () => {
     for (const value of [
       "null",

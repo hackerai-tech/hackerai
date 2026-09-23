@@ -18,6 +18,33 @@ export function historyDigest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+const canonicalSourceJson = (input: unknown): string =>
+  JSON.stringify(input, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.keys(value)
+            .sort()
+            .map((key) => [key, value[key]]),
+        )
+      : value,
+  );
+
+// Terminal adapters serialize structural results into text, sometimes after a
+// process-status line. Convex reorders that JSON when rebuilding UI history.
+// Match its values without ever canonicalizing stdout strings or replay bytes.
+function canonicalTerminalOutput(toolName: string, text: string): string {
+  if (!["run_terminal_cmd", "interact_terminal_session"].includes(toolName))
+    return text;
+  const boundary = text.startsWith("Process ") ? text.indexOf("\n") + 1 : 0;
+  try {
+    const value: unknown = JSON.parse(text.slice(boundary));
+    if (!value || typeof value !== "object") return text;
+    return text.slice(0, boundary) + canonicalSourceJson(value);
+  } catch {
+    return text;
+  }
+}
+
 /** Only an exact, backend-owned request prefix is trusted; sanitize every new suffix. */
 export function prepareReplayAuthorization(
   messages: ModelMessage[],
@@ -55,22 +82,24 @@ export function sourceMessageDigests(messages: ModelMessage[]): string[] {
             .map((part) => {
               const { providerOptions: _options, ...rest } =
                 part as typeof part & { providerOptions?: unknown };
+              if (rest.type === "tool-result" && rest.output.type === "text") {
+                return {
+                  ...rest,
+                  output: {
+                    ...rest.output,
+                    value: canonicalTerminalOutput(
+                      rest.toolName,
+                      rest.output.value,
+                    ),
+                  },
+                };
+              }
               return rest;
             });
     if (!content.length) return [];
     // Convex sorts object keys when it stores UI parts. Canonicalize source
     // identity only; never reorder the replay bytes or ordered content arrays.
-    const canonical = JSON.stringify(
-      { role: message.role, content },
-      (_key, value) =>
-        value && typeof value === "object" && !Array.isArray(value)
-          ? Object.fromEntries(
-              Object.keys(value)
-                .sort()
-                .map((key) => [key, value[key]]),
-            )
-          : value,
-    );
+    const canonical = canonicalSourceJson({ role: message.role, content });
     return [createHash("sha256").update(canonical).digest("hex")];
   });
 }
