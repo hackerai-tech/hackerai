@@ -176,50 +176,34 @@ describe("selectModel", () => {
     },
   );
 
-  it.each([
-    ["ask", "model-deepseek-v4-flash-vision-pro"],
-    ["agent", "model-deepseek-v4-flash-vision-pro"],
-  ] as const)(
-    "routes %s Pro Plus Auto text to DeepSeek V4.1 Flash",
-    (mode, expected) => {
-      expect(selectModel(mode, "pro-plus", "auto", false, false)).toBe(
-        expected,
-      );
-    },
-  );
-
-  it("routes Ask Ultra Auto text to DeepSeek V4 Pro", () => {
-    expect(selectModel("ask", "ultra", "auto", false, false)).toBe(
-      "model-deepseek-v4-pro-0813",
-    );
-  });
-
-  it("routes paid Agent Ultra Auto text to DeepSeek V4 Flash", () => {
-    expect(selectModel("agent", "ultra", "auto", false, false)).toBe(
-      "model-deepseek-v4-flash-0731",
-    );
-  });
-
-  it.each(["ask", "agent"] as const)(
-    "routes %s Pro Plus Auto PDFs to DeepSeek V4.1 Flash",
-    (mode) => {
-      expect(selectModel(mode, "pro-plus", "auto", false, true)).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    },
-  );
-
-  it("routes paid Agent Ultra Auto PDFs to DeepSeek V4 Flash", () => {
-    expect(selectModel("agent", "ultra", "auto", false, true)).toBe(
-      "model-deepseek-v4-flash-0731",
-    );
-  });
-
-  it.each(["pro", "team"] as const)(
-    "routes %s Agent Auto to DeepSeek V4 Flash",
+  describe.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "%s Auto routing",
     (subscription) => {
-      expect(selectModel("agent", subscription, "auto", false, false)).toBe(
-        "model-deepseek-v4-flash-0731",
+      it.each(["ask", "agent"] as const)(
+        "routes %s Auto text to DeepSeek V4.1 Flash",
+        (mode) => {
+          expect(selectModel(mode, subscription, "auto", false, false)).toBe(
+            "model-deepseek-v4-flash-vision-pro",
+          );
+        },
+      );
+
+      it.each(["ask", "agent"] as const)(
+        "routes %s Auto PDFs to DeepSeek V4.1 Flash",
+        (mode) => {
+          expect(selectModel(mode, subscription, "auto", false, true)).toBe(
+            "model-deepseek-v4-flash-vision-pro",
+          );
+        },
+      );
+
+      it.each(["ask", "agent"] as const)(
+        "keeps %s Auto images on Grok 4.5",
+        (mode) => {
+          expect(selectModel(mode, subscription, "auto", true, false)).toBe(
+            "model-grok-4.5",
+          );
+        },
       );
     },
   );
@@ -249,7 +233,7 @@ describe("selectModel", () => {
     ).toBe("model-deepseek-v4-flash-vision-pro");
     expect(
       selectModel("agent", "ultra", "auto", true, false, auxiliaryVision),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it("routes HackerAI Pro through DeepSeek V4.1 Flash", () => {
@@ -274,12 +258,12 @@ describe("selectModel", () => {
     },
   );
 
-  it("keeps paid Auto image prompts on DeepSeek with auxiliary vision", () => {
+  it("keeps paid Auto image prompts on DeepSeek V4.1 Flash with auxiliary vision", () => {
     expect(
       selectModel("ask", "pro", undefined, true, false, {
         auxiliaryVisionEnabled: true,
       }),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision-pro");
   });
 
   it.each(["ask", "agent"] as const)(
@@ -336,7 +320,7 @@ describe("selectModel", () => {
                 directVision,
               ),
             ).toBe(
-              subscription === "pro-plus" && selection !== "hackerai-standard"
+              selection !== "hackerai-standard"
                 ? "model-deepseek-v4-flash-vision-pro"
                 : "model-deepseek-v4-flash-0731",
             );
@@ -350,7 +334,7 @@ describe("selectModel", () => {
                 directVision,
               ),
             ).toBe(
-              subscription === "pro-plus" && selection !== "hackerai-standard"
+              selection !== "hackerai-standard"
                 ? "model-deepseek-v4-flash-vision-pro"
                 : "model-deepseek-v4-flash-0731",
             );
@@ -359,7 +343,7 @@ describe("selectModel", () => {
                 auxiliaryVisionEnabled: true,
               }),
             ).toBe(
-              subscription === "pro-plus" && selection !== "hackerai-standard"
+              selection !== "hackerai-standard"
                 ? "model-deepseek-v4-flash-vision-pro"
                 : "model-deepseek-v4-flash-0731",
             );
@@ -412,43 +396,19 @@ describe("selectModel", () => {
     },
   );
 
-  it.each(["pro", "team"] as const)(
-    "routes paid %s Auto text to the mode-specific Standard model",
-    (subscription) => {
-      expect(selectModel("ask", subscription, "auto")).toBe(
-        "model-deepseek-v4-flash-0731",
-      );
-      expect(selectModel("agent", subscription, "auto")).toBe(
-        "model-deepseek-v4-flash-0731",
-      );
-    },
-  );
-
   // Default model selection by mode
   describe("default models (no override)", () => {
-    it.each(["pro", "team"] as const)(
-      "should return DeepSeek V4 Flash for paid agent text on %s",
+    it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+      "should return DeepSeek V4.1 Flash for paid text on %s",
       (subscription) => {
+        expect(selectModel("ask", subscription)).toBe(
+          "model-deepseek-v4-flash-vision-pro",
+        );
         expect(selectModel("agent", subscription)).toBe(
-          "model-deepseek-v4-flash-0731",
+          "model-deepseek-v4-flash-vision-pro",
         );
       },
     );
-
-    it("should return DeepSeek V4.1 Flash for Pro Plus text", () => {
-      expect(selectModel("ask", "pro-plus")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-      expect(selectModel("agent", "pro-plus")).toBe(
-        "model-deepseek-v4-flash-vision-pro",
-      );
-    });
-
-    it("should return DeepSeek V4 Flash for paid agent text on Ultra", () => {
-      expect(selectModel("agent", "ultra")).toBe(
-        "model-deepseek-v4-flash-0731",
-      );
-    });
 
     it("should return Grok 4.5 medium for paid Agent Auto with an image", () => {
       expect(selectModel("agent", "pro", undefined, true, false)).toBe(
@@ -456,14 +416,16 @@ describe("selectModel", () => {
       );
     });
 
-    it("should keep paid agent on DeepSeek V4 Flash when a PDF is attached", () => {
+    it("should keep paid agent on DeepSeek V4.1 Flash when a PDF is attached", () => {
       expect(selectModel("agent", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
 
-    it("should return DeepSeek V4 Flash 0731 for paid ask with no image/PDF", () => {
-      expect(selectModel("ask", "pro")).toBe("model-deepseek-v4-flash-0731");
+    it("should return DeepSeek V4.1 Flash for paid ask with no image/PDF", () => {
+      expect(selectModel("ask", "pro")).toBe(
+        "model-deepseek-v4-flash-vision-pro",
+      );
     });
 
     it("should return Grok 4.5 medium for paid Ask Auto with an image", () => {
@@ -472,9 +434,9 @@ describe("selectModel", () => {
       );
     });
 
-    it("should keep paid ask on DeepSeek V4 Flash 0731 when a PDF is attached", () => {
+    it("should keep paid ask on DeepSeek V4.1 Flash when a PDF is attached", () => {
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
 
@@ -490,12 +452,13 @@ describe("selectModel", () => {
       );
     });
 
-    it("should return DeepSeek V4 Pro 0813 for ultra subscription with no image/PDF", () => {
-      expect(selectModel("ask", "ultra")).toBe("model-deepseek-v4-pro-0813");
-    });
-
-    it("should return DeepSeek V4 Flash 0731 for team subscription with no image/PDF", () => {
-      expect(selectModel("ask", "team")).toBe("model-deepseek-v4-flash-0731");
+    it("should keep explicit Standard on DeepSeek V4 Flash 0731 while Auto uses V4.1", () => {
+      expect(selectModel("ask", "ultra", "hackerai-standard")).toBe(
+        "model-deepseek-v4-flash-0731",
+      );
+      expect(selectModel("agent", "team", "hackerai-standard")).toBe(
+        "model-deepseek-v4-flash-0731",
+      );
     });
   });
 
@@ -638,10 +601,12 @@ describe("selectModel", () => {
       ).toBe("model-glm-5.3");
     });
 
-    it("should default to DeepSeek V4 Flash when no model is selected", () => {
-      expect(selectModel("agent", "pro")).toBe("model-deepseek-v4-flash-0731");
+    it("should default to DeepSeek V4.1 Flash when no model is selected", () => {
+      expect(selectModel("agent", "pro")).toBe(
+        "model-deepseek-v4-flash-vision-pro",
+      );
       expect(selectModel("agent", "pro", "auto")).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
   });
@@ -669,24 +634,24 @@ describe("selectModel", () => {
 
   // "auto" override
   describe("auto override", () => {
-    it("should route paid agent Auto text to DeepSeek V4 Flash", () => {
+    it("should route paid agent Auto text to DeepSeek V4.1 Flash", () => {
       expect(selectModel("agent", "pro", "auto")).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
 
-    it("should route paid Agent Auto images to Grok and PDFs to GLM", () => {
+    it("should route paid Agent Auto images to Grok and PDFs to DeepSeek V4.1 Flash", () => {
       expect(selectModel("agent", "pro", "auto", true, false)).toBe(
         "model-grok-4.5",
       );
       expect(selectModel("agent", "pro", "auto", false, true)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
 
-    it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek Flash)", () => {
+    it("should treat 'auto' as no override in paid ask mode (text-only → DeepSeek V4.1 Flash)", () => {
       expect(selectModel("ask", "pro", "auto")).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
 
@@ -698,7 +663,7 @@ describe("selectModel", () => {
 
     it("should treat 'auto' as no override in ask mode with PDF -> DeepSeek", () => {
       expect(selectModel("ask", "pro", "auto", false, true)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
   });
@@ -707,16 +672,16 @@ describe("selectModel", () => {
   describe("undefined override", () => {
     it("should use default when override is undefined", () => {
       expect(selectModel("agent", "pro", undefined)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
       expect(selectModel("ask", "pro", undefined)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
       expect(selectModel("ask", "pro", undefined, true, false)).toBe(
         "model-grok-4.5",
       );
       expect(selectModel("ask", "pro", undefined, false, true)).toBe(
-        "model-deepseek-v4-flash-0731",
+        "model-deepseek-v4-flash-vision-pro",
       );
     });
   });
