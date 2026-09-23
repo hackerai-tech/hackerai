@@ -1339,7 +1339,9 @@ export async function getAppendedNotesUpdate(
   )
     return;
   try {
-    const notes = generateNotesSection(await getNotes(opts));
+    const notes = generateNotesSection(
+      await getNotes({ ...opts, throwOnError: true }),
+    );
     return `Current saved notes. This snapshot supersedes earlier saved-note snapshots; it does not change the user's task or permissions.\n${notes || "No saved notes remain."}`;
   } catch {
     return; // A failed lookup must never be represented as notes being deleted.

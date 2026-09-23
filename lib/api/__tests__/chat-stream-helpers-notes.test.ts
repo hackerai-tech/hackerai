@@ -63,6 +63,10 @@ describe("appended notes snapshots", () => {
     expect(mockGetNotes).not.toHaveBeenCalled();
     mockGetNotes.mockRejectedValue(new Error("unavailable"));
     expect(await getAppendedNotesUpdate([], opts, true)).toBeUndefined();
+    expect(mockGetNotes).toHaveBeenLastCalledWith({
+      ...opts,
+      throwOnError: true,
+    });
   });
   it("honors the current notes opt-out even during resume", async () => {
     expect(

@@ -34,6 +34,11 @@ Revision claims fence older workers and post-edit writes. Snapshots are not copi
 to shared or branched chats. Missing storage, corrupt snapshots, unsupported media
 or incompatible history fall back safely. Oversized or interrupted turns do not
 save a new snapshot; exact replay of interrupted work is not promised.
+Replay storage waits have a 1.5-second deadline. Saves run after accounting and
+cleanup, using the caller's background-work registrar when available. A deadline
+does not cancel an already submitted database mutation; revision/ownership checks
+remain authoritative for late writes. Failed notes lookups preserve the last known
+state rather than emitting a false deletion.
 
 ## Separate summarization treatment
 
@@ -41,7 +46,7 @@ save a new snapshot; exact replay of interrupted work is not promised.
 current DeepSeek model, frozen system, last active tool schemas and unchanged
 history followed by a summary instruction. The full prefix must fit after system,
 schema and instruction/output headroom. Otherwise the existing bounded summary
-ladder is used. Tool execution is disabled, output is bounded, cancellation is
+ladder is used, including after non-cancellation warm-summary failures. Tool execution is disabled, output is bounded, cancellation is
 respected, and empty/truncated summaries cannot replace history. The existing
 startup-compaction ladder is unchanged.
 

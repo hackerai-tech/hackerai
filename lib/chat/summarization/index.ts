@@ -829,8 +829,10 @@ export const compactModelMessagesInRun = async ({
   try {
     // Reserve actual schemas/system plus instruction headroom and bounded output.
     // If the full prefix cannot fit, keep the existing bounded-summary path.
-    const schemaTokens = cacheAlignedSummary
-      ? safeCountTokens(
+    let prefixBudget = 0;
+    if (cacheAlignedSummary) {
+      try {
+        const schemaTokens = safeCountTokens(
           JSON.stringify(
             await Promise.all(
               Object.entries(cacheAlignedSummary.tools).map(
@@ -842,21 +844,43 @@ export const compactModelMessagesInRun = async ({
               ),
             ),
           ),
-        )
-      : 0;
-    const prefixBudget = Math.max(
-      0,
-      maxTokens -
-        Math.max(
-          systemPromptTokens,
-          safeCountTokens(cacheAlignedSummary?.system ?? ""),
-        ) -
-        schemaTokens -
-        12_288,
-    );
+        );
+        prefixBudget = Math.max(
+          0,
+          maxTokens -
+            Math.max(
+              systemPromptTokens,
+              safeCountTokens(cacheAlignedSummary.system),
+            ) -
+            schemaTokens -
+            12_288,
+        );
+      } catch {
+        // An unplannable warm request must not remove the bounded recovery path.
+      }
+    }
     const useWarmPrefix =
       cacheAlignedSummary &&
+      prefixBudget > 0 &&
       estimateSummaryInputTokens(modelMessages) <= prefixBudget;
+    let warmPrefixSucceeded = false;
+    const runBoundedSummary = () =>
+      generateSummaryTextWithRetry({
+        onRetry: progress.retry,
+        messagesToSummarize: [],
+        modelMessages,
+        mode,
+        chatSystemPrompt,
+        hasExistingSummary,
+        tools,
+        providerOptions,
+        abortSignal,
+        summaryInputMaxTokens: getSummaryInputMaxTokens(maxTokens),
+        chatId,
+        subscription,
+        reason: compactionReason,
+        onPhaseDuration,
+      });
     if (useWarmPrefix) cacheAlignedSummary.onUsed?.();
     const summaryPromise = useWarmPrefix
       ? generateSummaryText(
@@ -876,27 +900,20 @@ export const compactModelMessagesInRun = async ({
             timeout: 60_000,
             maxOutputTokens: 8192,
           },
-        ).then((result) => ({
-          ...result,
-          languageModel: cacheAlignedSummary.languageModel,
-          attempt: "primary" as const,
-        }))
-      : generateSummaryTextWithRetry({
-          onRetry: progress.retry,
-          messagesToSummarize: [],
-          modelMessages,
-          mode,
-          chatSystemPrompt,
-          hasExistingSummary,
-          tools,
-          providerOptions,
-          abortSignal,
-          summaryInputMaxTokens: getSummaryInputMaxTokens(maxTokens),
-          chatId,
-          subscription,
-          reason: compactionReason,
-          onPhaseDuration,
-        });
+        )
+          .then((result) => {
+            warmPrefixSucceeded = true;
+            return {
+              ...result,
+              languageModel: cacheAlignedSummary.languageModel,
+              attempt: "primary" as const,
+            };
+          })
+          .catch((error) => {
+            if (abortSignal?.aborted) throw error;
+            return runBoundedSummary();
+          })
+      : runBoundedSummary();
     const transcriptSave = startTranscriptSave({
       messages: [],
       modelMessages: transcriptModelMessages,
@@ -932,7 +949,7 @@ export const compactModelMessagesInRun = async ({
         persistence: "run_scoped",
         compaction_model:
           summaryResult.usage.model ?? CONTEXT_COMPACTION_MODEL_NAME,
-        cache_aligned_prefix: Boolean(useWarmPrefix),
+        cache_aligned_prefix: warmPrefixSucceeded,
         summary_input_tokens: summaryResult.usage.inputTokens,
         summary_output_tokens: summaryResult.usage.outputTokens,
         estimated_compacted_input_tokens:

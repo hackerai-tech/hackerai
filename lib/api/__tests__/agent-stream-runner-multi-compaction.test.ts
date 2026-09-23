@@ -630,6 +630,7 @@ describe("createAgentStream repeated compaction", () => {
     mockLoadHistory
       .mockReset()
       .mockResolvedValue({ revision: 0, payload: null });
+    mockSaveHistory.mockReset().mockResolvedValue(true);
     mockNotesUpdate.mockReset();
     mockDescribeImage
       .mockReset()
@@ -772,10 +773,22 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockNotesUpdate).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    "saves only completed, non-aborted replay (aborted=%s)",
-    async (aborted) => {
+  it.each([
+    { aborted: false, background: false },
+    { aborted: true, background: false },
+    { aborted: false, background: true },
+  ])(
+    "saves only completed replay after accounting (%j)",
+    async ({ aborted, background }) => {
       mockHistoryFlag.mockResolvedValue(true);
+      const register = jest.fn();
+      let finishSave: (() => void) | undefined;
+      if (background)
+        mockSaveHistory.mockReturnValue(
+          new Promise<void>((resolve) => {
+            finishSave = resolve;
+          }),
+        );
       const model = "deepseek/deepseek-v4.1-flash";
       const controller = new AbortController();
       const state = initAgentStreamState(
@@ -786,6 +799,7 @@ describe("createAgentStream repeated compaction", () => {
         "model-deepseek-v4-flash-0731",
         createTestStreamContext({
           abortController: controller,
+          ...(background && { registerBackgroundWork: register }),
           trackedProvider: { languageModel: () => ({ modelId: model }) },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {
@@ -807,6 +821,12 @@ describe("createAgentStream repeated compaction", () => {
       await stream.onStepFinish({ response });
       if (aborted) controller.abort();
       await stream.onFinish({ finishReason: "stop", usage: {}, response });
+      if (background) {
+        expect(state.streamFinishReason).toBe("stop");
+        expect(register).toHaveBeenCalledTimes(1);
+        finishSave!();
+        await register.mock.calls[0][0];
+      }
       if (aborted) expect(mockSaveHistory).not.toHaveBeenCalled();
       else
         expect(mockSaveHistory).toHaveBeenCalledWith(

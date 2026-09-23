@@ -342,6 +342,57 @@ describe("checkAndSummarizeIfNeeded", () => {
     },
   );
 
+  it.each(["provider", "truncated", "cancelled"])(
+    "recovers warm summary %s failures unless cancelled",
+    async (failure) => {
+      const controller = new AbortController();
+      const warmModel = {
+        modelId: "deepseek/deepseek-v4.1-flash",
+      } as LanguageModel;
+      mockGenerateText
+        .mockImplementationOnce(async () => {
+          if (failure === "truncated")
+            return { text: "Partial", finishReason: "length" };
+          if (failure === "cancelled") controller.abort(new Error("stopped"));
+          throw new Error(failure);
+        })
+        .mockResolvedValue({
+          text: "Bounded checkpoint",
+          finishReason: "stop",
+        });
+      const result = compactModelMessagesInRun({
+        modelMessages: [{ role: "user", content: "History" }],
+        subscription: "pro",
+        mode: "agent",
+        writer: mockWriter,
+        chatId: null,
+        maxTokens: 128_000,
+        compactionIndex: 1,
+        hasExistingSummary: false,
+        abortSignal: controller.signal,
+        cacheAlignedSummary: {
+          languageModel: warmModel,
+          system: "Frozen prompt",
+          tools: {},
+          providerOptions: {},
+        },
+      });
+      if (failure === "cancelled") {
+        await expect(result).rejects.toThrow("cancelled");
+        expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      } else {
+        expect((await result)?.summaryText).toContain("Bounded checkpoint");
+        expect(mockGenerateText).toHaveBeenCalledTimes(2);
+        expect((mockGenerateText.mock.calls[0][0] as any).model).toBe(
+          warmModel,
+        );
+        expect((mockGenerateText.mock.calls[1][0] as any).model).not.toBe(
+          warmModel,
+        );
+      }
+    },
+  );
+
   it("persists source runtime records and shares the retained-tail budget", async () => {
     const source: UIMessage[] = [
       createMessage("user", "user"),

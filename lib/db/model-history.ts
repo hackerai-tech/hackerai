@@ -7,6 +7,24 @@ import {
 } from "@/lib/chat/model-history";
 
 type Owner = { serviceKey: string; chatId: string; userId: string };
+export const MODEL_HISTORY_DEADLINE_MS = 1500;
+
+async function withHistoryDeadline<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Model history storage deadline exceeded")),
+          MODEL_HISTORY_DEADLINE_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const loadReference = makeFunctionReference<
   "mutation",
   Owner,
@@ -19,11 +37,13 @@ const saveReference = makeFunctionReference<
 >("modelHistory:save");
 
 export async function loadModelHistory(chatId: string, userId: string) {
-  return getConvexClient().mutation(loadReference, {
-    chatId,
-    userId,
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-  });
+  return withHistoryDeadline(
+    getConvexClient().mutation(loadReference, {
+      chatId,
+      userId,
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    }),
+  );
 }
 
 export async function saveModelHistory(
@@ -35,12 +55,14 @@ export async function saveModelHistory(
 ) {
   const payload = JSON.stringify(snapshot);
   if (Buffer.byteLength(payload) > MODEL_HISTORY_MAX_BYTES) return false;
-  return getConvexClient().mutation(saveReference, {
-    chatId,
-    userId,
-    revision,
-    startedAt,
-    payload,
-    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-  });
+  return withHistoryDeadline(
+    getConvexClient().mutation(saveReference, {
+      chatId,
+      userId,
+      revision,
+      startedAt,
+      payload,
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    }),
+  );
 }

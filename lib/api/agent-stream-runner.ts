@@ -2360,26 +2360,6 @@ export async function createAgentStream(
     onFinish: async (finishResult) => {
       ctx.onModelStreamFinish?.();
       const { finishReason, usage, response } = finishResult;
-      if (
-        historyEnabled &&
-        historyToSave &&
-        historyRevision !== undefined &&
-        !abortSignal.aborted &&
-        finishReason === "stop"
-      ) {
-        try {
-          // One write per completed turn, not a database round trip per tool step.
-          await saveModelHistory(
-            ctx.chatId,
-            ctx.userId,
-            historyRevision,
-            ctx.streamStartTime,
-            historyToSave,
-          );
-        } catch {
-          // Storage is an optimization. Never bypass accounting or fail the task.
-        }
-      }
       const hardReason = ctx.getHardTimeoutReason();
       if (
         hardReason === null &&
@@ -2504,6 +2484,27 @@ export async function createAgentStream(
         .catch((err) =>
           console.error("[agent-stream] PTY closeAll (onFinish) failed:", err),
         );
+      if (
+        historyEnabled &&
+        historyToSave &&
+        historyRevision !== undefined &&
+        !abortSignal.aborted &&
+        state.streamFinishReason === "stop"
+      ) {
+        // Accounting/cleanup above must never wait on optional replay storage.
+        // The database wrapper also bounds the work if no registrar is available.
+        const save = saveModelHistory(
+          ctx.chatId,
+          ctx.userId,
+          historyRevision,
+          ctx.streamStartTime,
+          historyToSave,
+        )
+          .then(() => undefined)
+          .catch(() => undefined);
+        if (ctx.registerBackgroundWork) ctx.registerBackgroundWork(save);
+        else await save;
+      }
     },
 
     onError: async ({ error }) => {
