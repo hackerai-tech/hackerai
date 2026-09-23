@@ -184,6 +184,44 @@ describe("deriveChatTimelineRows", () => {
     });
   });
 
+  it("keeps a large parallel live step in one stable row without dropping tools", () => {
+    const tools = Array.from({ length: 100 }, (_, index) => ({
+      type: "tool-shell",
+      toolCallId: `tool-${index}`,
+      input: { command: `command ${index}` },
+      state: "output-available",
+    }));
+    const message = agentMessage(
+      [
+        { type: "step-start" },
+        ...tools,
+        { type: "text", text: "final answer" },
+      ] as ChatMessage["parts"],
+      { generationStartedAt: Date.now() },
+    );
+
+    const rows = deriveChatTimelineRows({
+      messages: [message],
+      status: "streaming",
+      lastAssistantMessageIndex: 0,
+      expandedAgentMessageIds: new Set(),
+    });
+
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toMatchObject({
+      kind: "agent-tool-group",
+      id: `work:${message.id}:tool-group:0:tool:tool-0`,
+      settled: false,
+    });
+    expect(
+      rows[1]?.kind === "agent-tool-group" && rows[1].activities,
+    ).toHaveLength(100);
+    expect(rows.at(-1)).toMatchObject({
+      kind: "message",
+      workPresentation: "timeline-shell",
+    });
+  });
+
   it("keeps a live multi-tool step in one stable row as tools stream in", () => {
     const stepStart = { type: "step-start" };
     const read = (toolCallId: string, state: string) => ({
