@@ -40,6 +40,8 @@ import {
   MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
 } from "@/lib/ai/provider-response-guard";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
+import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import { createSubagentProviderHistory } from "@/lib/ai/subagents/provider-history";
 import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
   SUBAGENT_MAX_DURATION_SECONDS,
@@ -185,6 +187,7 @@ type CancellationCleanup = {
   userId: string;
   parentTriggerRunId: string;
   profile: "general" | "security_task" | "security_validation";
+  flushProviderHistory: () => void;
 };
 
 const cancellationCleanup = new Map<string, CancellationCleanup>();
@@ -375,6 +378,7 @@ export const subagentTask = task({
       runPromise.catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 5_000)),
     ]);
+    cleanup.flushProviderHistory();
     const finishOutcome = await finishSubagent({
       subagentId: cleanup.subagentId,
       triggerRunId: ctx.run.id,
@@ -435,11 +439,23 @@ export const subagentTask = task({
     let profile!: ReturnType<typeof getSubagentProfileDefinition>;
     let permissionMode!: AgentPermissionMode;
 
+    const providerHistory = createSubagentProviderHistory(
+      {
+        subagent_id: row.subagent_id,
+        parent_trigger_run_id: row.parent_trigger_run_id,
+        trigger_run_id: ctx.run.id,
+        user_id: row.user_id,
+        environment: ctx.environment.type,
+      },
+      (event) => triggerLogger.info("[subagent] provider call history", event),
+    );
+
     cancellationCleanup.set(ctx.run.id, {
       subagentId: row.subagent_id,
       userId: row.user_id,
       parentTriggerRunId: row.parent_trigger_run_id,
       profile: row.profile,
+      flushProviderHistory: () => providerHistory.flush(true),
     });
     try {
       const attachOutcome = await attachSubagentTriggerRun(
@@ -1063,7 +1079,15 @@ export const subagentTask = task({
               generationAttempt: number,
               stepIndex: number,
             ): LanguageModel => {
-              const languageModel = provider.languageModel(modelName);
+              const languageModel = withProviderModelHistory(
+                provider.languageModel(modelName),
+                {
+                  configured: modelName,
+                  generationStep: stepIndex + 1,
+                  onStart: (entry) =>
+                    providerHistory.record(entry, generationAttempt),
+                },
+              );
               return namespaceLanguageModelToolCalls(
                 guardLanguageModelProviderResponse(languageModel, {
                   maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
@@ -2055,6 +2079,7 @@ export const subagentTask = task({
         .set("runtimeErrorCategory", outerRuntimeDiagnostics.category);
       throw error;
     } finally {
+      providerHistory.flush(activeAbort.signal.aborted);
       activeRuntimeBudget.dispose();
       triggerSignal.removeEventListener("abort", abortFromParent);
       cancellationCleanup.delete(ctx.run.id);
