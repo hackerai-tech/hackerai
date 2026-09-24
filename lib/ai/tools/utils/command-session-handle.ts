@@ -3,8 +3,7 @@ import { createResolvableExited } from "./pty-exited-promise";
 
 /**
  * A lightweight handle that lets one-shot command execution participate in
- * the same task-scoped lifecycle as PTYs, for background work or after a
- * foreground timeout.
+ * the same per-chat session lifecycle as PTYs after a foreground timeout.
  *
  * The underlying command transport still owns execution and streaming. This
  * adapter only provides an opaque session handle, bounded output fan-out, and

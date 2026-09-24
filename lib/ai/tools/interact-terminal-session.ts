@@ -214,7 +214,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         sessionIdToCheck: string,
         expected: TerminalReviewState,
       ): boolean => {
-        const current = ptySessionManager.get(ptyScopeId, sessionIdToCheck);
+        const current = ptySessionManager.get(chatId, sessionIdToCheck);
         if (!current || current !== expected.session) return true;
         const currentExit = peekSessionExit(current);
         return (

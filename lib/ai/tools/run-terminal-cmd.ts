@@ -619,17 +619,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           };
         }
 
-        if (is_background && !isE2BSandbox(sandbox)) {
-          return {
-            result: {
-              output: "",
-              resumable: false,
-              error:
-                "Managed background commands are unavailable on this transport. No command was started. Use is_background=false for foreground execution with timeout recovery, or interactive=true for a supported PTY session. Do not work around this with nohup or detached shell jobs.",
-            },
-          };
-        }
-
         // Health-check cloud sandboxes; local sandboxes have relay-specific checks.
         // (they relay commands through Convex and have their own connectivity)
         if (isCloudSandbox(sandbox)) {
@@ -813,7 +802,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               pid?: number;
             }> | null = null;
             let resumableTimeoutObserved = false;
-            let backgroundLaunchAttempted = false;
 
             const forgetUnexposedCommandSession = async () => {
               if (!commandSession || commandSessionExposed) return;
@@ -848,10 +836,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 } catch {
                   return false;
                 }
-              }
-
-              if (is_background) {
-                return execution?.kill ? execution.kill() : false;
               }
 
               if (!processId && execution?.pid) {
@@ -944,7 +928,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
               }
 
               if (terminated) {
-                if (is_background) commandHandle?.resolveExit(null);
                 commandSessionExposed = false;
                 await forgetUnexposedCommandSession();
               } else if (commandSession) {
@@ -984,9 +967,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             handler = createTerminalHandler(
               (output: string) => createTerminalWriter(output),
               {
-                timeoutSeconds: is_background
-                  ? undefined
-                  : effectiveStreamTimeout,
+                timeoutSeconds: effectiveStreamTimeout,
                 onTimeout: async () => {
                   if (resolved) {
                     return;
@@ -1082,40 +1063,51 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Register abort listener
             abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-            const commandSessionReady: Promise<void> = (() => {
-              commandHandle = createCommandSessionHandle({
-                kill: terminateManagedCommand,
-              });
-              return ptySessionManager
-                .create(ptyScopeId, {
-                  executionRecord: executionRecord(sandboxInstance, command),
-                  cols,
-                  rows,
-                  kind: "command",
-                  sandboxIdentity:
-                    getAgentApprovalSandboxIdentity(sandboxInstance),
-                  originalCommand: command,
-                  workingDirectory:
-                    isCentrifugoSandbox(sandboxInstance) &&
-                    typeof sandboxInstance.getWorkingDirectory === "function"
-                      ? sandboxInstance.getWorkingDirectory()
-                      : buildSandboxCommandOptions(sandboxInstance).cwd,
-                  createHandle: async () => commandHandle!,
-                })
-                .then((session) => {
-                  commandSession = session;
-                });
-            })();
+            const commandSessionReady: Promise<void> = is_background
+              ? Promise.resolve()
+              : (() => {
+                  commandHandle = createCommandSessionHandle({
+                    kill: terminateManagedCommand,
+                  });
+                  return ptySessionManager
+                    .create(ptyScopeId, {
+                      executionRecord: executionRecord(
+                        sandboxInstance,
+                        command,
+                      ),
+                      cols,
+                      rows,
+                      kind: "command",
+                      sandboxIdentity:
+                        getAgentApprovalSandboxIdentity(sandboxInstance),
+                      originalCommand: command,
+                      workingDirectory:
+                        isCentrifugoSandbox(sandboxInstance) &&
+                        typeof sandboxInstance.getWorkingDirectory ===
+                          "function"
+                          ? sandboxInstance.getWorkingDirectory()
+                          : buildSandboxCommandOptions(sandboxInstance).cwd,
+                      createHandle: async () => commandHandle!,
+                    })
+                    .then((session) => {
+                      commandSession = session;
+                    });
+                })();
 
             const forwardCommandOutput = (output: string) => {
-              if (!resolved) void handler?.stdout(output);
+              void handler?.stdout(output);
               commandHandle?.emitText(output);
             };
 
-            const commonOptions = buildSandboxCommandOptions(sandboxInstance, {
-              onStdout: forwardCommandOutput,
-              onStderr: forwardCommandOutput,
-            });
+            const commonOptions = buildSandboxCommandOptions(
+              sandboxInstance,
+              is_background
+                ? undefined
+                : {
+                    onStdout: forwardCommandOutput,
+                    onStderr: forwardCommandOutput,
+                  },
+            );
             // agent-browser is installed in MIOSA sandboxes too, and needs the
             // same runtime env there. Gating this on E2B alone left Chromium
             // running without its configured flags on MIOSA.
@@ -1209,60 +1201,42 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                 return { stdout: "", stderr: "", exitCode: 130 };
               }
 
+              if (is_background) {
+                return retryWithBackoff(async () => {
+                  const result = await sandboxInstance.commands.run(
+                    effectiveCommand,
+                    {
+                      ...runOptions,
+                      background: true,
+                    },
+                  );
+                  return {
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    exitCode: result.exitCode ?? 0,
+                    pid: (result as { pid?: number }).pid,
+                  };
+                }, retryOptions);
+              }
+
               if (isE2BSandbox(sandboxInstance)) {
                 // E2B's foreground `run()` only returns after exit, so it
                 // cannot provide identity while a command is still running.
                 // Start it through the SDK's background handle, retain that
                 // exact handle/PID for lifecycle operations, then wait here
                 // to preserve foreground behavior for the caller.
-                const start = () => {
-                  if (is_background) backgroundLaunchAttempted = true;
-                  return sandboxInstance.commands.run(effectiveCommand, {
-                    ...runOptions,
-                    background: true,
-                  });
-                };
-                // A lost background-start response may hide a launched process;
-                // never retry it automatically and risk duplicating the work.
-                const started = (await (is_background
-                  ? start()
-                  : retryWithBackoff(
-                      start,
-                      retryOptions,
-                    ))) as unknown as E2BCommandHandle;
+                const started = (await retryWithBackoff(
+                  () =>
+                    sandboxInstance.commands.run(effectiveCommand, {
+                      ...runOptions,
+                      background: true,
+                    }),
+                  retryOptions,
+                )) as unknown as E2BCommandHandle;
                 execution = started;
                 processId = started.pid;
                 commandHandle?.setPid(started.pid);
-                if (is_background && commandSession && !resolved) {
-                  commandSessionExposed = true;
-                  resolved = true;
-                  handler?.cleanup();
-                  backgroundProcessTracker.addProcess(
-                    commandSession.sessionId,
-                    started.pid,
-                    command,
-                    BackgroundProcessTracker.extractOutputFiles(command),
-                    commandHandle!.exited,
-                  );
-                  await ptySessionManager.checkpoint(commandSession);
-                  resolve({
-                    result: {
-                      ...recoveryFields(commandSession),
-                      pid: started.pid,
-                      status: "running",
-                      resumable: true,
-                      output: handler?.getResult().output ?? "",
-                    },
-                  });
-                }
-                // Cancellation can arrive while the SDK is still starting.
-                // Retain and stop that exact handle once it becomes available.
-                if (is_background && abortSignal?.aborted) {
-                  await onAbort();
-                }
-                const result = await (is_background
-                  ? started.wait()
-                  : measureTerminalWait(() => started.wait()));
+                const result = await measureTerminalWait(() => started.wait());
                 return { ...result, pid: started.pid };
               }
 
@@ -1310,6 +1284,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     .filter(Boolean)
                     .join("\n");
 
+                  // Track background processes with their output files
+                  if (is_background && processId) {
+                    const backgroundOutput = `Detached background process started with PID: ${processId}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`;
+                    await createTerminalWriter(backgroundOutput);
+
+                    const outputFiles =
+                      BackgroundProcessTracker.extractOutputFiles(command);
+                    backgroundProcessTracker.addProcess(
+                      processId,
+                      command,
+                      outputFiles,
+                    );
+                  }
+
                   // Save full output to file when truncated (show path at top so AI sees it first)
                   let outputWithSaveInfo =
                     finalResult.output || sandboxOutput || "";
@@ -1332,18 +1320,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   }
 
                   resolve({
-                    result: {
-                      ...recoveryFields(commandSession),
-                      status:
-                        (exec.exitCode ?? 0) === 0 ? "completed" : "failed",
-                      processStarted: true,
-                      exitCode: exec.exitCode ?? 0,
-                      output: outputWithSaveInfo,
-                      error:
-                        exec.exitCode === -1 && exec.stderr
-                          ? exec.stderr
-                          : undefined,
-                    },
+                    result: is_background
+                      ? {
+                          pid: processId,
+                          resumable: false,
+                          output: `Detached background process started with PID: ${processId ?? "unknown"}. No reusable terminal session was created; do not pass this PID to interact_terminal_session.\n`,
+                        }
+                      : {
+                          ...recoveryFields(commandSession),
+                          status:
+                            (exec.exitCode ?? 0) === 0 ? "completed" : "failed",
+                          processStarted: true,
+                          exitCode: exec.exitCode ?? 0,
+                          output: outputWithSaveInfo,
+                          error:
+                            exec.exitCode === -1 && exec.stderr
+                              ? exec.stderr
+                              : undefined,
+                        },
                   });
                 } else {
                   // Abort paths do not expose a resumable
@@ -1364,23 +1358,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   );
                   resumableTimeoutObserved = false;
                 }
-                if (
-                  !is_background ||
-                  error instanceof CommandExitError ||
-                  !execution
-                ) {
-                  commandHandle?.resolveExit(
-                    error instanceof CommandExitError ? error.exitCode : null,
-                  );
-                } else if (commandSession) {
-                  commandHandle?.emitText(
-                    "\nCommand monitoring failed; process status is unverified. Use this session to retry cleanup.\n",
-                  );
-                  await ptySessionManager.checkpoint(
-                    commandSession,
-                    "termination_unconfirmed",
-                  );
-                }
+                commandHandle?.resolveExit(
+                  error instanceof CommandExitError ? error.exitCode : null,
+                );
                 if (handler) {
                   handler.cleanup();
                 }
@@ -1426,13 +1406,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                       },
                     });
                   } else {
-                    reject(
-                      is_background && backgroundLaunchAttempted
-                        ? new Error(
-                            `Background launch could not be confirmed; no usable process handle was returned. Do not automatically rerun the command. ${resolveToolErrorMessage(error)}`,
-                          )
-                        : error,
-                    );
+                    reject(error);
                   }
                 } else {
                   await forgetUnexposedCommandSession();

@@ -55,7 +55,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
 
               if (active) {
                 const processDetails = processes
-                  .map((p) => `Session ${p.session}: ${p.command}`)
+                  .map((p) => `PID ${p.pid}: ${p.command}`)
                   .join(", ");
 
                 blockedFiles.push({

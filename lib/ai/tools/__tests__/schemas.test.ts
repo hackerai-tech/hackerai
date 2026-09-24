@@ -24,9 +24,11 @@ describe("agent tool schema descriptions", () => {
     expect(fullAccessDescription).toContain(
       "Use command chaining and pipes for efficiency",
     );
-    expect(fullAccessDescription).toContain("use the exact returned `session`");
     expect(fullAccessDescription).toContain(
-      "Do not use nohup, pgrep, pkill, or invent sessions from PIDs",
+      "Process running with session ID X",
+    );
+    expect(fullAccessDescription).toContain(
+      "a detached PID is not a reusable terminal session",
     );
     expect(fullAccessDescription).toContain("append ` | cat` to the command");
 
