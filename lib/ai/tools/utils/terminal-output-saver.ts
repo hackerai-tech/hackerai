@@ -10,6 +10,12 @@ import {
   isCentrifugoSandbox,
   isMiosaSandbox,
 } from "./sandbox-types";
+import {
+  listOwnerOnlyPosixFiles,
+  removeOwnerOnlyPosixFile,
+  usesOwnerOnlyPosixFileTransport,
+  writeOwnerOnlyPosixFile,
+} from "./owner-only-posix-file";
 
 export const MAX_SAVED_TERMINAL_OUTPUT_FILES = 10;
 const PERSISTENCE_RETRY_DELAY_MS = 250;
@@ -206,10 +212,16 @@ const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
 /** Deletes the oldest timestamped output files beyond the per-chat limit. */
 const pruneOldSavedOutputs = async (
   sandbox: AnySandbox,
+  root: string,
   directory: string,
 ): Promise<void> => {
   const files = asCommonSandbox(sandbox).files;
-  const savedOutputs = (await files.list(directory))
+  const ownerOnlyPosix = usesOwnerOnlyPosixFileTransport(sandbox);
+  const savedOutputs = (
+    ownerOnlyPosix
+      ? await listOwnerOnlyPosixFiles(sandbox, root, directory)
+      : await files.list(directory)
+  )
     .map((entry) => entry.name)
     .filter((name) => name.endsWith(".txt"))
     .sort()
@@ -219,7 +231,11 @@ const pruneOldSavedOutputs = async (
     const stalePath = staleName.startsWith("/")
       ? staleName
       : `${directory}/${staleName}`;
-    await files.remove(stalePath);
+    if (ownerOnlyPosix) {
+      await removeOwnerOnlyPosixFile(sandbox, root, directory, stalePath);
+    } else {
+      await files.remove(stalePath);
+    }
   }
 };
 
@@ -246,22 +262,28 @@ export async function saveFullOutputToFile(
   // e.g. 2026-02-17_16-54-34_442Z
 
   const dir = getOutputDirectory(sandbox, scopeId);
+  const root = dir.slice(0, dir.lastIndexOf("/"));
   const filePath = `${dir}/${timestamp}.txt`;
   let failureStage: "ensure_directory" | "write_output" = "ensure_directory";
   const save = async (): Promise<string> => {
     failureStage = "ensure_directory";
-    const mkdirResult = await sandbox.commands.run(`mkdir -p ${dir}`, {
-      timeoutMs: 5000,
-    });
-    if (mkdirResult.exitCode !== 0)
-      throw Object.assign(new Error("Output directory creation failed"), {
-        exitCode: mkdirResult.exitCode,
+    if (usesOwnerOnlyPosixFileTransport(sandbox)) {
+      failureStage = "write_output";
+      await writeOwnerOnlyPosixFile(sandbox, root, dir, filePath, fullOutput);
+    } else {
+      const mkdirResult = await sandbox.commands.run(`mkdir -p ${dir}`, {
+        timeoutMs: 5000,
       });
-    failureStage = "write_output";
-    await sandbox.files.write(filePath, fullOutput);
+      if (mkdirResult.exitCode !== 0)
+        throw Object.assign(new Error("Output directory creation failed"), {
+          exitCode: mkdirResult.exitCode,
+        });
+      failureStage = "write_output";
+      await sandbox.files.write(filePath, fullOutput);
+    }
 
     try {
-      await pruneOldSavedOutputs(sandbox, dir);
+      await pruneOldSavedOutputs(sandbox, root, dir);
     } catch (err) {
       console.warn(
         JSON.stringify({

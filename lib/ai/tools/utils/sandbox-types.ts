@@ -23,6 +23,7 @@ export interface ConnectionInfo {
     commands: boolean;
     pty: boolean;
     files?: boolean;
+    commandStdin?: boolean;
   };
 }
 
@@ -126,6 +127,8 @@ export interface CommonSandboxInterface {
         background?: boolean;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
+        displayName?: string;
+        stdin?: string | Buffer;
         signal?: AbortSignal;
       },
     ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;

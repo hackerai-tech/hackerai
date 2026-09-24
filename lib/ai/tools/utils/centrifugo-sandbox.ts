@@ -21,6 +21,7 @@ import {
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import {
   CentrifugoMessageReassembler,
+  fragmentCentrifugoMessage,
   fragmentMatchesCorrelation,
 } from "@/packages/local/src/centrifugo-transport";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
@@ -326,6 +327,10 @@ export class CentrifugoSandbox extends EventEmitter {
     );
   }
 
+  supportsCommandStdin(): boolean {
+    return this.connectionInfo.capabilities?.commandStdin === true;
+  }
+
   /** Native write/append support may be available without the full file API. */
   protected supportsNativeFileMutations(): boolean {
     if (
@@ -585,6 +590,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
         displayName?: string;
+        stdin?: string | Buffer;
         signal?: AbortSignal;
         onCancelReady?: (cancel: () => Promise<boolean>) => void;
       },
@@ -594,6 +600,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       exitCode: number;
       pid?: number;
     }> => {
+      if (opts?.stdin !== undefined && !this.supportsCommandStdin()) {
+        throw new Error(
+          "Command stdin requires an updated HackerAI local client",
+        );
+      }
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
       const channel = sandboxConnectionChannel(
@@ -952,14 +963,33 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               timeout,
               background: opts?.background,
               displayName: opts?.displayName,
+              ...(opts?.stdin !== undefined && {
+                stdin:
+                  typeof opts.stdin === "string"
+                    ? opts.stdin
+                    : opts.stdin.toString("base64"),
+                stdinEncoding:
+                  typeof opts.stdin === "string" ? "utf8" : "base64",
+              }),
               chatId: this.chatId,
               triggerRunId: this.triggerRunId,
               targetConnectionId: this.connectionInfo.connectionId,
             };
 
             commandPublishInFlight = true;
-            subscription!
-              .publish(commandMessage)
+            (async () => {
+              if (opts?.stdin === undefined) {
+                // Preserve the legacy command shape for local clients that do
+                // not implement transport-fragment reassembly.
+                await subscription!.publish(commandMessage);
+              } else {
+                for (const fragment of fragmentCentrifugoMessage(
+                  commandMessage as unknown as Record<string, unknown>,
+                )) {
+                  await subscription!.publish(fragment);
+                }
+              }
+            })()
               .then(() => {
                 commandPublishInFlight = false;
                 tPublished = Date.now();

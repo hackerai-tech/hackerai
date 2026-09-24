@@ -7,6 +7,13 @@ import {
   isCentrifugoSandbox,
   isMiosaSandbox,
 } from "./sandbox-types";
+import {
+  listOwnerOnlyPosixFiles,
+  readOwnerOnlyPosixFile,
+  removeOwnerOnlyPosixFile,
+  usesOwnerOnlyPosixFileTransport,
+  writeOwnerOnlyPosixFile,
+} from "./owner-only-posix-file";
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
@@ -52,8 +59,10 @@ export function createTerminalRecordStore(
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
   const base = isCentrifugoSandbox(sandbox) ? "/tmp" : "/home/user";
-  const directory = `${base}/terminal_execution_records/${scope}`;
+  const root = `${base}/terminal_execution_records`;
+  const directory = `${root}/${scope}`;
   const files = asCommonSandbox(sandbox).files;
+  const ownerOnlyPosix = usesOwnerOnlyPosixFileTransport(sandbox);
   const pathFor = (session: string) => {
     if (!/^[a-f0-9]{8}$/.test(session))
       throw new Error("Invalid terminal session ID");
@@ -63,7 +72,16 @@ export function createTerminalRecordStore(
     session: string,
   ): Promise<TerminalExecutionRecord | null> => {
     try {
-      const raw = await files.read(pathFor(session));
+      const recordPath = pathFor(session);
+      const raw = ownerOnlyPosix
+        ? await readOwnerOnlyPosixFile(
+            sandbox,
+            root,
+            directory,
+            recordPath,
+            2_000_001,
+          )
+        : await files.read(recordPath);
       if (raw.length > 2_000_000) return null;
       const record = recordSchema.parse(JSON.parse(raw));
       return record.session === session &&
@@ -91,9 +109,19 @@ export function createTerminalRecordStore(
       try {
         const validated = recordSchema.parse(record);
         const path = pathFor(record.session);
-        // Both sandbox file APIs create parents; no shell or secret-bearing
-        // command is needed. A torn write is rejected by read(), never adopted.
-        await files.write(path, JSON.stringify(validated));
+        if (ownerOnlyPosix) {
+          await writeOwnerOnlyPosixFile(
+            sandbox,
+            root,
+            directory,
+            path,
+            JSON.stringify(validated),
+          );
+        } else {
+          // Native and cloud file APIs create parents without exposing the
+          // record in a shell command. A torn write is rejected by read().
+          await files.write(path, JSON.stringify(validated));
+        }
         return path;
       } catch {
         return null; // Persistence failure must not interrupt or replay a command.
@@ -114,7 +142,9 @@ export function createTerminalRecordStore(
       if (lastPrunedAt.size > 256)
         lastPrunedAt.delete(lastPrunedAt.keys().next().value!);
       try {
-        const entries = await files.list(directory);
+        const entries = ownerOnlyPosix
+          ? await listOwnerOnlyPosixFiles(sandbox, root, directory)
+          : await files.list(directory);
         const records = await Promise.all(
           entries.map(async ({ name }) => {
             // Never trust paths from a sandbox directory listing.
@@ -139,7 +169,16 @@ export function createTerminalRecordStore(
                 i >= MAX_RECORDS ||
                 r.updatedAt < Date.now() - TERMINAL_RECORD_RETENTION_MS,
             )
-            .map((r) => files.remove(pathFor(r.session))),
+            .map((r) =>
+              ownerOnlyPosix
+                ? removeOwnerOnlyPosixFile(
+                    sandbox,
+                    root,
+                    directory,
+                    pathFor(r.session),
+                  )
+                : files.remove(pathFor(r.session)),
+            ),
         );
       } catch {
         /* Retention is best effort when the sandbox disconnects. */

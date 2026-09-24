@@ -19,6 +19,10 @@ jest.mock("../command-cancellation", () => ({
   isProcessTreeTerminationConfirmed: () => true,
 }));
 
+jest.mock("../private-artifact-hardening", () => ({
+  hardenExistingTerminalArtifacts: jest.fn().mockResolvedValue(true),
+}));
+
 import { LocalSandboxClient } from "../index";
 
 const config = {
@@ -103,6 +107,35 @@ describe("LocalSandboxClient cleanup", () => {
     });
   });
 
+  it("decodes base64 command stdin before starting the process", async () => {
+    const client = new LocalSandboxClient(config);
+    const streamCommand = jest.fn().mockResolvedValue(undefined);
+    const privateClient = client as unknown as {
+      handleCommand: (message: Record<string, unknown>) => Promise<void>;
+      streamCommand: typeof streamCommand;
+    };
+    privateClient.streamCommand = streamCommand;
+
+    await privateClient.handleCommand({
+      type: "command",
+      commandId: "command-with-stdin",
+      command: "cat >/tmp/private-record",
+      stdin: Buffer.from("private evidence").toString("base64"),
+      stdinEncoding: "base64",
+      targetConnectionId: "connection-1",
+      displayName: "",
+    });
+
+    expect(streamCommand).toHaveBeenCalledWith(
+      "command-with-stdin",
+      "cat >/tmp/private-record",
+      undefined,
+      false,
+      "cat >/tmp/private-record",
+      Buffer.from("private evidence"),
+    );
+  });
+
   it("reports an injected exit handler without exiting the process", async () => {
     const onExitRequested = jest.fn();
     const exitSpy = jest
@@ -167,7 +200,10 @@ describe("LocalSandboxClient cleanup", () => {
     expect(mutation).toHaveBeenCalledTimes(1);
     expect(mutation).toHaveBeenCalledWith(
       "localSandbox:connect",
-      expect.objectContaining({ environmentId: "test-environment" }),
+      expect.objectContaining({
+        environmentId: "test-environment",
+        capabilities: expect.objectContaining({ commandStdin: true }),
+      }),
     );
     expect(logSpy.mock.calls.flat().join("\n")).not.toContain(
       "Local sandbox is ready",

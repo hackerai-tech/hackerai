@@ -273,6 +273,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       sandboxKind: "centrifugo" as const,
       getConnectionId: () => "local-fixture",
       isWindows: () => false,
+      supportsNativeFileRelay: () => true,
       files: {
         write: async (path: string, data: string) => {
           files.set(path, data);

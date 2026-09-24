@@ -34,8 +34,12 @@ import {
   confirmProcessTermination,
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
-import { CentrifugoPublishQueue } from "./centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  CentrifugoPublishQueue,
+} from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
+import { hardenExistingTerminalArtifacts } from "./private-artifact-hardening";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -85,12 +89,15 @@ interface OsInfo {
 interface ClientCapabilities {
   commands: boolean;
   pty: boolean;
+  commandStdin: boolean;
 }
 
 interface CentrifugoCommandMessage {
   type: "command";
   commandId: string;
   command: string;
+  stdin?: string;
+  stdinEncoding?: "utf8" | "base64";
   env?: Record<string, string>;
   cwd?: string;
   timeout?: number;
@@ -295,9 +302,11 @@ export class LocalSandboxClient {
   private processRunner: ProcessRunner;
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
+  private incomingReassembler = new CentrifugoMessageReassembler();
   private cleanupPromise?: Promise<void>;
   private exitRequested = false;
   private relayTransport: string | null = null;
+  private privateArtifactStorageReady = false;
 
   constructor(
     private config: Config,
@@ -391,6 +400,7 @@ export class LocalSandboxClient {
         "⚠️  Commands run directly on your OS without any isolation.",
       ),
     );
+    this.privateArtifactStorageReady = await hardenExistingTerminalArtifacts();
     await this.connect();
   }
 
@@ -407,6 +417,7 @@ export class LocalSandboxClient {
     return {
       commands: true,
       pty: isPtyAvailable(),
+      commandStdin: this.privateArtifactStorageReady,
     };
   }
 
@@ -575,7 +586,9 @@ export class LocalSandboxClient {
     this.subscription.on("publication", (ctx: PublicationContext) => {
       if (this.isShuttingDown) return;
 
-      const message = ctx.data;
+      const message = this.incomingReassembler.accept(ctx.data);
+
+      if (!message) return;
 
       if (!isTargetedIncomingMessage(message)) {
         return;
@@ -708,8 +721,17 @@ export class LocalSandboxClient {
   }
 
   private async handleCommand(msg: CentrifugoCommandMessage): Promise<void> {
-    const { commandId, command, env, cwd, timeout, background, displayName } =
-      msg;
+    const {
+      commandId,
+      command,
+      stdin,
+      stdinEncoding,
+      env,
+      cwd,
+      timeout,
+      background,
+      displayName,
+    } = msg;
 
     // Determine what to show in console:
     // - displayName === "" (empty string): hide command entirely
@@ -762,6 +784,9 @@ export class LocalSandboxClient {
       }
 
       if (background) {
+        if (stdin !== undefined) {
+          throw new Error("Background commands do not accept stdin");
+        }
         const pid = await this.spawnBackground(fullCommand);
         await this.publishToChannel({
           type: "exit",
@@ -781,6 +806,11 @@ export class LocalSandboxClient {
         timeout,
         shouldShow,
         displayText,
+        stdin === undefined
+          ? undefined
+          : stdinEncoding === "base64"
+            ? Buffer.from(stdin, "base64")
+            : stdin,
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -876,6 +906,7 @@ export class LocalSandboxClient {
     timeout: number | undefined,
     shouldShow: boolean,
     displayText: string,
+    stdin?: string | Buffer,
   ): Promise<void> {
     const startTime = Date.now();
     const commandTimeout = timeout ?? 30000;
@@ -890,11 +921,19 @@ export class LocalSandboxClient {
         fullCommand,
       );
       const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         detached: os.platform() !== "win32",
         ...spawnSpec.options,
       });
       this.activeStreamCommands.set(commandId, proc);
+
+      if (stdin !== undefined) {
+        proc.stdin?.on("error", () => {
+          // The child exit path reports the command result. EPIPE here only
+          // means it stopped reading before the complete private payload.
+        });
+        proc.stdin?.end(stdin);
+      }
 
       if (commandTimeout > 0) {
         timeoutId = setTimeout(() => {
