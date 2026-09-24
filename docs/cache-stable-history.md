@@ -72,6 +72,40 @@ completion, errors, latency, compaction frequency and summary quality. An improv
 hit ratio alone is not a release criterion. Review before adding the summary
 treatment or expanding the cohort; HAC-129 owns readout and flag removal.
 
+### Low-volume measurement
+
+Existing exposure, `hackerai-agent_run`, and `hackerai-usage_cost` events carry
+`cache_history_run_id` (the random settlement ID, shared across provider retries).
+Trigger exposures also carry `trigger_run_id`; Ask uses the same history run ID
+on its usage event. Join by these identifiers, not chat ID. Deduplicate each
+event type per run; do not add outcome and usage copies of the same costs.
+
+The only new event is `cache_history_run_started`, sampled deterministically at
+10% of initially eligible runs, independently of treatment. It is emitted once
+before history storage, never per token, tool, step or retry. Use this sample for
+started-run denominators and censoring; terminal/usage enrichment is unsampled.
+This measures entry into the eligible stream, not requests failing before model
+selection. A missing terminal event remains unknown, not an automatic error.
+
+Initial `cache_history_assignment` stays treatment/control/unavailable/ineligible
+through retries. Compare eligible treatment and control within model, release,
+mode and start-time strata; exclude unavailable evaluations. Exposure/restore
+counters describe actual execution; last observed load/save result and fallback
+enums describe missing, invalidated, oversized, rejected, timed-out or failed
+history. Pending/not-attempted saves are not successes. Existing bounded background
+storage is drained before completion accounting; no extra storage wait is added.
+
+`usage_observed_model_cost_dollars` includes reported model work discarded by
+billing retry resets plus summaries; it does not change billing. Provider-cost
+record counts include explicit zero costs, while absent costs remain estimates.
+Compare started SDK model steps with usage records and report uncovered calls instead
+of treating zero aggregates as free work. This counter does not observe transport
+retries inside the SDK/provider. Unreported failed summary/provider work
+cannot be priced by this telemetry. Cache coverage uses records reporting both
+input and cache-read counts, including explicit zero reads; use the covered input
+and read totals for weighted ratios and report coverage separately. Do not infer
+missing reads from write-only telemetry. Never export history digests or content.
+
 Before rollout, use disposable chats in the verified Preview environment:
 
 - Test Ask and Agent with flags off, history only, then both flags on. Run a short

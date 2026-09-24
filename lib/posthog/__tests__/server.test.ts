@@ -25,6 +25,7 @@ jest.mock("@/lib/posthog/logs", () => ({
 
 const {
   getPostHogFeatureFlagForUser,
+  getPostHogBooleanFlagDecisionForUser,
   getPostHogFeatureFlagValueForUser,
   getPostHogFeatureFlagVariantForUser,
   phLogger,
@@ -59,6 +60,15 @@ describe("phLogger", () => {
   });
 
   it("distinguishes a disabled boolean flag from an unavailable evaluation", async () => {
+    mockGetFlag.mockReturnValueOnce(false);
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
+    await expect(
+      getPostHogBooleanFlagDecisionForUser("history", "user"),
+    ).resolves.toBe(false);
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("private service error"));
+    await expect(
+      getPostHogBooleanFlagDecisionForUser("history", "user"),
+    ).resolves.toBeNull();
     mockGetFeatureFlag.mockResolvedValueOnce(false);
     await expect(
       getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),

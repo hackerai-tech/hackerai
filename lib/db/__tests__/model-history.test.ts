@@ -8,6 +8,7 @@ import {
   saveModelHistory,
   MODEL_HISTORY_DEADLINE_MS,
 } from "../model-history";
+import { MODEL_HISTORY_MAX_BYTES } from "@/lib/chat/model-history";
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -51,4 +52,33 @@ it("clears the deadline on a successful lookup", async () => {
     payload: null,
   });
   expect(jest.getTimerCount()).toBe(0);
+});
+
+it.each([
+  [true, "saved"],
+  [false, "rejected"],
+])("reports save result %s", async (result, expected) => {
+  mockMutation.mockResolvedValue(result);
+  await expect(
+    saveModelHistory("chat", "user", 1, 1, {
+      version: 1,
+      identity: "test",
+      source: [],
+      messages: [],
+      system: "system",
+    }),
+  ).resolves.toBe(expected);
+});
+
+it("reports the local size limit without calling storage", async () => {
+  await expect(
+    saveModelHistory("chat", "user", 1, 1, {
+      version: 1,
+      identity: "test",
+      source: [],
+      messages: [],
+      system: "x".repeat(MODEL_HISTORY_MAX_BYTES),
+    }),
+  ).resolves.toBe("too_large");
+  expect(mockMutation).not.toHaveBeenCalled();
 });

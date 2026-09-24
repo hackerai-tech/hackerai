@@ -56,6 +56,7 @@ import {
   POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import { cacheHistoryProperties } from "@/lib/analytics/cache-history";
 import type { SandboxSessionUsage } from "@/lib/ai/tools";
 import type { TriggerRunCostBreakdown } from "@/lib/billing/trigger-run-cost";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
@@ -1311,6 +1312,10 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
   monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
   // Every completion path must explicitly forward its request telemetry.
   abliteratedProviderSummary:
@@ -1374,6 +1379,8 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  cacheHistoryTelemetry,
+  usageMeasurement,
   abliteratedProviderSummary,
   posthog,
   userId,
@@ -1579,6 +1586,8 @@ export function captureAgentRun({
     distinctId: userId,
     event: "hackerai-agent_run",
     properties: {
+      ...cacheHistoryProperties(cacheHistoryTelemetry),
+      ...usageMeasurement,
       ...(handledToolFailureCount !== undefined && {
         handled_tool_failure_count: handledToolFailureCount,
       }),
@@ -1803,6 +1812,8 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    cacheHistoryTelemetry: args.cacheHistoryTelemetry,
+    usageMeasurement: args.usageMeasurement,
     monthlyFreeBudget: args.monthlyFreeBudget,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
@@ -1871,6 +1882,8 @@ export function captureAgentCompletionAnalytics(
  * separately.
  */
 export function captureUsageCost({
+  cacheHistoryTelemetry,
+  usageMeasurement,
   posthog,
   userId,
   subscription,
@@ -1892,6 +1905,10 @@ export function captureUsageCost({
   monthlyFreeBudget,
   triggerRunId,
 }: {
+  cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
   posthog: PostHog | null;
   userId: string;
   subscription: string;
@@ -1938,6 +1955,8 @@ export function captureUsageCost({
     distinctId: userId,
     event: "hackerai-usage_cost",
     properties: {
+      ...cacheHistoryProperties(cacheHistoryTelemetry),
+      ...usageMeasurement,
       user_id: userId,
       ...(triggerRunId && { trigger_run_id: triggerRunId }),
       subscription,
