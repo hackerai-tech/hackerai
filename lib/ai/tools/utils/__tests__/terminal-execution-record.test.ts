@@ -67,6 +67,8 @@ describe("terminal execution records", () => {
       ...sandbox,
       sandboxKind: "centrifugo",
       getConnectionId: () => "relay-one",
+      isWindows: () => false,
+      supportsNativeFileRelay: () => true,
       getConnectionInfo: () => ({
         connectionId: "relay-one",
         environmentId: "installation-one",

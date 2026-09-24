@@ -957,6 +957,7 @@ export default defineSchema({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
       }),
     ),
     last_heartbeat: v.number(),

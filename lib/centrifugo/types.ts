@@ -2,6 +2,9 @@ export interface CommandMessage {
   type: "command";
   commandId: string;
   command: string;
+  /** Optional process stdin. Base64 keeps arbitrary terminal bytes JSON-safe. */
+  stdin?: string;
+  stdinEncoding?: "utf8" | "base64";
   env?: Record<string, string>;
   cwd?: string;
   timeout?: number;

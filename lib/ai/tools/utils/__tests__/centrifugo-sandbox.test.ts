@@ -15,7 +15,10 @@ import {
   LocalCommandRelayUnsubscribedError,
   isLocalCommandRelayUnsubscribedError,
 } from "../local-sandbox-errors";
-import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  fragmentCentrifugoMessage,
+} from "@/packages/local/src/centrifugo-transport";
 
 // Track all created mock subscriptions and clients for assertions
 let mockSubscriptions: MockSubscription[];
@@ -493,6 +496,108 @@ describe("CentrifugoSandbox", () => {
         stderr: "",
         exitCode: 0,
       });
+    });
+
+    it("publishes binary command stdin without placing it in the command", async () => {
+      const sandbox = createSandbox({
+        capabilities: { commands: true, pty: true, commandStdin: true },
+      } as any);
+      const stdin = Buffer.from("private\u0000evidence");
+      const { promise } = startCommand(sandbox, "cat > private-record", {
+        timeoutMs: 5000,
+        displayName: "",
+        stdin,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          command: "cat > private-record",
+          stdin: stdin.toString("base64"),
+          stdinEncoding: "base64",
+        }),
+      );
+      expect(sub.publish.mock.calls[0][0].command).toBe("cat > private-record");
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toEqual({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+    });
+
+    it("keeps large ordinary commands compatible with pre-stdin clients", async () => {
+      const sandbox = createSandbox();
+      const command = `printf %s ${"x".repeat(40_000)}`;
+      const { promise } = startCommand(sandbox, command, { timeoutMs: 5000 });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "command", command }),
+      );
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toMatchObject({ exitCode: 0 });
+    });
+
+    it("fragments large stdin only for clients that advertise support", async () => {
+      const sandbox = createSandbox({
+        capabilities: { commands: true, pty: true, commandStdin: true },
+      } as any);
+      const stdin = Buffer.alloc(100_000, "s");
+      const { promise } = startCommand(sandbox, "cat > private-record", {
+        timeoutMs: 5000,
+        stdin,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish.mock.calls.length).toBeGreaterThan(1);
+      const reassembler = new CentrifugoMessageReassembler();
+      let commandMessage: unknown = null;
+      for (const [fragment] of sub.publish.mock.calls) {
+        commandMessage = reassembler.accept(fragment) ?? commandMessage;
+      }
+      expect(commandMessage).toEqual(
+        expect.objectContaining({
+          type: "command",
+          command: "cat > private-record",
+          stdin: stdin.toString("base64"),
+          stdinEncoding: "base64",
+        }),
+      );
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toMatchObject({ exitCode: 0 });
+    });
+
+    it("rejects stdin before connecting to an unsupported client", async () => {
+      const sandbox = createSandbox();
+
+      await expect(
+        sandbox.commands.run("cat", { stdin: "private" }),
+      ).rejects.toThrow("requires an updated HackerAI local client");
+      expect(mockSubscriptions).toHaveLength(0);
     });
 
     it("subscribes, receives stdout/stderr/exit messages, and returns aggregated result", async () => {
