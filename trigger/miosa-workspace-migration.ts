@@ -12,7 +12,11 @@ const RECENT_IDLE_RECHECKS = 3;
 const RECENT_IDLE_RECHECK_MINUTES = 15;
 
 function shouldRecheckWhenIdle(reason: string) {
-  return reason === "source_active" || reason === "workspace_in_use";
+  return (
+    reason === "source_active" ||
+    reason === "workspace_in_use" ||
+    reason === "migration_in_progress"
+  );
 }
 
 export const miosaWorkspaceMigration = schemaTask({
@@ -52,6 +56,7 @@ export const miosaWorkspaceMigration = schemaTask({
         const result = await migrateE2BWorkspace({
           ...payload,
           triggerRunId: ctx.run.id,
+          triggerAttempt: ctx.attempt.number,
           environment: ctx.environment.type,
         });
         if (

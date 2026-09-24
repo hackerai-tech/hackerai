@@ -18,7 +18,9 @@ The existing paid-plan and Miosa assignment gates still apply. A server request
 selected by `miosa_e2b_file_migration_v1` nominates only the E2B workspace used
 by that recent acquisition, schedules a Trigger task after 20 minutes and
 continues using E2B. There is no all-user scanner. Scheduling is deduplicated per
-user/source for one hour. If that recent workspace is still active or holds the
+user/source across all parent Agent runs using a global Trigger idempotency key
+for twelve hours. This covers the configured delay, attempts, idle waits and
+backoff; the durable fence remains authoritative if a later job is scheduled. If that recent workspace is still active or holds the
 activity fence, the same task waits 15 minutes and rechecks it up to three times;
 permanent incompatibilities complete without another attempt. The worker
 rechecks the flag, complete cross-cluster inventory, source ownership, paused
@@ -52,7 +54,10 @@ Two jobs may run concurrently. Tasks have a two-hour ceiling and up to three
 attempts with backoff; transient E2B connection and command-list checks also get
 three bounded attempts with operation-specific diagnostics before the task
 fails. Individual filesystem operations and transfers have shorter limits. A
-retained checking fence requires recovery before a retry can proceed.
+retained checking fence records its owning Trigger run and attempt. A duplicate
+waits while that exact attempt is executing. A retry, legacy ownerless record,
+terminal owner or unavailable status requires recovery; no fence is expired or
+automatically cleared.
 
 ## Cutover and recovery
 
@@ -125,10 +130,14 @@ On the actual Preview URL using disposable paid test accounts:
    old E2B ID still exists. Check both the visible response and actual provider.
 3. Verify active work, mounted volumes, multiple sources, outside-home links,
    unknown reads and size limits defer migration without changing the source.
-4. Exercise corrupted transfer, source changes, interrupted workers, failed
+4. Nominate the same source from two separate Agent runs and confirm they share
+   one delayed migration run. For a deliberately duplicated disposable test job,
+   verify `migration_in_progress` while the owner executes and `already_claimed`
+   after it commits. A crashed owner must still require recovery.
+5. Exercise corrupted transfer, source changes, interrupted workers, failed
    destination cleanup, lost commit acknowledgement and destination loss. Confirm
    no partial destination or stale E2B copy becomes available.
-5. Create a Miosa-only file, disable the flag and simulate acquisition failure.
+6. Create a Miosa-only file, disable the flag and simulate acquisition failure.
    The user must stay pinned to the copied destination. Verify explicit reset.
 
 `miosa_e2b_file_migration_checked` reports bounded reason/count/duration fields;

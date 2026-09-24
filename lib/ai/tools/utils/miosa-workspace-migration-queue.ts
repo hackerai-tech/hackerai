@@ -51,7 +51,13 @@ export async function queueE2BFileMigration(options: {
     return false;
   try {
     if (!(await isE2BFileMigrationEnabled(userId, environment))) return false;
-    const { tasks } = await import("@trigger.dev/sdk");
+    const { tasks, idempotencyKeys } = await import("@trigger.dev/sdk");
+    // Raw keys are scoped to the parent Agent run inside Trigger. All Agents
+    // nominating this source must share a key within the execution environment.
+    const idempotencyKey = await idempotencyKeys.create(
+      `${E2B_FILE_MIGRATION_TASK}:${miosaExternalUserId(userId)}:${workspaces[0].info.sandboxId}`,
+      { scope: "global" },
+    );
     await tasks.trigger(
       E2B_FILE_MIGRATION_TASK,
       {
@@ -63,8 +69,10 @@ export async function queueE2BFileMigration(options: {
       {
         delay: "20m",
         region: triggerRegion,
-        idempotencyKey: `${E2B_FILE_MIGRATION_TASK}:${miosaExternalUserId(userId)}:${workspaces[0].info.sandboxId}`,
-        idempotencyKeyTTL: "1h",
+        idempotencyKey,
+        // Cover the initial delay, idle waits, three two-hour attempts and
+        // retry backoff. The durable fence still protects against later jobs.
+        idempotencyKeyTTL: "12h",
       },
     );
   } catch {
