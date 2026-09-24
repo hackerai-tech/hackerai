@@ -201,6 +201,7 @@ export class UsageTracker {
 
   accumulateSummarization(usage: {
     inputTokens: number;
+    inputTokensReported?: boolean;
     outputTokens: number;
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
@@ -236,7 +237,8 @@ export class UsageTracker {
       measurementCost: isValidCacheTokenCount(usage.cost)
         ? usage.cost
         : undefined,
-      inputReported: isValidCacheTokenCount(usage.inputTokens),
+      inputReported:
+        usage.inputTokensReported ?? isValidCacheTokenCount(usage.inputTokens),
       cacheReadReported: isValidCacheTokenCount(usage.cacheReadTokens),
       rawCost,
       inputTokens,

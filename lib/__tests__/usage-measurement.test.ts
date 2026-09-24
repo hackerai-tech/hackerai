@@ -10,6 +10,29 @@ it("preserves an explicit zero provider cost instead of labelling it missing", (
   });
 });
 
+it("does not count normalized summary input as reported provider usage", () => {
+  const tracker = new UsageTracker();
+  tracker.accumulateSummarization({
+    inputTokens: 0,
+    outputTokens: 0,
+    inputTokensReported: false,
+    cacheReadTokens: 0,
+  });
+  tracker.accumulateSummarization({
+    inputTokens: 0,
+    outputTokens: 0,
+    inputTokensReported: true,
+    cacheReadTokens: 0,
+    cost: 0,
+  });
+  expect(tracker.measurementProperties("model")).toMatchObject({
+    usage_summary_records: 2,
+    usage_input_reported_records: 1,
+    usage_cache_read_reported_records: 1,
+    usage_provider_cost_records: 1,
+  });
+});
+
 it("retains observed retry costs without adding them back to customer billing", () => {
   const tracker = new UsageTracker();
   tracker.recordModelCall();
