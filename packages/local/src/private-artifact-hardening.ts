@@ -14,6 +14,7 @@ const openDirectoryNoFollow = (directory: string) =>
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY,
   );
 
+/** Opens and tightens a directory through the same no-follow file handle. */
 const hardenOwnedDirectory = async (
   directory: string,
   uid: number,
@@ -29,6 +30,7 @@ const hardenOwnedDirectory = async (
   }
 };
 
+/** Atomically creates a missing root or validates an existing no-follow root. */
 const claimOwnedRoot = async (root: string, uid: number): Promise<boolean> => {
   try {
     await mkdir(root, { mode: 0o700 });
@@ -38,6 +40,7 @@ const claimOwnedRoot = async (root: string, uid: number): Promise<boolean> => {
   return hardenOwnedDirectory(root, uid);
 };
 
+/** Tightens an owned regular file through a no-follow file handle. */
 const hardenOwnedFile = async (
   filePath: string,
   uid: number,

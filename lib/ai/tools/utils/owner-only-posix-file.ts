@@ -85,6 +85,7 @@ const runChecked = async (
   return result.stdout;
 };
 
+/** Selects the hardened fallback only for non-native POSIX local relays. */
 export function usesOwnerOnlyPosixFileTransport(
   sandbox: AnySandbox,
 ): sandbox is LocalPosixSandbox {
@@ -97,6 +98,10 @@ export function usesOwnerOnlyPosixFileTransport(
   return !isWindows && !hasNativeFileRelay;
 }
 
+/**
+ * Atomically replaces one private artifact through an owner-only temporary
+ * file. Payload bytes travel over command stdin and never enter shell argv.
+ */
 export async function writeOwnerOnlyPosixFile(
   sandbox: LocalPosixSandbox,
   root: string,
@@ -155,6 +160,7 @@ chmod 600 ${encodedFilePath}
   }
 }
 
+/** Reads at most maxBytes after revalidating ownership, type, and permissions. */
 export async function readOwnerOnlyPosixFile(
   sandbox: LocalPosixSandbox,
   root: string,
@@ -177,6 +183,7 @@ head -c ${maxBytes} ${encodedFilePath}
   );
 }
 
+/** Lists direct children only after revalidating both private directories. */
 export async function listOwnerOnlyPosixFiles(
   sandbox: LocalPosixSandbox,
   root: string,
@@ -198,6 +205,7 @@ done
     .map((name) => ({ name }));
 }
 
+/** Removes one owner-controlled regular file without following symlinks. */
 export async function removeOwnerOnlyPosixFile(
   sandbox: LocalPosixSandbox,
   root: string,
