@@ -40,6 +40,7 @@ type TaskDefinition = {
     context: {
       ctx: {
         run: { id: string; region: "us-east-1" };
+        attempt: { number: number };
         environment: { type: "PRODUCTION" };
       };
     },
@@ -57,6 +58,7 @@ const payload = {
 const context = {
   ctx: {
     run: { id: "run-migration-1", region: "us-east-1" as const },
+    attempt: { number: 1 },
     environment: { type: "PRODUCTION" as const },
   },
 };
@@ -83,6 +85,7 @@ describe("Miosa workspace migration task retries", () => {
     expect(migrateE2BWorkspace).toHaveBeenCalledWith({
       ...payload,
       triggerRunId: "run-migration-1",
+      triggerAttempt: 1,
       environment: "PRODUCTION",
     });
   });
@@ -109,6 +112,16 @@ describe("Miosa workspace migration task retries", () => {
     });
     expect(wait.for).toHaveBeenCalledWith({ minutes: 15 });
     expect(migrateE2BWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("rechecks a live duplicate until the owner commits", async () => {
+    (migrateE2BWorkspace as jest.Mock)
+      .mockResolvedValueOnce({ reason: "migration_in_progress" })
+      .mockResolvedValueOnce({ reason: "already_claimed" });
+    await expect(task.run(payload, context)).resolves.toEqual({
+      reason: "already_claimed",
+    });
+    expect(wait.for).toHaveBeenCalledTimes(1);
   });
 
   it("bounds idle rechecks for a workspace that remains in use", async () => {

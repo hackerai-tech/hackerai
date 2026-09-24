@@ -11,6 +11,9 @@ type MigrationState = {
   region: TriggerRunRegion;
   // File migrations pin an exact verified destination. Never recreate it empty.
   destinationId?: string;
+  // Optional for legacy records. An attempt, not just a run, owns the fence:
+  // a retry must not mistake a previous crashed attempt for a live migration.
+  owner?: { runId: string; attempt: number };
 };
 
 type CleanupState = {
@@ -30,6 +33,11 @@ function isMigrationState(value: MigrationState): boolean {
     ["checking", "miosa"].includes(value.phase) &&
     typeof value.token === "string" &&
     typeof value.sourceId === "string" &&
+    (value.owner === undefined ||
+      (typeof value.owner?.runId === "string" &&
+        value.owner.runId.startsWith("run_") &&
+        Number.isInteger(value.owner.attempt) &&
+        value.owner.attempt > 0)) &&
     (value.destinationId === undefined ||
       (typeof value.destinationId === "string" && !!value.destinationId)) &&
     ["us-east-1", "us-west-2"].includes(value.region)
@@ -100,6 +108,7 @@ export async function claimCloudMigration(
   userId: string,
   sourceId: string,
   region: TriggerRunRegion,
+  owner?: MigrationState["owner"],
 ) {
   const redis = createRedisClient();
   if (!redis) throw new CloudMigrationUnavailableError();
@@ -110,6 +119,7 @@ export async function claimCloudMigration(
     token: randomUUID(),
     sourceId,
     region,
+    ...(owner && { owner }),
   };
   const serialized = JSON.stringify(state);
   try {
