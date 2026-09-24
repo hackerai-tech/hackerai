@@ -378,6 +378,9 @@ export const subagentTask = task({
       runPromise.catch(() => undefined),
       new Promise((resolve) => setTimeout(resolve, 5_000)),
     ]);
+    // A stalled provider may never reach the run's finally before the worker
+    // is killed. Preserve the bounded snapshot even when the timeout wins;
+    // the cancellation_hook reason distinguishes it from a normal exit.
     cleanup.flushProviderHistory();
     const finishOutcome = await finishSubagent({
       subagentId: cleanup.subagentId,
@@ -455,7 +458,8 @@ export const subagentTask = task({
       userId: row.user_id,
       parentTriggerRunId: row.parent_trigger_run_id,
       profile: row.profile,
-      flushProviderHistory: () => providerHistory.flush(true),
+      flushProviderHistory: () =>
+        providerHistory.flush(true, "cancellation_hook"),
     });
     try {
       const attachOutcome = await attachSubagentTriggerRun(

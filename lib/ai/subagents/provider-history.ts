@@ -32,7 +32,10 @@ export function createSubagentProviderHistory(
       calls.push({ entry, callIndex: callCount, generationAttempt });
       if (calls.length > MAX_RETAINED_CALLS) calls.shift();
     },
-    flush(aborted: boolean) {
+    flush(
+      aborted: boolean,
+      reason: "run_exit" | "cancellation_hook" = "run_exit",
+    ) {
       if (flushed) return;
       flushed = true;
       if (callCount === 0) return;
@@ -44,6 +47,7 @@ export function createSubagentProviderHistory(
           event: "subagent_provider_history",
           service: "hackerai-subagent",
           request_id: context.trigger_run_id,
+          flush_reason: reason,
           provider_call_count: callCount,
           omitted_provider_call_count: callCount - calls.length,
           provider_calls: calls.map(
@@ -62,6 +66,14 @@ export function createSubagentProviderHistory(
                 entry.openrouter_generation_id,
               ),
               openrouter_request_id: identifier(entry.openrouter_request_id),
+              openrouter_attempts: entry.openrouter_attempts
+                ?.slice(0, 8)
+                .map(({ provider, model, status, selected }) => ({
+                  provider: identifier(provider),
+                  model: identifier(model),
+                  status,
+                  selected,
+                })),
               outcome:
                 entry.outcome === "pending"
                   ? aborted

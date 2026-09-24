@@ -176,7 +176,8 @@ it.each([false, true])(
     const result = headersArrived ? await pending : undefined;
     abort.abort();
     if (result) await result.stream.cancel("stop");
-    history.flush(true);
+    history.flush(true, "cancellation_hook");
+    expect(emit.mock.calls[0][0].flush_reason).toBe("cancellation_hook");
     expect(emit.mock.calls[0][0].provider_calls[0]).toMatchObject({
       outcome: "aborted",
       duration_ms: expect.any(Number),
@@ -247,4 +248,34 @@ it("does not let a failed sink change cleanup and does not emit empty runs", () 
   history.record(entry(), 2);
   history.flush(true);
   expect(emit).toHaveBeenCalledTimes(1);
+});
+
+it("snapshots only bounded routing-attempt fields without retaining mutable metadata", () => {
+  const emit = jest.fn();
+  const history = createSubagentProviderHistory(context, emit);
+  const attempts = Array.from({ length: 10 }, (_, i) => ({
+    provider: `provider-${i}`,
+    model: "routed-model",
+    status: 503,
+    selected: false,
+    headers: { authorization: "secret" },
+    error: "private provider error",
+  }));
+  history.record(
+    { ...entry(), outcome: "error", openrouter_attempts: attempts },
+    1,
+  );
+  history.flush(false);
+  attempts[0].provider = "changed-after-flush";
+  const logged = emit.mock.calls[0][0].provider_calls[0].openrouter_attempts;
+  expect(logged).toHaveLength(8);
+  expect(logged[0]).toEqual({
+    provider: "provider-0",
+    model: "routed-model",
+    status: 503,
+    selected: false,
+  });
+  expect(JSON.stringify(logged)).not.toMatch(
+    /secret|private|headers|changed-after-flush/,
+  );
 });
