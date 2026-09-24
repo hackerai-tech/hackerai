@@ -55,7 +55,8 @@ const stripPlatformAuthorization = (
  * Adds trusted authorization and posture activation at the final provider boundary.
  *
  * The caller's UI messages remain unchanged, so this annotation cannot be
- * persisted, displayed, titled, or summarized as user-authored content.
+ * persisted in UI history, displayed, titled, or summarized as user-authored content.
+ * Backend-only replay may retain the final request under the same policy identity.
  */
 export const appendPlatformAuthorizationToLatestUserMessage = (
   messages: ModelMessage[],

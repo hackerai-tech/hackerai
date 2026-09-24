@@ -32,6 +32,7 @@ import {
 
 import {
   convertToModelMessages,
+  asSchema,
   streamText,
   type LanguageModel,
   type ModelMessage,
@@ -40,6 +41,21 @@ import {
   type ToolSet,
 } from "ai";
 import { randomUUID } from "crypto";
+import {
+  ModelHistoryReplay,
+  MODEL_HISTORY_FLAG,
+  CACHE_ALIGNED_SUMMARY_FLAG,
+  historyDigest,
+  sourceMessageDigests,
+  parseModelHistory,
+  restoreModelHistory,
+  isReplayableTextHistory,
+  prepareReplayAuthorization,
+  type ModelHistorySnapshot,
+} from "@/lib/chat/model-history";
+import { loadModelHistory, saveModelHistory } from "@/lib/db/model-history";
+import { getPostHogFeatureFlagForUser, phLogger } from "@/lib/posthog/server";
+import { getAppendedNotesUpdate } from "./chat-stream-helpers";
 import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
 import {
   buildProviderOptions,
@@ -1168,6 +1184,7 @@ export async function createAgentStream(
     abortSignal,
   );
   let latestToolCallBatchSplitCount = 0;
+  let trustedHistoryPrefix: ModelMessage[] = [];
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1199,16 +1216,25 @@ export async function createAgentStream(
       repairedMessages = repair.messages as ModelMessage[];
     }
 
-    const messagesWithAuthorization = preparePlatformAuthorizationForModel(
-      repairedMessages,
-      ctx.platformAuthorized,
-      effectiveModelName,
-    );
+    const messagesWithAuthorization = historyEnabled
+      ? prepareReplayAuthorization(
+          repairedMessages,
+          trustedHistoryPrefix,
+          ctx.platformAuthorized,
+          effectiveModelName,
+        )
+      : preparePlatformAuthorizationForModel(
+          repairedMessages,
+          ctx.platformAuthorized,
+          effectiveModelName,
+        );
 
-    return addOpenRouterFileAnnotationsToLastAssistantMessage(
+    const prepared = addOpenRouterFileAnnotationsToLastAssistantMessage(
       messagesWithAuthorization,
       openRouterFileAnnotations,
     );
+    if (historyEnabled) trustedHistoryPrefix = structuredClone(prepared);
+    return prepared;
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
@@ -1270,6 +1296,116 @@ export async function createAgentStream(
     );
   }
   const initialModelInfo = getEffectiveModelInfo();
+  const historyRoute = initialModelInfo.languageModel.modelId ?? "";
+  let historyEnabled =
+    historyRoute.startsWith("deepseek/deepseek-v4") &&
+    isReplayableTextHistory(initialSerializedMessages) &&
+    (await getPostHogFeatureFlagForUser(MODEL_HISTORY_FLAG, ctx.userId));
+  const historyReplay = new ModelHistoryReplay();
+  let historyRevision: number | undefined;
+  let sourceModelMessages: ModelMessage[] = [];
+  let frozenSystemPrompt = ctx.currentSystemPrompt;
+  // All non-date prompt changes (including authorization/customization) invalidate replay.
+  let historyIdentity = "";
+  let sourceResponseCursor = 0;
+  let historyRestored = false;
+  if (historyEnabled) {
+    try {
+      const schemas = await Promise.all(
+        Object.entries(ctx.tools).map(async ([name, tool]) => ({
+          name,
+          description: tool.description,
+          schema: await asSchema(tool.inputSchema).jsonSchema,
+          type: tool.type,
+          strict: tool.strict,
+          inputExamples: tool.inputExamples,
+          providerOptions: tool.providerOptions,
+        })),
+      );
+      historyIdentity = historyDigest({
+        version: 1,
+        model: historyRoute,
+        mode: ctx.mode,
+        subscription: ctx.subscription,
+        authorization: ctx.platformAuthorized,
+        notesEnabled: ctx.noteInjectionOpts.shouldIncludeNotes,
+        system: ctx.currentSystemPrompt.replace(
+          /^The current date is .+$/m,
+          "The current date is <session-date>.",
+        ),
+        tools: schemas,
+      });
+      sourceModelMessages = await convertToModelMessages(
+        state.sourceUiMessages ?? state.finalMessages,
+        { tools: promptSerializationTools },
+      );
+      const stored = await loadModelHistory(ctx.chatId, ctx.userId);
+      historyRevision = stored?.revision;
+      const snapshot = parseModelHistory(stored?.payload ?? null);
+      const restored = restoreModelHistory(
+        snapshot,
+        historyIdentity,
+        sourceModelMessages,
+        initialSerializedMessages,
+      );
+      if (restored && snapshot) {
+        historyRestored = true;
+        initialSerializedMessages = restored;
+        frozenSystemPrompt = snapshot.system;
+        trustedHistoryPrefix = structuredClone(snapshot.messages);
+        if (snapshot.system !== ctx.currentSystemPrompt) {
+          const date = ctx.currentSystemPrompt.match(
+            /^The current date is .+$/m,
+          )?.[0];
+          initialSerializedMessages = historyReplay.append(
+            initialSerializedMessages,
+            "date",
+            date,
+          );
+        }
+      }
+      if (restored) {
+        // A resumed prefix may contain stale notes, including notes since deleted.
+        // Fresh histories already receive notes from their caller.
+        initialSerializedMessages = historyReplay.append(
+          initialSerializedMessages,
+          "notes",
+          await getAppendedNotesUpdate([], ctx.noteInjectionOpts, true),
+        );
+      }
+    } catch {
+      // Missing deployment/schema/storage is a control fallback, not a chat failure.
+      historyEnabled = false;
+    }
+  }
+  let lastHistoryRequest: ModelMessage[] | undefined;
+  const cacheAlignedSummaryEnabled =
+    historyEnabled &&
+    (await getPostHogFeatureFlagForUser(
+      CACHE_ALIGNED_SUMMARY_FLAG,
+      ctx.userId,
+    ));
+  let lastHistoryResponseCursor = 0;
+  let lastHistoryTools: ToolSet = ctx.tools;
+  let historyToSave: ModelHistorySnapshot | undefined;
+  let historyExposed = false;
+  const exposeHistory = () => {
+    if (historyExposed || !historyEnabled) return;
+    historyExposed = true;
+    phLogger.event("cache_stable_history_exposed", {
+      userId: ctx.userId,
+      chat_id: ctx.chatId,
+      mode: ctx.mode,
+      model: historyRoute,
+      variant: "v1",
+      replay_restored: historyRestored,
+    });
+  };
+  const requestSystemPrompt = (name: string) =>
+    buildSystemPrompt(
+      historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt,
+      name,
+    );
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
   );
@@ -1301,16 +1437,14 @@ export async function createAgentStream(
       generationStepOffset,
     ),
     maxOutputTokens,
-    system: buildSystemPrompt(
-      ctx.currentSystemPrompt,
-      initialModelInfo.modelName,
-    ),
+    system: requestSystemPrompt(initialModelInfo.modelName),
     messages: initialModelMessages,
     tools: ctx.tools,
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
+      exposeHistory();
       ctx.onModelStreamStart?.();
       if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
     },
@@ -1324,13 +1458,22 @@ export async function createAgentStream(
       const generationStepIndex =
         generationStepOffset + localGenerationStepIndex;
       const rawModelMessages = messages as ModelMessage[];
-      let rollingModelMessages = buildRollingModelMessages(
-        rawModelMessages,
-        rollingContextCheckpoint,
-      );
-      rollingModelMessages = limitModelImageToolResults(
-        rollingModelMessages as Array<Record<string, unknown>>,
-      ).messages as ModelMessage[];
+      if (
+        historyEnabled &&
+        (getEffectiveModelInfo(generationStepIndex).languageModel.modelId !==
+          historyRoute ||
+          !isReplayableTextHistory(rawModelMessages))
+      ) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      let rollingModelMessages = historyEnabled
+        ? historyReplay.project(rawModelMessages)
+        : buildRollingModelMessages(rawModelMessages, rollingContextCheckpoint);
+      if (!historyEnabled)
+        rollingModelMessages = limitModelImageToolResults(
+          rollingModelMessages as Array<Record<string, unknown>>,
+        ).messages as ModelMessage[];
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
@@ -1345,7 +1488,9 @@ export async function createAgentStream(
           : [...activeTools, "wait_for_agents"];
       };
       try {
-        const pruneResult = pruneToolOutputs(state.finalMessages);
+        const pruneResult = historyEnabled
+          ? { prunedCount: 0, messages: state.finalMessages }
+          : pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
           state.transcriptSourceMessages ??= state.finalMessages;
           state.finalMessages = pruneResult.messages;
@@ -1424,6 +1569,8 @@ export async function createAgentStream(
                 state.ctxUsage = result.contextUsage;
               }
               state.finalMessages = result.summarizedMessages;
+              // Durable summary changed the source projection: restart replay from its checkpoint.
+              historyReplay.reset();
               state.transcriptSourceMessages = undefined;
               streamHasImageViewResults =
                 !ctx.auxiliaryVisionEnabled &&
@@ -1474,10 +1621,30 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
+              if (historyEnabled) {
+                sourceModelMessages = await convertToModelMessages(
+                  result.summarizedMessages,
+                  { tools: promptSerializationTools },
+                );
+                sourceResponseCursor =
+                  rawModelMessages.length - initialModelMessages.length;
+                lastHistoryResponseCursor = sourceResponseCursor;
+                lastHistoryTools = activeTools
+                  ? Object.fromEntries(
+                      Object.entries(ctx.tools).filter(([name]) =>
+                        activeTools.includes(name),
+                      ),
+                    )
+                  : ctx.tools;
+              }
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
               );
+              if (historyEnabled) {
+                historyReplay.commit(preparedMessages, rawModelMessages.length);
+                lastHistoryRequest = structuredClone(preparedMessages);
+              }
               recordProviderRequestDiagnostics({
                 modelName: continuationModelInfo.modelName,
                 requestedSlug: continuationModelInfo.requestedSlug,
@@ -1497,10 +1664,7 @@ export async function createAgentStream(
                 activeTools,
                 providerOptions,
                 messages: preparedMessages,
-                system: buildSystemPrompt(
-                  ctx.currentSystemPrompt,
-                  continuationModelInfo.modelName,
-                ),
+                system: requestSystemPrompt(continuationModelInfo.modelName),
                 ...(parentGate.toolChoice
                   ? { toolChoice: parentGate.toolChoice }
                   : {}),
@@ -1546,6 +1710,31 @@ export async function createAgentStream(
                   ),
                 ),
               registerBackgroundWork: ctx.registerBackgroundWork,
+              ...(historyEnabled &&
+                cacheAlignedSummaryEnabled &&
+                lastHistoryRequest && {
+                  cacheAlignedSummary: {
+                    languageModel: effectiveModelInfo.languageModel,
+                    tools: lastHistoryTools,
+                    system: frozenSystemPrompt,
+                    providerOptions: getStepProviderOptions(
+                      effectiveModelInfo.modelName,
+                    ),
+                    onUsed: () =>
+                      phLogger.event("cache_aligned_summary_exposed", {
+                        userId: ctx.userId,
+                        chat_id: ctx.chatId,
+                        mode: ctx.mode,
+                        model: historyRoute,
+                        variant: "v1",
+                      }),
+                    onDiscardedUsage: (usage) =>
+                      ctx.summarizationTracker.recordSummarizationUsage(
+                        usage,
+                        ctx.usageTracker,
+                      ),
+                  },
+                }),
             });
 
             if (!inRunResult) {
@@ -1635,6 +1824,10 @@ export async function createAgentStream(
                   baseMessages: nextBaseMessages,
                   rawMessageCursor: rawModelMessages.length,
                 };
+                if (historyEnabled) {
+                  lastHistoryResponseCursor =
+                    rawModelMessages.length - initialModelMessages.length;
+                }
                 rollingModelMessages = nextBaseMessages;
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
@@ -1658,10 +1851,25 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
+                if (historyEnabled)
+                  lastHistoryTools = activeTools
+                    ? Object.fromEntries(
+                        Object.entries(ctx.tools).filter(([name]) =>
+                          activeTools.includes(name),
+                        ),
+                      )
+                    : ctx.tools;
                 const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
                 );
+                if (historyEnabled) {
+                  historyReplay.commit(
+                    preparedMessages,
+                    rawModelMessages.length,
+                  );
+                  lastHistoryRequest = structuredClone(preparedMessages);
+                }
                 recordProviderRequestDiagnostics({
                   modelName: continuationModelInfo.modelName,
                   requestedSlug: continuationModelInfo.requestedSlug,
@@ -1681,10 +1889,7 @@ export async function createAgentStream(
                   activeTools,
                   providerOptions,
                   messages: preparedMessages,
-                  system: buildSystemPrompt(
-                    ctx.currentSystemPrompt,
-                    continuationModelInfo.modelName,
-                  ),
+                  system: requestSystemPrompt(continuationModelInfo.modelName),
                   ...(parentGate.toolChoice
                     ? { toolChoice: parentGate.toolChoice }
                     : {}),
@@ -1697,27 +1902,60 @@ export async function createAgentStream(
         let currentMessages = rollingModelMessages as Array<
           Record<string, unknown>
         >;
-        const modelPrune = pruneModelMessages(currentMessages);
+        const modelPrune =
+          historyEnabled && !shouldCompactInRun
+            ? { prunedCount: 0, messages: currentMessages }
+            : pruneModelMessages(currentMessages);
         if (modelPrune.prunedCount > 0) {
           currentMessages = modelPrune.messages;
         }
 
-        let updatedMessages = await applyPrepareStepReminders(currentMessages, {
-          toolResults,
-          noteInjectionOpts: ctx.noteInjectionOpts,
-        });
+        let updatedMessages = historyEnabled
+          ? historyReplay.append(
+              currentMessages as ModelMessage[],
+              "notes",
+              await getAppendedNotesUpdate(toolResults, ctx.noteInjectionOpts),
+            )
+          : await applyPrepareStepReminders(currentMessages, {
+              toolResults,
+              noteInjectionOpts: ctx.noteInjectionOpts,
+            });
 
         if (loopRecovery.nudge) {
-          updatedMessages = [
-            ...updatedMessages,
-            { role: "user", content: loopRecovery.nudge },
-          ] as typeof updatedMessages;
+          updatedMessages = historyEnabled
+            ? historyReplay.append(
+                updatedMessages as ModelMessage[],
+                "recovery",
+                loopRecovery.nudge,
+              )
+            : ([
+                ...updatedMessages,
+                { role: "user", content: loopRecovery.nudge },
+              ] as typeof updatedMessages);
+        } else if (historyEnabled && historyReplay.hasEvent("recovery")) {
+          updatedMessages = historyReplay.append(
+            updatedMessages as ModelMessage[],
+            "recovery",
+            "The earlier loop-recovery intervention is complete. Continue the current task under the current tool permissions.",
+          );
         }
         if (parentGate.reminder) {
-          updatedMessages = [
-            ...updatedMessages,
-            { role: "user", content: parentGate.reminder },
-          ] as typeof updatedMessages;
+          updatedMessages = historyEnabled
+            ? historyReplay.append(
+                updatedMessages as ModelMessage[],
+                "parent",
+                parentGate.reminder,
+              )
+            : ([
+                ...updatedMessages,
+                { role: "user", content: parentGate.reminder },
+              ] as typeof updatedMessages);
+        } else if (historyEnabled && historyReplay.hasEvent("parent")) {
+          updatedMessages = historyReplay.append(
+            updatedMessages as ModelMessage[],
+            "parent",
+            "The earlier delegated-result waiting requirement is now satisfied. Continue the current task under the current tool permissions.",
+          );
         }
 
         const activeTools = enforceParentGateTool(
@@ -1733,6 +1971,24 @@ export async function createAgentStream(
           ) as ModelMessage[],
           effectiveModelInfo.modelName,
         )) as typeof messages;
+        if (historyEnabled) {
+          historyReplay.commit(
+            preparedMessages as ModelMessage[],
+            rawModelMessages.length,
+          );
+          lastHistoryRequest = structuredClone(
+            preparedMessages,
+          ) as ModelMessage[];
+          lastHistoryResponseCursor =
+            rawModelMessages.length - initialModelMessages.length;
+          lastHistoryTools = activeTools
+            ? Object.fromEntries(
+                Object.entries(ctx.tools).filter(([name]) =>
+                  activeTools.includes(name),
+                ),
+              )
+            : ctx.tools;
+        }
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
           requestedSlug: effectiveModelInfo.requestedSlug,
@@ -1752,15 +2008,15 @@ export async function createAgentStream(
           activeTools,
           providerOptions,
           messages: preparedMessages,
-          system: buildSystemPrompt(
-            ctx.currentSystemPrompt,
-            effectiveModelInfo.modelName,
-          ),
+          system: requestSystemPrompt(effectiveModelInfo.modelName),
           ...(parentGate.toolChoice
             ? { toolChoice: parentGate.toolChoice }
             : {}),
         };
       } catch (error) {
+        // Do not persist a request assembled through the recovery path as an exact replay.
+        historyEnabled = false;
+        historyReplay.reset();
         if (error instanceof AbliterationVisionError || abortSignal.aborted)
           throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
@@ -1933,6 +2189,44 @@ export async function createAgentStream(
       toolCalls,
       toolResults,
     }) => {
+      // Never persist an earlier partial candidate after an unsupported final step.
+      historyToSave = undefined;
+      if (
+        historyEnabled &&
+        response.modelId &&
+        response.modelId !== historyRoute
+      ) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      if (
+        historyEnabled &&
+        lastHistoryRequest &&
+        historyRevision !== undefined &&
+        !abortSignal.aborted
+      ) {
+        const source = [
+          ...sourceModelMessages,
+          ...response.messages.slice(sourceResponseCursor),
+        ];
+        const digests = sourceMessageDigests(source);
+        const replay = [
+          ...lastHistoryRequest,
+          ...response.messages.slice(lastHistoryResponseCursor),
+        ];
+        if (
+          digests.length === source.length &&
+          isReplayableTextHistory(replay)
+        ) {
+          historyToSave = {
+            version: 1,
+            identity: historyIdentity,
+            source: digests,
+            messages: replay,
+            system: frozenSystemPrompt,
+          };
+        }
+      }
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
       const responsePdfParserEngine = getResponseHeader(
@@ -2195,6 +2489,27 @@ export async function createAgentStream(
         .catch((err) =>
           console.error("[agent-stream] PTY closeAll (onFinish) failed:", err),
         );
+      if (
+        historyEnabled &&
+        historyToSave &&
+        historyRevision !== undefined &&
+        !abortSignal.aborted &&
+        state.streamFinishReason === "stop"
+      ) {
+        // Accounting/cleanup above must never wait on optional replay storage.
+        // The database wrapper also bounds the work if no registrar is available.
+        const save = saveModelHistory(
+          ctx.chatId,
+          ctx.userId,
+          historyRevision,
+          ctx.streamStartTime,
+          historyToSave,
+        )
+          .then(() => undefined)
+          .catch(() => undefined);
+        if (ctx.registerBackgroundWork) ctx.registerBackgroundWork(save);
+        else await save;
+      }
     },
 
     onError: async ({ error }) => {

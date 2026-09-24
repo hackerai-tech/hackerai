@@ -2135,9 +2135,12 @@ export async function deleteNote({
 export async function getNotes({
   userId,
   subscription,
+  throwOnError = false,
 }: {
   userId: string;
   subscription: SubscriptionTier;
+  /** State-replacement callers must distinguish deletion from an unavailable lookup. */
+  throwOnError?: boolean;
 }) {
   try {
     const notes = await getConvexClient().query(api.notes.getNotesForBackend, {
@@ -2147,7 +2150,8 @@ export async function getNotes({
     });
     return notes;
   } catch (error) {
-    // If no notes found or error, return empty array
+    if (throwOnError) throw error;
+    // Optional prompt enrichment keeps its existing empty-on-error behavior.
     return [];
   }
 }

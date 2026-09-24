@@ -224,6 +224,7 @@ describe("Agent approval lifecycle guards", () => {
           );
         return {
           first: jest.fn(async () => rows()[0] ?? null),
+          unique: jest.fn(async () => rows()[0] ?? null),
           take: jest.fn(async (limit: number) => rows().slice(0, limit)),
         };
       }),
