@@ -3,14 +3,11 @@
 Owner and rollout: [HAC-113](https://linear.app/hackerai/issue/HAC-113).
 
 This replaces pristine-template fingerprinting. No baseline JSON is required.
-The migration restores `/home/user` and keeps a compressed copy of the other
-recoverable filesystem entries at
-`/var/lib/hackerai-migration/e2b-filesystem.tar.gz` inside the user's Miosa VM.
-The original E2B sandbox is retained. This is file preservation, not VM-image or
-process migration: custom system tools may need reinstalling. Files in `/root`,
-`/tmp`, `/opt`, and system configuration are available in the archive, not
-automatically installed over the Miosa operating system. Do not describe this
-as preserving an arbitrary customized runtime unchanged.
+The migration copies only `/home/user`, including hidden files and metadata.
+It does not distinguish Agent-created files from other files in that directory.
+The original E2B sandbox is retained. Files outside `/home/user`, installed system
+tools and running processes are not migrated; customized runtimes may need
+reinstalling. Do not describe this as preserving an arbitrary VM unchanged.
 
 ## Eligibility and storage contract
 
@@ -33,15 +30,12 @@ active commands, unsupported mounts, unsupported home entries and links from
 home to un-restored paths are deferred. The destination must use the native
 `hackerai-tools` template.
 
-The archive includes regular files, hidden/empty files, directories, links,
-numeric ownership, modes, extended attributes and tar timestamps. Kernel
-`/proc` and `/sys` are excluded. Device nodes and FIFOs are archived as metadata;
-no device bytes are read. Runtime sockets under `/run` and `/dev` and in-memory
-process/connection state are not restored. Other sockets defer migration.
-Captured system journal bytes are retained, but their ongoing changes do not
-invalidate the same-source comparison. Certificate/configuration bytes are
-never normalized away. Unknown reads and all other detected source changes deny
-cutover. The original source remains the recovery copy for runtime state.
+The archive includes regular files, hidden/empty files, directories, internal
+links, numeric ownership, modes, extended attributes and tar timestamps under
+`/home/user`. Sockets, device nodes, FIFOs and links to outside-home paths defer
+migration. System files and runtime logs outside home are not scanned or copied.
+Unknown reads and detected source changes deny cutover. The original source
+remains the recovery copy for files and runtime state outside the migration scope.
 
 Initial limits: 250,000 entries, 12 GiB of regular-file data and a 4 GiB compressed
 archive. Archive bytes pass through the worker in 4 MiB chunks without local
@@ -123,9 +117,9 @@ and in-flight pre-cutover checks without another deployment.
 On the actual Preview URL using disposable paid test accounts:
 
 1. Create an E2B workspace with binary, hidden and empty files, nested folders,
-   permissions, internal links and xattrs. Include a file outside home. Run a
-   bounded Agent command, allow the idle interval, and run the migration task.
-   Verify copied home contents and the outside-home archive entry.
+   permissions, internal links and xattrs. Include a disposable file outside home.
+   Run a bounded Agent command, allow the idle interval, and run the migration
+   task. Verify copied home contents and that the outside-home file is not copied.
 2. Run Agent on Miosa, reload/reconnect and verify the files again. Confirm the
    old E2B ID still exists. Check both the visible response and actual provider.
 3. Verify active work, mounted volumes, multiple sources, outside-home links,
