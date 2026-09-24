@@ -24,7 +24,10 @@ import {
   type MiosaAcquisitionDiagnostic,
 } from "./miosa-acquisition-diagnostics";
 import { miosaExternalUserId } from "./miosa-identity";
-import { isE2BFileMigrationEnabled } from "./miosa-workspace-migration-queue";
+import {
+  E2B_FILE_MIGRATION_TASK,
+  isE2BFileMigrationEnabled,
+} from "./miosa-workspace-migration-queue";
 import { transferCommand } from "./workspace-transfer-program";
 import { MIOSA_NATIVE_TEMPLATE_ID } from "./miosa-runtime";
 import { waitForMiosaReadiness } from "./miosa-readiness";
@@ -335,6 +338,7 @@ export type E2BFileMigrationRequest = {
   subscription: SubscriptionTier;
   triggerRegion: TriggerRunRegion;
   triggerRunId?: string;
+  triggerAttempt?: number;
   environment?: string;
 };
 
@@ -370,6 +374,34 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   const existingMigration = await readCloudMigrationState(userId);
   if (existingMigration?.phase === "miosa") return report("already_claimed");
   if (existingMigration) {
+    if (existingMigration.phase === "checking" && existingMigration.owner) {
+      const { owner } = existingMigration;
+      let liveOwner = false;
+      if (owner.runId !== triggerRunId) {
+        try {
+          const { runs } = await import("@trigger.dev/sdk");
+          const run = await runs.retrieve(owner.runId, {
+            retry: { maxAttempts: 2 },
+          });
+          liveOwner =
+            run.id === owner.runId &&
+            run.taskIdentifier === E2B_FILE_MIGRATION_TASK &&
+            run.status === "EXECUTING" &&
+            run.attemptCount === owner.attempt;
+        } catch {
+          // Unknown liveness must retain the fence and request recovery.
+        }
+      }
+      // The owner may have committed or cleaned up during the status lookup.
+      // Recheck on the next idle pass rather than alarming on an obsolete read.
+      const current = await readCloudMigrationState(userId);
+      if (
+        current?.phase !== "checking" ||
+        current.token !== existingMigration.token
+      )
+        return report("workspace_in_use");
+      if (liveOwner) return report("migration_in_progress");
+    }
     report(
       existingMigration.phase === "checking"
         ? "checking_claim_recovery_required"
@@ -404,7 +436,14 @@ export async function migrateE2BWorkspace(request: E2BFileMigrationRequest) {
   )
     return report("unsupported_or_active_inventory");
   if (workspaces[0].info.state !== "paused") return report("source_active");
-  const claim = await claimCloudMigration(userId, sourceId, triggerRegion);
+  const claim = await claimCloudMigration(
+    userId,
+    sourceId,
+    triggerRegion,
+    triggerRunId && request.triggerAttempt
+      ? { runId: triggerRunId, attempt: request.triggerAttempt }
+      : undefined,
+  );
   if (!claim) return report("workspace_in_use");
   const stage = `/.hackerai-migration-${claim.token}`;
   let source: Sandbox | undefined;

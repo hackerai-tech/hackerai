@@ -254,6 +254,14 @@ export default defineSchema({
       filterFields: ["user_id"],
     }),
 
+  // Backend-only bounded replay state. Never copied into shared/branched chats.
+  model_history: defineTable({
+    chat_id: v.string(),
+    revision: v.number(),
+    started_at: v.number(),
+    payload: v.optional(v.string()),
+  }).index("by_chat_id", ["chat_id"]),
+
   chat_summaries: defineTable({
     chat_id: v.string(),
     summary_text: v.string(),
@@ -957,6 +965,7 @@ export default defineSchema({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
       }),
     ),
     last_heartbeat: v.number(),

@@ -1,3 +1,4 @@
+import { runs } from "@trigger.dev/sdk";
 import { createHash } from "node:crypto";
 import { ReadableStream } from "node:stream/web";
 import { Sandbox } from "@e2b/code-interpreter";
@@ -17,6 +18,7 @@ import {
   miosaMigrationDestinationName,
 } from "../miosa-workspace-migration";
 
+jest.mock("@trigger.dev/sdk", () => ({ runs: { retrieve: jest.fn() } }));
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
   CommandExitError: class CommandExitError extends Error {
@@ -45,6 +47,7 @@ jest.mock("../miosa-sandbox", () => ({
   ensureMiosaSandboxConnection: jest.fn(),
 }));
 jest.mock("../miosa-workspace-migration-queue", () => ({
+  E2B_FILE_MIGRATION_TASK: "miosa-e2b-file-migration",
   isE2BFileMigrationEnabled: jest.fn(),
 }));
 jest.mock("../miosa-readiness", () => ({ waitForMiosaReadiness: jest.fn() }));
@@ -401,6 +404,114 @@ describe("file migration transaction", () => {
     expect(source.commands.list).toHaveBeenCalledTimes(4);
     expect(destroy).toHaveBeenCalled();
     expect(claim.abandon).toHaveBeenCalled();
+  });
+  const ownedChecking = {
+    version: 1,
+    phase: "checking",
+    token: "retained",
+    sourceId: "source",
+    region: "us-east-1",
+    owner: { runId: "run_owner", attempt: 1 },
+  };
+  const liveRun = {
+    id: "run_owner",
+    taskIdentifier: "miosa-e2b-file-migration",
+    status: "EXECUTING",
+    attemptCount: 1,
+  };
+  it("defers a duplicate without touching either provider or the owner's fence", async () => {
+    (readCloudMigrationState as jest.Mock).mockResolvedValue(ownedChecking);
+    (runs.retrieve as jest.Mock).mockResolvedValue(liveRun);
+    await expect(
+      migrateE2BWorkspace({
+        ...request,
+        triggerRunId: "run_duplicate",
+        triggerAttempt: 1,
+      }),
+    ).resolves.toEqual({ reason: "migration_in_progress" });
+    expect(claimCloudMigration).not.toHaveBeenCalled();
+    expect(createMiosaClient).not.toHaveBeenCalled();
+    expect(Sandbox.connect).not.toHaveBeenCalled();
+    expect(claim.abandon).not.toHaveBeenCalled();
+  });
+  it.each([
+    { status: "CRASHED" },
+    { status: "COMPLETED" },
+    { status: "WAITING" },
+    { attemptCount: 2 },
+    { taskIdentifier: "agent" },
+  ])("retains an orphan or unproven owner's fence: %j", async (override) => {
+    (readCloudMigrationState as jest.Mock).mockResolvedValue(ownedChecking);
+    (runs.retrieve as jest.Mock).mockResolvedValue({ ...liveRun, ...override });
+    await expect(
+      migrateE2BWorkspace({
+        ...request,
+        triggerRunId: "run_duplicate",
+        triggerAttempt: 1,
+      }),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    expect(claimCloudMigration).not.toHaveBeenCalled();
+    expect(claim.abandon).not.toHaveBeenCalled();
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "miosa_e2b_file_migration_checked",
+      expect.objectContaining({ reason: "checking_claim_recovery_required" }),
+    );
+  });
+  it("does not treat its own previous attempt as a live owner", async () => {
+    (readCloudMigrationState as jest.Mock).mockResolvedValue(ownedChecking);
+    await expect(
+      migrateE2BWorkspace({
+        ...request,
+        triggerRunId: "run_owner",
+        triggerAttempt: 2,
+      }),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    expect(runs.retrieve).not.toHaveBeenCalled();
+  });
+  it("fails closed when owner status cannot be retrieved", async () => {
+    (readCloudMigrationState as jest.Mock).mockResolvedValue(ownedChecking);
+    (runs.retrieve as jest.Mock).mockRejectedValue(
+      new Error("private provider message"),
+    );
+    await expect(migrateE2BWorkspace(request)).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+    expect(
+      JSON.stringify((phLogger.event as jest.Mock).mock.calls),
+    ).not.toContain("private provider message");
+  });
+  it.each([
+    null,
+    { ...ownedChecking, phase: "miosa" },
+    { ...ownedChecking, token: "new-owner" },
+  ])(
+    "rechecks a claim changed during owner lookup without a false recovery alarm",
+    async (current) => {
+      (readCloudMigrationState as jest.Mock)
+        .mockResolvedValueOnce(ownedChecking)
+        .mockResolvedValueOnce(current);
+      (runs.retrieve as jest.Mock).mockResolvedValue({
+        ...liveRun,
+        status: "COMPLETED",
+      });
+      await expect(migrateE2BWorkspace(request)).resolves.toEqual({
+        reason: "workspace_in_use",
+      });
+      expect(claimCloudMigration).not.toHaveBeenCalled();
+    },
+  );
+  it("records the Trigger attempt that owns a new migration", async () => {
+    await migrateE2BWorkspace({
+      ...request,
+      triggerRunId: "run_owner",
+      triggerAttempt: 2,
+    });
+    expect(claimCloudMigration).toHaveBeenCalledWith(
+      "user",
+      "source",
+      "us-east-1",
+      { runId: "run_owner", attempt: 2 },
+    );
   });
   it("keeps an interrupted checking claim fenced for recovery", async () => {
     (readCloudMigrationState as jest.Mock).mockResolvedValue({

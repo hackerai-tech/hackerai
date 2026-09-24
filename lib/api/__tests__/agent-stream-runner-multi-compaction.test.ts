@@ -1,4 +1,14 @@
 import type { ModelMessage, UIMessage } from "ai";
+import { deserialize, serialize } from "node:v8";
+import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
+const originalClone = globalThis.structuredClone;
+beforeAll(() => {
+  globalThis.structuredClone = <T>(value: T): T =>
+    deserialize(serialize(value));
+});
+afterAll(() => {
+  globalThis.structuredClone = originalClone;
+});
 import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
@@ -7,6 +17,19 @@ const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
+const mockHistoryFlag = jest.fn(async () => false);
+const mockLoadHistory = jest.fn();
+const mockSaveHistory = jest.fn();
+const mockNotesUpdate = jest.fn();
+jest.mock("@/lib/db/model-history", () => ({
+  loadModelHistory: (...args: unknown[]) => mockLoadHistory(...args),
+  saveModelHistory: (...args: unknown[]) => mockSaveHistory(...args),
+}));
+jest.mock("@/lib/posthog/server", () => ({
+  getPostHogFeatureFlagForUser: (...args: unknown[]) =>
+    mockHistoryFlag(...args),
+  phLogger: { event: jest.fn(), warn: jest.fn(), info: jest.fn() },
+}));
 const mockDescribeImage = jest.fn(async () => ({
   description: "Visible image text",
 }));
@@ -18,6 +41,7 @@ jest.mock("@/lib/chat/auxiliary-vision", () => ({
 
 jest.mock("server-only", () => ({}));
 jest.mock("ai", () => ({
+  asSchema: jest.requireActual("ai").asSchema,
   convertToModelMessages: jest.fn(async (messages: UIMessage[]) =>
     messages.map((message) => ({
       role: message.role,
@@ -32,6 +56,7 @@ jest.mock("ai", () => ({
   wrapLanguageModel: jest.fn(({ model }) => model),
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
+  getAppendedNotesUpdate: (...args: unknown[]) => mockNotesUpdate(...args),
   addCacheBreakpointToLastUserMessage: (messages: ModelMessage[]) => messages,
   applyPrepareStepReminders: async (messages: ModelMessage[]) => messages,
   buildProviderOptions: mockBuildProviderOptions,
@@ -601,6 +626,12 @@ describe("retry served-model telemetry", () => {
 describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockHistoryFlag.mockResolvedValue(false);
+    mockLoadHistory
+      .mockReset()
+      .mockResolvedValue({ revision: 0, payload: null });
+    mockSaveHistory.mockReset().mockResolvedValue(true);
+    mockNotesUpdate.mockReset();
     mockDescribeImage
       .mockReset()
       .mockResolvedValue({ description: "Visible image text" });
@@ -616,6 +647,199 @@ describe("createAgentStream repeated compaction", () => {
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
   });
+
+  it.each(["ask", "agent"])(
+    "retains appended notes on later %s requests without rewriting the original user message",
+    async (mode) => {
+      mockHistoryFlag.mockResolvedValue(true);
+      mockNotesUpdate
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce("Current notes: changed")
+        .mockResolvedValue(undefined);
+      const raw: ModelMessage[] = [
+        { role: "user", content: "Original request" },
+      ];
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Original request")],
+        { usedTokens: 100, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        createTestStreamContext({
+          mode,
+          trackedProvider: {
+            languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+          },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+      await stream.prepareStep({ stepNumber: 0, steps: [], messages: raw });
+      const second = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [{ toolName: "update_note" }] }],
+        messages: [...raw, { role: "assistant", content: "Updated notes" }],
+      });
+      expect(second.messages[0]).toEqual(raw[0]);
+      expect(second.messages.at(-1).content).toBe("Current notes: changed");
+      const third = await stream.prepareStep({
+        stepNumber: 2,
+        steps: [{}, {}],
+        messages: [
+          ...raw,
+          { role: "assistant", content: "Updated notes" },
+          { role: "assistant", content: "Continue" },
+        ],
+      });
+      expect(third.messages.slice(0, second.messages.length)).toEqual(
+        second.messages,
+      );
+      expect(third.messages.at(-1).content).toBe("Continue");
+    },
+  );
+
+  it("restores private model history and the frozen prompt on the next turn", async () => {
+    mockHistoryFlag.mockResolvedValue(true);
+    const model = "deepseek/deepseek-v4.1-flash";
+    const source: ModelMessage[] = [
+      { role: "user", content: "Original request" },
+    ];
+    const identity = historyDigest({
+      version: 1,
+      model,
+      mode: "agent",
+      subscription: "pro",
+      authorization: false,
+      notesEnabled: false,
+      system: "system",
+      tools: [],
+    });
+    mockLoadHistory.mockResolvedValue({
+      revision: 2,
+      payload: JSON.stringify({
+        version: 1,
+        identity,
+        source: sourceMessageDigests(source),
+        system: "system",
+        messages: [
+          ...source,
+          { role: "user", content: "Previously injected context" },
+        ],
+      }),
+    });
+    const state = initAgentStreamState(
+      [uiMessage("old", "Original request"), uiMessage("new", "Next question")],
+      { usedTokens: 100, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-deepseek-v4-flash-0731",
+      createTestStreamContext({
+        trackedProvider: { languageModel: () => ({ modelId: model }) },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+    expect(stream.messages.map((m: ModelMessage) => m.content)).toEqual([
+      "Original request",
+      "Previously injected context",
+      "Next question",
+    ]);
+    expect(stream.system).toBe("system");
+  });
+
+  it("fails back to control when replay storage is unavailable", async () => {
+    mockHistoryFlag.mockResolvedValue(true);
+    mockLoadHistory.mockRejectedValue(new Error("unavailable"));
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Original request")],
+      { usedTokens: 100, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-deepseek-v4-flash-0731",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+    expect(stream.messages).toEqual([
+      { role: "user", content: "Original request" },
+    ]);
+    expect(mockNotesUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { aborted: false, background: false },
+    { aborted: true, background: false },
+    { aborted: false, background: true },
+  ])(
+    "saves only completed replay after accounting (%j)",
+    async ({ aborted, background }) => {
+      mockHistoryFlag.mockResolvedValue(true);
+      const register = jest.fn();
+      let finishSave: (() => void) | undefined;
+      if (background)
+        mockSaveHistory.mockReturnValue(
+          new Promise<void>((resolve) => {
+            finishSave = resolve;
+          }),
+        );
+      const model = "deepseek/deepseek-v4.1-flash";
+      const controller = new AbortController();
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Original request")],
+        { usedTokens: 100, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        createTestStreamContext({
+          abortController: controller,
+          ...(background && { registerBackgroundWork: register }),
+          trackedProvider: { languageModel: () => ({ modelId: model }) },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      const prepared = await stream.prepareStep({
+        stepNumber: 0,
+        steps: [],
+        messages: stream.messages,
+      });
+      const response = {
+        modelId: model,
+        messages: [{ role: "assistant", content: "Done" }],
+      };
+      await stream.onStepFinish({ response });
+      if (aborted) controller.abort();
+      await stream.onFinish({ finishReason: "stop", usage: {}, response });
+      if (background) {
+        expect(state.streamFinishReason).toBe("stop");
+        expect(register).toHaveBeenCalledTimes(1);
+        finishSave!();
+        await register.mock.calls[0][0];
+      }
+      if (aborted) expect(mockSaveHistory).not.toHaveBeenCalled();
+      else
+        expect(mockSaveHistory).toHaveBeenCalledWith(
+          "chat",
+          "user",
+          0,
+          expect.any(Number),
+          expect.objectContaining({
+            messages: [...prepared.messages, ...response.messages],
+          }),
+        );
+    },
+  );
 
   it("repairs legacy oversized Abliteration batches in initial and later requests and records counts", async () => {
     const calls = Array.from({ length: 148 }, (_, i) => ({

@@ -82,8 +82,6 @@ type TranscriptMessage = UIMessage & {
   priority?: "low" | "normal" | "high" | "urgent";
 };
 
-const ignoreToolGroupMount = () => undefined;
-
 const isActive = (status: SubagentStatus) =>
   SUBAGENT_ACTIVE_STATUSES.has(status);
 
@@ -443,11 +441,9 @@ const SubagentTranscriptParts = memo(function SubagentTranscriptParts({
         <AgentToolGroupRow
           key={item.id}
           activities={item.activities}
-          animateOnMount={false}
-          groupId={`${message.id}:${item.id}`}
           isLastMessage={isLastMessage}
           message={visibleMessage}
-          onMount={ignoreToolGroupMount}
+          settled={item.settled}
           status={status}
           summary={item.summary}
           terminalChunksByToolCallId={projection.terminalChunksByToolCallId}

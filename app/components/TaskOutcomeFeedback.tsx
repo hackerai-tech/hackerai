@@ -10,7 +10,6 @@ import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
 import {
   PAID_TASK_OUTCOME_ANSWERS,
-  TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_REASONS,
   reasonsForAnswer,
   type TaskOutcomeAnswer,
@@ -23,7 +22,7 @@ function captureSurvey(event: string, row: Survey) {
     event: `task_outcome_survey_${event}`,
     properties: {
       ...taskOutcomeProperties(row),
-      survey_ui_version: row.survey_kind === "new_paid" ? 4 : 3,
+      survey_ui_version: 4,
     },
     dedupeKey: `${row._id}:${event}`,
   });
@@ -226,7 +225,7 @@ export function TaskOutcomeFeedbackPrompt({
   return (
     <div
       ref={question}
-      className={`relative mb-3 mt-2 flex ${visibleSurvey.survey_kind === "new_paid" ? "w-full" : "w-[17rem]"} max-w-full flex-wrap items-center gap-x-4 gap-y-2 pr-11 text-sm sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}
+      className={`relative mb-3 mt-2 flex w-full max-w-full flex-wrap items-center gap-x-4 gap-y-2 pr-11 text-sm sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}
       role="group"
       aria-label="Task feedback"
     >
@@ -238,7 +237,7 @@ export function TaskOutcomeFeedbackPrompt({
           {done
             ? "Thanks for your feedback"
             : answer
-              ? answer === "yes" || answer === "helpful"
+              ? answer === "helpful"
                 ? "What helped?"
                 : "What could be better?"
               : "Did this help?"}
@@ -285,43 +284,33 @@ export function TaskOutcomeFeedbackPrompt({
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              {(visibleSurvey.survey_kind === "new_paid"
-                ? (["solved", "helpful", "no", "not_checked"] as const)
-                : (["yes", "partly", "no"] as const)
-              ).map((value) => {
-                const Icon =
-                  value === "yes" || value === "solved"
-                    ? Check
-                    : value === "partly" ||
-                        value === "helpful" ||
-                        value === "not_checked"
-                      ? Minus
-                      : X;
-                return (
-                  <Button
-                    type="button"
-                    key={value}
-                    variant="outline"
-                    size="sm"
-                    className="h-[44px] gap-1.5 rounded-full border-border/70 bg-transparent px-3 text-xs font-normal shadow-none hover:border-foreground/30 hover:bg-muted/60 sm:h-8"
-                    disabled={busy}
-                    onClick={() => void saveAnswer(value)}
-                  >
-                    <Icon
-                      className="size-3.5 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    {value in PAID_TASK_OUTCOME_ANSWERS &&
-                    visibleSurvey.survey_kind === "new_paid"
-                      ? PAID_TASK_OUTCOME_ANSWERS[
-                          value as keyof typeof PAID_TASK_OUTCOME_ANSWERS
-                        ]
-                      : TASK_OUTCOME_ANSWERS[
-                          value as keyof typeof TASK_OUTCOME_ANSWERS
-                        ]}
-                  </Button>
-                );
-              })}
+              {(["solved", "helpful", "no", "not_checked"] as const).map(
+                (value) => {
+                  const Icon =
+                    value === "solved"
+                      ? Check
+                      : value === "helpful" || value === "not_checked"
+                        ? Minus
+                        : X;
+                  return (
+                    <Button
+                      type="button"
+                      key={value}
+                      variant="outline"
+                      size="sm"
+                      className="h-[44px] gap-1.5 rounded-full border-border/70 bg-transparent px-3 text-xs font-normal shadow-none hover:border-foreground/30 hover:bg-muted/60 sm:h-8"
+                      disabled={busy}
+                      onClick={() => void saveAnswer(value)}
+                    >
+                      <Icon
+                        className="size-3.5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      {PAID_TASK_OUTCOME_ANSWERS[value]}
+                    </Button>
+                  );
+                },
+              )}
             </div>
           )}
           {error && (

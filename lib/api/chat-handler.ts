@@ -609,7 +609,6 @@ export const createChatHandler = () => {
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
         posthog,
-        assignment: abliteratedExperiment,
         userId,
         chatId,
         messageId: assistantMessageId,

@@ -60,6 +60,50 @@ describe("persistent cloud migration fence", () => {
     ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
   });
 
+  it("persists owner identity through commit and still prevents stale release", async () => {
+    const owner = { runId: "run_owner", attempt: 2 };
+    const claim = await claimCloudMigration(
+      "user-1",
+      "source",
+      "us-east-1",
+      owner,
+    );
+    expect(await readCloudMigrationState("user-1")).toMatchObject({
+      phase: "checking",
+      owner,
+    });
+    await claim!.commit("destination");
+    expect(await readCloudMigrationState("user-1")).toMatchObject({
+      phase: "miosa",
+      owner,
+      destinationId: "destination",
+    });
+    await expect(claim!.abandon()).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+  });
+
+  it.each([
+    null,
+    { runId: "run_owner", attempt: 0 },
+    { runId: "bad", attempt: 1 },
+  ])("fails closed on malformed persisted ownership: %j", async (owner) => {
+    records.set(
+      "cloud_workspace_migration:v1:user-1",
+      JSON.stringify({
+        version: 1,
+        phase: "checking",
+        token: "token",
+        sourceId: "source",
+        region: "us-east-1",
+        owner,
+      }),
+    );
+    await expect(readCloudMigrationState("user-1")).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+  });
+
   it("remains on Miosa across flag changes, with no expiring key", async () => {
     const claim = await claimCloudMigration("user-1", "source", "us-east-1");
     await claim!.commit();

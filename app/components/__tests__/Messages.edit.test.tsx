@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { createRef, useLayoutEffect } from "react";
 import type { ReactNode } from "react";
 import {
@@ -522,10 +528,27 @@ describe("Messages virtualized row invalidation", () => {
     }
   });
 
-  it("still animates a new group appended to an observed live agent message", () => {
+  it("keeps a live tool step in one row and folds it in place once it settles", () => {
+    jest.useFakeTimers();
     const liveAgentStart = {
       ...messagesWithHistoricalToolGroup[1],
       parts: [{ type: "reasoning", text: "Starting" }],
+    } as ChatMessage;
+    const liveToolStep = {
+      ...messagesWithHistoricalToolGroup[1],
+      parts: [
+        { type: "step-start" },
+        {
+          type: "tool-read_file",
+          toolCallId: "read-1",
+          state: "output-available",
+        },
+        {
+          type: "tool-shell",
+          toolCallId: "shell-1",
+          state: "input-available",
+        },
+      ],
     } as ChatMessage;
     const sharedProps = {
       chatId: "chat-with-live-group",
@@ -552,15 +575,41 @@ describe("Messages virtualized row invalidation", () => {
 
     rerender(
       <DataStreamProvider>
+        <Messages messages={[messages[0], liveToolStep]} {...sharedProps} />
+      </DataStreamProvider>,
+    );
+
+    const liveRow = screen.getByTestId("agent-tool-group-row");
+    expect(liveRow).toHaveAttribute("data-phase", "live");
+    expect(
+      screen.queryByRole("button", { name: /tool details/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("agent-activity-row")).toHaveLength(2);
+
+    rerender(
+      <DataStreamProvider>
         <Messages messages={messagesWithHistoricalToolGroup} {...sharedProps} />
       </DataStreamProvider>,
     );
 
+    expect(screen.getByTestId("agent-tool-group-row")).toBe(liveRow);
+    expect(liveRow).toHaveAttribute("data-phase", "settled");
     expect(
       screen.getByRole("button", {
         name: /read a file, ran a command\. hide tool details/i,
       }),
     ).toHaveAttribute("aria-expanded", "true");
+
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(
+      screen.getByRole("button", {
+        name: /read a file, ran a command\. show tool details/i,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+    jest.useRealTimers();
   });
 
   it("jumps to a navigator target without animation", async () => {

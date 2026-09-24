@@ -39,8 +39,10 @@ export type AgentActivityTimelineRow = BaseTimelineRow &
 export type AgentToolGroupTimelineRow = BaseTimelineRow & {
   kind: "agent-tool-group";
   activities: AgentWorkActivity[];
-  animateOnMount: boolean;
   isLastMessage: boolean;
+  /** Restored streams settle without the live collapse delay. */
+  restored: boolean;
+  settled: boolean;
   summary: string;
   terminalChunksByToolCallId: Map<string, readonly string[]>;
 };
@@ -61,13 +63,9 @@ export type DeriveChatTimelineRowsOptions = {
   status: ChatStatus;
   lastAssistantMessageIndex: number | undefined;
   expandedAgentMessageIds: ReadonlySet<string>;
-  animateNewToolGroups?: boolean;
-  seenAgentMessageIds?: ReadonlySet<string>;
-  seenToolGroupIds?: ReadonlySet<string>;
   restoredAgentMessageIds?: ReadonlySet<string>;
 };
 
-const EMPTY_TOOL_GROUP_IDS: ReadonlySet<string> = new Set();
 const EMPTY_MESSAGE_IDS: ReadonlySet<string> = new Set();
 
 export function findLatestTimelineAnchorMessageId(
@@ -117,9 +115,6 @@ export function deriveChatTimelineRows({
   status,
   lastAssistantMessageIndex,
   expandedAgentMessageIds,
-  animateNewToolGroups = true,
-  seenAgentMessageIds,
-  seenToolGroupIds = EMPTY_TOOL_GROUP_IDS,
   restoredAgentMessageIds = EMPTY_MESSAGE_IDS,
 }: DeriveChatTimelineRowsOptions): ChatTimelineRow[] {
   const rows: ChatTimelineRow[] = [];
@@ -175,11 +170,7 @@ export function deriveChatTimelineRows({
       lastAssistantMessageIndex !== undefined &&
       messageIndex === lastAssistantMessageIndex;
     const isTiming = status === "streaming" && isLastAssistantMessage;
-    const canAnimateNewToolGroups =
-      animateNewToolGroups &&
-      !restoredAgentMessageIds.has(message.id) &&
-      (seenAgentMessageIds === undefined ||
-        seenAgentMessageIds.has(message.id));
+    const isRestored = restoredAgentMessageIds.has(message.id);
     const hasFinalAnswer = trailingTextParts.length > 0;
     const canToggle = !isTiming && hasFinalAnswer;
     const expanded =
@@ -212,18 +203,15 @@ export function deriveChatTimelineRows({
     if (expanded) {
       for (const item of timelineItems) {
         if (item.kind === "tool-group") {
-          const rowId = `work:${message.id}:${item.id}`;
           rows.push({
             kind: "agent-tool-group",
-            id: rowId,
+            id: `work:${message.id}:${item.id}`,
             message,
             messageIndex,
             activities: item.activities,
-            animateOnMount:
-              isTiming &&
-              canAnimateNewToolGroups &&
-              !seenToolGroupIds.has(rowId),
             isLastMessage: messageIndex === messages.length - 1,
+            restored: isRestored,
+            settled: item.settled,
             summary: item.summary,
             terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
           });
@@ -239,7 +227,7 @@ export function deriveChatTimelineRows({
           id: `work:${message.id}:${activity.id}`,
           isLastMessage: messageIndex === messages.length - 1,
           keepLatestReasoningOpenDuringStreaming: true,
-          suppressReasoningAutoOpen: restoredAgentMessageIds.has(message.id),
+          suppressReasoningAutoOpen: isRestored,
           deferReasoningCollapseUntilParent: hasFinalAnswer,
           terminalChunksByToolCallId: projection.terminalChunksByToolCallId,
         });
@@ -346,8 +334,9 @@ function isChatTimelineRowUnchanged(
   ) {
     return (
       previous.message === next.message &&
-      previous.animateOnMount === next.animateOnMount &&
       previous.isLastMessage === next.isLastMessage &&
+      previous.restored === next.restored &&
+      previous.settled === next.settled &&
       previous.summary === next.summary &&
       previous.activities.length === next.activities.length &&
       previous.activities.every((activity, index) => {
