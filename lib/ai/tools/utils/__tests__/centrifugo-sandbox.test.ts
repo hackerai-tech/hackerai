@@ -10,6 +10,7 @@
 import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
+import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
@@ -167,6 +168,72 @@ describe("CentrifugoSandbox", () => {
       data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
     });
     await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
+  });
+
+  it("includes the threshold-crossing PTY chunk in its checkpoint", async () => {
+    const sandbox = createSandbox();
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const pending = createCentrifugoPtyHandle(sandbox, {
+        command: "large output",
+        cols: 80,
+        rows: 24,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      sub.emit("publication", {
+        data: { type: "pty_ready", sessionId: FIXED_UUID, pid: 123 },
+      });
+      const handle = await pending;
+
+      sub.emit("publication", {
+        data: {
+          type: "pty_data",
+          sessionId: FIXED_UUID,
+          data: "private-output-".repeat(75_000),
+        },
+      });
+      const checkpoint = logSpy.mock.calls
+        .map(([value]) => {
+          try {
+            return JSON.parse(String(value)) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .find(
+          (value) =>
+            value?.event === "local_relay_pty_traffic" &&
+            value.phase === "checkpoint",
+        );
+      expect(checkpoint).toEqual(
+        expect.objectContaining({
+          sample_rate: 1,
+          pty_data_bytes: Buffer.byteLength(
+            "private-output-".repeat(75_000),
+            "utf8",
+          ),
+        }),
+      );
+      expect(JSON.stringify(checkpoint)).not.toContain("private-output");
+
+      sub.emit("publication", {
+        data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("counts unfragmented file-list entries in the relay estimate", () => {
+    const entries = Array.from({ length: 2_000 }, (_, index) => ({
+      name: `${index}-${"x".repeat(600)}`,
+    }));
+    expect(
+      estimateRelayPayloadBytes({ type: "file_list_result", entries }),
+    ).toBeGreaterThan(1024 * 1024);
   });
 
   describe("attachment cancellation", () => {

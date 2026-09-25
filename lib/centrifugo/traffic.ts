@@ -10,6 +10,9 @@ export function estimateRelayPayloadBytes(value: unknown): number {
       bytes += Buffer.byteLength(payload[key], "utf8");
     }
   }
+  if (Array.isArray(payload.entries)) {
+    bytes += Buffer.byteLength(JSON.stringify(payload.entries), "utf8");
+  }
   return bytes;
 }
 

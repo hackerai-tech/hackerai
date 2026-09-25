@@ -12,8 +12,9 @@ logged. Smaller subscriptions are sampled at 1 in 256 using their random
 operation ID; `sample_rate` records which rule applied. The counters are per
 server subscription, not distinct bytes sent by the relay. Long-lived
 active PTY sessions also log cumulative checkpoints at 1 MiB, 2 MiB, 4 MiB,
-and so on, so an ongoing stream is visible before it exits. Count only the
-latest checkpoint per PTY session when aggregating bytes. In particular,
+and so on, so an ongoing stream is visible before it exits. When aggregating
+bytes, use a PTY session's completion record if present; otherwise use only
+its latest checkpoint. In particular,
 `received_payload_bytes_estimate` includes publications for other operations
 on the same user channel, while `stdout_bytes`, `stderr_bytes`, and
 `pty_data_bytes` count only matching output. A large difference, together

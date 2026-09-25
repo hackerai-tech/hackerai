@@ -361,67 +361,73 @@ export async function createCentrifugoPtyHandle(
     subscription.on("publication", (ctx) => {
       receivedPublications += 1;
       receivedPayloadBytesEstimate += estimateRelayPayloadBytes(ctx.data);
-      if (receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes) {
-        logTraffic("checkpoint");
-        while (receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes) {
-          nextTrafficCheckpointBytes *= 2;
+      try {
+        if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
+          unmatchedPublications += 1;
+          return;
         }
-      }
-      if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
-        unmatchedPublications += 1;
-        return;
-      }
-      const reassembled = reassembler.accept(ctx.data);
-      if (!reassembled) return;
-      const msg = parsePtyMessage(reassembled);
-      if (!msg || msg.sessionId !== sessionId) {
-        unmatchedPublications += 1;
-        return;
-      }
+        const reassembled = reassembler.accept(ctx.data);
+        if (!reassembled) return;
+        const msg = parsePtyMessage(reassembled);
+        if (!msg || msg.sessionId !== sessionId) {
+          unmatchedPublications += 1;
+          return;
+        }
 
-      switch (msg.type) {
-        case "pty_ready":
-          pid = msg.pid;
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeoutId);
-            resolve(handle);
-          }
-          break;
-
-        case "pty_data": {
-          const bytes = encoder.encode(msg.data);
-          ptyDataBytes += bytes.byteLength;
-          const snapshot = Array.from(listeners);
-          for (const listener of snapshot) {
-            try {
-              listener(bytes);
-            } catch (err) {
-              console.error(`${LOG_PREFIX} listener threw:`, err);
+        switch (msg.type) {
+          case "pty_ready":
+            pid = msg.pid;
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeoutId);
+              resolve(handle);
             }
+            break;
+
+          case "pty_data": {
+            const bytes = encoder.encode(msg.data);
+            ptyDataBytes += bytes.byteLength;
+            const snapshot = Array.from(listeners);
+            for (const listener of snapshot) {
+              try {
+                listener(bytes);
+              } catch (err) {
+                console.error(`${LOG_PREFIX} listener threw:`, err);
+              }
+            }
+            break;
           }
-          break;
+
+          case "pty_exit":
+            resolveExitedOnce({ exitCode: msg.exitCode });
+            cleanup();
+            break;
+
+          case "pty_error":
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeoutId);
+              cleanup();
+              reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
+            } else {
+              console.error(
+                `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
+              );
+              resolveExitedOnce({ exitCode: null });
+              cleanup();
+            }
+            break;
         }
-
-        case "pty_exit":
-          resolveExitedOnce({ exitCode: msg.exitCode });
-          cleanup();
-          break;
-
-        case "pty_error":
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeoutId);
-            cleanup();
-            reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
-          } else {
-            console.error(
-              `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
-            );
-            resolveExitedOnce({ exitCode: null });
-            cleanup();
+      } finally {
+        if (
+          !cleanedUp &&
+          receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes
+        ) {
+          logTraffic("checkpoint");
+          while (receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes) {
+            nextTrafficCheckpointBytes *= 2;
           }
-          break;
+        }
       }
     });
 
