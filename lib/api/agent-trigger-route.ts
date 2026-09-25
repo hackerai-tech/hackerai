@@ -1,4 +1,3 @@
-import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
 import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
@@ -456,13 +455,8 @@ export const createAgentTriggerPost =
         projectId: requestedProjectId,
       } = parsedBody.body;
 
-      const {
-        userId,
-        subscription,
-        organizationId,
-        freeQuotaSubject,
-        emailVerified,
-      } = await getUserIDAndPro(req);
+      const { userId, subscription, organizationId, freeQuotaSubject } =
+        await getUserIDAndPro(req);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
@@ -692,11 +686,6 @@ export const createAgentTriggerPost =
         subscription,
         organizationId,
         freeQuotaSubject,
-        emailVerified,
-        monthlyBudgetCountry:
-          subscription === "free"
-            ? monthlyBudgetCountryFromRequest(req)
-            : undefined,
         regionalFreeCountry:
           subscription === "free"
             ? regionalFreeCountryFromRequest(req)

@@ -1,9 +1,4 @@
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
-import {
-  evaluateFreeMonthlyBudget,
-  captureFreeMonthlyBudgetExposure,
-} from "@/lib/experiments/free-monthly-budget";
-import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
@@ -367,13 +362,8 @@ export const createChatHandler = () => {
       });
       const requestMessages = requireChatMessagesArray(messages);
 
-      const {
-        userId,
-        subscription,
-        organizationId,
-        freeQuotaSubject,
-        emailVerified,
-      } = await getUserIDAndPro(req);
+      const { userId, subscription, organizationId, freeQuotaSubject } =
+        await getUserIDAndPro(req);
       paidDailyFreeAllowanceUserId = userId;
       const freeUsageSubject = freeQuotaSubject ?? userId;
       let selectedModelOverride: SelectedModel | undefined =
@@ -503,23 +493,7 @@ export const createChatHandler = () => {
         subscription,
         country: regionalFreeCountryFromRequest(req),
       });
-      const monthlyFreeBudget = regionalFreeLimits
-        ? undefined
-        : await evaluateFreeMonthlyBudget({
-            posthog: (posthog ??= PostHogClient()),
-            userId,
-            subscription,
-            freeQuotaSubject,
-            emailVerified,
-            country: monthlyBudgetCountryFromRequest(req),
-          });
-      const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
-      await captureFreeMonthlyBudgetExposure(
-        posthog,
-        monthlyFreeBudget,
-        userId,
-        mode,
-      );
+      const freeLimits = regionalFreeLimits;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
           ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
@@ -1447,7 +1421,6 @@ export const createChatHandler = () => {
                   usageMeasurement:
                     usageTracker.measurementProperties(selectedModel),
                   regionalFreeLimits,
-                  monthlyFreeBudget,
                   posthog,
                   userId,
                   subscription,
@@ -2343,7 +2316,6 @@ export const createChatHandler = () => {
                                     usageTracker.measurementProperties(
                                       selectedModel,
                                     ),
-                                  monthlyFreeBudget,
                                   hasResponseContent: hasCompletedAssistantText(
                                     retryMessages,
                                     retryMessageId,
@@ -2676,7 +2648,6 @@ export const createChatHandler = () => {
                       cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                       usageMeasurement:
                         usageTracker.measurementProperties(selectedModel),
-                      monthlyFreeBudget,
                       hasResponseContent: hasCompletedAssistantText(
                         messages,
                         assistantMessageId,

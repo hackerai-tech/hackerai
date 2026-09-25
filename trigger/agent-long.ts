@@ -1,9 +1,5 @@
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
-import {
-  evaluateFreeMonthlyBudget,
-  captureFreeMonthlyBudgetExposure,
-} from "@/lib/experiments/free-monthly-budget";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
@@ -1490,8 +1486,6 @@ export type AgentLongPayload = {
   organizationId?: string;
   freeQuotaSubject?: string;
   regionalFreeCountry?: string;
-  monthlyBudgetCountry?: string;
-  emailVerified?: boolean;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -1933,25 +1927,9 @@ export const agentLongTask = task({
         subscription,
         country: payload.regionalFreeCountry,
       });
+      const freeLimits = regionalFreeLimits;
       // Check capacity before moderation/model work, then consume the daily
       // request atomically under the free-run lock when execution starts.
-      const monthlyFreeBudget = regionalFreeLimits
-        ? undefined
-        : await evaluateFreeMonthlyBudget({
-            posthog,
-            userId,
-            subscription,
-            freeQuotaSubject,
-            emailVerified: payload.emailVerified,
-            country: payload.monthlyBudgetCountry,
-          });
-      const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
-      await captureFreeMonthlyBudgetExposure(
-        posthog,
-        monthlyFreeBudget,
-        userId,
-        mode,
-      );
       if (subscription === "free") {
         await checkRateLimitCapacity(
           userId,
@@ -3249,7 +3227,6 @@ export const agentLongTask = task({
                     usageTracker.measurementProperties(selectedModel),
                   triggerRunId: ctx.run.id,
                   regionalFreeLimits,
-                  monthlyFreeBudget,
                   posthog,
                   userId,
                   subscription,
@@ -3850,7 +3827,6 @@ export const agentLongTask = task({
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
                   usageTracker.measurementProperties(selectedModel),
-                monthlyFreeBudget,
                 hasResponseContent: hasCompletedAssistantText(
                   retryMessages,
                   retryMessageId,
@@ -4847,7 +4823,6 @@ export const agentLongTask = task({
                         cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                         usageMeasurement:
                           usageTracker.measurementProperties(selectedModel),
-                        monthlyFreeBudget,
                         hasResponseContent: hasCompletedAssistantText(
                           finishedMessages,
                           assistantMessageId,
