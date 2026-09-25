@@ -11,6 +11,22 @@ const providerFromModel = (model: string | undefined): string | undefined =>
   model?.includes("/") ? model.split("/", 1)[0] : undefined;
 
 /**
+ * The observed Together disconnects can recur across different fallback models.
+ * Use the verified OpenRouter slug only on recovery requests; never infer an
+ * upstream from a model author or turn arbitrary display names into slugs.
+ */
+export const getProviderDisconnectIgnoredSlugs = (
+  error: unknown,
+  metadata: OpenRouterModelMetadata = {},
+): string[] => {
+  const category = getProviderErrorCategory(extractErrorDetails(error));
+  return (category === "stream_terminated" || category === "timeout") &&
+    metadata.provider_name?.toLowerCase() === "together"
+    ? ["together"]
+    : [];
+};
+
+/**
  * Low-cardinality provider failure envelope used by Trigger.dev error
  * fingerprinting. Provider and model remain structured fields for diagnosis,
  * but do not create a separate unresolved error group for every upstream.

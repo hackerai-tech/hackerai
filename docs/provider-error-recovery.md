@@ -8,6 +8,15 @@ wins. Recovery retains completed tool results and removes only the incomplete
 tail. The existing model selection, billing, authorization, and retry limits
 still apply.
 
+Agent transport recovery excludes Together from the recovery leg when
+OpenRouter identifies it on the failing request or its generation lookup.
+Prior successful steps' attribution is never used to exclude a provider.
+Changing model alone can
+otherwise return to the same unhealthy provider. The exclusion merges with
+existing provider privacy/routing constraints, lasts only for that run's
+recovery, and does not increase the retry budget. Unknown provider display
+names are not guessed into routing slugs.
+
 A retained local tool call can lack its result even before a completed sibling
 or later step. Continuation preserves that call as an error with an explicitly
 unknown execution outcome, so the next request has a matching result without

@@ -50,6 +50,9 @@ export type SandboxUploadFailureReason =
   | "sandbox_placement_failure"
   | "sandbox_operation_timeout"
   | "attachment_download_timeout"
+  | "attachment_disk_full"
+  | "attachment_permission_denied"
+  | "attachment_write_failed"
   | "attachment_transfer_failed"
   | "command_channel_failure"
   | "unknown";
@@ -229,6 +232,15 @@ const classifySandboxUploadFailureReason = (
     file.kind === "url" &&
     WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message)
   ) {
+    if (/no space left on device|disk quota exceeded/i.test(message)) {
+      return "attachment_disk_full";
+    }
+    if (/permission denied|read-only file system/i.test(message)) {
+      return "attachment_permission_denied";
+    }
+    if (extractCommandExitCode(error) === 23) {
+      return "attachment_write_failed";
+    }
     return "attachment_transfer_failed";
   }
   if (isTransientSandboxCommandError(error)) {
@@ -778,13 +790,14 @@ const downloadFileToSandbox = async (
   //   6  = could not resolve host (DNS lag after sandbox resume)
   //   7  = couldn't connect
   //   18 = partial transfer
-  //   23 = write error (CURLE_WRITE_ERROR) — the prod incident
   //   56 = failure receiving network data
-  const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 23, 56]);
+  // Write failures go straight to the writable-path fallback. Repeating the
+  // same destination cannot repair permissions or a full filesystem.
+  const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 56]);
   const MAX_ATTEMPTS = 3;
 
   const curlCmd =
-    `curl -fsSL --retry 3 --retry-all-errors --retry-delay 1 --create-dirs ` +
+    `curl -fsSL --retry 3 --retry-connrefused --retry-delay 1 --create-dirs ` +
     `-o '${escapedLocalPath}' '${escapedUrl}'`;
 
   let result = await runSandboxCommand(sandbox, curlCmd, signal);
@@ -797,7 +810,7 @@ const downloadFileToSandbox = async (
       break;
     }
     console.warn(
-      `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${localPath}, retrying`,
+      `[sandbox-download] curl exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS}, retrying`,
     );
     await delay(500 * attempt, signal);
     result = await runSandboxCommand(sandbox, curlCmd, signal);
@@ -808,7 +821,7 @@ const downloadFileToSandbox = async (
   try {
     const probe = await runSandboxCommand(
       sandbox,
-      `df -h /home/user 2>&1 || true; ls -la /home/user/upload 2>&1 || true; id 2>&1 || true`,
+      `df -h /home/user 2>&1 || true; id 2>&1 || true`,
       signal,
     );
     diagnostics = (probe.stdout || "").slice(0, 1024);
@@ -938,17 +951,25 @@ const stageSandboxFile = async (
       throw error;
     }
 
-    const fallbackPath = await resolveWritableUploadFallbackPath(
-      sandbox,
-      file.localPath,
-      signal,
-    );
+    let fallbackPath: string | null;
+    try {
+      fallbackPath = await resolveWritableUploadFallbackPath(
+        sandbox,
+        file.localPath,
+        signal,
+      );
+    } catch (fallbackError) {
+      throwIfAttachmentAborted(signal, fallbackError);
+      // E2B throws for a nonzero exit instead of returning it. A failed
+      // best-effort directory probe must not replace the transfer cause.
+      throw error;
+    }
     if (!fallbackPath || fallbackPath === file.localPath) {
       throw error;
     }
 
     console.warn(
-      `[sandbox-upload] ${file.localPath} is not writable, retrying attachment staging at ${fallbackPath}`,
+      "[sandbox-upload] destination is not writable, retrying attachment staging in a reserved fallback directory",
     );
 
     const fallbackFile = { ...file, localPath: fallbackPath } as SandboxFile;
@@ -1304,6 +1325,12 @@ export const getSandboxUploadUserMessage = (
       return "The computer took too long to become ready for the attachment. Please try again.";
     case "attachment_download_timeout":
       return "The attachment download timed out on the selected computer. Check its network connection and try again.";
+    case "attachment_disk_full":
+      return "The computer has no space available for the attachment. Free some disk space and try again.";
+    case "attachment_permission_denied":
+      return "The computer could not write the attachment because its upload locations are not writable. Check filesystem permissions and try again.";
+    case "attachment_write_failed":
+      return "The computer could not save the attachment. Check available disk space and filesystem permissions, then try again.";
     default: {
       const noun = result.failedCount === 1 ? "attachment" : "attachments";
       return `Failed to upload ${result.failedCount} ${noun} to the computer. Please try again.`;

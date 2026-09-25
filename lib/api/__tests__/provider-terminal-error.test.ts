@@ -1,4 +1,36 @@
-import { wrapProviderTerminalError } from "../provider-terminal-error";
+import {
+  getProviderDisconnectIgnoredSlugs,
+  wrapProviderTerminalError,
+} from "../provider-terminal-error";
+
+describe("getProviderDisconnectIgnoredSlugs", () => {
+  const disconnect = Object.assign(new TypeError("terminated"), {
+    cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+  });
+
+  it("avoids the observed upstream only after a transport failure", () => {
+    expect(
+      getProviderDisconnectIgnoredSlugs(disconnect, {
+        provider_name: "Together",
+      }),
+    ).toEqual(["together"]);
+    expect(
+      getProviderDisconnectIgnoredSlugs(
+        Object.assign(new Error("Invalid request"), { statusCode: 400 }),
+        { provider_name: "Together" },
+      ),
+    ).toEqual([]);
+  });
+
+  it.each([undefined, "unknown", "deepseek", "Unmapped Provider"])(
+    "does not infer an upstream slug from %s",
+    (provider_name) => {
+      expect(
+        getProviderDisconnectIgnoredSlugs(disconnect, { provider_name }),
+      ).toEqual([]);
+    },
+  );
+});
 
 describe("wrapProviderTerminalError", () => {
   it("uses a low-cardinality fingerprint while retaining provider diagnostics", () => {

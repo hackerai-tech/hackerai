@@ -731,6 +731,8 @@ type FallbackOptions = {
   pdfParserEngine?: "mistral-ocr" | "cloudflare-ai";
   reasoningOverride?: ProviderReasoningOverride;
   excludedModelSlugs?: readonly string[];
+  /** OpenRouter upstream slugs to avoid on a bounded transport recovery. */
+  ignoredProviderSlugs?: readonly string[];
   requestedModelSlug?: string;
   /** Stable OpenRouter sticky-routing key for cache-capable model requests. */
   cacheSessionId?: string;
@@ -1041,9 +1043,22 @@ export function buildProviderOptions(
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
     reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
     reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
-  const providerRouting = modelId
+  const baseProviderRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
+  const providerRouting = options.ignoredProviderSlugs?.length
+    ? {
+        ...baseProviderRouting,
+        ignore: [
+          ...new Set([
+            ...(baseProviderRouting && "ignore" in baseProviderRouting
+              ? baseProviderRouting.ignore
+              : []),
+            ...options.ignoredProviderSlugs,
+          ]),
+        ],
+      }
+    : baseProviderRouting;
   const reasoning = isStandardGlmFlashVision
     ? {
         enabled: true,

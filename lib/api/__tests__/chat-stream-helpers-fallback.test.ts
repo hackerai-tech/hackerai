@@ -25,6 +25,55 @@ jest.mock("@/lib/logger", () => ({
   logger: { warn: jest.fn(), info: jest.fn(), error: jest.fn() },
 }));
 
+describe("transport recovery provider exclusions", () => {
+  it("merges the recovery exclusion with privacy and latency routing", () => {
+    const result = buildProviderOptions(
+      true,
+      "user",
+      "model-glm-5.3-flash",
+      "agent",
+      {
+        requestedModelSlug: "z-ai/glm-5.3-flash",
+        ignoredProviderSlugs: ["together"],
+      },
+    );
+    expect(result.openrouter.provider).toEqual({
+      sort: "latency",
+      data_collection: "deny",
+      ignore: ["together"],
+    });
+    expect(result.openrouter.models?.length).toBeGreaterThan(0);
+  });
+
+  it("preserves existing ignored upstreams and deduplicates them", () => {
+    const result = buildProviderOptions(
+      true,
+      "user",
+      "model-deepseek-v4-flash-0731",
+      "agent",
+      {
+        requestedModelSlug: "deepseek/deepseek-v4-flash",
+        ignoredProviderSlugs: ["together", "novita"],
+      },
+    );
+    expect(result.openrouter.provider).toEqual({
+      ignore: ["novita", "together"],
+    });
+  });
+
+  it("does not change normal routing or send OpenRouter options to direct providers", () => {
+    expect(
+      buildProviderOptions(true, "user", "model-glm-5.3-flash", "agent")
+        .openrouter.provider,
+    ).toEqual({ sort: "latency", data_collection: "deny" });
+    expect(
+      buildProviderOptions(true, "user", "model-abliterated", "agent", {
+        ignoredProviderSlugs: ["together"],
+      }),
+    ).toEqual({});
+  });
+});
+
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
 const GROK_4_5_SLUG = "x-ai/grok-4.5";
