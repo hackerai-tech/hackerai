@@ -272,6 +272,7 @@ import {
 } from "@/lib/chat/agent-long-provider-retry";
 import {
   ProviderTerminalError,
+  getProviderDisconnectIgnoredSlugs,
   wrapProviderTerminalError,
 } from "@/lib/api/provider-terminal-error";
 import {
@@ -908,6 +909,7 @@ const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
   state.stoppedDueToStepLimit = false;
   state.streamFinishReason = undefined;
   state.providerError = undefined;
+  state.providerErrorMetadata = undefined;
   state.providerRejectedMultimodalToolResults = false;
   state.stoppedDueToTokenExhaustion = false;
   state.stoppedDueToElapsedTimeout = false;
@@ -4456,6 +4458,13 @@ export const agentLongTask = task({
                                 : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
+                        streamCtx.ignoredProviderSlugs =
+                          hasTerminalProviderStreamError
+                            ? getProviderDisconnectIgnoredSlugs(
+                                state.providerError,
+                                state.providerErrorMetadata,
+                              )
+                            : [];
                         phLogger.warn(
                           "[agent-long] Provider output triggered fallback retry",
                           {
@@ -4466,6 +4475,8 @@ export const agentLongTask = task({
                             blockedProviderModel,
                             fallbackModel: retryModel,
                             fallbackModelSlug: retryModelSlug,
+                            ignoredProviderSlugs:
+                              streamCtx.ignoredProviderSlugs,
                             userId,
                             subscription,
                             retryReason,
@@ -4642,6 +4653,16 @@ export const agentLongTask = task({
                                     : undefined;
 
                                   if (nextContinuation && finalRetryModel) {
+                                    streamCtx.ignoredProviderSlugs = [
+                                      ...new Set([
+                                        ...(streamCtx.ignoredProviderSlugs ??
+                                          []),
+                                        ...getProviderDisconnectIgnoredSlugs(
+                                          state.providerError,
+                                          state.providerErrorMetadata,
+                                        ),
+                                      ]),
+                                    ];
                                     recordProviderDisconnectRecoveryAttempt({
                                       failedModel: retryModel,
                                       retryModel: finalRetryModel,

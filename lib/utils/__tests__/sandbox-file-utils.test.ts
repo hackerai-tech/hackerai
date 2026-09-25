@@ -540,7 +540,7 @@ describe("desktop-local sandbox file helpers", () => {
           "-o '/tmp/hackerai-upload/fallback.d4e5f6/report.pdf'",
         ),
       );
-      expect(homeCurlAttempts).toHaveLength(3);
+      expect(homeCurlAttempts).toHaveLength(1);
       expect(fallbackCurlAttempts).toHaveLength(1);
       expect(
         run.mock.calls.some(([command]) =>
@@ -550,6 +550,116 @@ describe("desktop-local sandbox file helpers", () => {
     } finally {
       jest.useRealTimers();
       consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ["No space left on device", "attachment_disk_full", "Free some disk space"],
+    ["Permission denied", "attachment_permission_denied", "permissions"],
+    ["Read-only file system", "attachment_permission_denied", "permissions"],
+    [
+      "Failure writing output to destination",
+      "attachment_write_failed",
+      "disk space",
+    ],
+  ])(
+    "preserves %s when the writable-directory probe throws",
+    async (stderr, reason, guidance) => {
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      const run = jest.fn(async (command: string) => {
+        if (command.startsWith("curl")) {
+          throw Object.assign(new Error("exit status 23"), {
+            exitCode: 23,
+            stderr: `curl: (23) ${stderr}`,
+            stdout: "",
+          });
+        }
+        if (command.includes("for base in")) {
+          throw Object.assign(new Error("exit status 1"), { exitCode: 1 });
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+      try {
+        const result = await uploadSandboxFiles(
+          [
+            {
+              kind: "url",
+              url: "https://storage.example.com/private.zip?token=secret",
+              localPath: "/home/user/upload/private.zip",
+            },
+          ],
+          async () => ({ commands: { run } }),
+        );
+        expect(result.failedCount).toBe(1);
+        expect(result.failureDetails?.[0]).toMatchObject({
+          reason,
+          exitCode: 23,
+        });
+        expect(getSandboxUploadUserMessage(result)).toContain(guidance);
+        expect(
+          run.mock.calls.filter(([command]) => command.startsWith("curl")),
+        ).toHaveLength(1);
+        expect(JSON.stringify(errorSpy.mock.calls)).not.toMatch(
+          /private.zip|token=secret/,
+        );
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it("preserves cancellation during the fallback-directory probe", async () => {
+    const controller = new AbortController();
+    const stop = new Error("user stopped");
+    const downloadFromUrl = jest
+      .fn()
+      .mockRejectedValue(new Error("curl: (23) Permission denied"));
+    const run = jest.fn(async () => {
+      controller.abort(stop);
+      throw new Error("exit status 1");
+    });
+    await expect(
+      uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/file",
+            localPath: "/home/user/upload/file",
+          },
+        ],
+        async () => ({ commands: { run }, files: { downloadFromUrl } }),
+        { signal: controller.signal },
+      ),
+    ).rejects.toBe(stop);
+  });
+
+  it.each([
+    "ENOSPC: no space left on device",
+    "Failed to prepare local file: disk quota exceeded",
+  ])("reports local attachment disk exhaustion: %s", async (message) => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const copyLocal = jest.fn().mockRejectedValue(new Error(message));
+    const run = jest.fn().mockRejectedValue(new Error("exit status 1"));
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "localPath",
+            path: "/private/report.txt",
+            localPath: "/tmp/hackerai-upload/report.txt",
+          },
+        ],
+        async () => ({ commands: { run }, files: { copyLocal } }),
+      );
+      expect(result.failureDetails?.[0].reason).toBe("attachment_disk_full");
+      expect(getSandboxUploadUserMessage(result)).toContain(
+        "Free some disk space",
+      );
+      expect(copyLocal).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 

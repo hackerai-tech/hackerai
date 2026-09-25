@@ -391,6 +391,8 @@ export type AgentStreamState = {
   fallbackServed: boolean | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
+  /** Attribution from the failing request only, never merged with prior steps. */
+  providerErrorMetadata?: OpenRouterModelMetadata;
   /** Best-effort OpenRouter IDs/provider attribution, including failed streams. */
   openRouterMetadata: OpenRouterModelMetadata;
   /** True when a provider rejected an image-bearing tool result. */
@@ -724,6 +726,8 @@ export type AgentStreamContext = {
   };
   /** Provider model IDs that must not be used by an OpenRouter fallback. */
   excludedProviderModelSlugs?: readonly string[];
+  /** Upstream exclusions apply only to the current recovery model leg. */
+  ignoredProviderSlugs?: readonly string[];
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
   getActiveElapsedTimeMs?: () => number;
@@ -1178,6 +1182,7 @@ export async function createAgentStream(
           streamHasPdfAttachments && !providerPdfAttachmentsDisabled,
         pdfParserEngine,
         excludedModelSlugs: ctx.excludedProviderModelSlugs,
+        ignoredProviderSlugs: ctx.ignoredProviderSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
@@ -2596,6 +2601,7 @@ export async function createAgentStream(
     onError: async ({ error }) => {
       state.providerError = error;
       const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
+      state.providerErrorMetadata = errorOpenRouterMetadata;
       state.openRouterMetadata = mergeOpenRouterMetadata(
         errorOpenRouterMetadata,
         state.openRouterMetadata,
@@ -2645,6 +2651,10 @@ export async function createAgentStream(
       ) {
         const generationMetadata = await fetchOpenRouterGenerationMetadata(
           errorOpenRouterMetadata.openrouter_generation_id,
+        );
+        state.providerErrorMetadata = mergeOpenRouterMetadata(
+          errorOpenRouterMetadata,
+          generationMetadata,
         );
         state.openRouterMetadata = mergeOpenRouterMetadata(
           errorOpenRouterMetadata,

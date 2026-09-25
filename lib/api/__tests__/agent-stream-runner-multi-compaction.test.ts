@@ -655,6 +655,60 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it("retains upstream exclusions on both the initial recovery request and subsequent steps", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        ignoredProviderSlugs: ["together"],
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    expect(mockBuildProviderOptions).toHaveBeenLastCalledWith(
+      false,
+      "user",
+      "test-model",
+      "agent",
+      expect.objectContaining({ ignoredProviderSlugs: ["together"] }),
+    );
+    mockBuildProviderOptions.mockClear();
+    await stream.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(mockBuildProviderOptions).toHaveBeenLastCalledWith(
+      false,
+      "user",
+      "test-model",
+      "agent",
+      expect.objectContaining({ ignoredProviderSlugs: ["together"] }),
+    );
+  });
+
+  it("does not attribute a bare disconnect to the previous step's upstream", async () => {
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    state.openRouterMetadata = { provider_name: "Together" };
+    state.providerErrorMetadata = { provider_name: "Together" };
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        usageTracker: { hasUsage: true },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    await stream.onError({ error: new TypeError("terminated") });
+    expect(state.providerErrorMetadata).toEqual({});
+  });
+
   it.each([true, false, null])(
     "samples one start across retries and keeps initial assignment %s",
     async (decision) => {
