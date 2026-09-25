@@ -1,8 +1,5 @@
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
-import {
-  ABLITERATED_EXPERIMENT_KEY,
-  type AbliterationExperimentKey,
-} from "./abliteration-keys";
+import { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
 export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
@@ -18,7 +15,7 @@ import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-res
 
 export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
-  key: AbliterationExperimentKey;
+  key: typeof ABLITERATED_EXPERIMENT_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;

@@ -64,5 +64,5 @@ a Vercel setting did not prove the Trigger worker target. No Convex
 configuration or schema change was required.
 
 The route is now hard-coded and assignment/exposure plumbing has been removed.
-Both environment-specific experiments and flags are retained only as inactive
-historical records.
+Both environment-specific experiments remain as historical records, and their
+inactive flags are archived.

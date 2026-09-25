@@ -19,7 +19,7 @@ Keep paid targeting and rollout intact. Flag rollback applies to new requests
 and runs; already-running work can retain its original assignment. Deploy the
 shared code guard to Vercel and Trigger independently for permanent enforcement.
 
-Keep retired experiment keys and analytics attribution for historical readouts.
+Historical events and PostHog experiment records remain available for readouts.
 Analyze the original Ask and Agent cohorts separately, preserving assignment,
 exposure, prior-payer exclusions and equal follow-up windows. Stopping enrollment
 does not establish a statistical winner or remove historical data.
@@ -66,8 +66,9 @@ Paid daily free-allowance rescue requests and all free-tier requests are exclude
 Free Ask retains `ask-model-free-glm`; free Agent retains its selected baseline.
 Existing quotas, concurrency checks and sandbox entitlements continue to apply.
 The retired free Ask key `abliterated_free_ask_moderated_v1`
-([HAC-103](https://linear.app/hackerai/issue/HAC-103)) is retained only for historical
-analytics attribution. Free requests do not evaluate either Abliteration flag.
+([HAC-103](https://linear.app/hackerai/issue/HAC-103)) is archived in PostHog and
+removed from runtime analytics code. Free requests do not evaluate either
+Abliteration flag.
 
 Every control retains its exact existing baseline. Analyze provider model,
 selector, subscription, input modality, and mode separately as well as overall.
@@ -169,9 +170,8 @@ Flag definitions verified after the free-user rollback:
 Paid groups target `subscription_tier` in `pro`, `pro-plus`, `ultra`, `team`.
 The server supplies the current trusted subscription and enforces the remaining
 eligibility checks. Only paid requests can evaluate the parent experiment flag.
-Keep the legacy free Ask key for stable historical analytics joins, rather than
-removing its event attribution. Never infer a runtime's environment from another
-service's configuration.
+Historical free Ask events retain their recorded key for analytics joins. Never
+infer a runtime's environment from another service's configuration.
 
 Before any deployment/configuration work, independently verify the intended
 Convex account, project, designated deployment, URL, and custom domain, and the

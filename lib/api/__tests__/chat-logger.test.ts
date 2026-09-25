@@ -751,7 +751,7 @@ describe("captureAgentCompletionAnalytics", () => {
   });
 
   it.each(["success", "aborted"] as const)(
-    "attributes %s to monthly budget without overwriting model experiment",
+    "preserves %s model experiment attribution in free Agent outcomes",
     (outcome) => {
       const capture = jest.fn();
       captureAgentCompletionAnalytics({
@@ -768,12 +768,6 @@ describe("captureAgentCompletionAnalytics", () => {
         sandboxInfo: null,
         chatLogger: undefined,
         abliteratedProviderSummary: undefined,
-        monthlyFreeBudget: {
-          monthlyBudgetExperiment: "free_monthly_budget_v1",
-          variant: "test",
-          monthlyCostDollars: 0.5,
-          dailyRequests: 10,
-        },
         experiment: {
           key: "free_ask_flash_conversion_v1",
           variant: "control",
@@ -792,7 +786,6 @@ describe("captureAgentCompletionAnalytics", () => {
       const events = capture.mock.calls.map((call) => call[0]);
       const run = events.find((event) => event.event === "hackerai-agent_run");
       expect(run.properties).toMatchObject({
-        free_monthly_budget_variant: "test",
         experiment_variant: "control",
         outcome,
       });
@@ -800,7 +793,10 @@ describe("captureAgentCompletionAnalytics", () => {
         (event) => event.event === "free_response_completed",
       );
       if (outcome === "success")
-        expect(activation.properties.free_monthly_budget_variant).toBe("test");
+        expect(activation.properties).toMatchObject({
+          mode: "agent",
+          subscription_tier: "free",
+        });
       else expect(activation).toBeUndefined();
     },
   );
@@ -904,7 +900,6 @@ describe("captureAgentCompletionAnalytics", () => {
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],
-    ["ask", "abliterated_free_ask_moderated_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {
@@ -924,10 +919,7 @@ describe("captureAgentCompletionAnalytics", () => {
         chatId: "chat",
         endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
         mode,
-        subscription:
-          experimentKey === "abliterated_free_ask_moderated_v1"
-            ? "free"
-            : "pro",
+        subscription: "pro",
         outcome: "success",
         selectedModel: "model-abliterated",
         configuredModelId: "abliterated-model",
@@ -941,12 +933,7 @@ describe("captureAgentCompletionAnalytics", () => {
           requestId: "message",
         },
       });
-      expect(capture).toHaveBeenCalledTimes(
-        mode === "agent" ||
-          experimentKey === "abliterated_free_ask_moderated_v1"
-          ? 2
-          : 1,
-      );
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "abliterated_model_response_outcome",

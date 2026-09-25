@@ -1,8 +1,4 @@
 import {
-  freeMonthlyBudgetProperties,
-  type FreeMonthlyBudgetAssignment,
-} from "@/lib/experiments/free-monthly-budget";
-import {
   regionalFreeLimitsProperties,
   type RegionalFreeLimitsPolicy,
 } from "@/lib/rate-limit/regional-free-limits";
@@ -44,7 +40,7 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
-import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
+import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -1316,7 +1312,6 @@ type AgentCompletionAnalyticsArgs = {
   usageMeasurement?: ReturnType<
     import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
   >;
-  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
   // Every completion path must explicitly forward its request telemetry.
   abliteratedProviderSummary:
     ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
@@ -1428,7 +1423,6 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
-  monthlyFreeBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1742,7 +1736,6 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
-      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }
@@ -1764,7 +1757,6 @@ export function captureAgentCompletionAnalytics(
         distinctId: userId,
         event: "free_response_completed",
         properties: {
-          ...freeMonthlyBudgetProperties(args.monthlyFreeBudget),
           activation_definition_version: 1,
           mode,
           subscription_tier: subscription,
@@ -1776,7 +1768,7 @@ export function captureAgentCompletionAnalytics(
     }
   }
 
-  if (isAbliterationExperimentKey(args.experiment?.key)) {
+  if (args.experiment?.key === ABLITERATED_EXPERIMENT_KEY) {
     try {
       posthog?.capture({
         distinctId: userId,
@@ -1814,7 +1806,6 @@ export function captureAgentCompletionAnalytics(
   captureAgentRun({
     cacheHistoryTelemetry: args.cacheHistoryTelemetry,
     usageMeasurement: args.usageMeasurement,
-    monthlyFreeBudget: args.monthlyFreeBudget,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
@@ -1902,7 +1893,6 @@ export function captureUsageCost({
   fallbackServed,
   experiment,
   regionalFreeLimits,
-  monthlyFreeBudget,
   triggerRunId,
 }: {
   cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
@@ -1936,7 +1926,6 @@ export function captureUsageCost({
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
   regionalFreeLimits?: RegionalFreeLimitsPolicy;
-  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
   triggerRunId?: string;
 }) {
   if (!posthog) return;
@@ -2045,7 +2034,6 @@ export function captureUsageCost({
       }),
       ...getExperimentAnalyticsProperties(experiment),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
-      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }

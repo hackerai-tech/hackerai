@@ -2,7 +2,6 @@ import type { LanguageModel } from "ai";
 import { AbliteratedModelTelemetry } from "../abliterated-model";
 import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
 import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliterated-model";
-import { FREE_ASK_ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliteration-keys";
 
 const finishPart = {
   type: "finish",
@@ -232,43 +231,6 @@ describe("Abliteration stream telemetry", () => {
       ),
     );
     expect(other.getSummary().upstream_model_fallback_served).toBe(true);
-  });
-  it("attributes free Ask exposure to its own experiment when recovery serves GLM", async () => {
-    const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
-      assignment: {
-        key: FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
-        variant: "test",
-        modelKey: "model-abliterated",
-        baselineModel: "ask-model-free-glm",
-      },
-      messageId: "message",
-      chatId: "chat",
-      mode: "ask",
-      subscription: "free",
-    });
-    await expect(consume(telemetry, model([], true))).rejects.toThrow();
-    telemetry.setMessageId("replacement");
-    await consume(
-      telemetry,
-      model(
-        [{ type: "text-delta", id: "t", delta: "answer" }, finishPart],
-        false,
-        "z-ai/glm-5.3-flash",
-      ),
-    );
-    expect(events("abliterated_model_exposed")).toHaveLength(1);
-    expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
-      experiment_key: FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
-      experiment_variant: "test",
-      experiment_request_id: "message",
-      message_id: "replacement",
-      response_model: "z-ai/glm-5.3-flash",
-      platform_authorization_context: "standard",
-    });
-    expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
-      assigned_platform_authorization_context: "not_appended",
-      baseline_model: "ask-model-free-glm",
-    });
   });
   it("aggregates attempts while preserving eligibility and output without leaking content", async () => {
     const telemetry = create();
