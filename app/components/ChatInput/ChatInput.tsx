@@ -287,6 +287,7 @@ export const ChatInput = ({
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleRetryFile,
     handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
@@ -913,6 +914,7 @@ export const ChatInput = ({
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
             onRemoveFile={handleRemoveFile}
+            onRetryFile={handleRetryFile}
             onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
             onShowGeneratedTextInField={handleShowGeneratedTextInField}
             generatedTextAttachmentsAvailable={isAgent}
