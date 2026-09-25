@@ -9,6 +9,7 @@
 
 import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
+import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
@@ -140,6 +141,32 @@ describe("CentrifugoSandbox", () => {
   afterEach(() => {
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
+  });
+
+  it("publishes PTY creation once across subscription reconnects", async () => {
+    const sandbox = createSandbox();
+    const pending = createCentrifugoPtyHandle(sandbox, {
+      command: "echo once",
+      cols: 80,
+      rows: 24,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    const sub = mockSubscriptions[0];
+    sub.emit("subscribed");
+    sub.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sub.publish).toHaveBeenCalledTimes(1);
+
+    sub.emit("publication", {
+      data: { type: "pty_ready", sessionId: FIXED_UUID, pid: 123 },
+    });
+    const handle = await pending;
+    sub.emit("subscribed");
+    expect(sub.publish).toHaveBeenCalledTimes(1);
+    sub.emit("publication", {
+      data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
+    });
+    await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
   });
 
   describe("attachment cancellation", () => {
@@ -644,6 +671,135 @@ describe("CentrifugoSandbox", () => {
       });
       expect(onStdout).toHaveBeenCalledWith("hello\n");
       expect(onStderr).toHaveBeenCalledWith("warn\n");
+    });
+
+    it("publishes a command once when the subscription reconnects", async () => {
+      const sandbox = createSandbox();
+      const { promise } = startCommand(sandbox, "echo once", {
+        timeoutMs: 5000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      let resolvePresence!: (value: unknown) => void;
+      sub.presence.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePresence = resolve;
+          }),
+      );
+      sub.emit("subscribed");
+      sub.emit("subscribed");
+      expect(sub.presence).toHaveBeenCalledTimes(1);
+
+      resolvePresence({
+        clients: { "sandbox-client": { connInfo: { connectionId: "conn-1" } } },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toMatchObject({ exitCode: 0 });
+    });
+
+    it("logs only traffic counts and identifiers for a large command stream", async () => {
+      const sandbox = createSandbox();
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const output = "private-output-".repeat(75_000);
+      try {
+        const { promise } = startCommand(sandbox, "private-command", {
+          timeoutMs: 5000,
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        sub.emit("publication", {
+          data: { type: "stdout", commandId: FIXED_UUID, data: output },
+        });
+        sub.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+        });
+        await promise;
+
+        const trafficLog = logSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "local_relay_command_traffic");
+        expect(trafficLog).toEqual(
+          expect.objectContaining({
+            user_id: "user-1",
+            connection_id: "conn-1",
+            command_id: FIXED_UUID,
+            sample_rate: 1,
+            stdout_bytes: Buffer.byteLength(output, "utf8"),
+            stderr_bytes: 0,
+            output_chunks: 1,
+            command_publish_attempts: 1,
+          }),
+        );
+        expect(JSON.stringify(trafficLog)).not.toContain("private-output");
+        expect(JSON.stringify(trafficLog)).not.toContain("private-command");
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it("counts large publications for other commands as relay fanout", async () => {
+      const sandbox = createSandbox();
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const { promise } = startCommand(sandbox, "echo own", {
+          timeoutMs: 5000,
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        sub.emit("publication", {
+          data: {
+            type: "stdout",
+            commandId: "another-command",
+            data: "x".repeat(1024 * 1024),
+          },
+        });
+        sub.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+        });
+        await promise;
+
+        const trafficLog = logSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "local_relay_command_traffic");
+        expect(trafficLog).toEqual(
+          expect.objectContaining({
+            sample_rate: 1,
+            stdout_bytes: 0,
+            unmatched_publications: 1,
+            received_payload_bytes_estimate: expect.any(Number),
+          }),
+        );
+        expect(
+          trafficLog?.received_payload_bytes_estimate as number,
+        ).toBeGreaterThan(1024 * 1024);
+      } finally {
+        logSpy.mockRestore();
+      }
     });
 
     it("deduplicates retried desktop stream chunks by sequence", async () => {
@@ -1457,6 +1613,25 @@ describe("CentrifugoSandbox", () => {
         data: { type: "file_ok", requestId: request.requestId },
       });
 
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it("does not replay a desktop file write after resubscribing", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.write("C:\\repo\\app.ts", "updated");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("subscribed");
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+
+      const request = sub.publish.mock.calls[0][0] as { requestId: string };
+      sub.emit("publication", {
+        data: { type: "file_ok", requestId: request.requestId },
+      });
       await expect(promise).resolves.toBeUndefined();
     });
 
