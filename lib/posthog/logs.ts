@@ -1,8 +1,6 @@
 type LogLevel = "info" | "warn" | "error";
 type OtlpValue =
-  | { stringValue: string }
-  | { doubleValue: number }
-  | { boolValue: boolean };
+  { stringValue: string } | { doubleValue: number } | { boolValue: boolean };
 
 type OtlpAttribute = {
   key: string;
@@ -96,12 +94,76 @@ function normalizeAttributeKey(key: string): string {
     .toLowerCase();
 }
 
+// Build a bounded snapshot before encoding. Never invoke getters, toJSON, or
+// user-defined string coercion while preparing best-effort diagnostics.
 function stringifyUnknown(value: unknown): string {
-  if (typeof value === "string") return value;
+  let remainingCharacters = LOG_ATTRIBUTE_VALUE_MAX_LENGTH;
+  let remainingNodes = 100;
+  const seen = new WeakSet<object>();
+  const text = (value: string) => {
+    const result = value.slice(0, remainingCharacters);
+    remainingCharacters -= result.length;
+    return result;
+  };
+  const visit = (input: unknown, depth: number): unknown => {
+    if (remainingNodes-- <= 0 || remainingCharacters <= 0) return "[truncated]";
+    if (typeof input === "string") return text(input);
+    if (
+      input === null ||
+      typeof input === "boolean" ||
+      typeof input === "number"
+    )
+      return input;
+    if (typeof input !== "object") return `[${typeof input}]`;
+    if (depth >= 4) return "[depth limit]";
+    if (seen.has(input)) return "[circular]";
+    seen.add(input);
+    try {
+      if (Array.isArray(input)) {
+        const result: unknown[] = [];
+        const length = Object.getOwnPropertyDescriptor(input, "length")?.value;
+        if (typeof length !== "number") return "[unavailable]";
+        for (let index = 0; index < Math.min(length, 40); index += 1) {
+          if (remainingNodes <= 0 || remainingCharacters <= 0) {
+            result.push("[truncated]");
+            break;
+          }
+          const descriptor = Object.getOwnPropertyDescriptor(
+            input,
+            String(index),
+          );
+          result.push(
+            descriptor && "value" in descriptor
+              ? visit(descriptor.value, depth + 1)
+              : "[accessor or empty]",
+          );
+        }
+        if (length > 40) result.push("[truncated]");
+        return result;
+      }
+      const result: Record<string, unknown> = Object.create(null);
+      let count = 0;
+      for (const key in input) {
+        if (++count > 40 || remainingNodes <= 0 || remainingCharacters <= 0) {
+          result["[truncated]"] = true;
+          break;
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(input, key);
+        if (!descriptor?.enumerable) continue;
+        result[text(key)] =
+          "value" in descriptor
+            ? visit(descriptor.value, depth + 1)
+            : "[accessor]";
+      }
+      return result;
+    } catch {
+      return "[unavailable]";
+    }
+  };
   try {
-    return JSON.stringify(value);
+    return truncate(JSON.stringify(visit(value, 0)));
   } catch {
-    return String(value);
+    return "[unavailable]";
   }
 }
 
@@ -123,26 +185,49 @@ function toOtlpValue(value: unknown): OtlpValue | undefined {
 }
 
 function toOtlpAttributes(
+  event: string,
   attributes: Record<string, unknown> = {},
 ): OtlpAttribute[] {
-  const normalized: Record<string, unknown> = {
-    service: getServiceName(),
-    environment: getEnvironment(),
-    runtime: "node",
-    ...attributes,
+  const result: OtlpAttribute[] = [];
+  const usedKeys = new Set<string>();
+  const append = (key: string, value: unknown) => {
+    const normalizedKey = normalizeAttributeKey(key.slice(0, 128)).slice(
+      0,
+      128,
+    );
+    if (!normalizedKey || usedKeys.has(normalizedKey)) return;
+    const otlpValue = toOtlpValue(value);
+    if (!otlpValue) return;
+    usedKeys.add(normalizedKey);
+    result.push({ key: normalizedKey, value: otlpValue });
   };
-
-  return Object.entries(normalized)
-    .flatMap(([key, value]) => {
-      const normalizedKey = normalizeAttributeKey(key);
-      if (!normalizedKey) return [];
-
-      const otlpValue = toOtlpValue(value);
-      if (!otlpValue) return [];
-
-      return [{ key: normalizedKey, value: otlpValue }];
-    })
-    .slice(0, LOG_ATTRIBUTE_COUNT_LIMIT);
+  const read = (key: string) => {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(attributes, key);
+      return descriptor?.enumerable && "value" in descriptor
+        ? descriptor.value
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  append("service", read("service") ?? getServiceName());
+  append("environment", read("environment") ?? getEnvironment());
+  append("runtime", read("runtime") ?? "node");
+  append("event", event);
+  for (const key of POSTHOG_CORRELATION_KEYS) append(key, read(key));
+  let inspected = 0;
+  try {
+    for (const key in attributes) {
+      // Bound inspected keys as well as emitted values, including empty fields.
+      if (result.length >= LOG_ATTRIBUTE_COUNT_LIMIT || inspected++ >= 160)
+        break;
+      append(key, read(key));
+    }
+  } catch {
+    // A diagnostic object must not make its caller fail.
+  }
+  return result;
 }
 
 function nowUnixNano(): string {
@@ -212,10 +297,7 @@ export function emitPostHogLog({
     severityNumber: severityNumberFor(level),
     severityText: level.toUpperCase(),
     body: { stringValue: truncate(body) },
-    attributes: toOtlpAttributes({
-      event,
-      ...attributes,
-    }),
+    attributes: toOtlpAttributes(event, attributes),
   });
 
   if (pendingLogs.length > LOG_QUEUE_LIMIT) {

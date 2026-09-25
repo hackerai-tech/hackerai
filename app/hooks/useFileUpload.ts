@@ -34,6 +34,12 @@ import {
 import { PASTED_TEXT_ATTACHMENT_MIN_CHARS } from "@/lib/utils/pasted-text-attachments";
 import { getPreferredFileStorageRegion } from "@/lib/storage/file-storage-region";
 
+import {
+  browserUploadTransfers,
+  putBrowserFile,
+  UploadTransportError,
+} from "@/lib/utils/browser-file-upload";
+
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
 const PASTED_TEXT_ATTACHMENT_BASE_NAME = "Pasted text";
@@ -163,13 +169,35 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     desktopEnvironmentId,
   } = useGlobalState();
   const uploadedFilesRef = useRef(uploadedFiles);
+  const activeTransfersRef = useRef(new Set<File>());
   const preferredStorageRegionPromiseRef = useRef<ReturnType<
     typeof getPreferredFileStorageRegion
   > | null>(null);
 
   useEffect(() => {
     uploadedFilesRef.current = uploadedFiles;
+    for (const file of activeTransfersRef.current) {
+      if (!uploadedFiles.some((item) => item.file === file)) {
+        browserUploadTransfers.get(file)?.controller.abort();
+      }
+    }
   }, [uploadedFiles]);
+
+  useEffect(() => {
+    const activeTransfers = activeTransfersRef.current;
+    return () => {
+      for (const file of activeTransfers) {
+        browserUploadTransfers.get(file)?.controller.abort();
+        updateUploadedFile(file, {
+          uploading: false,
+          uploaded: false,
+          retryable: false,
+          error: "Upload interrupted. Remove and attach the file again.",
+        });
+      }
+      activeTransfers.clear();
+    };
+  }, [updateUploadedFile]);
 
   // Drag and drop state
   const [isDragOver, setIsDragOver] = useState(false);
@@ -197,10 +225,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
   const applyUploadedFileUpdate = useCallback(
     (indexToUpdate: number, updates: Partial<UploadedFileState>) => {
+      const target = uploadedFilesRef.current[indexToUpdate]?.file;
+      if (!target) return;
       uploadedFilesRef.current = uploadedFilesRef.current.map((file, index) =>
         index === indexToUpdate ? { ...file, ...updates } : file,
       );
-      updateUploadedFile(indexToUpdate, updates);
+      updateUploadedFile(target, updates);
     },
     [updateUploadedFile],
   );
@@ -333,30 +363,34 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
   const uploadFileToS3 = useCallback(
     async (
       file: File,
-      uploadIndex: number,
       options: {
         fallbackLocalFile?: LocalDesktopFile & { path: string };
-        generatedSource?: "pasted-text";
         expectedGeneratedTextAttachment?: {
-          id: string;
-          lastModified: number;
           previousFileId?: string;
           previousTokens?: number;
           previousUploadedFile?: UploadedFileState;
         };
       } = {},
     ) => {
+      let transfer = browserUploadTransfers.get(file);
+      if (transfer?.running) return;
+      transfer ??= {
+        controller: new AbortController(),
+        running: false,
+        retryable: false,
+      };
+      transfer.controller = new AbortController();
+      transfer.running = true;
+      transfer.retryable = false;
+      browserUploadTransfers.set(file, transfer);
+      activeTransfersRef.current.add(file);
+      const { signal } = transfer.controller;
       const getCurrentUploadIndex = () => {
-        const expected = options.expectedGeneratedTextAttachment;
-        if (!expected) return uploadIndex;
-
-        const currentIndex = uploadedFilesRef.current.findIndex(
-          (currentFile) =>
-            currentFile.generatedTextAttachment?.id === expected.id &&
-            currentFile.file.lastModified === expected.lastModified,
+        if (signal.aborted) return null;
+        const index = uploadedFilesRef.current.findIndex(
+          (item) => item.file === file,
         );
-
-        return currentIndex >= 0 ? currentIndex : null;
+        return index >= 0 ? index : null;
       };
 
       try {
@@ -368,36 +402,26 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
         // Step 1: Generate presigned S3 upload URL in the closest configured
         // storage region. Region lookup failure safely uses legacy storage.
-        preferredStorageRegionPromiseRef.current ??=
-          getPreferredFileStorageRegion();
-        const storageRegion = await preferredStorageRegionPromiseRef.current;
-        const { uploadUrl, s3Key, rateLimit } = await generateS3UploadUrlAction(
-          {
+        if (!transfer.reservation) {
+          preferredStorageRegionPromiseRef.current ??=
+            getPreferredFileStorageRegion();
+          const storageRegion = await preferredStorageRegionPromiseRef.current;
+          signal.throwIfAborted();
+          const reservation = await generateS3UploadUrlAction({
             fileName: file.name,
             contentType: file.type || "application/octet-stream",
             size: file.size,
             mode,
             ...(storageRegion ? { storageRegion } : {}),
-          },
-        );
-
-        // Show warning if approaching rate limit
-        if (rateLimit) {
-          showRateLimitWarning(rateLimit);
+          });
+          transfer.reservation = reservation;
+          if (reservation.rateLimit)
+            showRateLimitWarning(reservation.rateLimit);
         }
-
-        // Step 2: Upload file to S3 using presigned URL
-        const uploadResponse = await fetch(uploadUrl, {
-          method: "PUT",
-          body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-        });
-
-        if (!uploadResponse.ok) {
-          throw new Error(
-            `Failed to upload file ${file.name}: ${uploadResponse.statusText}`,
-          );
-        }
+        signal.throwIfAborted();
+        const { uploadUrl, s3Key } = transfer.reservation;
+        await putBrowserFile(file, uploadUrl, signal);
+        signal.throwIfAborted();
 
         // Step 3: Save file metadata to database with S3 key
         const { url, fileId, tokens } = await saveFile({
@@ -436,7 +460,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
                 error: `${file.name} exceeds the Ask mode token limit`,
               });
             } else {
-              removeUploadedFile(currentUploadIndex);
+              uploadedFilesRef.current = uploadedFilesRef.current.filter(
+                (item) => item.file !== file,
+              );
+              removeUploadedFile(file);
             }
 
             toast.error(
@@ -449,6 +476,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         // Set success state with tokens
         applyUploadedFileUpdate(currentUploadIndex, {
           tokens,
+          error: undefined,
+          retryable: false,
           uploading: false,
           uploaded: true,
           fileId,
@@ -524,14 +553,21 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           return;
         }
 
+        transfer.retryable =
+          error instanceof UploadTransportError && error.retryable;
         // Update the upload state to error
         applyUploadedFileUpdate(currentUploadIndex, {
           uploading: false,
           uploaded: false,
           error: errorMessage,
+          retryable: transfer.retryable,
         });
 
         toast.error(errorMessage);
+      } finally {
+        transfer.running = false;
+        if (!transfer.retryable) browserUploadTransfers.delete(file);
+        activeTransfersRef.current.delete(file);
       }
     },
     [
@@ -556,11 +592,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         generatedSource?: "pasted-text";
       } = {},
     ) => {
-      const startingIndex = uploadedFiles.length;
-
-      files.forEach((file, index) => {
-        // Add file as "uploading" state immediately
-        addUploadedFile({
+      files.forEach((selectedFile) => {
+        const file = new File([selectedFile], selectedFile.name, {
+          type: selectedFile.type,
+          lastModified: selectedFile.lastModified,
+        });
+        const uploadedFile: UploadedFileState = {
           file,
           uploading: true,
           uploaded: false,
@@ -568,15 +605,15 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           ...(options.generatedSource
             ? { generatedSource: options.generatedSource }
             : {}),
-        });
+        };
+        uploadedFilesRef.current = [...uploadedFilesRef.current, uploadedFile];
+        addUploadedFile(uploadedFile);
 
-        // Start upload in background with correct index
-        uploadFileToS3(file, startingIndex + index, {
-          generatedSource: options.generatedSource,
-        });
+        // Start upload in background
+        void uploadFileToS3(file);
       });
     },
-    [uploadedFiles.length, addUploadedFile, uploadFileToS3],
+    [addUploadedFile, uploadFileToS3],
   );
 
   const processGeneratedPastedText = useCallback(
@@ -661,13 +698,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       ];
       addUploadedFile(generatedUploadedFile);
 
-      uploadFileToS3(validFile, existingUploadedCount, {
-        generatedSource: "pasted-text",
-        expectedGeneratedTextAttachment: {
-          id: attachmentId,
-          lastModified: validFile.lastModified,
-        },
-      });
+      void uploadFileToS3(validFile);
 
       return true;
     },
@@ -696,17 +727,20 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           }
       >,
     ) => {
-      const startingIndex = uploadedFiles.length;
-
-      files.forEach((entry, index) => {
+      files.forEach((entry) => {
         if (entry.storage === "s3") {
-          addUploadedFile({
+          const uploadedFile: UploadedFileState = {
             file: entry.file,
             uploading: true,
             uploaded: false,
             storage: "s3",
-          });
-          uploadFileToS3(entry.file, startingIndex + index, {
+          };
+          uploadedFilesRef.current = [
+            ...uploadedFilesRef.current,
+            uploadedFile,
+          ];
+          addUploadedFile(uploadedFile);
+          void uploadFileToS3(entry.file, {
             fallbackLocalFile: entry.fallbackLocalFile,
           });
           return;
@@ -737,7 +771,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         });
       });
     },
-    [addUploadedFile, uploadFileToS3, uploadedFiles.length],
+    [addUploadedFile, uploadFileToS3],
   );
 
   const processLocalDesktopPaths = useCallback(
@@ -926,6 +960,8 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     if (!uploadedFile || removingFilesRef.current.has(uploadedFile.file))
       return;
     removingFilesRef.current.add(uploadedFile.file);
+    if (uploadedFile.file instanceof File)
+      browserUploadTransfers.get(uploadedFile.file)?.controller.abort();
     try {
       if (uploadedFile.fileId && uploadedFile.storage !== "local-desktop") {
         const fileId = uploadedFile.fileId as Id<"files">;
@@ -955,7 +991,12 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       const currentIndex = uploadedFilesRef.current.findIndex(
         (item) => item.file === uploadedFile.file,
       );
-      if (currentIndex !== -1) removeUploadedFile(currentIndex);
+      if (currentIndex !== -1) {
+        uploadedFilesRef.current = uploadedFilesRef.current.filter(
+          (item) => item.file !== uploadedFile.file,
+        );
+        removeUploadedFile(uploadedFile.file);
+      }
     } catch (error) {
       console.error("Failed to delete file from storage:", error);
       toast.error(
@@ -966,6 +1007,28 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     } finally {
       removingFilesRef.current.delete(uploadedFile.file);
     }
+  };
+
+  const handleRetryFile = (index: number) => {
+    const item = uploadedFilesRef.current[index];
+    if (
+      !item ||
+      !(item.file instanceof File) ||
+      item.generatedSource ||
+      item.generatedTextAttachment ||
+      !item.retryable ||
+      item.uploading
+    )
+      return;
+    const transfer = browserUploadTransfers.get(item.file);
+    if (!transfer?.retryable || transfer.running) return;
+    applyUploadedFileUpdate(index, {
+      error: undefined,
+      retryable: false,
+      uploading: true,
+      uploaded: false,
+    });
+    void uploadFileToS3(item.file);
   };
 
   const handleUpdateGeneratedTextFile = useCallback(
@@ -1103,16 +1166,10 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
         },
       };
 
-      uploadedFilesRef.current = uploadedFilesRef.current.map((file, index) =>
-        index === indexToUpdate ? updatedUploadedFile : file,
-      );
       applyUploadedFileUpdate(indexToUpdate, updatedUploadedFile);
 
-      uploadFileToS3(nextFile, indexToUpdate, {
-        generatedSource: "pasted-text",
+      void uploadFileToS3(nextFile, {
         expectedGeneratedTextAttachment: {
-          id: generatedTextAttachment.id,
-          lastModified: nextFile.lastModified,
           previousFileId,
           previousTokens,
           previousUploadedFile: uploadedFile,
@@ -1303,6 +1360,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleRetryFile,
     handleUpdateGeneratedTextFile,
     handleAttachClick,
     handlePasteEvent,

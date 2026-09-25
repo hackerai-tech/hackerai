@@ -77,9 +77,9 @@ interface GlobalStateType {
   uploadedFiles: UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
   addUploadedFile: (file: UploadedFileState) => void;
-  removeUploadedFile: (index: number) => void;
+  removeUploadedFile: (target: number | UploadedFileState["file"]) => void;
   updateUploadedFile: (
-    index: number,
+    target: number | UploadedFileState["file"],
     updates: Partial<UploadedFileState>,
   ) => void;
 
@@ -1107,14 +1107,28 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setUploadedFiles((prev) => [...prev, file]);
   }, []);
 
-  const removeUploadedFile = useCallback((index: number) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+  const removeUploadedFile = useCallback(
+    (target: number | UploadedFileState["file"]) => {
+      setUploadedFiles((prev) =>
+        prev.filter((file, i) =>
+          typeof target === "number" ? i !== target : file.file !== target,
+        ),
+      );
+    },
+    [],
+  );
 
   const updateUploadedFile = useCallback(
-    (index: number, updates: Partial<UploadedFileState>) => {
+    (
+      target: number | UploadedFileState["file"],
+      updates: Partial<UploadedFileState>,
+    ) => {
       setUploadedFiles((prev) =>
-        prev.map((file, i) => (i === index ? { ...file, ...updates } : file)),
+        prev.map((file, i) =>
+          (typeof target === "number" ? i === target : file.file === target)
+            ? { ...file, ...updates }
+            : file,
+        ),
       );
     },
     [],
