@@ -962,8 +962,11 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
     if (!uploadedFile || removingFilesRef.current.has(uploadedFile.file))
       return;
     removingFilesRef.current.add(uploadedFile.file);
-    if (uploadedFile.file instanceof File)
-      browserUploadTransfers.get(uploadedFile.file)?.controller.abort();
+    const matchesAttachment = (item: UploadedFileState) =>
+      item.file === uploadedFile.file ||
+      (uploadedFile.generatedTextAttachment !== undefined &&
+        item.generatedTextAttachment?.id ===
+          uploadedFile.generatedTextAttachment.id);
     try {
       if (uploadedFile.fileId && uploadedFile.storage !== "local-desktop") {
         const fileId = uploadedFile.fileId as Id<"files">;
@@ -990,14 +993,32 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             throw new Error("Failed to remove pasted text attachment");
         }
       }
-      const currentIndex = uploadedFilesRef.current.findIndex(
-        (item) => item.file === uploadedFile.file,
-      );
-      if (currentIndex !== -1) {
-        uploadedFilesRef.current = uploadedFilesRef.current.filter(
-          (item) => item.file !== uploadedFile.file,
+      // A replacement may finish while the previous stored file is deleted.
+      const currentFile = uploadedFilesRef.current.find(matchesAttachment);
+      if (
+        currentFile?.fileId &&
+        currentFile.fileId !== uploadedFile.fileId &&
+        currentFile.storage !== "local-desktop"
+      ) {
+        const fileId = currentFile.fileId as Id<"files">;
+        await confirmDeletion(
+          () => deleteFile({ fileId }),
+          { fileId },
+          "Removing file…",
         );
-        removeUploadedFile(uploadedFile.file);
+      }
+      if (uploadedFile.file instanceof File)
+        browserUploadTransfers.get(uploadedFile.file)?.controller.abort();
+      const currentIndex =
+        uploadedFilesRef.current.findIndex(matchesAttachment);
+      if (currentIndex !== -1) {
+        const target = uploadedFilesRef.current[currentIndex].file;
+        if (target instanceof File)
+          browserUploadTransfers.get(target)?.controller.abort();
+        uploadedFilesRef.current = uploadedFilesRef.current.filter(
+          (item) => !matchesAttachment(item),
+        );
+        removeUploadedFile(target);
       }
     } catch (error) {
       console.error("Failed to delete file from storage:", error);

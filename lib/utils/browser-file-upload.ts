@@ -54,12 +54,17 @@ export async function putBrowserFile(
   uploadUrl: string,
   signal: AbortSignal,
 ): Promise<void> {
+  // Allow slower large transfers while keeping every attempt finite.
+  const timeoutMs = Math.min(
+    75 * 60_000,
+    Math.max(5 * 60_000, Math.ceil(file.size / (64 * 1024)) * 1_000),
+  );
   for (let attempt = 0; attempt < 3; attempt += 1) {
     signal.throwIfAborted();
     const request = new AbortController();
     const abort = () => request.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
-    const timeout = setTimeout(() => request.abort(), 5 * 60_000);
+    const timeout = setTimeout(() => request.abort(), timeoutMs);
     try {
       const response = await fetch(uploadUrl, {
         method: "PUT",

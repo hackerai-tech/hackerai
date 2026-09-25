@@ -410,6 +410,140 @@ describe("browser attachment recovery", () => {
     expect(result.current.uploadedFiles[0].uploaded).toBe(true);
   });
 
+  it("keeps a replacement running when deleting its previous stored file fails", async () => {
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handlePastedTextAttachment("x".repeat(5000));
+    });
+    let finish!: (response: unknown) => void;
+    let signal!: AbortSignal;
+    (global.fetch as jest.Mock).mockImplementationOnce((_url, options) => {
+      signal = options.signal;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    });
+    saveFile.mockResolvedValueOnce({
+      fileId: "replacement",
+      url: "url",
+      tokens: 0,
+    });
+    await act(async () => {
+      result.current.preview.handleUpdateGeneratedTextFile(
+        0,
+        "replacement content",
+      );
+    });
+    deleteFile.mockRejectedValueOnce(new Error("Deletion unavailable"));
+    await act(async () => {
+      await result.current.preview.handleRemoveFile(0);
+    });
+    expect(signal.aborted).toBe(false);
+    await act(async () => {
+      finish({ ok: true });
+    });
+    expect(result.current.uploadedFiles[0]).toMatchObject({
+      uploaded: true,
+      uploading: false,
+      fileId: "replacement",
+      generatedTextAttachment: { content: "replacement content" },
+    });
+  });
+
+  it("deletes a replacement that finishes while removal waits for the previous file", async () => {
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handlePastedTextAttachment("x".repeat(5000));
+    });
+    let finishPut!: (response: unknown) => void;
+    let finishDelete!: () => void;
+    (global.fetch as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPut = resolve;
+        }),
+    );
+    saveFile.mockResolvedValueOnce({
+      fileId: "replacement",
+      url: "url",
+      tokens: 0,
+    });
+    await act(async () => {
+      result.current.preview.handleUpdateGeneratedTextFile(
+        0,
+        "replacement content",
+      );
+    });
+    deleteFile.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDelete = resolve;
+        }),
+    );
+    let removal!: Promise<void>;
+    act(() => {
+      removal = result.current.preview.handleRemoveFile(0);
+    });
+    await act(async () => {
+      finishPut({ ok: true });
+    });
+    expect(result.current.uploadedFiles[0].fileId).toBe("replacement");
+    await act(async () => {
+      finishDelete();
+      await removal;
+    });
+    expect(deleteFile).toHaveBeenCalledWith({ fileId: "replacement" });
+    expect(result.current.uploadedFiles).toHaveLength(0);
+  });
+
+  it("removes the restored attachment if its replacement fails during deletion", async () => {
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
+    await act(async () => {
+      await result.current.picker.handlePastedTextAttachment("x".repeat(5000));
+    });
+    let finishPut!: (response: unknown) => void;
+    let finishDelete!: () => void;
+    (global.fetch as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPut = resolve;
+        }),
+    );
+    await act(async () => {
+      result.current.preview.handleUpdateGeneratedTextFile(
+        0,
+        "replacement content",
+      );
+    });
+    deleteFile.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishDelete = resolve;
+        }),
+    );
+    let removal!: Promise<void>;
+    act(() => {
+      removal = result.current.preview.handleRemoveFile(0);
+    });
+    await act(async () => {
+      finishPut({ ok: false, status: 403 });
+    });
+    expect(
+      result.current.uploadedFiles[0].generatedTextAttachment?.content,
+    ).toBe("x".repeat(5000));
+    await act(async () => {
+      finishDelete();
+      await removal;
+    });
+    expect(result.current.uploadedFiles).toHaveLength(0);
+  });
+
   it("aborts in-flight requests on unmount", async () => {
     let signal!: AbortSignal;
     (global.fetch as jest.Mock).mockImplementation((_url, options) => {
