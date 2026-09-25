@@ -212,6 +212,9 @@ const classifySandboxUploadFailureReason = (
   if (WINDOWS_COMMAND_SYNTAX_PATTERN.test(message)) {
     return "windows_command_syntax";
   }
+  if (/no space left on device|disk quota exceeded/i.test(message)) {
+    return "attachment_disk_full";
+  }
   if (LOCAL_FILE_PREPARE_FAILURE_PATTERN.test(message)) {
     return "local_file_prepare_failed";
   }
@@ -232,9 +235,6 @@ const classifySandboxUploadFailureReason = (
     file.kind === "url" &&
     WRAPPED_FILE_TRANSFER_ERROR_PATTERN.test(message)
   ) {
-    if (/no space left on device|disk quota exceeded/i.test(message)) {
-      return "attachment_disk_full";
-    }
     if (/permission denied|read-only file system/i.test(message)) {
       return "attachment_permission_denied";
     }

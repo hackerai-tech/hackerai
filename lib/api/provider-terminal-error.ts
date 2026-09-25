@@ -4,6 +4,7 @@ import {
   getLocalOpenRouterRequestSizeGuardDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
+  isRetriableProviderStreamDisconnectError,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
 
@@ -19,8 +20,7 @@ export const getProviderDisconnectIgnoredSlugs = (
   error: unknown,
   metadata: OpenRouterModelMetadata = {},
 ): string[] => {
-  const category = getProviderErrorCategory(extractErrorDetails(error));
-  return (category === "stream_terminated" || category === "timeout") &&
+  return isRetriableProviderStreamDisconnectError(error) &&
     metadata.provider_name?.toLowerCase() === "together"
     ? ["together"]
     : [];

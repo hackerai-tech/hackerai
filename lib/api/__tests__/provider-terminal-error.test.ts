@@ -30,6 +30,31 @@ describe("getProviderDisconnectIgnoredSlugs", () => {
       ).toEqual([]);
     },
   );
+
+  it.each([502, 503, 504])(
+    "avoids Together after an eligible numeric SSE %s failure",
+    (code) => {
+      expect(
+        getProviderDisconnectIgnoredSlugs(
+          { code, message: "Upstream unavailable" },
+          {
+            provider_name: "Together",
+          },
+        ),
+      ).toEqual(["together"]);
+    },
+  );
+
+  it("does not exclude an upstream for a bare abort", () => {
+    expect(
+      getProviderDisconnectIgnoredSlugs(
+        Object.assign(new Error("The operation was aborted"), {
+          name: "AbortError",
+        }),
+        { provider_name: "Together" },
+      ),
+    ).toEqual([]);
+  });
 });
 
 describe("wrapProviderTerminalError", () => {

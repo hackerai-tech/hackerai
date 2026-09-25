@@ -635,6 +635,34 @@ describe("desktop-local sandbox file helpers", () => {
     ).rejects.toBe(stop);
   });
 
+  it.each([
+    "ENOSPC: no space left on device",
+    "Failed to prepare local file: disk quota exceeded",
+  ])("reports local attachment disk exhaustion: %s", async (message) => {
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const copyLocal = jest.fn().mockRejectedValue(new Error(message));
+    const run = jest.fn().mockRejectedValue(new Error("exit status 1"));
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "localPath",
+            path: "/private/report.txt",
+            localPath: "/tmp/hackerai-upload/report.txt",
+          },
+        ],
+        async () => ({ commands: { run }, files: { copyLocal } }),
+      );
+      expect(result.failureDetails?.[0].reason).toBe("attachment_disk_full");
+      expect(getSandboxUploadUserMessage(result)).toContain(
+        "Free some disk space",
+      );
+      expect(copyLocal).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("retries transient E2B command-channel handshake timeouts", async () => {
     jest.useFakeTimers();
     const consoleWarnSpy = jest
