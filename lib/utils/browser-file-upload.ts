@@ -1,5 +1,8 @@
+import type { ChatMode } from "@/types/chat";
+
 // Keep signed URLs and transfer state in memory, outside persisted drafts.
 export interface BrowserUploadTransfer {
+  mode: ChatMode;
   controller: AbortController;
   running: boolean;
   retryable: boolean;

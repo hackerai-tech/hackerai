@@ -375,6 +375,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       let transfer = browserUploadTransfers.get(file);
       if (transfer?.running) return;
       transfer ??= {
+        mode,
         controller: new AbortController(),
         running: false,
         retryable: false,
@@ -384,6 +385,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       transfer.retryable = false;
       browserUploadTransfers.set(file, transfer);
       activeTransfersRef.current.add(file);
+      const uploadMode = transfer.mode;
       const { signal } = transfer.controller;
       const getCurrentUploadIndex = () => {
         if (signal.aborted) return null;
@@ -396,7 +398,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       try {
         logLocalAttachmentDebug("s3-upload-start", {
           fileName: file.name,
-          mode,
+          mode: uploadMode,
           sandboxPreference,
         });
 
@@ -411,7 +413,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
             fileName: file.name,
             contentType: file.type || "application/octet-stream",
             size: file.size,
-            mode,
+            mode: uploadMode,
             ...(storageRegion ? { storageRegion } : {}),
           });
           transfer.reservation = reservation;
@@ -429,7 +431,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           name: file.name,
           mediaType: file.type,
           size: file.size,
-          mode,
+          mode: uploadMode,
         });
 
         const currentUploadIndex = getCurrentUploadIndex();
@@ -440,7 +442,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
 
         // Only check token limit for "ask" mode
         // In "agent" mode, files are accessed in sandbox, no token limit applies
-        if (mode === "ask") {
+        if (uploadMode === "ask") {
           const currentTotal = Math.max(
             0,
             getTotalTokens() -

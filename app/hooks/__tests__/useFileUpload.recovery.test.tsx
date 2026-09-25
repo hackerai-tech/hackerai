@@ -91,11 +91,11 @@ function HarnessProvider({ children }: { children: ReactNode }) {
     </StateContext.Provider>
   );
 }
-function useHarness() {
+function useHarness(mode: "ask" | "agent" = "agent") {
   const globalState = useContext(StateContext);
   return {
-    picker: useFileUpload("agent"),
-    preview: useFileUpload("agent"),
+    picker: useFileUpload(mode),
+    preview: useFileUpload(mode),
     uploadedFiles: globalState.uploadedFiles as UploadedFileState[],
     clear: globalState.clear,
   };
@@ -137,7 +137,9 @@ describe("browser attachment recovery", () => {
 
   it("retries a transient transfer against one reservation and finalizes once", async () => {
     (global.fetch as jest.Mock).mockRejectedValueOnce(new TypeError("offline"));
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("report.txt")]),
@@ -155,7 +157,9 @@ describe("browser attachment recovery", () => {
 
   it("allows explicit retry from another hook without a new reservation or duplicate requests", async () => {
     (global.fetch as jest.Mock).mockRejectedValue(new TypeError("offline"));
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("report.txt")]),
@@ -194,7 +198,9 @@ describe("browser attachment recovery", () => {
           pending.push({ resolve, signal: options.signal }),
         ),
     );
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("first.txt"), file("second.txt")]),
@@ -219,7 +225,9 @@ describe("browser attachment recovery", () => {
 
   it("cancels retry timers when attachments clear", async () => {
     (global.fetch as jest.Mock).mockRejectedValue(new TypeError("offline"));
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("report.txt")]),
@@ -239,7 +247,9 @@ describe("browser attachment recovery", () => {
           finish = resolve;
         }),
     );
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("report.txt")]),
@@ -258,7 +268,9 @@ describe("browser attachment recovery", () => {
       ok: false,
       status: 403,
     });
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("denied.txt")]),
@@ -284,7 +296,9 @@ describe("browser attachment recovery", () => {
   });
 
   it("replaces generated pasted text using the previous file identity", async () => {
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handlePastedTextAttachment("x".repeat(5000));
     });
@@ -305,7 +319,9 @@ describe("browser attachment recovery", () => {
       .spyOn(navigator, "onLine", "get")
       .mockReturnValue(false);
     (global.fetch as jest.Mock).mockRejectedValueOnce(new TypeError("offline"));
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("report.txt")]),
@@ -332,7 +348,9 @@ describe("browser attachment recovery", () => {
           ),
         ),
     );
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([file("report.txt")]),
@@ -350,7 +368,9 @@ describe("browser attachment recovery", () => {
 
   it("keeps repeat selections of the same File independently removable", async () => {
     const sameFile = file("report.txt");
-    const { result } = renderHook(useHarness, { wrapper: HarnessProvider });
+    const { result } = renderHook(() => useHarness(), {
+      wrapper: HarnessProvider,
+    });
     await act(async () => {
       await result.current.picker.handleFileUploadEvent(
         select([sameFile, sameFile]),
@@ -366,13 +386,37 @@ describe("browser attachment recovery", () => {
     expect(result.current.uploadedFiles).toHaveLength(1);
   });
 
+  it("keeps the original upload mode when a failed attachment is retried", async () => {
+    (global.fetch as jest.Mock).mockRejectedValue(new TypeError("offline"));
+    const { result, rerender } = renderHook(
+      ({ mode }: { mode: "ask" | "agent" }) => useHarness(mode),
+      { wrapper: HarnessProvider, initialProps: { mode: "agent" } },
+    );
+    await act(async () => {
+      await result.current.picker.handleFileUploadEvent(
+        select([file("report.txt")]),
+      );
+    });
+    await tick(3000);
+    rerender({ mode: "ask" });
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true });
+    await act(async () => {
+      result.current.preview.handleRetryFile(0);
+    });
+    expect(generateS3UploadUrlAction).toHaveBeenCalledTimes(1);
+    expect(saveFile).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "agent" }),
+    );
+    expect(result.current.uploadedFiles[0].uploaded).toBe(true);
+  });
+
   it("aborts in-flight requests on unmount", async () => {
     let signal!: AbortSignal;
     (global.fetch as jest.Mock).mockImplementation((_url, options) => {
       signal = options.signal;
       return new Promise(() => {});
     });
-    const { result, unmount } = renderHook(useHarness, {
+    const { result, unmount } = renderHook(() => useHarness(), {
       wrapper: HarnessProvider,
     });
     await act(async () => {
