@@ -53,8 +53,21 @@ import {
   prepareReplayAuthorization,
   type ModelHistorySnapshot,
 } from "@/lib/chat/model-history";
-import { loadModelHistory, saveModelHistory } from "@/lib/db/model-history";
-import { getPostHogFeatureFlagForUser, phLogger } from "@/lib/posthog/server";
+import {
+  loadModelHistory,
+  saveModelHistory,
+  ModelHistoryTimeoutError,
+} from "@/lib/db/model-history";
+import {
+  getPostHogFeatureFlagForUser,
+  getPostHogBooleanFlagDecisionForUser,
+  phLogger,
+} from "@/lib/posthog/server";
+import {
+  cacheHistoryProperties,
+  sampleCacheHistoryStart,
+  type CacheHistoryTelemetry,
+} from "@/lib/analytics/cache-history";
 import { getAppendedNotesUpdate } from "./chat-stream-helpers";
 import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
 import {
@@ -360,6 +373,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
+  cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
   /** UI history before injected reminders/notes, kept for source-derived checkpoints. */
@@ -671,6 +685,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
@@ -1297,10 +1312,48 @@ export async function createAgentStream(
   }
   const initialModelInfo = getEffectiveModelInfo();
   const historyRoute = initialModelInfo.languageModel.modelId ?? "";
-  let historyEnabled =
+  const historyEligible =
     historyRoute.startsWith("deepseek/deepseek-v4") &&
-    isReplayableTextHistory(initialSerializedMessages) &&
-    (await getPostHogFeatureFlagForUser(MODEL_HISTORY_FLAG, ctx.userId));
+    isReplayableTextHistory(initialSerializedMessages);
+  const historyDecision = historyEligible
+    ? await getPostHogBooleanFlagDecisionForUser(MODEL_HISTORY_FLAG, ctx.userId)
+    : null;
+  let historyEnabled = historyEligible && historyDecision === true;
+  const firstAttempt = !state.cacheHistoryTelemetry;
+  const telemetryRunId =
+    state.cacheHistoryTelemetry?.runId ??
+    ctx.usageTracker.usageSettlementId ??
+    randomUUID();
+  const historyTelemetry = (state.cacheHistoryTelemetry ??= {
+    runId: telemetryRunId,
+    eligible: historyEligible,
+    assignment: !historyEligible
+      ? "ineligible"
+      : historyDecision === null
+        ? "unavailable"
+        : historyDecision
+          ? "treatment"
+          : "control",
+    model: historyRoute,
+    startedAt: Date.now(),
+    sampled: historyEligible && sampleCacheHistoryStart(telemetryRunId),
+    attempts: 0,
+    exposures: 0,
+    restores: 0,
+    load: "not_attempted",
+    save: "not_attempted",
+  });
+  historyTelemetry.attempts++;
+  // One sampled start per eligible request, independent of treatment assignment.
+  // Retries and tool steps never emit another start. Terminal events remain unsampled.
+  if (firstAttempt && historyTelemetry.sampled)
+    phLogger.event("cache_history_run_started", {
+      userId: ctx.userId,
+      chat_id: ctx.chatId,
+      trigger_run_id: ctx.triggerRunId,
+      mode: ctx.mode,
+      ...cacheHistoryProperties(historyTelemetry),
+    });
   const historyReplay = new ModelHistoryReplay();
   let historyRevision: number | undefined;
   let sourceModelMessages: ModelMessage[] = [];
@@ -1309,6 +1362,7 @@ export async function createAgentStream(
   let historyIdentity = "";
   let sourceResponseCursor = 0;
   let historyRestored = false;
+  let loadingHistory = false;
   if (historyEnabled) {
     try {
       const schemas = await Promise.all(
@@ -1339,7 +1393,9 @@ export async function createAgentStream(
         state.sourceUiMessages ?? state.finalMessages,
         { tools: promptSerializationTools },
       );
+      loadingHistory = true;
       const stored = await loadModelHistory(ctx.chatId, ctx.userId);
+      loadingHistory = false;
       historyRevision = stored?.revision;
       const snapshot = parseModelHistory(stored?.payload ?? null);
       const restored = restoreModelHistory(
@@ -1348,7 +1404,15 @@ export async function createAgentStream(
         sourceModelMessages,
         initialSerializedMessages,
       );
+      historyTelemetry.load = !stored?.payload
+        ? "missing"
+        : !snapshot
+          ? "invalid"
+          : restored
+            ? "restored"
+            : "invalidated";
       if (restored && snapshot) {
+        historyTelemetry.restores++;
         historyRestored = true;
         initialSerializedMessages = restored;
         frozenSystemPrompt = snapshot.system;
@@ -1373,8 +1437,12 @@ export async function createAgentStream(
           await getAppendedNotesUpdate([], ctx.noteInjectionOpts, true),
         );
       }
-    } catch {
+    } catch (error) {
       // Missing deployment/schema/storage is a control fallback, not a chat failure.
+      if (loadingHistory)
+        historyTelemetry.load =
+          error instanceof ModelHistoryTimeoutError ? "timeout" : "error";
+      historyTelemetry.fallback = "initialization";
       historyEnabled = false;
     }
   }
@@ -1392,6 +1460,7 @@ export async function createAgentStream(
   const exposeHistory = () => {
     if (historyExposed || !historyEnabled) return;
     historyExposed = true;
+    historyTelemetry.exposures++;
     phLogger.event("cache_stable_history_exposed", {
       userId: ctx.userId,
       chat_id: ctx.chatId,
@@ -1399,6 +1468,8 @@ export async function createAgentStream(
       model: historyRoute,
       variant: "v1",
       replay_restored: historyRestored,
+      trigger_run_id: ctx.triggerRunId,
+      ...cacheHistoryProperties(historyTelemetry),
     });
   };
   const requestSystemPrompt = (name: string) =>
@@ -1444,6 +1515,7 @@ export async function createAgentStream(
     abortSignal,
     providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
+      if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       ctx.onModelStreamStart?.();
       if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
@@ -1464,6 +1536,7 @@ export async function createAgentStream(
           historyRoute ||
           !isReplayableTextHistory(rawModelMessages))
       ) {
+        historyTelemetry.fallback = "route_or_content";
         historyEnabled = false;
         historyReplay.reset();
       }
@@ -2015,6 +2088,7 @@ export async function createAgentStream(
         };
       } catch (error) {
         // Do not persist a request assembled through the recovery path as an exact replay.
+        historyTelemetry.fallback = "prepare_error";
         historyEnabled = false;
         historyReplay.reset();
         if (error instanceof AbliterationVisionError || abortSignal.aborted)
@@ -2196,6 +2270,7 @@ export async function createAgentStream(
         response.modelId &&
         response.modelId !== historyRoute
       ) {
+        historyTelemetry.fallback = "response_model";
         historyEnabled = false;
         historyReplay.reset();
       }
@@ -2498,6 +2573,7 @@ export async function createAgentStream(
       ) {
         // Accounting/cleanup above must never wait on optional replay storage.
         // The database wrapper also bounds the work if no registrar is available.
+        historyTelemetry.save = "pending";
         const save = saveModelHistory(
           ctx.chatId,
           ctx.userId,
@@ -2505,8 +2581,13 @@ export async function createAgentStream(
           ctx.streamStartTime,
           historyToSave,
         )
-          .then(() => undefined)
-          .catch(() => undefined);
+          .then((result) => {
+            historyTelemetry.save = result;
+          })
+          .catch((error) => {
+            historyTelemetry.save =
+              error instanceof ModelHistoryTimeoutError ? "timeout" : "error";
+          });
         if (ctx.registerBackgroundWork) ctx.registerBackgroundWork(save);
         else await save;
       }

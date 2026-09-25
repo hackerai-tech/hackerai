@@ -690,6 +690,66 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it("enriches existing run and usage events without adding events", () => {
+    const capture = jest.fn();
+    const shared = {
+      posthog: { capture },
+      userId: "synthetic",
+      chatId: "synthetic-chat",
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      subscription: "pro",
+      triggerRunId: "run_synthetic",
+      cacheHistoryTelemetry: {
+        runId: "settlement-synthetic",
+        eligible: true,
+        assignment: "treatment",
+        model: "deepseek/deepseek-v4-flash",
+        startedAt: 1,
+        sampled: false,
+        attempts: 2,
+        exposures: 2,
+        restores: 1,
+        load: "restored",
+        save: "timeout",
+      },
+      usageMeasurement: {
+        usage_measurement_version: 1,
+        usage_observed_model_cost_dollars: 0.03,
+        usage_discarded_retry_cost_dollars: 0.01,
+      },
+    };
+    captureAgentCompletionAnalytics({
+      ...shared,
+      outcome: "success",
+      hasResponseContent: true,
+      selectedModel: "auto",
+      configuredModelId: "deepseek/deepseek-v4-flash",
+      sandboxInfo: null,
+      abliteratedProviderSummary: undefined,
+    });
+    captureUsageCost({
+      ...shared,
+      usage: { model: "auto", costDollars: 0.02, modelCostDollars: 0.02 },
+    });
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture.mock.calls.map(([event]) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+    for (const [event] of capture.mock.calls) {
+      expect(event.properties).toMatchObject({
+        trigger_run_id: "run_synthetic",
+        cache_history_run_id: "settlement-synthetic",
+        cache_history_assignment: "treatment",
+        cache_history_save_result: "timeout",
+        cache_history_attempts: 2,
+        usage_observed_model_cost_dollars: 0.03,
+        usage_discarded_retry_cost_dollars: 0.01,
+      });
+    }
+  });
+
   it.each(["success", "aborted"] as const)(
     "attributes %s to monthly budget without overwriting model experiment",
     (outcome) => {

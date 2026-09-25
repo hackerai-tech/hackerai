@@ -3244,6 +3244,9 @@ export const agentLongTask = task({
                   });
                 }
                 captureUsageCost({
+                  cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                  usageMeasurement:
+                    usageTracker.measurementProperties(selectedModel),
                   triggerRunId: ctx.run.id,
                   regionalFreeLimits,
                   monthlyFreeBudget,
@@ -3620,6 +3623,7 @@ export const agentLongTask = task({
               ctxSystemTokens,
               ctxMaxTokens,
               streamStartTime,
+              triggerRunId: ctx.run.id,
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
@@ -3843,6 +3847,9 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                usageMeasurement:
+                  usageTracker.measurementProperties(selectedModel),
                 monthlyFreeBudget,
                 hasResponseContent: hasCompletedAssistantText(
                   retryMessages,
@@ -4837,6 +4844,9 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                        usageMeasurement:
+                          usageTracker.measurementProperties(selectedModel),
                         monthlyFreeBudget,
                         hasResponseContent: hasCompletedAssistantText(
                           finishedMessages,

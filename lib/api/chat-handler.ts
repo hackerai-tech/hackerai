@@ -1443,6 +1443,9 @@ export const createChatHandler = () => {
                   });
                 }
                 captureUsageCost({
+                  cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                  usageMeasurement:
+                    usageTracker.measurementProperties(selectedModel),
                   regionalFreeLimits,
                   monthlyFreeBudget,
                   posthog,
@@ -2334,6 +2337,12 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
+                                  cacheHistoryTelemetry:
+                                    state.cacheHistoryTelemetry,
+                                  usageMeasurement:
+                                    usageTracker.measurementProperties(
+                                      selectedModel,
+                                    ),
                                   monthlyFreeBudget,
                                   hasResponseContent: hasCompletedAssistantText(
                                     retryMessages,
@@ -2664,6 +2673,9 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
+                      cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                      usageMeasurement:
+                        usageTracker.measurementProperties(selectedModel),
                       monthlyFreeBudget,
                       hasResponseContent: hasCompletedAssistantText(
                         messages,

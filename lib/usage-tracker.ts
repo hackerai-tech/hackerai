@@ -34,6 +34,9 @@ const isValidCacheTokenCount = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 type ModelStepCost = {
+  measurementCost?: number;
+  inputReported: boolean;
+  cacheReadReported: boolean;
   rawCost: number;
   authoritativeCost?: number;
   inputTokens: number;
@@ -105,6 +108,15 @@ export class UsageTracker {
   modelProviderCost = 0;
   private modelStepCosts: ModelStepCost[] = [];
   private summarizationStepCosts: ModelStepCost[] = [];
+  // Measurement only: retries may replace billable usage, but incurred model work
+  // must not disappear from experiment cost. Never include this in deductions.
+  private discardedModelSteps: ModelStepCost[] = [];
+  private modelCallsStarted = 0;
+  private retryResets = 0;
+
+  recordModelCall(): void {
+    this.modelCallsStarted++;
+  }
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
@@ -125,6 +137,8 @@ export class UsageTracker {
    * model leg with the fallback model.
    */
   resetModelLeg() {
+    this.discardedModelSteps.push(...this.modelStepCosts);
+    this.retryResets++;
     this.providerCost -= this.modelProviderCost;
     this.modelProviderCost = 0;
     this.inputTokens = this.summarizationInputTokens;
@@ -162,6 +176,15 @@ export class UsageTracker {
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const stepCostIndex =
       this.modelStepCosts.push({
+        measurementCost: [
+          usage.raw?.cost_details?.upstream_inference_cost,
+          usage.raw?.cost_details?.upstreamInferenceCost,
+          usage.raw?.costDetails?.upstream_inference_cost,
+          usage.raw?.costDetails?.upstreamInferenceCost,
+          usage.raw?.cost,
+        ].find(isValidCacheTokenCount),
+        inputReported: isValidCacheTokenCount(usage.inputTokens),
+        cacheReadReported: isValidCacheTokenCount(reportedCacheReadTokens),
         rawCost,
         inputTokens: usage.inputTokens || 0,
         outputTokens: usage.outputTokens || 0,
@@ -178,6 +201,7 @@ export class UsageTracker {
 
   accumulateSummarization(usage: {
     inputTokens: number;
+    inputTokensReported?: boolean;
     outputTokens: number;
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
@@ -210,6 +234,12 @@ export class UsageTracker {
     this.cacheWriteTokens += cacheWriteTokens;
     this.summarizationCacheWriteTokens += cacheWriteTokens;
     this.summarizationStepCosts.push({
+      measurementCost: isValidCacheTokenCount(usage.cost)
+        ? usage.cost
+        : undefined,
+      inputReported:
+        usage.inputTokensReported ?? isValidCacheTokenCount(usage.inputTokens),
+      cacheReadReported: isValidCacheTokenCount(usage.cacheReadTokens),
       rawCost,
       inputTokens,
       outputTokens,
@@ -228,6 +258,10 @@ export class UsageTracker {
     stepCostIndex: number | undefined,
     costDollars: number | undefined,
   ) {
+    if (stepCostIndex !== undefined && isValidCacheTokenCount(costDollars)) {
+      const step = this.modelStepCosts[stepCostIndex];
+      if (step) step.measurementCost = costDollars;
+    }
     if (!isPositiveFiniteNumber(costDollars) || stepCostIndex === undefined) {
       return;
     }
@@ -284,6 +318,68 @@ export class UsageTracker {
     return (
       this.inputTokens > 0 || this.outputTokens > 0 || this.providerCost > 0
     );
+  }
+
+  private stepMeasurementCost(
+    step: ModelStepCost,
+    fallbackModel: string,
+  ): number {
+    const reported = step.measurementCost;
+    return reported !== undefined
+      ? reported
+      : calculateRawModelUsageCostDollars({
+          inputTokens: step.inputTokens,
+          outputTokens: step.outputTokens,
+          cacheReadTokens: step.cacheReadTokens,
+          cacheWriteTokens: step.cacheWriteTokens,
+          modelName: step.modelName ?? fallbackModel,
+        });
+  }
+
+  /** Observed costs, not billing. Missing/failed unreported calls are not zero. */
+  measurementProperties(fallbackModel: string) {
+    const modelSteps = [...this.discardedModelSteps, ...this.modelStepCosts];
+    const steps = [...modelSteps, ...this.summarizationStepCosts];
+    const sumCost = (values: ModelStepCost[]) =>
+      values.reduce(
+        (sum, step) => sum + this.stepMeasurementCost(step, fallbackModel),
+        0,
+      );
+    const covered = steps.filter(
+      (step) => step.inputReported && step.cacheReadReported,
+    );
+    return {
+      usage_measurement_version: 1,
+      usage_model_calls_started: this.modelCallsStarted,
+      usage_model_records: modelSteps.length,
+      usage_summary_records: this.summarizationStepCosts.length,
+      usage_retry_resets: this.retryResets,
+      usage_input_reported_records: steps.filter((step) => step.inputReported)
+        .length,
+      usage_cache_read_reported_records: covered.length,
+      usage_provider_cost_records: steps.filter(
+        (step) => step.measurementCost !== undefined,
+      ).length,
+      usage_observed_model_cost_dollars: sumCost(steps),
+      usage_discarded_retry_cost_dollars: sumCost(this.discardedModelSteps),
+      usage_summary_cost_dollars: sumCost(this.summarizationStepCosts),
+      usage_observed_input_tokens: steps.reduce(
+        (sum, step) => sum + step.inputTokens,
+        0,
+      ),
+      usage_observed_cache_read_tokens: steps.reduce(
+        (sum, step) => sum + step.cacheReadTokens,
+        0,
+      ),
+      usage_cache_covered_input_tokens: covered.reduce(
+        (sum, step) => sum + step.inputTokens,
+        0,
+      ),
+      usage_cache_covered_read_tokens: covered.reduce(
+        (sum, step) => sum + step.cacheReadTokens,
+        0,
+      ),
+    };
   }
 
   computeModelCostDollars(

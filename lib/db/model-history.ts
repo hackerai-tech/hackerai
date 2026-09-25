@@ -8,6 +8,11 @@ import {
 
 type Owner = { serviceKey: string; chatId: string; userId: string };
 export const MODEL_HISTORY_DEADLINE_MS = 1500;
+export class ModelHistoryTimeoutError extends Error {
+  constructor() {
+    super("Model history storage deadline exceeded");
+  }
+}
 
 async function withHistoryDeadline<T>(work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -16,7 +21,7 @@ async function withHistoryDeadline<T>(work: Promise<T>): Promise<T> {
       work,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
-          () => reject(new Error("Model history storage deadline exceeded")),
+          () => reject(new ModelHistoryTimeoutError()),
           MODEL_HISTORY_DEADLINE_MS,
         );
       }),
@@ -54,8 +59,9 @@ export async function saveModelHistory(
   snapshot: ModelHistorySnapshot,
 ) {
   const payload = JSON.stringify(snapshot);
-  if (Buffer.byteLength(payload) > MODEL_HISTORY_MAX_BYTES) return false;
-  return withHistoryDeadline(
+  if (Buffer.byteLength(payload) > MODEL_HISTORY_MAX_BYTES)
+    return "too_large" as const;
+  const saved = await withHistoryDeadline(
     getConvexClient().mutation(saveReference, {
       chatId,
       userId,
@@ -65,4 +71,5 @@ export async function saveModelHistory(
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
     }),
   );
+  return saved ? ("saved" as const) : ("rejected" as const);
 }

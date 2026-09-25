@@ -17,16 +17,32 @@ export async function getPostHogFeatureFlagForUser(
   userId: string,
   personProperties?: Record<string, string>,
 ): Promise<boolean> {
+  return (
+    (await getPostHogBooleanFlagDecisionForUser(
+      flagKey,
+      userId,
+      personProperties,
+    )) === true
+  );
+}
+
+/** Preserve an unavailable evaluation instead of mislabelling it as control. */
+export async function getPostHogBooleanFlagDecisionForUser(
+  flagKey: string,
+  userId: string,
+  personProperties?: Record<string, string>,
+): Promise<boolean | null> {
   const client = getClient();
-  if (!client) return false;
+  if (!client) return null;
   try {
     const flags = await client.evaluateFlags(userId, {
       flagKeys: [flagKey],
       ...(personProperties && { personProperties }),
     });
-    return flags.getFlag(flagKey) === true;
+    const value = flags.getFlag(flagKey);
+    return typeof value === "boolean" ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 

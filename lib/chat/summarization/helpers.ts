@@ -41,6 +41,8 @@ import { InvalidCompactionSummaryError } from "./startup-compaction";
 
 export interface SummarizationUsage {
   inputTokens: number;
+  /** Keep missing provider usage distinct from the normalized billing zero. */
+  inputTokensReported?: boolean;
   outputTokens: number;
   estimatedCompactedInputTokens?: number;
   cacheReadTokens?: number;
@@ -822,15 +824,27 @@ export const generateSummaryText = async (
   )?.inputTokenDetails;
   const usage: SummarizationUsage = {
     inputTokens: result.usage?.inputTokens ?? 0,
+    inputTokensReported:
+      typeof result.usage?.inputTokens === "number" &&
+      Number.isFinite(result.usage.inputTokens) &&
+      result.usage.inputTokens >= 0,
     outputTokens: result.usage?.outputTokens ?? 0,
     estimatedCompactedInputTokens,
-    ...(details?.cacheReadTokens
+    ...(typeof details?.cacheReadTokens === "number" &&
+    Number.isFinite(details.cacheReadTokens) &&
+    details.cacheReadTokens >= 0
       ? { cacheReadTokens: details.cacheReadTokens }
       : undefined),
-    ...(details?.cacheWriteTokens
+    ...(typeof details?.cacheWriteTokens === "number" &&
+    Number.isFinite(details.cacheWriteTokens) &&
+    details.cacheWriteTokens >= 0
       ? { cacheWriteTokens: details.cacheWriteTokens }
       : undefined),
-    ...(providerCost ? { cost: providerCost } : undefined),
+    ...(typeof providerCost === "number" &&
+    Number.isFinite(providerCost) &&
+    providerCost >= 0
+      ? { cost: providerCost }
+      : undefined),
     model:
       result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
   };

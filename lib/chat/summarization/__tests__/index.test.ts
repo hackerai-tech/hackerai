@@ -58,6 +58,7 @@ const {
   compactModelMessagesForSummarization,
   estimateSummaryInputTokens,
   getRecentCompleteModelTail,
+  generateSummaryText,
 } = require("../helpers") as typeof import("../helpers");
 const { AGENT_SUMMARIZATION_PROMPT, AGENT_RESUME_PREAMBLE } =
   require("../prompts") as typeof import("../prompts");
@@ -113,6 +114,39 @@ const createMockWriter = (): UIMessageStreamWriter =>
   ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
 
 const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
+
+describe("summary usage coverage", () => {
+  it.each([true, false])(
+    "preserves zero versus absent usage (reported=%s)",
+    async (reported) => {
+      mockGenerateText.mockReset();
+      mockGenerateText.mockResolvedValueOnce({
+        text: "Synthetic summary",
+        finishReason: "stop",
+        usage: reported
+          ? {
+              inputTokens: 0,
+              outputTokens: 0,
+              inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 0 },
+              raw: { cost: 0 },
+            }
+          : {},
+      });
+      const result = await generateSummaryText(
+        [],
+        mockLanguageModel,
+        "ask",
+        "system",
+        false,
+      );
+      expect(result.usage.inputTokens).toBe(0);
+      expect(result.usage.inputTokensReported).toBe(reported);
+      expect(result.usage.cacheReadTokens).toBe(reported ? 0 : undefined);
+      expect(result.usage.cacheWriteTokens).toBe(reported ? 0 : undefined);
+      expect(result.usage.cost).toBe(reported ? 0 : undefined);
+    },
+  );
+});
 
 describe("agent compaction state preservation", () => {
   it("requires runtime and resumable process state in the checkpoint", () => {

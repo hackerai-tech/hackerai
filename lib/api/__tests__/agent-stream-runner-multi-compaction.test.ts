@@ -1,6 +1,9 @@
 import type { ModelMessage, UIMessage } from "ai";
 import { deserialize, serialize } from "node:v8";
 import { historyDigest, sourceMessageDigests } from "@/lib/chat/model-history";
+import { sampleCacheHistoryStart } from "@/lib/analytics/cache-history";
+import { phLogger } from "@/lib/posthog/server";
+import { ModelHistoryTimeoutError } from "@/lib/db/model-history";
 const originalClone = globalThis.structuredClone;
 beforeAll(() => {
   globalThis.structuredClone = <T>(value: T): T =>
@@ -22,10 +25,14 @@ const mockLoadHistory = jest.fn();
 const mockSaveHistory = jest.fn();
 const mockNotesUpdate = jest.fn();
 jest.mock("@/lib/db/model-history", () => ({
+  ModelHistoryTimeoutError: jest.requireActual("@/lib/db/model-history")
+    .ModelHistoryTimeoutError,
   loadModelHistory: (...args: unknown[]) => mockLoadHistory(...args),
   saveModelHistory: (...args: unknown[]) => mockSaveHistory(...args),
 }));
 jest.mock("@/lib/posthog/server", () => ({
+  getPostHogBooleanFlagDecisionForUser: (...args: unknown[]) =>
+    mockHistoryFlag(...args),
   getPostHogFeatureFlagForUser: (...args: unknown[]) =>
     mockHistoryFlag(...args),
   phLogger: { event: jest.fn(), warn: jest.fn(), info: jest.fn() },
@@ -630,7 +637,7 @@ describe("createAgentStream repeated compaction", () => {
     mockLoadHistory
       .mockReset()
       .mockResolvedValue({ revision: 0, payload: null });
-    mockSaveHistory.mockReset().mockResolvedValue(true);
+    mockSaveHistory.mockReset().mockResolvedValue("saved");
     mockNotesUpdate.mockReset();
     mockDescribeImage
       .mockReset()
@@ -646,6 +653,86 @@ describe("createAgentStream repeated compaction", () => {
     mockRunSummarizationStep.mockReset();
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
+  });
+
+  it.each([true, false, null])(
+    "samples one start across retries and keeps initial assignment %s",
+    async (decision) => {
+      const id = Array.from({ length: 100 }, (_, i) => `run-${i}`).find(
+        sampleCacheHistoryStart,
+      )!;
+      mockHistoryFlag.mockResolvedValue(decision as any);
+      const modelId = "deepseek/deepseek-v4.1-flash";
+      const state = initAgentStreamState(
+        [uiMessage("initial", "private prompt")],
+        { usedTokens: 1, maxTokens: 128_000 },
+      );
+      const ctx = createTestStreamContext({
+        triggerRunId: "trigger-id",
+        trackedProvider: { languageModel: () => ({ modelId }) },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: { usageSettlementId: id },
+      });
+      const first = (await createAgentStream(
+        "model",
+        ctx as any,
+        state,
+      )) as any;
+      first.experimental_onStepStart({ model: { modelId } });
+      first.experimental_onStepStart({ model: { modelId } });
+      mockHistoryFlag.mockResolvedValue(false);
+      await createAgentStream("model", ctx as any, state);
+      const calls = jest.mocked(phLogger.event).mock.calls;
+      expect(
+        calls.filter(([name]) => name === "cache_history_run_started"),
+      ).toHaveLength(1);
+      expect(
+        calls.filter(([name]) => name === "cache_stable_history_exposed"),
+      ).toHaveLength(decision === true ? 1 : 0);
+      expect(state.cacheHistoryTelemetry).toMatchObject({
+        assignment:
+          decision === null
+            ? "unavailable"
+            : decision
+              ? "treatment"
+              : "control",
+        attempts: 2,
+      });
+      expect(calls[0][1]).toMatchObject({
+        trigger_run_id: "trigger-id",
+        cache_history_run_id: id,
+      });
+      expect(JSON.stringify(calls)).not.toContain("private prompt");
+    },
+  );
+
+  it("records a storage timeout without exposing or failing the model stream", async () => {
+    mockHistoryFlag.mockResolvedValue(true);
+    mockLoadHistory.mockRejectedValue(new ModelHistoryTimeoutError());
+    const state = initAgentStreamState([uiMessage("initial", "request")], {
+      usedTokens: 1,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "model",
+      createTestStreamContext({
+        trackedProvider: {
+          languageModel: () => ({ modelId: "deepseek/deepseek-v4.1-flash" }),
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {},
+      }) as any,
+      state,
+    )) as any;
+    stream.experimental_onStepStart({
+      model: { modelId: "deepseek/deepseek-v4.1-flash" },
+    });
+    expect(state.cacheHistoryTelemetry).toMatchObject({
+      assignment: "treatment",
+      load: "timeout",
+      fallback: "initialization",
+      exposures: 0,
+    });
   });
 
   it.each(["ask", "agent"])(
@@ -785,8 +872,8 @@ describe("createAgentStream repeated compaction", () => {
       let finishSave: (() => void) | undefined;
       if (background)
         mockSaveHistory.mockReturnValue(
-          new Promise<void>((resolve) => {
-            finishSave = resolve;
+          new Promise<string>((resolve) => {
+            finishSave = () => resolve("saved");
           }),
         );
       const model = "deepseek/deepseek-v4.1-flash";
@@ -828,7 +915,10 @@ describe("createAgentStream repeated compaction", () => {
         await register.mock.calls[0][0];
       }
       if (aborted) expect(mockSaveHistory).not.toHaveBeenCalled();
-      else
+      expect(state.cacheHistoryTelemetry?.save).toBe(
+        aborted ? "not_attempted" : "saved",
+      );
+      if (!aborted)
         expect(mockSaveHistory).toHaveBeenCalledWith(
           "chat",
           "user",
