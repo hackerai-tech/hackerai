@@ -189,6 +189,7 @@ export async function createCentrifugoPtyHandle(
   let createPublishAttempts = 0;
   let subscriptionEvents = 0;
   let receivedPayloadBytesEstimate = 0;
+  let unmatchedPayloadBytesEstimate = 0;
   let receivedPublications = 0;
   let unmatchedPublications = 0;
   let ptyDataBytes = 0;
@@ -215,6 +216,7 @@ export async function createCentrifugoPtyHandle(
           sample_rate: sampleRate,
           pty_data_bytes: ptyDataBytes,
           received_payload_bytes_estimate: receivedPayloadBytesEstimate,
+          unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
           received_publications: receivedPublications,
           unmatched_publications: unmatchedPublications,
           subscription_events: subscriptionEvents,
@@ -360,10 +362,12 @@ export async function createCentrifugoPtyHandle(
 
     subscription.on("publication", (ctx) => {
       receivedPublications += 1;
-      receivedPayloadBytesEstimate += estimateRelayPayloadBytes(ctx.data);
+      const payloadBytes = estimateRelayPayloadBytes(ctx.data);
+      receivedPayloadBytesEstimate += payloadBytes;
       try {
         if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
           unmatchedPublications += 1;
+          unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
         const reassembled = reassembler.accept(ctx.data);
@@ -371,6 +375,7 @@ export async function createCentrifugoPtyHandle(
         const msg = parsePtyMessage(reassembled);
         if (!msg || msg.sessionId !== sessionId) {
           unmatchedPublications += 1;
+          unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
 

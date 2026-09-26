@@ -840,6 +840,13 @@ describe("CentrifugoSandbox", () => {
           },
         });
         sub.emit("publication", {
+          data: {
+            type: "pty_data",
+            sessionId: "another-session",
+            data: "y".repeat(1024 * 1024),
+          },
+        });
+        sub.emit("publication", {
           data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
         });
         await promise;
@@ -857,13 +864,17 @@ describe("CentrifugoSandbox", () => {
           expect.objectContaining({
             sample_rate: 1,
             stdout_bytes: 0,
-            unmatched_publications: 1,
+            unmatched_publications: 2,
             received_payload_bytes_estimate: expect.any(Number),
+            unmatched_payload_bytes_estimate: expect.any(Number),
           }),
         );
         expect(
           trafficLog?.received_payload_bytes_estimate as number,
         ).toBeGreaterThan(1024 * 1024);
+        expect(
+          trafficLog?.unmatched_payload_bytes_estimate as number,
+        ).toBeGreaterThan(2 * 1024 * 1024);
       } finally {
         logSpy.mockRestore();
       }
