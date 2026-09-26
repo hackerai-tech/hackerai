@@ -42,6 +42,7 @@ import {
 import { evaluateProMonthlyPricingExperiment } from "@/lib/experiments/pro-monthly-pricing.server";
 import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
+import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
 
 function stripeProductId(product: Stripe.Price["product"]): string | undefined {
   return typeof product === "string" ? product : product?.id;
@@ -609,6 +610,19 @@ export const POST = async (req: NextRequest) => {
         userId,
         requestId,
       });
+    }
+
+    // The old renewal can still be payable after an immediate cancellation.
+    // Do not take a second Checkout payment until its final state is known.
+    if (await hasRecentCanceledRenewalAtRisk(stripe, customer.id)) {
+      return json(
+        {
+          error:
+            "A recent subscription payment is still being resolved. Contact support before starting another subscription so you are not charged twice.",
+          code: "recent_renewal_payment_needs_review",
+        },
+        { status: 409 },
+      );
     }
 
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;

@@ -59,6 +59,16 @@ subscription, credit note, support resolution, partial payment, or unrelated
 refund requires manual reconciliation. Payments made before cancellation and
 voluntary cancellations are outside this policy.
 
+An in-app cancellation of a `past_due` or `unpaid` subscription ends service
+immediately. The cancellation path voids its latest open automatic renewal
+invoice only when nothing has been paid and every line is a non-prorated
+subscription item. Stripe can settle an invoice while cancellation is running;
+the subscribe route checks recent canceled renewals before creating another
+Checkout session. An open invoice or a payment around cancellation returns a
+409 for support reconciliation instead of risking a second charge. A voided
+invoice allows a new checkout. This guard does not itself refund a settled
+payment.
+
 Refund creation uses an invoice/charge idempotency key and durable refund metadata
 for retries after Stripe's idempotency cache expires. API failures retry webhook
 delivery. Pending refunds stay pending; failed, canceled, or action-required refund

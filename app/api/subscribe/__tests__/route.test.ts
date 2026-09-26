@@ -13,6 +13,7 @@ const mockGetOrganization = jest.fn();
 const mockCreateOrganization = jest.fn();
 const mockUpdateOrganization = jest.fn();
 const mockListSubscriptions = jest.fn();
+const mockRetrieveInvoice = jest.fn();
 const mockListPrices = jest.fn();
 const mockListCustomers = jest.fn();
 const mockCreateCustomer = jest.fn();
@@ -64,6 +65,7 @@ jest.mock("@/app/api/workos", () => ({
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: { list: mockListSubscriptions },
+    invoices: { retrieve: mockRetrieveInvoice },
     prices: {
       list: mockListPrices,
     },
@@ -262,6 +264,53 @@ describe("POST /api/subscribe", () => {
         }),
       }),
     );
+  });
+
+  it("blocks a second checkout when a recently canceled renewal was paid late", async () => {
+    const endedAt = Math.floor(Date.now() / 1000) - 120;
+    mockListOrganizationMemberships.mockResolvedValueOnce({
+      data: [{ organizationId: "org_active", role: { slug: "admin" } }],
+    } as never);
+    mockGetOrganization.mockResolvedValueOnce({
+      id: "org_active",
+      stripeCustomerId: "cus_active",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValueOnce({
+      id: "cus_active",
+      metadata: { workOSOrganizationId: "org_active" },
+    } as never);
+    mockListSubscriptions.mockResolvedValueOnce({
+      data: [
+        {
+          id: "sub_old",
+          status: "canceled",
+          ended_at: endedAt,
+          customer: "cus_active",
+          latest_invoice: "in_old",
+          cancellation_details: { reason: "cancellation_requested" },
+        },
+      ],
+    } as never);
+    mockRetrieveInvoice.mockResolvedValueOnce({
+      id: "in_old",
+      customer: "cus_active",
+      parent: { subscription_details: { subscription: "sub_old" } },
+      billing_reason: "subscription_cycle",
+      collection_method: "charge_automatically",
+      status: "paid",
+      status_transitions: { paid_at: endedAt + 120 },
+    } as never);
+
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-plus-monthly-plan" }));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual(
+      expect.objectContaining({
+        code: "recent_renewal_payment_needs_review",
+      }),
+    );
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
   });
 
   it("rejects ambiguous multi-organization checkout without an active organization", async () => {
