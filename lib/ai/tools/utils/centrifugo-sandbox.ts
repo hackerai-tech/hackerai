@@ -901,7 +901,19 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           const reassembled = reassembler.accept(ctx.data);
           if (!reassembled) return;
           const message = parseSandboxMessage(reassembled);
-          if (!message) return;
+          if (!message) {
+            if (
+              typeof reassembled === "object" &&
+              reassembled !== null &&
+              "type" in reassembled &&
+              typeof reassembled.type === "string" &&
+              IGNORED_MESSAGE_TYPES.has(reassembled.type)
+            ) {
+              unmatchedPublications += 1;
+              unmatchedPayloadBytesEstimate += payloadBytes;
+            }
+            return;
+          }
           if (message.commandId !== commandId) {
             unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
