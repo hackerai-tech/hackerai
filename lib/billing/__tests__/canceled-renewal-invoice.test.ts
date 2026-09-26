@@ -97,6 +97,20 @@ describe("canceled renewal invoice", () => {
     ).resolves.toBe(true);
   });
 
+  it("keeps a collectible invoice blocked even with a support note", async () => {
+    for (const status of ["open", "uncollectible"]) {
+      const { stripe } = stripeMock(
+        invoice({
+          status,
+          metadata: { hackeraiLatePaymentResolution: "reviewed" },
+        }),
+      );
+      await expect(
+        hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 120),
+      ).resolves.toBe(true);
+    }
+  });
+
   it("does not block checkout after the renewal has been voided", async () => {
     const { stripe } = stripeMock(invoice({ status: "void" }));
 

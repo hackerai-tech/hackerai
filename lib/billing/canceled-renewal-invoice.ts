@@ -143,7 +143,10 @@ export async function hasRecentCanceledRenewalAtRisk(
 
       const invoice = await getCanceledRenewalInvoice(stripe, subscription);
       if (!invoice) continue;
-      if (invoice.status === "open" && invoice.amount_remaining > 0) {
+      if (
+        (invoice.status === "open" || invoice.status === "uncollectible") &&
+        invoice.amount_remaining > 0
+      ) {
         return true;
       }
       if (invoice.status === "paid") {
