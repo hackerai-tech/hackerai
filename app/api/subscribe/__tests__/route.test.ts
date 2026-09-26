@@ -14,6 +14,7 @@ const mockCreateOrganization = jest.fn();
 const mockUpdateOrganization = jest.fn();
 const mockListSubscriptions = jest.fn();
 const mockRetrieveInvoice = jest.fn();
+const mockListInvoicePayments = jest.fn();
 const mockListPrices = jest.fn();
 const mockListCustomers = jest.fn();
 const mockCreateCustomer = jest.fn();
@@ -66,6 +67,7 @@ jest.mock("@/app/api/stripe", () => ({
   stripe: {
     subscriptions: { list: mockListSubscriptions },
     invoices: { retrieve: mockRetrieveInvoice },
+    invoicePayments: { list: mockListInvoicePayments },
     prices: {
       list: mockListPrices,
     },
@@ -122,6 +124,7 @@ describe("POST /api/subscribe", () => {
     mockConvexMutation.mockResolvedValue(null);
     mockConvexQuery.mockResolvedValue(null);
     mockListSubscriptions.mockResolvedValue({ data: [] } as never);
+    mockListInvoicePayments.mockResolvedValue({ data: [] } as never);
 
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user_123",

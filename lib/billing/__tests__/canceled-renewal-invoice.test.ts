@@ -45,6 +45,12 @@ function invoice(overrides: Record<string, unknown> = {}) {
 
 function stripeMock(currentInvoice: Stripe.Invoice) {
   const voidInvoice = jest.fn();
+  const listInvoicePayments = jest
+    .fn()
+    .mockResolvedValue({ data: [] } as never);
+  const retrieveIntent = jest.fn();
+  const retrieveCharge = jest.fn();
+  const listRefunds = jest.fn();
   return {
     stripe: {
       invoices: {
@@ -54,8 +60,16 @@ function stripeMock(currentInvoice: Stripe.Invoice) {
       subscriptions: {
         list: jest.fn().mockResolvedValue({ data: [subscription] } as never),
       },
+      invoicePayments: { list: listInvoicePayments },
+      paymentIntents: { retrieve: retrieveIntent },
+      charges: { retrieve: retrieveCharge },
+      refunds: { list: listRefunds },
     } as unknown as Stripe,
     voidInvoice,
+    listInvoicePayments,
+    retrieveIntent,
+    retrieveCharge,
+    listRefunds,
   };
 }
 
@@ -89,5 +103,70 @@ describe("canceled renewal invoice", () => {
     await expect(
       hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 120),
     ).resolves.toBe(false);
+  });
+
+  it("allows checkout after support marked a paid renewal resolved", async () => {
+    const { stripe, listInvoicePayments } = stripeMock(
+      invoice({
+        status: "paid",
+        status_transitions: { paid_at: endedAt + 120 },
+        metadata: { hackeraiLatePaymentResolution: "replacement_month" },
+      }),
+    );
+
+    await expect(
+      hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 180),
+    ).resolves.toBe(false);
+    expect(listInvoicePayments).not.toHaveBeenCalled();
+  });
+
+  it("allows checkout only after the entire paid renewal charge is refunded", async () => {
+    const paidInvoice = invoice({
+      status: "paid",
+      amount_paid: 6000,
+      amount_remaining: 0,
+      currency: "usd",
+      status_transitions: { paid_at: endedAt + 120 },
+    });
+    const {
+      stripe,
+      listInvoicePayments,
+      retrieveIntent,
+      retrieveCharge,
+      listRefunds,
+    } = stripeMock(paidInvoice);
+    listInvoicePayments.mockResolvedValue({
+      data: [
+        {
+          invoice: "in_old",
+          amount_paid: 6000,
+          payment: { type: "payment_intent", payment_intent: "pi_old" },
+        },
+      ],
+    } as never);
+    retrieveIntent.mockResolvedValue({
+      status: "succeeded",
+      latest_charge: "ch_old",
+    } as never);
+    retrieveCharge.mockResolvedValue({
+      amount: 6000,
+      amount_refunded: 6000,
+      currency: "usd",
+      customer: "cus_123",
+    } as never);
+    listRefunds.mockResolvedValue({
+      data: [{ status: "succeeded", amount: 6000 }],
+    } as never);
+
+    await expect(
+      hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 180),
+    ).resolves.toBe(false);
+
+    listRefunds.mockResolvedValue({
+      data: [{ status: "pending", amount: 6000 }],
+    } as never);
+    await expect(
+      hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 180),
+    ).resolves.toBe(true);
   });
 });

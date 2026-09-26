@@ -71,6 +71,52 @@ export async function voidOpenCanceledRenewalInvoice(
   return "voided";
 }
 
+async function hasFullyRefundedInvoicePayment(
+  stripe: Stripe,
+  invoice: Stripe.Invoice,
+): Promise<boolean> {
+  const payments = await stripe.invoicePayments.list({
+    invoice: invoice.id,
+    status: "paid",
+    limit: 2,
+  });
+  const payment = payments.data[0];
+  if (
+    payments.has_more ||
+    payments.data.length !== 1 ||
+    !payment ||
+    stripeObjectId(payment.invoice) !== invoice.id ||
+    payment.amount_paid !== invoice.amount_paid ||
+    payment.payment.type !== "payment_intent"
+  ) {
+    return false;
+  }
+
+  const intentId = stripeObjectId(payment.payment.payment_intent);
+  if (!intentId) return false;
+  const intent = await stripe.paymentIntents.retrieve(intentId);
+  const chargeId = stripeObjectId(intent.latest_charge);
+  if (!chargeId || intent.status !== "succeeded") return false;
+  const charge = await stripe.charges.retrieve(chargeId);
+  if (
+    charge.amount !== invoice.amount_paid ||
+    charge.amount_refunded !== charge.amount ||
+    charge.currency !== invoice.currency ||
+    stripeObjectId(charge.customer) !== stripeObjectId(invoice.customer)
+  ) {
+    return false;
+  }
+
+  const refunds = await stripe.refunds.list({ charge: chargeId, limit: 100 });
+  return (
+    !refunds.has_more &&
+    refunds.data.length > 0 &&
+    refunds.data.every((refund) => refund.status === "succeeded") &&
+    refunds.data.reduce((amount, refund) => amount + refund.amount, 0) ===
+      charge.amount
+  );
+}
+
 export async function hasRecentCanceledRenewalAtRisk(
   stripe: Stripe,
   customerId: string,
@@ -100,11 +146,15 @@ export async function hasRecentCanceledRenewalAtRisk(
       if (invoice.status === "open" && invoice.amount_remaining > 0) {
         return true;
       }
-      if (
-        invoice.status === "paid" &&
-        (invoice.status_transitions.paid_at ?? 0) >=
+      if (invoice.status === "paid") {
+        if (
+          (invoice.status_transitions.paid_at ?? 0) <
           endedAt - PAYMENT_CANCELLATION_RACE_SECONDS
-      ) {
+        ) {
+          continue;
+        }
+        if (invoice.metadata?.hackeraiLatePaymentResolution) continue;
+        if (await hasFullyRefundedInvoicePayment(stripe, invoice)) continue;
         return true;
       }
     }

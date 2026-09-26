@@ -66,8 +66,9 @@ subscription item. Stripe can settle an invoice while cancellation is running;
 the subscribe route checks recent canceled renewals before creating another
 Checkout session. An open invoice or a payment around cancellation returns a
 409 for support reconciliation instead of risking a second charge. A voided
-invoice allows a new checkout. This guard does not itself refund a settled
-payment.
+invoice, a fully settled refund, or a documented support resolution allows a
+new checkout. Pending or partial refunds still require review. This guard does
+not itself refund a settled payment.
 
 Refund creation uses an invoice/charge idempotency key and durable refund metadata
 for retries after Stripe's idempotency cache expires. API failures retry webhook
