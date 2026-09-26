@@ -443,6 +443,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let requestPublishAttempts = 0;
       let subscriptionEvents = 0;
       let receivedPayloadBytesEstimate = 0;
+      let unmatchedPayloadBytesEstimate = 0;
       let receivedPublications = 0;
       let unmatchedPublications = 0;
       const startedAt = Date.now();
@@ -468,6 +469,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               request_type: input.type,
               sample_rate: sampleRate,
               received_payload_bytes_estimate: receivedPayloadBytesEstimate,
+              unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
               received_publications: receivedPublications,
               unmatched_publications: unmatchedPublications,
               subscription_events: subscriptionEvents,
@@ -524,9 +526,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       subscription.on("publication", (ctx) => {
         if (settled) return;
         receivedPublications += 1;
-        receivedPayloadBytesEstimate += estimateRelayPayloadBytes(ctx.data);
+        const payloadBytes = estimateRelayPayloadBytes(ctx.data);
+        receivedPayloadBytesEstimate += payloadBytes;
         if (!fragmentMatchesCorrelation(ctx.data, "requestId", requestId)) {
           unmatchedPublications += 1;
+          unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
 
@@ -535,6 +539,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         const message = parseFileResponseMessage(reassembled);
         if (!message || message.requestId !== requestId) {
           unmatchedPublications += 1;
+          unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
 
@@ -686,6 +691,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let stderrBytes = 0;
         let outputChunks = 0;
         let receivedPayloadBytesEstimate = 0;
+        let unmatchedPayloadBytesEstimate = 0;
         let receivedPublications = 0;
         let unmatchedPublications = 0;
         let cancelRequested = false;
@@ -729,6 +735,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
                 stderr_bytes: stderrBytes,
                 output_chunks: outputChunks,
                 received_payload_bytes_estimate: receivedPayloadBytesEstimate,
+                unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
                 received_publications: receivedPublications,
                 unmatched_publications: unmatchedPublications,
                 subscription_events: subscriptionEvents,
@@ -883,9 +890,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         subscription.on("publication", (ctx) => {
           if (settled) return;
           receivedPublications += 1;
-          receivedPayloadBytesEstimate += estimateRelayPayloadBytes(ctx.data);
+          const payloadBytes = estimateRelayPayloadBytes(ctx.data);
+          receivedPayloadBytesEstimate += payloadBytes;
           if (!fragmentMatchesCorrelation(ctx.data, "commandId", commandId)) {
             unmatchedPublications += 1;
+            unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
 
@@ -895,6 +904,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (!message) return;
           if (message.commandId !== commandId) {
             unmatchedPublications += 1;
+            unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
           if (message.type === "command" || message.type === "command_cancel") {

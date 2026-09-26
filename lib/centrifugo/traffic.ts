@@ -16,13 +16,11 @@ export function estimateRelayPayloadBytes(value: unknown): number {
   return bytes;
 }
 
-/** Log all large subscriptions and a deterministic 1/256 sample of the rest. */
+/** Log all large subscriptions and a deterministic 1/8 sample of the rest. */
 export function relayTrafficSampleRate(
   id: string,
   bytes: number,
 ): number | null {
   if (bytes >= LARGE_RELAY_STREAM_BYTES) return 1;
-  return Number.parseInt(id.replaceAll("-", "").slice(0, 2), 16) === 0
-    ? 256
-    : null;
+  return Number.parseInt(id.replaceAll("-", "").slice(0, 1), 16) < 2 ? 8 : null;
 }

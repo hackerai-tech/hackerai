@@ -859,10 +859,14 @@ describe("CentrifugoSandbox", () => {
             stdout_bytes: 0,
             unmatched_publications: 1,
             received_payload_bytes_estimate: expect.any(Number),
+            unmatched_payload_bytes_estimate: expect.any(Number),
           }),
         );
         expect(
           trafficLog?.received_payload_bytes_estimate as number,
+        ).toBeGreaterThan(1024 * 1024);
+        expect(
+          trafficLog?.unmatched_payload_bytes_estimate as number,
         ).toBeGreaterThan(1024 * 1024);
       } finally {
         logSpy.mockRestore();
