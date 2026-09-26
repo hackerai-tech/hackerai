@@ -1242,6 +1242,7 @@ const buildProviderMap = (
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "ask-model-free-glm": or(GLM_5_3_FLASH_SLUG),
+    "ask-model-free-deepseek-v41": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentModelSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
@@ -1312,6 +1313,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
+  "ask-model-free-deepseek-v41":
+    "Auto, an intelligent model router built by HackerAI",
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.6": "xAI Grok 4.6",
@@ -1355,6 +1358,7 @@ export function isAnthropicModel(modelName: string): boolean {
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
+    modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
@@ -1398,6 +1402,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   return (
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
+    normalized === "ask-model-free-deepseek-v41" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||
     normalized === "model-deepseek-v4-flash-vision" ||

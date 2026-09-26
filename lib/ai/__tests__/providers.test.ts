@@ -131,6 +131,20 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("z-ai/glm-5.3-flash");
     expect(
+      (
+        myProvider.languageModel("ask-model-free-deepseek-v41") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4.1-flash");
+    expect(isDeepSeekModel("ask-model-free-deepseek-v41")).toBe(true);
+    expect(supportsMultimodalToolResults("ask-model-free-deepseek-v41")).toBe(
+      true,
+    );
+    expect(getModelDisplayName("ask-model-free-deepseek-v41")).toBe(
+      getModelDisplayName("ask-model-free-glm"),
+    );
+    expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4.1-flash");

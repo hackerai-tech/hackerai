@@ -107,7 +107,11 @@ const HIGH_REASONING_ROUTES = [
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
-  it.each(["ask-model-free", "ask-model-free-glm"] as const)(
+  it.each([
+    "ask-model-free",
+    "ask-model-free-glm",
+    "ask-model-free-deepseek-v41",
+  ] as const)(
     "preserves free Ask low reasoning on retries from %s",
     (primaryModel) => {
       for (const retryModel of [
@@ -125,6 +129,32 @@ describe("buildProviderOptions fallback chain", () => {
       }
     },
   );
+  it("preserves free Ask reasoning and cost accounting for the V4.1 treatment", () => {
+    const selectedModel = "ask-model-free-deepseek-v41";
+    const options = buildProviderOptions(true, "user-1", selectedModel, "ask", {
+      reasoningOverride: { enabled: true, effort: "high" },
+    });
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "low",
+    });
+    expect(options.openrouter.models).toContain(GLM_FLASH_SLUG);
+    expect(getRetryFallbackModel(selectedModel, "ask")).toBe(
+      "model-glm-5.3-flash",
+    );
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel,
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: selectedModel,
+        responseModel: GLM_FLASH_SLUG,
+      }),
+    ).toBe("model-glm-5.3-flash");
+  });
   it("keeps the free Ask default at low reasoning with billed, retryable fallbacks", () => {
     const opts = buildProviderOptions(
       true,

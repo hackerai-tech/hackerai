@@ -20,6 +20,10 @@ control this Standard default. See HAC-98 for the decision and health review.
 
 ## Free Ask closeout — September 8, 2026
 
+The later [DeepSeek V4.1 conversion experiment](free-ask-deepseek-v41-experiment.md)
+can override this default for eligible requests using a new flag key. It does
+not reopen the historical experiment below.
+
 Free Ask now selects `ask-model-free-glm` (`z-ai/glm-5.3-flash`) directly,
 with low reasoning through the existing provider/fallback policy. No PostHog
 assignment is consulted or free Flash experiment exposure emitted. Existing
