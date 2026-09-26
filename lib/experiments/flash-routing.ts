@@ -4,16 +4,17 @@ import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-con
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
+export const FREE_ASK_DEEPSEEK_V41_KEY = "free_ask_deepseek_v4_1_conversion_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_ASK_DEEPSEEK_V41_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
 };
 
-/** Only paid Agent standard routes participate; free Ask uses a fixed model. */
+/** Enroll only the authenticated tier's existing eligible baseline route. */
 export async function evaluateFlashRouting({
   posthog,
   userId,
@@ -30,10 +31,15 @@ export async function evaluateFlashRouting({
   hasImages: boolean;
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || hasImages) return undefined;
-  const key =
-    mode === "agent" &&
-    subscription !== "free" &&
-    selectedModel === "model-deepseek-v4-flash-0731"
+  const isFreeAsk =
+    mode === "ask" &&
+    subscription === "free" &&
+    selectedModel === "ask-model-free-glm";
+  const key = isFreeAsk
+    ? FREE_ASK_DEEPSEEK_V41_KEY
+    : mode === "agent" &&
+        subscription !== "free" &&
+        selectedModel === "model-deepseek-v4-flash-0731"
       ? PAID_AGENT_FLASH_RETURN_KEY
       : undefined;
   if (!key) return undefined;
@@ -42,6 +48,18 @@ export async function evaluateFlashRouting({
     const flags = await posthog.evaluateFlags(userId, { flagKeys: [key] });
     const variant = flags.getFlag(key);
     if (variant !== "control" && variant !== "test") return undefined;
+    if (isFreeAsk) {
+      return {
+        key,
+        variant,
+        modelKey:
+          variant === "control" ? selectedModel : "ask-model-free-deepseek-v41",
+        configuredModel:
+          variant === "control"
+            ? "z-ai/glm-5.3-flash"
+            : "deepseek/deepseek-v4.1-flash",
+      };
+    }
     return {
       key,
       variant,
