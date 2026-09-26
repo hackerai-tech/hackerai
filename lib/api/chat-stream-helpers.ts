@@ -634,6 +634,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "ask-model-free-deepseek-v41": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
@@ -661,6 +662,7 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model",
   "ask-model-free",
   "ask-model-free-glm",
+  "ask-model-free-deepseek-v41",
   "agent-model",
   "agent-model-free",
 ]);
@@ -778,6 +780,7 @@ export function getRetryFallbackModel(
   }
   if (
     modelName === "ask-model-free" ||
+    modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
@@ -1016,7 +1019,8 @@ export function buildProviderOptions(
     mode === "ask" &&
     (options.isFreeAskRequest === true ||
       modelName === "ask-model-free" ||
-      modelName === "ask-model-free-glm");
+      modelName === "ask-model-free-glm" ||
+      modelName === "ask-model-free-deepseek-v41");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this

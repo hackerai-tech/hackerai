@@ -580,6 +580,7 @@ describe("token-bucket", () => {
 
     it.each([
       "model-deepseek-v4-flash-vision",
+      "ask-model-free-deepseek-v41",
       "model-deepseek-v4-flash-vision-pro",
       "agent-model-free",
       "deepseek/deepseek-v4.1-flash",
