@@ -61,6 +61,8 @@ describe("Flash routing experiments", () => {
     { ...paid, mode: "ask" as const },
     { ...paid, subscription: "free" as const },
     { ...paid, selectedModel: "model-deepseek-v4-pro-0813" },
+    { ...paid, selectedModel: "model-glm-5.3-flash-agent" },
+    { ...paid, mode: "ask" as const, selectedModel: "model-glm-5.3-flash" },
     { ...paid, selectedModel: "model-opus-4.6" },
     { ...paid, selectedModel: "model-deepseek-v4-flash-vision" },
     { ...paid, hasImages: true },

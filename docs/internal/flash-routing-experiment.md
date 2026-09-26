@@ -2,6 +2,22 @@
 
 Owner and decision record: [HAC-98](https://linear.app/hackerai/issue/HAC-98).
 
+## Paid Standard routing
+
+Paid Standard now selects `z-ai/glm-5.3-flash` directly in Ask and Agent,
+including native image input and parsed PDFs. The Agent registry alias retains
+GLM through image tool results and compaction. Auto and other tiers keep their
+existing routes. Authorization, moderation and allowance rescue can still
+select their established alternate routes.
+
+This explicit product decision supersedes the historical paid Standard baseline
+below; it does not reopen the Flash experiment or establish a statistical win.
+The old experiment only accepts the DeepSeek 0731 registry key, so the new
+Standard routes do not receive assignments or emit its exposure event. Existing
+provider telemetry records configured and served models. Rollback requires a
+code change and deployment of both Vercel and Trigger; flag changes do not
+control this Standard default. See HAC-98 for the decision and health review.
+
 ## Free Ask closeout — September 8, 2026
 
 Free Ask now selects `ask-model-free-glm` (`z-ai/glm-5.3-flash`) directly,
@@ -19,7 +35,7 @@ change. Verify a new free Ask request on the deployment, completion/reload,
 configured GLM model, low reasoning and no experiment attribution.
 
 The paid Agent flag remains disabled by the separate Agent decision in HAC-98.
-Its routing and the Abliteration experiment are unchanged by this cleanup.
+The Abliteration experiment is unchanged by the Standard routing decision.
 
 ## Historical experiment design
 

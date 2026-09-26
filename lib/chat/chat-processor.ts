@@ -39,9 +39,9 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
  *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
- *   DeepSeek V4.1 Flash. Explicit Standard uses DeepSeek V4 Flash 0731.
+ *   DeepSeek V4.1 Flash. Paid Standard uses GLM 5.3 Flash, including images.
  *   Ask Pro uses DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
- *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
+ *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
  *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
  */
@@ -63,7 +63,12 @@ export function selectModel(
     subscription,
     options,
   );
-  // Pro/Pro+ Standard and Auto use GLM Flash for lower-cost direct vision.
+  // Paid Standard uses native GLM vision as well as text/PDF parsing. Resolve
+  // it before the legacy media promotions so every paid plan keeps this route.
+  if (subscription !== "free" && allowedSelectedModel === "hackerai-standard") {
+    return resolveTierToProviderKey(allowedSelectedModel, mode);
+  }
+  // Pro/Pro+ Auto uses GLM Flash for lower-cost direct vision.
   // Other paid image routes retain DeepSeek Vision. The auxiliary treatment
   // is reserved for MiniMax summary recovery after direct routes fail.
   // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
@@ -72,12 +77,10 @@ export function selectModel(
     !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
-  const paidStandardTextModel: ModelName = "model-deepseek-v4-flash-0731";
   // Paid Auto text and PDF turns use DeepSeek V4.1 Flash on every plan.
-  // Explicit Standard keeps the 0731 model so that tier stays distinct.
   const paidAutoTextModel: ModelName = "model-deepseek-v4-flash-vision-pro";
   // Paid Agent Pro accepts original images without a separate vision route.
-  // Ask and paid Agent Auto/Standard retain their existing model selection.
+  // Ask Pro and paid Auto retain their existing model selection.
   if (
     isAgent &&
     subscription !== "free" &&
@@ -122,12 +125,6 @@ export function selectModel(
   // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
   if (isAutoSelection || subscription === "free") {
     return autoModel;
-  }
-
-  // Explicit Standard remains on V4 Flash 0731 while Auto uses V4.1 Flash.
-  // Keep an explicit key so model display surfaces show the selected tier.
-  if (allowedSelectedModel === "hackerai-standard") {
-    return hasProviderImage ? "model-grok-4.5" : paidStandardTextModel;
   }
 
   if (allowedSelectedModel === "hackerai-pro") {

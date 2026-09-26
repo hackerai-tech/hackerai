@@ -287,8 +287,13 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
-  // Native Pro vision needs no promotion, and must retain Pro reasoning.
-  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) return modelName;
+  // Native Standard and Pro vision need no promotion. The dedicated Standard
+  // alias also stays on GLM after compaction removes images from the context.
+  if (
+    modelName === "model-glm-5.3-flash-agent" ||
+    modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL
+  )
+    return modelName;
   if (directGlmVisionEnabled) {
     if (usesGlmFlashForStandardVision(subscription, selectedModelOverride)) {
       return STANDARD_AGENT_GLM_VISION_MODEL;

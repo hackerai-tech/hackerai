@@ -574,7 +574,7 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Standard uses DeepSeek V4 Flash 0731. Pro uses V4 Pro 0813 in Ask and
+ * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
  * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.

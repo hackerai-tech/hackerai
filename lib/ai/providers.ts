@@ -1442,7 +1442,9 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return "model-deepseek-v4-flash-0731";
+      return mode === "agent"
+        ? "model-glm-5.3-flash-agent"
+        : "model-glm-5.3-flash";
     case "hackerai-pro":
       return mode === "agent"
         ? "model-deepseek-v4-flash-vision-pro"

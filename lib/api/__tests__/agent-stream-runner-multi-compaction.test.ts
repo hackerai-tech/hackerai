@@ -216,6 +216,25 @@ const createTestStreamContext = (
 });
 
 describe("resolveAgentModelForImageToolResults", () => {
+  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+    "keeps paid %s Standard on native GLM through image tool results",
+    (subscription) => {
+      for (const directGlmVisionEnabled of [false, true]) {
+        expect(
+          resolveAgentModelForImageToolResults(
+            "model-glm-5.3-flash-agent",
+            "agent",
+            true,
+            "hackerai-standard",
+            false,
+            directGlmVisionEnabled,
+            subscription,
+          ),
+        ).toBe("model-glm-5.3-flash-agent");
+      }
+    },
+  );
+
   it.each([false, true])(
     "preserves native Pro tool vision with direct vision experiment=%s",
     (directGlmVisionEnabled) => {
@@ -1892,6 +1911,7 @@ describe("createAgentStream repeated compaction", () => {
   });
 
   it.each([
+    ["model-glm-5.3-flash-agent", "model-glm-5.3-flash-agent"],
     ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
     ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
     [
