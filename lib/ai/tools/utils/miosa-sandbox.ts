@@ -99,15 +99,15 @@ const initializeMiosaRuntime = async (
     "native",
     'set -eu; mkdir -p upload agent-transcripts terminal_full_output agent-browser-screenshots; for tool in nmap nuclei ffuf python3 bash setsid; do command -v "$tool" >/dev/null; done',
   );
-  const stream = sdkSandbox.exec.stream(
-    runtime === "native"
-      ? nativeInitialization
-      : runtimeInitializationCommand(runtimeImage),
-    { timeoutSec: runtime === "native" ? 30 : 15 * 60 },
-  );
   let exitCode: number | null = null;
   let timedOut = false;
   try {
+    const stream = sdkSandbox.exec.stream(
+      runtime === "native"
+        ? nativeInitialization
+        : runtimeInitializationCommand(runtimeImage),
+      { timeoutSec: runtime === "native" ? 30 : 15 * 60 },
+    );
     for await (const event of stream) {
       if (event.type === "exit") {
         const value = event.exitCode ?? event.exit_code;
@@ -123,6 +123,7 @@ const initializeMiosaRuntime = async (
         diagnostic.error_name === "TimeoutError"
         ? "timeout"
         : "transport",
+      diagnostic,
     );
   }
   if (exitCode === null) {
@@ -141,13 +142,18 @@ const initializeMiosaRuntime = async (
 
 class MiosaRuntimeInitializationError extends Error {
   readonly code: string;
+  readonly requestId?: string;
+  readonly status?: number;
   constructor(
     readonly failureKind:
       "nonzero_exit" | "missing_exit" | "timeout" | "transport",
+    diagnostic?: ReturnType<typeof miosaErrorDiagnostics>,
   ) {
     super("Cloud workspace initialization failed. Please retry shortly.");
     this.name = "MiosaRuntimeInitializationError";
     this.code = `RUNTIME_INIT_${failureKind.toUpperCase()}`;
+    this.requestId = diagnostic?.error_request_id;
+    this.status = diagnostic?.error_http_status;
   }
 }
 

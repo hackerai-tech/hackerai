@@ -493,6 +493,36 @@ describe("MIOSA sandbox adapter", () => {
     expect(sandbox.runtime).toBe("docker");
   });
 
+  it("classifies a synchronous native stream transport failure", async () => {
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-tools";
+    const sdk = createSdkSandbox();
+    Object.assign(sdk.data, { template_id: "hackerai-tools" });
+    sdk.exec.stream.mockImplementationOnce(() => {
+      throw Object.assign(new Error("private provider response"), {
+        code: "NETWORK_ERROR",
+        requestId: "req-transport-1",
+        status: 503,
+      });
+    });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const onDiagnostic = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { onDiagnostic },
+      ),
+    ).rejects.toMatchObject({ code: "RUNTIME_INIT_TRANSPORT" });
+    expect(onDiagnostic.mock.calls.at(-1)?.[0]).toMatchObject({
+      stage: "initialize_runtime",
+      error_code: "RUNTIME_INIT_TRANSPORT",
+      error_request_id: "req-transport-1",
+      error_http_status: 503,
+    });
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain(
+      "private provider response",
+    );
+  });
+
   it("initializes a native workspace without pulling or starting a container", async () => {
     const sdk = createSdkSandbox();
     Object.assign(sdk.data, { template_id: "hackerai-tools" });
