@@ -53,8 +53,13 @@ const UsageBudgetExhaustedNotice = ({
     isPersonalPaid &&
     entitlement?.extraUsageAvailable === true &&
     entitlement.hasBalance;
-  const canContinue =
-    (includedUsage?.monthly.remaining ?? 0) > 0 || Boolean(hasUsableCredits);
+  const hasIncludedUsage =
+    includedUsage?.monthlyStatusConfirmed === true &&
+    includedUsage.monthly.remaining > 0;
+  const isIncludedUsageUnavailable =
+    Boolean(includedUsageError) ||
+    includedUsage?.monthlyStatusConfirmed === false;
+  const canContinue = hasIncludedUsage || Boolean(hasUsableCredits);
   const spendingCapReached = entitlement?.reason === "monthly_cap_exhausted";
   const extraUsageDisabled = entitlement?.reason === "disabled";
   const isLoading =
@@ -67,7 +72,7 @@ const UsageBudgetExhaustedNotice = ({
       : subscription === "team" ||
           entitlement == null ||
           canContinue ||
-          includedUsageError
+          isIncludedUsageUnavailable
         ? "Manage usage"
         : spendingCapReached
           ? "Manage spending limit"
@@ -88,8 +93,8 @@ const UsageBudgetExhaustedNotice = ({
     } else {
       openSettingsDialog(
         subscription === "team" ||
-          includedUsageError ||
-          (includedUsage?.monthly.remaining ?? 0) > 0
+          isIncludedUsageUnavailable ||
+          hasIncludedUsage
           ? "Usage"
           : "Extra Usage",
       );
@@ -102,7 +107,7 @@ const UsageBudgetExhaustedNotice = ({
         <span aria-live="polite">
           {canContinue
             ? "This run stopped at a usage limit. Usage is available now; Continue to resume where it stopped."
-            : includedUsageError
+            : isIncludedUsageUnavailable
               ? "This run stopped at a usage limit. We couldn't check your current allowance; try again or view Usage."
               : spendingCapReached
                 ? "This run stopped when your Extra Usage spending limit was reached."

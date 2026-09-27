@@ -13,6 +13,7 @@ import type { SubscriptionTier } from "@/types";
 let mockSubscription: SubscriptionTier = "pro";
 let mockCheckingPlan = false;
 let mockIncludedUsageRemaining = 0;
+let mockMonthlyStatusConfirmed = true;
 let mockIncludedUsageLoading = false;
 let mockIncludedUsageError = false;
 const mockUseQuery = jest.fn();
@@ -34,7 +35,10 @@ jest.mock("swr", () => ({
   default: () => ({
     data: mockIncludedUsageError
       ? undefined
-      : { monthly: { remaining: mockIncludedUsageRemaining } },
+      : {
+          monthlyStatusConfirmed: mockMonthlyStatusConfirmed,
+          monthly: { remaining: mockIncludedUsageRemaining },
+        },
     isLoading: mockIncludedUsageLoading,
     error: mockIncludedUsageError ? new Error("usage unavailable") : undefined,
   }),
@@ -69,6 +73,7 @@ describe("BudgetExhaustedNotice", () => {
     mockSubscription = "pro";
     mockCheckingPlan = false;
     mockIncludedUsageRemaining = 0;
+    mockMonthlyStatusConfirmed = true;
     mockIncludedUsageLoading = false;
     mockIncludedUsageError = false;
     mockUseQuery.mockReturnValue(emptyEntitlement);
@@ -125,6 +130,22 @@ describe("BudgetExhaustedNotice", () => {
     expect(
       screen.queryByRole("button", { name: "Enable Extra Usage" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("does not treat fallback allowance as confirmed available usage", () => {
+    mockIncludedUsageRemaining = 100;
+    mockMonthlyStatusConfirmed = false;
+    mockUseQuery.mockReturnValue({ ...emptyEntitlement, reason: "disabled" });
+    render(<BudgetExhaustedNotice onContinue={jest.fn()} />);
+
+    expect(
+      screen.getByText(/couldn't check your current allowance/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage usage" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Continue" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
   });
 
   it("opens Extra Usage from the empty-balance notice without starting a run", () => {
