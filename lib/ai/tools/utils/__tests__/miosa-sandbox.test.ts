@@ -375,21 +375,86 @@ describe("MIOSA sandbox adapter", () => {
         });
       const onDiagnostic = jest.fn();
       const setSandbox = jest.fn();
-      await expect(
-        ensureMiosaSandboxConnection(
-          { userID: "user-1", setSandbox },
-          { beforeCreate: jest.fn(), onDiagnostic },
-        ),
-      ).rejects.toBe(error);
+      const acquisition = ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox },
+        { beforeCreate: jest.fn(), onDiagnostic },
+      );
+      if (stage === "initialize_runtime") {
+        await expect(acquisition).rejects.toMatchObject({
+          code: "RUNTIME_INIT_TRANSPORT",
+        });
+      } else {
+        await expect(acquisition).rejects.toBe(error);
+      }
       expect(onDiagnostic.mock.calls.at(-1)?.[0]).toMatchObject({
         stage,
         outcome: "failure",
-        error_code: "INVALID_ARGUMENT",
-        error_http_status: 422,
-        error_request_id: "req-123",
+        error_code:
+          stage === "initialize_runtime"
+            ? "RUNTIME_INIT_TRANSPORT"
+            : "INVALID_ARGUMENT",
+        ...(stage === "initialize_runtime"
+          ? {}
+          : {
+              error_http_status: 422,
+              error_request_id: "req-123",
+            }),
       });
       expect(setSandbox).not.toHaveBeenCalled();
       expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private");
+    },
+  );
+
+  it.each([
+    [
+      "nonzero_exit",
+      async function* () {
+        yield { type: "stderr", data: "private command output" };
+        yield { type: "exit", exit_code: 7 };
+      },
+    ],
+    [
+      "missing_exit",
+      async function* () {
+        yield { type: "stderr", data: "private command output" };
+      },
+    ],
+    [
+      "timeout",
+      async function* () {
+        yield { type: "stderr", data: "private command output" };
+        yield { type: "exit", exit_code: -1, timed_out: true };
+      },
+    ],
+    [
+      "transport",
+      async function* () {
+        yield { type: "stderr", data: "private command output" };
+        yield { type: "exit", exit_code: -1 };
+      },
+    ],
+  ] as const)(
+    "classifies native initialization %s without output",
+    async (kind, stream) => {
+      process.env.MIOSA_TEMPLATE_ID = "hackerai-tools";
+      const sdk = createSdkSandbox();
+      Object.assign(sdk.data, { template_id: "hackerai-tools" });
+      sdk.exec.stream.mockImplementation(stream);
+      mockGetOrCreate.mockResolvedValue(sdk);
+      const onDiagnostic = jest.fn();
+      await expect(
+        ensureMiosaSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          { onDiagnostic },
+        ),
+      ).rejects.toMatchObject({ code: `RUNTIME_INIT_${kind.toUpperCase()}` });
+      expect(onDiagnostic.mock.calls.at(-1)?.[0]).toMatchObject({
+        stage: "initialize_runtime",
+        error_code: `RUNTIME_INIT_${kind.toUpperCase()}`,
+      });
+      expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain(
+        "private command output",
+      );
     },
   );
 
@@ -426,6 +491,36 @@ describe("MIOSA sandbox adapter", () => {
       expect.objectContaining({ templateId: "miosa-sandbox-docker" }),
     );
     expect(sandbox.runtime).toBe("docker");
+  });
+
+  it("classifies a synchronous native stream transport failure", async () => {
+    process.env.MIOSA_TEMPLATE_ID = "hackerai-tools";
+    const sdk = createSdkSandbox();
+    Object.assign(sdk.data, { template_id: "hackerai-tools" });
+    sdk.exec.stream.mockImplementationOnce(() => {
+      throw Object.assign(new Error("private provider response"), {
+        code: "NETWORK_ERROR",
+        requestId: "req-transport-1",
+        status: 503,
+      });
+    });
+    mockGetOrCreate.mockResolvedValue(sdk);
+    const onDiagnostic = jest.fn();
+    await expect(
+      ensureMiosaSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        { onDiagnostic },
+      ),
+    ).rejects.toMatchObject({ code: "RUNTIME_INIT_TRANSPORT" });
+    expect(onDiagnostic.mock.calls.at(-1)?.[0]).toMatchObject({
+      stage: "initialize_runtime",
+      error_code: "RUNTIME_INIT_TRANSPORT",
+      error_request_id: "req-transport-1",
+      error_http_status: 503,
+    });
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain(
+      "private provider response",
+    );
   });
 
   it("initializes a native workspace without pulling or starting a container", async () => {

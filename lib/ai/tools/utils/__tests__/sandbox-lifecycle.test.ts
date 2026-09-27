@@ -388,6 +388,42 @@ describe("E2B sandbox lease lifecycle", () => {
     );
   });
 
+  it("logs the failing E2B phase and allowlisted code without a response body", async () => {
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    sandboxApi.list.mockReturnValue({
+      nextItems: jest.fn(async () => []),
+      hasNext: false,
+    });
+    sandboxApi.create.mockRejectedValue(
+      Object.assign(new Error("private token and response body"), {
+        code: "SERVICE_UNAVAILABLE",
+        status: 503,
+      }),
+    );
+    try {
+      await expect(
+        ensureSandboxConnection({
+          userID: "user-1",
+          setSandbox: jest.fn(),
+        }),
+      ).rejects.toMatchObject({
+        diagnostics: {
+          e2b_phase: "create",
+          e2b_error_code: "SERVICE_UNAVAILABLE",
+          e2b_http_status: 503,
+        },
+      });
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.stringContaining('"event":"e2b_sandbox_acquisition_failed"'),
+      );
+      expect(JSON.stringify(errorLog.mock.calls)).not.toContain(
+        "private token and response body",
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it("creates a fresh EU sandbox for an EU Trigger run when EU is configured", async () => {
     process.env.E2B_EU_API_KEY = "e2b-eu-test-key";
     process.env.E2B_EU_DOMAIN = "e2b-juliett.dev";
@@ -716,7 +752,7 @@ describe("E2B sandbox lease lifecycle", () => {
           userID: "user-1",
           setSandbox: jest.fn(),
         }),
-      ).rejects.toThrow("temporary transport failure");
+      ).rejects.toMatchObject({ diagnostics: { e2b_phase: "connect" } });
 
       expect(sandboxApi.kill).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();
@@ -738,7 +774,7 @@ describe("E2B sandbox lease lifecycle", () => {
           userID: "user-1",
           setSandbox: jest.fn(),
         }),
-      ).rejects.toThrow("Failed to place sandbox");
+      ).rejects.toMatchObject({ diagnostics: { e2b_phase: "connect" } });
 
       expect(sandboxApi.kill).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();
@@ -760,7 +796,7 @@ describe("E2B sandbox lease lifecycle", () => {
           userID: "user-1",
           setSandbox: jest.fn(),
         }),
-      ).rejects.toThrow("sandbox operation timed out");
+      ).rejects.toMatchObject({ diagnostics: { e2b_phase: "connect" } });
 
       expect(sandboxApi.kill).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();
@@ -782,7 +818,7 @@ describe("E2B sandbox lease lifecycle", () => {
           userID: "user-1",
           setSandbox: jest.fn(),
         }),
-      ).rejects.toThrow("Failed to place sandbox");
+      ).rejects.toMatchObject({ diagnostics: { e2b_phase: "connect" } });
 
       expect(sandboxApi.kill).not.toHaveBeenCalled();
       expect(sandboxApi.create).not.toHaveBeenCalled();

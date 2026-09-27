@@ -4,7 +4,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SubscriptionTier } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import type { CloudSandboxSelectionReason } from "./cloud-sandbox-provider";
-import { ensureSandboxConnection } from "./sandbox";
+import { ensureSandboxConnection, E2BAcquisitionError } from "./sandbox";
 import { isE2BSandbox, isMiosaSandbox } from "./sandbox-types";
 import {
   ensureMiosaSandboxConnection,
@@ -23,6 +23,11 @@ import {
   miosaAcquisitionFailureDiagnostics,
 } from "./miosa-acquisition-diagnostics";
 import { queueE2BFileMigration } from "./miosa-workspace-migration-queue";
+import {
+  assertMiosaAcquisitionNotCoolingDown,
+  MiosaAcquisitionCooldownError,
+  rememberTerminalMiosaFailure,
+} from "./miosa-acquisition-cooldown";
 import {
   readCloudMigrationState,
   assertCloudWorkspaceAvailable,
@@ -62,6 +67,8 @@ const ensureE2BCloudSandboxConnection = (options: {
           ? options.initialSandbox
           : null,
       triggerRegion: options.context?.triggerRegion,
+      acquisitionId: options.context?.acquisitionId,
+      triggerRunId: options.context?.triggerRunId,
     },
   );
 
@@ -71,6 +78,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
   context?: CloudSandboxAcquisitionContext;
+  onWorkspaceStatus?: (status: "existing" | "absent") => void;
 }) =>
   readCloudMigrationState(options.userId).then((migration) => {
     if (migration && migration.phase !== "miosa")
@@ -154,6 +162,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
             });
           }
         },
+        onWorkspaceStatus: options.onWorkspaceStatus,
       },
     );
   });
@@ -188,8 +197,10 @@ const recordAcquisitionFailure = (options: {
           ...miosaErrorDiagnostics(options.error),
           ...miosaAcquisitionFailureDiagnostics(options.error),
         }
-      : {}),
-    cloud_sandbox_acquisition_failed_event_version: 5,
+      : options.error instanceof E2BAcquisitionError
+        ? options.error.diagnostics
+        : {}),
+    cloud_sandbox_acquisition_failed_event_version: 6,
   });
 };
 
@@ -255,6 +266,12 @@ export async function ensureCloudSandboxConnection(options: {
   let bootInfo: SandboxBootInfo | undefined;
   let fallbackUsed = false;
   let enrollmentDeniedReason: MiosaEnrollmentError["reason"] | undefined;
+  const miosaWorkspace: { status: "existing" | "absent" | "unknown" } = {
+    status:
+      options.initialSandbox && isMiosaSandbox(options.initialSandbox)
+        ? "existing"
+        : "unknown",
+  };
   const onBoot = options.onBoot;
   options = {
     ...options,
@@ -307,9 +324,13 @@ export async function ensureCloudSandboxConnection(options: {
       if (options.initialSandbox && isE2BSandbox(options.initialSandbox)) {
         throw new MiosaEnrollmentError("existing_e2b_workspace");
       }
+      await assertMiosaAcquisitionNotCoolingDown(options.userId);
       const result = await ensureMiosaCloudSandboxConnection({
         ...options,
         setSandbox: () => {},
+        onWorkspaceStatus: (status) => {
+          miosaWorkspace.status = status;
+        },
       });
       const migrated = await readCloudMigrationState(options.userId);
       if (migrated && migrated.phase !== "miosa")
@@ -335,9 +356,41 @@ export async function ensureCloudSandboxConnection(options: {
       recordOutcome("miosa", "success");
       return { ...result, provider: "miosa" };
     } catch (error) {
-      // This check also covers a migration committed during beforeCreate, even
-      // when Miosa creation/readiness failed or the commit response was lost.
-      await assertCloudWorkspaceAvailable(options.userId, "e2b");
+      // A migration committed during acquisition keeps its durable Miosa pin.
+      // This read does not acquire an E2B use lease when fallback is unsafe.
+      if (await readCloudMigrationState(options.userId)) {
+        throw new CloudMigrationUnavailableError();
+      }
+      if (!(error instanceof MiosaEnrollmentError)) {
+        if (error instanceof MiosaAcquisitionCooldownError) {
+          phLogger.event("miosa_sandbox_acquisition_skipped", {
+            userId: options.userId,
+            chat_id: options.context?.chatId,
+            trigger_run_id: options.context?.triggerRunId,
+            acquisition_id: options.context?.acquisitionId,
+            reason: "terminal_cooldown",
+            miosa_sandbox_acquisition_skipped_event_version: 1,
+          });
+        } else {
+          await rememberTerminalMiosaFailure(options.userId, error);
+          recordAcquisitionFailure({
+            userId: options.userId,
+            provider: "miosa",
+            startedAt,
+            error,
+            context: options.context,
+          });
+        }
+        if (
+          error instanceof MiosaAcquisitionCooldownError ||
+          miosaErrorDiagnostics(error).error_code === "SNAPSHOT_MISSING" ||
+          miosaWorkspace.status !== "absent"
+        ) {
+          recordRolloutExposure(options);
+          recordOutcome("miosa", "error");
+          throw new MiosaWorkspaceUnavailableError();
+        }
+      }
       if (error instanceof MiosaEnrollmentError) {
         enrollmentDeniedReason = error.reason;
         phLogger.event("miosa_cloud_sandbox_enrollment_denied", {
@@ -357,13 +410,6 @@ export async function ensureCloudSandboxConnection(options: {
       } else {
         fallbackUsed = true;
         recordRolloutExposure(options);
-        recordAcquisitionFailure({
-          userId: options.userId,
-          provider: "miosa",
-          startedAt,
-          error,
-          context: options.context,
-        });
         phLogger.event("cloud_sandbox_provider_fallback", {
           userId: options.userId,
           chat_id: options.context?.chatId,
@@ -405,6 +451,15 @@ export async function ensureCloudSandboxConnection(options: {
       context: options.context,
     });
     throw error;
+  }
+}
+
+export class MiosaWorkspaceUnavailableError extends Error {
+  constructor() {
+    super(
+      "Cloud workspace temporarily unavailable. Please retry in a few minutes. Your files are preserved.",
+    );
+    this.name = "MiosaWorkspaceUnavailableError";
   }
 }
 

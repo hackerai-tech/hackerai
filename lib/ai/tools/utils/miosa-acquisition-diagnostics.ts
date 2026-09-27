@@ -79,7 +79,9 @@ export function miosaAcquisitionDiagnosticFields(
   };
 }
 
-export function miosaAcquisitionFailureDiagnostics(error: unknown) {
+export function miosaAcquisitionFailureDiagnostics(
+  error: unknown,
+): Partial<ReturnType<typeof miosaAcquisitionDiagnosticFields>> {
   const diagnostic =
     error && typeof error === "object" ? failures.get(error) : undefined;
   return diagnostic ? miosaAcquisitionDiagnosticFields(diagnostic) : {};
