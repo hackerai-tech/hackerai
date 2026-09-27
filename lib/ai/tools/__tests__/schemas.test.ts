@@ -105,7 +105,7 @@ describe("agent tool schema descriptions", () => {
     );
     expect(getDescription(todoWriteTool)).toContain("### When NOT to Use");
     expect(getDescription(todoWriteTool)).toContain(
-      "Before finishing your turn, complete every todo or cancel it if it is no longer relevant",
+      "Keep unfinished work pending or in_progress across turns, pauses, limits, and summarization.",
     );
   });
 

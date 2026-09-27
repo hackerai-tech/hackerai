@@ -29,6 +29,7 @@ import type {
 } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
+import { buildTodoContext } from "@/lib/chat/todo-context";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import {
   projectMessagesToTokenBudget,
@@ -1536,7 +1537,7 @@ export async function getMessagesByChatId({
               parts: [
                 {
                   type: "text",
-                  text: `${summaryPrefix}<context_summary>\n${latestSummary.summary_text}\n</context_summary>`,
+                  text: `${summaryPrefix}<context_summary>\n${latestSummary.summary_text}\n</context_summary>${buildTodoContext(chat?.todos ?? [])}`,
                 },
               ],
             };

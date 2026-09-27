@@ -994,7 +994,9 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summarizedMessages).toHaveLength(2);
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
-      text: `<context_summary>\n${result.summaryText}\n</context_summary>`,
+      text: expect.stringContaining(
+        `<context_summary>\n${result.summaryText}\n</context_summary>`,
+      ),
     });
     expect(result.summarizedMessages[1].id).toBe("msg-4");
 
@@ -2050,15 +2052,21 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(summaryMessageText).toEqual({
       type: "text",
-      text: expect.stringContaining("[in_progress] Run nmap scan on target"),
+      text: expect.stringContaining(
+        '"id":"1","status":"in_progress","content":"Run nmap scan on target"',
+      ),
     });
     expect(summaryMessageText).toEqual({
       type: "text",
-      text: expect.stringContaining("[pending] Test for SQL injection"),
+      text: expect.stringContaining(
+        '"id":"2","status":"pending","content":"Test for SQL injection"',
+      ),
     });
     expect(summaryMessageText).toEqual({
       type: "text",
-      text: expect.stringContaining("[completed] Enumerate subdomains"),
+      text: expect.stringContaining(
+        '"id":"3","status":"completed","content":"Enumerate subdomains"',
+      ),
     });
   });
 
@@ -2081,7 +2089,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(summaryText).toEqual({
       type: "text",
-      text: expect.stringContaining("[... current_todos truncated ...]"),
+      text: expect.stringContaining('"omitted":'),
     });
 
     if (summaryText.type !== "text") {
@@ -2198,7 +2206,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       result.summarizedMessages[0].parts[0] as { type: string; text: string }
     ).text;
     expect(summaryMessageText).toContain("<context_summary>");
-    expect(summaryMessageText).not.toContain("<current_todos>");
+    expect(summaryMessageText).toContain('"total":0,"omitted":0');
   });
 
   it("should use real message ID as cutoff when input starts with summary message", async () => {
