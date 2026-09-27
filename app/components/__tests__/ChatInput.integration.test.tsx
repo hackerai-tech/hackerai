@@ -2162,6 +2162,50 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Rate Limit Warning Integration", () => {
+    it("uses the smaller warning only while Todos is visible above the composer", () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        todos: [
+          { id: "todo-1", content: "Check domain", status: "in_progress" },
+        ],
+        sidebarOpen: false,
+      };
+      const warning = {
+        warningType: "sliding-window" as const,
+        remaining: 1,
+        resetTime: new Date(Date.now() + 60_000),
+        mode: "agent" as const,
+        subscription: "free" as const,
+      };
+      const content = () => (
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            rateLimitWarning={warning}
+            onDismissRateLimitWarning={jest.fn()}
+          />
+        </TestWrapper>
+      );
+
+      const { rerender } = render(content());
+      expect(screen.getByTestId("rate-limit-warning")).toHaveClass("mx-4");
+      expect(screen.getByTestId("rate-limit-warning")).toHaveClass("py-1.5");
+
+      mockSandboxState = { ...mockSandboxState, sidebarOpen: true };
+      rerender(content());
+      expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
+      expect(screen.getByTestId("rate-limit-warning")).toHaveClass("py-2.5");
+
+      mockSandboxState = { todos: [], sidebarOpen: false };
+      rerender(content());
+      expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
+    });
+
     it("should accept rate limit warning props", () => {
       // Note: Specific text matching removed due to component complexity
       // The important test is that the component renders without errors when warning is provided

@@ -8,6 +8,7 @@ import {
   useComposerInput,
 } from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
+import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
@@ -277,6 +278,8 @@ export const ChatInput = ({
     desktopBridgeStatus,
     retryDesktopBridge,
     defaultLocalSandboxPreference,
+    todos,
+    sidebarOpen,
   } = useGlobalState();
   const { user } = useAuth();
   const input = useComposerInput();
@@ -295,6 +298,8 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
+  const todoPanelVisible =
+    !sidebarOpen && getTodoPanelViewState(todos, status).hasActiveTodos;
   const approvalRequest = useMemo(
     () =>
       activeToolApprovalRequest &&
@@ -888,6 +893,7 @@ export const ChatInput = ({
           <RateLimitWarning
             data={rateLimitWarning}
             onDismiss={onDismissRateLimitWarning}
+            compact={todoPanelVisible}
           />
         )}
 
