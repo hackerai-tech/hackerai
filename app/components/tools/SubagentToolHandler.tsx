@@ -376,6 +376,10 @@ const presentationForPart = (
       action = "Subagents still working";
     } else if (output?.wait_outcome === "no_active_agents") {
       action = "No active subagents";
+    } else if (failed) {
+      action = "Could not wait for subagents";
+    } else if (state === "input-available" || state === "input-streaming") {
+      action = "Subagent wait interrupted";
     } else {
       suffix =
         terminalStatus && terminalStatus !== "completed"

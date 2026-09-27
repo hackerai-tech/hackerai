@@ -85,6 +85,27 @@ describe("continuous subagent waiting status", () => {
       screen.getByText("The child is checking the response."),
     ).toBeVisible();
   });
+
+  it("does not show completion when a grouped wait is interrupted", () => {
+    render(renderWaits([wait("one"), wait("two", "input-available")], "ready"));
+    expect(screen.getByText("Subagent wait interrupted")).toBeVisible();
+    expect(screen.queryByText(/finished/)).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed wait visibly distinct from completion", () => {
+    render(
+      <SubagentToolHandler
+        message={{ id: "parent-run", role: "assistant", parts: [] } as any}
+        part={{
+          ...wait("failed", "output-error"),
+          errorText: "Connection failed",
+        }}
+        status="ready"
+      />,
+    );
+    expect(screen.getByText("Could not wait for subagents")).toBeVisible();
+    expect(screen.queryByText(/finished/)).not.toBeInTheDocument();
+  });
 });
 
 describe("SubagentToolHandler", () => {
