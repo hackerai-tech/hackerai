@@ -91,7 +91,12 @@ describe("getSubscriptionCancellationStatusAction", () => {
       customer: "cus_123",
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule", "data.latest_invoice"],
+      expand: [
+        "data.items.data.price",
+        "data.schedule",
+        "data.latest_invoice",
+        "data.latest_invoice.payments",
+      ],
     });
   });
 
@@ -320,6 +325,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
           "data.items.data.price",
           "data.schedule",
           "data.latest_invoice",
+          "data.latest_invoice.payments",
         ],
       }),
     );

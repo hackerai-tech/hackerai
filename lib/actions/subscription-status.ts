@@ -62,7 +62,12 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule", "data.latest_invoice"],
+      expand: [
+        "data.items.data.price",
+        "data.schedule",
+        "data.latest_invoice",
+        "data.latest_invoice.payments",
+      ],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {

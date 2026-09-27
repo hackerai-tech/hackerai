@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 
@@ -8,15 +8,23 @@ const NOTICE_ID = "billing-recovery-return";
 
 /** Checks Stripe's invoice state after returning from a payment-method flow. */
 export function BillingRecoveryReturnNotice() {
+  const latestCheck = useRef(0);
+  const returnedFromPortal = useRef(false);
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (url.searchParams.get("billing-recovery-return") !== "1") return;
-    url.searchParams.delete("billing-recovery-return");
-    window.history.replaceState(window.history.state, "", url.toString());
+    if (url.searchParams.get("billing-recovery-return") === "1") {
+      returnedFromPortal.current = true;
+      url.searchParams.delete("billing-recovery-return");
+      window.history.replaceState(window.history.state, "", url.toString());
+    }
+    if (!returnedFromPortal.current) return;
+    let mounted = true;
 
     const checkPayment = async () => {
+      const checkId = ++latestCheck.current;
       try {
         const status = await getSubscriptionCancellationStatus();
+        if (!mounted || checkId !== latestCheck.current) return;
         if (
           status.renewalInvoicePaid &&
           (status.subscriptionStatus === "active" ||
@@ -46,7 +54,13 @@ export function BillingRecoveryReturnNotice() {
         } else if (status.subscriptionStatus === "active") {
           toast.info(
             "Your plan is active. Check billing for your latest invoice.",
-            { id: NOTICE_ID },
+            {
+              id: NOTICE_ID,
+              action: {
+                label: "Check again",
+                onClick: () => void checkPayment(),
+              },
+            },
           );
         } else {
           toast.warning("Payment is not confirmed yet", {
@@ -60,6 +74,7 @@ export function BillingRecoveryReturnNotice() {
           });
         }
       } catch {
+        if (!mounted || checkId !== latestCheck.current) return;
         toast.error("We couldn't verify the payment yet", {
           id: NOTICE_ID,
           description: "Check your invoice in billing or try again.",
@@ -69,6 +84,9 @@ export function BillingRecoveryReturnNotice() {
     };
 
     void checkPayment();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   return null;
