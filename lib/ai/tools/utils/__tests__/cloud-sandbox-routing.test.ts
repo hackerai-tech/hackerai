@@ -566,6 +566,14 @@ describe("cloud sandbox provider routing", () => {
     ).rejects.toThrow("Your files are preserved");
     expect(mockEnsureMiosa).not.toHaveBeenCalled();
     expect(mockEnsureE2B).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "miosa_sandbox_acquisition_skipped",
+      expect.objectContaining({ reason: "terminal_cooldown" }),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "cloud_sandbox_acquisition_failed",
+      expect.anything(),
+    );
   });
 
   it("never falls back on a missing snapshot even after an absent name lookup", async () => {

@@ -362,14 +362,25 @@ export async function ensureCloudSandboxConnection(options: {
         throw new CloudMigrationUnavailableError();
       }
       if (!(error instanceof MiosaEnrollmentError)) {
-        await rememberTerminalMiosaFailure(options.userId, error);
-        recordAcquisitionFailure({
-          userId: options.userId,
-          provider: "miosa",
-          startedAt,
-          error,
-          context: options.context,
-        });
+        if (error instanceof MiosaAcquisitionCooldownError) {
+          phLogger.event("miosa_sandbox_acquisition_skipped", {
+            userId: options.userId,
+            chat_id: options.context?.chatId,
+            trigger_run_id: options.context?.triggerRunId,
+            acquisition_id: options.context?.acquisitionId,
+            reason: "terminal_cooldown",
+            miosa_sandbox_acquisition_skipped_event_version: 1,
+          });
+        } else {
+          await rememberTerminalMiosaFailure(options.userId, error);
+          recordAcquisitionFailure({
+            userId: options.userId,
+            provider: "miosa",
+            startedAt,
+            error,
+            context: options.context,
+          });
+        }
         if (
           error instanceof MiosaAcquisitionCooldownError ||
           miosaErrorDiagnostics(error).error_code === "SNAPSHOT_MISSING" ||
