@@ -352,7 +352,7 @@ export const todoWriteToolInputSchema = z.object({
   merge: z
     .boolean()
     .describe(
-      "Whether to merge the todos with the existing todos. If true, the todos will be merged into the existing todos based on the id field. You can leave unchanged properties undefined. If false, the new todos will replace the existing todos.",
+      "Whether to merge the todos with the existing todos. If true, the todos will be merged into the existing todos based on the id field. You can leave unchanged properties undefined. If false, replace the assistant plan; every unfinished task must be included. Prefer true for follow-ups. With true and todos=[], read current state without changing it.",
     ),
   todos: z
     .array(
@@ -371,9 +371,8 @@ export const todoWriteToolInputSchema = z.object({
           .describe("The current status of the todo item"),
       }),
     )
-    .min(1)
     .describe(
-      "Array of todo items to write to the workspace. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status. A new item whose exact normalized content matches an earlier new item in the same write or a preserved manual todo is skipped and reported by ID.",
+      "Array of todo items to write to the workspace. Use merge=true and todos=[] to read the full current list without writing. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Replacement is rejected if it omits unfinished assistant tasks; keep them, or explicitly update their status when genuinely finished or obsolete. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status. A new item whose exact normalized content matches an earlier new item in the same write or a preserved manual todo is skipped and reported by ID.",
     ),
 });
 
@@ -389,7 +388,7 @@ Use proactively for:
 2. Non-trivial vulnerability testing requiring systematic approach
 3. User explicitly requests todo list
 4. User provides multiple targets or attack vectors (numbered/comma-separated)
-5. After receiving new instructions - capture requirements as todos (use merge=false to replace the assistant plan, or merge=true to patch the current plan)
+5. After receiving new instructions - use merge=true to add or patch requirements while retaining unfinished work. Use merge=false only for an intentional complete replan.
 6. After completing tasks - mark complete with merge=true and add follow-ups
 7. When starting new tasks - mark as in_progress (ideally only one at a time)
 
@@ -490,7 +489,9 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   - Mark complete IMMEDIATELY after finishing
   - Only ONE task in_progress at a time
   - Complete current tasks before starting new ones
-  - Before finishing your turn, complete every todo or cancel it if it is no longer relevant
+  - Keep unfinished work pending or in_progress across turns, pauses, limits, and summarization. Never cancel work just to finish a turn or because its context is missing.
+  - Cancel only when a user scope change or confirmed obsolescence makes the task irrelevant; explain the reason to the user. Mark completed only after verifying the work.
+  - If IDs or the plan are unclear, read the current list with merge=true and todos=[] before updating. Never guess IDs.
 
 3. **Task Breakdown:**
   - Create specific, actionable security tests

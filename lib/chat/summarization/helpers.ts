@@ -25,9 +25,6 @@ import {
   SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS,
   SUMMARY_PROMPT_VERSION,
   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
-  SUMMARY_TODO_BLOCK_MAX_TOKENS,
-  SUMMARY_TODO_CONTENT_MAX_TOKENS,
-  SUMMARY_TODO_MAX_ITEMS,
   SUMMARY_TOOL_OUTPUT_MAX_TOKENS,
   getSummarizationThresholdTokens,
 } from "./constants";
@@ -36,6 +33,7 @@ import {
   ASK_SUMMARIZATION_PROMPT,
   INCREMENTAL_SUMMARIZATION_INSTRUCTIONS,
 } from "./prompts";
+import { buildTodoContext } from "../todo-context";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
 
@@ -893,33 +891,7 @@ export const buildSummaryMessage = (
   summaryText: string,
   todos: Todo[] = [],
 ): UIMessage => {
-  let text = `<context_summary>\n${summaryText}\n</context_summary>`;
-
-  if (todos.length > 0) {
-    const visibleTodos = todos.slice(0, SUMMARY_TODO_MAX_ITEMS);
-    const omittedCount = todos.length - visibleTodos.length;
-    const todoLines = visibleTodos
-      .map((todo) => {
-        const content = truncateContent(
-          todo.content,
-          " [... truncated]",
-          SUMMARY_TODO_CONTENT_MAX_TOKENS,
-        );
-        return `- [${todo.status}] ${content}`;
-      })
-      .concat(
-        omittedCount > 0
-          ? [`- [... ${omittedCount} additional todos omitted ...]`]
-          : [],
-      )
-      .join("\n");
-    const boundedTodoLines = truncateContent(
-      todoLines,
-      "\n[... current_todos truncated ...]",
-      SUMMARY_TODO_BLOCK_MAX_TOKENS,
-    );
-    text += `\n<current_todos>\n${boundedTodoLines}\n</current_todos>`;
-  }
+  const text = `<context_summary>\n${summaryText}\n</context_summary>${buildTodoContext(todos)}`;
 
   return {
     id: uuidv4(),
