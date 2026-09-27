@@ -5,6 +5,7 @@ import {
   Asterisk,
   Atom,
   Bot,
+  ChevronDown,
   Flower2,
   Hexagon,
   Orbit,
@@ -19,6 +20,7 @@ import type { ChatStatus, SidebarSubagents } from "@/types/chat";
 import { isSidebarSubagents } from "@/types/chat";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
 import { formatSubagentCountSummary } from "@/lib/ai/subagents/status-summary";
+import { ReasoningHandler } from "@/app/components/ReasoningHandler";
 
 type LifecyclePart = {
   type: "data-subagent-lifecycle";
@@ -371,9 +373,13 @@ const presentationForPart = (
     } else if (output?.wait_outcome === "targets_not_found") {
       action = "Subagent targets not found";
     } else if (output?.wait_outcome === "timeout") {
-      action = "Subagent wait timed out";
+      action = "Subagents still working";
     } else if (output?.wait_outcome === "no_active_agents") {
       action = "No active subagents";
+    } else if (failed) {
+      action = "Could not wait for subagents";
+    } else if (state === "input-available" || state === "input-streaming") {
+      action = "Subagent wait interrupted";
     } else {
       suffix =
         terminalStatus && terminalStatus !== "completed"
@@ -520,6 +526,62 @@ export const SubagentToolGroup = memo(function SubagentToolGroup({
   parts: any[];
   status: ChatStatus;
 }) {
+  if (parts[0]?.type === "tool-wait_for_agents") {
+    const waits = parts.filter((part) => part.type === "tool-wait_for_agents");
+    const isWaitingSequence = waits.every(
+      (part) =>
+        part.state === "input-available" ||
+        (part.state === "output-available" &&
+          part.output?.success === true &&
+          part.output.wait_outcome === "timeout"),
+    );
+    if (isWaitingSequence) {
+      const presentation = presentationForPart(
+        message,
+        waits[waits.length - 1],
+        status,
+      );
+      const reasoningParts = parts.filter((part) => part.type === "reasoning");
+      if (reasoningParts.length === 0) {
+        return <SubagentFallback presentation={presentation} />;
+      }
+      return (
+        <details className="group/subagent-wait not-prose min-w-0">
+          <summary className="inline-flex h-9 max-w-full cursor-pointer list-none items-center gap-1 rounded-[15px] border border-border bg-muted/20 px-2.5 text-[13px] text-muted-foreground hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+            <Bot
+              className="mr-1 size-4 shrink-0 text-foreground"
+              aria-hidden="true"
+            />
+            <span className="truncate">
+              {presentation.waiting ? (
+                <Shimmer>{presentation.action}</Shimmer>
+              ) : (
+                presentation.action
+              )}
+            </span>
+            <ChevronDown
+              className="ml-1 size-3.5 shrink-0 transition-transform group-open/subagent-wait:rotate-180"
+              aria-hidden="true"
+            />
+          </summary>
+          <div className="mt-2 space-y-2 border-l border-border pl-3">
+            {reasoningParts.map((part) => {
+              const partIndex = message.parts.indexOf(part);
+              return partIndex < 0 ? null : (
+                <ReasoningHandler
+                  key={partIndex}
+                  message={message}
+                  partIndex={partIndex}
+                  status={status}
+                  suppressAutoOpenDuringStreaming
+                />
+              );
+            })}
+          </div>
+        </details>
+      );
+    }
+  }
   const presentations = parts.map((part) =>
     presentationForPart(message, part, status),
   );
