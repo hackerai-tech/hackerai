@@ -54,7 +54,13 @@ export const createTodoWrite = (context: ToolContext) => {
         const uniqueTodos = dedupeTodosById(todos);
         const { todos: contentDedupedTodos, skippedTodoIds } =
           dedupeNewAssistantTodosByContent(uniqueTodos, {
-            existingTodoIds,
+            existingTodoIds: shouldMerge
+              ? existingTodoIds
+              : new Set(
+                  existingTodos
+                    .filter((todo) => todo.sourceMessageId)
+                    .map((todo) => todo.id),
+                ),
             manualTodos: existingTodos.filter((todo) => !todo.sourceMessageId),
           });
         if (!shouldMerge) {

@@ -29,6 +29,30 @@ const records = (text: string): Todo[] =>
     .map((line) => JSON.parse(line));
 
 describe("todo continuity", () => {
+  it("retains same-description assistant identities without duplicating preserved manual tasks", async () => {
+    const manual = {
+      id: "manual",
+      content: "User task",
+      status: "pending" as const,
+    };
+    const existing = [
+      manual,
+      { ...item("first"), content: "Repeated task" },
+      { ...item("second"), content: "Repeated task" },
+    ];
+    const manager = new TodoManager(existing);
+    const result = await write(manager, { merge: false, todos: existing });
+    expect(result).not.toHaveProperty("error");
+    expect(manager.getAllTodos().map((todo) => todo.id)).toEqual([
+      "first",
+      "second",
+      "manual",
+    ]);
+    expect(manager.getAllTodos().find((todo) => todo.id === "manual")).toEqual(
+      manual,
+    );
+  });
+
   it("preserves exact task identities through compaction, reads, patches, persistence, and another compaction", async () => {
     const manager = new TodoManager();
     await write(manager, {
