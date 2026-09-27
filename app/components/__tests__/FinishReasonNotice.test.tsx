@@ -25,6 +25,17 @@ jest.mock("convex/react", () => ({
     hasBalance: false,
     autoReloadEnabled: false,
   }),
+  useAction: () => jest.fn(),
+}));
+jest.mock("@workos-inc/authkit-nextjs/components", () => ({
+  useAuth: () => ({ user: { id: "test-user" } }),
+}));
+jest.mock("swr", () => ({
+  __esModule: true,
+  default: () => ({
+    data: { monthly: { remaining: 0 } },
+    isLoading: false,
+  }),
 }));
 jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: jest.fn(),
@@ -160,7 +171,7 @@ describe("FinishReasonNotice", () => {
       },
       {
         finishReason: "budget-exhausted",
-        expectedText: "You've reached your usage limit, so this run stopped",
+        expectedText: "This run stopped when your usage limit was reached",
       },
       {
         finishReason: POST_SUMMARIZATION_INCOMPLETE_FINISH_REASON,
@@ -346,9 +357,7 @@ describe("FinishReasonNotice", () => {
       );
 
       expect(
-        screen.getByText(
-          /You've reached your usage limit, so this run stopped/i,
-        ),
+        screen.getByText(/This run stopped when your usage limit was reached/i),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: /continue/i }),

@@ -772,6 +772,7 @@ export const Messages = ({
               index={row.messageIndex}
               messagesLength={visibleMessages.length}
               lastAssistantMessageIndex={lastAssistantMessageIndex}
+              lastUserMessageIndex={lastUserMessageIndex}
               status={status}
               canEdit={row.messageIndex === lastUserMessageIndex}
               isEditing={

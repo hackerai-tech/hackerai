@@ -12,6 +12,9 @@ import type { SubscriptionTier } from "@/types";
 
 let mockSubscription: SubscriptionTier = "pro";
 let mockCheckingPlan = false;
+let mockIncludedUsageRemaining = 0;
+let mockIncludedUsageLoading = false;
+let mockIncludedUsageError = false;
 const mockUseQuery = jest.fn();
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -21,6 +24,20 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 }));
 jest.mock("convex/react", () => ({
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
+  useAction: () => jest.fn(),
+}));
+jest.mock("@workos-inc/authkit-nextjs/components", () => ({
+  useAuth: () => ({ user: { id: "test-user" } }),
+}));
+jest.mock("swr", () => ({
+  __esModule: true,
+  default: () => ({
+    data: mockIncludedUsageError
+      ? undefined
+      : { monthly: { remaining: mockIncludedUsageRemaining } },
+    isLoading: mockIncludedUsageLoading,
+    error: mockIncludedUsageError ? new Error("usage unavailable") : undefined,
+  }),
 }));
 jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: jest.fn(),
@@ -51,7 +68,63 @@ describe("BudgetExhaustedNotice", () => {
     jest.clearAllMocks();
     mockSubscription = "pro";
     mockCheckingPlan = false;
+    mockIncludedUsageRemaining = 0;
+    mockIncludedUsageLoading = false;
+    mockIncludedUsageError = false;
     mockUseQuery.mockReturnValue(emptyEntitlement);
+  });
+
+  it("offers Continue when a new paid plan has included usage without Extra Usage", () => {
+    mockUseQuery.mockReturnValue({
+      ...emptyEntitlement,
+      reason: "disabled",
+    });
+    mockIncludedUsageRemaining = 100;
+    const onContinue = jest.fn();
+    render(<BudgetExhaustedNotice onContinue={onContinue} />);
+
+    expect(screen.getByText(/Usage is available now/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Enable Extra Usage" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Manage usage" }));
+    expect(openSettingsDialog).toHaveBeenCalledWith("Usage");
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(onContinue).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for the included allowance check before recommending Extra Usage", () => {
+    mockIncludedUsageLoading = true;
+    mockUseQuery.mockReturnValue({
+      ...emptyEntitlement,
+      reason: "disabled",
+    });
+    render(<BudgetExhaustedNotice onContinue={jest.fn()} />);
+
+    expect(
+      screen.getByRole("button", { name: "Checking usage…" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Enable Extra Usage" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses neutral recovery copy when the included allowance check fails", () => {
+    mockIncludedUsageError = true;
+    mockUseQuery.mockReturnValue({
+      ...emptyEntitlement,
+      reason: "disabled",
+    });
+    render(<BudgetExhaustedNotice onContinue={jest.fn()} />);
+
+    expect(
+      screen.getByText(/couldn't check your current allowance/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Manage usage" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Enable Extra Usage" }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens Extra Usage from the empty-balance notice without starting a run", () => {

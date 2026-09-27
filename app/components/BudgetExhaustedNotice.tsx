@@ -1,5 +1,7 @@
 import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
-import { useQuery } from "convex/react";
+import { useAction, useQuery } from "convex/react";
+import useSWR from "swr";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
@@ -21,7 +23,26 @@ const UsageBudgetExhaustedNotice = ({
   onContinue,
 }: BudgetExhaustedNoticeProps) => {
   const { subscription, isCheckingProPlan } = useGlobalState();
+  const { user } = useAuth();
   const isPersonalPaid = subscription !== "free" && subscription !== "team";
+  const getAgentRateLimitStatus = useAction(
+    api.rateLimitStatus.getAgentRateLimitStatus,
+  );
+  const {
+    data: includedUsage,
+    error: includedUsageError,
+    isLoading: isCheckingIncludedUsage,
+  } = useSWR(
+    isPersonalPaid && !isCheckingProPlan && user
+      ? ["budget-exhausted-included-usage", user.id, subscription]
+      : null,
+    () => getAgentRateLimitStatus({ subscription }),
+    {
+      revalidateOnFocus: true,
+      refreshInterval: 60_000,
+      shouldRetryOnError: false,
+    },
+  );
   const entitlement = useQuery(
     api.extraUsage.getMaxModelExtraUsageEntitlement,
     isPersonalPaid && !isCheckingProPlan ? {} : "skip",
@@ -32,15 +53,21 @@ const UsageBudgetExhaustedNotice = ({
     isPersonalPaid &&
     entitlement?.extraUsageAvailable === true &&
     entitlement.hasBalance;
+  const canContinue =
+    (includedUsage?.monthly.remaining ?? 0) > 0 || Boolean(hasUsableCredits);
   const spendingCapReached = entitlement?.reason === "monthly_cap_exhausted";
   const extraUsageDisabled = entitlement?.reason === "disabled";
   const isLoading =
-    isCheckingProPlan || (isPersonalPaid && entitlement === undefined);
+    isCheckingProPlan ||
+    (isPersonalPaid && (entitlement === undefined || isCheckingIncludedUsage));
 
   const recoveryLabel =
     subscription === "free"
       ? "Upgrade plan"
-      : subscription === "team" || entitlement == null || hasUsableCredits
+      : subscription === "team" ||
+          entitlement == null ||
+          canContinue ||
+          includedUsageError
         ? "Manage usage"
         : spendingCapReached
           ? "Manage spending limit"
@@ -59,7 +86,13 @@ const UsageBudgetExhaustedNotice = ({
         cta_text: recoveryLabel,
       });
     } else {
-      openSettingsDialog(subscription === "team" ? "Usage" : "Extra Usage");
+      openSettingsDialog(
+        subscription === "team" ||
+          includedUsageError ||
+          (includedUsage?.monthly.remaining ?? 0) > 0
+          ? "Usage"
+          : "Extra Usage",
+      );
     }
   };
 
@@ -67,17 +100,19 @@ const UsageBudgetExhaustedNotice = ({
     <div className="mt-2 w-full">
       <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-3 flex-wrap">
         <span aria-live="polite">
-          {hasUsableCredits
-            ? "This run stopped at a usage limit. Continue to resume where it stopped."
-            : spendingCapReached
-              ? "You've reached your Extra Usage spending limit, so this run stopped."
-              : "You've reached your usage limit, so this run stopped."}
+          {canContinue
+            ? "This run stopped at a usage limit. Usage is available now; Continue to resume where it stopped."
+            : includedUsageError
+              ? "This run stopped at a usage limit. We couldn't check your current allowance; try again or view Usage."
+              : spendingCapReached
+                ? "This run stopped when your Extra Usage spending limit was reached."
+                : "This run stopped when your usage limit was reached."}
         </span>
         <div className="flex items-center gap-2 flex-wrap">
           <Button
             type="button"
             size="sm"
-            variant={hasUsableCredits ? "outline" : "default"}
+            variant={canContinue ? "outline" : "default"}
             disabled={isLoading}
             onClick={openRecovery}
           >
@@ -87,11 +122,11 @@ const UsageBudgetExhaustedNotice = ({
             <Button
               type="button"
               size="sm"
-              variant={hasUsableCredits ? "default" : "outline"}
+              variant={canContinue ? "default" : "outline"}
               disabled={isLoading}
               onClick={() => onContinue()}
             >
-              {hasUsableCredits ? "Continue" : "Try again"}
+              {canContinue ? "Continue" : "Try again"}
             </Button>
           )}
         </div>
