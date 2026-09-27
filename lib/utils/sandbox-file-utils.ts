@@ -66,6 +66,7 @@ type SandboxCommandResult = {
 
 type SandboxUploadFailureDetail = {
   kind: SandboxFile["kind"];
+  phase?: "acquisition" | "transfer";
   error: string;
   exitCode: number | null;
   reason: SandboxUploadFailureReason;
@@ -116,6 +117,11 @@ type CollectSandboxFilesOptions = {
 };
 
 const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
+const ACQUISITION_ERROR_NAMES = new Set([
+  "E2BAcquisitionError",
+  "MiosaWorkspaceUnavailableError",
+  "CloudMigrationUnavailableError",
+]);
 
 const logLocalAttachmentDebug = (
   event: string,
@@ -1061,8 +1067,17 @@ const summarizeSandboxUploadFailure = (
     sandboxFields?.sandbox_provider === "miosa"
       ? miosaErrorDiagnostics(error)
       : undefined;
+  // Acquisition has no sandbox instance yet. Preserve only known wrapper names
+  // for terminal diagnostics, independently of the retry-driving classifier.
+  const errorName =
+    phase === "acquisition" &&
+    error instanceof Error &&
+    ACQUISITION_ERROR_NAMES.has(error.name)
+      ? error.name
+      : providerDiagnostics?.error_name;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
+    phase,
     error: redactSandboxUploadError(file, error),
     exitCode: extractCommandExitCode(error),
     reason: classifySandboxUploadFailureReason(
@@ -1075,8 +1090,8 @@ const summarizeSandboxUploadFailure = (
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
-    ...(providerDiagnostics?.error_name && {
-      errorName: providerDiagnostics.error_name,
+    ...(errorName && {
+      errorName,
     }),
     ...(providerDiagnostics?.error_code && {
       errorCode: providerDiagnostics.error_code,
@@ -1260,6 +1275,7 @@ export const getSandboxUploadFailureMetadata = (
 
   return {
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
+    ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
     ...(failure?.reason ? { upload_failure_reason: failure.reason } : {}),
     ...(cause ? { upload_failure_cause: cause } : {}),
     ...(failure?.transientSandboxCommand !== undefined

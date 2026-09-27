@@ -2042,6 +2042,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
           "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.",
           {
             upload_failure_kind: "url",
+            upload_failure_phase: "transfer",
             upload_failure_reason: "local_command_no_response",
             upload_failure_cause:
               "Command timeout after 35000ms [firstMsg: no]",
@@ -2070,6 +2071,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
       });
       expect(wideEvent.error.metadata).toEqual({
         upload_failure_kind: "url",
+        upload_failure_phase: "transfer",
         upload_failure_reason: "local_command_no_response",
         upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
         upload_failure_transient_sandbox_command: true,

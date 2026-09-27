@@ -18,6 +18,56 @@ const PRODUCTION_COMMAND_TIMEOUT_MESSAGE =
 const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
   "Command timeout after 35000ms [connected: 417ms, subscribed: 417ms, published: 613ms, firstMsg: no] connectionId=conn-unresponsive";
 
+it.each([
+  "E2BAcquisitionError",
+  "MiosaWorkspaceUnavailableError",
+  "CloudMigrationUnavailableError",
+  "private-error-name",
+])(
+  "retains bounded acquisition diagnostics for %s without retrying",
+  async (name) => {
+    const ensureSandbox = jest.fn().mockRejectedValue(
+      Object.assign(new Error("Cloud workspace temporarily unavailable."), {
+        name,
+      }),
+    );
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await uploadSandboxFiles(
+        [1, 2].map((index) => ({
+          kind: "url" as const,
+          url: `https://example.com/${index}?token=private-token`,
+          localPath: `/tmp/private-file-${index}`,
+        })),
+        ensureSandbox,
+        { retryWithFreshSandboxOnTransientFailure: true },
+      );
+      expect(result.failedCount).toBe(2);
+      expect(result.pathRewrites).toEqual([]);
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      const metadata = getSandboxUploadFailureMetadata(result);
+      expect(metadata).toMatchObject({
+        upload_failure_phase: "acquisition",
+        upload_failure_reason: "unknown",
+        upload_failure_sandbox_readiness_reason: "unknown",
+      });
+      if (name === "private-error-name") {
+        expect(metadata).not.toHaveProperty("upload_failure_error_name");
+      } else {
+        expect(metadata).toHaveProperty("upload_failure_error_name", name);
+      }
+      expect(JSON.stringify(metadata)).not.toMatch(
+        /private-token|private-file|private-error-name/,
+      );
+      expect(getSandboxUploadUserMessage(result)).toBe(
+        "Failed to upload 2 attachments to the computer. Please try again.",
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  },
+);
+
 it("records safe validation fields for a Miosa attachment rejection without retrying it", async () => {
   const error = Object.assign(new Error("Provider rejected the request"), {
     name: "ValidationError",
@@ -68,6 +118,7 @@ it("records safe validation fields for a Miosa attachment rejection without retr
       }),
     );
     expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+      upload_failure_phase: "transfer",
       upload_failure_validation_fields: ["command"],
     });
     expect(JSON.stringify(eventSpy.mock.calls)).not.toMatch(
