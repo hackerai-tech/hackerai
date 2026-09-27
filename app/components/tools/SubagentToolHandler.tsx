@@ -371,7 +371,7 @@ const presentationForPart = (
     } else if (output?.wait_outcome === "targets_not_found") {
       action = "Subagent targets not found";
     } else if (output?.wait_outcome === "timeout") {
-      action = "Subagent wait timed out";
+      action = "Subagents still working";
     } else if (output?.wait_outcome === "no_active_agents") {
       action = "No active subagents";
     } else {
