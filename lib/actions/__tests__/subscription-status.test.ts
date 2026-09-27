@@ -2,6 +2,7 @@ import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockListSubscriptions = jest.fn();
 const mockRetrievePrice = jest.fn();
+const mockRetrievePaymentIntent = jest.fn();
 const mockGetBillingStatusContext = jest.fn();
 const mockPostHogError = jest.fn();
 
@@ -11,6 +12,7 @@ jest.mock("@/app/api/stripe", () => ({
       list: mockListSubscriptions,
     },
     prices: { retrieve: mockRetrievePrice },
+    paymentIntents: { retrieve: mockRetrievePaymentIntent },
   },
 }));
 
@@ -357,6 +359,91 @@ describe("blocked-chat renewal recovery eligibility", () => {
       });
     },
   );
+  it("reports a safe decline category from the open invoice's latest payment attempt", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          ...subscription,
+          latest_invoice: {
+            ...subscription.latest_invoice,
+            payments: {
+              data: [
+                {
+                  is_default: true,
+                  payment: {
+                    type: "payment_intent",
+                    payment_intent: "pi_renewal",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    } as never);
+    mockRetrievePaymentIntent.mockResolvedValue({
+      id: "pi_renewal",
+      last_payment_error: {
+        code: "card_declined",
+        decline_code: "insufficient_funds",
+        message: "Private issuer detail",
+      },
+    } as never);
+    const { default: getStatus } = await import("../subscription-status");
+    const status = await getStatus();
+    expect(mockRetrievePaymentIntent).toHaveBeenCalledWith("pi_renewal");
+    expect(status.renewalPaymentFailure).toBe("insufficient_funds");
+    expect(JSON.stringify(status)).not.toContain("Private issuer detail");
+  });
+  it("keeps the unpaid status when attempt details cannot be retrieved", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          ...subscription,
+          latest_invoice: {
+            ...subscription.latest_invoice,
+            payments: {
+              data: [
+                {
+                  is_default: true,
+                  payment: {
+                    type: "payment_intent",
+                    payment_intent: "pi_renewal",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    } as never);
+    mockRetrievePaymentIntent.mockRejectedValue(
+      new Error("Stripe unavailable"),
+    );
+    const { default: getStatus } = await import("../subscription-status");
+    expect(await getStatus()).toMatchObject({ renewalPaymentRequired: true });
+  });
+  it("confirms a paid renewal from invoice state", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          ...subscription,
+          status: "active",
+          latest_invoice: {
+            ...subscription.latest_invoice,
+            status: "paid",
+            amount_remaining: 0,
+          },
+        },
+      ],
+    } as never);
+    const { default: getStatus } = await import("../subscription-status");
+    expect(await getStatus()).toMatchObject({
+      subscriptionStatus: "active",
+      renewalInvoicePaid: true,
+    });
+    expect(mockRetrievePaymentIntent).not.toHaveBeenCalled();
+  });
   it.each([
     { status: "active" },
     { status: "canceled" },

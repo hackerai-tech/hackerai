@@ -10,12 +10,15 @@ import {
 } from "@/lib/analytics/paid-funnel";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { SubscriptionTier } from "@/types";
+import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
 
 type PastDueBillingBannerProps = {
   surface: "account_settings" | "blocked_chat";
   subscription: SubscriptionTier;
   subscriptionStatus: "past_due" | "unpaid";
   latestInvoiceId?: string;
+  renewalPaymentRequired?: boolean;
+  renewalPaymentFailure?: SubscriptionCancellationStatus["renewalPaymentFailure"];
   isOpening: boolean;
   onUpdatePayment: () => void;
 };
@@ -25,6 +28,8 @@ export function PastDueBillingBanner({
   subscription,
   subscriptionStatus,
   latestInvoiceId,
+  renewalPaymentRequired,
+  renewalPaymentFailure,
   isOpening,
   onUpdatePayment,
 }: PastDueBillingBannerProps) {
@@ -64,9 +69,15 @@ export function PastDueBillingBanner({
           className="mt-0.5 h-4 w-4 shrink-0 text-amber-500"
         />
         <p className="text-foreground">
-          {surface === "blocked_chat"
-            ? "Your renewal payment failed. Update your payment method to restore your paid usage. Access returns only after payment succeeds."
-            : "Your renewal payment failed—update your payment method to keep your plan."}
+          {!renewalPaymentRequired
+            ? "Your subscription needs billing attention. Review your payment status in billing."
+            : renewalPaymentFailure === "insufficient_funds"
+              ? "Your latest renewal payment was declined for insufficient funds. The invoice is still unpaid; check your payment method and retry in billing. Access returns only after payment succeeds."
+              : renewalPaymentFailure === "authentication_required"
+                ? "Your latest renewal payment needs authentication. The invoice is still unpaid; complete the payment in billing. Access returns only after payment succeeds."
+                : renewalPaymentFailure === "declined"
+                  ? "Your latest renewal payment was declined. The invoice is still unpaid; check your payment method in billing. Access returns only after payment succeeds."
+                  : "Your renewal invoice is still unpaid. Updating a payment method alone does not restore access. Check the payment in billing; access returns only after payment succeeds."}
         </p>
       </div>
       <Button

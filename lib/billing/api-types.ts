@@ -25,6 +25,11 @@ export type SubscriptionCancellationStatus = {
   latestInvoiceId?: string;
   /** Current automatic renewal is still open and unpaid. Never grants access. */
   renewalPaymentRequired?: boolean;
+  /** Stripe reports the latest renewal invoice paid. */
+  renewalInvoicePaid?: boolean;
+  /** Safe summary of the latest attempt on the open renewal invoice. */
+  renewalPaymentFailure?:
+    "insufficient_funds" | "authentication_required" | "declined";
   stripePriceId?: string;
   stripePriceLookupKey?: string;
   renewalAmountDollars?: number;

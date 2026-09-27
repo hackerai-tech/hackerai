@@ -133,6 +133,8 @@ export function BlockedChatBillingRecovery({
           subscription={subscription}
           subscriptionStatus={data.subscriptionStatus}
           latestInvoiceId={data.latestInvoiceId}
+          renewalPaymentRequired={data.renewalPaymentRequired}
+          renewalPaymentFailure={data.renewalPaymentFailure}
           isOpening={isOpening}
           onUpdatePayment={() => void openPayment()}
         />
