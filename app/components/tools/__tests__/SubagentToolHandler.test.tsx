@@ -16,6 +16,76 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 
 const { SubagentToolGroup, SubagentToolHandler } =
   require("../SubagentToolHandler") as typeof import("../SubagentToolHandler");
+const { projectAgentWorkParts } =
+  require("../../worked-for-parts") as typeof import("../../worked-for-parts");
+
+describe("continuous subagent waiting status", () => {
+  const wait = (id: string, state = "output-available") => ({
+    type: "tool-wait_for_agents",
+    toolCallId: id,
+    state,
+    input: {},
+    ...(state === "output-available"
+      ? { output: { success: true, wait_outcome: "timeout" } }
+      : {}),
+  });
+  const renderWaits = (parts: any[], status: "streaming" | "ready") => {
+    const message = { id: "parent-run", role: "assistant", parts } as any;
+    const activity = projectAgentWorkParts(
+      parts,
+      parts.map((_, index) => index),
+    ).activities[0];
+    return (
+      <SubagentToolGroup
+        message={message}
+        parts={activity.groupedParts!.map(({ part }) => part)}
+        status={status}
+      />
+    );
+  };
+
+  it("renders one status and updates it when the next wait starts and times out", () => {
+    const first = wait("one");
+    const second = wait("two");
+    const { rerender } = render(renderWaits([first, second], "streaming"));
+    expect(screen.getAllByText("Subagents still working")).toHaveLength(1);
+
+    rerender(
+      renderWaits(
+        [first, second, wait("three", "input-available")],
+        "streaming",
+      ),
+    );
+    expect(screen.getAllByText("Waiting for subagents")).toHaveLength(1);
+    expect(
+      screen.queryByText("Subagents still working"),
+    ).not.toBeInTheDocument();
+
+    rerender(renderWaits([first, second, wait("three")], "ready"));
+    expect(screen.getAllByText("Subagents still working")).toHaveLength(1);
+    expect(screen.queryByText("Waiting for subagents")).not.toBeInTheDocument();
+  });
+
+  it("retains intermediate reasoning behind an expandable status", () => {
+    const parts = [
+      wait("one"),
+      { type: "reasoning", text: "The child is checking the response." },
+      wait("two"),
+    ];
+    render(renderWaits(parts, "ready"));
+    const summary = screen
+      .getByText("Subagents still working")
+      .closest("summary")!;
+    const details = summary.closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(summary);
+    expect(details).toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Reasoning"));
+    expect(
+      screen.getByText("The child is checking the response."),
+    ).toBeVisible();
+  });
+});
 
 describe("SubagentToolHandler", () => {
   beforeEach(() => jest.clearAllMocks());

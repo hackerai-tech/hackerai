@@ -92,6 +92,79 @@ const getToolCallId = (part: MessagePart) => {
     : null;
 };
 
+const getSubagentWaitKey = (part: MessagePart): string | null => {
+  const candidate = part as {
+    type?: string;
+    state?: string;
+    errorText?: string;
+    input?: { target_agent_ids?: unknown };
+    output?: { success?: boolean; wait_outcome?: string };
+  };
+  if (
+    candidate.type !== "tool-wait_for_agents" ||
+    candidate.errorText ||
+    !(
+      candidate.state === "input-available" ||
+      (candidate.state === "output-available" &&
+        candidate.output?.success === true &&
+        candidate.output.wait_outcome === "timeout")
+    )
+  ) {
+    return null;
+  }
+  const targets = candidate.input?.target_agent_ids;
+  if (targets == null) return "all";
+  if (
+    !Array.isArray(targets) ||
+    !targets.every((id) => typeof id === "string")
+  ) {
+    return null;
+  }
+  return JSON.stringify([...new Set(targets)].sort());
+};
+
+/** Keep repeated waits in one stable row, retaining intervening reasoning. */
+const groupRepeatedSubagentWaits = (
+  activities: AgentWorkActivity[],
+): AgentWorkActivity[] => {
+  const grouped: AgentWorkActivity[] = [];
+  for (let index = 0; index < activities.length; index += 1) {
+    const first = activities[index];
+    const key = getSubagentWaitKey(first.part);
+    if (key === null) {
+      grouped.push(first);
+      continue;
+    }
+
+    let lastWaitIndex = index;
+    for (let cursor = index + 1; cursor < activities.length; cursor += 1) {
+      // Only a completed timeout can be followed by another wait. Concurrent
+      // in-flight calls must keep their own status rows.
+      if (
+        (activities[lastWaitIndex].part as { state?: string }).state !==
+        "output-available"
+      )
+        break;
+      const next = activities[cursor];
+      if (next.part.type === "reasoning") continue;
+      if (getSubagentWaitKey(next.part) !== key) break;
+      lastWaitIndex = cursor;
+    }
+
+    grouped.push({
+      ...first,
+      // Even the first wait uses a group so streaming retries keep the same
+      // component and row identity. Trailing reasoning remains outside until
+      // another matching wait confirms it belongs to this waiting sequence.
+      groupedParts: activities
+        .slice(index, lastWaitIndex + 1)
+        .map(({ part, partIndex }) => ({ part, partIndex })),
+    });
+    index = lastWaitIndex;
+  }
+  return grouped;
+};
+
 const getSubagentLifecycleGroupKey = (part: MessagePart) => {
   const candidate = part as {
     type?: string;
@@ -561,7 +634,9 @@ export function projectAgentWorkParts(
     previousProjectedType = type;
   }
 
-  const groupedActivities = groupAdjacentSubagentActivities(activities);
+  const groupedActivities = groupAdjacentSubagentActivities(
+    groupRepeatedSubagentWaits(activities),
+  );
 
   return {
     activities: groupedActivities,
