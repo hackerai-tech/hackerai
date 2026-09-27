@@ -19,17 +19,23 @@ jest.mock("../MessageItem", () => ({
   MessageItem: ({
     canEdit,
     isEditing,
+    lastUserMessageIndex,
     message,
     onStartEdit,
     status,
   }: {
     canEdit: boolean;
     isEditing: boolean;
+    lastUserMessageIndex?: number;
     message: ChatMessage;
     onStartEdit: (messageId: string) => void;
     status: string;
   }) => (
-    <div data-testid={`message-${message.id}`} data-status={status}>
+    <div
+      data-testid={`message-${message.id}`}
+      data-status={status}
+      data-last-user-message-index={lastUserMessageIndex}
+    >
       {isEditing ? (
         <div data-testid="message-editor">Editing {message.id}</div>
       ) : canEdit ? (
@@ -172,6 +178,41 @@ describe("Messages virtualized row invalidation", () => {
     mockLegendListScrollToIndex.mockReset();
     mockLegendListScrollToIndex.mockResolvedValue(undefined);
   });
+  it("passes the latest user boundary to an older stopped assistant row", () => {
+    const sharedProps = {
+      chatId: "chat-1",
+      setMessages: jest.fn(),
+      onRegenerate: jest.fn(),
+      onRetry: jest.fn(),
+      onEditMessage: jest.fn(),
+      status: "ready" as const,
+      error: null,
+      scrollRef: createRef<HTMLElement>(),
+      contentRef: createRef<HTMLElement>(),
+      finishReason: "budget-exhausted",
+      isMobile: true,
+    };
+    const { rerender } = render(
+      <DataStreamProvider>
+        <Messages {...sharedProps} messages={messages} />
+      </DataStreamProvider>,
+    );
+    expect(screen.getByTestId("message-assistant-1")).toHaveAttribute(
+      "data-last-user-message-index",
+      "0",
+    );
+
+    rerender(
+      <DataStreamProvider>
+        <Messages {...sharedProps} messages={navigatorMessages.slice(0, 3)} />
+      </DataStreamProvider>,
+    );
+    expect(screen.getByTestId("message-assistant-1")).toHaveAttribute(
+      "data-last-user-message-index",
+      "2",
+    );
+  });
+
   it("invalidates the virtualized row when editing starts", () => {
     render(
       <DataStreamProvider>
