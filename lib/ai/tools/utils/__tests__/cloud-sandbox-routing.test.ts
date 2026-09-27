@@ -4,12 +4,23 @@ const mockTerminateMiosa = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockMigrationRead = jest.fn();
 const mockMigrationAssert = jest.fn();
+const mockCooldownGuard = jest.fn();
+
+jest.mock("../miosa-acquisition-cooldown", () => ({
+  ...jest.requireActual("../miosa-acquisition-cooldown"),
+  assertMiosaAcquisitionNotCoolingDown: (...args: unknown[]) =>
+    mockCooldownGuard(...args),
+}));
 
 jest.mock("../cloud-migration-state", () => ({
   readCloudMigrationState: (...args: unknown[]) => mockMigrationRead(...args),
   assertCloudWorkspaceAvailable: (...args: unknown[]) =>
     mockMigrationAssert(...args),
-  CloudMigrationUnavailableError: class extends Error {},
+  CloudMigrationUnavailableError: class extends Error {
+    constructor() {
+      super("migration fence");
+    }
+  },
   registerE2BMigrationLease: jest.fn(),
 }));
 
@@ -19,6 +30,7 @@ jest.mock("@e2b/code-interpreter", () => ({
 
 jest.mock("../sandbox", () => ({
   ensureSandboxConnection: (...args: unknown[]) => mockEnsureE2B(...args),
+  E2BAcquisitionError: class extends Error {},
 }));
 
 jest.mock("../miosa-sandbox", () => ({
@@ -35,12 +47,18 @@ jest.mock("@/lib/posthog/server", () => ({
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
 import { MiosaEnrollmentError } from "../miosa-enrollment";
 import { createMiosaAcquisitionDiagnostics } from "../miosa-acquisition-diagnostics";
+import { MiosaAcquisitionCooldownError } from "../miosa-acquisition-cooldown";
 
 describe("cloud sandbox provider routing", () => {
   const setSandbox = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockEnsureMiosa.mockReset();
+    mockEnsureE2B.mockReset();
+    mockMigrationRead.mockReset();
+    mockMigrationAssert.mockReset();
+    mockCooldownGuard.mockReset().mockResolvedValue(undefined);
     mockMigrationRead.mockResolvedValue(null);
     mockMigrationAssert.mockResolvedValue(undefined);
   });
@@ -227,7 +245,10 @@ describe("cloud sandbox provider routing", () => {
 
   it("does not fall back after a migration committed but Miosa creation failed", async () => {
     mockEnsureMiosa.mockImplementationOnce(async () => {
-      mockMigrationAssert.mockRejectedValueOnce(new Error("migration fence"));
+      mockMigrationRead.mockResolvedValue({
+        phase: "miosa",
+        region: "us-east-1",
+      });
       throw new Error("Miosa unavailable after cutover");
     });
     await expect(
@@ -315,7 +336,8 @@ describe("cloud sandbox provider routing", () => {
   it("measures the complete fallback wait without attributing it to an E2B assignment", async () => {
     const clock = jest.spyOn(Date, "now").mockReturnValue(1000);
     const onBoot = jest.fn();
-    mockEnsureMiosa.mockImplementationOnce(async () => {
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      options.onWorkspaceStatus("absent");
       clock.mockReturnValue(4000);
       throw new Error("unavailable");
     });
@@ -384,7 +406,10 @@ describe("cloud sandbox provider routing", () => {
   });
 
   it("includes total acquisition failure in the denominator without logging raw errors", async () => {
-    mockEnsureMiosa.mockRejectedValueOnce(new Error("private response"));
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      options.onWorkspaceStatus("absent");
+      throw new Error("private response");
+    });
     mockEnsureE2B.mockRejectedValueOnce(new Error("private response"));
     await expect(
       ensureCloudSandboxConnection({
@@ -437,7 +462,10 @@ describe("cloud sandbox provider routing", () => {
 
   it("falls back to E2B when MIOSA acquisition fails", async () => {
     const sandbox = { sandboxId: "e2b-1" };
-    mockEnsureMiosa.mockRejectedValue(new Error("MIOSA unavailable"));
+    mockEnsureMiosa.mockImplementation(async (_context, options) => {
+      options.onWorkspaceStatus("absent");
+      throw new Error("MIOSA unavailable");
+    });
     mockEnsureE2B.mockResolvedValue({ sandbox });
 
     await expect(
@@ -460,7 +488,7 @@ describe("cloud sandbox provider routing", () => {
         provider: "miosa",
         sandbox_type: "cloud",
         sandbox_provider: "miosa",
-        cloud_sandbox_acquisition_failed_event_version: 5,
+        cloud_sandbox_acquisition_failed_event_version: 6,
       }),
     );
     expect(mockPostHogEvent).toHaveBeenCalledWith(
@@ -491,11 +519,63 @@ describe("cloud sandbox provider routing", () => {
     );
   });
 
+  it.each(["existing", "unknown"] as const)(
+    "preserves a %s Miosa workspace when acquisition fails",
+    async (status) => {
+      mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+        if (status === "existing") options.onWorkspaceStatus("existing");
+        throw new Error("private provider response");
+      });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { provider: "miosa", selectionReason: "miosa_rollout" },
+        }),
+      ).rejects.toThrow("Your files are preserved");
+      expect(mockEnsureE2B).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+        "cloud_sandbox_provider_fallback",
+        expect.anything(),
+      );
+      expect(mockPostHogEvent).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_completed",
+        expect.objectContaining({
+          sandbox_provider: "miosa",
+          outcome: "error",
+          fallback_used: false,
+        }),
+      );
+      expect(JSON.stringify(mockPostHogEvent.mock.calls)).not.toContain(
+        "private provider response",
+      );
+    },
+  );
+
+  it("skips a cooled Miosa acquisition without opening E2B", async () => {
+    mockCooldownGuard.mockRejectedValueOnce(
+      new MiosaAcquisitionCooldownError(),
+    );
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).rejects.toThrow("Your files are preserved");
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+  });
+
   it("excludes secret-like Miosa error names from all fallback telemetry", async () => {
     const error = Object.assign(new Error("private response body"), {
       name: "msk_private_canary",
     });
-    mockEnsureMiosa.mockRejectedValueOnce(error);
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      options.onWorkspaceStatus("absent");
+      throw error;
+    });
     mockEnsureE2B.mockResolvedValueOnce({ sandbox: { sandboxId: "e2b-1" } });
 
     await expect(
@@ -551,6 +631,7 @@ describe("cloud sandbox provider routing", () => {
         retryable: false,
       });
       mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+        options.onWorkspaceStatus("absent");
         const step = createMiosaAcquisitionDiagnostics({
           templateId: "hackerai-tools",
           workspaceName: "private-user",

@@ -105,23 +105,51 @@ const initializeMiosaRuntime = async (
       : runtimeInitializationCommand(runtimeImage),
     { timeoutSec: runtime === "native" ? 30 : 15 * 60 },
   );
-  const stderr: string[] = [];
   let exitCode: number | null = null;
-  for await (const event of stream) {
-    if (event.type === "stderr") stderr.push(event.data);
-    if (event.type === "exit") {
-      exitCode = Number(event.exitCode ?? event.exit_code ?? 0);
+  let timedOut = false;
+  try {
+    for await (const event of stream) {
+      if (event.type === "exit") {
+        const value = event.exitCode ?? event.exit_code;
+        exitCode =
+          typeof value === "number" && Number.isInteger(value) ? value : null;
+        timedOut = event.timedOut === true || event.timed_out === true;
+      }
     }
-  }
-  if (exitCode === null) {
-    throw new Error("MIOSA runtime initialization ended without an exit event");
-  }
-  if (exitCode !== 0) {
-    throw new Error(
-      stderr.join("").trim() || "Failed to initialize MIOSA sandbox runtime",
+  } catch (error) {
+    const diagnostic = miosaErrorDiagnostics(error);
+    throw new MiosaRuntimeInitializationError(
+      diagnostic.error_code === "TIMEOUT" ||
+        diagnostic.error_name === "TimeoutError"
+        ? "timeout"
+        : "transport",
     );
   }
+  if (exitCode === null) {
+    throw new MiosaRuntimeInitializationError("missing_exit");
+  }
+  if (timedOut) {
+    throw new MiosaRuntimeInitializationError("timeout");
+  }
+  if (exitCode === -1) {
+    throw new MiosaRuntimeInitializationError("transport");
+  }
+  if (exitCode !== 0) {
+    throw new MiosaRuntimeInitializationError("nonzero_exit");
+  }
 };
+
+class MiosaRuntimeInitializationError extends Error {
+  readonly code: string;
+  constructor(
+    readonly failureKind:
+      "nonzero_exit" | "missing_exit" | "timeout" | "transport",
+  ) {
+    super("Cloud workspace initialization failed. Please retry shortly.");
+    this.name = "MiosaRuntimeInitializationError";
+    this.code = `RUNTIME_INIT_${failureKind.toUpperCase()}`;
+  }
+}
 
 export const createMiosaClient = async (
   timeoutMs?: number,
@@ -365,9 +393,11 @@ export async function ensureMiosaSandboxConnection(
     migrationName?: string;
     acquisitionId?: string;
     onDiagnostic?: (diagnostic: MiosaAcquisitionDiagnostic) => void;
+    onWorkspaceStatus?: (status: "existing" | "absent") => void;
   } = {},
 ): Promise<{ sandbox: MiosaSandbox }> {
   if (options.initialSandbox) {
+    options.onWorkspaceStatus?.("existing");
     if (
       options.destinationId &&
       options.initialSandbox.sandboxId !== options.destinationId
@@ -413,8 +443,10 @@ export async function ensureMiosaSandboxConnection(
         return observedSandbox;
       });
       expectedId = existing.id;
+      options.onWorkspaceStatus?.("existing");
     } catch (error) {
       if (!(error instanceof NotFoundError)) throw error;
+      options.onWorkspaceStatus?.("absent");
       await step("enrollment", options.beforeCreate);
     }
   }
@@ -502,6 +534,9 @@ export async function ensureMiosaSandboxConnection(
           .catch(reconcile),
   );
   observedSandbox = sdkSandbox;
+  if (bootPathFromMiosa(sdkSandbox) !== "create_fresh") {
+    options.onWorkspaceStatus?.("existing");
+  }
   if (
     (options.destinationId || options.migrationName) &&
     ((options.destinationId && sdkSandbox.id !== options.destinationId) ||

@@ -1,6 +1,10 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
-import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
+import {
+  NotFoundError,
+  classifyE2BError,
+  getUserFacingE2BErrorMessage,
+} from "./e2b-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
 import {
   E2BRegionUnavailableError,
@@ -22,6 +26,37 @@ export {
 } from "./e2b-lease";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
+type E2BAcquisitionPhase = "routing" | "discovery" | "connect" | "create";
+
+const SAFE_E2B_CODES = new Set([
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "NOT_FOUND",
+  "AUTHENTICATION_ERROR",
+  "TEMPLATE_ERROR",
+  "INVALID_ARGUMENT",
+  "SANDBOX_ERROR",
+  "NOT_ENOUGH_SPACE",
+  "INTERNAL_SERVER_ERROR",
+  "SERVICE_UNAVAILABLE",
+  "GATEWAY_TIMEOUT",
+  "RESOURCE_EXHAUSTED",
+]);
+
+export class E2BAcquisitionError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: {
+      e2b_phase: E2BAcquisitionPhase;
+      e2b_error_category: ReturnType<typeof classifyE2BError>;
+      e2b_error_code?: string;
+      e2b_http_status?: number;
+    },
+  ) {
+    super(message);
+    this.name = "E2BAcquisitionError";
+  }
+}
 
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
@@ -54,6 +89,8 @@ export const ensureSandboxConnection = async (
   options: {
     initialSandbox?: Sandbox | null;
     triggerRegion?: TriggerRunRegion;
+    acquisitionId?: string;
+    triggerRunId?: string;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
@@ -64,6 +101,7 @@ export const ensureSandboxConnection = async (
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
+  let phase: E2BAcquisitionPhase = "routing";
   let createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -75,6 +113,7 @@ export const ensureSandboxConnection = async (
   try {
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
+    phase = "discovery";
 
     // Step 1: Look only in the cluster selected for this request. Crossing
     // clusters here would defeat the regional execution policy.
@@ -156,6 +195,7 @@ export const ensureSandboxConnection = async (
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
+        phase = "connect";
         const sandbox = await retryWithBackoff(
           () =>
             Sandbox.connect(existingSandboxInfo.sandboxId, {
@@ -182,10 +222,6 @@ export const ensureSandboxConnection = async (
           );
           createPath = "create_after_expired";
         } else {
-          console.error(
-            `[${userID}] Unexpected error resuming sandbox ${existingSandboxInfo.sandboxId}:`,
-            e,
-          );
           // The listed state can become stale while connect is pending. Never
           // destroy a shared user sandbox here: another run may have resumed
           // it by the time this failure is observed. The attachment path owns
@@ -198,6 +234,7 @@ export const ensureSandboxConnection = async (
 
     // Step 5: Create new sandbox with retry on E2B 429 rate limits
     let lastError: unknown;
+    phase = "create";
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
       if (attempt > 0) {
         console.warn(
@@ -235,18 +272,53 @@ export const ensureSandboxConnection = async (
     }
     throw lastError;
   } catch (error) {
-    console.error("Error creating persistent sandbox:", error);
+    const candidate =
+      error && typeof error === "object"
+        ? (error as { code?: unknown; status?: unknown; statusCode?: unknown })
+        : {};
+    const status = candidate.status ?? candidate.statusCode;
+    const diagnostics = {
+      e2b_phase: phase,
+      e2b_error_category: classifyE2BError(error),
+      ...(typeof candidate.code === "string" &&
+      SAFE_E2B_CODES.has(candidate.code)
+        ? { e2b_error_code: candidate.code }
+        : {}),
+      ...(typeof status === "number" &&
+      Number.isInteger(status) &&
+      status >= 400 &&
+      status <= 599
+        ? { e2b_http_status: status }
+        : {}),
+    };
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        event: "e2b_sandbox_acquisition_failed",
+        service: "agent-worker",
+        environment:
+          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        request_id: process.env.VERCEL_REQUEST_ID ?? null,
+        acquisition_id: options.acquisitionId ?? null,
+        trigger_run_id: options.triggerRunId ?? null,
+        user_id: userID,
+        ...diagnostics,
+        duration_ms: Math.round(performance.now() - startedAt),
+      }),
+    );
 
     if (error instanceof E2BRegionUnavailableError) throw error;
 
     // Surface specific error messages for known E2B errors
     const userMessage = getUserFacingE2BErrorMessage(error);
     if (userMessage) {
-      throw new Error(userMessage);
+      throw new E2BAcquisitionError(userMessage, diagnostics);
     }
 
-    throw new Error(
-      `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
+    throw new E2BAcquisitionError(
+      "Cloud sandbox is temporarily unavailable. Please retry shortly.",
+      diagnostics,
     );
   }
 };
