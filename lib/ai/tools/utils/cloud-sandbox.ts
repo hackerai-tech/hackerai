@@ -372,6 +372,7 @@ export async function ensureCloudSandboxConnection(options: {
         });
         if (
           error instanceof MiosaAcquisitionCooldownError ||
+          miosaErrorDiagnostics(error).error_code === "SNAPSHOT_MISSING" ||
           miosaWorkspace.status !== "absent"
         ) {
           recordRolloutExposure(options);

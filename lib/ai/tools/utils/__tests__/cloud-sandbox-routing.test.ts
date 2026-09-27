@@ -568,6 +568,27 @@ describe("cloud sandbox provider routing", () => {
     expect(mockEnsureE2B).not.toHaveBeenCalled();
   });
 
+  it("never falls back on a missing snapshot even after an absent name lookup", async () => {
+    mockEnsureMiosa.mockImplementationOnce(async (_context, options) => {
+      options.onWorkspaceStatus("absent");
+      throw Object.assign(new Error("private provider body"), {
+        code: "SNAPSHOT_MISSING",
+      });
+    });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa" },
+      }),
+    ).rejects.toThrow("Your files are preserved");
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "cloud_sandbox_provider_fallback",
+      expect.anything(),
+    );
+  });
+
   it("excludes secret-like Miosa error names from all fallback telemetry", async () => {
     const error = Object.assign(new Error("private response body"), {
       name: "msk_private_canary",
