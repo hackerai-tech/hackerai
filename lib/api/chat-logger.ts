@@ -253,6 +253,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerErrorRetriable",
   "paidDailyFreeAllowance",
   "upload_failure_kind",
+  "upload_failure_phase",
   "upload_failure_reason",
   "upload_failure_cause",
   "upload_failure_transient_sandbox_command",
