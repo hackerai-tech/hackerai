@@ -9,7 +9,11 @@ import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscripti
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
-import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
+import {
+  invoicePaymentIntentId,
+  paymentFailureGroup,
+  stripeObjectId,
+} from "@/lib/billing/subscription-payment-failure";
 
 type CurrentSubscriptionStatus = NonNullable<
   SubscriptionCancellationStatus["subscriptionStatus"]
@@ -58,7 +62,12 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       customer: stripeCustomerId,
       status: "all",
       limit: 10,
-      expand: ["data.items.data.price", "data.schedule", "data.latest_invoice"],
+      expand: [
+        "data.items.data.price",
+        "data.schedule",
+        "data.latest_invoice",
+        "data.latest_invoice.payments",
+      ],
     });
   } catch (error) {
     phLogger.error("billing_subscription_status_action_failed", {
@@ -102,6 +111,38 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     invoice.billing_reason === "subscription_cycle" &&
     invoice.amount_remaining > 0;
   const latestInvoiceId = stripeObjectId(currentSubscription.latest_invoice);
+  let renewalPaymentFailure: SubscriptionCancellationStatus["renewalPaymentFailure"];
+  if (renewalPaymentRequired && typeof invoice === "object" && invoice) {
+    const paymentIntentId = invoicePaymentIntentId(invoice);
+    if (paymentIntentId) {
+      try {
+        const paymentIntent =
+          await stripe.paymentIntents.retrieve(paymentIntentId);
+        const paymentError = paymentIntent.last_payment_error;
+        if (paymentError) {
+          const group = paymentFailureGroup({
+            failureCode: paymentError.code,
+            declineCode: paymentError.decline_code,
+          });
+          renewalPaymentFailure =
+            group === "insufficient_funds"
+              ? "insufficient_funds"
+              : group === "authentication_failed"
+                ? "authentication_required"
+                : "declined";
+        }
+      } catch (error) {
+        // The open invoice remains authoritative if Stripe cannot provide the
+        // attempt detail. Do not turn a status check into a billing outage.
+        phLogger.error("billing_renewal_attempt_lookup_failed", {
+          event: "billing_renewal_attempt_lookup_failed",
+          ...billingFields,
+          stripe_invoice_id: latestInvoiceId,
+          error,
+        });
+      }
+    }
+  }
   const item = currentSubscription.items?.data[0];
   const price = item?.price;
   const renewalAmountDollars =
@@ -145,6 +186,10 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     }),
     ...(latestInvoiceId && { latestInvoiceId }),
     ...(renewalPaymentRequired && { renewalPaymentRequired: true }),
+    ...(typeof invoice === "object" &&
+      invoice?.billing_reason === "subscription_cycle" &&
+      invoice.status === "paid" && { renewalInvoicePaid: true }),
+    ...(renewalPaymentFailure && { renewalPaymentFailure }),
     ...(price?.id && { stripePriceId: price.id }),
     ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
     ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),

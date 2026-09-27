@@ -42,9 +42,13 @@ export default async function redirectToBillingPortal(
   };
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
-  const returnUrl = options?.returnPath
-    ? getExtraUsageReturnUrl(baseUrl!, options.returnPath)
-    : null;
+  const returnUrl =
+    options?.returnPath || flow === "payment_method"
+      ? getExtraUsageReturnUrl(baseUrl!, options?.returnPath)
+      : null;
+  if (returnUrl && flow === "payment_method") {
+    returnUrl.searchParams.set("billing-recovery-return", "1");
+  }
   if (returnUrl && options?.surface === "blocked_chat") {
     returnUrl.searchParams.set("refresh", "entitlements");
   }

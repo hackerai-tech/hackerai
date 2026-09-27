@@ -197,6 +197,8 @@ describe("AccountTab", () => {
       cancelAtPeriodEnd: false,
       subscriptionStatus: "past_due",
       latestInvoiceId: "in_past_due",
+      renewalPaymentRequired: true,
+      renewalPaymentFailure: "insufficient_funds",
     } as never);
     mockRedirectToBillingPortal.mockResolvedValue("#payment-method" as never);
 
@@ -204,7 +206,7 @@ describe("AccountTab", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(
-      "Your renewal payment failed—update your payment method to keep your plan.",
+      "Your latest renewal payment was declined for insufficient funds. The invoice is still unpaid",
     );
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "recovery_prompt_impressed",
