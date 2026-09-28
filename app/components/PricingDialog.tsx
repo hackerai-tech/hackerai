@@ -83,6 +83,20 @@ export function getPricingIntentCopy(
   const limitType = context?.limitType;
   const reason = context?.reason;
 
+  if (source === "regional_subscription_first") {
+    return {
+      title: "Choose a subscription to start",
+      description:
+        "A subscription is required to send Ask requests or start Agent tasks. Choose the plan that fits your work.",
+      proDescription: "Security questions and Agent tasks",
+      proPlusDescription: "More usage for repeated Agent runs",
+      ultraDescription: "Maximum room for intensive work",
+      proButtonText: "Subscribe to Pro",
+      proPlusButtonText: "Subscribe to Pro+",
+      ultraButtonText: "Subscribe to Ultra",
+    };
+  }
+
   if (source === "agent_mode_gate") {
     return {
       title: "Unlock cloud Agent mode",
@@ -613,6 +627,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   const ultraButtonConfig = getUltraButtonConfig();
 
   const hasSubscription = subscription !== "free";
+  const showFreePlan =
+    !hasSubscription && context?.source !== "regional_subscription_first";
 
   return (
     <>
@@ -666,10 +682,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             <div
               className={cn(
                 "mx-auto grid w-full max-w-[88rem] grid-cols-1 gap-6 md:grid-cols-2",
-                hasSubscription ? "xl:grid-cols-3" : "xl:grid-cols-4",
+                showFreePlan ? "xl:grid-cols-4" : "xl:grid-cols-3",
               )}
             >
-              {!hasSubscription && (
+              {showFreePlan && (
                 <PlanCard
                   planName="Free"
                   price={0}

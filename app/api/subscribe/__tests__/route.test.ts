@@ -428,6 +428,8 @@ describe("POST /api/subscribe", () => {
           {
             id: "cs_open",
             url: "https://stripe.example/existing-checkout",
+            success_url: "https://hackerai.example/?refresh=entitlements",
+            cancel_url: "https://hackerai.example/",
             metadata: {
               workOSOrganizationId: "org_team",
               requestedPlan: "pro-monthly-plan",
@@ -529,6 +531,8 @@ describe("POST /api/subscribe", () => {
         {
           id: "cs_legacy",
           url: "https://stripe.example/legacy-checkout",
+          success_url: "https://hackerai.example/?refresh=entitlements",
+          cancel_url: "https://hackerai.example/",
           metadata: {
             workOSOrganizationId: "org_team",
             requestedPlan: "pro-monthly-plan",
@@ -564,6 +568,74 @@ describe("POST /api/subscribe", () => {
         },
       }),
     );
+  });
+
+  it("returns Preview checkout to its branch and rejects a matching session from another branch", async () => {
+    const originalEnv = {
+      VERCEL: process.env.VERCEL,
+      VERCEL_ENV: process.env.VERCEL_ENV,
+      VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL,
+      VERCEL_URL: process.env.VERCEL_URL,
+    };
+    Object.assign(process.env, {
+      VERCEL: "1",
+      VERCEL_ENV: "preview",
+      VERCEL_BRANCH_URL: "hackerai-git-regional-hackerai.vercel.app",
+      VERCEL_URL: "hackerai-regional-deployment-hackerai.vercel.app",
+    });
+    mockListOrganizationMemberships.mockResolvedValue({
+      data: [{ organizationId: "org_team", role: { slug: "admin" } }],
+    } as never);
+    mockGetOrganization.mockResolvedValue({
+      id: "org_team",
+      stripeCustomerId: "cus_existing_org",
+    } as never);
+    mockRetrieveCustomer.mockResolvedValue({
+      id: "cus_existing_org",
+      metadata: { workOSOrganizationId: "org_team" },
+    } as never);
+    mockListCheckoutSessions.mockResolvedValue({
+      data: [
+        {
+          id: "cs_stale_branch",
+          url: "https://stripe.example/stale-checkout",
+          success_url: "https://hackerai.example/?refresh=entitlements",
+          cancel_url: "https://hackerai.example/",
+          metadata: {
+            workOSOrganizationId: "org_team",
+            requestedPlan: "pro-monthly-plan",
+            resolvedPriceLookupKey: "pro-monthly-plan",
+            pricingExperimentKey: "hac46-pro-monthly-29-pricing",
+            pricingExperimentVariant: "control",
+            pricingExperimentPriceLookupKey: "pro-monthly-plan",
+          },
+        },
+      ],
+      has_more: false,
+    } as never);
+    try {
+      const { POST } = await import("../route");
+      const request = makeRequest({ plan: "pro-monthly-plan" });
+      request.nextUrl = new URL(
+        "https://hackerai-regional-deployment-hackerai.vercel.app",
+      );
+      const response = await POST(request);
+      expect(response.status).toBe(200);
+      expect(mockUpdateCheckoutSession).not.toHaveBeenCalled();
+      expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success_url:
+            "https://hackerai-regional-deployment-hackerai.vercel.app/?refresh=entitlements",
+          cancel_url:
+            "https://hackerai-regional-deployment-hackerai.vercel.app/",
+        }),
+      );
+    } finally {
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("returns a safe conflict response when Stripe's pending-session limit is reached", async () => {

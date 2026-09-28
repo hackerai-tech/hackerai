@@ -1,3 +1,7 @@
+import {
+  enforceRegionalSubscriptionFirst,
+  subscriptionFirstCountryFromRequest,
+} from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
@@ -372,6 +376,12 @@ export const createChatHandler = () => {
           subscription,
         );
       await assertUserCanMakeCostIncurringRequest(userId);
+      await enforceRegionalSubscriptionFirst({
+        userId,
+        subscription,
+        country: subscriptionFirstCountryFromRequest(req),
+        surface: "ask",
+      });
       usageRefundTracker.setUser(userId, subscription, organizationId);
       assertChatModeAccess({ mode, subscription });
       if (subscription === "free") {
