@@ -35,7 +35,7 @@ describe("presence traffic", () => {
     finish(true);
     sub.emit("publication", { data: { data: "after cleanup" } });
     expect(log).toHaveBeenCalledTimes(1);
-    expect(log.mock.calls[0][1]).toMatchObject({
+    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
       sample_rate: 8,
       presence_reliable: false,
       received_publications: 2,
@@ -58,7 +58,7 @@ describe("presence traffic", () => {
     const finish = trackPresenceTraffic(sub as Subscription, context);
     sub.emit("publication", { data: { data: "x".repeat(1024 * 1024) } });
     finish(true);
-    expect(log.mock.calls[0][1]).toMatchObject({
+    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
       sample_rate: 1,
       received_payload_bytes_estimate: 1024 * 1024 + 128,
     });

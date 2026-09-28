@@ -38,18 +38,22 @@ export function trackPresenceTraffic(
     const sampleRate = relayTrafficSampleRate(probeId, bytes);
     if (sampleRate === null) return;
 
-    console.log("local_relay_presence_traffic", {
-      source: context.source,
-      user_id: context.userId,
-      connection_id: context.connectionId,
-      chat_id: context.chatId,
-      probe_id: probeId,
-      sample_rate: sampleRate,
-      presence_reliable: presenceReliable,
-      received_publications: publications,
-      received_payload_bytes_estimate: bytes,
-      subscription_events: subscriptionEvents,
-      duration_ms: Date.now() - started,
-    });
+    console.log(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        event: "local_relay_presence_traffic",
+        source: context.source,
+        user_id: context.userId,
+        connection_id: context.connectionId,
+        chat_id: context.chatId ?? null,
+        probe_id: probeId,
+        sample_rate: sampleRate,
+        presence_reliable: presenceReliable,
+        received_publications: publications,
+        received_payload_bytes_estimate: bytes,
+        subscription_events: subscriptionEvents,
+        duration_ms: Date.now() - started,
+      }),
+    );
   };
 }

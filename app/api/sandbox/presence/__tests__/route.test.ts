@@ -119,7 +119,7 @@ describe.each(["presence-route", "sandbox-manager"] as const)(
       mockSubs[1].presence.mockResolvedValue({ clients: {} });
       mockSubs[1].emit("subscribed", {});
       expect((await (await response).json()).onlineCount).toBe(1);
-      expect(log.mock.calls[0][1]).toMatchObject({
+      expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
         source,
         connection_id: "one",
         received_publications: 1,
@@ -152,7 +152,7 @@ describe.each(["presence-route", "sandbox-manager"] as const)(
         }
         expect((await response).status).toBe(200);
         expect(log).toHaveBeenCalledTimes(2);
-        expect(log.mock.calls[0][1]).toMatchObject({
+        expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
           received_publications: 1,
           presence_reliable: false,
         });
