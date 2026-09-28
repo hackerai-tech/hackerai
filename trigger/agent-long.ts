@@ -578,6 +578,7 @@ type AgentLongErrorSummary = {
   requestedPreference?: string;
   actualSandbox?: string;
   uploadFailureKind?: string;
+  uploadFailurePhase?: "acquisition" | "transfer";
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -693,6 +694,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         ? truncateForTriggerMetadata(error.cause)
         : undefined;
     const errorMetadata = error.metadata;
+    const uploadFailurePhase = errorMetadata?.upload_failure_phase;
     return {
       category:
         error.type === "unauthorized"
@@ -766,6 +768,11 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_kind",
       ),
+      uploadFailurePhase:
+        uploadFailurePhase === "acquisition" ||
+        uploadFailurePhase === "transfer"
+          ? uploadFailurePhase
+          : undefined,
       uploadFailureReason: getStringMetadata(
         errorMetadata,
         "upload_failure_reason",
@@ -1038,6 +1045,8 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("actualSandbox", summary.actualSandbox);
   if (summary.uploadFailureKind)
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
+  if (summary.uploadFailurePhase)
+    metadata.set("uploadFailurePhase", summary.uploadFailurePhase);
   if (summary.uploadFailureReason)
     metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)
