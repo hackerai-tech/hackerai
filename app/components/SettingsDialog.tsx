@@ -12,6 +12,7 @@ import {
   Server,
   ChartNoAxesCombined,
   Gauge,
+  Cpu,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageNotesDialog } from "@/app/components/ManageNotesDialog";
@@ -26,6 +27,8 @@ import { RemoteControlTab } from "@/app/components/RemoteControlTab";
 import { UsageTab } from "@/app/components/UsageTab";
 import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
 import { TeamExtraUsageSection } from "@/app/components/TeamExtraUsageSection";
+import { ModelProvidersTab } from "@/app/components/ModelProvidersTab";
+import { MODEL_PROVIDERS_SETTINGS_TAB } from "@/app/hooks/useOrcaRouter";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -90,6 +93,12 @@ const SettingsDialog = ({
     label: "Extra Usage",
     icon: Gauge,
   };
+  // OrcaRouter models are selectable only on paid plans (Ask mode).
+  const modelProvidersTab = {
+    id: MODEL_PROVIDERS_SETTINGS_TAB,
+    label: MODEL_PROVIDERS_SETTINGS_TAB,
+    icon: Cpu,
+  };
   const membersTab = { id: "Members", label: "Members", icon: Users };
   const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
 
@@ -99,6 +108,7 @@ const SettingsDialog = ({
           ...baseTabs,
           agentsTab,
           localSandboxTab,
+          modelProvidersTab,
           usageTab,
           ...(isTeamAdmin ? [extraUsageTab] : []),
           membersTab,
@@ -109,6 +119,7 @@ const SettingsDialog = ({
             ...baseTabs,
             agentsTab,
             localSandboxTab,
+            modelProvidersTab,
             usageTab,
             extraUsageTab,
             accountTab,
@@ -251,6 +262,10 @@ const SettingsDialog = ({
                 {activeTab === "Agents" && <AgentsTab />}
 
                 {activeTab === "Remote Control" && <RemoteControlTab />}
+
+                {activeTab === MODEL_PROVIDERS_SETTINGS_TAB && (
+                  <ModelProvidersTab />
+                )}
 
                 {activeTab === "Usage" && <UsageTab />}
 

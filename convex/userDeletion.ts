@@ -21,6 +21,7 @@ export const USER_DELETION_TABLE_POLICY = {
     "task_outcome_surveys",
     "notes",
     "user_customization",
+    "orcarouter_credentials",
     "extra_usage",
     "team_member_usage",
     // Shared-organization rows are anonymized in place so the organization's
@@ -422,6 +423,11 @@ async function cleanupUserDataForUser(
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
     q.eq("user_id", userId),
   );
+  const orcarouterCredentialsBatch = await collectByIndexBatch<
+    Doc<"orcarouter_credentials">
+  >(ctx, budget, "orcarouter_credentials", "by_user_id", (q) =>
+    q.eq("user_id", userId),
+  );
   const localSandboxTokensBatch = await collectByIndexBatch<
     Doc<"local_sandbox_tokens">
   >(ctx, budget, "local_sandbox_tokens", "by_user_id", (q) =>
@@ -499,6 +505,7 @@ async function cleanupUserDataForUser(
     notesBatch,
     taskOutcomeSurveysBatch,
     customizationBatch,
+    orcarouterCredentialsBatch,
     messagesBatch,
     localSandboxTokensBatch,
     localSandboxConnectionsBatch,
@@ -587,6 +594,13 @@ async function cleanupUserDataForUser(
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "orcarouter_credentials",
+    orcarouterCredentialsBatch.docs,
+    mode,
+  );
   await deleteDocs(
     ctx,
     stats,

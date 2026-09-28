@@ -150,6 +150,8 @@ import {
   drainBackgroundWork,
 } from "@/lib/chat/background-work-drain";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
+import { createOrcaRouterProviderForUser } from "@/lib/ai/orcarouter/credentials";
 import {
   getSandboxUploadFailureMetadata,
   getSandboxUploadUserMessage,
@@ -552,6 +554,12 @@ export const createChatHandler = () => {
           }),
         );
       }
+
+      // Built before any streaming so a missing or revoked OrcaRouter key
+      // fails fast with a reconnect hint instead of a provider error.
+      const orcarouterProvider = isOrcaRouterModelKey(selectedModel)
+        ? await createOrcaRouterProviderForUser(userId)
+        : undefined;
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
@@ -1078,7 +1086,7 @@ export const createChatHandler = () => {
                 )
               : Promise.resolve(undefined);
 
-            const trackedProvider = createTrackedProvider();
+            const trackedProvider = createTrackedProvider(orcarouterProvider);
 
             let currentSystemPrompt = await systemPrompt(
               userId,

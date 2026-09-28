@@ -7,7 +7,13 @@ import {
   ABLITERATION_MODEL_KEY,
 } from "@/lib/ai/abliteration";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import type { ChatMode, SelectedModel } from "@/types/chat";
+import type { ChatMode, HackerAIModelTier } from "@/types/chat";
+import {
+  getOrcaRouterModelId,
+  isOrcaRouterModelKey,
+  type OrcaRouterModelKey,
+} from "@/lib/ai/orcarouter/models";
+import type { OrcaRouterFallbackProvider } from "@/lib/ai/orcarouter/provider";
 import { openrouterAttributionHeaders } from "@/lib/ai/openrouter-attribution";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -1282,7 +1288,7 @@ const baseProviders: ReturnType<typeof buildProviderMap> = {
   ),
 };
 
-export type ModelName = keyof typeof baseProviders;
+export type ModelName = keyof typeof baseProviders | OrcaRouterModelKey;
 
 export const modelCutoffDates: Partial<Record<ModelName, string>> &
   Record<string, string | undefined> = {
@@ -1340,6 +1346,9 @@ export const modelDisplayNames: Record<ModelName, string> &
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
+  if (isOrcaRouterModelKey(modelName)) {
+    return `${getOrcaRouterModelId(modelName)} via OrcaRouter`;
+  }
   return modelDisplayNames[modelName];
 };
 
@@ -1432,16 +1441,16 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
  * modes; media-aware routing happens in `selectModel`.
  */
 export function resolveTierToProviderKey(
-  tier: Exclude<SelectedModel, "auto">,
+  tier: Exclude<HackerAIModelTier, "auto">,
   mode: ChatMode,
 ): ModelName;
 export function resolveTierToProviderKey(tier: "auto", mode: ChatMode): null;
 export function resolveTierToProviderKey(
-  tier: SelectedModel,
+  tier: HackerAIModelTier,
   mode: ChatMode,
 ): ModelName | null;
 export function resolveTierToProviderKey(
-  tier: SelectedModel,
+  tier: HackerAIModelTier,
   mode: ChatMode,
 ): ModelName | null {
   if (tier === "auto") return null;
@@ -1463,4 +1472,16 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = () => myProvider;
+/**
+ * With a user's OrcaRouter provider, `orcarouter:<vendor/model>` keys resolve
+ * through it; every HackerAI model key keeps its existing route.
+ */
+export const createTrackedProvider = (
+  orcarouter?: OrcaRouterFallbackProvider,
+) =>
+  orcarouter
+    ? customProvider({
+        languageModels: baseProviders,
+        fallbackProvider: orcarouter,
+      })
+    : myProvider;

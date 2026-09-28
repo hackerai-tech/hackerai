@@ -36,6 +36,7 @@ You'll need the following accounts:
 **Optional:**
 
 - [abliteration.ai](https://abliteration.ai/) - AI models for security requests that standard models may refuse
+- [OrcaRouter](https://www.orcarouter.ai) - Lets paid users connect their own OrcaRouter account (API key or sign-in) and pick its models in Ask mode
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
@@ -71,6 +72,14 @@ To use abliteration.ai for eligible security requests, create an API key in the
 [abliteration.ai console](https://abliteration.ai/console) and set
 `ABLITERATION_API_KEY` in `.env.local`, Vercel, and Trigger.dev. Without this
 optional key, HackerAI continues using its standard models.
+
+To let users connect OrcaRouter, set `ORCAROUTER_CREDENTIALS_KEY` in
+`.env.local` and Vercel. It encrypts each user's OrcaRouter key before it is
+stored in Convex. Users then add a key or sign in with OrcaRouter from
+**Settings → Model providers**. The sign-in returns to
+`/api/orcarouter/callback` on your deployment, so there is no redirect URI to
+register. Without this key, the Model providers tab reports that OrcaRouter is
+not enabled.
 
 ### Start the development server
 

@@ -8,6 +8,7 @@ import type { UsageDeductionFailureReason } from "@/lib/rate-limit";
 import type { ChatApiEndpoint } from "@/lib/api/agent-endpoints";
 import type { ChatMode, RateLimitInfo, SubscriptionTier } from "@/types";
 import { v4 as uuidv4 } from "uuid";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
 
 interface StepUsage {
   inputTokens?: number;
@@ -172,7 +173,11 @@ export class UsageTracker {
     this.lastStepInputTokens = usage.inputTokens || 0;
     this.cacheReadTokens += cacheReadTokens;
     this.cacheWriteTokens += cacheWriteTokens;
-    const stepCost = getProviderUsageRawModelCost(usage.raw);
+    // OrcaRouter steps run on the user's own key, so any cost the relay
+    // reports is theirs, not HackerAI usage.
+    const stepCost = isOrcaRouterModelKey(modelName)
+      ? undefined
+      : getProviderUsageRawModelCost(usage.raw);
     const rawCost = isPositiveFiniteNumber(stepCost) ? stepCost : 0;
     const stepCostIndex =
       this.modelStepCosts.push({

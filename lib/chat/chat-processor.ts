@@ -24,6 +24,7 @@ import {
 } from "@/lib/chat/tool-abort-utils";
 import { stripOpenRouterReasoningMetadataFromMessages } from "@/lib/chat/provider-metadata-sanitizer";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
 /**
  * Get maximum steps allowed for a request.
  * Agent mode: 500 steps. Ask mode: 15 steps (free users only).
@@ -58,11 +59,24 @@ export function selectModel(
   } = {},
 ): ModelName {
   const isAgent = isAgentMode(mode);
-  const allowedSelectedModel = normalizeMaxModelForSubscription(
+  const requestedModel = normalizeMaxModelForSubscription(
     selectedModel,
     subscription,
     options,
   );
+  // A user-chosen OrcaRouter model is served with the user's own key in Ask
+  // mode and bypasses HackerAI's tier and media routing. Agent mode and free
+  // plans cannot use it, so route those requests as Auto.
+  if (
+    isOrcaRouterModelKey(requestedModel) &&
+    !isAgent &&
+    subscription !== "free"
+  ) {
+    return requestedModel;
+  }
+  const allowedSelectedModel = isOrcaRouterModelKey(requestedModel)
+    ? "auto"
+    : requestedModel;
   // Paid Standard uses native GLM vision as well as text/PDF parsing. Resolve
   // it before the legacy media promotions so every paid plan keeps this route.
   if (subscription !== "free" && allowedSelectedModel === "hackerai-standard") {

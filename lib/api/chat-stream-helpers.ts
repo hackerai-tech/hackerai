@@ -38,6 +38,7 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import type { ModelName } from "@/lib/ai/providers";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
 import type { AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -768,6 +769,9 @@ export function getRetryFallbackModel(
   modelName: ModelName,
   _mode: ChatMode,
 ): ModelName {
+  // The user chose this OrcaRouter model and pays for it with their own key;
+  // retry the same route instead of switching to a HackerAI model.
+  if (isOrcaRouterModelKey(modelName)) return modelName;
   if (modelName === ABLITERATION_LARGE_V2_MODEL_KEY) {
     return "model-deepseek-v4-pro-0813";
   }
@@ -980,7 +984,7 @@ export function resolveServedModelForCostAccounting({
   mode?: ChatMode;
   options?: FallbackOptions;
 }): string {
-  if (!responseModel) return modelName;
+  if (!responseModel || isOrcaRouterModelKey(modelName)) return modelName;
 
   const candidateKeys = [
     modelName as ModelName,

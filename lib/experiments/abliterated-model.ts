@@ -5,6 +5,7 @@ import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import type { ModelName } from "@/lib/ai/providers";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
 import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
 import {
   ABLITERATION_MODEL_KEY,
@@ -78,6 +79,8 @@ export function isEligibleForAbliteratedModel({
   return (
     subscription !== "free" &&
     !limitRescue &&
+    // An explicit OrcaRouter choice runs on the user's own key; never reroute it.
+    !isOrcaRouterModelKey(selectedModelOverride) &&
     moderationEligible &&
     messages.length > 0 &&
     !messagesContainUnsupportedFiles(messages)

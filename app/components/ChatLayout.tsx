@@ -11,6 +11,7 @@ import { useProjects } from "../hooks/useProjects";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { reportOrcaRouterConnectResult } from "../hooks/useOrcaRouter";
 import {
   loadSettingsDialog,
   onOpenSettingsDialog,
@@ -71,6 +72,10 @@ function ChatLayoutContent({ children }: { children: React.ReactNode }) {
     () => onOpenSettingsDialog(handleOpenSettings),
     [handleOpenSettings],
   );
+
+  useEffect(() => {
+    reportOrcaRouterConnectResult(handleOpenSettings);
+  }, [handleOpenSettings]);
 
   const forceTaskSidebarRail = Boolean(
     isMobile === false && sidebarOpen && compactTaskSidebar,

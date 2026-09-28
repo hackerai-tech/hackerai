@@ -1,4 +1,5 @@
 import type { SelectedModel, SubscriptionTier } from "@/types";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
 
 export function usesGlmFlashForStandardVision(
   subscription: SubscriptionTier | undefined,
@@ -19,5 +20,9 @@ export function isEligibleForDirectGlmVision({
   subscription: SubscriptionTier;
   selectedModelOverride?: SelectedModel;
 }): boolean {
-  return subscription !== "free" && selectedModelOverride !== "hackerai-max";
+  return (
+    subscription !== "free" &&
+    selectedModelOverride !== "hackerai-max" &&
+    !isOrcaRouterModelKey(selectedModelOverride)
+  );
 }

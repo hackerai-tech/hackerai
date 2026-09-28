@@ -33,12 +33,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   canUseMaxModel,
   normalizeMaxModelForSubscription,
+  normalizeSelectedModelForMode,
   normalizeSelectedModelForSubscription,
   type ChatMode,
   type SelectedModel,
@@ -49,6 +51,14 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import {
+  getOrcaRouterModelId,
+  isOrcaRouterModelKey,
+} from "@/lib/ai/orcarouter/models";
+import {
+  useOrcaRouterConnection,
+  useOrcaRouterModels,
+} from "@/app/hooks/useOrcaRouter";
 
 import { CostIndicator } from "./ModelSelector/CostIndicator";
 import {
@@ -57,6 +67,10 @@ import {
   getDefaultModelForMode,
   type ModelOption,
 } from "./ModelSelector/constants";
+import {
+  getOrcaRouterOptions,
+  OrcaRouterModelGroup,
+} from "./ModelSelector/OrcaRouterModelGroup";
 
 // ── Shared sub-components ──────────────────────────────────────────
 
@@ -293,6 +307,7 @@ const ModelOptionList = ({
   onSelect,
   onClose,
   mobile = false,
+  providerGroup,
 }: {
   options: ModelOption[];
   value: SelectedModel;
@@ -305,6 +320,8 @@ const ModelOptionList = ({
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
   mobile?: boolean;
+  /** Models from a user-connected provider, listed after the HackerAI tiers. */
+  providerGroup?: ReactNode;
 }) => (
   <div className="flex flex-col gap-px">
     {isFreeUser ? (
@@ -433,6 +450,7 @@ const ModelOptionList = ({
         </Tooltip>
       );
     })}
+    {providerGroup}
   </div>
 );
 
@@ -441,10 +459,27 @@ const ModelOptionList = ({
 export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
   const [maxAccessDialogOpen, setMaxAccessDialogOpen] = useState(false);
-  const { subscription } = useGlobalState();
+  const { subscription, uploadedFiles } = useGlobalState();
   const isMobile = Boolean(useIsMobile());
 
   const isFreeUser = subscription === "free";
+  // OrcaRouter models run on the user's own key, in Ask mode on paid plans.
+  const orcaRouterAvailable = !isFreeUser && !isAgentMode(mode);
+  const orcaRouterSelected = isOrcaRouterModelKey(value);
+  const orcaRouterActive = orcaRouterAvailable && (open || orcaRouterSelected);
+  const { connection: orcaRouterConnection } =
+    useOrcaRouterConnection(orcaRouterActive);
+  const orcaRouterConnected =
+    orcaRouterConnection?.connected === true &&
+    orcaRouterConnection.status === "active";
+  const {
+    catalog: orcaRouterCatalog,
+    isLoading: orcaRouterCatalogLoading,
+    refresh: refreshOrcaRouterCatalog,
+  } = useOrcaRouterModels(orcaRouterActive && orcaRouterConnected);
+  const hasImageAttachment = uploadedFiles.some((upload) =>
+    upload.file.type.startsWith("image/"),
+  );
   const shouldCheckPersonalMaxExtraUsage =
     (subscription === "pro" || subscription === "pro-plus") &&
     (open || value === "hackerai-max");
@@ -456,10 +491,11 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
     shouldCheckPersonalMaxExtraUsage && maxModelEntitlement === undefined;
   const maxModelExtraUsageAvailable =
     maxModelEntitlement?.extraUsageAvailable ?? false;
-  const subscriptionValue = normalizeSelectedModelForSubscription(
-    value,
-    subscription,
-  );
+  const subscriptionValue =
+    normalizeSelectedModelForMode(
+      normalizeSelectedModelForSubscription(value, subscription),
+      mode,
+    ) ?? "auto";
   const displayValue =
     value === "hackerai-max" && maxModelEntitlementLoading
       ? subscriptionValue
@@ -481,7 +517,61 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
       ? "Model"
       : isAuto
         ? "Auto"
-        : selected.label;
+        : isOrcaRouterModelKey(displayValue)
+          ? getOrcaRouterModelId(displayValue)
+          : selected.label;
+
+  // Re-validate a stored OrcaRouter choice against what this turn can use:
+  // a live catalog that no longer lists it, an attached image it cannot read,
+  // or a disconnected account all clear it back to Auto.
+  useEffect(() => {
+    if (!orcaRouterAvailable || !isOrcaRouterModelKey(value)) return;
+    if (!orcaRouterConnection) return;
+    let reason: string | undefined;
+    if (!orcaRouterConnected) {
+      reason = "OrcaRouter is not connected";
+    } else if (orcaRouterCatalog) {
+      const compatible = getOrcaRouterOptions(
+        orcaRouterCatalog,
+        hasImageAttachment,
+      ).some((model) => model.id === getOrcaRouterModelId(value));
+      const authoritative =
+        orcaRouterCatalog.status === "live" || hasImageAttachment;
+      if (!compatible && authoritative) {
+        reason = hasImageAttachment
+          ? "The selected OrcaRouter model does not accept images"
+          : "The selected OrcaRouter model is no longer available";
+      }
+    }
+    if (!reason) return;
+    onChange("auto");
+    toast.message(`${reason}. Switched to Auto.`);
+  }, [
+    hasImageAttachment,
+    onChange,
+    orcaRouterAvailable,
+    orcaRouterCatalog,
+    orcaRouterConnected,
+    orcaRouterConnection,
+    value,
+  ]);
+
+  const orcaRouterGroup = orcaRouterAvailable ? (
+    <OrcaRouterModelGroup
+      connection={orcaRouterConnection}
+      catalog={orcaRouterCatalog}
+      isLoading={orcaRouterCatalogLoading}
+      onRefresh={refreshOrcaRouterCatalog}
+      hasImageAttachment={hasImageAttachment}
+      value={displayValue}
+      onSelect={(model) => {
+        onChange(model);
+        setOpen(false);
+      }}
+      onClose={() => setOpen(false)}
+      mobile={isMobile}
+    />
+  ) : null;
 
   const handleAutoSelect = () => {
     onChange("auto");
@@ -604,6 +694,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
               mobile
+              providerGroup={orcaRouterGroup}
             />
           </SheetContent>
         </Sheet>
@@ -628,6 +719,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             onAutoSelect={handleAutoSelect}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}
+            providerGroup={orcaRouterGroup}
           />
         </PopoverContent>
       </Popover>

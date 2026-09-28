@@ -28,6 +28,7 @@ import {
   type LimitCapReason,
 } from "@/lib/limit-pressure";
 import { isUserRateLimitKey } from "./key-cleanup";
+import { isOrcaRouterModelKey } from "@/lib/ai/orcarouter/models";
 import {
   NORMAL_USAGE_MULTIPLIER,
   POINTS_PER_DOLLAR,
@@ -60,6 +61,13 @@ const DEFAULT_PRICING: ModelPricing = {
   output: 3.0,
   cacheRead: 0.5,
   cacheWrite: 0.5,
+};
+// OrcaRouter model tokens are billed to the user's own OrcaRouter account.
+const USER_BILLED_PRICING: ModelPricing = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
 };
 const GROK_4_6_BASE_PRICING: ModelPricing = {
   input: 2.0,
@@ -218,6 +226,7 @@ const getModelPricing = (
   inputTokens?: number,
 ): ModelPricing => {
   if (!modelName) return DEFAULT_PRICING;
+  if (isOrcaRouterModelKey(modelName)) return USER_BILLED_PRICING;
 
   if (
     GROK_4_6_MODEL_IDS.has(modelName) &&

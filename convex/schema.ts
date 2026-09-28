@@ -926,6 +926,19 @@ export default defineSchema({
       filterFields: ["user_id", "category"],
     }),
 
+  // User-connected OrcaRouter credential (API key or PKCE-issued key). The
+  // key is AES-GCM ciphertext sealed by the Next.js server; see
+  // lib/ai/orcarouter/credential-crypto.ts.
+  orcarouter_credentials: defineTable({
+    user_id: v.string(),
+    encrypted_key: v.string(),
+    key_hint: v.string(),
+    source: v.union(v.literal("api_key"), v.literal("pkce")),
+    status: v.union(v.literal("active"), v.literal("needs_reauth")),
+    generation: v.number(),
+    updated_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
   // Local Sandbox Tables
   local_sandbox_tokens: defineTable({
     user_id: v.string(),

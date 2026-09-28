@@ -1,6 +1,10 @@
 import { UIMessage } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails, FilePart } from "./file";
+import {
+  isOrcaRouterModelKey,
+  type OrcaRouterModelKey,
+} from "@/lib/ai/orcarouter/models";
 
 export type ChatMode = "agent" | "ask";
 
@@ -34,10 +38,16 @@ export function coerceAgentPermissionMode(value: unknown): AgentPermissionMode {
   return isAgentPermissionMode(value) ? value : DEFAULT_AGENT_PERMISSION_MODE;
 }
 
-export type SelectedModel =
+export type HackerAIModelTier =
   "auto" | "hackerai-standard" | "hackerai-pro" | "hackerai-max";
 
-export const SELECTABLE_MODELS: readonly SelectedModel[] = [
+/**
+ * A HackerAI tier, or an OrcaRouter catalog model served with the user's own
+ * OrcaRouter key (`orcarouter:<vendor/model>`, Ask mode only).
+ */
+export type SelectedModel = HackerAIModelTier | OrcaRouterModelKey;
+
+export const SELECTABLE_MODELS: readonly HackerAIModelTier[] = [
   "auto",
   "hackerai-standard",
   "hackerai-pro",
@@ -52,7 +62,7 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
  *      (renamed to `hackerai-standard` because Lite mis-described the entry tier).
  * Used by `coerceSelectedModel` to migrate values on read.
  */
-export const LEGACY_MODEL_ID_MAP: Record<string, SelectedModel> = {
+export const LEGACY_MODEL_ID_MAP: Record<string, HackerAIModelTier> = {
   // Migration only: the Sonnet provider is retired, so old browser state now
   // resolves to HackerAI Pro's current provider route.
   "sonnet-4.6": "hackerai-pro",
@@ -80,6 +90,7 @@ export function coerceSelectedModel(
   if ((SELECTABLE_MODELS as readonly string[]).includes(value)) {
     return value as SelectedModel;
   }
+  if (isOrcaRouterModelKey(value)) return value;
   // Use Object.hasOwn (not the `in` operator) to avoid matching inherited
   // properties like "toString" or "constructor" if a hostile/garbage value
   // ever reaches this function via localStorage or the request body.
@@ -91,8 +102,18 @@ export function coerceSelectedModel(
 
 export function isSelectedModel(value: string | null): value is SelectedModel {
   return (
-    value !== null && (SELECTABLE_MODELS as readonly string[]).includes(value)
+    value !== null &&
+    ((SELECTABLE_MODELS as readonly string[]).includes(value) ||
+      isOrcaRouterModelKey(value))
   );
+}
+
+/** OrcaRouter models run only in Ask mode; Agent mode falls back to Auto. */
+export function normalizeSelectedModelForMode(
+  model: SelectedModel | null | undefined,
+  mode: ChatMode,
+): SelectedModel | null | undefined {
+  return mode === "agent" && isOrcaRouterModelKey(model) ? "auto" : model;
 }
 
 export type LimitRescueRequest = {

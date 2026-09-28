@@ -12,6 +12,18 @@ const mockUseQuery = jest.fn((_query: unknown, args: unknown) =>
 );
 const mockRedirectToPricing = jest.fn();
 const mockOpenSettingsDialog = jest.fn();
+let mockUploadedFiles: Array<{ file: { type: string } }>;
+let mockOrcaRouterConnection: unknown;
+let mockOrcaRouterCatalog: unknown;
+const mockUseOrcaRouterConnection = jest.fn((enabled: boolean) => ({
+  connection: enabled ? mockOrcaRouterConnection : undefined,
+}));
+const mockUseOrcaRouterModels = jest.fn((enabled: boolean) => ({
+  catalog: enabled ? mockOrcaRouterCatalog : undefined,
+  isLoading: false,
+  refresh: jest.fn(),
+}));
+const mockToastMessage = jest.fn();
 
 Object.defineProperty(globalThis, "ResizeObserver", {
   configurable: true,
@@ -33,7 +45,19 @@ Object.defineProperty(globalThis, "ResizeObserver", {
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     subscription: mockSubscription,
+    uploadedFiles: mockUploadedFiles,
   }),
+}));
+
+jest.mock("@/app/hooks/useOrcaRouter", () => ({
+  MODEL_PROVIDERS_SETTINGS_TAB: "Model providers",
+  useOrcaRouterConnection: (enabled: boolean) =>
+    mockUseOrcaRouterConnection(enabled),
+  useOrcaRouterModels: (enabled: boolean) => mockUseOrcaRouterModels(enabled),
+}));
+
+jest.mock("sonner", () => ({
+  toast: { message: (...args: unknown[]) => mockToastMessage(...args) },
 }));
 
 jest.mock("@/hooks/use-mobile", () => ({
@@ -61,6 +85,9 @@ describe("ModelSelector", () => {
     mockSubscription = "pro-plus";
     mockMaxEntitlement = undefined;
     mockIsMobile = false;
+    mockUploadedFiles = [];
+    mockOrcaRouterConnection = { enabled: false, connected: false };
+    mockOrcaRouterCatalog = undefined;
     mockUseQuery.mockClear();
     mockRedirectToPricing.mockClear();
     mockOpenSettingsDialog.mockClear();
@@ -403,5 +430,184 @@ describe("ModelSelector", () => {
 
     expect(maxButton).toBeDefined();
     expect(maxButton).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("ModelSelector OrcaRouter models", () => {
+  // Shape returned by /api/orcarouter/models after catalog parsing: the
+  // server already dropped embedding, image-generation, video and rerank
+  // records, so only chat models (with their declared modalities) remain.
+  const liveCatalog = {
+    status: "live",
+    models: [
+      { id: "deepseek/deepseek-v4-pro", inputModalities: ["text"] },
+      { id: "openai/gpt-5.5", inputModalities: ["text", "image"] },
+      { id: "orcarouter/auto", inputModalities: [] },
+    ],
+  };
+
+  beforeEach(() => {
+    mockSubscription = "pro";
+    mockMaxEntitlement = undefined;
+    mockIsMobile = false;
+    mockUploadedFiles = [];
+    mockOrcaRouterConnection = {
+      enabled: true,
+      connected: true,
+      source: "api_key",
+      status: "active",
+      keyHint: "…abcd",
+      updatedAt: 1,
+    };
+    mockOrcaRouterCatalog = liveCatalog;
+    mockOpenSettingsDialog.mockClear();
+    mockToastMessage.mockClear();
+    mockUseOrcaRouterModels.mockClear();
+  });
+
+  const openSelector = () =>
+    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+
+  it("lists the live catalog from the API and selects a namespaced model", () => {
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
+
+    expect(mockUseOrcaRouterModels).toHaveBeenLastCalledWith(false);
+    openSelector();
+    expect(mockUseOrcaRouterModels).toHaveBeenLastCalledWith(true);
+
+    const options = screen
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(options).toEqual([
+      "deepseek/deepseek-v4-pro",
+      "openai/gpt-5.5",
+      "orcarouter/auto",
+    ]);
+
+    fireEvent.click(screen.getByRole("option", { name: "openai/gpt-5.5" }));
+    expect(onChange).toHaveBeenCalledWith("orcarouter:openai/gpt-5.5");
+  });
+
+  it("offers only models that declare image input when an image is attached", () => {
+    mockUploadedFiles = [{ file: { type: "image/png" } }];
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    openSelector();
+
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["openai/gpt-5.5"]);
+  });
+
+  it("clears a selected text-only model once an image is attached", () => {
+    mockUploadedFiles = [{ file: { type: "image/jpeg" } }];
+    const onChange = jest.fn();
+    render(
+      <ModelSelector
+        value="orcarouter:deepseek/deepseek-v4-pro"
+        onChange={onChange}
+        mode="ask"
+      />,
+    );
+
+    expect(onChange).toHaveBeenCalledWith("auto");
+    expect(mockToastMessage).toHaveBeenCalledWith(
+      "The selected OrcaRouter model does not accept images. Switched to Auto.",
+    );
+  });
+
+  it("keeps a compatible selection and shows it on the trigger", () => {
+    const onChange = jest.fn();
+    render(
+      <ModelSelector
+        value="orcarouter:openai/gpt-5.5"
+        onChange={onChange}
+        mode="ask"
+      />,
+    );
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "openai/gpt-5.5" }),
+    ).toBeVisible();
+  });
+
+  it("clears a model the live catalog no longer lists", () => {
+    const onChange = jest.fn();
+    render(
+      <ModelSelector
+        value="orcarouter:acme/retired-model"
+        onChange={onChange}
+        mode="ask"
+      />,
+    );
+    expect(onChange).toHaveBeenCalledWith("auto");
+  });
+
+  it("labels the verified fallback instead of offering free-text input", () => {
+    mockOrcaRouterCatalog = {
+      status: "fallback",
+      reason: "network",
+      models: [{ id: "openai/gpt-5.5", inputModalities: ["text", "image"] }],
+    };
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    openSelector();
+
+    expect(
+      screen.getByText("Live catalog unavailable — showing verified defaults"),
+    ).toBeVisible();
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("links to Model providers when OrcaRouter is not connected", () => {
+    mockOrcaRouterConnection = { enabled: true, connected: false };
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    openSelector();
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect OrcaRouter" }));
+    expect(mockOpenSettingsDialog).toHaveBeenCalledWith("Model providers");
+    expect(mockUseOrcaRouterModels).toHaveBeenLastCalledWith(false);
+  });
+
+  it("asks to reconnect after the saved key was rejected", () => {
+    mockOrcaRouterConnection = {
+      enabled: true,
+      connected: true,
+      source: "pkce",
+      status: "needs_reauth",
+      keyHint: "…abcd",
+      updatedAt: 1,
+    };
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    openSelector();
+
+    expect(
+      screen.getByRole("button", { name: "Reconnect OrcaRouter" }),
+    ).toBeVisible();
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+  });
+
+  it("hides OrcaRouter in Agent mode and shows the selection as Auto", () => {
+    render(
+      <ModelSelector
+        value="orcarouter:openai/gpt-5.5"
+        onChange={jest.fn()}
+        mode="agent"
+      />,
+    );
+    openSelector();
+    expect(
+      screen.queryByTestId("orcarouter-model-group"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer OrcaRouter on the free plan", () => {
+    mockSubscription = "free";
+    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    fireEvent.click(screen.getByRole("button", { name: /^Model$/i }));
+    expect(
+      screen.queryByTestId("orcarouter-model-group"),
+    ).not.toBeInTheDocument();
   });
 });
