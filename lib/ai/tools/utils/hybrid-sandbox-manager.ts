@@ -1,4 +1,9 @@
-import { Centrifuge, type Subscription } from "centrifuge";
+import {
+  Centrifuge,
+  type Subscription,
+  type SubscriptionErrorContext,
+} from "centrifuge";
+import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
 import type {
   AnySandbox,
   SandboxBootInfo,
@@ -168,6 +173,7 @@ export function filterConnectionsByPresence(
 async function queryLiveSandboxConnectionIds(
   userId: string,
   connectionIds: string[],
+  chatId?: string,
 ): Promise<PresenceProbeResult> {
   if (connectionIds.length === 0) {
     return {
@@ -188,12 +194,15 @@ async function queryLiveSandboxConnectionIds(
   }
 
   const start = Date.now();
+  let presenceReliable = false;
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
+  const finishTraffic: Array<(reliable: boolean) => void> = [];
+  const cleanups: Array<() => void> = [];
 
   try {
     const token = await generateCentrifugoToken(userId, 30);
-    client = new Centrifuge(wsUrl, { token });
+    client = new Centrifuge(wsUrl, { token, name: "hackerai-sandbox-manager" });
     const onlineConnectionIds = new Set<string>();
 
     const probes = connectionIds.map(
@@ -203,6 +212,14 @@ async function queryLiveSandboxConnectionIds(
             sandboxConnectionChannel(userId, connectionId),
           );
           subscriptions.push(sub);
+          finishTraffic.push(
+            trackPresenceTraffic(sub, {
+              source: "sandbox-manager",
+              userId,
+              connectionId: connectionId,
+              chatId,
+            }),
+          );
 
           const timeout = setTimeout(() => {
             cleanup();
@@ -215,10 +232,12 @@ async function queryLiveSandboxConnectionIds(
 
           const cleanup = () => {
             clearTimeout(timeout);
-            sub.removeAllListeners();
+            sub.removeListener("subscribed", onSubscribed);
+            sub.removeListener("error", onError);
           };
+          cleanups.push(cleanup);
 
-          sub.on("subscribed", async () => {
+          const onSubscribed = async () => {
             try {
               const result = await sub.presence();
               cleanup();
@@ -230,21 +249,24 @@ async function queryLiveSandboxConnectionIds(
               cleanup();
               reject(error);
             }
-          });
+          };
 
-          sub.on("error", (ctx) => {
+          const onError = (ctx: SubscriptionErrorContext) => {
             cleanup();
             reject(
               new Error(ctx.error?.message ?? "Centrifugo subscription error"),
             );
-          });
+          };
 
+          sub.on("subscribed", onSubscribed);
+          sub.on("error", onError);
           sub.subscribe();
         }),
     );
 
     client.connect();
     await Promise.all(probes);
+    presenceReliable = true;
 
     return {
       reliable: true,
@@ -259,6 +281,8 @@ async function queryLiveSandboxConnectionIds(
       error,
     };
   } finally {
+    cleanups.forEach((cleanup) => cleanup());
+    finishTraffic.forEach((finish) => finish(presenceReliable));
     try {
       for (const sub of subscriptions) {
         sub.removeAllListeners();
@@ -644,6 +668,7 @@ export class HybridSandboxManager implements SandboxManager {
       const presence = await queryLiveSandboxConnectionIds(
         this.userID,
         connections.map((connection) => connection.connectionId),
+        this.chatId,
       );
       if (!presence.reliable) {
         logStructured("warn", "local_sandbox_presence_unavailable", {

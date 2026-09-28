@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Centrifuge, type Subscription } from "centrifuge";
+import {
+  Centrifuge,
+  type Subscription,
+  type SubscriptionErrorContext,
+} from "centrifuge";
+import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { ConvexHttpClient } from "convex/browser";
@@ -51,10 +56,12 @@ export async function GET(request: NextRequest) {
 
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
+  const finishTraffic: Array<(reliable: boolean) => void> = [];
+  const cleanups: Array<() => void> = [];
   const probeStart = Date.now();
   try {
     const token = await generateCentrifugoToken(userId, 30);
-    client = new Centrifuge(wsUrl, { token });
+    client = new Centrifuge(wsUrl, { token, name: "hackerai-presence-route" });
 
     const probes = connections.map(
       (connection) =>
@@ -63,6 +70,13 @@ export async function GET(request: NextRequest) {
             sandboxConnectionChannel(userId, connection.connectionId),
           );
           subscriptions.push(sub);
+          finishTraffic.push(
+            trackPresenceTraffic(sub, {
+              source: "presence-route",
+              userId,
+              connectionId: connection.connectionId,
+            }),
+          );
 
           const timeout = setTimeout(() => {
             cleanup();
@@ -75,10 +89,12 @@ export async function GET(request: NextRequest) {
 
           const cleanup = () => {
             clearTimeout(timeout);
-            sub.removeAllListeners();
+            sub.removeListener("subscribed", onSubscribed);
+            sub.removeListener("error", onError);
           };
+          cleanups.push(cleanup);
 
-          sub.on("subscribed", async () => {
+          const onSubscribed = async () => {
             try {
               const result = await sub.presence();
               if (presenceHasConnectionId(result, connection.connectionId)) {
@@ -90,15 +106,17 @@ export async function GET(request: NextRequest) {
               cleanup();
               reject(e);
             }
-          });
+          };
 
-          sub.on("error", (ctx) => {
+          const onError = (ctx: SubscriptionErrorContext) => {
             cleanup();
             reject(
               new Error(ctx.error?.message ?? "Centrifugo subscription error"),
             );
-          });
+          };
 
+          sub.on("subscribed", onSubscribed);
+          sub.on("error", onError);
           sub.subscribe();
         }),
     );
@@ -116,6 +134,8 @@ export async function GET(request: NextRequest) {
       error: err,
     });
   } finally {
+    cleanups.forEach((cleanup) => cleanup());
+    finishTraffic.forEach((finish) => finish(presenceReliable));
     for (const sub of subscriptions) {
       sub.removeAllListeners();
       sub.unsubscribe();
