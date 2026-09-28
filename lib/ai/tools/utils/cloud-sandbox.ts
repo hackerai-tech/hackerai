@@ -4,6 +4,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SubscriptionTier } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import type { CloudSandboxSelectionReason } from "./cloud-sandbox-provider";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 import { ensureSandboxConnection, E2BAcquisitionError } from "./sandbox";
 import { isE2BSandbox, isMiosaSandbox } from "./sandbox-types";
 import {
@@ -240,6 +241,22 @@ export async function ensureCloudSandboxConnection(options: {
     context: { ...options.context, acquisitionId: randomUUID() },
   };
   const migrationState = await readCloudMigrationState(options.userId);
+  if (isMiosaCloudSandboxPaused()) {
+    // Never expose the stale E2B source of a committed migration. Recovery
+    // must preserve the newer MIOSA files before this fence can be cleared.
+    if (migrationState) throw new CloudMigrationUnavailableError();
+    if (options.initialSandbox && isMiosaSandbox(options.initialSandbox)) {
+      throw new MiosaWorkspaceUnavailableError();
+    }
+    options = {
+      ...options,
+      context: {
+        ...options.context,
+        provider: "e2b",
+        selectionReason: "miosa_rollout_paused",
+      },
+    };
+  }
   if (
     migrationState &&
     (migrationState.phase !== "miosa" ||

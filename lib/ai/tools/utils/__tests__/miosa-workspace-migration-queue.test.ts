@@ -1,6 +1,14 @@
+import { isMiosaCloudSandboxPaused } from "../miosa-rollout";
+jest.mock("../miosa-rollout", () => ({
+  isMiosaCloudSandboxPaused: jest.fn(() => false),
+}));
+
 import { tasks, idempotencyKeys } from "@trigger.dev/sdk";
 import { getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
-import { queueE2BFileMigration } from "../miosa-workspace-migration-queue";
+import {
+  isE2BFileMigrationEnabled,
+  queueE2BFileMigration,
+} from "../miosa-workspace-migration-queue";
 jest.mock("@trigger.dev/sdk", () => ({
   tasks: { trigger: jest.fn() },
   idempotencyKeys: { create: jest.fn() },
@@ -28,6 +36,7 @@ describe("migration scheduling", () => {
   } as Parameters<typeof queueE2BFileMigration>[0];
   beforeEach(() => {
     jest.resetAllMocks();
+    jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(false);
     process.env = { ...original, TRIGGER_ENV: "preview" };
     (getPostHogFeatureFlagForUser as jest.Mock).mockResolvedValue(true);
     (idempotencyKeys.create as jest.Mock).mockImplementation(
@@ -36,6 +45,17 @@ describe("migration scheduling", () => {
   });
   afterAll(() => {
     process.env = original;
+  });
+  it("stops scheduling and worker rechecks while paused even if PostHog enables migration", async () => {
+    jest
+      .mocked(isMiosaCloudSandboxPaused)
+      .mockImplementation(
+        jest.requireActual("../miosa-rollout").isMiosaCloudSandboxPaused,
+      );
+    expect(await isE2BFileMigrationEnabled("user", "PRODUCTION")).toBe(false);
+    expect(await queueE2BFileMigration(options)).toBe(false);
+    expect(getPostHogFeatureFlagForUser).not.toHaveBeenCalled();
+    expect(tasks.trigger).not.toHaveBeenCalled();
   });
   it("schedules after the idle interval and always keeps this acquisition on E2B", async () => {
     expect(await queueE2BFileMigration(options)).toBe(false);

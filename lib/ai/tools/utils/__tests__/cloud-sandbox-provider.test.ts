@@ -1,3 +1,8 @@
+import { isMiosaCloudSandboxPaused } from "../miosa-rollout";
+jest.mock("../miosa-rollout", () => ({
+  isMiosaCloudSandboxPaused: jest.fn(() => false),
+}));
+
 import {
   getCloudSandboxProvider,
   MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY,
@@ -10,6 +15,10 @@ describe("cloud sandbox provider selection", () => {
   const originalProvider = process.env.CLOUD_SANDBOX_PROVIDER;
   const originalMiosaKey = process.env.MIOSA_API_KEY;
   const originalMiosaTemplate = process.env.MIOSA_TEMPLATE_ID;
+
+  beforeEach(() => {
+    jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(false);
+  });
 
   afterEach(() => {
     if (originalProvider === undefined) {
@@ -39,6 +48,30 @@ describe("cloud sandbox provider selection", () => {
     delete process.env.CLOUD_SANDBOX_PROVIDER;
     expect(getCloudSandboxProvider()).toBe("e2b");
   });
+
+  it.each(["PREVIEW", "PRODUCTION", "DEVELOPMENT"])(
+    "keeps %s on E2B despite MIOSA overrides and an enabled flag while paused",
+    async (environment) => {
+      jest
+        .mocked(isMiosaCloudSandboxPaused)
+        .mockImplementation(
+          jest.requireActual("../miosa-rollout").isMiosaCloudSandboxPaused,
+        );
+      process.env.CLOUD_SANDBOX_PROVIDER = "miosa";
+      process.env.MIOSA_API_KEY = "msk_test";
+      const evaluateFlags = jest.fn(async () => ({ getFlag: () => true }));
+      expect(getCloudSandboxProvider()).toBe("e2b");
+      await expect(
+        selectCloudSandboxProvider({
+          userId: "user-1",
+          environment,
+          triggerRegion: "us-east-1",
+          featureFlagClient: { evaluateFlags },
+        }),
+      ).resolves.toEqual({ provider: "e2b", reason: "miosa_rollout_paused" });
+      expect(evaluateFlags).not.toHaveBeenCalled();
+    },
+  );
 
   it("honors an explicit E2B provider", () => {
     process.env.CLOUD_SANDBOX_PROVIDER = "e2b";

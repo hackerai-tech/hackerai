@@ -2,6 +2,24 @@
 
 Owner and rollout/readout decisions: [HAC-78](https://linear.app/hackerai/issue/HAC-78/rollout-miosa-as-primary-cloud-agent-sandbox-with-e2b-fallback).
 
+## Pause and recovery
+
+MIOSA cloud execution and E2B-to-MIOSA migration are paused in code for all
+environments. New cloud acquisitions use E2B even when an environment override
+or rollout flag requests MIOSA. Keep both rollout and migration flags inactive
+in each PostHog project. Existing active runs on older workers may finish;
+the code guard requires deploying both web and Trigger workers.
+
+Committed migration fences and cached MIOSA workspaces fail safely while paused.
+Their files remain preserved. Never clear a committed fence or reconnect the
+retained E2B source without a verified reverse transfer or explicit workspace
+reset. Cleanup still needs both providers' credentials.
+
+Resuming requires a reviewed change to `isMiosaCloudSandboxPaused`, independent
+environment verification and the acceptance checks below before reactivating
+either project's flags. The remaining pilot instructions describe that future
+resumption, not the current routing behavior.
+
 ## Approved scope
 
 Live activation state and dated acceptance evidence belong in HAC-78 and the

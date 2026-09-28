@@ -2,6 +2,12 @@
 
 Owner and rollout: [HAC-113](https://linear.app/hackerai/issue/HAC-113).
 
+Migration is currently paused in code in all environments. Scheduling and worker
+flag rechecks return disabled regardless of PostHog targeting. Keep the migration
+flag inactive in both projects. Existing committed fences remain intact and
+require verified reverse transfer or explicit reset before E2B can be used.
+The procedures below apply only after reviewed resumption of the rollout.
+
 This replaces pristine-template fingerprinting. No baseline JSON is required.
 The migration copies only `/home/user`, including hidden files and metadata.
 It does not distinguish Agent-created files from other files in that directory.

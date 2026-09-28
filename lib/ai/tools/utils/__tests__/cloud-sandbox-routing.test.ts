@@ -1,3 +1,8 @@
+import { isMiosaCloudSandboxPaused } from "../miosa-rollout";
+jest.mock("../miosa-rollout", () => ({
+  isMiosaCloudSandboxPaused: jest.fn(() => false),
+}));
+
 const mockEnsureE2B = jest.fn();
 const mockEnsureMiosa = jest.fn();
 const mockTerminateMiosa = jest.fn();
@@ -53,6 +58,7 @@ describe("cloud sandbox provider routing", () => {
   const setSandbox = jest.fn();
 
   beforeEach(() => {
+    jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(false);
     jest.clearAllMocks();
     mockEnsureMiosa.mockReset();
     mockEnsureE2B.mockReset();
@@ -61,6 +67,60 @@ describe("cloud sandbox provider routing", () => {
     mockCooldownGuard.mockReset().mockResolvedValue(undefined);
     mockMigrationRead.mockResolvedValue(null);
     mockMigrationAssert.mockResolvedValue(undefined);
+  });
+
+  it("routes stale MIOSA assignments to E2B while paused without opening MIOSA", async () => {
+    jest
+      .mocked(isMiosaCloudSandboxPaused)
+      .mockImplementation(
+        jest.requireActual("../miosa-rollout").isMiosaCloudSandboxPaused,
+      );
+    const sandbox = { sandboxId: "e2b-1" };
+    mockEnsureE2B.mockResolvedValue({ sandbox });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa", selectionReason: "miosa_rollout" },
+      }),
+    ).resolves.toEqual({ sandbox, provider: "e2b" });
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      "miosa_cloud_sandbox_rollout_exposed",
+      expect.anything(),
+    );
+  });
+
+  it.each(["checking", "miosa", "cleanup", "deleted"])(
+    "preserves the %s migration fence while paused without opening either provider",
+    async (phase) => {
+      jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
+      mockMigrationRead.mockResolvedValue({ phase, region: "us-east-1" });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { provider: "e2b", triggerRegion: "us-east-1" },
+        }),
+      ).rejects.toThrow("migration fence");
+      expect(mockEnsureMiosa).not.toHaveBeenCalled();
+      expect(mockEnsureE2B).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a cached MIOSA workspace while paused instead of replacing its files", async () => {
+    jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        initialSandbox: { sandboxKind: "miosa", sandboxId: "miosa-1" } as never,
+        context: { provider: "e2b" },
+      }),
+    ).rejects.toThrow("Your files are preserved");
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+    expect(mockEnsureE2B).not.toHaveBeenCalled();
   });
 
   it("drops unsampled successful steps but retains failures and acquisition completion", async () => {

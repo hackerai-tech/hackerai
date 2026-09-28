@@ -3,6 +3,7 @@ import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getPostHogFeatureFlagForUser, phLogger } from "@/lib/posthog/server";
 import { miosaIdentityMetadata, miosaExternalUserId } from "./miosa-identity";
 import type { ExistingE2BWorkspace } from "./miosa-enrollment";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 
 export const E2B_FILE_MIGRATION_FLAG = "miosa_e2b_file_migration_v1";
 export const E2B_FILE_MIGRATION_TASK = "miosa-e2b-file-migration";
@@ -18,6 +19,7 @@ export async function isE2BFileMigrationEnabled(
   userId: string,
   environment?: string,
 ) {
+  if (isMiosaCloudSandboxPaused()) return false;
   const resolvedEnvironment = resolveMigrationEnvironment(userId, environment);
   return (
     resolvedEnvironment !== "unknown" &&

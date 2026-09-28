@@ -3,10 +3,12 @@ import type {
   TriggerRunRegion,
 } from "@/lib/api/trigger-region";
 import type { SubscriptionTier } from "@/types";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 
 export type CloudSandboxProvider = "miosa" | "e2b";
 export type CloudSandboxSelectionReason =
   | "configured"
+  | "miosa_rollout_paused"
   | "miosa_rollout"
   | "miosa_rollout_control"
   | "miosa_empty_workspace_migration"
@@ -19,10 +21,11 @@ export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
 export const MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY = "hackerai_environment";
 
 /**
- * Resolve an explicit provider override. Without one, production request
- * routing is decided by {@link selectCloudSandboxProvider}.
+ * Resolve an explicit provider override when MIOSA execution is not paused.
+ * Otherwise use E2B regardless of environment configuration.
  */
 export function getCloudSandboxProvider(): CloudSandboxProvider {
+  if (isMiosaCloudSandboxPaused()) return "e2b";
   const configured = process.env.CLOUD_SANDBOX_PROVIDER?.trim();
   if (configured === "e2b" || configured === "miosa") {
     return configured;
@@ -68,6 +71,9 @@ export async function selectCloudSandboxProvider(options: {
   provider: CloudSandboxProvider;
   reason: CloudSandboxSelectionReason;
 }> {
+  if (isMiosaCloudSandboxPaused()) {
+    return { provider: "e2b", reason: "miosa_rollout_paused" };
+  }
   if (
     options.requestRegionClass === "unknown" ||
     (!options.requestRegionClass && !options.triggerRegion)
