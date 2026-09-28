@@ -75,15 +75,21 @@ function isReusableCheckoutSession(
     resolvedPriceLookupKey,
     pricingExperiment,
     quantity,
+    successUrl,
+    cancelUrl,
   }: {
     organizationId: string;
     requestedPlan: string;
     resolvedPriceLookupKey: string;
     pricingExperiment: ProMonthlyPricingExperimentAssignment | undefined;
     quantity: number;
+    successUrl: string;
+    cancelUrl: string;
   },
 ): boolean {
   if (!session.url) return false;
+  if (session.success_url !== successUrl || session.cancel_url !== cancelUrl)
+    return false;
   if (session.metadata?.workOSOrganizationId !== organizationId) return false;
   if (session.metadata?.requestedPlan !== requestedPlan) return false;
   const previousResolvedPriceLookupKey =
@@ -223,6 +229,8 @@ async function findReusableCheckoutSession({
   resolvedPriceLookupKey,
   pricingExperiment,
   quantity,
+  successUrl,
+  cancelUrl,
 }: {
   customerId: string;
   organizationId: string;
@@ -230,6 +238,8 @@ async function findReusableCheckoutSession({
   resolvedPriceLookupKey: string;
   pricingExperiment: ProMonthlyPricingExperimentAssignment | undefined;
   quantity: number;
+  successUrl: string;
+  cancelUrl: string;
 }): Promise<Stripe.Checkout.Session | undefined> {
   let startingAfter: string | undefined;
 
@@ -247,6 +257,8 @@ async function findReusableCheckoutSession({
         resolvedPriceLookupKey,
         pricingExperiment,
         quantity,
+        successUrl,
+        cancelUrl,
       }),
     );
 
@@ -625,7 +637,15 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+    // Shared Preview configuration can point at another branch. Use Vercel's
+    // deployment identity so checkout returns to the branch that opened it.
+    const previewHost =
+      process.env.VERCEL_ENV === "preview" && process.env.VERCEL === "1"
+        ? (process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL)
+        : undefined;
+    const baseUrl = previewHost
+      ? `https://${previewHost}`
+      : process.env.NEXT_PUBLIC_BASE_URL;
     if (!baseUrl) {
       return json(
         { error: "NEXT_PUBLIC_BASE_URL is not configured" },
@@ -680,6 +700,8 @@ export const POST = async (req: NextRequest) => {
       resolvedPriceLookupKey,
       pricingExperiment,
       quantity,
+      successUrl: successUrl.toString(),
+      cancelUrl: cancelUrl.toString(),
     });
     const reusedCheckoutSession = Boolean(session);
 
