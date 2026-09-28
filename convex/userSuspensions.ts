@@ -8,6 +8,7 @@ const suspensionCategoryValidator = v.union(
   v.literal("dispute_fraudulent"),
   v.literal("dispute_billing_hold"),
   v.literal("support_confirmed_fraud"),
+  v.literal("security_abuse"),
 );
 
 const suspensionSourceValidator = v.union(
@@ -73,13 +74,21 @@ export const upsertActive = mutation({
     source: v.optional(suspensionSourceValidator),
     sourceId: v.string(),
     sourceReason: v.optional(v.string()),
-    stripeCustomerId: v.string(),
+    stripeCustomerId: v.optional(v.string()),
     stripeChargeId: v.optional(v.string()),
     workosOrganizationId: v.optional(v.string()),
     sourceCreatedAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    if (args.category === "security_abuse") {
+      if (args.source !== "support") {
+        throw new Error("Security suspensions must be issued by support");
+      }
+    } else if (!args.stripeCustomerId) {
+      throw new Error("Billing suspensions require a Stripe customer");
+    }
 
     const now = Date.now();
     const existing = await ctx.db

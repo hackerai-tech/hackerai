@@ -5,6 +5,7 @@ import type { DataModel, Doc } from "../_generated/dataModel";
 export const CHAT_ACCESS_BLOCKING_SUSPENSION_CATEGORIES = [
   "dispute_fraudulent",
   "support_confirmed_fraud",
+  "security_abuse",
 ] as const;
 
 type SuspensionReaderCtx = {

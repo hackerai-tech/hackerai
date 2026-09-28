@@ -36,11 +36,12 @@ type SuspensionRow = {
     | "early_fraud_warning"
     | "dispute_fraudulent"
     | "dispute_billing_hold"
-    | "support_confirmed_fraud";
+    | "support_confirmed_fraud"
+    | "security_abuse";
   source: "stripe" | "support";
   source_id: string;
   source_reason?: string;
-  stripe_customer_id: string;
+  stripe_customer_id?: string;
   stripe_charge_id?: string;
   workos_organization_id?: string;
   created_at: number;
@@ -181,6 +182,38 @@ describe("userSuspensions", () => {
       source_id: "support_case:intercom_456",
       source_reason: "confirmed_unauthorized_charge",
     });
+  });
+
+  it("persists a security suspension that survives login and is resolved only by support", async () => {
+    const {
+      upsertActive,
+      getActiveByUser,
+      getActiveChatAccessBlockByUser,
+      resolveBySource,
+    } = await import("../userSuspensions");
+    const { ctx, rows } = makeMockCtx();
+    const args = {
+      ...baseArgs,
+      stripeCustomerId: undefined,
+      category: "security_abuse",
+      source: "support",
+      sourceId: "abuse_case_123",
+    };
+    await (upsertActive as any).handler(ctx, args);
+    const queryArgs = { serviceKey: SERVICE_KEY, userId: args.userId };
+    expect(
+      await (getActiveByUser as any).handler(ctx, queryArgs),
+    ).toMatchObject({ category: "security_abuse", status: "active" });
+    expect(
+      await (getActiveChatAccessBlockByUser as any).handler(ctx, queryArgs),
+    ).toMatchObject({ category: "security_abuse" });
+    await (resolveBySource as any).handler(ctx, {
+      ...queryArgs,
+      sourceId: args.sourceId,
+      resolvedReason: "support_review",
+    });
+    expect(await (getActiveByUser as any).handler(ctx, queryArgs)).toBeNull();
+    expect(rows).toHaveLength(1);
   });
 
   it("updates an existing suspension for the same user and source", async () => {
