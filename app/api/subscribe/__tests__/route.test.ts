@@ -575,11 +575,13 @@ describe("POST /api/subscribe", () => {
       VERCEL: process.env.VERCEL,
       VERCEL_ENV: process.env.VERCEL_ENV,
       VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL,
+      VERCEL_URL: process.env.VERCEL_URL,
     };
     Object.assign(process.env, {
       VERCEL: "1",
       VERCEL_ENV: "preview",
       VERCEL_BRANCH_URL: "hackerai-git-regional-hackerai.vercel.app",
+      VERCEL_URL: "hackerai-regional-deployment-hackerai.vercel.app",
     });
     mockListOrganizationMemberships.mockResolvedValue({
       data: [{ organizationId: "org_team", role: { slug: "admin" } }],
@@ -613,14 +615,19 @@ describe("POST /api/subscribe", () => {
     } as never);
     try {
       const { POST } = await import("../route");
-      const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+      const request = makeRequest({ plan: "pro-monthly-plan" });
+      request.nextUrl = new URL(
+        "https://hackerai-regional-deployment-hackerai.vercel.app",
+      );
+      const response = await POST(request);
       expect(response.status).toBe(200);
       expect(mockUpdateCheckoutSession).not.toHaveBeenCalled();
       expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
         expect.objectContaining({
           success_url:
-            "https://hackerai-git-regional-hackerai.vercel.app/?refresh=entitlements",
-          cancel_url: "https://hackerai-git-regional-hackerai.vercel.app/",
+            "https://hackerai-regional-deployment-hackerai.vercel.app/?refresh=entitlements",
+          cancel_url:
+            "https://hackerai-regional-deployment-hackerai.vercel.app/",
         }),
       );
     } finally {

@@ -639,10 +639,18 @@ export const POST = async (req: NextRequest) => {
 
     // Shared Preview configuration can point at another branch. Use Vercel's
     // deployment identity so checkout returns to the branch that opened it.
-    const previewHost =
-      process.env.VERCEL_ENV === "preview" && process.env.VERCEL === "1"
-        ? (process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL)
-        : undefined;
+    const isVercelPreview =
+      process.env.VERCEL_ENV === "preview" && process.env.VERCEL === "1";
+    const trustedPreviewHosts = [
+      process.env.VERCEL_BRANCH_URL,
+      process.env.VERCEL_URL,
+    ];
+    const requestHost = req.nextUrl?.host;
+    const previewHost = isVercelPreview
+      ? requestHost && trustedPreviewHosts.includes(requestHost)
+        ? requestHost
+        : (process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL)
+      : undefined;
     const baseUrl = previewHost
       ? `https://${previewHost}`
       : process.env.NEXT_PUBLIC_BASE_URL;
