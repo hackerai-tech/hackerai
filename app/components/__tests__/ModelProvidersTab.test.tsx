@@ -10,15 +10,23 @@ import {
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
-import { ModelProvidersTab } from "../ModelProvidersTab";
-import {
-  useOrcaRouterConnect,
-  useOrcaRouterModels,
-} from "@/app/hooks/useOrcaRouter";
+
+let mockSubscription = "free";
+jest.mock("@/app/contexts/GlobalState", () => ({
+  useGlobalState: () => ({ subscription: mockSubscription }),
+}));
 
 jest.mock("sonner", () => ({
   toast: { success: jest.fn(), error: jest.fn(), message: jest.fn() },
 }));
+
+// Load after the mocks above so the component sees them.
+const { ModelProvidersTab } = jest.requireActual<
+  typeof import("../ModelProvidersTab")
+>("../ModelProvidersTab");
+const { useOrcaRouterConnect, useOrcaRouterModels } = jest.requireActual<
+  typeof import("@/app/hooks/useOrcaRouter")
+>("@/app/hooks/useOrcaRouter");
 
 type Handler = (init?: RequestInit) => { status?: number; body: unknown };
 let routes: Record<string, Handler>;
@@ -41,6 +49,7 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 );
 
 beforeEach(() => {
+  mockSubscription = "free";
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   fetchMock.mockClear();
   routes = {
@@ -145,6 +154,33 @@ describe("ModelProvidersTab", () => {
     expect(
       screen.getByRole("button", { name: "Connect OrcaRouter" }),
     ).toBeEnabled();
+  });
+
+  it("shows no Agent-mode note on the free plan", async () => {
+    render(<ModelProvidersTab />, { wrapper });
+    await screen.findByTestId("orcarouter-api-key-option");
+    expect(
+      screen.queryByTestId("orcarouter-agent-mode-note"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("still lets paid-plan users manage a saved key", async () => {
+    mockSubscription = "pro";
+    routes["GET /api/orcarouter/credential"] = () => ({
+      body: {
+        enabled: true,
+        connected: true,
+        source: "pkce",
+        status: "active",
+        keyHint: "…abcd",
+        updatedAt: 1,
+      },
+    });
+    render(<ModelProvidersTab />, { wrapper });
+    expect(
+      await screen.findByTestId("orcarouter-agent-mode-note"),
+    ).toHaveTextContent("does not use OrcaRouter yet");
+    expect(screen.getByRole("button", { name: "Disconnect" })).toBeEnabled();
   });
 
   it("explains when the deployment has not enabled OrcaRouter", async () => {

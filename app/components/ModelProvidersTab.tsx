@@ -13,6 +13,7 @@ import {
   useOrcaRouterConnect,
   useOrcaRouterConnection,
 } from "@/app/hooks/useOrcaRouter";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 const SOURCE_LABELS = {
   api_key: "API key",
@@ -25,6 +26,7 @@ const SOURCE_LABELS = {
  * kind of key, encrypted server-side; it is never sent back to the browser.
  */
 const ModelProvidersTab = () => {
+  const { subscription } = useGlobalState();
   const { connection, isLoading, saveApiKey, clear } =
     useOrcaRouterConnection();
   const { connect, isConnecting } = useOrcaRouterConnect();
@@ -100,6 +102,15 @@ const ModelProvidersTab = () => {
               account in Ask mode. Tokens are billed by OrcaRouter to your
               account, not to your HackerAI usage.
             </p>
+            {subscription !== "free" && (
+              <p
+                className="mt-2 text-sm text-muted-foreground"
+                data-testid="orcarouter-agent-mode-note"
+              >
+                Your plan uses Agent mode, which does not use OrcaRouter yet.
+                You can still manage or disconnect a saved key here.
+              </p>
+            )}
           </div>
         </div>
 

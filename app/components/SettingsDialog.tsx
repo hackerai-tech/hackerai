@@ -93,7 +93,8 @@ const SettingsDialog = ({
     label: "Extra Usage",
     icon: Gauge,
   };
-  // OrcaRouter models run in Ask mode, which is the free plan's mode.
+  // OrcaRouter models run in Ask mode (the free plan's mode). Every plan can
+  // still manage or disconnect a saved key, e.g. after upgrading.
   const modelProvidersTab = {
     id: MODEL_PROVIDERS_SETTINGS_TAB,
     label: MODEL_PROVIDERS_SETTINGS_TAB,
@@ -108,6 +109,7 @@ const SettingsDialog = ({
           ...baseTabs,
           agentsTab,
           localSandboxTab,
+          modelProvidersTab,
           usageTab,
           ...(isTeamAdmin ? [extraUsageTab] : []),
           membersTab,
@@ -118,6 +120,7 @@ const SettingsDialog = ({
             ...baseTabs,
             agentsTab,
             localSandboxTab,
+            modelProvidersTab,
             usageTab,
             extraUsageTab,
             accountTab,
