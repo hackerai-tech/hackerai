@@ -3,6 +3,7 @@ jest.mock("server-only", () => ({}));
 import { describe, expect, it } from "@jest/globals";
 import { selectModel } from "@/lib/chat/chat-processor";
 import {
+  getContentFilterRetryModel,
   getRetryFallbackModel,
   resolveServedModelForCostAccounting,
 } from "@/lib/api/chat-stream-helpers";
@@ -54,6 +55,7 @@ describe("OrcaRouter model routing", () => {
 
   it("never swaps the user's OrcaRouter model for a HackerAI model", () => {
     expect(getRetryFallbackModel(KEY, "ask")).toBe(KEY);
+    expect(getContentFilterRetryModel(KEY, "ask", "openai/gpt-5.5")).toBe(KEY);
     expect(
       isEligibleForAbliteratedModel({
         subscription: "pro",

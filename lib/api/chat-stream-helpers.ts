@@ -859,6 +859,8 @@ export function getContentFilterRetryModel(
   servedModel?: string,
   preferredFallbackOverride?: ModelName,
 ): ModelName {
+  // Keep a filtered OrcaRouter request on the user's own route and billing.
+  if (isOrcaRouterModelKey(modelName)) return modelName;
   const preferredFallback =
     preferredFallbackOverride ?? getRetryFallbackModel(modelName, mode);
   if (!servedModel) return preferredFallback;
