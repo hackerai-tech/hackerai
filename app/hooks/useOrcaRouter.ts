@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import useSWR from "swr";
+import useSWR, { useSWRConfig } from "swr";
 import { toast } from "sonner";
 import {
   getOrcaRouterAuthErrorMessage,
@@ -48,6 +48,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 /** Connection status for the signed-in user. Never contains the key. */
 export function useOrcaRouterConnection(enabled = true) {
+  const { mutate: mutateCache } = useSWRConfig();
   const { data, error, isLoading, mutate } = useSWR<OrcaRouterConnection>(
     enabled ? ORCAROUTER_CONNECTION_KEY : null,
     (url: string) => requestJson<OrcaRouterConnection>(url),
@@ -65,9 +66,11 @@ export function useOrcaRouterConnection(enabled = true) {
         },
       );
       await mutate(next, { revalidate: false });
+      // A new key can belong to another account or fix a revoked one.
+      await mutateCache(ORCAROUTER_MODELS_KEY);
       return next;
     },
-    [mutate],
+    [mutate, mutateCache],
   );
 
   const clear = useCallback(async () => {
@@ -76,7 +79,8 @@ export function useOrcaRouterConnection(enabled = true) {
       { method: "DELETE" },
     );
     await mutate(next, { revalidate: false });
-  }, [mutate]);
+    await mutateCache(ORCAROUTER_MODELS_KEY, undefined, { revalidate: false });
+  }, [mutate, mutateCache]);
 
   return { connection: data, error, isLoading, saveApiKey, clear, mutate };
 }

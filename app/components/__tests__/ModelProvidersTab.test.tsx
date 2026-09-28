@@ -11,7 +11,10 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { SWRConfig } from "swr";
 import type { ReactNode } from "react";
 import { ModelProvidersTab } from "../ModelProvidersTab";
-import { useOrcaRouterConnect } from "@/app/hooks/useOrcaRouter";
+import {
+  useOrcaRouterConnect,
+  useOrcaRouterModels,
+} from "@/app/hooks/useOrcaRouter";
 
 jest.mock("sonner", () => ({
   toast: { success: jest.fn(), error: jest.fn(), message: jest.fn() },
@@ -91,6 +94,37 @@ describe("ModelProvidersTab", () => {
     expect(status).toHaveTextContent("Connected with API key …1234");
     expect(document.body).not.toHaveTextContent("sk-orca-pasted-1234");
     expect(screen.getByLabelText("OrcaRouter API key")).toHaveValue("");
+  });
+
+  it("refreshes the model catalog after a new key is saved", async () => {
+    let catalogFetches = 0;
+    routes["GET /api/orcarouter/models"] = () => {
+      catalogFetches += 1;
+      return { body: { status: "live", models: [] } };
+    };
+    routes["PUT /api/orcarouter/credential"] = () => ({
+      body: {
+        enabled: true,
+        connected: true,
+        source: "api_key",
+        status: "active",
+        keyHint: "…9999",
+        updatedAt: 2,
+      },
+    });
+    const Both = () => {
+      useOrcaRouterModels(true);
+      return <ModelProvidersTab />;
+    };
+    render(<Both />, { wrapper });
+    await waitFor(() => expect(catalogFetches).toBe(1));
+
+    fireEvent.change(await screen.findByLabelText("OrcaRouter API key"), {
+      target: { value: "sk-orca-new-9999" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+
+    await waitFor(() => expect(catalogFetches).toBe(2));
   });
 
   it("prompts to reconnect after the key was revoked", async () => {

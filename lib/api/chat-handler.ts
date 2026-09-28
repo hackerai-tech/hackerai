@@ -684,6 +684,9 @@ export const createChatHandler = () => {
         }
 
         const capReason = getRateLimitErrorCapReason(error);
+        // The paid daily allowance rescue switches to a HackerAI model; never
+        // apply it to a request the user chose to run on their OrcaRouter key.
+        if (isOrcaRouterModelKey(selectedModel)) throw error;
         if (capReason !== "monthly_exhausted") {
           if (limitRescue) {
             capturePaidDailyFreeAllowanceServerEvent({
