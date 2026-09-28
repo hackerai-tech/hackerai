@@ -5,6 +5,7 @@ import {
   type AnySandbox,
 } from "@/types";
 import { ChatSDKError } from "@/lib/errors";
+import { localEnvironmentIdentity } from "@/lib/sandbox/environment";
 import type { SandboxFallbackInfo } from "./hybrid-sandbox-manager";
 import { isCentrifugoSandbox, isMiosaSandbox } from "./sandbox-types";
 
@@ -47,9 +48,15 @@ export function getAgentApprovalSandboxIdentity(
   sandbox: AnySandbox,
 ): AgentApprovalSandboxIdentity {
   if (isMiosaSandbox(sandbox)) return "miosa";
-  return isCentrifugoSandbox(sandbox)
-    ? getAgentApprovalConnectionSandboxIdentity(sandbox.getConnectionId())
-    : "e2b";
+  if (!isCentrifugoSandbox(sandbox)) return "e2b";
+
+  const connection =
+    typeof sandbox.getConnectionInfo === "function"
+      ? sandbox.getConnectionInfo()
+      : { connectionId: sandbox.getConnectionId() };
+  return getAgentApprovalConnectionSandboxIdentity(
+    localEnvironmentIdentity(connection),
+  );
 }
 
 export function assertAgentApprovalSandboxIdentity({

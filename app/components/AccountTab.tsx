@@ -607,6 +607,12 @@ const AccountTab = () => {
               subscription={subscription}
               subscriptionStatus={pastDueStatus}
               latestInvoiceId={currentCancellationStatus?.latestInvoiceId}
+              renewalPaymentRequired={
+                currentCancellationStatus?.renewalPaymentRequired
+              }
+              renewalPaymentFailure={
+                currentCancellationStatus?.renewalPaymentFailure
+              }
               isOpening={isOpeningBillingPortal}
               onUpdatePayment={() =>
                 void redirectToBillingPortal("payment_method")

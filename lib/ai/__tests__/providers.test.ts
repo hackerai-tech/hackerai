@@ -131,9 +131,23 @@ describe("provider registry", () => {
         .modelId,
     ).toBe("z-ai/glm-5.3-flash");
     expect(
+      (
+        myProvider.languageModel("ask-model-free-deepseek-v41") as {
+          modelId: string;
+        }
+      ).modelId,
+    ).toBe("deepseek/deepseek-v4.1-flash");
+    expect(isDeepSeekModel("ask-model-free-deepseek-v41")).toBe(true);
+    expect(supportsMultimodalToolResults("ask-model-free-deepseek-v41")).toBe(
+      true,
+    );
+    expect(getModelDisplayName("ask-model-free-deepseek-v41")).toBe(
+      getModelDisplayName("ask-model-free-glm"),
+    );
+    expect(
       (myProvider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash");
     expect(
       (
         myProvider.languageModel("auxiliary-vision-model") as {
@@ -228,13 +242,6 @@ describe("provider registry", () => {
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
     ).toBe("deepseek/deepseek-v4-flash");
-    expect(
-      (
-        myProvider.languageModel("agent-auto-review-model") as {
-          modelId: string;
-        }
-      ).modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
     expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6")).toBe("xAI Grok 4.6");
@@ -265,10 +272,6 @@ describe("provider registry", () => {
     expect(getModelDisplayName("title-generator-model")).toBe(
       "DeepSeek V4 Flash",
     );
-    expect(getModelDisplayName("agent-auto-review-model")).toBe(
-      "DeepSeek V4 Flash 0731",
-    );
-    expect(getModelCutoffDate("agent-auto-review-model")).toBe("July 2026");
   });
 
   it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
@@ -293,10 +296,9 @@ describe("provider registry", () => {
     expect(isDeepSeekModel("model-deepseek-v4-flash-0731")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro")).toBe(true);
     expect(isDeepSeekModel("model-deepseek-v4-pro-0813")).toBe(true);
-    expect(isDeepSeekModel("agent-auto-review-model")).toBe(true);
   });
 
-  it("keeps tracked free Ask on GLM and Agent/rescue on DeepSeek", () => {
+  it("keeps tracked free Ask on GLM, rescue on 0731, and Agent on V4.1", () => {
     const provider = createTrackedProvider();
     expect(
       (provider.languageModel("ask-model-free-glm") as { modelId: string })
@@ -308,7 +310,7 @@ describe("provider registry", () => {
     expect(
       (provider.languageModel("agent-model-free") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash-0731");
+    ).toBe("deepseek/deepseek-v4.1-flash");
   });
 
   it.each([

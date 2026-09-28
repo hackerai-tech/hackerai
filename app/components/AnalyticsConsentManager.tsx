@@ -7,11 +7,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useId,
   useMemo,
   useState,
 } from "react";
 import { saveAnalyticsConsent } from "@/app/actions/analytics-consent";
+import { resolvePendingInfluencerReferral } from "@/lib/influencers/pending-referral";
 import { PostHogProvider } from "@/app/providers";
 import { Button } from "@/components/ui/button";
 import {
@@ -231,6 +233,10 @@ export function AnalyticsConsentManager({
   const resolvedConsent =
     runtimeStatus === undefined ? initialConsent : runtimeStatus.consent;
   const consent = chosenConsent ?? resolvedConsent;
+
+  useEffect(() => {
+    if (decisionResolved) resolvePendingInfluencerReferral(window, consent);
+  }, [consent, decisionResolved]);
 
   const analyticsAllowed =
     decisionResolved &&

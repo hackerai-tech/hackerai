@@ -5,6 +5,7 @@ import {
   Asterisk,
   Atom,
   Bot,
+  ChevronDown,
   Flower2,
   Hexagon,
   Orbit,
@@ -19,6 +20,7 @@ import type { ChatStatus, SidebarSubagents } from "@/types/chat";
 import { isSidebarSubagents } from "@/types/chat";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
 import { formatSubagentCountSummary } from "@/lib/ai/subagents/status-summary";
+import { ReasoningHandler } from "@/app/components/ReasoningHandler";
 
 type LifecyclePart = {
   type: "data-subagent-lifecycle";
@@ -41,6 +43,7 @@ type SubagentPresentation = {
   sidebarContent: SidebarSubagents;
   suffix?: string;
   toolCallId: string;
+  visualSeed: string;
   waiting: boolean;
 };
 
@@ -108,6 +111,113 @@ const nameForAgentId = (
   return undefined;
 };
 
+type AgentCreationIdentity = {
+  agentId?: string;
+  agentName?: string;
+  toolCallId: string;
+};
+
+type AgentLifecycleLink = {
+  agentId: string;
+  toolCallId: string;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const creationIdentityForPart = (
+  candidate: unknown,
+): AgentCreationIdentity | undefined => {
+  if (!isRecord(candidate)) return undefined;
+  if (
+    candidate.type !== "tool-create_agent" &&
+    candidate.type !== "tool-delegate_task"
+  ) {
+    return undefined;
+  }
+  if (typeof candidate.toolCallId !== "string") return undefined;
+
+  const output = isRecord(candidate.output) ? candidate.output : undefined;
+  const input = isRecord(candidate.input) ? candidate.input : undefined;
+  const profileInput = isRecord(input?.profile_input)
+    ? input.profile_input
+    : undefined;
+  const profileCandidate = isRecord(profileInput?.candidate)
+    ? profileInput.candidate
+    : undefined;
+  const agentId =
+    typeof output?.agent_id === "string" ? output.agent_id : undefined;
+  const agentName =
+    typeof output?.name === "string"
+      ? output.name
+      : typeof input?.name === "string"
+        ? input.name
+        : typeof profileCandidate?.title === "string"
+          ? profileCandidate.title
+          : undefined;
+
+  return { agentId, agentName, toolCallId: candidate.toolCallId };
+};
+
+const lifecycleLinkForPart = (
+  candidate: unknown,
+): AgentLifecycleLink | undefined => {
+  if (!isRecord(candidate) || candidate.type !== "data-subagent-lifecycle") {
+    return undefined;
+  }
+  if (!isRecord(candidate.data)) return undefined;
+  if (
+    typeof candidate.data.subagent_id !== "string" ||
+    typeof candidate.data.parent_tool_call_id !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    agentId: candidate.data.subagent_id,
+    toolCallId: candidate.data.parent_tool_call_id,
+  };
+};
+
+const creationToolCallIdForAgent = (
+  message: UIMessage,
+  agentId: string | undefined,
+  agentName: string,
+): string | undefined => {
+  const creationParts = (message.parts as unknown[])
+    .map(creationIdentityForPart)
+    .filter((candidate): candidate is AgentCreationIdentity =>
+      Boolean(candidate),
+    );
+  const lifecycleLinks = (message.parts as unknown[])
+    .map(lifecycleLinkForPart)
+    .filter((candidate): candidate is AgentLifecycleLink => Boolean(candidate));
+
+  for (const candidate of creationParts) {
+    if (agentId && candidate.agentId === agentId) {
+      return candidate.toolCallId;
+    }
+    if (
+      agentId &&
+      lifecycleLinks.some(
+        (lifecycle) =>
+          lifecycle.toolCallId === candidate.toolCallId &&
+          lifecycle.agentId === agentId,
+      )
+    ) {
+      return candidate.toolCallId;
+    }
+  }
+
+  const matchingNames = creationParts.filter(
+    (candidate) => candidate.agentName === agentName,
+  );
+  if (matchingNames.length === 1) {
+    return matchingNames[0].toolCallId;
+  }
+
+  return undefined;
+};
+
 const hashString = (value: string) => {
   let hash = 0;
   for (let index = 0; index < value.length; index += 1) {
@@ -118,9 +228,8 @@ const hashString = (value: string) => {
 
 const assignVisualIndexes = (presentations: SubagentPresentation[]) => {
   const occupied = new Set<number>();
-  return presentations.map(({ agentId, toolCallId }) => {
-    const preferredIndex =
-      hashString(agentId ?? toolCallId) % SUBAGENT_VISUALS.length;
+  return presentations.map(({ visualSeed }) => {
+    const preferredIndex = hashString(visualSeed) % SUBAGENT_VISUALS.length;
     for (let offset = 0; offset < SUBAGENT_VISUALS.length; offset += 1) {
       const visualIndex = (preferredIndex + offset) % SUBAGENT_VISUALS.length;
       if (occupied.has(visualIndex)) continue;
@@ -199,6 +308,11 @@ const presentationForPart = (
   const isSend = type === "tool-send_message_to_agent";
   const isWait = type === "tool-wait_for_agents";
   const isCancel = type === "tool-cancel_agent";
+  const visualSeed = isCreate
+    ? toolCallId
+    : (creationToolCallIdForAgent(message, agentId, agentName) ??
+      agentId ??
+      toolCallId);
   const hasChildLifecycle = Boolean(lifecycle?.data?.subagent_id);
   const failed = Boolean(errorText) || output?.success === false;
   const legacyCanOpen =
@@ -259,9 +373,13 @@ const presentationForPart = (
     } else if (output?.wait_outcome === "targets_not_found") {
       action = "Subagent targets not found";
     } else if (output?.wait_outcome === "timeout") {
-      action = "Subagent wait timed out";
+      action = "Subagents still working";
     } else if (output?.wait_outcome === "no_active_agents") {
       action = "No active subagents";
+    } else if (failed) {
+      action = "Could not wait for subagents";
+    } else if (state === "input-available" || state === "input-streaming") {
+      action = "Subagent wait interrupted";
     } else {
       suffix =
         terminalStatus && terminalStatus !== "completed"
@@ -304,6 +422,7 @@ const presentationForPart = (
     },
     suffix,
     toolCallId,
+    visualSeed,
     waiting,
   };
 };
@@ -407,6 +526,62 @@ export const SubagentToolGroup = memo(function SubagentToolGroup({
   parts: any[];
   status: ChatStatus;
 }) {
+  if (parts[0]?.type === "tool-wait_for_agents") {
+    const waits = parts.filter((part) => part.type === "tool-wait_for_agents");
+    const isWaitingSequence = waits.every(
+      (part) =>
+        part.state === "input-available" ||
+        (part.state === "output-available" &&
+          part.output?.success === true &&
+          part.output.wait_outcome === "timeout"),
+    );
+    if (isWaitingSequence) {
+      const presentation = presentationForPart(
+        message,
+        waits[waits.length - 1],
+        status,
+      );
+      const reasoningParts = parts.filter((part) => part.type === "reasoning");
+      if (reasoningParts.length === 0) {
+        return <SubagentFallback presentation={presentation} />;
+      }
+      return (
+        <details className="group/subagent-wait not-prose min-w-0">
+          <summary className="inline-flex h-9 max-w-full cursor-pointer list-none items-center gap-1 rounded-[15px] border border-border bg-muted/20 px-2.5 text-[13px] text-muted-foreground hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+            <Bot
+              className="mr-1 size-4 shrink-0 text-foreground"
+              aria-hidden="true"
+            />
+            <span className="truncate">
+              {presentation.waiting ? (
+                <Shimmer>{presentation.action}</Shimmer>
+              ) : (
+                presentation.action
+              )}
+            </span>
+            <ChevronDown
+              className="ml-1 size-3.5 shrink-0 transition-transform group-open/subagent-wait:rotate-180"
+              aria-hidden="true"
+            />
+          </summary>
+          <div className="mt-2 space-y-2 border-l border-border pl-3">
+            {reasoningParts.map((part) => {
+              const partIndex = message.parts.indexOf(part);
+              return partIndex < 0 ? null : (
+                <ReasoningHandler
+                  key={partIndex}
+                  message={message}
+                  partIndex={partIndex}
+                  status={status}
+                  suppressAutoOpenDuringStreaming
+                />
+              );
+            })}
+          </div>
+        </details>
+      );
+    }
+  }
   const presentations = parts.map((part) =>
     presentationForPart(message, part, status),
   );

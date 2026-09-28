@@ -13,6 +13,7 @@ import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
 } from "@/lib/analytics/paid-funnel";
+import { assertUserCanStartBillingTransaction } from "@/lib/suspensions";
 
 export default async function redirectToBillingPortal(
   flow?: BillingPortalFlow,
@@ -32,6 +33,7 @@ export default async function redirectToBillingPortal(
     });
     throw error;
   });
+  await assertUserCanStartBillingTransaction(context.user.id);
   const stripeCustomerId = context.stripeCustomerId;
   const billingFields = {
     userId: context.user.id,
@@ -40,9 +42,13 @@ export default async function redirectToBillingPortal(
   };
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
-  const returnUrl = options?.returnPath
-    ? getExtraUsageReturnUrl(baseUrl!, options.returnPath)
-    : null;
+  const returnUrl =
+    options?.returnPath || flow === "payment_method"
+      ? getExtraUsageReturnUrl(baseUrl!, options?.returnPath)
+      : null;
+  if (returnUrl && flow === "payment_method") {
+    returnUrl.searchParams.set("billing-recovery-return", "1");
+  }
   if (returnUrl && options?.surface === "blocked_chat") {
     returnUrl.searchParams.set("refresh", "entitlements");
   }

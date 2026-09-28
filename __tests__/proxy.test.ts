@@ -138,22 +138,28 @@ describe("proxy", () => {
     },
   );
 
-  it("bypasses AuthKit for the independently authenticated user-research gateway", async () => {
-    const { default: proxy } = await import("../proxy");
+  it.each([
+    "/api/internal/user-research",
+    "/api/internal/influencers/partners",
+  ])(
+    "bypasses AuthKit for independently authenticated gateway %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
 
-    const response = await proxy(
-      createRequest({
-        pathname: "/api/internal/user-research",
-        method: "POST",
-      }),
-    );
+      const response = await proxy(
+        createRequest({
+          pathname,
+          method: "POST",
+        }),
+      );
 
-    expect(response).toMatchObject({ kind: "next" });
-    expect(mockAuthkit).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalledWith();
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
-  });
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not bypass AuthKit for sibling internal API paths", async () => {
     mockAuthkit.mockResolvedValue({

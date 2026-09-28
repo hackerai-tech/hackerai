@@ -486,6 +486,8 @@ describe("useChatHandlers regenerate model", () => {
       current: "run-1",
     };
     const resumeActiveRun = jest.fn(async () => undefined);
+    const onAgentRunAlreadyFinished = jest.fn();
+    const getAgentRunRequestGeneration = jest.fn(() => 7);
     const { result } = renderHook(() =>
       useChatHandlers({
         chatId: "chat-1",
@@ -500,6 +502,8 @@ describe("useChatHandlers regenerate model", () => {
         hasManuallyStoppedRef: { current: false },
         activeTriggerRunRef,
         resumeActiveRun,
+        getAgentRunRequestGeneration,
+        onAgentRunAlreadyFinished,
       }),
     );
 
@@ -512,9 +516,9 @@ describe("useChatHandlers regenerate model", () => {
     expect(activeTriggerRunRef.current).toBeUndefined();
     expect(resumeActiveRun).not.toHaveBeenCalled();
     expect(mockSetIsAutoResuming).toHaveBeenLastCalledWith(false);
-    expect(mockToastInfo).toHaveBeenCalledWith("Agent run already finished", {
-      description: "Nothing is running to cancel. Try the action again.",
-    });
+    expect(getAgentRunRequestGeneration).toHaveBeenCalledTimes(1);
+    expect(onAgentRunAlreadyFinished).toHaveBeenCalledWith("run-1", 7);
+    expect(mockToastInfo).not.toHaveBeenCalled();
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "agent_cancel_stale_recovery_started",
       {

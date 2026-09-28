@@ -23,6 +23,7 @@ import {
   sharedMessageValidator,
 } from "./lib/sharedChatSnapshot";
 import { stripOpenRouterReasoningMetadataFromParts } from "../lib/chat/provider-metadata-sanitizer";
+import { invalidateModelHistory } from "./modelHistory";
 import {
   MAX_MESSAGE_SEARCH_QUERY_LENGTH,
   MIN_MESSAGE_SEARCH_QUERY_LENGTH,
@@ -695,6 +696,9 @@ export const saveMessage = mutation({
 
         // Apply patch if there are changes
         if (Object.keys(patch).length > 0) {
+          if (existingMessage.role !== "assistant" && patch.parts) {
+            await invalidateModelHistory(ctx, args.chatId);
+          }
           patch.update_time = Date.now();
           failureStage = "patch_existing_message";
           await ctx.db.patch(existingMessage._id, patch);
@@ -1307,6 +1311,7 @@ export const deleteLastAssistantMessage = mutation({
           }
         }
 
+        await invalidateModelHistory(ctx, args.chatId);
         if (args.resetSummary) {
           await clearChatSummaries(ctx, args.chatId);
         } else {
@@ -2112,6 +2117,7 @@ export const regenerateWithNewContent = mutation({
         newParts.push(...existingFileParts);
       }
 
+      await invalidateModelHistory(ctx, message.chat_id);
       await ctx.db.patch(message._id, {
         parts:
           newParts.length > 0

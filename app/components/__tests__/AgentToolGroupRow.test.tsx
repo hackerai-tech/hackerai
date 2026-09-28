@@ -47,25 +47,40 @@ const activities = [
   },
 ];
 
+const liveActivities = activities.map((activity) => ({
+  ...activity,
+  part: {
+    ...activity.part,
+    state: "input-available",
+  } as ChatMessage["parts"][number],
+}));
+
 const group = (
-  animateOnMount: boolean,
+  settled: boolean,
   groupActivities = activities,
   summary = "Read a file, ran a command",
+  restored = false,
 ) => (
   <AgentToolGroupRow
     activities={groupActivities}
-    animateOnMount={animateOnMount}
-    groupId="group-1"
     isLastMessage
     message={message}
-    onMount={jest.fn()}
+    restored={restored}
+    settled={settled}
     status="streaming"
     summary={summary}
     terminalChunksByToolCallId={new Map()}
   />
 );
 
-const renderGroup = (animateOnMount: boolean) => render(group(animateOnMount));
+const renderGroup = (settled: boolean) => render(group(settled));
+
+/** Mounts the run live and then settles it, as a streaming step does. */
+const renderSettlingGroup = (restored = false) => {
+  const result = render(group(false, liveActivities, undefined, restored));
+  result.rerender(group(true, activities, undefined, restored));
+  return result;
+};
 
 describe("AgentToolGroupRow", () => {
   beforeEach(() => {
@@ -77,9 +92,41 @@ describe("AgentToolGroupRow", () => {
     jest.useRealTimers();
   });
 
-  it("smoothly closes a newly completed live group after a short delay", () => {
+  it("renders a live run expanded in place without a summary header", () => {
+    const { rerender } = render(group(false, [liveActivities[0]]));
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(1);
+    expect(screen.getByTestId("agent-tool-group-row")).toHaveAttribute(
+      "data-phase",
+      "live",
+    );
+
+    rerender(group(false, liveActivities));
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
+    expect(
+      document.querySelector('[data-slot="collapsible-content"]'),
+    ).not.toHaveAttribute("data-animate-open");
+  });
+
+  it("keeps the streamed tool details mounted when the run settles", () => {
+    const { rerender } = render(group(false, liveActivities));
+    const detailsBeforeSettle = screen.getAllByTestId("grouped-tool-detail");
+
+    rerender(group(true, activities));
+
+    const detailsAfterSettle = screen.getAllByTestId("grouped-tool-detail");
+    expect(detailsAfterSettle).toHaveLength(2);
+    detailsAfterSettle.forEach((detail, index) => {
+      expect(detail).toBe(detailsBeforeSettle[index]);
+    });
+  });
+
+  it("slides the summary header in and folds a settled live run after a short delay", () => {
     jest.useFakeTimers();
-    renderGroup(true);
+    renderSettlingGroup();
 
     const trigger = screen.getByRole("button", {
       name: /read a file, ran a command\. hide tool details/i,
@@ -87,12 +134,23 @@ describe("AgentToolGroupRow", () => {
     const content = document.querySelector('[data-slot="collapsible-content"]');
 
     expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(trigger).toHaveAttribute("data-entering", "true");
+    expect(trigger).toHaveClass("agent-tool-group-header");
     expect(content).toHaveClass("agent-tool-group-content");
-    expect(content).toHaveClass("worked-for-content");
+    expect(content).not.toHaveAttribute("data-animate-open");
+    expect(screen.getByTestId("agent-tool-group-row")).toHaveAttribute(
+      "data-phase",
+      "settled",
+    );
     expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
 
     act(() => {
-      jest.advanceTimersByTime(500);
+      jest.advanceTimersByTime(499);
+    });
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+    act(() => {
+      jest.advanceTimersByTime(1);
     });
 
     expect(mockCaptureScrollPosition).toHaveBeenCalledWith(trigger);
@@ -108,29 +166,65 @@ describe("AgentToolGroupRow", () => {
     ).toBeInTheDocument();
   });
 
+  it("folds a restored run immediately once it settles", () => {
+    jest.useFakeTimers();
+    renderSettlingGroup(true);
+
+    expect(
+      screen.getByRole("button", { name: /show tool details/i }),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("does not fold a settled single-tool run", () => {
+    jest.useFakeTimers();
+    const { rerender } = render(group(false, [liveActivities[0]]));
+
+    rerender(group(true, [activities[0]]));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
+
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(1);
+  });
+
   it("starts historical groups closed and keeps their details accessible", () => {
-    renderGroup(false);
+    renderGroup(true);
 
     const trigger = screen.getByRole("button", {
       name: /read a file, ran a command\. show tool details/i,
     });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).not.toHaveAttribute("data-entering");
 
     fireEvent.click(trigger);
 
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
+    expect(
+      document.querySelector('[data-slot="collapsible-content"]'),
+    ).toHaveAttribute("data-animate-open", "true");
   });
 
-  it("finishes its mount animation if streaming ends before the timeout", () => {
+  it("finishes folding if streaming ends before the timeout", () => {
     jest.useFakeTimers();
-    const { rerender } = renderGroup(true);
+    const { rerender } = renderSettlingGroup();
 
     expect(
       screen.getByRole("button", { name: /hide tool details/i }),
     ).toHaveAttribute("aria-expanded", "true");
 
-    rerender(group(false));
+    rerender(
+      <AgentToolGroupRow
+        activities={activities}
+        isLastMessage
+        message={message}
+        settled
+        status="ready"
+        summary="Read a file, ran a command"
+        terminalChunksByToolCallId={new Map()}
+      />,
+    );
     act(() => {
       jest.advanceTimersByTime(499);
     });
@@ -148,13 +242,16 @@ describe("AgentToolGroupRow", () => {
     ).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("preserves a user's choice when streaming ends", () => {
-    const { rerender } = renderGroup(true);
+  it("preserves a user's choice instead of auto-folding", () => {
+    jest.useFakeTimers();
+    renderSettlingGroup();
     const trigger = screen.getByRole("button", { name: /hide tool details/i });
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("button", { name: /show tool details/i }));
-    rerender(group(false));
+    act(() => {
+      jest.advanceTimersByTime(500);
+    });
 
     expect(
       screen.getByRole("button", { name: /hide tool details/i }),
@@ -162,13 +259,13 @@ describe("AgentToolGroupRow", () => {
   });
 
   it("uses the category icon for homogeneous work and the tool icon for a mix", () => {
-    const { rerender } = renderGroup(false);
+    const { rerender } = renderGroup(true);
 
     expect(document.querySelector('[data-summary-icon="mixed"]')).toBeTruthy();
 
     rerender(
       group(
-        false,
+        true,
         [
           {
             id: "tool:write-1",
@@ -199,7 +296,7 @@ describe("AgentToolGroupRow", () => {
 
   it("keeps a failed group summary neutral while preserving accessible details", () => {
     render(
-      group(false, [
+      group(true, [
         activities[0],
         {
           ...activities[1],
@@ -226,7 +323,7 @@ describe("AgentToolGroupRow", () => {
   });
 
   it("uses the full row while keeping the chevron touch-visible and hover-only on desktop", () => {
-    renderGroup(false);
+    renderGroup(true);
 
     const trigger = screen.getByRole("button", { name: /show tool details/i });
     const chevron = screen.getByTestId("agent-tool-group-chevron");

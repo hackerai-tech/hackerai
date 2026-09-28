@@ -29,6 +29,7 @@ import type {
 } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
+import { buildTodoContext } from "@/lib/chat/todo-context";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
 import {
   projectMessagesToTokenBudget,
@@ -1536,7 +1537,7 @@ export async function getMessagesByChatId({
               parts: [
                 {
                   type: "text",
-                  text: `${summaryPrefix}<context_summary>\n${latestSummary.summary_text}\n</context_summary>`,
+                  text: `${summaryPrefix}<context_summary>\n${latestSummary.summary_text}\n</context_summary>${buildTodoContext(chat?.todos ?? [])}`,
                 },
               ],
             };
@@ -1804,24 +1805,30 @@ export async function setActiveAgentApprovalPending({
   request,
   expectedRunId,
   expectedApprovalSessionId,
+  expectedApprovalId,
 }: {
   chatId: string;
   pending: boolean;
   request?: AgentToolApprovalPendingRequest;
   expectedRunId?: string;
   expectedApprovalSessionId?: string;
+  expectedApprovalId?: string;
 }) {
   try {
-    await getConvexClient().mutation(api.chats.setActiveAgentApprovalPending, {
-      serviceKey,
-      chatId,
-      pending,
-      ...(request !== undefined ? { request } : {}),
-      ...(expectedRunId !== undefined ? { expectedRunId } : {}),
-      ...(expectedApprovalSessionId !== undefined
-        ? { expectedApprovalSessionId }
-        : {}),
-    });
+    return await getConvexClient().mutation(
+      api.chats.setActiveAgentApprovalPending,
+      {
+        serviceKey,
+        chatId,
+        pending,
+        ...(request !== undefined ? { request } : {}),
+        ...(expectedRunId !== undefined ? { expectedRunId } : {}),
+        ...(expectedApprovalSessionId !== undefined
+          ? { expectedApprovalSessionId }
+          : {}),
+        ...(expectedApprovalId !== undefined ? { expectedApprovalId } : {}),
+      },
+    );
   } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
@@ -2129,9 +2136,12 @@ export async function deleteNote({
 export async function getNotes({
   userId,
   subscription,
+  throwOnError = false,
 }: {
   userId: string;
   subscription: SubscriptionTier;
+  /** State-replacement callers must distinguish deletion from an unavailable lookup. */
+  throwOnError?: boolean;
 }) {
   try {
     const notes = await getConvexClient().query(api.notes.getNotesForBackend, {
@@ -2141,7 +2151,8 @@ export async function getNotes({
     });
     return notes;
   } catch (error) {
-    // If no notes found or error, return empty array
+    if (throwOnError) throw error;
+    // Optional prompt enrichment keeps its existing empty-on-error behavior.
     return [];
   }
 }

@@ -187,4 +187,25 @@ describe("paid start tracking", () => {
       paid_seat_count: 2,
     });
   });
+  it("retains the invoice's original renewal date on webhook replay", async () => {
+    const { ctx, events } = makeMockCtx();
+    const args = {
+      entityType: "user" as const,
+      entityId: "u",
+      sourceEventId: "in",
+      conversionType: "free_to_paid" as const,
+      tier: "pro" as const,
+      billingPeriodEnd: 1784592000000,
+    };
+    await recordPaidStartEventInternal(ctx, args);
+    await recordPaidStartEventInternal(ctx, {
+      ...args,
+      billingPeriodEnd: 1790000000000,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toHaveProperty(
+      "billing_period_end",
+      args.billingPeriodEnd,
+    );
+  });
 });

@@ -2,17 +2,10 @@ import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
-import {
-  evaluateFreeMonthlyBudget,
-  captureFreeMonthlyBudgetExposure,
-} from "@/lib/experiments/free-monthly-budget";
-import { monthlyBudgetCountryFromRequest } from "@/lib/experiments/free-monthly-budget-request";
+import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
-import {
-  evaluateRegionalFreeLimits,
-  captureRegionalFreeLimitsExposure,
-} from "@/lib/experiments/regional-free-limits";
-import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
+import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
+import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import {
   prepareProviderDisconnectContinuation,
   PROVIDER_DISCONNECT_CONTINUATION_PROMPT,
@@ -221,6 +214,7 @@ import {
   requireVercelChatMode,
 } from "@/lib/api/chat-request-validation";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   createAgentStream,
@@ -372,13 +366,8 @@ export const createChatHandler = () => {
       });
       const requestMessages = requireChatMessagesArray(messages);
 
-      const {
-        userId,
-        subscription,
-        organizationId,
-        freeQuotaSubject,
-        emailVerified,
-      } = await getUserIDAndPro(req);
+      const { userId, subscription, organizationId, freeQuotaSubject } =
+        await getUserIDAndPro(req);
       paidDailyFreeAllowanceUserId = userId;
       const freeUsageSubject = freeQuotaSubject ?? userId;
       let selectedModelOverride: SelectedModel | undefined =
@@ -387,7 +376,7 @@ export const createChatHandler = () => {
           subscription,
         );
       await assertUserCanMakeCostIncurringRequest(userId);
-      const subscriptionFirst = await enforceRegionalSubscriptionFirst({
+      await enforceRegionalSubscriptionFirst({
         userId,
         subscription,
         country: subscriptionFirstCountryFromRequest(req),
@@ -509,38 +498,12 @@ export const createChatHandler = () => {
         projectId: projectContext.projectId,
       });
 
-      const regionalFreeLimits = subscriptionFirst
-        ? undefined
-        : await evaluateRegionalFreeLimits({
-            posthog: (posthog ??= PostHogClient()),
-            userId,
-            subscription,
-            country: regionalFreeCountryFromRequest(req),
-          });
-      const monthlyFreeBudget =
-        subscriptionFirst || regionalFreeLimits
-          ? undefined
-          : await evaluateFreeMonthlyBudget({
-              posthog,
-              userId,
-              subscription,
-              freeQuotaSubject,
-              emailVerified,
-              country: monthlyBudgetCountryFromRequest(req),
-            });
-      const freeLimits = monthlyFreeBudget ?? regionalFreeLimits;
-      await captureFreeMonthlyBudgetExposure(
-        posthog,
-        monthlyFreeBudget,
+      const regionalFreeLimits = getRegionalFreeLimits({
         userId,
-        mode,
-      );
-      await captureRegionalFreeLimitsExposure(
-        posthog,
-        regionalFreeLimits,
-        userId,
-        mode,
-      );
+        subscription,
+        country: regionalFreeCountryFromRequest(req),
+      });
+      const freeLimits = regionalFreeLimits;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
           ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
@@ -581,7 +544,7 @@ export const createChatHandler = () => {
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
         allowLocalDesktopFiles:
-          isAgentMode(mode) && sandboxPreference === "desktop",
+          isAgentMode(mode) && isDesktopPreference(sandboxPreference ?? "e2b"),
         directGlmVisionEnabled,
         chatId,
         requestId,
@@ -630,7 +593,6 @@ export const createChatHandler = () => {
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
         posthog,
-        assignment: abliteratedExperiment,
         userId,
         chatId,
         messageId: assistantMessageId,
@@ -648,15 +610,16 @@ export const createChatHandler = () => {
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      const requestHasImages =
+        countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
+        uiMessagesContainImageViewResult(processedMessages);
       const flashRoutingAssignment = await evaluateFlashRouting({
         posthog,
         userId,
         mode,
         subscription,
         selectedModel,
-        hasImages:
-          countFileAttachments(fetched.truncatedMessages).imageCount > 0 ||
-          uiMessagesContainImageViewResult(processedMessages),
+        hasImages: requestHasImages,
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -824,6 +787,14 @@ export const createChatHandler = () => {
         abliteratedExperiment?.modelKey === selectedModel
           ? abliteratedExperiment
           : undefined;
+      const recordFlashRoutingExposure = createFlashRoutingExposureRecorder({
+        posthog,
+        assignment: activeFlashRoutingAssignment,
+        userId,
+        mode,
+        subscription,
+        requestId: assistantMessageId,
+      });
       const routingExperimentContext = activeAbliteratedExperiment
         ? {
             key: activeAbliteratedExperiment.key,
@@ -968,6 +939,7 @@ export const createChatHandler = () => {
                 cloudSandboxProvider: cloudSandboxSelection.provider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion: executionRegion,
+                environment: process.env.VERCEL_ENV ?? "development",
               },
             );
 
@@ -1052,6 +1024,7 @@ export const createChatHandler = () => {
                   sandboxFiles,
                   ensureSandbox,
                   {
+                    signal: userStopSignal.signal,
                     retryWithFreshSandboxOnTransientFailure: true,
                     logContext: {
                       service: "chat-handler",
@@ -1454,8 +1427,10 @@ export const createChatHandler = () => {
                   });
                 }
                 captureUsageCost({
+                  cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                  usageMeasurement:
+                    usageTracker.measurementProperties(selectedModel),
                   regionalFreeLimits,
-                  monthlyFreeBudget,
                   posthog,
                   userId,
                   subscription,
@@ -1640,20 +1615,27 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              onAgentGuardrail: (observation) =>
+                phLogger.warn("Agent guardrail observed", {
+                  event: "agent_guardrail_observed",
+                  configured_model: selectedModel,
+                  userId,
+                  user_id: userId,
+                  request_id: requestId,
+                  chat_id: chatId,
+                  endpoint,
+                  mode,
+                  ...observation,
+                }),
               abliteratedTelemetry,
               ...(activeAbliteratedExperiment?.variant === "test" && {
                 abliteratedStepRouting: {
                   baselineModel: activeAbliteratedExperiment.baselineModel,
                 },
               }),
-              onProviderRequestStart: createFlashRoutingExposureRecorder({
-                posthog,
-                assignment: activeFlashRoutingAssignment,
-                userId,
-                mode,
-                subscription,
-                requestId: assistantMessageId,
-              }),
+              onProviderRequestStart: (configuredModel) => {
+                recordFlashRoutingExposure(configuredModel);
+              },
               trackedProvider,
               currentSystemPrompt,
               tools,
@@ -1889,6 +1871,7 @@ export const createChatHandler = () => {
 
             mergePrimaryStream(
               result.toUIMessageStream({
+                onError: formatToolStreamError,
                 generateMessageId: () => assistantMessageId,
                 messageMetadata: ({ part }) => {
                   if (part.type === "start") {
@@ -2214,7 +2197,14 @@ export const createChatHandler = () => {
                             prepareProviderDisconnectContinuation(messages, {
                               allowCompletedTail: true,
                             });
-                          if (continuation?.preservedCompletedToolCount) {
+                          if (!continuation?.preservedCompletedToolCount) {
+                            usageTracker.resetModelLeg();
+                          }
+                          if (
+                            continuation &&
+                            (continuation.preservedCompletedToolCount > 0 ||
+                              continuation.preservedUnknownToolCount > 0)
+                          ) {
                             state.finalMessages = [
                               ...state.finalMessages,
                               ...continuation.messages,
@@ -2229,8 +2219,6 @@ export const createChatHandler = () => {
                                 ],
                               },
                             ];
-                          } else {
-                            usageTracker.resetModelLeg();
                           }
                         } else if (shouldRetryWithVisionSummary) {
                           state.finalMessages = recoveredVisionMessages!;
@@ -2257,6 +2245,7 @@ export const createChatHandler = () => {
 
                         writer.merge(
                           retryResult.toUIMessageStream({
+                            onError: formatToolStreamError,
                             generateMessageId: () => retryMessageId,
                             messageMetadata: ({ part }) => {
                               if (part.type === "start") {
@@ -2331,7 +2320,12 @@ export const createChatHandler = () => {
                                     ? "error"
                                     : "success";
                                 captureAgentCompletionAnalytics({
-                                  monthlyFreeBudget,
+                                  cacheHistoryTelemetry:
+                                    state.cacheHistoryTelemetry,
+                                  usageMeasurement:
+                                    usageTracker.measurementProperties(
+                                      selectedModel,
+                                    ),
                                   hasResponseContent: hasCompletedAssistantText(
                                     retryMessages,
                                     retryMessageId,
@@ -2661,7 +2655,9 @@ export const createChatHandler = () => {
                         ? "error"
                         : "success";
                     captureAgentCompletionAnalytics({
-                      monthlyFreeBudget,
+                      cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                      usageMeasurement:
+                        usageTracker.measurementProperties(selectedModel),
                       hasResponseContent: hasCompletedAssistantText(
                         messages,
                         assistantMessageId,
@@ -3000,6 +2996,7 @@ export const createChatHandler = () => {
 
                     const autoContinueStopSource =
                       getAgentAutoContinueStopSource({
+                        stoppedDueToStepLimit: state.stoppedDueToStepLimit,
                         finishReason: state.streamFinishReason,
                         stoppedDueToTokenExhaustion:
                           state.stoppedDueToTokenExhaustion,
@@ -3081,6 +3078,13 @@ export const createChatHandler = () => {
               });
             }
             shutdownPostHog(posthog);
+            if (
+              userStopSignal.signal.aborted &&
+              error === userStopSignal.signal.reason
+            ) {
+              writer.write({ type: "abort" });
+              return;
+            }
             throw error;
           }
         },

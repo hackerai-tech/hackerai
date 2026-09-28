@@ -151,8 +151,16 @@ export const subagentContextRefSchema = z.discriminatedUnion("kind", [
 
 export type SubagentContextRef = z.infer<typeof subagentContextRefSchema>;
 
+const subagentBriefSchema = z
+  .string()
+  .optional()
+  .describe(
+    "Optional concise description of this operation. Metadata only; does not change the delegated task or its instructions.",
+  );
+
 export const createAgentInputSchema = z
   .object({
+    brief: subagentBriefSchema,
     profile: subagentProfileSchema.optional(),
     name: z.string().trim().min(1).max(120),
     task: z.string().trim().min(1).max(4_000),
@@ -181,6 +189,7 @@ export type CreateAgentInput = z.infer<typeof createAgentInputSchema>;
 
 export const delegateTaskInputSchema = z
   .object({
+    brief: subagentBriefSchema,
     name: z.string().trim().min(1).max(120),
     task: z.string().trim().min(1).max(4_000),
     success_criteria: z
@@ -202,7 +211,10 @@ export const delegateTaskInputSchema = z
       .array(subagentCapabilityBundleSchema)
       .min(1)
       .max(6)
-      .default(["code_read"]),
+      .default(["code_read"])
+      .describe(
+        "Labels describing the delegated work for routing and task context. They do not limit the child's built-in subagent tools.",
+      ),
     complexity: subagentTaskComplexitySchema.default("medium"),
     expected_duration_minutes: z.number().int().min(1).max(15).default(8),
     output_kind: subagentOutputKindSchema.default("answer"),
@@ -212,6 +224,7 @@ export type DelegateTaskInput = z.infer<typeof delegateTaskInputSchema>;
 
 export const continueAgentInputSchema = z
   .object({
+    brief: subagentBriefSchema,
     target_agent_id: z.string().trim().min(1).max(100),
     follow_up: z.string().trim().min(1).max(2_000),
   })

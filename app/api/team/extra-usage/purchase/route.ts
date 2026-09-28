@@ -3,6 +3,8 @@ import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { requireAdminOrg } from "../../team-auth";
 import { normalizeCheckoutAttemptId } from "@/lib/analytics/paid-funnel";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 /**
  * POST /api/team/extra-usage/purchase
@@ -14,6 +16,13 @@ export const POST = async (req: NextRequest) => {
   try {
     const guard = await requireAdminOrg(req);
     if (!guard.ok) return guard.response;
+
+    if (await hasActiveSuspensionForUser(guard.userId)) {
+      return NextResponse.json(
+        { error: BILLING_ERRORS.accountSuspended },
+        { status: 403 },
+      );
+    }
 
     let body: unknown;
     try {
@@ -44,6 +53,7 @@ export const POST = async (req: NextRequest) => {
       {
         serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
         organizationId: guard.organizationId,
+        userId: guard.userId,
         amountDollars,
         baseUrl,
         checkoutAttemptId,

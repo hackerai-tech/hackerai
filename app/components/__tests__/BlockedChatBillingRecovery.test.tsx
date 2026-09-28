@@ -74,7 +74,7 @@ it.each(["past_due", "unpaid"] as const)(
       await screen.findByRole("button", { name: "Update payment" }),
     ).toBeEnabled();
     expect(
-      screen.getByText(/Access returns only after payment succeeds/),
+      screen.getByText(/access returns only after payment succeeds/i),
     ).toBeVisible();
     expect(
       screen.queryByText("Add credits or upgrade"),
@@ -88,6 +88,18 @@ it.each(["past_due", "unpaid"] as const)(
     );
   },
 );
+it("explains an insufficient-funds retry without offering credits", async () => {
+  statusMock.mockResolvedValue({
+    ...delinquent,
+    renewalPaymentFailure: "insufficient_funds",
+  });
+  setup();
+  expect(
+    await screen.findByText(/declined for insufficient funds/),
+  ).toBeVisible();
+  expect(screen.getByText(/invoice is still unpaid/)).toBeVisible();
+  expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
+});
 it("opens the existing portal at the current chat and never resumes on selection", async () => {
   portalMock.mockRejectedValue(new Error("Portal unavailable"));
   setup();

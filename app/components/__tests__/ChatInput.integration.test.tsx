@@ -1,7 +1,14 @@
 import "@testing-library/jest-dom";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { getFunctionName } from "convex/server";
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 import {
   act,
   render,
@@ -18,6 +25,23 @@ import {
   getDraftContentById,
 } from "@/lib/utils/client-storage";
 import type { UploadedFileState } from "@/types/file";
+import { toast } from "sonner";
+
+let mockSandboxState: Partial<
+  ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
+> = {};
+jest.mock("@/app/contexts/GlobalState", () => {
+  const original = jest.requireActual<
+    typeof import("@/app/contexts/GlobalState")
+  >("@/app/contexts/GlobalState");
+  return {
+    ...original,
+    useGlobalState: () => ({
+      ...original.useGlobalState(),
+      ...mockSandboxState,
+    }),
+  };
+});
 
 const mockUseQuery = jest.fn(() => undefined);
 const mockReadGeneratedTextAttachment = jest.fn();
@@ -31,7 +55,7 @@ const setNavigatorOnline = (isOnline: boolean) => {
   });
 };
 
-// Mock only external dependencies, not contexts
+// Keep real providers; stub external services and sandbox lifecycle snapshots.
 jest.mock("react-hotkeys-hook", () => ({
   useHotkeys: jest.fn(),
 }));
@@ -62,6 +86,10 @@ jest.mock("@/app/hooks/useTauri", () => ({
   readGeneratedTextAttachment: (...args: unknown[]) =>
     mockReadGeneratedTextAttachment(...args),
 }));
+
+const { isTauriEnvironment } = jest.requireMock<
+  typeof import("@/app/hooks/useTauri")
+>("@/app/hooks/useTauri");
 
 const { ChatInput } =
   jest.requireActual<typeof import("../ChatInput")>("../ChatInput");
@@ -161,12 +189,34 @@ const AgentApprovalSetter = () => {
   return null;
 };
 
+const SelectedComputerProbe = () => {
+  const { sandboxPreference, chatMode } = useGlobalState();
+  return (
+    <output data-testid="selected-computer">
+      {chatMode}:{sandboxPreference}
+    </output>
+  );
+};
+
 const AgentModeSetter = () => {
   const { setChatMode } = useGlobalState();
 
   useEffect(() => {
     setChatMode("agent");
   }, [setChatMode]);
+
+  return null;
+};
+
+const TaskPanelsSetter = () => {
+  const { setTodos, queueMessage } = useGlobalState();
+
+  useEffect(() => {
+    setTodos([
+      { id: "todo-1", content: "Private task progress", status: "in_progress" },
+    ]);
+    queueMessage("Private queued message");
+  }, [setTodos, queueMessage]);
 
   return null;
 };
@@ -178,6 +228,8 @@ describe("ChatInput - Integration Tests", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSandboxState = {};
+    jest.mocked(isTauriEnvironment).mockReturnValue(false);
     jest
       .mocked(useAuth)
       .mockReturnValue({ user: null, entitlements: [] } as ReturnType<
@@ -198,6 +250,192 @@ describe("ChatInput - Integration Tests", () => {
     });
     window.localStorage.clear();
     setNavigatorOnline(true);
+  });
+
+  describe("Sandbox disconnect warnings", () => {
+    afterEach(() => jest.restoreAllMocks());
+    const ui = () => (
+      <TestWrapper>
+        <ChatInput onSubmit={mockOnSubmit} onStop={mockOnStop} status="ready" />
+      </TestWrapper>
+    );
+
+    beforeEach(() => {
+      jest.spyOn(toast, "info").mockReturnValue(0);
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        chatMode: "agent",
+        subscription: "free",
+        isCheckingProPlan: false,
+        freeDesktopAgentOnlyActive: true,
+        sandboxPreference: "desktop",
+        desktopBridgeStatus: "connected",
+        localConnections: [],
+        hasLocalSandbox: true,
+      };
+    });
+
+    it("does not mistake task selection changes for a disconnect", async () => {
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      for (const sandboxPreference of [
+        "e2b",
+        "desktop",
+        "missing-runner",
+        "desktop",
+      ]) {
+        mockSandboxState = { ...mockSandboxState, sandboxPreference };
+        rerender(ui());
+      }
+      expect(toast.info).not.toHaveBeenCalled();
+    });
+
+    it("waits for Desktop startup without flashing a disconnect warning and preserves the draft", async () => {
+      jest.mocked(isTauriEnvironment).mockReturnValue(true);
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "idle",
+        hasLocalSandbox: false,
+      };
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      const textarea = await screen.findByRole("textbox");
+      fireEvent.change(textarea, { target: { value: "Test startup" } });
+
+      for (const desktopBridgeStatus of ["idle", "connecting"] as const) {
+        mockSandboxState = { ...mockSandboxState, desktopBridgeStatus };
+        rerender(ui());
+        expect(
+          screen.queryByText("Your computer is disconnected."),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeDisabled();
+        fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(textarea).toHaveValue("Test startup");
+      }
+
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "connected",
+        hasLocalSandbox: true,
+      };
+      rerender(ui());
+      expect(
+        screen.queryByText("Your computer is disconnected."),
+      ).not.toBeInTheDocument();
+      expect(toast.info).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeEnabled();
+      fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+    });
+
+    it("shows reconnect controls if Desktop startup fails", async () => {
+      jest.mocked(isTauriEnvironment).mockReturnValue(true);
+      const retryDesktopBridge = jest.fn();
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "connecting",
+        hasLocalSandbox: false,
+        retryDesktopBridge,
+      };
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      expect(
+        screen.queryByText("Your computer is disconnected."),
+      ).not.toBeInTheDocument();
+
+      mockSandboxState = { ...mockSandboxState, desktopBridgeStatus: "failed" };
+      rerender(ui());
+      expect(
+        screen.getByText("Your computer is disconnected."),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+      expect(retryDesktopBridge).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not warn when free Desktop access finishes resolving", async () => {
+      mockSandboxState = {
+        ...mockSandboxState,
+        isCheckingProPlan: true,
+        freeDesktopAgentOnlyActive: false,
+        sandboxPreference: "e2b",
+      };
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      mockSandboxState = {
+        ...mockSandboxState,
+        isCheckingProPlan: false,
+        freeDesktopAgentOnlyActive: true,
+      };
+      rerender(ui());
+      mockSandboxState = { ...mockSandboxState, sandboxPreference: "desktop" };
+      rerender(ui());
+      expect(toast.info).not.toHaveBeenCalled();
+    });
+
+    it("warns once when the selected Desktop bridge actually disconnects", async () => {
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      mockSandboxState = {
+        ...mockSandboxState,
+        desktopBridgeStatus: "connecting",
+      };
+      rerender(ui());
+      rerender(ui());
+      expect(toast.info).toHaveBeenCalledTimes(1);
+      expect(toast.info).toHaveBeenCalledWith(
+        "Desktop sandbox disconnected.",
+        expect.objectContaining({
+          description: "Reconnect the Desktop sandbox to keep using Agent.",
+        }),
+      );
+    });
+
+    it("warns when the selected remote runner disconnects even if Desktop is healthy", async () => {
+      mockSandboxState = {
+        ...mockSandboxState,
+        sandboxPreference: "remote-kali",
+        localConnections: [{ connectionId: "remote-kali", isDesktop: false }],
+      };
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      mockSandboxState = { ...mockSandboxState, localConnections: [] };
+      rerender(ui());
+      expect(toast.info).toHaveBeenCalledWith(
+        "Local sandbox disconnected.",
+        expect.objectContaining({
+          description:
+            "Reconnect the selected local runner to keep using Agent.",
+        }),
+      );
+    });
+
+    it("still switches free web Agent to Ask when its local connection is lost on the Cloud default", async () => {
+      const setChatMode = jest.fn();
+      mockSandboxState = {
+        ...mockSandboxState,
+        freeDesktopAgentOnlyActive: false,
+        sandboxPreference: "e2b",
+        defaultLocalSandboxPreference: null,
+        setChatMode,
+      };
+      const { rerender } = render(ui());
+      await screen.findByRole("textbox");
+      mockSandboxState = { ...mockSandboxState, hasLocalSandbox: false };
+      rerender(ui());
+      expect(setChatMode).toHaveBeenCalledWith("ask");
+      expect(toast.info).toHaveBeenCalledWith(
+        "Local sandbox disconnected. Switched to Ask mode.",
+        expect.any(Object),
+      );
+    });
   });
 
   describe("Ask Mode Integration", () => {
@@ -452,6 +690,24 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockOnStop).toHaveBeenCalledTimes(1);
     });
 
+    it("hides a stale stop action after an Agent run is known to be terminal", () => {
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="streaming"
+            hideStop
+          />
+        </TestWrapper>,
+      );
+
+      expect(
+        screen.queryByLabelText("Stop generation"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Send message")).toBeDisabled();
+    });
+
     it("should not show queue panel in ask mode even with queued messages", () => {
       render(
         <TestWrapper>
@@ -468,7 +724,244 @@ describe("ChatInput - Integration Tests", () => {
     });
   });
 
+  describe("Signed-out home composer", () => {
+    it.each([
+      ["desktop", true],
+      ["desktop", false],
+      ["missing-remote", false],
+    ])(
+      "hides disconnected %s controls (native=%s) and allows the auth submission with a saved Agent preference",
+      async (sandboxPreference, isNative) => {
+        jest.mocked(isTauriEnvironment).mockReturnValue(isNative);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", sandboxPreference);
+        mockUseQuery.mockReturnValue([]);
+        render(
+          <TestWrapper>
+            <ChatInput
+              isNewChat
+              restoreDraftAttachments={false}
+              offlineProtection={false}
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        expect(
+          screen.queryByText("Your computer is disconnected."),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "Reconnect" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByText("Choose another environment"),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId("chat-input-agent-context"),
+        ).not.toBeInTheDocument();
+        fireEvent.change(screen.getByRole("textbox"), {
+          target: { value: "Test request" },
+        });
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).toBeEnabled();
+        expect(
+          screen.getByRole("button", { name: "Send message" }),
+        ).not.toHaveClass("bg-red-500/10");
+        fireEvent.keyDown(screen.getByRole("textbox"), {
+          key: "Enter",
+          code: "Enter",
+        });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      },
+    );
+
+    it("hides task progress, queued messages, and a live approval after logout", () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      const content = () => (
+        <TestWrapper>
+          <TaskPanelsSetter />
+          <AgentApprovalSetter />
+          <ChatInput
+            isNewChat
+            restoreDraftAttachments={false}
+            rateLimitWarning={{
+              warningType: "sliding-window",
+              remaining: 1,
+              resetTime: new Date(Date.now() + 60_000),
+              mode: "agent",
+              subscription: "free",
+            }}
+            onDismissRateLimitWarning={jest.fn()}
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+          />
+        </TestWrapper>
+      );
+      const { rerender } = render(content());
+      expect(screen.getByText("Private task progress")).toBeInTheDocument();
+      expect(screen.getByText("Private queued message")).toBeInTheDocument();
+      expect(screen.getByTestId("agent-approval-prompt")).toBeInTheDocument();
+      expect(screen.getByTestId("rate-limit-warning")).toBeInTheDocument();
+      jest
+        .mocked(useAuth)
+        .mockReturnValue({ user: null, entitlements: [] } as ReturnType<
+          typeof useAuth
+        >);
+      rerender(content());
+      expect(
+        screen.queryByText("Private task progress"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Private queued message"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("agent-approval-prompt"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("rate-limit-warning"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("textbox")).toBeInTheDocument();
+    });
+  });
+
   describe("Agent Mode Integration", () => {
+    beforeEach(() => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+    });
+    it.each([
+      ["desktop", []],
+      ["missing-remote", []],
+      ["desktop", ["pro-plan"]],
+      ["missing-remote", ["pro-plan"]],
+    ] as const)(
+      "blocks continue on disconnected %s (%j), preserves the draft, and resumes after reconnect",
+      async (sandboxPreference, entitlements) => {
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [...entitlements],
+        } as ReturnType<typeof useAuth>);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", sandboxPreference);
+        let connections: Array<{
+          connectionId: string;
+          isDesktop: boolean;
+          name: string;
+        }> = [];
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? connections
+            : undefined,
+        );
+        const settingsRequested = jest.fn();
+        window.addEventListener("open-settings-dialog", settingsRequested);
+        const input = (
+          <TestWrapper>
+            <SelectedComputerProbe />
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              onSendNow={jest.fn()}
+              status="ready"
+            />
+          </TestWrapper>
+        );
+        const { rerender } = render(input);
+        const textarea = await screen.findByRole("textbox");
+        fireEvent.change(textarea, { target: { value: "continue" } });
+        fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+        expect(mockOnSubmit).not.toHaveBeenCalled();
+        expect(textarea).toHaveValue("continue");
+        expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+          `agent:${sandboxPreference}`,
+        );
+        expect(
+          screen.getByText("Your computer is disconnected."),
+        ).toBeInTheDocument();
+        fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+        if (sandboxPreference === "desktop") {
+          expect(
+            screen.getByText(/Open HackerAI Desktop on your selected computer/),
+          ).toBeInTheDocument();
+          expect(settingsRequested).not.toHaveBeenCalled();
+        } else {
+          expect(settingsRequested).toHaveBeenCalledWith(
+            expect.objectContaining({ detail: { tab: "Remote Control" } }),
+          );
+        }
+        window.removeEventListener("open-settings-dialog", settingsRequested);
+        connections = [
+          {
+            connectionId: sandboxPreference,
+            isDesktop: sandboxPreference === "desktop",
+            name: "My computer",
+          },
+        ];
+        rerender(
+          <TestWrapper>
+            <SelectedComputerProbe />
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              onSendNow={jest.fn()}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        await waitFor(() =>
+          expect(
+            screen.queryByText("Your computer is disconnected."),
+          ).not.toBeInTheDocument(),
+        );
+        fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+        await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+        expect(screen.getByTestId("selected-computer")).toHaveTextContent(
+          `agent:${sandboxPreference}`,
+        );
+      },
+    );
+
+    it.each([true, false])(
+      "shows contextual reconnect copy for isNewChat=%s",
+      async (isNewChat) => {
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        window.localStorage.setItem("sandbox-preference", "desktop");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? []
+            : undefined,
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              isNewChat={isNewChat}
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+            />
+          </TestWrapper>,
+        );
+        expect(
+          await screen.findByText(
+            isNewChat
+              ? "Reconnect or choose another environment to start."
+              : "Reconnect it to continue this task.",
+          ),
+        ).toBeInTheDocument();
+        expect(screen.getByRole("status")).toHaveClass(
+          "computer-reconnection-warning",
+        );
+      },
+    );
+
     it("renders a glass composer with a narrower sandbox context strip", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
@@ -809,7 +1302,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("clears the approval prompt when the persisted lifecycle resolves", () => {
+    it("clears the approval prompt when the persisted lifecycle resolves", async () => {
       const storedApprovalRequest = {
         approvalId: "stored-approval-1",
         toolCallId: "tool-1",
@@ -839,10 +1332,10 @@ describe("ChatInput - Integration Tests", () => {
       expect(
         screen.queryByTestId("agent-approval-prompt"),
       ).not.toBeInTheDocument();
-      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
+      expect(await screen.findByTestId("chat-input")).toBeInTheDocument();
     });
 
-    it("shows a neutral input shell until the initial task state resolves", () => {
+    it("shows a neutral input shell until the initial task state resolves", async () => {
       render(
         <TestWrapper>
           <AgentModeSetter />
@@ -858,7 +1351,7 @@ describe("ChatInput - Integration Tests", () => {
       );
 
       expect(
-        screen.getByTestId("chat-input-loading-state"),
+        await screen.findByTestId("chat-input-loading-state"),
       ).toBeInTheDocument();
       expect(screen.getByTestId("chat-input-loading-surface")).toHaveClass(
         "h-[98px]",
@@ -1725,6 +2218,51 @@ describe("ChatInput - Integration Tests", () => {
   });
 
   describe("Rate Limit Warning Integration", () => {
+    it("uses the smaller warning only while Todos is visible above the composer", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      mockSandboxState = {
+        todos: [
+          { id: "todo-1", content: "Check domain", status: "in_progress" },
+        ],
+        sidebarOpen: false,
+      };
+      const warning = {
+        warningType: "sliding-window" as const,
+        remaining: 1,
+        resetTime: new Date(Date.now() + 60_000),
+        mode: "agent" as const,
+        subscription: "free" as const,
+      };
+      const content = () => (
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            rateLimitWarning={warning}
+            onDismissRateLimitWarning={jest.fn()}
+          />
+        </TestWrapper>
+      );
+
+      const { rerender } = render(content());
+      await screen.findByTestId("rate-limit-warning");
+      expect(screen.getByTestId("rate-limit-warning")).toHaveClass("mx-4");
+      expect(screen.getByTestId("rate-limit-warning")).toHaveClass("py-1.5");
+
+      mockSandboxState = { ...mockSandboxState, sidebarOpen: true };
+      rerender(content());
+      expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
+      expect(screen.getByTestId("rate-limit-warning")).toHaveClass("py-2.5");
+
+      mockSandboxState = { todos: [], sidebarOpen: false };
+      rerender(content());
+      expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
+    });
+
     it("should accept rate limit warning props", () => {
       // Note: Specific text matching removed due to component complexity
       // The important test is that the component renders without errors when warning is provided

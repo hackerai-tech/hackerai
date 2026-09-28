@@ -6,8 +6,7 @@ type ModelAwareToolSchemaOptions = {
 };
 
 const usesDeepSeekToolBrief = (modelName?: string): boolean =>
-  modelName?.includes("deepseek") === true ||
-  modelName === "agent-auto-review-model";
+  modelName?.includes("deepseek") === true;
 
 export const createToolBriefSchema = ({
   modelName,
@@ -63,7 +62,7 @@ Commands run in the selected sandbox environment.${approvalGated ? " The platfor
 ${approvalGated ? "For every approval-gated command, provide a concise, user-facing justification describing the intended outcome; HackerAI displays it in the approval prompt, so do not merely repeat the command. prefix_rule is optional: provide it only for a narrow, useful category of similar commands the user can safely approve for this conversation. It must be an exact argv prefix represented as separate array elements. Prefer a stable safe prefix over copying the complete command, and omit it when no reusable scope is appropriate. Never provide prefix_rule for destructive commands, shell wrappers, compound commands, redirects, substitutions, environment assignments, wildcards, or other dynamic shell syntax." : ""}
 In using these tools, adhere to the following guidelines:
 ${commandCompositionGuidance}
-2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
+2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file. If the file tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. A timeout or lost response may hide a completed write: inspect the file before retrying, especially before append.
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 ${pagerGuidance}
 5. For long-running commands whose output or completion you need to monitor, keep \`is_background\` false. If the result says \`Process running with session ID X\`, continue it with \`interact_terminal_session\` using that exact session ID. Use \`is_background\` true only for detached jobs whose output and completion you do not need to poll; a detached PID is not a reusable terminal session.
@@ -71,7 +70,7 @@ ${pagerGuidance}
 ${largeOutputGuidance}
 8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
 9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 7 minutes (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout -> reduce scope, break into smaller operations.
+10. Choose scope and execution intensity from the user's objective, target behavior, and available resources. Adapt when errors, throttling, or diminishing returns appear. Preserve useful progress and inspect existing sessions, execution records, and artifacts before repeating work. A wait expiring is not a process failure: continue the returned session. Finish when the requested outcome is supported by evidence, and state any remaining uncertainty.
 11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 12. When searching for text in files, prefer using \`rg\` (ripgrep) because it is much faster than alternatives like \`grep\`. When searching for files by name, prefer \`rg --files\` or \`find\`. If the \`rg\` command is not found, fall back to \`grep\` or \`find\`.
    - To read files, prefer the file tool over \`cat\`/\`head\`/\`tail\` when practical.`,
@@ -109,7 +108,7 @@ ${largeOutputGuidance}
         .optional()
         .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command output before returning. A quiet foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy that returned session exactly and never derive one from its PID. Noisy foreground commands that already produced truncated output may be terminated to protect the session. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Time in seconds to wait for command output before returning; reaching this limit does not terminate the process. A foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy it exactly and never derive one from a PID. Captured output is retained in a bounded execution record when available. Explicit cancellation and infrastructure resource limits can still stop execution. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
@@ -141,12 +140,13 @@ export const createInteractTerminalSessionToolSchema = ({
 </supported_actions>
 
 <instructions>
-- Only call this tool when the preceding \`run_terminal_cmd\` result contains an explicit \`session\` field; copy that value exactly
+- Use the exact \`session\` returned by \`run_terminal_cmd\`, including a session preserved in conversation context; never invent an ID
+- Across turns, \`view\` or \`wait\` can retrieve a historical execution record when the live session has closed. Check its status, saved output, and artifacts before repeating work. A historical record cannot accept input or be killed; a last-recorded running state does not prove the process is still alive.
 - A PID is not a session ID. Never derive a session from a PID (for example, never turn PID 1689 into \`cmd-1689\`)
 - Input-capable sessions are created with \`interactive=true\`; timed-out foreground commands may return non-interactive sessions that support wait/view/kill but not send
 - When using \`view\` action, ensure command has completed execution before using its output
 - Set a short \`timeout\` (such as 5s) on \`wait\` for processes that don't return promptly to avoid meaningless waiting time
-- Processes are NEVER killed on timeout - they keep running in the session; \`timeout\` only controls how long to wait for output before returning
+- The output wait does not kill processes; explicit cancellation, response cleanup, and infrastructure resource limits can close live sessions. Saved records remain available while the original sandbox and retention allow.
 - Use \`wait\` action when a process needs additional time to complete and return
 - Only use \`wait\` after \`send\`, or after \`run_terminal_cmd\` returned without finishing and included an explicit \`session\` field; decide whether to wait based on the prior output
 - DO NOT use \`wait\` for long-running daemon processes
@@ -291,7 +291,7 @@ export const createFileToolSchema = ({
           "Use 'read' for text-based or line-oriented formats.",
           "This model cannot view sandbox images directly; ask the user to select a model with image viewing support.",
         ]),
-    "Code MUST be saved to a file using this tool before execution via the shell tool.",
+    "Save code with this tool before execution via the shell tool. If this tool reports a transport failure, reconnect the Desktop app before retrying. Never substitute a terminal write to bypass a rejected file operation or project-root boundary. Verify the existing file before retrying a mutation whose result is unknown.",
     "DO NOT write partial or truncated content; always output the full content.",
     "'edit' can make multiple targeted replacements at once; all must succeed or none are applied.",
     "For extensive modifications to shorter files, use 'write' to rewrite the entire file instead of 'edit'.",
@@ -352,7 +352,7 @@ export const todoWriteToolInputSchema = z.object({
   merge: z
     .boolean()
     .describe(
-      "Whether to merge the todos with the existing todos. If true, the todos will be merged into the existing todos based on the id field. You can leave unchanged properties undefined. If false, the new todos will replace the existing todos.",
+      "Whether to merge the todos with the existing todos. If true, the todos will be merged into the existing todos based on the id field. You can leave unchanged properties undefined. If false, replace the assistant plan; every unfinished task must be included. Prefer true for follow-ups. With true and todos=[], read current state without changing it.",
     ),
   todos: z
     .array(
@@ -371,9 +371,8 @@ export const todoWriteToolInputSchema = z.object({
           .describe("The current status of the todo item"),
       }),
     )
-    .min(1)
     .describe(
-      "Array of todo items to write to the workspace. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status. A new item whose exact normalized content matches an earlier new item in the same write or a preserved manual todo is skipped and reported by ID.",
+      "Array of todo items to write to the workspace. Use merge=true and todos=[] to read the full current list without writing. For merge=false, new items should include content and status and replace the assistant-generated plan while preserving manually created todos. Replacement is rejected if it omits unfinished assistant tasks; keep them, or explicitly update their status when genuinely finished or obsolete. Partial items are treated as merge-style updates. For merge=true, existing items may be patched with partial updates, but new items should include content and status. A new item whose exact normalized content matches an earlier new item in the same write or a preserved manual todo is skipped and reported by ID.",
     ),
 });
 
@@ -389,7 +388,7 @@ Use proactively for:
 2. Non-trivial vulnerability testing requiring systematic approach
 3. User explicitly requests todo list
 4. User provides multiple targets or attack vectors (numbered/comma-separated)
-5. After receiving new instructions - capture requirements as todos (use merge=false to replace the assistant plan, or merge=true to patch the current plan)
+5. After receiving new instructions - use merge=true to add or patch requirements while retaining unfinished work. Use merge=false only for an intentional complete replan.
 6. After completing tasks - mark complete with merge=true and add follow-ups
 7. When starting new tasks - mark as in_progress (ideally only one at a time)
 
@@ -490,7 +489,9 @@ NEVER INCLUDE THESE IN TODOS: basic enumeration steps; reading tool output; rout
   - Mark complete IMMEDIATELY after finishing
   - Only ONE task in_progress at a time
   - Complete current tasks before starting new ones
-  - Before finishing your turn, complete every todo or cancel it if it is no longer relevant
+  - Keep unfinished work pending or in_progress across turns, pauses, limits, and summarization. Never cancel work just to finish a turn or because its context is missing.
+  - Cancel only when a user scope change or confirmed obsolescence makes the task irrelevant; explain the reason to the user. Mark completed only after verifying the work.
+  - If IDs or the plan are unclear, read the current list with merge=true and todos=[] before updating. Never guess IDs.
 
 3. **Task Breakdown:**
   - Create specific, actionable security tests

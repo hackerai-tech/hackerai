@@ -25,6 +25,55 @@ jest.mock("@/lib/logger", () => ({
   logger: { warn: jest.fn(), info: jest.fn(), error: jest.fn() },
 }));
 
+describe("transport recovery provider exclusions", () => {
+  it("merges the recovery exclusion with privacy and latency routing", () => {
+    const result = buildProviderOptions(
+      true,
+      "user",
+      "model-glm-5.3-flash",
+      "agent",
+      {
+        requestedModelSlug: "z-ai/glm-5.3-flash",
+        ignoredProviderSlugs: ["together"],
+      },
+    );
+    expect(result.openrouter.provider).toEqual({
+      sort: "latency",
+      data_collection: "deny",
+      ignore: ["together"],
+    });
+    expect(result.openrouter.models?.length).toBeGreaterThan(0);
+  });
+
+  it("preserves existing ignored upstreams and deduplicates them", () => {
+    const result = buildProviderOptions(
+      true,
+      "user",
+      "model-deepseek-v4-flash-0731",
+      "agent",
+      {
+        requestedModelSlug: "deepseek/deepseek-v4-flash",
+        ignoredProviderSlugs: ["together", "novita"],
+      },
+    );
+    expect(result.openrouter.provider).toEqual({
+      ignore: ["novita", "together"],
+    });
+  });
+
+  it("does not change normal routing or send OpenRouter options to direct providers", () => {
+    expect(
+      buildProviderOptions(true, "user", "model-glm-5.3-flash", "agent")
+        .openrouter.provider,
+    ).toEqual({ sort: "latency", data_collection: "deny" });
+    expect(
+      buildProviderOptions(true, "user", "model-abliterated", "agent", {
+        ignoredProviderSlugs: ["together"],
+      }),
+    ).toEqual({});
+  });
+});
+
 // Slugs the test asserts against. These match the registry in lib/ai/providers.ts.
 // If the registry slug for a model changes, update both places intentionally.
 const GROK_4_5_SLUG = "x-ai/grok-4.5";
@@ -58,7 +107,11 @@ const HIGH_REASONING_ROUTES = [
 ] as const;
 
 describe("buildProviderOptions fallback chain", () => {
-  it.each(["ask-model-free", "ask-model-free-glm"] as const)(
+  it.each([
+    "ask-model-free",
+    "ask-model-free-glm",
+    "ask-model-free-deepseek-v41",
+  ] as const)(
     "preserves free Ask low reasoning on retries from %s",
     (primaryModel) => {
       for (const retryModel of [
@@ -76,6 +129,32 @@ describe("buildProviderOptions fallback chain", () => {
       }
     },
   );
+  it("preserves free Ask reasoning and cost accounting for the V4.1 treatment", () => {
+    const selectedModel = "ask-model-free-deepseek-v41";
+    const options = buildProviderOptions(true, "user-1", selectedModel, "ask", {
+      reasoningOverride: { enabled: true, effort: "high" },
+    });
+    expect(options.openrouter.reasoning).toEqual({
+      enabled: true,
+      effort: "low",
+    });
+    expect(options.openrouter.models).toContain(GLM_FLASH_SLUG);
+    expect(getRetryFallbackModel(selectedModel, "ask")).toBe(
+      "model-glm-5.3-flash",
+    );
+    expect(
+      isAutoModelSelectionForRetry({
+        selectedModel,
+        selectedModelOverride: "hackerai-standard",
+      }),
+    ).toBe(true);
+    expect(
+      resolveServedModelForCostAccounting({
+        modelName: selectedModel,
+        responseModel: GLM_FLASH_SLUG,
+      }),
+    ).toBe("model-glm-5.3-flash");
+  });
   it("keeps the free Ask default at low reasoning with billed, retryable fallbacks", () => {
     const opts = buildProviderOptions(
       true,
@@ -457,6 +536,26 @@ describe("buildProviderOptions fallback chain", () => {
     expect(opts.openrouter).not.toHaveProperty("plugins");
   });
 
+  it("adds a sticky cache session only to DeepSeek requests", () => {
+    const deepSeek = buildProviderOptions(
+      false,
+      "user-1",
+      "model-deepseek-v4-flash-0731",
+      "agent",
+      { cacheSessionId: "hackerai-cache-v1-test" },
+    );
+    expect(deepSeek.openrouter.session_id).toBe("hackerai-cache-v1-test");
+
+    const grok = buildProviderOptions(
+      false,
+      "user-1",
+      "model-grok-4.6",
+      "agent",
+      { cacheSessionId: "hackerai-cache-v1-test" },
+    );
+    expect(grok.openrouter).not.toHaveProperty("session_id");
+  });
+
   it("can keep later PDF steps on the Cloudflare parser", () => {
     const opts = buildProviderOptions(
       false,
@@ -819,10 +918,10 @@ describe("isAutoModelSelectionForRetry", () => {
     ).toBe(true);
   });
 
-  it("keeps explicitly selected HackerAI Max Grok 4.6 retryable", () => {
+  it("keeps explicitly selected HackerAI Max GLM 5.3 retryable", () => {
     expect(
       isAutoModelSelectionForRetry({
-        selectedModel: "model-grok-4.6",
+        selectedModel: "model-glm-5.3",
         selectedModelOverride: "hackerai-max",
       }),
     ).toBe(true);
@@ -1170,11 +1269,11 @@ describe("resolveServedModelForCostAccounting", () => {
     ).toBe(DEEPSEEK_FLASH_PREVIOUS_SLUG);
   });
 
-  it("maps the free Agent DeepSeek primary slug to its route key", () => {
+  it("maps the free Agent DeepSeek V4.1 primary slug to its route key", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "agent-model-free",
-        responseModel: DEEPSEEK_FLASH_SLUG,
+        responseModel: DEEPSEEK_VISION_SLUG,
         mode: "agent",
       }),
     ).toBe("agent-model-free");

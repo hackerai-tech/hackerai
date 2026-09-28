@@ -2,8 +2,11 @@ import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
+const mockResolvedPreferences = new Map<string, string>();
 jest.mock("convex/react", () => ({
   useMutation: () => jest.fn(),
+  useQuery: (_query: unknown, args: "skip" | { preference: string }) =>
+    args === "skip" ? undefined : mockResolvedPreferences.get(args.preference),
 }));
 
 const mockIsTauriEnvironment = jest.fn(() => true);
@@ -47,6 +50,7 @@ describe("useSandboxPreference", () => {
     jest.clearAllMocks();
     mockIsTauriEnvironment.mockReturnValue(true);
     window.localStorage.clear();
+    mockResolvedPreferences.clear();
   });
 
   it("defaults Desktop to the local sandbox when no preference is saved", () => {
@@ -71,6 +75,131 @@ describe("useSandboxPreference", () => {
     expect(result.current.sandboxPreference).toBe("e2b");
   });
 
+  it("persists a remote computer across remounts without falling back to Cloud", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    const first = renderHook(() => useSandboxPreference(false));
+    act(() => first.result.current.setSandboxPreference("remote-kali"));
+    first.unmount();
+    const second = renderHook(() => useSandboxPreference(false));
+    expect(second.result.current.sandboxPreference).toBe("remote-kali");
+  });
+
+  it("upgrades an owned legacy session preference and remembers the logical environment", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "old-session");
+    mockResolvedPreferences.set("old-session", "environment:same-computer");
+    const first = renderHook(() => useSandboxPreference(true));
+    expect(first.result.current.sandboxPreference).toBe(
+      "environment:same-computer",
+    );
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:same-computer",
+    );
+    first.unmount();
+    const second = renderHook(() => useSandboxPreference(true));
+    expect(second.result.current.sandboxPreference).toBe(
+      "environment:same-computer",
+    );
+  });
+
+  it("upgrades a restored task without overwriting the new-task default", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "environment:default-computer");
+    mockResolvedPreferences.set("task-session", "environment:task-computer");
+    const { result } = renderHook(() => useSandboxPreference(true));
+    act(() =>
+      result.current.setSandboxPreference("task-session", { remember: false }),
+    );
+    expect(result.current.sandboxPreference).toBe("environment:task-computer");
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:default-computer",
+    );
+    act(() => result.current.resetSandboxPreference());
+    expect(result.current.sandboxPreference).toBe(
+      "environment:default-computer",
+    );
+  });
+
+  it("does not let a queued legacy upgrade replace a newer explicit selection", async () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    localStorage.setItem("sandbox-preference", "old-session");
+    mockResolvedPreferences.set("old-session", "environment:old-computer");
+    const { result } = renderHook(() => useSandboxPreference(true));
+    act(() => result.current.setSandboxPreference("environment:new-computer"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.sandboxPreference).toBe("environment:new-computer");
+    expect(localStorage.getItem("sandbox-preference")).toBe(
+      "environment:new-computer",
+    );
+  });
+
+  it.each(["desktop", "remote-kali", "e2b"])(
+    "restores a task on %s without changing the new-chat default, including after reload",
+    (taskPreference) => {
+      window.localStorage.setItem("sandbox-preference", "my-default-computer");
+      const first = renderHook(() => useSandboxPreference(false));
+      act(() =>
+        first.result.current.setSandboxPreference(taskPreference, {
+          remember: false,
+        }),
+      );
+      expect(first.result.current.sandboxPreference).toBe(taskPreference);
+      expect(localStorage.getItem("sandbox-preference")).toBe(
+        "my-default-computer",
+      );
+      act(() => first.result.current.resetSandboxPreference());
+      expect(first.result.current.sandboxPreference).toBe(
+        "my-default-computer",
+      );
+      act(() =>
+        first.result.current.setSandboxPreference(taskPreference, {
+          remember: false,
+        }),
+      );
+      first.unmount();
+      const second = renderHook(() => useSandboxPreference(false));
+      expect(second.result.current.sandboxPreference).toBe(
+        "my-default-computer",
+      );
+    },
+  );
+
+  it("remembers an explicit selection even when it already matches the restored task", () => {
+    window.localStorage.setItem("sandbox-preference", "e2b");
+    const { result } = renderHook(() => useSandboxPreference(false));
+    act(() =>
+      result.current.setSandboxPreference("desktop", { remember: false }),
+    );
+    act(() => result.current.setSandboxPreference("desktop"));
+    act(() =>
+      result.current.setSandboxPreference("other-task", { remember: false }),
+    );
+    act(() => result.current.resetSandboxPreference());
+    expect(result.current.sandboxPreference).toBe("desktop");
+    expect(localStorage.getItem("sandbox-preference")).toBe("desktop");
+  });
+
+  it("distinguishes untouched Cloud from an explicit Cloud choice across reloads", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    const first = renderHook(() => useSandboxPreference(false));
+    expect(first.result.current.hasExplicitSandboxPreference).toBe(false);
+    act(() => first.result.current.setSandboxPreference("e2b"));
+    expect(first.result.current.hasExplicitSandboxPreference).toBe(true);
+    first.unmount();
+    const second = renderHook(() => useSandboxPreference(false));
+    expect(second.result.current.sandboxPreference).toBe("e2b");
+    expect(second.result.current.hasExplicitSandboxPreference).toBe(true);
+  });
+
+  it("restores legacy Desktop preferences on the web", () => {
+    mockIsTauriEnvironment.mockReturnValue(false);
+    window.localStorage.setItem("sandbox-preference", "tauri");
+    const { result } = renderHook(() => useSandboxPreference(false));
+    expect(result.current.sandboxPreference).toBe("desktop");
+  });
+
   it("does not initialize the desktop bridge in a web browser", async () => {
     mockIsTauriEnvironment.mockReturnValue(false);
 
@@ -80,6 +209,27 @@ describe("useSandboxPreference", () => {
       expect(result.current.desktopBridgeStatus).toBe("idle");
     });
     expect(DesktopSandboxBridge).not.toHaveBeenCalled();
+  });
+
+  it("binds the Desktop default to this installation rather than another online Desktop", async () => {
+    (DesktopSandboxBridge as jest.Mock).mockImplementation(() => ({
+      start: jest.fn().mockResolvedValue("new-session"),
+      stop: jest.fn().mockResolvedValue(undefined),
+      getConnectionId: jest.fn().mockReturnValue("new-session"),
+      getEnvironmentId: jest.fn().mockReturnValue("this-installation"),
+    }));
+    const { result, rerender } = renderHook(
+      ({ authenticated }) => useSandboxPreference(authenticated),
+      { initialProps: { authenticated: true } },
+    );
+    await waitFor(() =>
+      expect(result.current.desktopBridgeStatus).toBe("connected"),
+    );
+    expect(result.current.sandboxPreference).toBe(
+      "desktop-environment:this-installation",
+    );
+    expect(result.current.desktopEnvironmentId).toBe("this-installation");
+    await act(async () => rerender({ authenticated: false }));
   });
 
   it("automatically retries a bridge that fails during startup readiness", async () => {

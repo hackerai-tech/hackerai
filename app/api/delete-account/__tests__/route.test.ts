@@ -291,6 +291,10 @@ describe("POST /api/delete-account", () => {
     expect(mockDeleteCustomer).not.toHaveBeenCalled();
     expect(mockDeleteOrganization).not.toHaveBeenCalled();
     expect(mockDeleteUser).toHaveBeenCalledWith("user_123");
+    expect(mockTerminateCloudSandboxesForUser).toHaveBeenCalledWith(
+      "user_123",
+      { permanent: true },
+    );
     expect(mockCloseAndCancelAgentResources).toHaveBeenCalledWith(
       [{ chatId: "subagent", triggerRunId: "child-run-1" }],
       "account-deleted",

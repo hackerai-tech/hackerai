@@ -1,6 +1,10 @@
 const mockStopAll = jest.fn();
 const mockConfirmProcessTermination = jest.fn().mockResolvedValue(true);
 
+jest.mock("../environment-identity", () => ({
+  getEnvironmentId: jest.fn().mockResolvedValue("test-environment"),
+}));
+
 jest.mock("../process-runner", () => ({
   ProcessRunner: jest.fn().mockImplementation(() => ({
     on: jest.fn(),
@@ -13,6 +17,10 @@ jest.mock("../command-cancellation", () => ({
   confirmProcessTermination: (...args: unknown[]) =>
     mockConfirmProcessTermination(...args),
   isProcessTreeTerminationConfirmed: () => true,
+}));
+
+jest.mock("../private-artifact-hardening", () => ({
+  hardenExistingTerminalArtifacts: jest.fn().mockResolvedValue(true),
 }));
 
 import { LocalSandboxClient } from "../index";
@@ -99,6 +107,35 @@ describe("LocalSandboxClient cleanup", () => {
     });
   });
 
+  it("decodes base64 command stdin before starting the process", async () => {
+    const client = new LocalSandboxClient(config);
+    const streamCommand = jest.fn().mockResolvedValue(undefined);
+    const privateClient = client as unknown as {
+      handleCommand: (message: Record<string, unknown>) => Promise<void>;
+      streamCommand: typeof streamCommand;
+    };
+    privateClient.streamCommand = streamCommand;
+
+    await privateClient.handleCommand({
+      type: "command",
+      commandId: "command-with-stdin",
+      command: "cat >/tmp/private-record",
+      stdin: Buffer.from("private evidence").toString("base64"),
+      stdinEncoding: "base64",
+      targetConnectionId: "connection-1",
+      displayName: "",
+    });
+
+    expect(streamCommand).toHaveBeenCalledWith(
+      "command-with-stdin",
+      "cat >/tmp/private-record",
+      undefined,
+      false,
+      "cat >/tmp/private-record",
+      Buffer.from("private evidence"),
+    );
+  });
+
   it("reports an injected exit handler without exiting the process", async () => {
     const onExitRequested = jest.fn();
     const exitSpy = jest
@@ -132,17 +169,18 @@ describe("LocalSandboxClient cleanup", () => {
     });
     const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
     const client = new LocalSandboxClient(config);
-    (
-      client as unknown as {
-        convexHttp: { mutation: jest.Mock };
-      }
-    ).convexHttp.mutation = jest.fn().mockResolvedValue({
+    const mutation = jest.fn().mockResolvedValue({
       success: true,
       userId: "user-1",
       connectionId: "connection-1",
       centrifugoToken: "relay-token",
       centrifugoWsUrl: "wss://relay.example.test/connection/websocket",
     });
+    (
+      client as unknown as {
+        convexHttp: { mutation: jest.Mock };
+      }
+    ).convexHttp.mutation = mutation;
     (
       client as unknown as {
         setupCentrifugo: () => Promise<void>;
@@ -159,12 +197,24 @@ describe("LocalSandboxClient cleanup", () => {
 
     const start = client.start();
     await setupStarted;
+    expect(mutation).toHaveBeenCalledTimes(1);
+    expect(mutation).toHaveBeenCalledWith(
+      "localSandbox:connect",
+      expect.objectContaining({
+        environmentId: "test-environment",
+        capabilities: expect.objectContaining({ commandStdin: true }),
+      }),
+    );
     expect(logSpy.mock.calls.flat().join("\n")).not.toContain(
       "Local sandbox is ready",
     );
 
     markRelayReady();
     await start;
+    expect(mutation).toHaveBeenNthCalledWith(2, "localSandbox:ready", {
+      token: config.token,
+      connectionId: "connection-1",
+    });
     expect(logSpy.mock.calls.flat().join("\n")).toContain(
       "Local sandbox is ready",
     );

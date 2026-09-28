@@ -1,9 +1,5 @@
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
-import {
-  ABLITERATED_EXPERIMENT_KEY,
-  FREE_ASK_ABLITERATED_EXPERIMENT_KEY,
-  type AbliterationExperimentKey,
-} from "./abliteration-keys";
+import { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
 export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
@@ -19,7 +15,7 @@ import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-res
 
 export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
-  key: AbliterationExperimentKey;
+  key: typeof ABLITERATED_EXPERIMENT_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -80,6 +76,7 @@ export function isEligibleForAbliteratedModel({
   limitRescue?: boolean;
 }): boolean {
   return (
+    subscription !== "free" &&
     !limitRescue &&
     moderationEligible &&
     messages.length > 0 &&
@@ -131,10 +128,7 @@ export async function evaluateAbliteratedModel({
   )
     return undefined;
 
-  const experimentKey =
-    subscription === "free" && mode === "ask"
-      ? FREE_ASK_ABLITERATED_EXPERIMENT_KEY
-      : ABLITERATED_EXPERIMENT_KEY;
+  const experimentKey = ABLITERATED_EXPERIMENT_KEY;
   try {
     // This pinned SDK's evaluateFlags.getFlag emits exposure on access. Use the
     // supported no-event API until it supports deferring exposure explicitly.

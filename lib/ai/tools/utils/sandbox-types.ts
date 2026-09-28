@@ -13,6 +13,8 @@ export interface OsInfo {
 
 export interface ConnectionInfo {
   connectionId: string;
+  environmentId?: string;
+  createdAt?: number;
   name: string;
   osInfo?: OsInfo;
   lastSeen?: number;
@@ -21,6 +23,7 @@ export interface ConnectionInfo {
     commands: boolean;
     pty: boolean;
     files?: boolean;
+    commandStdin?: boolean;
   };
 }
 
@@ -124,6 +127,8 @@ export interface CommonSandboxInterface {
         background?: boolean;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
+        displayName?: string;
+        stdin?: string | Buffer;
         signal?: AbortSignal;
       },
     ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;

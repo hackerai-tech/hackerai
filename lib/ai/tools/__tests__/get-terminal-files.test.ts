@@ -1,10 +1,15 @@
 jest.mock("../utils/sandbox-file-uploader", () => ({
   uploadSandboxFileToConvex: jest.fn(),
 }));
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { event: jest.fn() },
+}));
 
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import type { ToolContext } from "@/types";
+import { phLogger } from "@/lib/posthog/server";
+import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
 
 const mockUploadSandboxFileToConvex =
   uploadSandboxFileToConvex as jest.MockedFunction<
@@ -167,5 +172,117 @@ describe("get_terminal_files", () => {
         }),
       }),
     );
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        delivered_file_count: 1,
+        failed_file_count: 1,
+      }),
+    );
+    expect(
+      JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+    ).not.toContain("client.zip");
+  });
+  it.each([
+    "C:\\Users\\User\\Documents\\report.zip",
+    "\\\\server\\share\\report.zip",
+  ])("keeps Windows absolute path %s on the selected host", async (path) => {
+    mockUploadSandboxFileToConvex.mockResolvedValue({
+      url: "https://files.example/report.zip",
+      fileId: "file_report" as never,
+      tokens: 0,
+      name: "report.zip",
+      mediaType: "application/zip",
+      sizeBytes: 1024,
+    });
+    const result = (await runTool(createGetTerminalFiles(makeContext()), {
+      files: [path],
+    })) as { failedFiles: unknown[] };
+    expect(result.failedFiles).toHaveLength(0);
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledWith(
+      expect.objectContaining({ fullPath: path }),
+    );
+  });
+  it("recovers a stale local relay once and delivers from its replacement", async () => {
+    const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };
+    const replacement = {
+      sandboxKind: "centrifugo",
+      getConnectionId: () => "new",
+    };
+    const recoverLocalConnection = jest.fn(async () => ({
+      sandbox: replacement,
+    }));
+    const getSandbox = jest
+      .fn()
+      .mockResolvedValueOnce({ sandbox: stale })
+      .mockResolvedValueOnce({ sandbox: replacement });
+    mockUploadSandboxFileToConvex
+      .mockRejectedValueOnce(new LocalCommandRelayUnsubscribedError("old"))
+      .mockResolvedValueOnce({
+        url: "https://files.example/report.zip",
+        fileId: "file_report" as never,
+        tokens: 0,
+        name: "report.zip",
+        mediaType: "application/zip",
+        sizeBytes: 1024,
+      });
+    const base = makeContext();
+    const context = makeContext({
+      sandboxManager: {
+        ...base.sandboxManager,
+        getSandbox,
+        recoverLocalConnection,
+      },
+    });
+    const result = (await runTool(createGetTerminalFiles(context), {
+      files: ["C:\\report.zip"],
+    })) as { failedFiles: unknown[]; files: unknown[] };
+    expect(result.files).toHaveLength(1);
+    expect(result.failedFiles).toHaveLength(0);
+    expect(recoverLocalConnection).toHaveBeenCalledWith(
+      "old",
+      "command_relay_unsubscribed",
+    );
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(2);
+    expect(mockUploadSandboxFileToConvex).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sandbox: replacement,
+        fullPath: "C:\\report.zip",
+      }),
+    );
+    expect(phLogger.event).toHaveBeenCalledWith(
+      "agent_file_delivery_completed",
+      expect.objectContaining({
+        relay_recovery_attempted: true,
+        relay_recovery_succeeded: true,
+        delivered_file_count: 1,
+      }),
+    );
+  });
+  it("does not retry local files on a cloud sandbox after relay recovery", async () => {
+    const stale = { sandboxKind: "centrifugo", getConnectionId: () => "old" };
+    const cloud = { id: "cloud" };
+    const base = makeContext();
+    const context = makeContext({
+      sandboxManager: {
+        ...base.sandboxManager,
+        getSandbox: jest
+          .fn()
+          .mockResolvedValueOnce({ sandbox: stale })
+          .mockResolvedValueOnce({ sandbox: cloud }),
+        recoverLocalConnection: jest.fn(async () => ({ sandbox: cloud })),
+      },
+    });
+    mockUploadSandboxFileToConvex.mockRejectedValueOnce(
+      new LocalCommandRelayUnsubscribedError("old"),
+    );
+    const result = (await runTool(createGetTerminalFiles(context), {
+      files: ["C:\\report.zip"],
+    })) as { failedFiles: Array<{ reason: string }> };
+    expect(result.failedFiles[0].reason).toContain(
+      "selected local sandbox changed",
+    );
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
   });
 });

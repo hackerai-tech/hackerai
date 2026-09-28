@@ -1,3 +1,8 @@
+import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
+import {
+  attributeInfluencer,
+  partnerTrackingAllowed,
+} from "@/lib/influencers/attribution";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -35,6 +40,9 @@ import {
   type ProMonthlyPricingExperimentAssignment,
 } from "@/lib/experiments/pro-monthly-pricing";
 import { evaluateProMonthlyPricingExperiment } from "@/lib/experiments/pro-monthly-pricing.server";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
+import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
 
 function stripeProductId(product: Stripe.Price["product"]): string | undefined {
   return typeof product === "string" ? product : product?.id;
@@ -282,8 +290,19 @@ export const POST = async (req: NextRequest) => {
     const { userId, subscription, organizationId, freeQuotaSubject } =
       await getUserIDAndPro(req);
 
+    if (await hasActiveSuspensionForUser(userId)) {
+      return json({ error: BILLING_ERRORS.accountSuspended }, { status: 403 });
+    }
+
     // Get user details from WorkOS to create a personal organization.
     const user = await workos.userManagement.getUser(userId);
+    await attributeInfluencer(req, {
+      userId,
+      email: user.email,
+      identity: freeQuotaSubject,
+      subscription,
+      createdAt: user.createdAt,
+    });
     const orgName = buildWorkOSOrganizationName(user);
     const referralConfig = getReferralRewardConfig();
     const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
@@ -593,6 +612,19 @@ export const POST = async (req: NextRequest) => {
       });
     }
 
+    // The old renewal can still be payable after an immediate cancellation.
+    // Do not take a second Checkout payment until its final state is known.
+    if (await hasRecentCanceledRenewalAtRisk(stripe, customer.id)) {
+      return json(
+        {
+          error:
+            "A recent subscription payment is still being resolved. Contact support before starting another subscription so you are not charged twice.",
+          code: "recent_renewal_payment_needs_review",
+        },
+        { status: 409 },
+      );
+    }
+
     const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
     if (!baseUrl) {
       return json(
@@ -615,6 +647,31 @@ export const POST = async (req: NextRequest) => {
     }
 
     const cancelUrl = new URL(baseUrl);
+
+    if (freeQuotaSubject && subscription === "free") {
+      const attribution = await getConvexClient().query(
+        api.influencers.getAttribution,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          identity: freeQuotaSubject,
+        },
+      );
+      if (attribution) {
+        // Existing billing customers cannot acquire new influencer attribution.
+        const history = await stripe.subscriptions.list({
+          customer: customer.id,
+          status: "all",
+          limit: 1,
+        });
+        if (history.data.length === 0) {
+          await getConvexClient().mutation(api.influencers.bindCustomer, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            identity: freeQuotaSubject,
+            customerId: customer.id,
+          });
+        }
+      }
+    }
 
     let session = await findReusableCheckoutSession({
       customerId: customer.id,
@@ -759,6 +816,30 @@ export const POST = async (req: NextRequest) => {
           error: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+
+    if (
+      freeQuotaSubject &&
+      subscription === "free" &&
+      partnerTrackingAllowed(req)
+    ) {
+      const checkoutStartedAt = Date.now();
+      after(async () => {
+        try {
+          const client = getConvexClient();
+          await client.mutation(api.influencerAnalytics.recordCheckout, {
+            serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+            identity: freeQuotaSubject,
+            attemptId: session.id,
+            timestamp: checkoutStartedAt,
+            plan: resolvedPriceLookupKey,
+            interval: selectedPrice.recurring?.interval ?? "unknown",
+          });
+          await flushInfluencerAnalytics(client);
+        } catch {
+          console.warn("Influencer checkout analytics unavailable");
+        }
+      });
     }
 
     phLogger.event(

@@ -42,6 +42,7 @@ const mockPostHogWarn = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogFlush = jest.fn();
 const mockGetReferralRewardConfig = jest.fn();
+const mockHasActiveSuspensionForUser = jest.fn();
 
 jest.mock("next/server", () => ({
   after: jest.fn((callback: () => void) => callback()),
@@ -153,6 +154,10 @@ jest.mock("@/lib/posthog/server", () => ({
 
 jest.mock("@/lib/referrals/config", () => ({
   getReferralRewardConfig: mockGetReferralRewardConfig,
+}));
+
+jest.mock("@/lib/suspensions", () => ({
+  hasActiveSuspensionForUser: mockHasActiveSuspensionForUser,
 }));
 
 function makeWebhookRequest({
@@ -1950,12 +1955,15 @@ describe("POST /api/subscription/webhook", () => {
           },
           lines: {
             data: [
-              subscriptionInvoiceLine(
-                "sub_historical_price",
-                "price_pro_29",
-                5800,
-                2,
-              ),
+              {
+                ...subscriptionInvoiceLine(
+                  "sub_historical_price",
+                  "price_pro_29",
+                  5800,
+                  2,
+                ),
+                period: { start: 1_782_000_000, end: 1_784_592_000 },
+              },
             ],
           },
           status_transitions: { paid_at: 1_782_000_000 },
@@ -2027,6 +2035,7 @@ describe("POST /api/subscription/webhook", () => {
       expect.objectContaining({
         stripePriceId: "price_pro_29",
         plan: "pro-monthly-plan-29-experiment",
+        billingPeriodEnd: 1_784_592_000_000,
       }),
     );
     for (const eventName of ["invoice_paid", "subscription_started"]) {
@@ -2043,6 +2052,9 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockPostHogEvent).toHaveBeenCalledWith(
       "invoice_paid",
       expect.objectContaining({
+        invoice_paid_at: 1_782_000_000_000,
+        billing_period_start: 1_782_000_000_000,
+        billing_period_end: 1_784_592_000_000,
         subscription_mrr_dollars: 58,
         attributed_mrr_dollars: 58,
         retained_mrr_dollars: 58,

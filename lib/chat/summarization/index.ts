@@ -6,10 +6,12 @@ import {
   LanguageModel,
   ToolSet,
   ModelMessage,
+  asSchema,
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import { countMessagesTokens, safeCountTokens } from "@/lib/token-utils";
+import { estimateSummaryInputTokens } from "./helpers";
 import {
   startSummarizationProgress,
   writeSummarizationFailed,
@@ -19,10 +21,9 @@ import { isCloudSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
-  getStartupCompactionVariant,
   isRecoverableStartupCompactionError,
-  STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS,
-  STARTUP_COMPACTION_FALLBACK_MODEL,
+  STARTUP_COMPACTION_FALLBACK_MODELS,
+  STARTUP_COMPACTION_VARIANT,
   type StartupCompactionContext,
 } from "./startup-compaction";
 import type { ProviderPromptPressure } from "./provider-pressure";
@@ -44,7 +45,7 @@ import {
   persistSummaryTranscript,
   resolveSummarizationMaxTokens,
 } from "./helpers";
-import type { SummarizationResult } from "./helpers";
+import type { SummarizationResult, SummarizationUsage } from "./helpers";
 import {
   getRetainedTailBudgetTokens,
   selectRetainedTailForSummarization,
@@ -73,6 +74,10 @@ export type ContextCompactionPhaseReporter = (
 export type BackgroundWorkRegistrar = (work: Promise<void>) => void;
 
 export const CONTEXT_COMPACTION_MODEL_NAME = "model-glm-5.3-flash";
+const CONTEXT_COMPACTION_MODEL_CHAIN = [
+  CONTEXT_COMPACTION_MODEL_NAME,
+  ...STARTUP_COMPACTION_FALLBACK_MODELS,
+] as const;
 const SUMMARIZATION_RETRY_MODEL_BY_MODE: Record<ChatMode, string> = {
   ask: "fallback-ask-model",
   agent: "fallback-agent-model",
@@ -150,6 +155,13 @@ const getSummarizationAttemptFromError = (
   return record?.[SUMMARIZATION_ATTEMPT_ERROR_KEY] === "fallback"
     ? "fallback"
     : "primary";
+};
+
+const getSummarizationModelFromError = (error: unknown): LanguageModel => {
+  const modelName = getErrorRecord(error)?.__hackeraiSummarizationModel;
+  return myProvider.languageModel(
+    typeof modelName === "string" ? modelName : CONTEXT_COMPACTION_MODEL_NAME,
+  );
 };
 
 const summarizeSummarizationErrorForLog = (error: unknown) => {
@@ -237,6 +249,15 @@ const buildContextCompactionProviderOptions = (
     },
   };
 };
+
+const buildStartupCompactionProviderOptions = (
+  providerOptions?: Record<string, Record<string, unknown>>,
+): Record<string, Record<string, unknown>> => ({
+  openrouter: {
+    ...buildContextCompactionProviderOptions(providerOptions).openrouter,
+    provider: { sort: "throughput", data_collection: "deny" },
+  },
+});
 
 const reportPhaseDuration = (
   reporter: ContextCompactionPhaseReporter | undefined,
@@ -509,108 +530,130 @@ const generateSummaryTextWithRetry = async ({
     attempt: SummarizationAttempt;
   }
 > => {
-  const summaryLanguageModel = myProvider.languageModel(
-    CONTEXT_COMPACTION_MODEL_NAME,
-  );
   const startedAt = Date.now();
   abortSignal?.throwIfAborted();
-  const variant =
-    startupCompaction && mode === "agent"
-      ? await getStartupCompactionVariant(startupCompaction.userId)
-      : "control";
-  const bounded = variant === "bounded_glm_v1";
-  abortSignal?.throwIfAborted();
-  if (startupCompaction && mode === "agent") {
-    startupCompaction.onAttempt?.({ variant, fallbackUsed: false });
-  }
   try {
-    let result: Awaited<ReturnType<typeof generateSummaryText>>;
-    try {
-      result = await generateSummaryText(
-        messagesToSummarize,
-        summaryLanguageModel,
-        mode,
-        chatSystemPrompt,
-        hasExistingSummary,
-        tools,
-        buildContextCompactionProviderOptions(providerOptions),
-        abortSignal,
-        modelMessages,
-        summaryInputMaxTokens,
-        bounded
-          ? {
-              timeout: STARTUP_COMPACTION_PRIMARY_TIMEOUT_MS,
-              maxRetries: 0,
-            }
-          : undefined,
+    if (!startupCompaction || mode !== "agent") {
+      const languageModel = myProvider.languageModel(
+        CONTEXT_COMPACTION_MODEL_NAME,
       );
-    } catch (error) {
-      if (
-        abortSignal?.aborted ||
-        !(
-          isMalformedProviderJsonError(error) ||
-          (bounded && isRecoverableStartupCompactionError(error))
-        )
-      ) {
-        throw error;
-      }
-
-      const retryModelName = bounded
-        ? STARTUP_COMPACTION_FALLBACK_MODEL
-        : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
-      if (bounded)
-        startupCompaction?.onAttempt?.({ variant, fallbackUsed: true });
-      const retryLanguageModel = myProvider.languageModel(retryModelName);
-      onRetry?.();
-      logContextCompactionRetrying({
-        chatId,
-        mode,
-        subscription,
-        reason,
-        attempt: "primary",
-        languageModel: summaryLanguageModel,
-        retryModelName,
-        error,
-      });
-
       try {
-        result = await generateSummaryText(
+        const result = await generateSummaryText(
           messagesToSummarize,
-          retryLanguageModel,
+          languageModel,
           mode,
           chatSystemPrompt,
           hasExistingSummary,
-          undefined,
-          bounded
-            ? {
-                openrouter: {
-                  ...buildContextCompactionProviderOptions(providerOptions)
-                    .openrouter,
-                  provider: { sort: "latency", data_collection: "deny" },
-                },
-              }
-            : buildSummarizationRetryProviderOptions(providerOptions),
+          tools,
+          buildContextCompactionProviderOptions(providerOptions),
           abortSignal,
           modelMessages,
           summaryInputMaxTokens,
         );
-      } catch (retryError) {
-        markSummarizationAttemptError(retryError, "fallback", retryModelName);
-        throw retryError;
-      }
+        return { ...result, languageModel, attempt: "primary" };
+      } catch (error) {
+        if (abortSignal?.aborted || !isMalformedProviderJsonError(error)) {
+          markSummarizationAttemptError(
+            error,
+            "primary",
+            CONTEXT_COMPACTION_MODEL_NAME,
+          );
+          throw error;
+        }
 
-      return {
-        ...result,
-        languageModel: retryLanguageModel,
-        attempt: "fallback",
-      };
+        const retryModelName = SUMMARIZATION_RETRY_MODEL_BY_MODE[mode];
+        const retryLanguageModel = myProvider.languageModel(retryModelName);
+        onRetry?.();
+        logContextCompactionRetrying({
+          chatId,
+          mode,
+          subscription,
+          reason,
+          attempt: "primary",
+          languageModel,
+          retryModelName,
+          error,
+        });
+
+        try {
+          const result = await generateSummaryText(
+            messagesToSummarize,
+            retryLanguageModel,
+            mode,
+            chatSystemPrompt,
+            hasExistingSummary,
+            undefined,
+            buildSummarizationRetryProviderOptions(providerOptions),
+            abortSignal,
+            modelMessages,
+            summaryInputMaxTokens,
+          );
+          return {
+            ...result,
+            languageModel: retryLanguageModel,
+            attempt: "fallback",
+          };
+        } catch (retryError) {
+          markSummarizationAttemptError(retryError, "fallback", retryModelName);
+          throw retryError;
+        }
+      }
     }
 
-    return {
-      ...result,
-      languageModel: summaryLanguageModel,
-      attempt: "primary",
-    };
+    for (const [index, modelName] of CONTEXT_COMPACTION_MODEL_CHAIN.entries()) {
+      abortSignal?.throwIfAborted();
+      const attempt: SummarizationAttempt =
+        index === 0 ? "primary" : "fallback";
+      const languageModel = myProvider.languageModel(modelName);
+      startupCompaction.onAttempt?.({
+        variant: STARTUP_COMPACTION_VARIANT,
+        fallbackUsed: index > 0,
+      });
+      try {
+        const result = await generateSummaryText(
+          messagesToSummarize,
+          languageModel,
+          mode,
+          chatSystemPrompt,
+          hasExistingSummary,
+          index === 0 ? tools : undefined,
+          buildStartupCompactionProviderOptions(providerOptions),
+          abortSignal,
+          modelMessages,
+          summaryInputMaxTokens,
+          { maxRetries: 0 },
+        );
+
+        return { ...result, languageModel, attempt };
+      } catch (error) {
+        markSummarizationAttemptError(error, attempt, modelName);
+        const retryModelName = CONTEXT_COMPACTION_MODEL_CHAIN[index + 1];
+        if (
+          abortSignal?.aborted ||
+          retryModelName === undefined ||
+          !(
+            isMalformedProviderJsonError(error) ||
+            isRecoverableStartupCompactionError(error)
+          )
+        ) {
+          throw error;
+        }
+
+        onRetry?.();
+        logContextCompactionRetrying({
+          chatId,
+          mode,
+          subscription,
+          reason,
+          attempt,
+          languageModel,
+          retryModelName,
+          error,
+        });
+      }
+    }
+
+    throw new Error("Context compaction model chain was empty");
   } finally {
     reportPhaseDuration(onPhaseDuration, "summary_generation", startedAt);
   }
@@ -696,6 +739,15 @@ export interface CompactModelMessagesInRunOptions {
   providerPromptPressure?: ProviderPromptPressure | null;
   compactionIndex: number;
   hasExistingSummary: boolean;
+  /** Only in-run warm calls; startup and provider-recovery paths keep their existing policy. */
+  cacheAlignedSummary?: {
+    languageModel: LanguageModel;
+    tools: ToolSet;
+    system: string;
+    providerOptions: Record<string, Record<string, unknown>>;
+    onUsed?: () => void;
+    onDiscardedUsage?: (usage: SummarizationUsage) => void;
+  };
   onPhaseDuration?: ContextCompactionPhaseReporter;
   registerBackgroundWork?: BackgroundWorkRegistrar;
 }
@@ -735,6 +787,7 @@ export const compactModelMessagesInRun = async ({
   providerPromptPressure,
   compactionIndex,
   hasExistingSummary,
+  cacheAlignedSummary,
   onPhaseDuration,
   registerBackgroundWork,
 }: CompactModelMessagesInRunOptions): Promise<InRunModelCompactionResult | null> => {
@@ -775,22 +828,94 @@ export const compactModelMessagesInRun = async ({
   );
 
   try {
-    const summaryPromise = generateSummaryTextWithRetry({
-      onRetry: progress.retry,
-      messagesToSummarize: [],
-      modelMessages,
-      mode,
-      chatSystemPrompt,
-      hasExistingSummary,
-      tools,
-      providerOptions,
-      abortSignal,
-      summaryInputMaxTokens: getSummaryInputMaxTokens(maxTokens),
-      chatId,
-      subscription,
-      reason: compactionReason,
-      onPhaseDuration,
-    });
+    // Reserve actual schemas/system plus instruction headroom and bounded output.
+    // If the full prefix cannot fit, keep the existing bounded-summary path.
+    let prefixBudget = 0;
+    if (cacheAlignedSummary) {
+      try {
+        const schemaTokens = safeCountTokens(
+          JSON.stringify(
+            await Promise.all(
+              Object.entries(cacheAlignedSummary.tools).map(
+                async ([name, tool]) => ({
+                  name,
+                  description: tool.description,
+                  schema: await asSchema(tool.inputSchema).jsonSchema,
+                }),
+              ),
+            ),
+          ),
+        );
+        prefixBudget = Math.max(
+          0,
+          maxTokens -
+            Math.max(
+              systemPromptTokens,
+              safeCountTokens(cacheAlignedSummary.system),
+            ) -
+            schemaTokens -
+            12_288,
+        );
+      } catch {
+        // An unplannable warm request must not remove the bounded recovery path.
+      }
+    }
+    const useWarmPrefix =
+      cacheAlignedSummary &&
+      prefixBudget > 0 &&
+      estimateSummaryInputTokens(modelMessages) <= prefixBudget;
+    let warmPrefixSucceeded = false;
+    const runBoundedSummary = () =>
+      generateSummaryTextWithRetry({
+        onRetry: progress.retry,
+        messagesToSummarize: [],
+        modelMessages,
+        mode,
+        chatSystemPrompt,
+        hasExistingSummary,
+        tools,
+        providerOptions,
+        abortSignal,
+        summaryInputMaxTokens: getSummaryInputMaxTokens(maxTokens),
+        chatId,
+        subscription,
+        reason: compactionReason,
+        onPhaseDuration,
+      });
+    if (useWarmPrefix) cacheAlignedSummary.onUsed?.();
+    const summaryPromise = useWarmPrefix
+      ? generateSummaryText(
+          [],
+          cacheAlignedSummary.languageModel,
+          mode,
+          cacheAlignedSummary.system,
+          hasExistingSummary,
+          cacheAlignedSummary.tools,
+          cacheAlignedSummary.providerOptions,
+          abortSignal,
+          modelMessages,
+          prefixBudget,
+          {
+            preservePrefix: true,
+            maxRetries: 0,
+            timeout: 60_000,
+            maxOutputTokens: 8192,
+            onDiscardedUsage: cacheAlignedSummary.onDiscardedUsage,
+          },
+        )
+          .then((result) => {
+            warmPrefixSucceeded = true;
+            return {
+              ...result,
+              languageModel: cacheAlignedSummary.languageModel,
+              attempt: "primary" as const,
+            };
+          })
+          .catch((error) => {
+            if (abortSignal?.aborted) throw error;
+            return runBoundedSummary();
+          })
+      : runBoundedSummary();
     const transcriptSave = startTranscriptSave({
       messages: [],
       modelMessages: transcriptModelMessages,
@@ -824,7 +949,9 @@ export const compactModelMessagesInRun = async ({
         subscription,
         compaction_index: compactionIndex,
         persistence: "run_scoped",
-        compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+        compaction_model:
+          summaryResult.usage.model ?? CONTEXT_COMPACTION_MODEL_NAME,
+        cache_aligned_prefix: warmPrefixSucceeded,
         summary_input_tokens: summaryResult.usage.inputTokens,
         summary_output_tokens: summaryResult.usage.outputTokens,
         estimated_compacted_input_tokens:
@@ -848,15 +975,7 @@ export const compactModelMessagesInRun = async ({
       subscription,
       reason: compactionReason,
       attempt: failedAttempt,
-      languageModel:
-        failedAttempt === "fallback"
-          ? myProvider.languageModel(
-              getErrorRecord(error)?.__hackeraiSummarizationModel ===
-                STARTUP_COMPACTION_FALLBACK_MODEL
-                ? STARTUP_COMPACTION_FALLBACK_MODEL
-                : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode],
-            )
-          : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
+      languageModel: getSummarizationModelFromError(error),
       fallbackResult: "no_summarization",
       error,
     });
@@ -1163,15 +1282,7 @@ export const checkAndSummarizeIfNeeded = async ({
       subscription,
       reason: compactionReason,
       attempt: failedAttempt,
-      languageModel:
-        failedAttempt === "fallback"
-          ? myProvider.languageModel(
-              getErrorRecord(error)?.__hackeraiSummarizationModel ===
-                STARTUP_COMPACTION_FALLBACK_MODEL
-                ? STARTUP_COMPACTION_FALLBACK_MODEL
-                : SUMMARIZATION_RETRY_MODEL_BY_MODE[mode],
-            )
-          : myProvider.languageModel(CONTEXT_COMPACTION_MODEL_NAME),
+      languageModel: getSummarizationModelFromError(error),
       fallbackResult: "no_summarization",
       error,
     });

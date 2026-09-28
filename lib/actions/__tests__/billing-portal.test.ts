@@ -4,6 +4,7 @@ const mockCreateBillingPortalSession = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogEvent = jest.fn();
+const mockAssertUserCanStartBillingTransaction = jest.fn();
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -17,6 +18,11 @@ jest.mock("@/app/api/stripe", () => ({
 
 jest.mock("@/lib/actions/billing-context", () => ({
   getBillingActionContext: mockGetBillingActionContext,
+}));
+
+jest.mock("@/lib/suspensions", () => ({
+  assertUserCanStartBillingTransaction:
+    mockAssertUserCanStartBillingTransaction,
 }));
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -35,6 +41,7 @@ describe("redirectToBillingPortal", () => {
       user: { id: "user_123" },
       stripeCustomerId: "cus_123",
     } as never);
+    mockAssertUserCanStartBillingTransaction.mockResolvedValue(undefined);
   });
 
   it("returns the Stripe billing portal URL", async () => {
@@ -71,7 +78,7 @@ describe("redirectToBillingPortal", () => {
 
     expect(mockCreateBillingPortalSession).toHaveBeenCalledWith({
       customer: "cus_123",
-      return_url: "https://hackerai.co",
+      return_url: "https://hackerai.co/?billing-recovery-return=1",
       flow_data: { type: "payment_method_update" },
     });
     expect(mockPostHogEvent).toHaveBeenCalledWith(
@@ -192,7 +199,7 @@ describe("blocked-chat payment portal return", () => {
     expect(mockCreateBillingPortalSession).toHaveBeenLastCalledWith({
       customer: "cus_test",
       return_url:
-        "https://preview.example.com/c/test-chat?refresh=entitlements",
+        "https://preview.example.com/c/test-chat?billing-recovery-return=1&refresh=entitlements",
       flow_data: { type: "payment_method_update" },
     });
     expect(mockPostHogEvent).toHaveBeenLastCalledWith(
@@ -210,7 +217,8 @@ describe("blocked-chat payment portal return", () => {
       });
       expect(mockCreateBillingPortalSession).toHaveBeenLastCalledWith(
         expect.objectContaining({
-          return_url: "https://preview.example.com/?refresh=entitlements",
+          return_url:
+            "https://preview.example.com/?billing-recovery-return=1&refresh=entitlements",
         }),
       );
     },

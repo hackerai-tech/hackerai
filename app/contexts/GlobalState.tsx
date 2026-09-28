@@ -10,6 +10,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
+import { usePathname } from "next/navigation";
 import { useAccessToken, useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   type ChatMode,
@@ -33,6 +34,7 @@ import type { FileMessagePart } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   useSandboxPreference,
+  type SetSandboxPreference,
   type DesktopBridgeStatus,
 } from "@/app/hooks/useSandboxPreference";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
@@ -61,6 +63,7 @@ import {
 } from "@/lib/activation/agent-first-default";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
 import { useAutoSelectNewRemoteConnection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import { environmentPreference } from "@/lib/sandbox/environment";
 import {
   ComposerStateProvider,
   useComposerActions,
@@ -74,9 +77,9 @@ interface GlobalStateType {
   uploadedFiles: UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
   addUploadedFile: (file: UploadedFileState) => void;
-  removeUploadedFile: (index: number) => void;
+  removeUploadedFile: (target: number | UploadedFileState["file"]) => void;
   updateUploadedFile: (
-    index: number,
+    target: number | UploadedFileState["file"],
     updates: Partial<UploadedFileState>,
   ) => void;
 
@@ -140,7 +143,8 @@ interface GlobalStateType {
 
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
-  setSandboxPreference: (preference: SandboxPreference) => void;
+  setSandboxPreference: SetSandboxPreference;
+  resetSandboxPreference: () => void;
 
   // Agent tool approval behavior
   agentPermissionMode: AgentPermissionMode;
@@ -149,6 +153,7 @@ interface GlobalStateType {
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
   desktopBridgeStatus: DesktopBridgeStatus;
+  desktopEnvironmentId?: string;
   retryDesktopBridge: () => void;
 
   // Whether a local sandbox (desktop or remote) is available
@@ -216,6 +221,8 @@ interface GlobalStateProviderProps {
 
 interface LocalSandboxConnection {
   connectionId: string;
+  environmentId?: string;
+  createdAt?: number;
   name: string;
   osInfo?: {
     platform: string;
@@ -474,9 +481,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const {
     sandboxPreference,
+    hasExplicitSandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
   } = useSandboxPreference(!!user);
 
@@ -499,13 +509,16 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
   const defaultLocalSandboxPreference =
     useMemo<SandboxPreference | null>(() => {
-      if (desktopBridgeActive) return "desktop";
+      if (desktopBridgeActive)
+        return desktopEnvironmentId
+          ? `desktop-environment:${desktopEnvironmentId}`
+          : "desktop";
       const firstRemote = localConnections?.find((c) => !c.isDesktop);
-      if (firstRemote) return firstRemote.connectionId;
+      if (firstRemote) return environmentPreference(firstRemote);
       const firstDesktop = localConnections?.find((c) => c.isDesktop);
-      if (firstDesktop) return "desktop";
+      if (firstDesktop) return environmentPreference(firstDesktop);
       return null;
-    }, [desktopBridgeActive, localConnections]);
+    }, [desktopBridgeActive, desktopEnvironmentId, localConnections]);
 
   const entitlementRefreshRequested =
     typeof window !== "undefined" &&
@@ -613,12 +626,14 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       return;
     }
 
-    const localSandboxPreference = agentDefaultDecision.useDefaultLocalSandbox
-      ? defaultLocalSandboxPreference
-      : null;
+    const localSandboxPreference =
+      agentDefaultDecision.useDefaultLocalSandbox && sandboxPreference === "e2b"
+        ? defaultLocalSandboxPreference
+        : null;
 
     if (
       agentDefaultDecision.useDefaultLocalSandbox &&
+      sandboxPreference === "e2b" &&
       !localSandboxPreference
     ) {
       return;
@@ -633,7 +648,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     agentFirstDefaultAppliedRef.current = true;
     setChatModeState("agent");
     if (localSandboxPreference) {
-      setSandboxPreference(localSandboxPreference);
+      setSandboxPreference(localSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -728,9 +743,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     [agentOnlyActive],
   );
 
+  const pathname = usePathname();
   useAutoSelectNewRemoteConnection({
     connections: localConnections,
     enabled: Boolean(user),
+    isNewChat: pathname === "/",
+    hasExplicitSandboxPreference,
     chatMode: accessibleChatMode,
     setChatMode,
     subscription: paidAgentSubscription,
@@ -747,7 +765,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
       freeDesktopSandboxPreference &&
       sandboxPreference !== freeDesktopSandboxPreference
     ) {
-      setSandboxPreference(freeDesktopSandboxPreference);
+      setSandboxPreference(freeDesktopSandboxPreference, { remember: false });
     }
     if (freeDesktopAgentOnlyActive && selectedModel !== "auto") {
       setSelectedModelRaw("auto");
@@ -1089,14 +1107,28 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setUploadedFiles((prev) => [...prev, file]);
   }, []);
 
-  const removeUploadedFile = useCallback((index: number) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
-  }, []);
+  const removeUploadedFile = useCallback(
+    (target: number | UploadedFileState["file"]) => {
+      setUploadedFiles((prev) =>
+        prev.filter((file, i) =>
+          typeof target === "number" ? i !== target : file.file !== target,
+        ),
+      );
+    },
+    [],
+  );
 
   const updateUploadedFile = useCallback(
-    (index: number, updates: Partial<UploadedFileState>) => {
+    (
+      target: number | UploadedFileState["file"],
+      updates: Partial<UploadedFileState>,
+    ) => {
       setUploadedFiles((prev) =>
-        prev.map((file, i) => (i === index ? { ...file, ...updates } : file)),
+        prev.map((file, i) =>
+          (typeof target === "number" ? i === target : file.file === target)
+            ? { ...file, ...updates }
+            : file,
+        ),
       );
     },
     [],
@@ -1164,7 +1196,8 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setActiveProjectId(null);
-  }, []);
+    resetSandboxPreference();
+  }, [resetSandboxPreference]);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
@@ -1327,10 +1360,12 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
+    resetSandboxPreference,
     agentPermissionMode,
     setAgentPermissionMode,
     desktopBridgeActive,
     desktopBridgeStatus,
+    desktopEnvironmentId,
     retryDesktopBridge,
     hasLocalSandbox,
     localConnections,

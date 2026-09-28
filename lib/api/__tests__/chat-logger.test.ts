@@ -18,6 +18,76 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
+
+it("emits the complete model history in the final request event", () => {
+  const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const chatLogger = createChatLogger({
+      chatId: "history",
+      endpoint: "/api/agent-long",
+    });
+    chatLogger.setChat(
+      {
+        messageCount: 1,
+        estimatedInputTokens: 100,
+        isNewChat: true,
+        notesEnabled: false,
+      },
+      "model-abliterated",
+    );
+    const first = {
+      timestamp: "2026-09-16T16:57:49.280Z",
+      generation_step: 1,
+      configured: "model-abliterated",
+      requested: "abliterated-model",
+      actual: "abliterated-model",
+      provider: "abliteration.chat",
+      outcome: "pending",
+    };
+    chatLogger.recordProviderModelCall(first);
+    first.outcome = "completed";
+    chatLogger.recordProviderModelCall({
+      ...first,
+      generation_step: 2,
+      configured: "baseline",
+      requested: "deepseek/requested",
+      actual: "deepseek/served",
+      provider: "openrouter",
+      upstream_provider: "DeepInfra",
+    });
+    chatLogger.setStreamResponse(
+      "deepseek/served",
+      { inputTokens: 100, outputTokens: 1 },
+      { provider_name: "DeepInfra" },
+    );
+    chatLogger.emitSuccess({
+      finishReason: "stop",
+      wasAborted: false,
+      wasPreemptiveTimeout: false,
+      hadSummarization: false,
+    });
+    const event = JSON.parse(String(logSpy.mock.calls[0][0]));
+    expect(event.model.history).toEqual([
+      expect.objectContaining({
+        call_index: 1,
+        provider: "abliteration.chat",
+        actual: "abliterated-model",
+        outcome: "completed",
+      }),
+      expect.objectContaining({
+        call_index: 2,
+        provider: "openrouter",
+        upstream_provider: "DeepInfra",
+        actual: "deepseek/served",
+        outcome: "completed",
+      }),
+    ]);
+    expect(event.model.actual).toBe("deepseek/served");
+  } finally {
+    logSpy.mockRestore();
+  }
+});
+
 describe("captureToolCalls", () => {
   it("aggregates all tool calls into one anonymous PostHog event", () => {
     const capture = jest.fn();
@@ -113,7 +183,7 @@ describe("captureAgentRun", () => {
       taskToFirstModelStartMs: 875,
       requestToFirstModelStartMs: 1_310,
       requestToFirstModelChunkMs: 1_725,
-      startupCompactionVariant: "bounded_glm_v1",
+      startupCompactionVariant: "glm53_flash_deepseek_v41_glm53_v1",
       startupCompactionFallbackUsed: true,
       startupSubphaseTimingVersion: 1,
       startupSummaryGenerationDurationMs: 600,
@@ -163,7 +233,7 @@ describe("captureAgentRun", () => {
         request_to_first_model_start_ms: 1_310,
         request_to_first_model_chunk_ms: 1_725,
         startup_subphase_timing_version: 1,
-        startup_compaction_variant: "bounded_glm_v1",
+        startup_compaction_variant: "glm53_flash_deepseek_v41_glm53_v1",
         startup_compaction_fallback_used: true,
         startup_summary_generation_duration_ms: 600,
         startup_transcript_saving_duration_ms: 400,
@@ -620,8 +690,68 @@ describe("captureAgentBudgetAbort", () => {
 });
 
 describe("captureAgentCompletionAnalytics", () => {
+  it("enriches existing run and usage events without adding events", () => {
+    const capture = jest.fn();
+    const shared = {
+      posthog: { capture },
+      userId: "synthetic",
+      chatId: "synthetic-chat",
+      endpoint: "/api/agent-long",
+      mode: "agent",
+      subscription: "pro",
+      triggerRunId: "run_synthetic",
+      cacheHistoryTelemetry: {
+        runId: "settlement-synthetic",
+        eligible: true,
+        assignment: "treatment",
+        model: "deepseek/deepseek-v4-flash",
+        startedAt: 1,
+        sampled: false,
+        attempts: 2,
+        exposures: 2,
+        restores: 1,
+        load: "restored",
+        save: "timeout",
+      },
+      usageMeasurement: {
+        usage_measurement_version: 1,
+        usage_observed_model_cost_dollars: 0.03,
+        usage_discarded_retry_cost_dollars: 0.01,
+      },
+    };
+    captureAgentCompletionAnalytics({
+      ...shared,
+      outcome: "success",
+      hasResponseContent: true,
+      selectedModel: "auto",
+      configuredModelId: "deepseek/deepseek-v4-flash",
+      sandboxInfo: null,
+      abliteratedProviderSummary: undefined,
+    });
+    captureUsageCost({
+      ...shared,
+      usage: { model: "auto", costDollars: 0.02, modelCostDollars: 0.02 },
+    });
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture.mock.calls.map(([event]) => event.event)).toEqual([
+      "hackerai-agent_run",
+      "hackerai-usage_cost",
+    ]);
+    for (const [event] of capture.mock.calls) {
+      expect(event.properties).toMatchObject({
+        trigger_run_id: "run_synthetic",
+        cache_history_run_id: "settlement-synthetic",
+        cache_history_assignment: "treatment",
+        cache_history_save_result: "timeout",
+        cache_history_attempts: 2,
+        usage_observed_model_cost_dollars: 0.03,
+        usage_discarded_retry_cost_dollars: 0.01,
+      });
+    }
+  });
+
   it.each(["success", "aborted"] as const)(
-    "attributes %s to monthly budget without overwriting model experiment",
+    "preserves %s model experiment attribution in free Agent outcomes",
     (outcome) => {
       const capture = jest.fn();
       captureAgentCompletionAnalytics({
@@ -638,12 +768,6 @@ describe("captureAgentCompletionAnalytics", () => {
         sandboxInfo: null,
         chatLogger: undefined,
         abliteratedProviderSummary: undefined,
-        monthlyFreeBudget: {
-          monthlyBudgetExperiment: "free_monthly_budget_v1",
-          variant: "test",
-          monthlyCostDollars: 0.5,
-          dailyRequests: 10,
-        },
         experiment: {
           key: "free_ask_flash_conversion_v1",
           variant: "control",
@@ -662,7 +786,6 @@ describe("captureAgentCompletionAnalytics", () => {
       const events = capture.mock.calls.map((call) => call[0]);
       const run = events.find((event) => event.event === "hackerai-agent_run");
       expect(run.properties).toMatchObject({
-        free_monthly_budget_variant: "test",
         experiment_variant: "control",
         outcome,
       });
@@ -670,7 +793,10 @@ describe("captureAgentCompletionAnalytics", () => {
         (event) => event.event === "free_response_completed",
       );
       if (outcome === "success")
-        expect(activation.properties.free_monthly_budget_variant).toBe("test");
+        expect(activation.properties).toMatchObject({
+          mode: "agent",
+          subscription_tier: "free",
+        });
       else expect(activation).toBeUndefined();
     },
   );
@@ -774,7 +900,6 @@ describe("captureAgentCompletionAnalytics", () => {
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],
-    ["ask", "abliterated_free_ask_moderated_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {
@@ -794,10 +919,7 @@ describe("captureAgentCompletionAnalytics", () => {
         chatId: "chat",
         endpoint: mode === "agent" ? "/api/agent-long" : "/api/chat",
         mode,
-        subscription:
-          experimentKey === "abliterated_free_ask_moderated_v1"
-            ? "free"
-            : "pro",
+        subscription: "pro",
         outcome: "success",
         selectedModel: "model-abliterated",
         configuredModelId: "abliterated-model",
@@ -811,12 +933,7 @@ describe("captureAgentCompletionAnalytics", () => {
           requestId: "message",
         },
       });
-      expect(capture).toHaveBeenCalledTimes(
-        mode === "agent" ||
-          experimentKey === "abliterated_free_ask_moderated_v1"
-          ? 2
-          : 1,
-      );
+      expect(capture).toHaveBeenCalledTimes(mode === "agent" ? 2 : 1);
       expect(capture).toHaveBeenCalledWith(
         expect.objectContaining({
           event: "abliterated_model_response_outcome",
@@ -938,6 +1055,56 @@ describe("captureAgentCompletionAnalytics", () => {
 });
 
 describe("captureUsageCost", () => {
+  it.each(["ask", "agent"])(
+    "records %s regional policy without contaminating the ended experiment",
+    (mode) => {
+      const capture = jest.fn();
+      captureUsageCost({
+        posthog: { capture } as any,
+        userId: "regional-user",
+        subscription: "free",
+        chatId: "regional-chat",
+        endpoint: mode === "ask" ? "/api/chat" : "/api/agent-long",
+        mode,
+        regionalFreeLimits: {
+          country: "NG",
+          dailyRequests: 3,
+          monthlyCostDollars: 0.1,
+        },
+        experiment: { key: "separate-model-test", variant: "control" },
+        usage: {
+          model: "auto",
+          type: "included",
+          inputTokens: 100,
+          outputTokens: 50,
+          totalTokens: 150,
+          costDollars: 0.01,
+          includedCostDollars: 0.01,
+          extraUsageCostDollars: 0,
+          uncoveredCostDollars: 0,
+          includedPointsDeducted: 100,
+          extraUsagePointsDeducted: 0,
+          uncoveredPoints: 0,
+          usageDeductionFailed: false,
+          modelCostDollars: 0.01,
+          nonModelCostDollars: 0,
+          costSource: "provider",
+        },
+      });
+      const properties = capture.mock.calls[0][0].properties;
+      expect(properties).toMatchObject({
+        regional_free_policy_version: 1,
+        regional_free_country: "NG",
+        regional_free_daily_requests: 3,
+        regional_free_monthly_cost_dollars: 0.1,
+        experiment_key: "separate-model-test",
+        experiment_variant: "control",
+      });
+      expect(properties).not.toHaveProperty("regional_free_variant");
+      expect(properties).not.toHaveProperty("$feature/regional_free_limits_v1");
+    },
+  );
+
   it("keeps model=auto while adding the actual served model and allowance fields", () => {
     const capture = jest.fn();
 
@@ -1023,12 +1190,12 @@ describe("captureUsageCost", () => {
         included_points_deducted: 1000,
         extra_usage_points_deducted: 3200,
         usage_economics_version: 2,
-        usage_pricing_version: "request-1.50-extra-1.40-v2",
-        request_usage_multiplier: 1.5,
-        included_usage_multiplier: 1.5,
-        extra_usage_multiplier: 1.4,
+        usage_pricing_version: "request-1.20-extra-1.20-v2",
+        request_usage_multiplier: 1.2,
+        included_usage_multiplier: 1.2,
+        extra_usage_multiplier: 1.2,
         extra_usage_balance_multiplier: 1.5,
-        effective_extra_usage_multiplier: 2.1,
+        effective_extra_usage_multiplier: 1.8,
         included_usage_value_dollars: 0.1,
         extra_usage_charge_dollars: 0.48,
         covered_usage_value_dollars: 0.58,
@@ -1174,12 +1341,12 @@ describe("captureUsageSettlement", () => {
         usage_deduction_failed: true,
         usage_deduction_failure_reason: "monthly_cap_exceeded",
         forced: false,
-        usage_pricing_version: "request-1.50-extra-1.40-v2",
-        request_usage_multiplier: 1.5,
-        included_usage_multiplier: 1.5,
-        extra_usage_multiplier: 1.4,
+        usage_pricing_version: "request-1.20-extra-1.20-v2",
+        request_usage_multiplier: 1.2,
+        included_usage_multiplier: 1.2,
+        extra_usage_multiplier: 1.2,
         extra_usage_balance_multiplier: 1.5,
-        effective_extra_usage_multiplier: 2.1,
+        effective_extra_usage_multiplier: 1.8,
         settlement_capture_reason: "anomaly",
         settlement_run_sampled:
           isUsageSettlementSuccessSampled("settlement_123"),
@@ -1875,6 +2042,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
           "The selected computer stopped responding while preparing the attachment. Reconnect it in Remote Control, then try again.",
           {
             upload_failure_kind: "url",
+            upload_failure_phase: "transfer",
             upload_failure_reason: "local_command_no_response",
             upload_failure_cause:
               "Command timeout after 35000ms [firstMsg: no]",
@@ -1903,6 +2071,7 @@ describe("createChatLogger ChatSDKError metadata", () => {
       });
       expect(wideEvent.error.metadata).toEqual({
         upload_failure_kind: "url",
+        upload_failure_phase: "transfer",
         upload_failure_reason: "local_command_no_response",
         upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
         upload_failure_transient_sandbox_command: true,

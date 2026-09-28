@@ -2,7 +2,8 @@ import { generateText, Output, type UIMessage } from "ai";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { GROK_4_5_SLUG, myProvider } from "@/lib/ai/providers";
+import { myProvider, resolveTierToProviderKey } from "@/lib/ai/providers";
+import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 import { isAgentAutoReviewFilesystemDeletionCommand } from "@/lib/chat/agent-auto-review-evidence";
 import type {
@@ -27,11 +28,14 @@ const CONVERSATION_CONTEXT_SEPARATOR =
   "\n\n--- next retained conversation item ---\n\n";
 const USER_CONTEXT_TRUNCATION_TAG = "user_content_truncated";
 export const AGENT_AUTO_REVIEW_TIMEOUT_MS = 15_000;
-export const AGENT_AUTO_REVIEW_MODEL = "agent-auto-review-model" as const;
+export const AGENT_AUTO_REVIEW_MODEL = resolveTierToProviderKey(
+  "hackerai-standard",
+  "agent",
+);
 export const AGENT_AUTO_REVIEW_PROVIDER_OPTIONS = {
   openrouter: {
     reasoning: { enabled: false },
-    models: [GROK_4_5_SLUG],
+    models: getFallbackSlugs(AGENT_AUTO_REVIEW_MODEL, "agent"),
     usage: { include: true },
   },
 };
@@ -62,7 +66,7 @@ export type AgentAutoReviewDecision = z.infer<
   modelCostDollars?: number;
 };
 
-type AgentAutoReviewAuthorizationContext = {
+export type AgentAutoReviewAuthorizationContext = {
   text: string;
   complete: boolean;
   omittedUserMessageCount?: number;

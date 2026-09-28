@@ -31,6 +31,7 @@ import {
   priceBillingInterval,
   subscriptionMrrDollars,
 } from "@/lib/billing/subscription-mrr";
+import { voidOpenCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import type { SubscriptionTier } from "@/types";
 import {
   proMonthlyPricingAssignmentFromMetadata,
@@ -297,6 +298,30 @@ export default async function cancelSubscriptionAction(
       error,
     });
     throw error;
+  }
+
+  if (cancelImmediately) {
+    try {
+      const invoiceResult = await voidOpenCanceledRenewalInvoice(
+        stripe,
+        updatedSubscription,
+      );
+      if (invoiceResult === "paid") {
+        phLogger.warn("billing_canceled_renewal_already_paid", {
+          ...billingFields,
+          stripe_subscription_id: subscriptionContext.id,
+        });
+      }
+    } catch (error) {
+      // Stripe canceled the subscription, but an in-flight payment may have
+      // settled before the invoice could be voided. Checkout checks the live
+      // invoice and stops a second payment while support reconciles it.
+      phLogger.error("billing_canceled_renewal_void_failed", {
+        ...billingFields,
+        stripe_subscription_id: subscriptionContext.id,
+        error,
+      });
+    }
   }
 
   const completedAt = updatedSubscription.canceled_at

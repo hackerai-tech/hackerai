@@ -38,6 +38,7 @@ const GENERATED_TEXT_SAVE_DEBOUNCE_MS = 600;
 export const FileUploadPreview = ({
   uploadedFiles,
   onRemoveFile,
+  onRetryFile,
   onUpdateGeneratedTextFile,
   onShowGeneratedTextInField,
   generatedTextAttachmentsAvailable = true,
@@ -319,7 +320,11 @@ export const FileUploadPreview = ({
       <div className="flex flex-col gap-3 rounded-t-[22px] transition-all relative bg-input-chat py-3 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0">
         <div className="w-full">
           <div className="no-scrollbar horizontal-scroll-fade-mask flex flex-nowrap gap-2 overflow-x-auto px-2.5 [--edge-fade-distance:1rem]">
-            {filePreviews.map((filePreview, index) => {
+            {filePreviews.map((filePreview) => {
+              const index = uploadedFiles.findIndex(
+                (item) => item.file === filePreview.file,
+              );
+              if (index < 0) return null;
               const uploadedFile = uploadedFiles[index];
               const generatedText = uploadedFile?.generatedTextAttachment;
               const isGeneratedPastedText = Boolean(
@@ -567,6 +572,24 @@ export const FileUploadPreview = ({
                     </div>
                   </div>
 
+                  {!isGeneratedPastedText &&
+                    uploadedFile?.error &&
+                    uploadedFile.retryable &&
+                    onRetryFile && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-1 w-full text-foreground"
+                        aria-label={`Retry upload of ${filePreview.file.name}`}
+                        disabled={
+                          uploadedFile.uploading || removingFile !== null
+                        }
+                        onClick={() => onRetryFile(index)}
+                      >
+                        Retry
+                      </Button>
+                    )}
                   <div className="absolute end-1.5 top-1.5 inline-flex gap-1">
                     <Button
                       type="button"

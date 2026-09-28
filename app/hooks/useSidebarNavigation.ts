@@ -15,7 +15,10 @@ import {
 interface UseSidebarNavigationProps {
   messages: Message[];
   sidebarContent: SidebarContent | null;
-  onNavigate?: (content: SidebarContent) => void;
+  onNavigate?: (
+    content: SidebarContent,
+    context: { isLatest: boolean },
+  ) => void;
 }
 
 export const useSidebarNavigation = ({
@@ -68,19 +71,27 @@ export const useSidebarNavigation = ({
 
   const handlePrev = useCallback(() => {
     if (currentIndex > 0 && onNavigate) {
-      onNavigate(toolExecutions[currentIndex - 1]);
+      const targetIndex = currentIndex - 1;
+      onNavigate(toolExecutions[targetIndex], {
+        isLatest: targetIndex === toolExecutions.length - 1,
+      });
     }
   }, [currentIndex, toolExecutions, onNavigate]);
 
   const handleNext = useCallback(() => {
     if (currentIndex < toolExecutions.length - 1 && onNavigate) {
-      onNavigate(toolExecutions[currentIndex + 1]);
+      const targetIndex = currentIndex + 1;
+      onNavigate(toolExecutions[targetIndex], {
+        isLatest: targetIndex === toolExecutions.length - 1,
+      });
     }
   }, [currentIndex, toolExecutions, onNavigate]);
 
   const handleJumpToLive = useCallback(() => {
     if (toolExecutions.length > 0 && onNavigate) {
-      onNavigate(toolExecutions[toolExecutions.length - 1]);
+      onNavigate(toolExecutions[toolExecutions.length - 1], {
+        isLatest: true,
+      });
     }
   }, [toolExecutions, onNavigate]);
 
@@ -98,7 +109,9 @@ export const useSidebarNavigation = ({
         Math.min(targetIndex, toolExecutions.length - 1),
       );
 
-      onNavigate(toolExecutions[clampedIndex]);
+      onNavigate(toolExecutions[clampedIndex], {
+        isLatest: clampedIndex === toolExecutions.length - 1,
+      });
     },
     [toolExecutions, onNavigate],
   );

@@ -1,11 +1,7 @@
 import {
-  freeMonthlyBudgetProperties,
-  type FreeMonthlyBudgetAssignment,
-} from "@/lib/experiments/free-monthly-budget";
-import {
   regionalFreeLimitsProperties,
-  type RegionalFreeLimitsAssignment,
-} from "@/lib/experiments/regional-free-limits";
+  type RegionalFreeLimitsPolicy,
+} from "@/lib/rate-limit/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -44,7 +40,7 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
-import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
+import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -56,6 +52,7 @@ import {
   POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import { cacheHistoryProperties } from "@/lib/analytics/cache-history";
 import type { SandboxSessionUsage } from "@/lib/ai/tools";
 import type { TriggerRunCostBreakdown } from "@/lib/billing/trigger-run-cost";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
@@ -256,6 +253,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerErrorRetriable",
   "paidDailyFreeAllowance",
   "upload_failure_kind",
+  "upload_failure_phase",
   "upload_failure_reason",
   "upload_failure_cause",
   "upload_failure_transient_sandbox_command",
@@ -703,6 +701,12 @@ export function createChatLogger(config: ChatLoggerConfig) {
      * whole stream finishes, so abort and timeout logs can still identify it.
      */
     setModelResponse,
+
+    recordProviderModelCall: (
+      entry: Parameters<typeof builder.recordProviderModelCall>[0],
+    ) => {
+      builder.recordProviderModelCall(entry);
+    },
 
     /**
      * Record Anthropic prompt repair before provider call.
@@ -1305,7 +1309,10 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
-  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
+  cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
   // Every completion path must explicitly forward its request telemetry.
   abliteratedProviderSummary:
     ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
@@ -1368,6 +1375,8 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  cacheHistoryTelemetry,
+  usageMeasurement,
   abliteratedProviderSummary,
   posthog,
   userId,
@@ -1415,7 +1424,6 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
-  monthlyFreeBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1573,6 +1581,8 @@ export function captureAgentRun({
     distinctId: userId,
     event: "hackerai-agent_run",
     properties: {
+      ...cacheHistoryProperties(cacheHistoryTelemetry),
+      ...usageMeasurement,
       ...(handledToolFailureCount !== undefined && {
         handled_tool_failure_count: handledToolFailureCount,
       }),
@@ -1727,7 +1737,6 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
-      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }
@@ -1749,7 +1758,6 @@ export function captureAgentCompletionAnalytics(
         distinctId: userId,
         event: "free_response_completed",
         properties: {
-          ...freeMonthlyBudgetProperties(args.monthlyFreeBudget),
           activation_definition_version: 1,
           mode,
           subscription_tier: subscription,
@@ -1761,7 +1769,7 @@ export function captureAgentCompletionAnalytics(
     }
   }
 
-  if (isAbliterationExperimentKey(args.experiment?.key)) {
+  if (args.experiment?.key === ABLITERATED_EXPERIMENT_KEY) {
     try {
       posthog?.capture({
         distinctId: userId,
@@ -1797,7 +1805,8 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
-    monthlyFreeBudget: args.monthlyFreeBudget,
+    cacheHistoryTelemetry: args.cacheHistoryTelemetry,
+    usageMeasurement: args.usageMeasurement,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
@@ -1865,6 +1874,8 @@ export function captureAgentCompletionAnalytics(
  * separately.
  */
 export function captureUsageCost({
+  cacheHistoryTelemetry,
+  usageMeasurement,
   posthog,
   userId,
   subscription,
@@ -1883,9 +1894,12 @@ export function captureUsageCost({
   fallbackServed,
   experiment,
   regionalFreeLimits,
-  monthlyFreeBudget,
   triggerRunId,
 }: {
+  cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
   posthog: PostHog | null;
   userId: string;
   subscription: string;
@@ -1912,8 +1926,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
-  regionalFreeLimits?: RegionalFreeLimitsAssignment;
-  monthlyFreeBudget?: FreeMonthlyBudgetAssignment;
+  regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
 }) {
   if (!posthog) return;
@@ -1932,6 +1945,8 @@ export function captureUsageCost({
     distinctId: userId,
     event: "hackerai-usage_cost",
     properties: {
+      ...cacheHistoryProperties(cacheHistoryTelemetry),
+      ...usageMeasurement,
       user_id: userId,
       ...(triggerRunId && { trigger_run_id: triggerRunId }),
       subscription,
@@ -2020,7 +2035,6 @@ export function captureUsageCost({
       }),
       ...getExperimentAnalyticsProperties(experiment),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
-      ...freeMonthlyBudgetProperties(monthlyFreeBudget),
     },
   });
 }

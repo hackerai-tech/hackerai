@@ -7,12 +7,22 @@ import type { ExistingE2BWorkspace } from "./miosa-enrollment";
 export const E2B_FILE_MIGRATION_FLAG = "miosa_e2b_file_migration_v1";
 export const E2B_FILE_MIGRATION_TASK = "miosa-e2b-file-migration";
 
-export async function isE2BFileMigrationEnabled(userId: string) {
-  const environment = miosaIdentityMetadata(userId).environment;
+function resolveMigrationEnvironment(userId: string, environment?: string) {
+  const selected = environment?.trim().toLowerCase();
+  return selected && ["production", "preview", "development"].includes(selected)
+    ? selected
+    : miosaIdentityMetadata(userId).environment;
+}
+
+export async function isE2BFileMigrationEnabled(
+  userId: string,
+  environment?: string,
+) {
+  const resolvedEnvironment = resolveMigrationEnvironment(userId, environment);
   return (
-    environment !== "unknown" &&
+    resolvedEnvironment !== "unknown" &&
     (await getPostHogFeatureFlagForUser(E2B_FILE_MIGRATION_FLAG, userId, {
-      hackerai_environment: environment,
+      hackerai_environment: resolvedEnvironment,
     })) === true
   );
 }
@@ -23,9 +33,11 @@ export async function queueE2BFileMigration(options: {
   userId: string;
   subscription?: SubscriptionTier;
   triggerRegion?: TriggerRunRegion;
+  environment?: string;
   workspaces: ExistingE2BWorkspace[];
 }): Promise<false> {
-  const { userId, subscription, triggerRegion, workspaces } = options;
+  const { userId, subscription, triggerRegion, environment, workspaces } =
+    options;
   if (
     !subscription ||
     subscription === "free" ||
@@ -38,8 +50,14 @@ export async function queueE2BFileMigration(options: {
   )
     return false;
   try {
-    if (!(await isE2BFileMigrationEnabled(userId))) return false;
-    const { tasks } = await import("@trigger.dev/sdk");
+    if (!(await isE2BFileMigrationEnabled(userId, environment))) return false;
+    const { tasks, idempotencyKeys } = await import("@trigger.dev/sdk");
+    // Raw keys are scoped to the parent Agent run inside Trigger. All Agents
+    // nominating this source must share a key within the execution environment.
+    const idempotencyKey = await idempotencyKeys.create(
+      `${E2B_FILE_MIGRATION_TASK}:${miosaExternalUserId(userId)}:${workspaces[0].info.sandboxId}`,
+      { scope: "global" },
+    );
     await tasks.trigger(
       E2B_FILE_MIGRATION_TASK,
       {
@@ -51,8 +69,10 @@ export async function queueE2BFileMigration(options: {
       {
         delay: "20m",
         region: triggerRegion,
-        idempotencyKey: `${E2B_FILE_MIGRATION_TASK}:${miosaExternalUserId(userId)}:${workspaces[0].info.sandboxId}`,
-        idempotencyKeyTTL: "1h",
+        idempotencyKey,
+        // Cover the initial delay, idle waits, three two-hour attempts and
+        // retry backoff. The durable fence still protects against later jobs.
+        idempotencyKeyTTL: "12h",
       },
     );
   } catch {

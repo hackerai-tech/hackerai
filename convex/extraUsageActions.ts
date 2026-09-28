@@ -7,6 +7,7 @@ import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
 import { convexLogger } from "./lib/logger";
 import { extraUsageDollarsToPoints } from "./lib/extraUsagePricing";
+import { BILLING_ERRORS } from "../lib/billing/billing-errors";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -549,6 +550,17 @@ export const createPurchaseSession = action({
       return { url: null, error: "Not authenticated" };
     }
 
+    const activeSuspension = await ctx.runQuery(
+      api.userSuspensions.getActiveByUser,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId: identity.subject,
+      },
+    );
+    if (activeSuspension?.status === "active") {
+      return { url: null, error: BILLING_ERRORS.accountSuspended };
+    }
+
     // Validate amount
     if (!Number.isInteger(args.amountDollars)) {
       return { url: null, error: "Amount must be a whole dollar value" };
@@ -698,6 +710,17 @@ export const createBillingPortalSession = action({
       return { url: null, error: "Not authenticated" };
     }
 
+    const activeSuspension = await ctx.runQuery(
+      api.userSuspensions.getActiveByUser,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId: identity.subject,
+      },
+    );
+    if (activeSuspension?.status === "active") {
+      return { url: null, error: BILLING_ERRORS.accountSuspended };
+    }
+
     // Basic URL validation
     if (!args.baseUrl || !args.baseUrl.startsWith("http")) {
       return { url: null, error: "Invalid base URL" };
@@ -779,6 +802,27 @@ export const deductWithAutoReload = action({
     // Validate service key
     if (args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
       throw new Error("Invalid service key");
+    }
+
+    const activeSuspension = await ctx.runQuery(
+      api.userSuspensions.getActiveByUser,
+      {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+      },
+    );
+    if (activeSuspension?.status === "active") {
+      return {
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: false,
+        autoReloadTriggered: false,
+        autoReloadResult: {
+          success: false,
+          reason: "account_suspended",
+        },
+      };
     }
 
     if (args.amountPoints <= 0) {

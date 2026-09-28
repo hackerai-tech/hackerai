@@ -9,7 +9,6 @@ export const FREE_AGENT_REQUEST_COST = 1;
 export type FreeLimitPolicy = {
   dailyRequests: number;
   monthlyCostDollars: number;
-  monthlyBudgetExperiment?: "free_monthly_budget_v1";
 };
 
 export const getFreeRequestLimit = (policy?: FreeLimitPolicy): number => {
@@ -36,14 +35,6 @@ export const getFreeMonthlyCostLimitDollars = (
     Number.isFinite(configuredLimit) && configuredLimit > 0
       ? configuredLimit
       : FREE_MONTHLY_COST_LIMIT_USD_DEFAULT;
-  // Only the server-evaluated experiment can raise the default. A stricter
-  // operational override still wins, including on resumed/delegated runs.
-  if (
-    normal === FREE_MONTHLY_COST_LIMIT_USD_DEFAULT &&
-    policy?.monthlyBudgetExperiment === "free_monthly_budget_v1" &&
-    policy.monthlyCostDollars === 0.5
-  )
-    return 0.5;
   return policy &&
     Number.isFinite(policy.monthlyCostDollars) &&
     policy.monthlyCostDollars > 0

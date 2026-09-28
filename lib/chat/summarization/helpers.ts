@@ -25,9 +25,6 @@ import {
   SUMMARY_OVERFLOW_TOOL_OUTPUT_MAX_TOKENS,
   SUMMARY_PROMPT_VERSION,
   SUMMARY_RECENT_MODEL_TAIL_MAX_TOKENS,
-  SUMMARY_TODO_BLOCK_MAX_TOKENS,
-  SUMMARY_TODO_CONTENT_MAX_TOKENS,
-  SUMMARY_TODO_MAX_ITEMS,
   SUMMARY_TOOL_OUTPUT_MAX_TOKENS,
   getSummarizationThresholdTokens,
 } from "./constants";
@@ -36,11 +33,14 @@ import {
   ASK_SUMMARIZATION_PROMPT,
   INCREMENTAL_SUMMARIZATION_INSTRUCTIONS,
 } from "./prompts";
+import { buildTodoContext } from "../todo-context";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
 
 export interface SummarizationUsage {
   inputTokens: number;
+  /** Keep missing provider usage distinct from the normalized billing zero. */
+  inputTokensReported?: boolean;
   outputTokens: number;
   estimatedCompactedInputTokens?: number;
   cacheReadTokens?: number;
@@ -735,6 +735,9 @@ export const generateSummaryText = async (
   generationOptions?: {
     timeout?: number;
     maxRetries?: number;
+    preservePrefix?: boolean;
+    maxOutputTokens?: number;
+    onDiscardedUsage?: (usage: SummarizationUsage) => void;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
@@ -764,18 +767,30 @@ export const generateSummaryText = async (
     (await convertToModelMessages(messagesToSummarize, {
       tools: tools ? createPromptSerializationTools(tools) : undefined,
     }));
-  const compactedModelMessages = compactModelMessagesForSummarization(
-    sourceModelMessages as ModelMessage[],
-  );
-  const summaryModelMessages = boundModelMessagesForSummarization(
-    compactedModelMessages,
-    { maxInputTokens: summaryInputMaxTokens },
-  );
+  const compactedModelMessages = generationOptions?.preservePrefix
+    ? sourceModelMessages
+    : compactModelMessagesForSummarization(
+        sourceModelMessages as ModelMessage[],
+      );
+  const summaryModelMessages = generationOptions?.preservePrefix
+    ? compactedModelMessages
+    : boundModelMessagesForSummarization(compactedModelMessages, {
+        maxInputTokens: summaryInputMaxTokens,
+      });
   const estimatedCompactedInputTokens =
     estimateSummaryInputTokens(summaryModelMessages);
+  if (
+    generationOptions?.preservePrefix &&
+    estimatedCompactedInputTokens > summaryInputMaxTokens
+  ) {
+    throw new Error("Cache-aligned summary exceeds its input budget");
+  }
 
   const result = await generateText({
     model: languageModel,
+    ...(generationOptions?.maxOutputTokens !== undefined && {
+      maxOutputTokens: generationOptions.maxOutputTokens,
+    }),
     ...(generationOptions?.timeout !== undefined && {
       timeout: generationOptions.timeout,
     }),
@@ -796,10 +811,6 @@ export const generateSummaryText = async (
     ],
   });
 
-  if (!result.text.trim() || result.finishReason !== "stop") {
-    throw new InvalidCompactionSummaryError();
-  }
-
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (
     result.usage as {
@@ -809,23 +820,44 @@ export const generateSummaryText = async (
       };
     }
   )?.inputTokenDetails;
-  return {
-    text: result.text,
-    usage: {
-      inputTokens: result.usage?.inputTokens ?? 0,
-      outputTokens: result.usage?.outputTokens ?? 0,
-      estimatedCompactedInputTokens,
-      ...(details?.cacheReadTokens
-        ? { cacheReadTokens: details.cacheReadTokens }
-        : undefined),
-      ...(details?.cacheWriteTokens
-        ? { cacheWriteTokens: details.cacheWriteTokens }
-        : undefined),
-      ...(providerCost ? { cost: providerCost } : undefined),
-      model:
-        result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
-    },
+  const usage: SummarizationUsage = {
+    inputTokens: result.usage?.inputTokens ?? 0,
+    inputTokensReported:
+      typeof result.usage?.inputTokens === "number" &&
+      Number.isFinite(result.usage.inputTokens) &&
+      result.usage.inputTokens >= 0,
+    outputTokens: result.usage?.outputTokens ?? 0,
+    estimatedCompactedInputTokens,
+    ...(typeof details?.cacheReadTokens === "number" &&
+    Number.isFinite(details.cacheReadTokens) &&
+    details.cacheReadTokens >= 0
+      ? { cacheReadTokens: details.cacheReadTokens }
+      : undefined),
+    ...(typeof details?.cacheWriteTokens === "number" &&
+    Number.isFinite(details.cacheWriteTokens) &&
+    details.cacheWriteTokens >= 0
+      ? { cacheWriteTokens: details.cacheWriteTokens }
+      : undefined),
+    ...(typeof providerCost === "number" &&
+    Number.isFinite(providerCost) &&
+    providerCost >= 0
+      ? { cost: providerCost }
+      : undefined),
+    model:
+      result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
   };
+  // A discarded warm attempt can still be billable. Account for its reported
+  // usage separately before trying a differently priced bounded fallback.
+  if (
+    abortSignal?.aborted ||
+    !result.text.trim() ||
+    result.finishReason !== "stop"
+  ) {
+    generationOptions?.onDiscardedUsage?.(usage);
+    abortSignal?.throwIfAborted();
+    throw new InvalidCompactionSummaryError();
+  }
+  return { text: result.text, usage };
 };
 
 export const buildSummaryPersistenceMetadata = ({
@@ -859,33 +891,7 @@ export const buildSummaryMessage = (
   summaryText: string,
   todos: Todo[] = [],
 ): UIMessage => {
-  let text = `<context_summary>\n${summaryText}\n</context_summary>`;
-
-  if (todos.length > 0) {
-    const visibleTodos = todos.slice(0, SUMMARY_TODO_MAX_ITEMS);
-    const omittedCount = todos.length - visibleTodos.length;
-    const todoLines = visibleTodos
-      .map((todo) => {
-        const content = truncateContent(
-          todo.content,
-          " [... truncated]",
-          SUMMARY_TODO_CONTENT_MAX_TOKENS,
-        );
-        return `- [${todo.status}] ${content}`;
-      })
-      .concat(
-        omittedCount > 0
-          ? [`- [... ${omittedCount} additional todos omitted ...]`]
-          : [],
-      )
-      .join("\n");
-    const boundedTodoLines = truncateContent(
-      todoLines,
-      "\n[... current_todos truncated ...]",
-      SUMMARY_TODO_BLOCK_MAX_TOKENS,
-    );
-    text += `\n<current_todos>\n${boundedTodoLines}\n</current_todos>`;
-  }
+  const text = `<context_summary>\n${summaryText}\n</context_summary>${buildTodoContext(todos)}`;
 
   return {
     id: uuidv4(),

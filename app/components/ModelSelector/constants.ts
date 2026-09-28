@@ -16,7 +16,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable performance for everyday tasks",
-    poweredBy: "DeepSeek V4 Flash 0731",
+    poweredBy: "Z.ai GLM 5.3 Flash",
   },
   {
     id: "hackerai-pro",
@@ -28,7 +28,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "xAI Grok 4.6",
+    poweredBy: "Z.ai GLM 5.3",
   },
 ];
 
@@ -37,7 +37,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
-    poweredBy: "DeepSeek V4 Flash 0731",
+    poweredBy: "Z.ai GLM 5.3 Flash",
     thinking: true,
   },
   {
@@ -51,7 +51,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "xAI Grok 4.6",
+    poweredBy: "Z.ai GLM 5.3",
     thinking: true,
   },
 ];

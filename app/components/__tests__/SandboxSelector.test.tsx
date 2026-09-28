@@ -1,16 +1,20 @@
 import "@testing-library/jest-dom";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockGlobalState = {
   subscription: "free",
-  localConnections: [] as Array<{
-    connectionId: string;
-    isDesktop: boolean;
-    name?: string;
-    osInfo?: { hostname?: string };
-  }>,
+  localConnections: [] as
+    | Array<{
+        connectionId: string;
+        environmentId?: string;
+        isDesktop: boolean;
+        name?: string;
+        osInfo?: { hostname?: string };
+      }>
+    | undefined,
   desktopBridgeStatus: "connecting",
+  desktopEnvironmentId: undefined as string | undefined,
 };
 let mockPresenceConnections: Array<{
   connectionId: string;
@@ -51,6 +55,7 @@ describe("SandboxSelector", () => {
     mockGlobalState.subscription = "free";
     mockGlobalState.localConnections = [];
     mockGlobalState.desktopBridgeStatus = "connecting";
+    mockGlobalState.desktopEnvironmentId = undefined;
     mockPresenceConnections = [];
     global.fetch = jest.fn().mockImplementation(async () => ({
       ok: true,
@@ -64,6 +69,54 @@ describe("SandboxSelector", () => {
     expect(
       screen.getByRole("button", { name: /Local reconnecting/i }),
     ).toBeInTheDocument();
+  });
+
+  it("retains the reconnecting label for the current stable Desktop identity", () => {
+    mockGlobalState.desktopEnvironmentId = "this-desktop";
+    render(<SandboxSelector value="desktop-environment:this-desktop" />);
+    expect(
+      screen.getByRole("button", { name: /Local reconnecting/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows one option per environment after a replacement session connects", () => {
+    mockGlobalState.desktopBridgeStatus = "connected";
+    mockGlobalState.localConnections = [
+      {
+        connectionId: "old-session",
+        environmentId: "same-computer",
+        isDesktop: false,
+        name: "Kali",
+      },
+      {
+        connectionId: "new-session",
+        environmentId: "same-computer",
+        isDesktop: false,
+        name: "Kali",
+      },
+      {
+        connectionId: "other-session",
+        environmentId: "other-computer",
+        isDesktop: false,
+        name: "Other",
+      },
+    ];
+    render(<SandboxSelector value="environment:same-computer" />);
+    fireEvent.click(screen.getByRole("button", { name: "Kali" }));
+    expect(screen.getAllByRole("button", { name: "Kali" })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Other" })).toBeInTheDocument();
+  });
+
+  it("keeps the selected local label neutral while connections hydrate", () => {
+    mockGlobalState.desktopBridgeStatus = "idle";
+    mockGlobalState.localConnections = undefined;
+
+    render(<SandboxSelector value="desktop" />);
+
+    expect(
+      screen.getByRole("button", { name: /^Local$/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Local unavailable/i)).not.toBeInTheDocument();
   });
 
   it("shows Local unavailable instead of Cloud after Desktop recovery fails", () => {
@@ -122,7 +175,7 @@ describe("SandboxSelector", () => {
     );
   });
 
-  it("selects a healthy remote runner while the embedded bridge reconnects", async () => {
+  it("preserves Desktop while the bridge reconnects even with another healthy runner", async () => {
     const onChange = jest.fn();
     mockGlobalState.localConnections = [
       { connectionId: "stale-desktop", isDesktop: true },
@@ -140,8 +193,38 @@ describe("SandboxSelector", () => {
 
     render(<SandboxSelector value="desktop" onChange={onChange} />);
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith("remote-kali"));
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    expect(onChange).not.toHaveBeenCalled();
   });
+
+  it.each(["desktop", "remote-kali"])(
+    "keeps a paid user's disconnected %s until Cloud is explicitly chosen",
+    async (value) => {
+      mockGlobalState.subscription = "pro";
+      mockGlobalState.desktopBridgeStatus = "connected";
+      mockGlobalState.localConnections = [
+        {
+          connectionId: value,
+          isDesktop: value === "desktop",
+          name: "My computer",
+        },
+      ];
+      const onChange = jest.fn();
+      const { rerender } = render(
+        <SandboxSelector value={value} onChange={onChange} />,
+      );
+      mockGlobalState.localConnections = [];
+      mockGlobalState.desktopBridgeStatus = "failed";
+      rerender(<SandboxSelector value={value} onChange={onChange} />);
+      expect(onChange).not.toHaveBeenCalled();
+      fireEvent.click(
+        screen.getByRole("button", { name: /Local unavailable/i }),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "Cloud" }));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledWith("e2b");
+    },
+  );
 
   it("does not select a remote runner without live relay presence", async () => {
     const onChange = jest.fn();
@@ -193,6 +276,8 @@ describe("SandboxSelector", () => {
 
     render(<SandboxSelector value="e2b" onChange={onChange} />);
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith("desktop"));
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith("desktop", { remember: false }),
+    );
   });
 });

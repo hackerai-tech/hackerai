@@ -7,6 +7,7 @@ import {
   STRIX_SUBAGENT_SKILL_COUNT,
   STRIX_SUBAGENT_SKILL_SOURCE_COMMIT,
   listSubagentSkills,
+  resolveDelegatedSubagentSkills,
   resolveSubagentSkills,
 } from "../skills";
 import { renderSubagentSkillKnowledge } from "../skills/knowledge";
@@ -67,6 +68,43 @@ describe("Strix subagent skills", () => {
     expect(resolveSubagentSkills(["tooling/nmap"])).toEqual({
       success: false,
       error: expect.stringContaining("Unknown subagent skill"),
+    });
+  });
+
+  it("keeps valid delegated skills while warning about unresolved optional skills", () => {
+    expect(
+      resolveDelegatedSubagentSkills(["sql-injection", "web-app-testing"]),
+    ).toMatchObject({
+      success: true,
+      skills: [{ id: "vulnerabilities/sql_injection" }],
+      ignoredSkills: [{ requested: "web-app-testing", reason: "unknown" }],
+    });
+    expect(resolveDelegatedSubagentSkills(["missing-skill"])).toEqual({
+      success: true,
+      skills: [],
+      ignoredSkills: [{ requested: "missing-skill", reason: "unknown" }],
+    });
+  });
+
+  it("keeps delegated-skill safety limits strict", () => {
+    expect(
+      resolveDelegatedSubagentSkills(["idor", "vulnerabilities/idor"]),
+    ).toEqual({
+      success: false,
+      error: "Duplicate subagent skill: vulnerabilities/idor",
+    });
+    expect(
+      resolveDelegatedSubagentSkills([
+        "missing-1",
+        "missing-2",
+        "missing-3",
+        "missing-4",
+        "missing-5",
+        "missing-6",
+      ]),
+    ).toEqual({
+      success: false,
+      error: "Choose at most 5 subagent skills.",
     });
   });
 

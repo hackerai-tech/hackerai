@@ -3,6 +3,7 @@ import { refreshE2BSandboxLease } from "../e2b-lease";
 import {
   assertCloudWorkspaceAvailable,
   claimCloudMigration,
+  claimCloudWorkspaceCleanup,
   readCloudMigrationState,
   CloudMigrationUnavailableError,
   registerE2BMigrationLease,
@@ -33,7 +34,7 @@ describe("persistent cloud migration fence", () => {
           records.set(key, expected);
           return 1;
         }
-        if (records.get(key) !== expected) return 0;
+        if ((records.get(key) ?? "") !== expected) return 0;
         if (next) records.set(key, next);
         else records.delete(key);
         return 1;
@@ -57,6 +58,50 @@ describe("persistent cloud migration fence", () => {
     await expect(
       assertCloudWorkspaceAvailable("user-1", "miosa"),
     ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+  });
+
+  it("persists owner identity through commit and still prevents stale release", async () => {
+    const owner = { runId: "run_owner", attempt: 2 };
+    const claim = await claimCloudMigration(
+      "user-1",
+      "source",
+      "us-east-1",
+      owner,
+    );
+    expect(await readCloudMigrationState("user-1")).toMatchObject({
+      phase: "checking",
+      owner,
+    });
+    await claim!.commit("destination");
+    expect(await readCloudMigrationState("user-1")).toMatchObject({
+      phase: "miosa",
+      owner,
+      destinationId: "destination",
+    });
+    await expect(claim!.abandon()).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+  });
+
+  it.each([
+    null,
+    { runId: "run_owner", attempt: 0 },
+    { runId: "bad", attempt: 1 },
+  ])("fails closed on malformed persisted ownership: %j", async (owner) => {
+    records.set(
+      "cloud_workspace_migration:v1:user-1",
+      JSON.stringify({
+        version: 1,
+        phase: "checking",
+        token: "token",
+        sourceId: "source",
+        region: "us-east-1",
+        owner,
+      }),
+    );
+    await expect(readCloudMigrationState("user-1")).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
   });
 
   it("remains on Miosa across flag changes, with no expiring key", async () => {
@@ -145,5 +190,96 @@ describe("persistent cloud migration fence", () => {
       CloudMigrationUnavailableError,
     );
     expect(setTimeout).not.toHaveBeenCalled();
+  });
+
+  it("excludes migration and both providers during reset, then permits a fresh workspace", async () => {
+    const cleanup = await claimCloudWorkspaceCleanup("user-1", false);
+    expect(
+      await claimCloudMigration("user-1", "source", "us-east-1"),
+    ).toBeNull();
+    for (const provider of ["e2b", "miosa"] as const) {
+      await expect(
+        assertCloudWorkspaceAvailable("user-1", provider),
+      ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    }
+    await expect(
+      claimCloudWorkspaceCleanup("user-1", false),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    await cleanup.finish(true);
+    expect(
+      await claimCloudMigration("user-1", "fresh-source", "us-east-1"),
+    ).not.toBeNull();
+  });
+
+  it("cannot replace a migration that wins after cleanup's initial read", async () => {
+    redis.get.mockImplementationOnce(async () => {
+      await claimCloudMigration("user-1", "source", "us-east-1");
+      return null;
+    });
+    await expect(
+      claimCloudWorkspaceCleanup("user-1", false),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    expect((await readCloudMigrationState("user-1"))?.phase).toBe("checking");
+  });
+
+  it.each([undefined, "verified-destination"])(
+    "restores the committed pin after failed reset (%s), then allows reset retry",
+    async (destinationId) => {
+      const claim = await claimCloudMigration("user-1", "source", "us-east-1");
+      await claim!.commit(destinationId);
+      const before = await readCloudMigrationState("user-1");
+      const cleanup = await claimCloudWorkspaceCleanup("user-1", false);
+      expect(await readCloudMigrationState("user-1")).toMatchObject({
+        phase: "cleanup",
+        migration: before,
+      });
+      await cleanup.finish(false);
+      expect(await readCloudMigrationState("user-1")).toEqual(before);
+      const retry = await claimCloudWorkspaceCleanup("user-1", false);
+      await retry.finish(true);
+      expect(await readCloudMigrationState("user-1")).toBeNull();
+    },
+  );
+
+  it("retains a permanent deletion fence after success or failure and permits deletion retry", async () => {
+    const cleanup = await claimCloudWorkspaceCleanup("user-1", true);
+    await cleanup.finish(false);
+    expect((await readCloudMigrationState("user-1"))?.phase).toBe("deleted");
+    expect(
+      await claimCloudMigration("user-1", "source", "us-east-1"),
+    ).toBeNull();
+    await expect(
+      claimCloudWorkspaceCleanup("user-1", false),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    const retry = await claimCloudWorkspaceCleanup("user-1", true);
+    await retry.finish(true);
+    expect((await readCloudMigrationState("user-1"))?.phase).toBe("deleted");
+  });
+
+  it("does not let a stale cleanup clear or restore a newer owner", async () => {
+    const first = await claimCloudWorkspaceCleanup("user-1", false);
+    await first.finish(true);
+    const second = await claimCloudWorkspaceCleanup("user-1", false);
+    const current = await readCloudMigrationState("user-1");
+    await expect(first.finish(false)).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+    expect(await readCloudMigrationState("user-1")).toEqual(current);
+    await second.finish(true);
+  });
+
+  it("preserves local cleanup without Redis while production fails closed", async () => {
+    (createRedisClient as jest.Mock).mockReturnValue(null);
+    const cleanup = await claimCloudWorkspaceCleanup("user-1", false);
+    await cleanup.finish(true);
+    const original = process.env;
+    try {
+      process.env = { ...original, NODE_ENV: "production" };
+      await expect(
+        claimCloudWorkspaceCleanup("user-1", false),
+      ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    } finally {
+      process.env = original;
+    }
   });
 });

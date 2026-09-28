@@ -112,7 +112,80 @@ describe("filterConnectionsByPresence", () => {
   });
 });
 
+describe("stable environment acquisition", () => {
+  it.each(["free", "pro"] as const)(
+    "blocks wrong-host and cloud fallback for %s",
+    async (subscription) => {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "environment:machine-a",
+        "service-key",
+        null,
+        subscription,
+      );
+      jest
+        .spyOn(manager, "listConnections")
+        .mockResolvedValue([makeConnection({ environmentId: "machine-b" })]);
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "selected computer is disconnected",
+      );
+      await expect(manager.getSandboxContextForPrompt()).rejects.toThrow(
+        "selected computer is disconnected",
+      );
+      expect(manager.getEffectivePreference()).toBe("environment:machine-a");
+    },
+  );
+
+  it("uses the replacement session while persisting the same environment", async () => {
+    const previousWs = process.env.CENTRIFUGO_WS_URL;
+    const previousSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+    process.env.CENTRIFUGO_WS_URL = "ws://localhost:8000/connection/websocket";
+    process.env.CENTRIFUGO_TOKEN_SECRET = "test-secret";
+    try {
+      const manager = new HybridSandboxManager(
+        "user-1",
+        jest.fn(),
+        "environment:machine-a",
+        "service-key",
+        null,
+        "free",
+      );
+      const session = makeConnection({
+        environmentId: "machine-a",
+        connectionId: "replacement",
+      });
+      jest.spyOn(manager, "listConnections").mockResolvedValue([session]);
+      const result = await manager.getSandbox();
+      expect((result.sandbox as any).getConnectionId()).toBe("replacement");
+      expect(manager.getEffectivePreference()).toBe("environment:machine-a");
+    } finally {
+      if (previousWs === undefined) delete process.env.CENTRIFUGO_WS_URL;
+      else process.env.CENTRIFUGO_WS_URL = previousWs;
+      if (previousSecret === undefined)
+        delete process.env.CENTRIFUGO_TOKEN_SECRET;
+      else process.env.CENTRIFUGO_TOKEN_SECRET = previousSecret;
+    }
+  });
+});
+
 describe("isSameLocalMachine", () => {
+  it("uses stable identity across host renames and refuses a different identity with matching metadata", () => {
+    const first = makeConnection({ environmentId: "machine-a" });
+    expect(
+      isSameLocalMachine(first, {
+        ...first,
+        name: "renamed",
+        connectionId: "new",
+      }),
+    ).toBe(true);
+    expect(
+      isSameLocalMachine(first, { ...first, environmentId: "machine-b" }),
+    ).toBe(false);
+    expect(
+      isSameLocalMachine(first, { ...first, environmentId: undefined }),
+    ).toBe(false);
+  });
   const kaliConnection = makeConnection({
     connectionId: "conn-old",
     name: "4p3x",
@@ -435,6 +508,37 @@ describe("HybridSandboxManager prompt-time fallback", () => {
       assertAgentApprovalSandboxIdentity({
         sandbox: desktopB,
         expectedSandboxIdentity: "connection:desktop-a",
+      }),
+    ).toThrow("selected sandbox changed after approval");
+  });
+
+  it("keeps approvals bound to a stable local environment across relay sessions", () => {
+    const local = (connectionId: string, environmentId: string) =>
+      ({
+        sandboxKind: "centrifugo" as const,
+        getConnectionId: () => connectionId,
+        getConnectionInfo: () => ({
+          connectionId,
+          environmentId,
+          isDesktop: false,
+        }),
+      }) as never;
+    const first = local("session-a", "machine-a");
+    const replacement = local("session-b", "machine-a");
+    const other = local("session-c", "machine-b");
+    const approvedIdentity = getAgentApprovalSandboxIdentity(first);
+
+    expect(getAgentApprovalSandboxIdentity(replacement)).toBe(approvedIdentity);
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: replacement,
+        expectedSandboxIdentity: approvedIdentity,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAgentApprovalSandboxIdentity({
+        sandbox: other,
+        expectedSandboxIdentity: approvedIdentity,
       }),
     ).toThrow("selected sandbox changed after approval");
   });

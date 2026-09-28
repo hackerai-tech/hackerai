@@ -872,6 +872,32 @@ describe("deductWithAutoReloadForTeam", () => {
     } as never);
   });
 
+  it("does not charge team auto-reload for a suspended account", async () => {
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        status: "active",
+        category: "dispute_billing_hold",
+      })),
+      runMutation: jest.fn(),
+    };
+
+    const result = await callDeductWithAutoReloadForTeam(ctx, {
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      amountPoints: 100_000,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      poolDisabled: true,
+      autoReloadTriggered: false,
+      autoReloadResult: { success: false, reason: "account_suspended" },
+    });
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(mockInvoicesCreate).not.toHaveBeenCalled();
+    expect(mockInvoicesPay).not.toHaveBeenCalled();
+  });
+
   it("checks auto-reload after a successful deduction crosses the threshold", async () => {
     mockGetOrganization.mockResolvedValue({ stripeCustomerId: null });
     const ctx: any = {

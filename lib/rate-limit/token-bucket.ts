@@ -30,7 +30,6 @@ import {
 import { isUserRateLimitKey } from "./key-cleanup";
 import {
   NORMAL_USAGE_MULTIPLIER,
-  EXTRA_USAGE_REQUEST_MULTIPLIER,
   POINTS_PER_DOLLAR,
   includedPointsToExtraUsagePoints,
   extraUsagePointsToIncludedPoints,
@@ -156,13 +155,14 @@ const MODEL_PRICING_MAP: Record<string, ModelPricing> = {
   "agent-model": GROK_4_6_BASE_PRICING,
   "fallback-agent-model": GROK_4_6_BASE_PRICING,
   "fallback-ask-model": GROK_4_6_BASE_PRICING,
-  // Free Ask and Free Agent use DeepSeek 0731 at different reasoning efforts.
-  // Provider fallbacks reconcile against their served model.
+  // The paid daily free Ask rescue retains DeepSeek 0731, while free Agent
+  // uses DeepSeek V4.1 Flash. Provider fallbacks reconcile against their
+  // served model.
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
   "ask-model-free-glm": GLM_5_3_FLASH_PRICING,
-  "agent-model-free": DEEPSEEK_V4_FLASH_0731_PRICING,
+  "ask-model-free-deepseek-v41": DEEPSEEK_V4_1_FLASH_PRICING,
+  "agent-model-free": DEEPSEEK_V4_1_FLASH_PRICING,
   // DeepSeek V4 Flash 0731 rates from OpenRouter: $0.14 in / $0.28 out per 1M tokens.
-  "agent-auto-review-model": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_PRICING,
   "model-deepseek-v4-pro": DEEPSEEK_V4_PRO_PRICING,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_PRICING,
@@ -1052,12 +1052,17 @@ export const checkTokenBucketLimit = async (
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
           const bucketDeduct = estimatedCost - shortfall;
 
-          const monthlyResult =
-            bucketDeduct > 0
-              ? await monthly.limiter.limit(monthly.key, {
-                  rate: bucketDeduct,
-                })
-              : monthlyCheck;
+          // An exhausted bucket reports success: false even for the zero-rate
+          // peek above. When Extra Usage covers the whole request there is no
+          // subscription debit to validate, so that failed peek must not block
+          // an otherwise successful paid request.
+          if (bucketDeduct <= 0) {
+            return buildResult(monthlyCheck, 0, extraUsageShortfall);
+          }
+
+          const monthlyResult = await monthly.limiter.limit(monthly.key, {
+            rate: bucketDeduct,
+          });
 
           if (!monthlyResult.success) {
             try {
@@ -1387,10 +1392,7 @@ export const deductUsage = async (
       const pointsToRefund = Math.abs(costDifference);
       const extraUsageRefundTarget = Math.min(
         initialExtraUsagePoints,
-        Math.floor(
-          (pointsToRefund * EXTRA_USAGE_REQUEST_MULTIPLIER) /
-            NORMAL_USAGE_MULTIPLIER,
-        ),
+        Math.floor(pointsToRefund),
       );
 
       if (extraUsageRefundTarget > 0) {

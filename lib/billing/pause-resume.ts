@@ -18,6 +18,7 @@ import { isTerminalStripeResourceError } from "@/lib/billing/stripe-terminal-err
 import { stripeObjectId } from "@/lib/billing/subscription-payment-failure";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { phLogger } from "@/lib/posthog/server";
+import { assertUserCanStartBillingTransaction } from "@/lib/suspensions";
 
 export type SubscriptionPauseRecord = NonNullable<
   FunctionReturnType<typeof api.subscriptionPauses.getActivePauseForUser>
@@ -133,6 +134,7 @@ export async function resumePausedSubscription(
   pause: SubscriptionPauseRecord,
   options: { trigger: ResumeTrigger; now?: number },
 ): Promise<ResumePausedSubscriptionOutcome> {
+  await assertUserCanStartBillingTransaction(pause.userId);
   const now = options.now ?? Date.now();
   const convex = getConvexClient();
   const key = serviceKey();

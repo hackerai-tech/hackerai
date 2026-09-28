@@ -45,6 +45,7 @@ export const getAgentRateLimitStatus = action({
     ),
   },
   returns: v.object({
+    monthlyStatusConfirmed: v.boolean(),
     monthly: v.object({
       remaining: v.number(),
       limit: v.number(),
@@ -85,6 +86,7 @@ export const getAgentRateLimitStatus = action({
     // Default response for free tier or no limits
     if (subscription === "free" || monthlyLimit === 0) {
       return {
+        monthlyStatusConfirmed: true,
         monthly: emptyStatus,
         monthlyBudgetUsd: 0,
       };
@@ -96,6 +98,7 @@ export const getAgentRateLimitStatus = action({
 
     if (!redisUrl || !redisToken) {
       return {
+        monthlyStatusConfirmed: false,
         monthly: {
           remaining: monthlyLimit,
           limit: monthlyLimit,
@@ -144,6 +147,7 @@ export const getAgentRateLimitStatus = action({
       const monthlyUsed = Math.max(0, effectiveMonthlyLimit - monthlyRemaining);
 
       return {
+        monthlyStatusConfirmed: true,
         monthly: {
           remaining: monthlyRemaining,
           limit: effectiveMonthlyLimit,
@@ -159,6 +163,7 @@ export const getAgentRateLimitStatus = action({
     } catch (error) {
       console.error("Failed to get rate limit status:", error);
       return {
+        monthlyStatusConfirmed: false,
         monthly: {
           remaining: monthlyLimit,
           limit: monthlyLimit,

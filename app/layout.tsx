@@ -14,6 +14,7 @@ import { AgentApprovalProvider } from "./contexts/AgentApprovalContext";
 import { AnalyticsConsentManager } from "./components/AnalyticsConsentManager";
 import { DataStreamProvider } from "./components/DataStreamProvider";
 import { ChunkLoadRecovery } from "./components/ChunkLoadRecovery";
+import { BillingRecoveryReturnNotice } from "./components/BillingRecoveryReturnNotice";
 import { resolveClientInitialAuth } from "@/lib/auth/initial-auth";
 import { FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME } from "@/lib/analytics/acquisition";
 import { parseFirstTouchAttributionCookie } from "@/lib/analytics/acquisition-cookie";
@@ -30,6 +31,8 @@ import {
   countryCodeFromHeaders,
   getAnalyticsConsentDecision,
 } from "@/lib/privacy/analytics-consent";
+import { IntercomMessenger } from "./components/IntercomMessenger";
+import { createIntercomMessengerIdentity } from "@/lib/intercom/messenger";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -123,6 +126,7 @@ async function getInitialAuth() {
   return resolveClientInitialAuth(withAuth);
 }
 
+/** Renders the application shell with server-resolved auth and integrations. */
 export default async function RootLayout({
   children,
 }: Readonly<{
@@ -135,6 +139,9 @@ export default async function RootLayout({
     cookies(),
     headers(),
   ]);
+  const intercomIdentity = initialAuth.user
+    ? await createIntercomMessengerIdentity(initialAuth.user)
+    : null;
   const firstTouchAttribution = parseFirstTouchAttributionCookie(
     cookieStore.get(FIRST_TOUCH_ATTRIBUTION_COOKIE_NAME)?.value,
   );
@@ -163,6 +170,7 @@ export default async function RootLayout({
                 <TooltipProvider>
                   {children}
                   <Toaster />
+                  <BillingRecoveryReturnNotice />
                 </TooltipProvider>
               </AgentApprovalProvider>
             </TodoBlockProvider>
@@ -190,6 +198,7 @@ export default async function RootLayout({
       <body className="antialiased h-full">
         <ConvexClientProvider initialAuth={initialAuth}>
           {content}
+          <IntercomMessenger identity={intercomIdentity} />
         </ConvexClientProvider>
       </body>
     </html>

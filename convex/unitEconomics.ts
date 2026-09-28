@@ -223,6 +223,7 @@ export const recordPaidStartEvent = mutation({
     paidSeatCount: v.optional(v.number()),
     billingInterval: v.optional(paidStartBillingIntervalValidator),
     billingIntervalCount: v.optional(v.number()),
+    billingPeriodEnd: v.optional(v.number()),
     quantity: v.optional(v.number()),
     userCount: v.optional(v.number()),
     stripeCustomerId: v.optional(v.string()),
@@ -236,6 +237,7 @@ export const recordPaidStartEvent = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     assertFiniteOptionalNumber(args.occurredAt, "occurredAt");
+    assertFiniteOptionalNumber(args.billingPeriodEnd, "billingPeriodEnd");
     assertFiniteOptionalNumber(
       args.paidAccountStartCount,
       "paidAccountStartCount",
@@ -264,9 +266,9 @@ export const recordPaidStartEvent = mutation({
       paidUserStartCount: args.paidUserStartCount,
       paidSeatCount: args.paidSeatCount,
       billingInterval: args.billingInterval as
-        | PaidStartBillingInterval
-        | undefined,
+        PaidStartBillingInterval | undefined,
       billingIntervalCount: args.billingIntervalCount,
+      billingPeriodEnd: args.billingPeriodEnd,
       quantity: args.quantity,
       userCount: args.userCount,
       stripeCustomerId: args.stripeCustomerId,

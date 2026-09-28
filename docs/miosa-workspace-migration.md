@@ -3,22 +3,25 @@
 Owner and rollout: [HAC-113](https://linear.app/hackerai/issue/HAC-113).
 
 This replaces pristine-template fingerprinting. No baseline JSON is required.
-The migration restores `/home/user` and keeps a compressed copy of the other
-recoverable filesystem entries at
-`/var/lib/hackerai-migration/e2b-filesystem.tar.gz` inside the user's Miosa VM.
-The original E2B sandbox is retained. This is file preservation, not VM-image or
-process migration: custom system tools may need reinstalling. Files in `/root`,
-`/tmp`, `/opt`, and system configuration are available in the archive, not
-automatically installed over the Miosa operating system. Do not describe this
-as preserving an arbitrary customized runtime unchanged.
+The migration copies only `/home/user`, including hidden files and metadata.
+It does not distinguish Agent-created files from other files in that directory.
+The original E2B sandbox is retained. Files outside `/home/user`, installed system
+tools and running processes are not migrated; customized runtimes may need
+reinstalling. Do not describe this as preserving an arbitrary VM unchanged.
 
 ## Eligibility and storage contract
 
 The existing paid-plan and Miosa assignment gates still apply. A server request
-selected by `miosa_e2b_file_migration_v1` schedules a Trigger task after 20 minutes
-and continues using E2B. Scheduling is deduplicated per user/source for one hour.
-The worker rechecks the flag, complete cross-cluster inventory, source ownership,
-paused lifecycle, region and the exclusive 15-minute activity fence. Source
+selected by `miosa_e2b_file_migration_v1` nominates only the E2B workspace used
+by that recent acquisition, schedules a Trigger task after 20 minutes and
+continues using E2B. There is no all-user scanner. Scheduling is deduplicated per
+user/source across all parent Agent runs using a global Trigger idempotency key
+for twelve hours. This covers the configured delay, attempts, idle waits and
+backoff; the durable fence remains authoritative if a later job is scheduled. If that recent workspace is still active or holds the
+activity fence, the same task waits 15 minutes and rechecks it up to three times;
+permanent incompatibilities complete without another attempt. The worker
+rechecks the flag, complete cross-cluster inventory, source ownership, paused
+lifecycle, region and the exclusive 15-minute activity fence. Source
 metadata must match the worker's configured E2B template alias because multiple
 environments may share an E2B account. Unknown or other-environment sources are
 deferred even if their user ID matches. Multiple
@@ -27,15 +30,12 @@ active commands, unsupported mounts, unsupported home entries and links from
 home to un-restored paths are deferred. The destination must use the native
 `hackerai-tools` template.
 
-The archive includes regular files, hidden/empty files, directories, links,
-numeric ownership, modes, extended attributes and tar timestamps. Kernel
-`/proc` and `/sys` are excluded. Device nodes and FIFOs are archived as metadata;
-no device bytes are read. Runtime sockets under `/run` and `/dev` and in-memory
-process/connection state are not restored. Other sockets defer migration.
-Captured system journal bytes are retained, but their ongoing changes do not
-invalidate the same-source comparison. Certificate/configuration bytes are
-never normalized away. Unknown reads and all other detected source changes deny
-cutover. The original source remains the recovery copy for runtime state.
+The archive includes regular files, hidden/empty files, directories, internal
+links, numeric ownership, modes, extended attributes and tar timestamps under
+`/home/user`. Sockets, device nodes, FIFOs and links to outside-home paths defer
+migration. System files and runtime logs outside home are not scanned or copied.
+Unknown reads and detected source changes deny cutover. The original source
+remains the recovery copy for files and runtime state outside the migration scope.
 
 Initial limits: 250,000 entries, 12 GiB of regular-file data and a 4 GiB compressed
 archive. Archive bytes pass through the worker in 4 MiB chunks without local
@@ -44,8 +44,14 @@ size and SHA-256; the destination rechecks archive integrity and the restored
 home's content/metadata fingerprint. It verifies the source again, pauses it,
 and tests destination pause/resume persistence before committing the destination
 ID. Oversized workspaces and insufficient destination storage stay on E2B.
-Two jobs may run concurrently. Tasks have a two-hour ceiling and no automatic
-retry; individual filesystem operations and transfers have shorter limits.
+Two jobs may run concurrently. Tasks have a two-hour ceiling and up to three
+attempts with backoff; transient E2B connection and command-list checks also get
+three bounded attempts with operation-specific diagnostics before the task
+fails. Individual filesystem operations and transfers have shorter limits. A
+retained checking fence records its owning Trigger run and attempt. A duplicate
+waits while that exact attempt is executing. A retry, legacy ownerless record,
+terminal owner or unavailable status requires recovery; no fence is expired or
+automatically cleared.
 
 ## Cutover and recovery
 
@@ -65,8 +71,24 @@ Committed records pin an exact destination ID. Missing or broken destinations
 fail safely; neither creation of an empty replacement nor fallback to the stale
 E2B copy is permitted. Flag rollback stops new migrations, including in-flight
 copies before installation, while migrated users retain Miosa. Legacy committed
-empty-migration records remain readable. Explicit user reset still deletes both
-providers and then clears the matching record.
+empty-migration records remain readable. Cleanup atomically owns the same Redis
+key before enumerating either provider, including when no migration existed.
+An active checking claim blocks cleanup before enumeration; never revoke it to
+force deletion. Concurrent cleanup attempts must retry.
+
+Explicit workspace reset deletes both providers, then clears only its matching
+cleanup token. Failed reset restores the prior committed record so it cannot
+expose the retained E2B copy. Account deletion retains a non-expiring `deleted`
+fence even after partial provider failure, preventing delayed migration jobs
+from creating another destination. Failed deletion retains any committed pin so
+retries still require both providers; account deletion may retry cleanup under
+that fence. Never clear a deleted account's fence to retry a task.
+
+A crashed cleanup retains `cleanup` ownership and any prior committed record
+inside it. Stop the cleanup invocation and confirm it cannot resume before
+operator recovery. For reset, finish provider deletion or restore the recorded
+committed pin; clear the matching cleanup token only after complete deletion.
+For account deletion, finish provider cleanup and retain the `deleted` fence.
 
 For a stranded checking record, stop the corresponding Trigger job, confirm the
 record token/source and both provider identities, destroy the exact uncommitted
@@ -95,17 +117,21 @@ and in-flight pre-cutover checks without another deployment.
 On the actual Preview URL using disposable paid test accounts:
 
 1. Create an E2B workspace with binary, hidden and empty files, nested folders,
-   permissions, internal links and xattrs. Include a file outside home. Run a
-   bounded Agent command, allow the idle interval, and run the migration task.
-   Verify copied home contents and the outside-home archive entry.
+   permissions, internal links and xattrs. Include a disposable file outside home.
+   Run a bounded Agent command, allow the idle interval, and run the migration
+   task. Verify copied home contents and that the outside-home file is not copied.
 2. Run Agent on Miosa, reload/reconnect and verify the files again. Confirm the
    old E2B ID still exists. Check both the visible response and actual provider.
 3. Verify active work, mounted volumes, multiple sources, outside-home links,
    unknown reads and size limits defer migration without changing the source.
-4. Exercise corrupted transfer, source changes, interrupted workers, failed
+4. Nominate the same source from two separate Agent runs and confirm they share
+   one delayed migration run. For a deliberately duplicated disposable test job,
+   verify `migration_in_progress` while the owner executes and `already_claimed`
+   after it commits. A crashed owner must still require recovery.
+5. Exercise corrupted transfer, source changes, interrupted workers, failed
    destination cleanup, lost commit acknowledgement and destination loss. Confirm
    no partial destination or stale E2B copy becomes available.
-5. Create a Miosa-only file, disable the flag and simulate acquisition failure.
+6. Create a Miosa-only file, disable the flag and simulate acquisition failure.
    The user must stay pinned to the copied destination. Verify explicit reset.
 
 `miosa_e2b_file_migration_checked` reports bounded reason/count/duration fields;

@@ -6,6 +6,7 @@ import type {
 } from "@miosa/sdk";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { createMiosaFiles } from "./miosa-files";
+import { recoverMiosaAcquisition } from "./miosa-acquisition-recovery";
 import {
   MIOSA_CPU_COUNT,
   MIOSA_MEMORY_MB,
@@ -14,6 +15,7 @@ import {
 import { waitForMiosaReadiness } from "./miosa-readiness";
 import {
   createMiosaAcquisitionDiagnostics,
+  miosaErrorDiagnostics,
   type MiosaAcquisitionDiagnostic,
 } from "./miosa-acquisition-diagnostics";
 import {
@@ -97,37 +99,73 @@ const initializeMiosaRuntime = async (
     "native",
     'set -eu; mkdir -p upload agent-transcripts terminal_full_output agent-browser-screenshots; for tool in nmap nuclei ffuf python3 bash setsid; do command -v "$tool" >/dev/null; done',
   );
-  const stream = sdkSandbox.exec.stream(
-    runtime === "native"
-      ? nativeInitialization
-      : runtimeInitializationCommand(runtimeImage),
-    { timeoutSec: runtime === "native" ? 30 : 15 * 60 },
-  );
-  const stderr: string[] = [];
   let exitCode: number | null = null;
-  for await (const event of stream) {
-    if (event.type === "stderr") stderr.push(event.data);
-    if (event.type === "exit") {
-      exitCode = Number(event.exitCode ?? event.exit_code ?? 0);
+  let timedOut = false;
+  try {
+    const stream = sdkSandbox.exec.stream(
+      runtime === "native"
+        ? nativeInitialization
+        : runtimeInitializationCommand(runtimeImage),
+      { timeoutSec: runtime === "native" ? 30 : 15 * 60 },
+    );
+    for await (const event of stream) {
+      if (event.type === "exit") {
+        const value = event.exitCode ?? event.exit_code;
+        exitCode =
+          typeof value === "number" && Number.isInteger(value) ? value : null;
+        timedOut = event.timedOut === true || event.timed_out === true;
+      }
     }
+  } catch (error) {
+    const diagnostic = miosaErrorDiagnostics(error);
+    throw new MiosaRuntimeInitializationError(
+      diagnostic.error_code === "TIMEOUT" ||
+        diagnostic.error_name === "TimeoutError"
+        ? "timeout"
+        : "transport",
+      diagnostic,
+    );
   }
   if (exitCode === null) {
-    throw new Error("MIOSA runtime initialization ended without an exit event");
+    throw new MiosaRuntimeInitializationError("missing_exit");
+  }
+  if (timedOut) {
+    throw new MiosaRuntimeInitializationError("timeout");
+  }
+  if (exitCode === -1) {
+    throw new MiosaRuntimeInitializationError("transport");
   }
   if (exitCode !== 0) {
-    throw new Error(
-      stderr.join("").trim() || "Failed to initialize MIOSA sandbox runtime",
-    );
+    throw new MiosaRuntimeInitializationError("nonzero_exit");
   }
 };
 
+class MiosaRuntimeInitializationError extends Error {
+  readonly code: string;
+  readonly requestId?: string;
+  readonly status?: number;
+  constructor(
+    readonly failureKind:
+      "nonzero_exit" | "missing_exit" | "timeout" | "transport",
+    diagnostic?: ReturnType<typeof miosaErrorDiagnostics>,
+  ) {
+    super("Cloud workspace initialization failed. Please retry shortly.");
+    this.name = "MiosaRuntimeInitializationError";
+    this.code = `RUNTIME_INIT_${failureKind.toUpperCase()}`;
+    this.requestId = diagnostic?.error_request_id;
+    this.status = diagnostic?.error_http_status;
+  }
+}
+
 export const createMiosaClient = async (
   timeoutMs?: number,
+  maxRetries?: number,
 ): Promise<MiosaClient> => {
   const { Miosa } = await import("@miosa/sdk");
   return new Miosa({
     apiKey: process.env.MIOSA_API_KEY,
     ...(timeoutMs && { timeout: timeoutMs }),
+    ...(maxRetries !== undefined && { maxRetries }),
     ...(process.env.MIOSA_BASE_URL && {
       baseUrl: process.env.MIOSA_BASE_URL,
     }),
@@ -359,10 +397,13 @@ export async function ensureMiosaSandboxConnection(
     beforeCreate?: () => Promise<void>;
     destinationId?: string;
     migrationName?: string;
+    acquisitionId?: string;
     onDiagnostic?: (diagnostic: MiosaAcquisitionDiagnostic) => void;
+    onWorkspaceStatus?: (status: "existing" | "absent") => void;
   } = {},
 ): Promise<{ sandbox: MiosaSandbox }> {
   if (options.initialSandbox) {
+    options.onWorkspaceStatus?.("existing");
     if (
       options.destinationId &&
       options.initialSandbox.sandboxId !== options.destinationId
@@ -377,9 +418,16 @@ export async function ensureMiosaSandboxConnection(
   const startedAt = performance.now();
   const workspaceName =
     options.migrationName ?? sandboxNameForUser(context.userID);
+  let observedSandbox: MiosaSdkSandbox | undefined;
+  let expectedId = options.destinationId;
+  let recoveryTrigger: unknown;
   const step = createMiosaAcquisitionDiagnostics({
     templateId,
     workspaceName,
+    acquisitionId: options.acquisitionId,
+    getSandbox: () => observedSandbox,
+    getExpectedId: () => expectedId,
+    getRecoveryTrigger: () => recoveryTrigger,
     onDiagnostic: options.onDiagnostic,
   });
   // Migration destinations can wait for a snapshot restore beyond the SDK's
@@ -396,39 +444,70 @@ export async function ensureMiosaSandboxConnection(
     try {
       // Existing assignments retain their files, even after a plan upgrade or
       // an earlier E2B fallback. The pilot gate restricts new enrollment only.
-      await step("lookup_existing", () =>
-        client.sandboxes.getByName(workspaceName),
-      );
+      const existing = await step("lookup_existing", async () => {
+        observedSandbox = await client.sandboxes.getByName(workspaceName);
+        return observedSandbox;
+      });
+      expectedId = existing.id;
+      options.onWorkspaceStatus?.("existing");
     } catch (error) {
       if (!(error instanceof NotFoundError)) throw error;
+      options.onWorkspaceStatus?.("absent");
       await step("enrollment", options.beforeCreate);
     }
   }
+  const reconcile = async (error: unknown): Promise<MiosaSdkSandbox> => {
+    const diagnostic = miosaErrorDiagnostics(error);
+    if (
+      diagnostic.error_code !== "SANDBOX_NOT_PAUSED" &&
+      diagnostic.error_code !== "TIMEOUT"
+    )
+      throw error;
+    recoveryTrigger = error;
+    try {
+      return await step(
+        diagnostic.error_code === "TIMEOUT"
+          ? "acquisition_reconciliation"
+          : "resume_conflict_refresh",
+        async () => {
+          // Separate read-only client: no SDK HTTP retries, and no impact on the
+          // command client's timeout. The helper bounds stalled reads as well.
+          const reader = await createMiosaClient(2_000, 0);
+          return recoverMiosaAcquisition({
+            lookup: () =>
+              expectedId
+                ? reader.sandboxes.get(expectedId)
+                : reader.sandboxes.getByName(workspaceName),
+            expectedId,
+            workspaceName,
+            externalUserId,
+            onObserved: (sandbox) => {
+              observedSandbox = sandbox;
+            },
+          });
+        },
+      );
+    } catch {
+      // The nested diagnostic retains the reconciliation error/request ID. The
+      // outer fallback must preserve the original acquisition failure class.
+      throw error;
+    }
+  };
   const sdkSandbox = await step("get_or_create", () =>
     options.destinationId
       ? (async () => {
           const current = await client.sandboxes.get(options.destinationId!);
+          observedSandbox = current;
           if (
             current.id !== options.destinationId ||
             current.data.external_user_id !== externalUserId
           )
             throw new Error("Migrated workspace identity mismatch");
           if (current.state === "paused") {
-            try {
-              await current.resume();
-            } catch (error) {
-              if (
-                !(error instanceof Error) ||
-                !("code" in error) ||
-                error.code !== "SANDBOX_NOT_PAUSED"
-              )
-                throw error;
-              const refreshed = await current.refresh();
-              if (refreshed.state !== "running") throw error;
-            }
+            await current.resume();
           }
           return current;
-        })()
+        })().catch(reconcile)
       : client.sandboxes
           .getOrCreate({
             name: workspaceName,
@@ -454,28 +533,16 @@ export async function ensureMiosaSandboxConnection(
               ...identity,
             },
           })
-          .catch(async (error: unknown) => {
-            if (
-              !(error instanceof Error) ||
-              !("code" in error) ||
-              error.code !== "SANDBOX_NOT_PAUSED"
-            )
-              throw error;
-
-            // Another run may have resumed the shared workspace after getOrCreate's
-            // lookup. Re-read that same name, never create a replacement or retry a
-            // destructive/ambiguous lifecycle operation. Readiness still runs below.
-            return step("resume_conflict_refresh", async () => {
-              const current = await client.sandboxes
-                .getByName(workspaceName)
-                .catch(() => {
-                  throw error;
-                });
-              if (current.state !== "running") throw error;
-              return current;
-            });
-          }),
+          .then((sandbox) => {
+            observedSandbox = sandbox;
+            return sandbox;
+          })
+          .catch(reconcile),
   );
+  observedSandbox = sdkSandbox;
+  if (bootPathFromMiosa(sdkSandbox) !== "create_fresh") {
+    options.onWorkspaceStatus?.("existing");
+  }
   if (
     (options.destinationId || options.migrationName) &&
     ((options.destinationId && sdkSandbox.id !== options.destinationId) ||

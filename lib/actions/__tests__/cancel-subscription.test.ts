@@ -14,6 +14,8 @@ import {
 const mockListSubscriptions = jest.fn();
 const mockUpdateSubscription = jest.fn();
 const mockCancelSubscription = jest.fn();
+const mockRetrieveInvoice = jest.fn();
+const mockVoidInvoice = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogError = jest.fn();
@@ -27,6 +29,7 @@ jest.mock("@/app/api/stripe", () => ({
       update: mockUpdateSubscription,
       cancel: mockCancelSubscription,
     },
+    invoices: { retrieve: mockRetrieveInvoice, voidInvoice: mockVoidInvoice },
   },
 }));
 
@@ -297,6 +300,70 @@ describe("cancelSubscriptionAction", () => {
         cancellation_completion_type: "immediate_in_app",
         cancel_at_period_end: false,
       }),
+    );
+  });
+
+  it("voids the open renewal invoice after an immediate cancellation", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [
+        {
+          id: "sub_past_due",
+          status: "past_due",
+          cancel_at_period_end: false,
+          items: {
+            data: [
+              { price: { id: "price_pro", lookup_key: "pro-monthly-plan" } },
+            ],
+          },
+        },
+      ],
+    } as never);
+    mockCancelSubscription.mockResolvedValue({
+      id: "sub_past_due",
+      status: "canceled",
+      customer: "cus_123",
+      latest_invoice: "in_renewal",
+      cancellation_details: { reason: "cancellation_requested" },
+      cancel_at_period_end: false,
+    } as never);
+    mockRetrieveInvoice.mockResolvedValue({
+      id: "in_renewal",
+      customer: "cus_123",
+      parent: { subscription_details: { subscription: "sub_past_due" } },
+      billing_reason: "subscription_cycle",
+      collection_method: "charge_automatically",
+      status: "open",
+      amount_remaining: 6000,
+      amount_paid: 0,
+      lines: {
+        has_more: false,
+        data: [
+          {
+            parent: {
+              type: "subscription_item_details",
+              subscription_item_details: {
+                subscription: "sub_past_due",
+                proration: false,
+              },
+            },
+          },
+        ],
+      },
+    } as never);
+
+    const { default: cancelSubscriptionAction } =
+      await import("../cancel-subscription");
+    await cancelSubscriptionAction({
+      cancellationReason: {
+        reasonCategory: "other",
+        reasonSubcategory: "billing_or_renewal",
+        reasonDetails: "Renewal did not go through",
+      },
+    });
+
+    expect(mockVoidInvoice).toHaveBeenCalledWith("in_renewal");
+    expect(mockCancelSubscription.mock.invocationCallOrder[0]).toBeLessThan(
+      mockVoidInvoice.mock.invocationCallOrder[0],
     );
   });
 

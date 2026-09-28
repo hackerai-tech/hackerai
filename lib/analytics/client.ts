@@ -244,14 +244,44 @@ type CtaAnalyticsProperties = ClientAnalyticsProperties & {
 export function captureUpgradeCtaImpression(
   properties: CtaAnalyticsProperties,
 ) {
+  return (
+    captureDailyCtaImpression(
+      PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+      properties,
+    ) === "captured"
+  );
+}
+
+export function captureComputerActivationImpression(
+  properties: CtaAnalyticsProperties,
+) {
+  // Already recorded today is also handled; only unavailable capture needs retry.
+  return (
+    captureDailyCtaImpression(
+      "computer_activation_cta_impressed",
+      properties,
+    ) !== "unavailable"
+  );
+}
+
+function captureDailyCtaImpression(
+  event:
+    | typeof PAID_FUNNEL_EVENTS.upgradeCtaImpressed
+    | "computer_activation_cta_impressed",
+  properties: CtaAnalyticsProperties,
+): "captured" | "duplicate" | "unavailable" {
   const posthog = getReadyPostHogClient();
   if (!posthog) {
     void loadPostHogClient().catch(() => {});
-    return false;
+    return "unavailable";
   }
 
   const day = new Date().toISOString().slice(0, 10);
   const distinctId = posthog.get_distinct_id();
+  const storageKey =
+    event === PAID_FUNNEL_EVENTS.upgradeCtaImpressed
+      ? UPGRADE_IMPRESSION_STORAGE_KEY
+      : "hackerai:analytics:computer-activation-impressions:v1";
   const dedupeKey = [
     distinctId,
     properties.surface,
@@ -260,7 +290,7 @@ export function captureUpgradeCtaImpression(
 
   let state: UpgradeImpressionState = { day, keys: [] };
   try {
-    const stored = window.localStorage.getItem(UPGRADE_IMPRESSION_STORAGE_KEY);
+    const stored = window.localStorage.getItem(storageKey);
     const parsed = stored
       ? (JSON.parse(stored) as UpgradeImpressionState)
       : null;
@@ -271,14 +301,14 @@ export function captureUpgradeCtaImpression(
     ) {
       state = parsed;
     }
-    if (state.keys.includes(dedupeKey)) return false;
+    if (state.keys.includes(dedupeKey)) return "duplicate";
   } catch {
     // Storage can be unavailable in privacy-restricted browsers. Capture the
     // event normally rather than dropping a legitimate impression.
   }
 
   const captured = captureAuthenticatedEvent(
-    PAID_FUNNEL_EVENTS.upgradeCtaImpressed,
+    event,
     paidFunnelProperties({
       ...properties,
       impression_dedupe_scope: UPGRADE_CTA_IMPRESSION_DEDUPE.scope,
@@ -287,27 +317,36 @@ export function captureUpgradeCtaImpression(
     }),
     {
       uuid: uuidv5(
-        upgradeCtaImpressionInsertId({
-          distinctId,
-          surface: properties.surface,
-          source: properties.source,
-          utcDay: day,
-        }),
+        event === PAID_FUNNEL_EVENTS.upgradeCtaImpressed
+          ? upgradeCtaImpressionInsertId({
+              distinctId,
+              surface: properties.surface,
+              source: properties.source,
+              utcDay: day,
+            })
+          : JSON.stringify([
+              event,
+              1,
+              distinctId,
+              properties.surface,
+              properties.source ?? null,
+              day,
+            ]),
         uuidv5.URL,
       ),
     },
   );
-  if (!captured) return false;
+  if (!captured) return "unavailable";
 
   try {
     window.localStorage.setItem(
-      UPGRADE_IMPRESSION_STORAGE_KEY,
+      storageKey,
       JSON.stringify({ day, keys: [...state.keys, dedupeKey].slice(-100) }),
     );
   } catch {
     // Best-effort dedupe only.
   }
-  return true;
+  return "captured";
 }
 
 export function captureUpgradeCtaClick(properties: CtaAnalyticsProperties) {

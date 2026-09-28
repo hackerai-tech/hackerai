@@ -90,6 +90,24 @@ describe("suspensions", () => {
     }
   });
 
+  it("blocks billing transactions while any suspension is active", async () => {
+    mockQuery.mockResolvedValueOnce({
+      user_id: "user_123",
+      status: "active",
+      category: "dispute_billing_hold",
+      source: "stripe",
+      source_id: "dp_123",
+    } as never);
+    const { assertUserCanStartBillingTransaction } =
+      await import("../suspensions");
+
+    await expect(
+      assertUserCanStartBillingTransaction("user_123"),
+    ).rejects.toThrow(
+      "Billing is disabled while this account has an active payment dispute or fraud hold.",
+    );
+  });
+
   it("blocks chat-history access for fraudulent disputes", async () => {
     const { assertUserCanAccessChatHistory } = await import("../suspensions");
 

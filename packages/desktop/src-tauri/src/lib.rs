@@ -1,4 +1,5 @@
 mod platform;
+mod environment_identity;
 mod pty;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
@@ -2081,6 +2082,7 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            environment_identity::get_environment_id,
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,

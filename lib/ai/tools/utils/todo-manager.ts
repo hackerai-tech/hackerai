@@ -147,28 +147,19 @@ export class TodoManager {
   }
 
   /**
-   * Merge base todos (from client/request) with current manager todos (tool-updated)
-   * and tag only newly generated/updated todos with the provided assistantMessageId.
+   * Persist the authoritative manager snapshot, including removals. The base list
+   * is used only to distinguish manual todos from newly created assistant work.
    */
   mergeWith(baseTodos: Todo[] | undefined, assistantMessageId: string): Todo[] {
     const base: Todo[] = Array.isArray(baseTodos) ? baseTodos : [];
     const baseIdSet = new Set(base.map((t) => t.id));
 
-    const idToTodo: Record<string, Todo> = {};
-    for (const t of base) {
-      idToTodo[t.id] = t;
-    }
-
-    for (const t of this.todos) {
+    return this.todos.map((t) => {
       const shouldTag =
         this.hasCreatedPlanThisRun &&
         !t.sourceMessageId &&
         !baseIdSet.has(t.id);
-      idToTodo[t.id] = shouldTag
-        ? { ...t, sourceMessageId: assistantMessageId }
-        : t;
-    }
-
-    return Object.values(idToTodo);
+      return shouldTag ? { ...t, sourceMessageId: assistantMessageId } : t;
+    });
   }
 }

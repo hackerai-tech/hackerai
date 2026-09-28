@@ -9,13 +9,18 @@
 
 import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
+import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
+import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
   LocalCommandRelayUnsubscribedError,
   isLocalCommandRelayUnsubscribedError,
 } from "../local-sandbox-errors";
-import { fragmentCentrifugoMessage } from "@/packages/local/src/centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  fragmentCentrifugoMessage,
+} from "@/packages/local/src/centrifugo-transport";
 
 // Track all created mock subscriptions and clients for assertions
 let mockSubscriptions: MockSubscription[];
@@ -137,6 +142,284 @@ describe("CentrifugoSandbox", () => {
   afterEach(() => {
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
+  });
+
+  it("publishes PTY creation once across subscription reconnects", async () => {
+    const sandbox = createSandbox();
+    const pending = createCentrifugoPtyHandle(sandbox, {
+      command: "echo once",
+      cols: 80,
+      rows: 24,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    const sub = mockSubscriptions[0];
+    sub.emit("subscribed");
+    sub.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    expect(sub.publish).toHaveBeenCalledTimes(1);
+
+    sub.emit("publication", {
+      data: { type: "pty_ready", sessionId: FIXED_UUID, pid: 123 },
+    });
+    const handle = await pending;
+    sub.emit("subscribed");
+    expect(sub.publish).toHaveBeenCalledTimes(1);
+    sub.emit("publication", {
+      data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
+    });
+    await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
+  });
+
+  it("includes the threshold-crossing PTY chunk in its checkpoint", async () => {
+    const sandbox = createSandbox();
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const pending = createCentrifugoPtyHandle(sandbox, {
+        command: "large output",
+        cols: 80,
+        rows: 24,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      sub.emit("publication", {
+        data: { type: "pty_ready", sessionId: FIXED_UUID, pid: 123 },
+      });
+      const handle = await pending;
+
+      sub.emit("publication", {
+        data: {
+          type: "pty_data",
+          sessionId: FIXED_UUID,
+          data: "private-output-".repeat(75_000),
+        },
+      });
+      const checkpoint = logSpy.mock.calls
+        .map(([value]) => {
+          try {
+            return JSON.parse(String(value)) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .find(
+          (value) =>
+            value?.event === "local_relay_pty_traffic" &&
+            value.phase === "checkpoint",
+        );
+      expect(checkpoint).toEqual(
+        expect.objectContaining({
+          sample_rate: 1,
+          pty_data_bytes: Buffer.byteLength(
+            "private-output-".repeat(75_000),
+            "utf8",
+          ),
+        }),
+      );
+      expect(JSON.stringify(checkpoint)).not.toContain("private-output");
+
+      sub.emit("publication", {
+        data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("counts unfragmented file-list entries in the relay estimate", () => {
+    const entries = Array.from({ length: 2_000 }, (_, index) => ({
+      name: `${index}-${"x".repeat(600)}`,
+    }));
+    expect(
+      estimateRelayPayloadBytes({ type: "file_list_result", entries }),
+    ).toBeGreaterThan(1024 * 1024);
+  });
+
+  describe("attachment cancellation", () => {
+    it.each(["copy", "download"])(
+      "forwards Stop through %s and waits for command cancellation",
+      async (operation) => {
+        const sandbox = createSandbox({
+          osInfo: {
+            platform: "linux",
+            arch: "x64",
+            release: "test",
+            hostname: "test",
+          },
+        } as any);
+        (sandbox as any).httpClient = "curl";
+        (sandbox as any).curlCaps = {
+          retryAllErrors: true,
+          retryConnrefused: true,
+          sslNoRevoke: false,
+        };
+        const controller = new AbortController();
+        let started!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (_command, options) => {
+            expect(options?.signal).toBe(controller.signal);
+            started();
+            await new Promise<void>((resolve) =>
+              options?.signal?.addEventListener("abort", () => resolve(), {
+                once: true,
+              }),
+            );
+            return { stdout: "", stderr: "", exitCode: 130 };
+          });
+        const pending =
+          operation === "copy"
+            ? sandbox.files.copyLocal(
+                "/tmp/source.txt",
+                "/tmp/destination.txt",
+                { signal: controller.signal },
+              )
+            : sandbox.files.downloadFromUrl(
+                "https://example.com/file",
+                "/tmp/destination.txt",
+                { signal: controller.signal },
+              );
+        await ready;
+        controller.abort();
+        await expect(pending).rejects.toBe(controller.signal.reason);
+        expect(run).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(["small", "chunked", "empty"])(
+      "cancels a pending %s native write without publishing more chunks",
+      async (size) => {
+        const sandbox = createDesktopSandbox();
+        const controller = new AbortController();
+        const content =
+          size === "small"
+            ? "script"
+            : Buffer.alloc(size === "empty" ? 0 : 500_000);
+        const pending = sandbox.files.write("C:\\temp\\script.ps1", content, {
+          signal: controller.signal,
+        });
+        const rejected = expect(pending).rejects.toMatchObject({
+          name: "AbortError",
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        expect(sub.publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "file_write" }),
+        );
+
+        controller.abort();
+        await rejected;
+        expect(sub.unsubscribe).toHaveBeenCalled();
+        expect(mockClients[0].disconnect).toHaveBeenCalled();
+        expect(mockSubscriptions).toHaveLength(1);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("bounds stalled project PowerShell script cleanup after canceling its native write", async () => {
+      const sandbox = createDesktopSandbox("C:\\work\\project");
+      (sandbox as any).httpClient = "powershell";
+      (sandbox as any).shellKind = "cmd";
+      const controller = new AbortController();
+      const run = jest.spyOn(sandbox.commands, "run");
+      const pending = sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "/tmp/file.txt",
+        { signal: controller.signal },
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      mockSubscriptions[0].emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscriptions[0].publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_write",
+          path: `C:\\work\\project\\hackerai-transfer-${FIXED_UUID}.ps1`,
+          allowedRoot: "C:\\work\\project",
+        }),
+      );
+      controller.abort();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscriptions[0].unsubscribe).toHaveBeenCalled();
+      expect(mockSubscriptions).toHaveLength(2);
+      mockSubscriptions[1].emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockSubscriptions[1].publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "file_remove",
+          path: `C:\\work\\project\\hackerai-transfer-${FIXED_UUID}.ps1`,
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(5000);
+      await rejected;
+      expect(mockSubscriptions[1].unsubscribe).toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it.each(["directory", "chunk"])(
+      "stops legacy Windows script staging during the first %s command",
+      async (stage) => {
+        const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+        (sandbox as any).shellKind = "cmd";
+        const controller = new AbortController();
+        const run = jest
+          .spyOn(sandbox.commands, "run")
+          .mockImplementation(async (command, options) => {
+            if (
+              command.startsWith(
+                stage === "directory" ? "if not exist" : "echo ",
+              )
+            ) {
+              expect(options?.signal).toBe(controller.signal);
+              controller.abort();
+              return { stdout: "", stderr: "", exitCode: 130 };
+            }
+            return { stdout: "", stderr: "", exitCode: 0 };
+          });
+        await expect(
+          sandbox.files.write("C:\\temp\\script.ps1", "x".repeat(20_000), {
+            signal: controller.signal,
+          }),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        const commands = run.mock.calls.map(([command]) => command);
+        expect(
+          commands.filter((command) => command.startsWith("echo ")),
+        ).toHaveLength(stage === "chunk" ? 1 : 0);
+        expect(commands.some((command) => command.startsWith("certutil"))).toBe(
+          false,
+        );
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
+    it("cancels a capability probe without retrying or starting a download", async () => {
+      const sandbox = createSandbox();
+      const controller = new AbortController();
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockImplementation(async (_command, options) => {
+          expect(options?.signal).toBe(controller.signal);
+          controller.abort();
+          return { stdout: "", stderr: "", exitCode: 130 };
+        });
+      await expect(
+        sandbox.files.downloadFromUrl(
+          "https://example.com/file",
+          "/tmp/destination.txt",
+          { signal: controller.signal },
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(run).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("parseSandboxMessage", () => {
@@ -309,6 +592,108 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
+    it("publishes binary command stdin without placing it in the command", async () => {
+      const sandbox = createSandbox({
+        capabilities: { commands: true, pty: true, commandStdin: true },
+      } as any);
+      const stdin = Buffer.from("private\u0000evidence");
+      const { promise } = startCommand(sandbox, "cat > private-record", {
+        timeoutMs: 5000,
+        displayName: "",
+        stdin,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "command",
+          command: "cat > private-record",
+          stdin: stdin.toString("base64"),
+          stdinEncoding: "base64",
+        }),
+      );
+      expect(sub.publish.mock.calls[0][0].command).toBe("cat > private-record");
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toEqual({
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+    });
+
+    it("keeps large ordinary commands compatible with pre-stdin clients", async () => {
+      const sandbox = createSandbox();
+      const command = `printf %s ${"x".repeat(40_000)}`;
+      const { promise } = startCommand(sandbox, command, { timeoutMs: 5000 });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+      expect(sub.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "command", command }),
+      );
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toMatchObject({ exitCode: 0 });
+    });
+
+    it("fragments large stdin only for clients that advertise support", async () => {
+      const sandbox = createSandbox({
+        capabilities: { commands: true, pty: true, commandStdin: true },
+      } as any);
+      const stdin = Buffer.alloc(100_000, "s");
+      const { promise } = startCommand(sandbox, "cat > private-record", {
+        timeoutMs: 5000,
+        stdin,
+      });
+
+      await jest.advanceTimersByTimeAsync(0);
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+
+      expect(sub.publish.mock.calls.length).toBeGreaterThan(1);
+      const reassembler = new CentrifugoMessageReassembler();
+      let commandMessage: unknown = null;
+      for (const [fragment] of sub.publish.mock.calls) {
+        commandMessage = reassembler.accept(fragment) ?? commandMessage;
+      }
+      expect(commandMessage).toEqual(
+        expect.objectContaining({
+          type: "command",
+          command: "cat > private-record",
+          stdin: stdin.toString("base64"),
+          stdinEncoding: "base64",
+        }),
+      );
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toMatchObject({ exitCode: 0 });
+    });
+
+    it("rejects stdin before connecting to an unsupported client", async () => {
+      const sandbox = createSandbox();
+
+      await expect(
+        sandbox.commands.run("cat", { stdin: "private" }),
+      ).rejects.toThrow("requires an updated HackerAI local client");
+      expect(mockSubscriptions).toHaveLength(0);
+    });
+
     it("subscribes, receives stdout/stderr/exit messages, and returns aggregated result", async () => {
       const sandbox = createSandbox();
       const onStdout = jest.fn();
@@ -353,6 +738,146 @@ describe("CentrifugoSandbox", () => {
       });
       expect(onStdout).toHaveBeenCalledWith("hello\n");
       expect(onStderr).toHaveBeenCalledWith("warn\n");
+    });
+
+    it("publishes a command once when the subscription reconnects", async () => {
+      const sandbox = createSandbox();
+      const { promise } = startCommand(sandbox, "echo once", {
+        timeoutMs: 5000,
+      });
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      let resolvePresence!: (value: unknown) => void;
+      sub.presence.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePresence = resolve;
+          }),
+      );
+      sub.emit("subscribed");
+      sub.emit("subscribed");
+      expect(sub.presence).toHaveBeenCalledTimes(1);
+
+      resolvePresence({
+        clients: { "sandbox-client": { connInfo: { connectionId: "conn-1" } } },
+      });
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+
+      sub.emit("publication", {
+        data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+      });
+      await expect(promise).resolves.toMatchObject({ exitCode: 0 });
+    });
+
+    it("logs only traffic counts and identifiers for a large command stream", async () => {
+      const sandbox = createSandbox();
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const output = "private-output-".repeat(75_000);
+      try {
+        const { promise } = startCommand(sandbox, "private-command", {
+          timeoutMs: 5000,
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        sub.emit("publication", {
+          data: { type: "stdout", commandId: FIXED_UUID, data: output },
+        });
+        sub.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+        });
+        await promise;
+
+        const trafficLog = logSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "local_relay_command_traffic");
+        expect(trafficLog).toEqual(
+          expect.objectContaining({
+            user_id: "user-1",
+            connection_id: "conn-1",
+            command_id: FIXED_UUID,
+            sample_rate: 1,
+            stdout_bytes: Buffer.byteLength(output, "utf8"),
+            stderr_bytes: 0,
+            output_chunks: 1,
+            command_publish_attempts: 1,
+          }),
+        );
+        expect(JSON.stringify(trafficLog)).not.toContain("private-output");
+        expect(JSON.stringify(trafficLog)).not.toContain("private-command");
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
+
+    it("counts large publications for other commands as relay fanout", async () => {
+      const sandbox = createSandbox();
+      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const { promise } = startCommand(sandbox, "echo own", {
+          timeoutMs: 5000,
+        });
+        await jest.advanceTimersByTimeAsync(0);
+        const sub = mockSubscriptions[0];
+        sub.emit("subscribed");
+        await jest.advanceTimersByTimeAsync(0);
+        sub.emit("publication", {
+          data: {
+            type: "stdout",
+            commandId: "another-command",
+            data: "x".repeat(1024 * 1024),
+          },
+        });
+        sub.emit("publication", {
+          data: {
+            type: "pty_data",
+            sessionId: "another-session",
+            data: "y".repeat(1024 * 1024),
+          },
+        });
+        sub.emit("publication", {
+          data: { type: "exit", commandId: FIXED_UUID, exitCode: 0 },
+        });
+        await promise;
+
+        const trafficLog = logSpy.mock.calls
+          .map(([value]) => {
+            try {
+              return JSON.parse(String(value)) as Record<string, unknown>;
+            } catch {
+              return null;
+            }
+          })
+          .find((value) => value?.event === "local_relay_command_traffic");
+        expect(trafficLog).toEqual(
+          expect.objectContaining({
+            sample_rate: 1,
+            stdout_bytes: 0,
+            unmatched_publications: 2,
+            received_payload_bytes_estimate: expect.any(Number),
+            unmatched_payload_bytes_estimate: expect.any(Number),
+          }),
+        );
+        expect(
+          trafficLog?.received_payload_bytes_estimate as number,
+        ).toBeGreaterThan(1024 * 1024);
+        expect(
+          trafficLog?.unmatched_payload_bytes_estimate as number,
+        ).toBeGreaterThan(2 * 1024 * 1024);
+      } finally {
+        logSpy.mockRestore();
+      }
     });
 
     it("deduplicates retried desktop stream chunks by sequence", async () => {
@@ -1169,6 +1694,98 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toBeUndefined();
     });
 
+    it("does not replay a desktop file write after resubscribing", async () => {
+      const sandbox = createDesktopSandbox();
+      const promise = sandbox.files.write("C:\\repo\\app.ts", "updated");
+      await jest.advanceTimersByTimeAsync(0);
+
+      const sub = mockSubscriptions[0];
+      sub.emit("subscribed");
+      sub.emit("subscribed");
+      await jest.advanceTimersByTimeAsync(0);
+      sub.emit("subscribed");
+      expect(sub.publish).toHaveBeenCalledTimes(1);
+
+      const request = sub.publish.mock.calls[0][0] as { requestId: string };
+      sub.emit("publication", {
+        data: { type: "file_ok", requestId: request.requestId },
+      });
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it.each([
+      ["cmd", "download"],
+      ["bash", "download"],
+      ["cmd", "upload"],
+      ["bash", "upload"],
+    ] as const)(
+      "completes a project-scoped PowerShell %s %s through the native file guard",
+      async (shell, direction) => {
+        const project = "C:\\work\\project with spaces";
+        const sandbox = createDesktopSandbox(project);
+        (sandbox as any).shellKind = shell;
+        (sandbox as any).httpClient = "powershell";
+        const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+        });
+        const url = "https://example.com/file?signature=opaque";
+        const transfer =
+          direction === "download"
+            ? sandbox.files.downloadFromUrl(url, "file.txt")
+            : sandbox.files.uploadToUrl("file.txt", url, "text/plain");
+        const outcome = transfer.catch((error: unknown) => error);
+
+        await jest.advanceTimersByTimeAsync(0);
+        // Exercise the real write/remove relay. Model the Desktop's project
+        // boundary so a global-temp write fails as it did in production.
+        for (let index = 0; index < mockSubscriptions.length; index++) {
+          const sub = mockSubscriptions[index];
+          sub.emit("subscribed");
+          await jest.advanceTimersByTimeAsync(0);
+          const request = sub.publish.mock.calls[0][0];
+          const outsideProject =
+            request.type === "file_write" &&
+            (request.allowedRoot !== project ||
+              !request.path.startsWith(`${project}\\`));
+          sub.emit("publication", {
+            data: outsideProject
+              ? {
+                  type: "file_error",
+                  requestId: request.requestId,
+                  message: "Path is outside the allowed project folder",
+                }
+              : { type: "file_ok", requestId: request.requestId },
+          });
+          await jest.advanceTimersByTimeAsync(0);
+        }
+
+        await expect(outcome).resolves.toBeUndefined();
+        const scriptPath = `${project}\\hackerai-transfer-${FIXED_UUID}.ps1`;
+        expect(mockSubscriptions).toHaveLength(2);
+        expect(mockSubscriptions[0].publish).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "file_write",
+            path: scriptPath,
+            allowedRoot: project,
+          }),
+        );
+        expect(mockSubscriptions[1].publish).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "file_remove", path: scriptPath }),
+        );
+        expect(run).toHaveBeenCalledTimes(1);
+        const command = run.mock.calls[0][0];
+        expect(command).toContain(
+          shell === "cmd"
+            ? `-File "${scriptPath}"`
+            : `-File '/c/work/project with spaces/hackerai-transfer-${FIXED_UUID}.ps1'`,
+        );
+        expect(command).not.toContain(url);
+        expect(jest.getTimerCount()).toBe(0);
+      },
+    );
+
     it("includes the project folder as the allowed root for native writes", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\hackerai");
       const promise = sandbox.files.write("src\\app.ts", "updated");
@@ -1291,7 +1908,7 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("files.write", () => {
-    it("uses heredoc approach for text content", async () => {
+    it("uses literal printf for text content", async () => {
       jest.useRealTimers();
 
       let callCount = 0;
@@ -1339,20 +1956,20 @@ describe("CentrifugoSandbox", () => {
         });
         await sandbox.files.write("/tmp/hackerai/test.txt", "hello world");
 
-        // files.write runs mkdir -p then cat > ... heredoc.
-        // Find the subscription whose publish was called with a cat > command
+        // Find the write after the parent-directory setup.
         const allPublishCalls = mockSubscriptions.flatMap((sub) =>
           (sub.publish as jest.Mock).mock.calls.map(
             (call: unknown[]) => call[0],
           ),
         );
         const writeCmd = allPublishCalls.find((msg: { command?: string }) =>
-          msg?.command?.includes("cat >"),
+          msg?.command?.includes("printf '%s'"),
         );
         expect(writeCmd).toBeDefined();
 
-        expect(writeCmd.command).toContain("cat >");
-        expect(writeCmd.command).toContain("<<'HACKERAI_EOF_");
+        expect(writeCmd.command).toBe(
+          "printf '%s' 'hello world' > '/tmp/hackerai/test.txt'",
+        );
         expect(writeCmd.command).toContain("hello world");
       } finally {
         jest.useFakeTimers();
@@ -1388,7 +2005,9 @@ describe("CentrifugoSandbox", () => {
       )!;
       const tempFile = firstChunk.match(/ > (.+)$/)?.[1];
       expect(tempFile).toBeDefined();
-      expect(commands).toContain(`del /q /f ${tempFile}`);
+      expect(commands).toContain(
+        `del /q /f ${tempFile} 2>nul & rmdir /s /q ${tempFile} 2>nul`,
+      );
     });
   });
 
@@ -1775,7 +2394,9 @@ describe("CentrifugoSandbox", () => {
           .replace(/\\/g, "/")}'`,
       );
       expect(powerShellCommand).not.toContain(nativeSource);
-      expect(remove).toHaveBeenCalledWith(nativeScriptPath);
+      expect(remove).toHaveBeenCalledWith(nativeScriptPath, {
+        signal: expect.any(AbortSignal),
+      });
     });
 
     it("redacts the native destination from Git Bash PowerShell download errors", async () => {
@@ -2492,13 +3113,12 @@ describe("CentrifugoSandbox", () => {
       expect(runs[0]).toContain("-maxdepth 1 -type f");
     });
 
-    it("files.write for text content uses heredoc with MSYS path", async () => {
+    it("files.write preserves text with an MSYS path", async () => {
       const { sandbox, runs } = createWindowsBashSandbox();
       await sandbox.files.write("/tmp/foo/bar.txt", "hello");
       // First call is the ensureDirectory mkdir -p, second is the write itself.
       expect(runs[0]).toBe("mkdir -p '/c/temp/foo'");
-      expect(runs[1]).toContain("cat > '/c/temp/foo/bar.txt'");
-      expect(runs[1]).toContain("<<'HACKERAI_EOF_");
+      expect(runs[1]).toBe("printf '%s' 'hello' > '/c/temp/foo/bar.txt'");
       expect(runs[1]).toContain("hello");
       // No certutil / cmd.exe artifacts.
       expect(runs[1]).not.toContain("certutil");
@@ -2531,6 +3151,49 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("getSandboxContext", () => {
+    it("describes the desktop login shell without assuming Bash or a Linux home", () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          osInfo: {
+            platform: "darwin",
+            arch: "arm64",
+            release: "24",
+            hostname: "mac",
+          },
+        },
+        defaultConfig,
+      );
+      expect(sandbox.getSandboxContext()).toContain(
+        "configured login shell with -lc",
+      );
+      expect(sandbox.getSandboxContext()).toContain('"$HOME"');
+      expect(sandbox.getSandboxContext()).toContain("Quote URLs and paths");
+      expect(sandbox.getSandboxContext()).not.toContain("/bin/bash -c");
+    });
+
+    it("does not downgrade project-scoped mutations when the file probe failed", async () => {
+      const sandbox = new CentrifugoSandbox(
+        "user-1",
+        {
+          ...defaultConnection,
+          isDesktop: true,
+          capabilities: { commands: true, pty: true, files: false },
+        },
+        defaultConfig,
+        "/project",
+      );
+      const run = jest.spyOn(sandbox.commands, "run");
+      await expect(
+        sandbox.files.write("/outside/file", "content"),
+      ).rejects.toThrow("require the native file bridge");
+      await expect(
+        sandbox.files.append("/outside/file", "content"),
+      ).rejects.toThrow("require the native file bridge");
+      expect(run).not.toHaveBeenCalled();
+    });
     it("returns context with OS info", () => {
       const sandbox = createSandbox({
         osInfo: {

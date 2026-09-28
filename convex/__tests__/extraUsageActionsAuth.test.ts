@@ -125,6 +125,7 @@ function makeCtx(userId = "user_member") {
     auth: {
       getUserIdentity: jest.fn(async () => ({ subject: userId })),
     },
+    runQuery: jest.fn(async () => null),
     runMutation: jest.fn(async () => null),
   };
 }
@@ -214,6 +215,24 @@ describe("extraUsageActions billing authorization", () => {
     mockGetOrganization.mockResolvedValue({
       stripeCustomerId: "cus_team",
     } as never);
+  });
+
+  it("blocks Checkout creation while the account has an active dispute hold", async () => {
+    const ctx = makeCtx("user_suspended");
+    ctx.runQuery.mockResolvedValueOnce({
+      status: "active",
+      category: "dispute_billing_hold",
+    });
+
+    const result = await callCreatePurchaseSession(ctx);
+
+    expect(result).toEqual({
+      url: null,
+      error:
+        "Billing is disabled while this account has an active payment dispute or fraud hold. Contact support before making another payment.",
+    });
+    expect(mockListOrganizationMemberships).not.toHaveBeenCalled();
+    expect(mockCheckoutSessionCreate).not.toHaveBeenCalled();
   });
 
   it("rejects a non-admin active org member before creating a Checkout session", async () => {
@@ -438,6 +457,30 @@ describe("deductWithAutoReload", () => {
       id: "in_auto",
       deleted: true,
     } as never);
+  });
+
+  it("does not charge auto-reload while the account is suspended", async () => {
+    const ctx: any = {
+      runQuery: jest.fn(async () => ({
+        status: "active",
+        category: "dispute_billing_hold",
+      })),
+      runMutation: jest.fn(),
+    };
+
+    const result = await callDeductWithAutoReload(ctx, {
+      userId: "user_suspended",
+      amountPoints: 100_000,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      autoReloadTriggered: false,
+      autoReloadResult: { success: false, reason: "account_suspended" },
+    });
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+    expect(mockInvoicesCreate).not.toHaveBeenCalled();
+    expect(mockInvoicesPay).not.toHaveBeenCalled();
   });
 
   it("attempts auto-reload when the request is larger than the current balance", async () => {

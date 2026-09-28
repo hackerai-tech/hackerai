@@ -122,6 +122,17 @@ const taskSrc = fs.readFileSync(
   "utf8",
 );
 
+const subagentSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../../trigger/subagent.ts"),
+  "utf8",
+);
+
+const approvalRequesterSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../chat/agent-tool-approval-requester.ts"),
+  "utf8",
+);
+const approvalRuntimeSrc = `${taskSrc}\n${approvalRequesterSrc}`;
+
 const dbActionsSrc = fs.readFileSync(
   path.resolve(__dirname, "../../db/actions.ts"),
   "utf8",
@@ -505,6 +516,20 @@ describe("agent-long chat UI — completion reconciliation", () => {
     expect(reconciliationSrc).toMatch(/clearTimeout\(requestTimeout\)/);
     expect(reconciliationSrc).toMatch(/response\.status\s*===\s*404/);
     expect(reconciliationSrc).toMatch(/payload\.terminal\s*===\s*true/);
+    expect(chatComponentSrc).toMatch(/markAgentRunUiTerminal/);
+    expect(chatComponentSrc).toMatch(
+      /submissionGeneration:\s*agentLongSubmissionGeneration/,
+    );
+    expect(reconciliationSrc).toMatch(
+      /const requestGeneration\s*=\s*agentLongRequestGenerationRef\.current/,
+    );
+    expect(reconciliationSrc).toMatch(
+      /markAgentRunUiTerminal\([\s\S]*requestGeneration/,
+    );
+    expect(reconciliationSrc).toMatch(/persistedRunDetached/);
+    expect(reconciliationSrc).toMatch(
+      /persistedRunDetached[\s\S]*scheduleFinishLocally\(\)/,
+    );
     expect(statusSrc).toMatch(/active_trigger_run_id\s*!==\s*runId/);
     expect(statusSrc).toMatch(/status:\s*"DETACHED",\s*terminal:\s*true/);
     expect(transportSrc).toMatch(
@@ -530,10 +555,10 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /agentLongRunFallbackAllowedRef\.current\s*=\s*false;[\s\S]*return fetchAgentLongStream/,
     );
     expect(chatComponentSrc).toMatch(
-      /submissionGeneration\s*=\s*\+\+agentLongSubmissionGenerationRef\.current/,
+      /requestGeneration\s*=\s*\+\+agentLongRequestGenerationRef\.current/,
     );
     expect(chatComponentSrc).toMatch(
-      /submissionGeneration\s*!==\s*agentLongSubmissionGenerationRef\.current/,
+      /requestGeneration\s*!==\s*agentLongRequestGenerationRef\.current/,
     );
     expect(chatComponentSrc).toMatch(
       /if \(init\?\.method !== "GET"\) \{[\s\S]*agentLongRunCorrelationRef\.current = null;[\s\S]*agentLongRunFallbackAllowedRef\.current = false;[\s\S]*setAgentLongRunId\(null\)/,
@@ -573,7 +598,7 @@ describe("agent-long chat UI — completion reconciliation", () => {
       /onRunStarted\?\.\(\{[\s\S]*runId:\s*handle\.runId/,
     );
     expect(chatComponentSrc).toMatch(
-      /fetchAgentLongStream\(init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
+      /fetchAgentLongStream\(\s*init,\s*\(run\)\s*=>\s*\{[\s\S]*setAgentLongRunId\(run\.runId\)/,
     );
   });
 
@@ -989,21 +1014,26 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent approval denial resolves as rejected without aborting the run", () => {
-    expect(taskSrc).toMatch(/next\.output\.decision\s*===\s*"approve"/);
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(
+      /next\.output\.decision\s*===\s*"approve"/,
+    );
+    expect(approvalRuntimeSrc).toMatch(
       /next\.output\.decision\s*===\s*"approve"[\s\S]*return\s*\{\s*approved:\s*true,\s*approvalId,\s*sandboxIdentity\s*\}/,
     );
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(
       /tool approval denied[\s\S]*return\s*\{\s*approved:\s*false,[\s\S]*reason:\s*humanDenialTrippedCircuitBreaker[\s\S]*buildDeniedApprovalReason\(next\.output\.message\)/,
     );
-    expect(taskSrc).toMatch(/record\.message === undefined/);
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(/record\.message === undefined/);
+    expect(approvalRuntimeSrc).toMatch(
       /The user denied approval for this operation and said:/,
     );
 
-    const denyLogIdx = taskSrc.indexOf("tool approval denied");
-    const denyReturnIdx = taskSrc.indexOf("approved: false", denyLogIdx);
-    const abortIdx = taskSrc.indexOf("signal.aborted", denyLogIdx);
+    const denyLogIdx = approvalRuntimeSrc.indexOf("tool approval denied");
+    const denyReturnIdx = approvalRuntimeSrc.indexOf(
+      "approved: false",
+      denyLogIdx,
+    );
+    const abortIdx = approvalRuntimeSrc.indexOf("signal.aborted", denyLogIdx);
 
     expect(denyLogIdx).toBeGreaterThan(-1);
     expect(denyReturnIdx).toBeGreaterThan(denyLogIdx);
@@ -1011,49 +1041,54 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("agent approval supports target prefix grants for ask-again behavior", () => {
-    expect(taskSrc).toMatch(/record\.grant === "target_prefix"/);
-    expect(taskSrc).toMatch(/record\.targetPrefix === undefined/);
-    expect(taskSrc).toMatch(/record\.targetKind === undefined/);
-    expect(taskSrc).toMatch(/const approvedTargetGrants/);
-    expect(taskSrc).toMatch(/initialTargetGrants/);
-    expect(taskSrc).toMatch(/persistTargetGrant/);
-    expect(taskSrc).toMatch(/persistAgentApprovalGrant/);
-    expect(taskSrc).toMatch(/agent_approval_grants/);
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(/record\.grant === "target_prefix"/);
+    expect(approvalRuntimeSrc).toMatch(/record\.targetPrefix === undefined/);
+    expect(approvalRuntimeSrc).toMatch(/record\.targetKind === undefined/);
+    expect(approvalRuntimeSrc).toMatch(/const approvedTargetGrants/);
+    expect(approvalRuntimeSrc).toMatch(/initialTargetGrants/);
+    expect(approvalRuntimeSrc).toMatch(/persistTargetGrant/);
+    expect(approvalRuntimeSrc).toMatch(/persistAgentApprovalGrant/);
+    expect(approvalRuntimeSrc).toMatch(/agent_approval_grants/);
+    expect(approvalRuntimeSrc).toMatch(
       /scopedGrant\.workingDirectory === workingDirectory/,
     );
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(
       /workingDirectory:\s*projectContext\.workingDirectory/,
     );
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(
       /approvedTargetGrant\.kind !== "terminal_interaction"/,
     );
-    expect(taskSrc).toMatch(/matchesApprovalTargetGrant/);
-    expect(taskSrc).toMatch(/approvalStatus", "auto_approved"/);
-    expect(taskSrc).toMatch(/next\.output\.grant === "target_prefix"/);
-    expect(taskSrc).toMatch(/approvalGrant", "target_prefix"/);
+    expect(approvalRuntimeSrc).toMatch(/matchesApprovalTargetGrant/);
+    expect(approvalRuntimeSrc).toMatch(/approvalStatus", "auto_approved"/);
+    expect(approvalRuntimeSrc).toMatch(
+      /next\.output\.grant === "target_prefix"/,
+    );
+    expect(approvalRuntimeSrc).toMatch(/approvalGrant", "target_prefix"/);
   });
 
   test("agent approval pending state is durable until the user responds", () => {
-    expect(taskSrc).toMatch(/buildPendingApprovalRequest/);
-    expect(taskSrc).toMatch(/AgentToolApprovalPendingRequest/);
-    expect(taskSrc).toMatch(/operation:\s*request\.operation/);
-    expect(taskSrc).toMatch(/request\.justification/);
-    expect(taskSrc).toMatch(/request\.prefixRule/);
-    expect(taskSrc).toMatch(/let shouldClearApprovalPending = false/);
-    expect(taskSrc).toMatch(
-      /if\s*\(\s*approvalPendingMarked\s*&&\s*shouldClearApprovalPending\s*\)/,
+    expect(approvalRuntimeSrc).toMatch(/buildPendingApprovalRequest/);
+    expect(approvalRuntimeSrc).toMatch(/AgentToolApprovalPendingRequest/);
+    expect(approvalRuntimeSrc).toMatch(/operation:\s*request\.operation/);
+    expect(approvalRuntimeSrc).toMatch(/request\.justification/);
+    expect(approvalRuntimeSrc).toMatch(/request\.prefixRule/);
+    expect(approvalRuntimeSrc).toMatch(/claimApprovalSlot/);
+    expect(approvalRuntimeSrc).toMatch(/outcome === "acquired"/);
+    expect(approvalRuntimeSrc).toMatch(/outcome !== "busy"/);
+    expect(approvalRuntimeSrc).toMatch(/expectedApprovalId: approvalId/);
+    expect(approvalRuntimeSrc).toMatch(
+      /if \(approvalPendingMarked\) \{[\s\S]*releaseApprovalSlot\(approvalId\)/,
     );
-    expect(taskSrc).toMatch(/shouldClearApprovalPending = true/);
-    expect(taskSrc).toMatch(/setApprovalPending\(\s*true,\s*[\s\S]*approvalId/);
   });
 
   test("agent approval waits without a wall-clock expiry", () => {
-    expect(taskSrc).not.toMatch(/AGENT_APPROVAL_TIMEOUT/);
-    expect(taskSrc).toMatch(/\.wait<AgentToolApprovalInputRecord>\(\)/);
-    expect(taskSrc).toMatch(/activeRuntimeBudget\.pause\(\)/);
-    expect(taskSrc).toMatch(/activeRuntimeBudget\.resume\(\)/);
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).not.toMatch(/AGENT_APPROVAL_TIMEOUT/);
+    expect(approvalRuntimeSrc).toMatch(
+      /\.wait<AgentToolApprovalInputRecord>\(\)/,
+    );
+    expect(approvalRuntimeSrc).toMatch(/activeRuntimeBudget\.pause\(\)/);
+    expect(approvalRuntimeSrc).toMatch(/activeRuntimeBudget\.resume\(\)/);
+    expect(approvalRuntimeSrc).toMatch(
       /getActiveElapsedTimeMs:\s*runtimeBudget\.getElapsedTimeMs/,
     );
   });
@@ -1105,13 +1140,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentApprovalRouteSrc).toMatch(/pending\?\.approvalId/);
     expect(agentApprovalRouteSrc).toMatch(/pending\?\.toolCallId/);
     expect(agentApprovalRouteSrc).not.toMatch(/streams\.read/);
-    expect(taskSrc).toMatch(/\.set\("approvalToolCallId"/);
-    expect(taskSrc).toContain('.set("userId", userId)');
-    expect(taskSrc).toContain('.set("approvalSessionId", approvalSessionId)');
-    expect(taskSrc).toMatch(
+    expect(approvalRuntimeSrc).toMatch(/\.set\("approvalToolCallId"/);
+    expect(approvalRuntimeSrc).toContain('.set("userId", userId)');
+    expect(approvalRuntimeSrc).toContain(
+      '.set("approvalSessionId", approvalSessionId)',
+    );
+    expect(approvalRuntimeSrc).toMatch(
       /\.set\(\s*"approvalProtocolVersion",\s*AGENT_TOOL_APPROVAL_PROTOCOL_VERSION/,
     );
-    expect(taskSrc).toMatch(/await metadata\.flush\(\)/);
+    expect(approvalRuntimeSrc).toMatch(/await metadata\.flush\(\)/);
     expect(agentApprovalRouteSrc).toMatch(/signAgentToolApprovalInput/);
     expect(agentApprovalRouteSrc).toMatch(
       /sessions\.open\(approvalSessionId\)\.in\.send\(signedInput/,
@@ -1124,6 +1161,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "event",
         "service",
         "runId",
+        "source_run_id",
+        "source_agent_id",
         "approvalId",
         "tool_call_id",
         "tool_name",
@@ -1134,6 +1173,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "event",
         "service",
         "runId",
+        "source_run_id",
+        "source_agent_id",
         "approvalId",
         "tool_call_id",
         "tool_name",
@@ -1143,6 +1184,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "event",
         "service",
         "runId",
+        "source_run_id",
+        "source_agent_id",
         "approvalId",
         "tool_call_id",
         "tool_name",
@@ -1155,6 +1198,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
         "event",
         "service",
         "runId",
+        "source_run_id",
+        "source_agent_id",
         "approvalId",
         "tool_call_id",
         "tool_name",
@@ -1168,7 +1213,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       const escapedMessage = message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const payload = new RegExp(
         `triggerLogger\\.info\\("${escapedMessage}",\\s*\\{([\\s\\S]*?)\\n\\s*\\}\\);`,
-      ).exec(taskSrc)?.[1];
+      ).exec(approvalRuntimeSrc)?.[1];
       expect(payload).toBeDefined();
       const keys = Array.from(
         payload?.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s*:|\s*,\s*$)/gm) ??
@@ -1178,7 +1223,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       expect(keys.sort()).toEqual([...expectedKeys].sort());
     }
 
-    expect(taskSrc).not.toContain('.set("approvalTargetPrefix"');
+    expect(approvalRuntimeSrc).not.toContain('.set("approvalTargetPrefix"');
   });
 
   test("terminal approval cleanup compare-clears stale composer state", () => {
@@ -1207,10 +1252,8 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 
-  test("full-access runs enable generic delegation without a rollout flag", () => {
-    expect(routeSrc).toMatch(
-      /const genericDelegationEnabled\s*=\s*agentPermissionMode === "full_access"/,
-    );
+  test("all Agent permission modes enable generic delegation without a rollout flag", () => {
+    expect(routeSrc).toMatch(/const genericDelegationEnabled\s*=\s*true/);
     expect(routeSrc).not.toContain('"agent-generic-delegation-v1"');
     expect(routeSrc).not.toContain("securityValidationSubagentsEnabled");
     expect(routeSrc).not.toContain("securityTaskSubagentsEnabled");
@@ -1546,7 +1589,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("content-filter finishes retry once on a different model and remain terminal on fallback", () => {
     expect(agentStreamRunnerSrc).toMatch(
-      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*languageModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? languageModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
+      /const telemetryModel =\s*ctx\.abliteratedTelemetry\?\.wrap\(\s*historyModel,\s*stepIndex,\s*activeStepRouting,?\s*\) \?\? historyModel;\s*const recoveryModel = recoverAbliterationMedia\(\s*ctx\.providerStreamTimeout\s*\?\s*withProviderStreamTimeout\(telemetryModel, ctx\.providerStreamTimeout\)\s*:\s*telemetryModel,?\s*\);[\s\S]{0,150}guardLanguageModelProviderResponse\(recoveryModel/,
     );
     expect(agentStreamRunnerSrc).toMatch(
       /isProviderContentBlockedFinishReasonError\(error\)/,
@@ -1841,7 +1884,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
 
   test("agent stream applies per-step OpenRouter metadata cost before budget checks", () => {
     const onStepFinishIdx = agentStreamRunnerSrc.indexOf(
-      "onStepFinish: async ({ usage, response, providerMetadata }) => {",
+      "onStepFinish: async (",
     );
     const accumulateIdx = agentStreamRunnerSrc.indexOf(
       "stepUsageCostIndex = ctx.usageTracker.accumulateStep",
@@ -2406,8 +2449,20 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
       "cloudSandboxSelectionReason: cloudSandboxSelection.reason",
     );
+    expect(taskSrc.slice(toolsIdx, promptIdx)).toContain(
+      "environment: ctx.environment.type",
+    );
     expect(taskSrc.slice(promptIdx, promptIdx + 700)).toContain(
       "cloudSandboxProvider",
+    );
+  });
+
+  test("the web chat and subagent tool paths preserve their runtime environment", () => {
+    expect(chatHandlerSrc).toMatch(
+      /cloudSandboxSelectionReason: cloudSandboxSelection\.reason,[\s\S]{0,200}environment: process\.env\.VERCEL_ENV \?\? "development"/,
+    );
+    expect(subagentSrc).toMatch(
+      /chargeSandboxRuntime: false,[\s\S]{0,200}environment: ctx\.environment\.type/,
     );
   });
 

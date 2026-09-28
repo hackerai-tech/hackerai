@@ -57,6 +57,7 @@ interface MessageItemProps {
   index: number;
   messagesLength: number;
   lastAssistantMessageIndex: number | undefined;
+  lastUserMessageIndex?: number;
   status: ChatStatus;
   canEdit: boolean;
   isEditing: boolean;
@@ -109,6 +110,7 @@ function areMessageItemPropsEqual(
   if (prev.messagesLength !== next.messagesLength) return false;
   if (prev.lastAssistantMessageIndex !== next.lastAssistantMessageIndex)
     return false;
+  if (prev.lastUserMessageIndex !== next.lastUserMessageIndex) return false;
   if (prev.finishReason !== next.finishReason) return false;
   if (prev.mode !== next.mode) return false;
   if (prev.agentRunSpendCapWarning !== next.agentRunSpendCapWarning)
@@ -168,6 +170,7 @@ export const MessageItem = memo(function MessageItem({
   index,
   messagesLength,
   lastAssistantMessageIndex,
+  lastUserMessageIndex,
   status,
   canEdit,
   isEditing,
@@ -675,16 +678,18 @@ export const MessageItem = memo(function MessageItem({
           )}
 
         {/* Finish reason notice under last assistant message */}
-        {isLastAssistantMessage && status !== "streaming" && (
-          <FinishReasonNotice
-            finishReason={finishReason}
-            mode={mode}
-            agentRunSpendCapPremiumContinuationAllowed={
-              agentRunSpendCapWarning?.premiumContinuationAllowed
-            }
-            onContinue={onContinue}
-          />
-        )}
+        {isLastAssistantMessage &&
+          index > (lastUserMessageIndex ?? -1) &&
+          status !== "streaming" && (
+            <FinishReasonNotice
+              finishReason={finishReason}
+              mode={mode}
+              agentRunSpendCapPremiumContinuationAllowed={
+                agentRunSpendCapWarning?.premiumContinuationAllowed
+              }
+              onContinue={onContinue}
+            />
+          )}
 
         <MessageActions
           messageText={messageText}

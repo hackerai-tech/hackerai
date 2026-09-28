@@ -3,6 +3,8 @@ import { terminateCloudSandboxesForUser } from "../cloud-sandbox";
 
 const mockTerminateMiosaSandboxesForUser = jest.fn();
 
+jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: () => null }));
+
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: {
     list: jest.fn(),

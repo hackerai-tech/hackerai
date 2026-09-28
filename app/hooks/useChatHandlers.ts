@@ -2,10 +2,11 @@ import { RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useLatestRef } from "@/app/hooks/useLatestRef";
+import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
 import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
+import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   normalizeSelectedModelForSubscription,
@@ -43,6 +44,7 @@ import { v4 as uuidv4 } from "uuid";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
 interface UseChatHandlersProps {
+  sendDisabledReason?: string;
   chatId: string;
   messages: ChatMessage[];
   sendMessage: (
@@ -60,6 +62,11 @@ interface UseChatHandlersProps {
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
   resumeActiveRun?: () => void | Promise<void>;
+  getAgentRunRequestGeneration?: () => number;
+  onAgentRunAlreadyFinished?: (
+    runId: string | undefined,
+    requestGeneration: number | undefined,
+  ) => void;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -97,10 +104,14 @@ export const useChatHandlers = ({
   hasManuallyStoppedRef,
   activeTriggerRunRef,
   resumeActiveRun,
+  getAgentRunRequestGeneration,
+  onAgentRunAlreadyFinished,
   onStopCallback,
   resetAutoContinueCount,
+  sendDisabledReason,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStreamDispatch();
+  const sendDisabledReasonRef = useCommittedRef(sendDisabledReason);
   const {
     getInput,
     uploadedFiles,
@@ -116,6 +127,7 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
+    desktopEnvironmentId,
     agentPermissionMode,
     selectedModel,
     sidebarOpen,
@@ -137,6 +149,7 @@ export const useChatHandlers = ({
   // latest value at the moment of the click.
   const chatModeRef = useLatestRef(chatMode);
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
@@ -194,15 +207,38 @@ export const useChatHandlers = ({
         activeTriggerRunId?: string | null;
       };
 
-  const cancelTriggerRun = async (): Promise<AgentCancellationResult> => {
-    if (!shouldCancelTriggerRun()) return { outcome: "not_applicable" };
-    const expectedTriggerRunId = activeTriggerRunRef?.current;
+  const cancelTriggerRun = async (
+    beforeCancel?: Promise<unknown>,
+  ): Promise<AgentCancellationResult> => {
+    const pendingStart = getPendingAgentLongRunStart(chatId);
+    if (!pendingStart && !shouldCancelTriggerRun()) {
+      await beforeCancel;
+      return { outcome: "not_applicable" };
+    }
+    // Capture the target before awaiting: a later run or navigation must not
+    // change which task this Stop is allowed to cancel.
+    const currentRunId = activeTriggerRunRef?.current;
+    let startFailure: unknown;
+    const [startedRun] = await Promise.all([
+      pendingStart?.catch((error: unknown) => {
+        startFailure = error;
+        return undefined;
+      }),
+      beforeCancel,
+    ]);
+    const expectedTriggerRunId = startedRun?.runId ?? currentRunId;
+    // Cancel a captured existing run even if the new start failed. Without an
+    // exact handle, never send a broad cancellation that could hit a later run.
+    if (!expectedTriggerRunId) {
+      if (startFailure) throw startFailure;
+      return { outcome: "not_applicable" };
+    }
     const response = await fetch(AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chatId,
-        ...(expectedTriggerRunId ? { expectedTriggerRunId } : {}),
+        expectedTriggerRunId,
       }),
     });
     if (response.status === 409) {
@@ -234,11 +270,15 @@ export const useChatHandlers = ({
         `Agent cancellation failed with status ${response.status}`,
       );
     }
+    // A lost start response can still hide a newly created durable task. Keep
+    // that uncertainty visible and prevent steering from starting another run.
+    if (startFailure) throw startFailure;
     return { outcome: "canceled" };
   };
 
   const recoverStaleAgentRun = async (
     result: Extract<AgentCancellationResult, { outcome: "stale_run" }>,
+    requestGeneration?: number,
   ): Promise<void> => {
     hasManuallyStoppedRef.current = false;
     if (activeTriggerRunRef && result.activeTriggerRunId !== undefined) {
@@ -261,9 +301,13 @@ export const useChatHandlers = ({
 
     if (hasNoActiveRun) {
       setIsAutoResuming(false);
-      toast.info("Agent run already finished", {
-        description: "Nothing is running to cancel. Try the action again.",
-      });
+      // The user's intent is already satisfied. Treat this completion race as
+      // a silent, successful reconciliation instead of surfacing internal run
+      // lifecycle state or asking them to repeat an action that cannot help.
+      onAgentRunAlreadyFinished?.(
+        result.expectedTriggerRunId,
+        requestGeneration,
+      );
       return;
     }
 
@@ -374,6 +418,7 @@ export const useChatHandlers = ({
   };
 
   const stopActiveRunForReplacement = async (): Promise<boolean> => {
+    const requestGeneration = getAgentRunRequestGeneration?.();
     const [triggerCancelResult, streamStopResult] = await Promise.allSettled([
       cancelTriggerRun(),
       stopActiveStream({ skipSave: true }),
@@ -391,19 +436,22 @@ export const useChatHandlers = ({
       throw streamStopResult.reason;
     }
     if (triggerCancelResult.value.outcome === "stale_run") {
-      await recoverStaleAgentRun(triggerCancelResult.value);
+      await recoverStaleAgentRun(triggerCancelResult.value, requestGeneration);
       return false;
     }
     return true;
   };
 
   const stopActiveRunForSteer = async (): Promise<boolean> => {
+    const requestGeneration = getAgentRunRequestGeneration?.();
     // Persist the latest message and todo snapshot before canceling the Trigger
     // run. The next run reads the persisted todo snapshot.
-    await stopActiveStream({ requireCancelSuccess: true });
-    const cancelResult = await cancelTriggerRun();
+    // Capture a pending start now, before the todo save can outlive its response.
+    const cancelResult = await cancelTriggerRun(
+      stopActiveStream({ requireCancelSuccess: true }),
+    );
     if (cancelResult.outcome === "stale_run") {
-      await recoverStaleAgentRun(cancelResult);
+      await recoverStaleAgentRun(cancelResult, requestGeneration);
       return false;
     }
     return true;
@@ -416,6 +464,7 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent): Promise<boolean> => {
     e.preventDefault();
+    if (sendDisabledReasonRef.current) return false;
 
     // Read the prompt only when the user submits. Keeping the live composer
     // value out of this hook prevents each keystroke from rerendering Chat.
@@ -483,7 +532,12 @@ export const useChatHandlers = ({
     if (
       hasLocalDesktopFiles &&
       (!isAgentMode(currentChatMode) ||
-        sandboxPreferenceRef.current !== "desktop")
+        !(
+          sandboxPreferenceRef.current === "desktop" ||
+          (desktopEnvironmentIdRef.current !== undefined &&
+            sandboxPreferenceRef.current ===
+              `desktop-environment:${desktopEnvironmentIdRef.current}`)
+        ))
     ) {
       toast.error("Local attachments require desktop Agent mode", {
         description:
@@ -502,6 +556,12 @@ export const useChatHandlers = ({
       if (queueBehavior === "queue") {
         // Queue the message - will auto-send after current response completes
         queueMessage(input, validFiles);
+        captureAuthenticatedEvent("chat_user_submission", {
+          definition_version: 1,
+          mode: currentChatMode,
+          subscription_tier: subscription,
+          queued: true,
+        });
         clearInput();
         clearUploadedFiles();
         return true;
@@ -553,6 +613,7 @@ export const useChatHandlers = ({
       });
       return false;
     }
+    if (sendDisabledReasonRef.current) return false;
     if (!isExistingChat) {
       window.history.replaceState({}, "", `/c/${chatId}`);
     }
@@ -603,12 +664,19 @@ export const useChatHandlers = ({
       );
     }
 
+    captureAuthenticatedEvent("chat_user_submission", {
+      definition_version: 1,
+      mode: currentChatMode,
+      subscription_tier: subscription,
+      queued: false,
+    });
     clearInput();
     clearUploadedFiles();
     return true;
   };
 
   const handleStop = async () => {
+    const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
       message_id: messages.findLast((message) => message.role === "assistant")
@@ -644,7 +712,7 @@ export const useChatHandlers = ({
       triggerCancelResult.status === "fulfilled" &&
       triggerCancelResult.value.outcome === "stale_run"
     ) {
-      await recoverStaleAgentRun(triggerCancelResult.value);
+      await recoverStaleAgentRun(triggerCancelResult.value, requestGeneration);
       return false;
     }
 
@@ -652,6 +720,7 @@ export const useChatHandlers = ({
   };
 
   const handleRegenerate = async () => {
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -659,6 +728,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     // Remove todos from all assistant messages in the auto-continue chain.
@@ -712,6 +782,7 @@ export const useChatHandlers = ({
         todos: cleanedTodos,
       });
     }
+    if (sendDisabledReasonRef.current) return;
     runChatAction("regenerate response", () =>
       regenerate({
         body: {
@@ -730,6 +801,7 @@ export const useChatHandlers = ({
   };
 
   const handleRetry = async (options: RetryOptions = {}) => {
+    if (sendDisabledReasonRef.current) return;
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -737,6 +809,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
@@ -768,6 +841,7 @@ export const useChatHandlers = ({
       });
     }
 
+    if (sendDisabledReasonRef.current) return;
     runChatAction("retry response", () =>
       regenerate({
         body: {
@@ -791,6 +865,7 @@ export const useChatHandlers = ({
     newContent: string,
     remainingFileIds?: string[],
   ) => {
+    if (sendDisabledReasonRef.current) return;
     const lastUserMessageIndex = findLastUserMessageIndex(messages);
     if (
       lastUserMessageIndex === undefined ||
@@ -807,6 +882,7 @@ export const useChatHandlers = ({
     if (hasActiveRunToReplace()) {
       if (!(await stopActiveRunForReplacement())) return;
     }
+    if (sendDisabledReasonRef.current) return;
     const agentRunRequestId = uuidv4();
 
     // Compute the todo snapshot before the edit mutation. Stopping a run
@@ -839,6 +915,7 @@ export const useChatHandlers = ({
       throw error;
     }
 
+    if (sendDisabledReasonRef.current) return;
     setTodos(cleanedTodosForEdit);
 
     // Build updated parts: text + remaining file parts
@@ -899,6 +976,7 @@ export const useChatHandlers = ({
   };
 
   const handleContinue = (selectedModelOverride?: SelectedModel) => {
+    if (sendDisabledReasonRef.current) return;
     if (status === "streaming" || status === "submitted") return;
     hasManuallyStoppedRef.current = false;
     resetAutoContinueCount?.();
@@ -925,6 +1003,7 @@ export const useChatHandlers = ({
   };
 
   const handleSendNow = async (messageId: string) => {
+    if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
     resetAutoContinueCount?.();
@@ -940,6 +1019,8 @@ export const useChatHandlers = ({
       if (hasActiveRunToReplace()) {
         if (!(await stopActiveRunForSteer())) return;
       }
+
+      if (sendDisabledReasonRef.current) return;
 
       // Keep the queued message available if stopping fails.
       removeQueuedMessage(messageId);

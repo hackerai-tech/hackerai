@@ -1,6 +1,6 @@
 import { hasMeaningfulToolInput } from "@/lib/chat/tool-abort-utils";
 import { OUTPUT_LIMIT_FINISH_REASON } from "@/lib/chat/stop-conditions";
-import type { UIMessage } from "ai";
+import { isStaticToolUIPart, type UIMessage } from "ai";
 
 type MessagePartLike = {
   type?: unknown;
@@ -133,6 +133,7 @@ export type ProviderDisconnectContinuation = {
   messages: UIMessage[];
   removedPartCount: number;
   preservedCompletedToolCount: number;
+  preservedUnknownToolCount: number;
   preservedTextPartCount: number;
 };
 
@@ -206,9 +207,28 @@ export const prepareProviderDisconnectContinuation = (
   if (removedPartCount <= 0 && !allowCompletedTail) return undefined;
 
   const preservedParts = parts.slice(0, preserveUntil);
+  let preservedUnknownToolCount = 0;
+  // Parallel tools can leave an unfinished call before a completed sibling.
+  // Keep its identity with an explicit unknown outcome: dropping it loses the
+  // execution record, while retaining input-available breaks the next request.
+  const continuationParts = preservedParts.map((part) => {
+    if (
+      !isStaticToolUIPart(part) ||
+      part.state !== "input-available" ||
+      part.providerExecuted === true
+    )
+      return part;
+    preservedUnknownToolCount++;
+    return {
+      ...part,
+      state: "output-error" as const,
+      errorText:
+        "The provider stream ended before this tool's result was received; its execution outcome is unknown. Verify its effects before considering another execution.",
+    };
+  });
   const normalizedMessages = messages.slice(0, assistantIndex);
-  if (hasDurableAssistantPart(preservedParts)) {
-    normalizedMessages.push({ ...assistant, parts: preservedParts });
+  if (hasDurableAssistantPart(continuationParts)) {
+    normalizedMessages.push({ ...assistant, parts: continuationParts });
   }
   normalizedMessages.push(...messages.slice(assistantIndex + 1));
 
@@ -217,6 +237,7 @@ export const prepareProviderDisconnectContinuation = (
     removedPartCount,
     preservedCompletedToolCount:
       preservedParts.filter(isCompletedToolPart).length,
+    preservedUnknownToolCount,
     preservedTextPartCount: preservedParts.filter(
       (part) =>
         getPartType(part) === "text" && Boolean(getPartText(part)?.trim()),

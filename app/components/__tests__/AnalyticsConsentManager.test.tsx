@@ -11,11 +11,16 @@ import userEvent from "@testing-library/user-event";
 import { SWRConfig } from "swr";
 
 const mockSaveAnalyticsConsent = jest.fn<() => Promise<void>>();
+const mockResolvePendingReferral = jest.fn();
 const mockFetch = jest.fn<typeof fetch>();
 const originalFetch = global.fetch;
 
 jest.mock("@/app/actions/analytics-consent", () => ({
   saveAnalyticsConsent: mockSaveAnalyticsConsent,
+}));
+
+jest.mock("@/lib/influencers/pending-referral", () => ({
+  resolvePendingInfluencerReferral: mockResolvePendingReferral,
 }));
 
 jest.mock("@/app/providers", () => ({
@@ -136,12 +141,22 @@ describe("AnalyticsConsentManager", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Allow analytics" }));
+    expect(mockResolvePendingReferral).not.toHaveBeenCalledWith(
+      window,
+      "accepted",
+    );
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "false",
     );
 
     finishSave?.();
+    await waitFor(() =>
+      expect(mockResolvePendingReferral).toHaveBeenCalledWith(
+        window,
+        "accepted",
+      ),
+    );
     await waitFor(() =>
       expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
         "data-analytics-allowed",
@@ -167,6 +182,10 @@ describe("AnalyticsConsentManager", () => {
     await user.click(screen.getByRole("button", { name: "Allow analytics" }));
 
     expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(mockResolvePendingReferral).not.toHaveBeenCalledWith(
+      window,
+      "accepted",
+    );
     expect(screen.getByTestId("posthog-provider")).toHaveAttribute(
       "data-analytics-allowed",
       "false",

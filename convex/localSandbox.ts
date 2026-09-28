@@ -3,6 +3,58 @@ import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { DatabaseReader } from "./_generated/server";
 import { SignJWT } from "jose";
+import { isEnvironmentPreference } from "../lib/sandbox/environment";
+
+function validateEnvironmentId(id: string | undefined) {
+  if (
+    id !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      id,
+    )
+  ) {
+    throw new ConvexError("Invalid environment ID");
+  }
+}
+
+async function resolvePreference(
+  db: DatabaseReader,
+  userId: string,
+  preference: string,
+) {
+  if (
+    preference === "desktop" ||
+    preference === "e2b" ||
+    isEnvironmentPreference(preference)
+  )
+    return preference;
+  const session = await db
+    .query("local_sandbox_connections")
+    .withIndex("by_connection_id", (q) => q.eq("connection_id", preference))
+    .unique();
+  return session?.user_id === userId && session.environment_id
+    ? `${session.client_version === "desktop" ? "desktop-environment" : "environment"}:${session.environment_id}`
+    : preference;
+}
+
+export const resolveEnvironmentPreference = query({
+  args: { preference: v.string() },
+  returns: v.string(),
+  handler: async (ctx, { preference }) => {
+    const user = await ctx.auth.getUserIdentity();
+    return user
+      ? resolvePreference(ctx.db, user.subject, preference)
+      : preference;
+  },
+});
+
+export const resolveEnvironmentPreferenceForBackend = query({
+  args: { serviceKey: v.string(), userId: v.string(), preference: v.string() },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    return resolvePreference(ctx.db, args.userId, args.preference);
+  },
+});
 
 /**
  * Internal mutation: purge disconnected sandbox connections older than cutoff.
@@ -204,6 +256,7 @@ export const regenerateToken = mutation({
 
 export const connect = mutation({
   args: {
+    environmentId: v.optional(v.string()),
     token: v.string(),
     connectionName: v.string(),
     clientVersion: v.string(),
@@ -220,6 +273,7 @@ export const connect = mutation({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
       }),
     ),
   },
@@ -248,12 +302,15 @@ export const connect = mutation({
       return { success: false, error: "Centrifugo not configured" };
     }
 
+    validateEnvironmentId(args.environmentId);
     const connectionId = crypto.randomUUID();
 
     // Create new connection (multiple connections allowed)
     await ctx.db.insert("local_sandbox_connections", {
       user_id: userId,
       connection_id: connectionId,
+      environment_id: args.environmentId,
+      ...(args.environmentId ? { ready: false } : {}),
       connection_name: args.connectionName,
       client_version: args.clientVersion,
       mode: "dangerous",
@@ -273,6 +330,33 @@ export const connect = mutation({
       centrifugoToken,
       centrifugoWsUrl,
     };
+  },
+});
+
+export const ready = mutation({
+  args: { token: v.string(), connectionId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const auth = await validateToken(ctx.db, args.token);
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) =>
+        q.eq("connection_id", args.connectionId),
+      )
+      .unique();
+    if (
+      !auth.valid ||
+      !connection ||
+      connection.user_id !== auth.userId ||
+      connection.status !== "connected"
+    ) {
+      throw new ConvexError("Connection is no longer active");
+    }
+    await ctx.db.patch(connection._id, {
+      ready: true,
+      last_heartbeat: Date.now(),
+    });
+    return null;
   },
 });
 
@@ -433,6 +517,7 @@ export const disconnect = mutation({
 // ============================================================================
 export const connectDesktop = mutation({
   args: {
+    environmentId: v.optional(v.string()),
     connectionName: v.string(),
     osInfo: v.optional(
       v.object({
@@ -447,6 +532,7 @@ export const connectDesktop = mutation({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
       }),
     ),
   },
@@ -465,6 +551,7 @@ export const connectDesktop = mutation({
     }
 
     const userId = identity.subject;
+    validateEnvironmentId(args.environmentId);
 
     // Disconnect stale desktop connections for this user (page reload, etc.)
     const existingDesktop = await ctx.db
@@ -475,7 +562,10 @@ export const connectDesktop = mutation({
       .collect();
     const now = Date.now();
     for (const conn of existingDesktop) {
-      if (conn.client_version === "desktop") {
+      if (
+        conn.client_version === "desktop" &&
+        conn.environment_id === args.environmentId
+      ) {
         await ctx.db.patch(conn._id, {
           status: "disconnected",
           disconnected_at: now,
@@ -489,8 +579,10 @@ export const connectDesktop = mutation({
     await ctx.db.insert("local_sandbox_connections", {
       user_id: userId,
       connection_id: connectionId,
+      environment_id: args.environmentId,
       connection_name: args.connectionName,
       container_id: undefined,
+      ...(args.environmentId ? { ready: false } : {}),
       client_version: "desktop",
       mode: "dangerous",
       os_info: args.osInfo,
@@ -584,7 +676,10 @@ export const heartbeatDesktop = mutation({
       return { success: false };
     }
 
-    await ctx.db.patch(connection._id, { last_heartbeat: Date.now() });
+    await ctx.db.patch(connection._id, {
+      last_heartbeat: Date.now(),
+      ready: true,
+    });
     return { success: true };
   },
 });
@@ -664,6 +759,8 @@ export const listConnections = query({
   returns: v.array(
     v.object({
       connectionId: v.string(),
+      environmentId: v.optional(v.string()),
+      createdAt: v.optional(v.number()),
       name: v.string(),
       osInfo: v.optional(
         v.object({
@@ -679,6 +776,7 @@ export const listConnections = query({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
       }),
     }),
   ),
@@ -692,14 +790,18 @@ export const listConnections = query({
 
     const connections = await collectConnectedLocalConnections(ctx.db, userId);
 
-    return connections.map((conn) => ({
-      connectionId: conn.connection_id,
-      name: conn.connection_name,
-      osInfo: conn.os_info,
-      lastSeen: conn.last_heartbeat,
-      isDesktop: conn.client_version === "desktop",
-      capabilities: conn.capabilities ?? { commands: true, pty: true },
-    }));
+    return connections
+      .filter((conn) => conn.ready !== false)
+      .map((conn) => ({
+        connectionId: conn.connection_id,
+        environmentId: conn.environment_id,
+        createdAt: conn._creationTime,
+        name: conn.connection_name,
+        osInfo: conn.os_info,
+        lastSeen: conn.last_heartbeat,
+        isDesktop: conn.client_version === "desktop",
+        capabilities: conn.capabilities ?? { commands: true, pty: true },
+      }));
   },
 });
 
@@ -711,6 +813,8 @@ export const listConnectionsForBackend = query({
   returns: v.array(
     v.object({
       connectionId: v.string(),
+      environmentId: v.optional(v.string()),
+      createdAt: v.optional(v.number()),
       name: v.string(),
       osInfo: v.optional(
         v.object({
@@ -726,6 +830,7 @@ export const listConnectionsForBackend = query({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
       }),
     }),
   ),
@@ -737,13 +842,17 @@ export const listConnectionsForBackend = query({
       args.userId,
     );
 
-    return connections.map((conn) => ({
-      connectionId: conn.connection_id,
-      name: conn.connection_name,
-      osInfo: conn.os_info,
-      lastSeen: conn.last_heartbeat,
-      isDesktop: conn.client_version === "desktop",
-      capabilities: conn.capabilities ?? { commands: true, pty: true },
-    }));
+    return connections
+      .filter((conn) => conn.ready !== false)
+      .map((conn) => ({
+        connectionId: conn.connection_id,
+        environmentId: conn.environment_id,
+        createdAt: conn._creationTime,
+        name: conn.connection_name,
+        osInfo: conn.os_info,
+        lastSeen: conn.last_heartbeat,
+        isDesktop: conn.client_version === "desktop",
+        capabilities: conn.capabilities ?? { commands: true, pty: true },
+      }));
   },
 });

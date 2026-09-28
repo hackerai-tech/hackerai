@@ -1,7 +1,8 @@
 # Subscription before regional task usage
 
 Decision record and owner: [HAC-118](https://linear.app/hackerai/issue/HAC-118),
-Ross Manko. This PR prepares a test; it does not launch Production.
+Ross Manko. The owner authorized a Production 50/50 control/test rollout.
+Activation follows verified deployment and acceptance; HAC-118 records live state.
 
 ## Policy
 
@@ -13,7 +14,7 @@ The browser never supplies authoritative country, assignment or subscription.
 
 Test users see their existing server-selected monthly Pro price before the idle
 composer. Checkout and alternative plans use the existing subscription flow.
-No regional discount or free renewal is offered. Ask, both Agent endpoints and
+No regional discount or free renewal is offered. Ask, the Agent endpoint and
 the worker reject test requests before model/tool execution. The Agent route
 rejects before saving the message or dispatching a worker. The new gate does not
 consume/refund existing quota or referral credits. Those credits do not bypass
@@ -21,17 +22,21 @@ the subscription requirement. History and account/billing surfaces stay availabl
 In-progress tasks keep their controls and existing run policy; new requests
 reevaluate eligibility. Paid entitlement changes immediately remove the UI gate.
 
-Controls use the configured ordinary free allowance. Both enrolled arms skip
-the older regional and monthly free-budget experiments. **Do not publicly launch
-while HAC-104 is running:** this would contaminate its cost/conversion readout.
-Disabling this flag restores the preexisting allowance experiments on new work.
+Control accounts keep the permanent regional allowance: at most three shared
+Ask/Agent requests/day and $0.10/calendar month, including stricter operational
+limits and existing referral credits. Enrollment never bypasses this policy.
+Disabling this flag restores the same allowance on new work without resetting
+counters. HAC-104 is closed; do not restart its archived allowance experiment.
+If historical participants enter this test, label their later outcomes as affected
+by subscription-first rather than an uninterrupted allowance follow-up.
 
 ## Rollout and environments
 
-| Environment | Project               | Flag   | Active | Enrollment       | Split               |
-| ----------- | --------------------- | ------ | ------ | ---------------- | ------------------- |
-| Preview     | hackerai-dev / 401167 | 887004 | Yes    | 100% eligible QA | Forced test         |
-| Production  | HackerAI / 144137     | 886891 | No     | 0%               | 50/50 when enrolled |
+Preview project `401167` uses independent flag `887004` at 100% eligible forced
+test. Production project `144137` uses flag `886891`: the approved target is
+100% eligible enrollment with stable control/test allocation of 50/50. The actual
+active state, rollout, targeting and launch timestamp are recorded in HAC-118
+after read-back, rather than inferred from this document.
 
 Both flags target `subscription=free` and `regional_subscription_country` in
 IN/PK/BD/NG. Assignment is deterministic by WorkOS user ID. The worker derives its
@@ -51,9 +56,10 @@ match the build logs, browser connection and Trigger payload before testing.
 No Convex changes are needed. A flag definition alone does not establish a
 worker's environment selection.
 
-Before public enrollment, review HAC-104, verify an internal allowlist and agree
-the rollout. The proposed first public stage is 10% eligible enrollment split
-50/50, with a reviewed expansion based on contribution, not traffic reduction.
+Before public enrollment, complete Preview checkout, payment activation, direct
+API enforcement and rollback acceptance, verify both runtime identities, and
+complete CI/review. The owner-approved 50/50 split supersedes the earlier 10%
+enrollment proposal; do not reinterpret it as 50% enrollment split in half.
 
 ## Measurement and decision
 
@@ -75,7 +81,7 @@ Reconcile shared overhead separately and do not count worker/sandbox cost twice.
 Guardrails include total contribution, conversion/revenue per exposed account,
 checkout errors, paid/out-of-country restrictions, assignment balance and access
 after payment. Review leading outcomes at 14 days and matured outcomes at 30 days
-after the actual launch; launch readiness review is September 23, 2026.
+after the actual launch, recorded in HAC-118.
 
 Rollback immediately for paid/out-of-scope restriction, broken checkout or task
 access after payment. Stop if lost revenue exceeds serving-cost savings. Disable
@@ -99,4 +105,4 @@ approved permanent policy.
    stop/reconnect controls for existing runs must remain accessible.
 5. Check exposure properties and zero-usage participants. Disable the Preview
    flag, focus/reload and confirm restored access; restore forced-test Preview
-   configuration after QA. Keep Production disabled pending the reviewed launch.
+   configuration after QA. Activate Production only after the verified deployment and acceptance.

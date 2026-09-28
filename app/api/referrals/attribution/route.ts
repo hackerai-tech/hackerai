@@ -1,3 +1,6 @@
+import { flushInfluencerAnalytics } from "@/lib/influencers/analytics";
+import { attributeInfluencer } from "@/lib/influencers/attribution";
+import { INFLUENCER_COOKIE } from "@/lib/influencers/policy";
 import { after, NextRequest, NextResponse } from "next/server";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
@@ -26,6 +29,28 @@ function parseCreatedAtMs(raw: unknown): number | undefined {
 }
 
 export async function POST(req: NextRequest) {
+  if (req.cookies.get(INFLUENCER_COOKIE)?.value) {
+    const auth = await getUserIDAndPro(req);
+    const user = await workos.userManagement.getUser(auth.userId);
+    const attributed = await attributeInfluencer(req, {
+      userId: auth.userId,
+      email: user.email,
+      identity: auth.freeQuotaSubject,
+      subscription: auth.subscription,
+      createdAt: user.createdAt,
+    });
+    if (attributed) {
+      after(() => flushInfluencerAnalytics().then(() => {}));
+      const response = NextResponse.json({
+        attributed: true,
+        status: "attributed",
+      });
+      response.cookies.delete(INFLUENCER_COOKIE);
+      clearReferralCookies(response);
+      return response;
+    }
+  }
+
   const config = getReferralRewardConfig();
   const referralCode = req.cookies.get(REFERRAL_COOKIE_NAME)?.value;
 

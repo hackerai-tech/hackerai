@@ -11,7 +11,38 @@ type MigrationState = {
   region: TriggerRunRegion;
   // File migrations pin an exact verified destination. Never recreate it empty.
   destinationId?: string;
+  // Optional for legacy records. An attempt, not just a run, owns the fence:
+  // a retry must not mistake a previous crashed attempt for a live migration.
+  owner?: { runId: string; attempt: number };
 };
+
+type CleanupState = {
+  version: 1;
+  phase: "cleanup" | "deleted";
+  token: string;
+  // Retain the destination pin for crash recovery and failed deletion retries.
+  migration?: MigrationState;
+  sourceId?: never;
+  region?: never;
+  destinationId?: never;
+};
+
+function isMigrationState(value: MigrationState): boolean {
+  return (
+    value.version === 1 &&
+    ["checking", "miosa"].includes(value.phase) &&
+    typeof value.token === "string" &&
+    typeof value.sourceId === "string" &&
+    (value.owner === undefined ||
+      (typeof value.owner?.runId === "string" &&
+        value.owner.runId.startsWith("run_") &&
+        Number.isInteger(value.owner.attempt) &&
+        value.owner.attempt > 0)) &&
+    (value.destinationId === undefined ||
+      (typeof value.destinationId === "string" && !!value.destinationId)) &&
+    ["us-east-1", "us-west-2"].includes(value.region)
+  );
+}
 
 export class CloudMigrationUnavailableError extends Error {
   constructor() {
@@ -41,7 +72,7 @@ export async function refreshE2BMigrationLease(sandbox: Sandbox) {
 
 export async function readCloudMigrationState(
   userId: string,
-): Promise<MigrationState | null> {
+): Promise<MigrationState | CleanupState | null> {
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production")
@@ -49,17 +80,20 @@ export async function readCloudMigrationState(
     return null;
   }
   try {
-    const value = await redis.get<MigrationState>(keyFor(userId));
+    const value = await redis.get<MigrationState | CleanupState>(
+      keyFor(userId),
+    );
     if (value === null) return null;
-    if (
-      value.version !== 1 ||
-      !["checking", "miosa"].includes(value.phase) ||
-      typeof value.token !== "string" ||
-      typeof value.sourceId !== "string" ||
-      (value.destinationId !== undefined &&
-        (typeof value.destinationId !== "string" || !value.destinationId)) ||
-      !["us-east-1", "us-west-2"].includes(value.region)
-    ) {
+    const valid =
+      value.phase === "cleanup" || value.phase === "deleted"
+        ? value.version === 1 &&
+          typeof value.token === "string" &&
+          !!value.token &&
+          (value.migration === undefined ||
+            (value.migration.phase === "miosa" &&
+              isMigrationState(value.migration)))
+        : isMigrationState(value as MigrationState);
+    if (!valid) {
       throw new CloudMigrationUnavailableError();
     }
     return value;
@@ -74,6 +108,7 @@ export async function claimCloudMigration(
   userId: string,
   sourceId: string,
   region: TriggerRunRegion,
+  owner?: MigrationState["owner"],
 ) {
   const redis = createRedisClient();
   if (!redis) throw new CloudMigrationUnavailableError();
@@ -84,6 +119,7 @@ export async function claimCloudMigration(
     token: randomUUID(),
     sourceId,
     region,
+    ...(owner && { owner }),
   };
   const serialized = JSON.stringify(state);
   try {
@@ -153,22 +189,82 @@ export async function assertCloudWorkspaceAvailable(
     }
   }
   const state = await readCloudMigrationState(userId);
-  if (state?.phase === "checking") {
+  if (state && state.phase !== "miosa") {
     throw new CloudMigrationUnavailableError();
   }
 }
 
-/** Only call after both providers confirm the user's explicit workspace reset. */
-export async function clearCloudMigrationAfterReset(
+/** Own the migration key before enumerating either provider. Older workers also
+ * reject this key, so they cannot claim after cleanup's provider snapshot. */
+export async function claimCloudWorkspaceCleanup(
   userId: string,
-  observed: MigrationState,
+  permanent: boolean,
 ) {
+  const observed = await readCloudMigrationState(userId);
+  if (
+    observed &&
+    observed.phase !== "miosa" &&
+    !(permanent && observed.phase === "deleted")
+  ) {
+    throw new CloudMigrationUnavailableError();
+  }
   const redis = createRedisClient();
-  if (!redis) throw new CloudMigrationUnavailableError();
-  const removed = await redis.eval(
-    `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0`,
-    [keyFor(userId)],
-    [JSON.stringify(observed)],
-  );
-  if (removed !== 1) throw new CloudMigrationUnavailableError();
+  if (!redis) {
+    if (process.env.NODE_ENV === "production")
+      throw new CloudMigrationUnavailableError();
+    // Local provider cleanup remains usable without Redis; migration cannot
+    // claim at all in that configuration.
+    return { migration: null, finish: async (_success: boolean) => {} };
+  }
+  const key = keyFor(userId);
+  const migration =
+    observed?.phase === "miosa"
+      ? observed
+      : observed?.phase === "deleted"
+        ? (observed.migration ?? null)
+        : null;
+  const state: CleanupState = {
+    version: 1,
+    phase: "cleanup",
+    token: randomUUID(),
+    ...(migration && { migration }),
+  };
+  const serialized = JSON.stringify(state);
+  try {
+    const claimed = await redis.eval(
+      `if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+      [key],
+      [observed ? JSON.stringify(observed) : "", serialized],
+    );
+    if (claimed !== 1) throw new CloudMigrationUnavailableError();
+  } catch {
+    throw new CloudMigrationUnavailableError();
+  }
+  return {
+    migration,
+    finish: async (success: boolean) => {
+      // Account deletion never grants queued jobs permission again, including
+      // after partial provider failure. A later deletion attempt may retry.
+      const next = permanent
+        ? JSON.stringify({
+            version: 1,
+            phase: "deleted",
+            token: state.token,
+            ...(!success && migration && { migration }),
+          })
+        : success || !observed
+          ? ""
+          : JSON.stringify(observed);
+      try {
+        const finished = await redis.eval(
+          `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end return 1`,
+          [key],
+          [serialized, next],
+        );
+        if (finished !== 1) throw new CloudMigrationUnavailableError();
+      } catch {
+        throw new CloudMigrationUnavailableError();
+      }
+    },
+  };
 }

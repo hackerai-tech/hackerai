@@ -163,7 +163,9 @@ describe("useFileUpload desktop-local agent attachments", () => {
         );
       } else {
         expect(removeGeneratedTextAttachment).not.toHaveBeenCalled();
-        expect(removeUploadedFile).toHaveBeenCalledWith(0);
+        expect(removeUploadedFile).toHaveBeenCalledWith(
+          globalState.uploadedFiles[0].file,
+        );
         expect(toast.error).not.toHaveBeenCalled();
       }
       errorSpy.mockRestore();
@@ -276,7 +278,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
     await waitFor(() => {
       expect(updateUploadedFile).toHaveBeenLastCalledWith(
-        0,
+        expect.any(Object),
         expect.objectContaining({
           uploaded: true,
           uploading: false,
@@ -361,7 +363,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
     });
 
     expect(updateUploadedFile).toHaveBeenLastCalledWith(
-      0,
+      expect.any(Object),
       expect.objectContaining({
         uploaded: true,
         uploading: false,
@@ -480,7 +482,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
     await waitFor(() => {
       expect(updateUploadedFile).toHaveBeenCalledWith(
-        0,
+        expect.any(Object),
         expect.objectContaining({
           uploaded: true,
           uploading: false,
@@ -516,7 +518,7 @@ describe("useFileUpload desktop-local agent attachments", () => {
 
     await waitFor(() => {
       expect(updateUploadedFile).toHaveBeenCalledWith(
-        0,
+        expect.any(Object),
         expect.objectContaining({
           uploading: false,
           uploaded: false,
