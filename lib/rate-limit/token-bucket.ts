@@ -30,7 +30,6 @@ import {
 import { isUserRateLimitKey } from "./key-cleanup";
 import {
   NORMAL_USAGE_MULTIPLIER,
-  EXTRA_USAGE_REQUEST_MULTIPLIER,
   POINTS_PER_DOLLAR,
   includedPointsToExtraUsagePoints,
   extraUsagePointsToIncludedPoints,
@@ -1393,10 +1392,7 @@ export const deductUsage = async (
       const pointsToRefund = Math.abs(costDifference);
       const extraUsageRefundTarget = Math.min(
         initialExtraUsagePoints,
-        Math.floor(
-          (pointsToRefund * EXTRA_USAGE_REQUEST_MULTIPLIER) /
-            NORMAL_USAGE_MULTIPLIER,
-        ),
+        Math.floor(pointsToRefund),
       );
 
       if (extraUsageRefundTarget > 0) {

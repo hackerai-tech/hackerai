@@ -3,33 +3,23 @@ export const POINTS_PER_DOLLAR = 10_000;
 
 /**
  * Request usage pricing multiplier applied to raw provider and tool cost before
- * deducting points from a paid plan's included balance.
+ * deducting points from either included allowance or Extra Usage.
  */
-export const NORMAL_USAGE_MULTIPLIER = 1.3;
+export const NORMAL_USAGE_MULTIPLIER = 1.2;
 
 /**
- * Request multiplier used when provider/tool cost is paid from Extra Usage.
- * Stored Extra Usage points retain their existing 1.5x dollar conversion; this
- * separate consumption multiplier lets included and prepaid usage be priced
- * independently without revaluing balances customers already purchased.
+ * Both balances share the request multiplier. Keep the separate analytics name
+ * so historical pricing versions remain comparable. Stored Extra Usage points
+ * retain their 1.5x dollar conversion without revaluing purchased balances.
  */
-export const EXTRA_USAGE_REQUEST_MULTIPLIER = 1.4;
+export const EXTRA_USAGE_REQUEST_MULTIPLIER = NORMAL_USAGE_MULTIPLIER;
 
 /** Convert included-usage points into the stored points charged to Extra Usage. */
 export const includedPointsToExtraUsagePoints = (points: number): number =>
   Number.isFinite(points) && points > 0
-    ? Math.ceil(
-        Number(
-          (
-            (points * EXTRA_USAGE_REQUEST_MULTIPLIER) /
-            NORMAL_USAGE_MULTIPLIER
-          ).toFixed(6),
-        ),
-      )
+    ? Math.ceil(Number(points.toFixed(6)))
     : 0;
 
 /** Express stored Extra Usage points in included-usage coverage units. */
 export const extraUsagePointsToIncludedPoints = (points: number): number =>
-  Number.isFinite(points) && points > 0
-    ? (points * NORMAL_USAGE_MULTIPLIER) / EXTRA_USAGE_REQUEST_MULTIPLIER
-    : 0;
+  Number.isFinite(points) && points > 0 ? points : 0;
