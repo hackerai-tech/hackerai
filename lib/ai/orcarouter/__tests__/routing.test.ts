@@ -14,6 +14,8 @@ import { isEligibleForDirectGlmVision } from "@/lib/chat/auxiliary-vision-eligib
 import {
   coerceSelectedModel,
   normalizeSelectedModelForMode,
+  normalizeSelectedModelForSubscription,
+  normalizeSelectedModelOverrideForSubscription,
 } from "@/types/chat";
 
 const KEY = "orcarouter:openai/gpt-5.5" as const;
@@ -26,17 +28,25 @@ describe("OrcaRouter model routing", () => {
     expect(coerceSelectedModel("orcarouter:")).toBeNull();
   });
 
-  it("serves an OrcaRouter choice in paid Ask mode", () => {
-    expect(selectModel("ask", "pro", KEY)).toBe(KEY);
-    expect(selectModel("ask", "ultra", KEY, true)).toBe(KEY);
+  it("serves an OrcaRouter choice in Ask mode, including the free plan", () => {
+    expect(selectModel("ask", "free", KEY)).toBe(KEY);
+    expect(selectModel("ask", "pro", KEY, true)).toBe(KEY);
+    expect(normalizeSelectedModelForSubscription(KEY, "free")).toBe(KEY);
+    expect(normalizeSelectedModelOverrideForSubscription(KEY, "free")).toBe(
+      KEY,
+    );
+    // Free plans still cannot pick HackerAI tiers.
+    expect(normalizeSelectedModelForSubscription("hackerai-pro", "free")).toBe(
+      "auto",
+    );
   });
 
-  it("routes Agent mode and free plans as Auto", () => {
+  it("routes Agent mode as Auto", () => {
     expect(selectModel("agent", "pro", KEY)).toBe(
       selectModel("agent", "pro", "auto"),
     );
-    expect(selectModel("ask", "free", KEY)).toBe(
-      selectModel("ask", "free", "auto"),
+    expect(selectModel("agent", "free", KEY)).toBe(
+      selectModel("agent", "free", "auto"),
     );
     expect(normalizeSelectedModelForMode(KEY, "agent")).toBe("auto");
     expect(normalizeSelectedModelForMode(KEY, "ask")).toBe(KEY);

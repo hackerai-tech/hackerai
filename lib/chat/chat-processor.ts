@@ -65,13 +65,9 @@ export function selectModel(
     options,
   );
   // A user-chosen OrcaRouter model is served with the user's own key in Ask
-  // mode and bypasses HackerAI's tier and media routing. Agent mode and free
-  // plans cannot use it, so route those requests as Auto.
-  if (
-    isOrcaRouterModelKey(requestedModel) &&
-    !isAgent &&
-    subscription !== "free"
-  ) {
+  // mode and bypasses HackerAI's tier and media routing. Agent mode does not
+  // support it yet, so route those requests as Auto.
+  if (isOrcaRouterModelKey(requestedModel) && !isAgent) {
     return requestedModel;
   }
   const allowedSelectedModel = isOrcaRouterModelKey(requestedModel)

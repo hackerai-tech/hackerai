@@ -345,6 +345,14 @@ const ModelOptionList = ({
           </span>
           <ChevronRight className="h-4 w-4 text-primary shrink-0" />
         </a>
+        {!isAuto && (
+          // A free user on an OrcaRouter model needs a way back to Auto.
+          <AutoOptionButton
+            isSelected={false}
+            onSelect={onAutoSelect}
+            mobile={mobile}
+          />
+        )}
         <div className="my-1.5 border-b border-border/50" />
       </>
     ) : (
@@ -463,8 +471,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const isMobile = Boolean(useIsMobile());
 
   const isFreeUser = subscription === "free";
-  // OrcaRouter models run on the user's own key, in Ask mode on paid plans.
-  const orcaRouterAvailable = !isFreeUser && !isAgentMode(mode);
+  // OrcaRouter models run on the user's own key in Ask mode.
+  const orcaRouterAvailable = !isAgentMode(mode);
   const orcaRouterSelected = isOrcaRouterModelKey(value);
   const orcaRouterActive = orcaRouterAvailable && (open || orcaRouterSelected);
   const { connection: orcaRouterConnection } =
@@ -513,12 +521,12 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const isFreeAgent = isFreeUser && isAgentMode(mode);
   const triggerLabel = isFreeAgent
     ? "Auto"
-    : isFreeUser
-      ? "Model"
-      : isAuto
-        ? "Auto"
-        : isOrcaRouterModelKey(displayValue)
-          ? getOrcaRouterModelId(displayValue)
+    : isOrcaRouterModelKey(displayValue)
+      ? getOrcaRouterModelId(displayValue)
+      : isFreeUser
+        ? "Model"
+        : isAuto
+          ? "Auto"
           : selected.label;
 
   // Re-validate a stored OrcaRouter choice against what this turn can use:

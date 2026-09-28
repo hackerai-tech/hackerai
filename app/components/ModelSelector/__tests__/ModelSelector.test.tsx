@@ -602,12 +602,30 @@ describe("ModelSelector OrcaRouter models", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not offer OrcaRouter on the free plan", () => {
+  it("offers OrcaRouter models to free Ask users", () => {
     mockSubscription = "free";
-    render(<ModelSelector value="auto" onChange={jest.fn()} mode="ask" />);
+    const onChange = jest.fn();
+    render(<ModelSelector value="auto" onChange={onChange} mode="ask" />);
     fireEvent.click(screen.getByRole("button", { name: /^Model$/i }));
-    expect(
-      screen.queryByTestId("orcarouter-model-group"),
-    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("option", { name: "openai/gpt-5.5" }));
+    expect(onChange).toHaveBeenCalledWith("orcarouter:openai/gpt-5.5");
+  });
+
+  it("lets a free user on an OrcaRouter model return to Auto", () => {
+    mockSubscription = "free";
+    const onChange = jest.fn();
+    render(
+      <ModelSelector
+        value="orcarouter:openai/gpt-5.5"
+        onChange={onChange}
+        mode="ask"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "openai/gpt-5.5" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /Auto Balanced quality and speed/i }),
+    );
+    expect(onChange).toHaveBeenCalledWith("auto");
   });
 });

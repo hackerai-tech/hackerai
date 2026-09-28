@@ -93,7 +93,7 @@ const SettingsDialog = ({
     label: "Extra Usage",
     icon: Gauge,
   };
-  // OrcaRouter models are selectable only on paid plans (Ask mode).
+  // OrcaRouter models run in Ask mode, which is the free plan's mode.
   const modelProvidersTab = {
     id: MODEL_PROVIDERS_SETTINGS_TAB,
     label: MODEL_PROVIDERS_SETTINGS_TAB,
@@ -108,7 +108,6 @@ const SettingsDialog = ({
           ...baseTabs,
           agentsTab,
           localSandboxTab,
-          modelProvidersTab,
           usageTab,
           ...(isTeamAdmin ? [extraUsageTab] : []),
           membersTab,
@@ -119,12 +118,17 @@ const SettingsDialog = ({
             ...baseTabs,
             agentsTab,
             localSandboxTab,
-            modelProvidersTab,
             usageTab,
             extraUsageTab,
             accountTab,
           ]
-        : [...baseTabs, agentsTab, localSandboxTab, accountTab];
+        : [
+            ...baseTabs,
+            agentsTab,
+            localSandboxTab,
+            modelProvidersTab,
+            accountTab,
+          ];
 
   const canShowInitialTab = initialTab
     ? tabs.some((t) => t.id === initialTab)

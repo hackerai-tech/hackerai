@@ -108,7 +108,10 @@ export function isSelectedModel(value: string | null): value is SelectedModel {
   );
 }
 
-/** OrcaRouter models run only in Ask mode; Agent mode falls back to Auto. */
+/**
+ * OrcaRouter models run in Ask mode on the user's own key (Ask is the free
+ * plan's mode); Agent mode falls back to Auto.
+ */
 export function normalizeSelectedModelForMode(
   model: SelectedModel | null | undefined,
   mode: ChatMode,
@@ -238,7 +241,10 @@ export function normalizeSelectedModelForSubscription(
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
 ): SelectedModel {
-  if (subscription === "free") return "auto";
+  // Free plans choose between Auto and a model on their own OrcaRouter key.
+  if (subscription === "free") {
+    return isOrcaRouterModelKey(model) ? model : "auto";
+  }
   return model ?? "auto";
 }
 
@@ -246,7 +252,9 @@ export function normalizeSelectedModelOverrideForSubscription(
   model: SelectedModel | null | undefined,
   subscription: SubscriptionTier,
 ): SelectedModel | undefined {
-  if (subscription === "free") return "auto";
+  if (subscription === "free") {
+    return isOrcaRouterModelKey(model) ? model : "auto";
+  }
   return model ?? undefined;
 }
 

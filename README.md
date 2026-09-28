@@ -36,7 +36,7 @@ You'll need the following accounts:
 **Optional:**
 
 - [abliteration.ai](https://abliteration.ai/) - AI models for security requests that standard models may refuse
-- [OrcaRouter](https://www.orcarouter.ai) - Lets paid users connect their own OrcaRouter account (API key or sign-in) and pick its models in Ask mode
+- [OrcaRouter](https://www.orcarouter.ai) - Lets users connect their own OrcaRouter account (API key or sign-in) and pick its models in Ask mode
 - [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
