@@ -1,5 +1,7 @@
 "use client";
 
+import "./security-widget.css";
+
 import React, { useCallback } from "react";
 import { useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { UserSecurity } from "@workos-inc/widgets/user-security";

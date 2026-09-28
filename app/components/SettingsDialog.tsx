@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   Settings,
   X,
@@ -16,7 +17,6 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageNotesDialog } from "@/app/components/ManageNotesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
-import { SecurityTab } from "@/app/components/SecurityTab";
 import { PersonalizationTab } from "@/app/components/PersonalizationTab";
 import { AccountTab } from "@/app/components/AccountTab";
 import { DataControlsTab } from "@/app/components/DataControlsTab";
@@ -28,6 +28,19 @@ import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
 import { TeamExtraUsageSection } from "@/app/components/TeamExtraUsageSection";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+
+// Keep the widget runtime and its vendor styles out of the initial app bundle.
+const SecurityTab = dynamic(
+  () => import("./SecurityTab").then((module) => module.SecurityTab),
+  {
+    ssr: false,
+    loading: () => (
+      <div role="status" className="text-sm text-muted-foreground">
+        Loading security settings…
+      </div>
+    ),
+  },
+);
 
 interface SettingsDialogProps {
   open: boolean;
