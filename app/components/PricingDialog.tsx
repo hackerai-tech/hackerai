@@ -450,13 +450,16 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       return;
     }
 
+    // Close pricing while its hash is still active so its URL cleanup runs.
+    onClose();
+
     // Update URL with billing period before opening team dialog
     const url = new URL(window.location.href);
     url.searchParams.set("selectedPlan", isYearly ? "yearly" : "monthly");
     url.hash = "team-pricing-seat-selection";
     window.history.replaceState({}, "", url.toString());
+    window.dispatchEvent(new Event("hashchange"));
 
-    onClose(); // Close the pricing dialog
     setTeamPricingDialogOpen(true);
   };
 
