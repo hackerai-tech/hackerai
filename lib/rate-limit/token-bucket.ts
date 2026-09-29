@@ -577,10 +577,10 @@ export const calculateRawModelUsageCostDollars = ({
 // Budget Limits
 // =============================================================================
 
-/** Monthly credit amounts per tier (1:1 with subscription price) */
+/** Monthly credit amounts per tier. */
 const MONTHLY_CREDITS: Record<string, number> = {
   free: 0,
-  pro: 250_000, // $25
+  pro: 250_000,
   "pro-plus": 600_000, // $60
   ultra: 2_000_000, // $200
   team: 400_000, // $40

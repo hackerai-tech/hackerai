@@ -7,7 +7,6 @@ import { phLogger } from "@/lib/posthog/server";
 import {
   PAID_FUNNEL_EVENTS,
   paidFunnelProperties,
-  planLookupKeyToTier,
 } from "@/lib/analytics/paid-funnel";
 import type { KeepSubscriptionResult } from "@/lib/billing/api-types";
 import {
@@ -15,7 +14,11 @@ import {
   subscriptionPauseFromMetadata,
   type SubscriptionPauseMetadata,
 } from "@/lib/billing/retention-offers";
-import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  subscriptionCurrentPeriodEndMs,
+  subscriptionPlanFromPrice,
+  subscriptionTierFromPrice,
+} from "@/lib/billing/current-subscription";
 import {
   releaseSubscriptionSchedule,
   subscriptionScheduleId,
@@ -36,12 +39,6 @@ type SubscriptionContext = {
 };
 
 export type { KeepSubscriptionResult };
-
-function subscriptionTierFromLookupKey(
-  lookupKey: string | null | undefined,
-): SubscriptionTier | undefined {
-  return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
-}
 
 async function getActiveSubscriptionContext(
   stripeCustomerId: string,
@@ -70,8 +67,8 @@ async function getActiveSubscriptionContext(
   return {
     id: currentSubscription.id,
     priceId: price?.id,
-    plan: price?.lookup_key ?? undefined,
-    tier: subscriptionTierFromLookupKey(price?.lookup_key),
+    plan: subscriptionPlanFromPrice(price),
+    tier: subscriptionTierFromPrice(price),
     currentPeriodEnd: subscriptionCurrentPeriodEndMs(currentSubscription),
     cancelAtPeriodEnd: currentSubscription.cancel_at_period_end === true,
     scheduleId: subscriptionScheduleId(currentSubscription),

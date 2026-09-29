@@ -32,10 +32,10 @@ jest.mock("@/lib/analytics/client", () => ({
 }));
 
 const price = {
-  key: "hac46-pro-monthly-29-pricing",
-  variant: "test",
-  priceLookupKey: "pro-monthly-plan-29-experiment",
+  priceLookupKey: "pro-monthly-plan",
   displayedAmountDollars: 29,
+  currency: "usd",
+  billingInterval: "month",
   stripePriceId: "price_29",
 };
 const response = (body: unknown) => ({ ok: true, json: async () => body });
@@ -63,7 +63,7 @@ describe("subscription before task presentation", () => {
     );
   });
 
-  it("shows the assigned price before allowing a task and uses the established checkout", async () => {
+  it("shows the $29 price before allowing a task and uses the established checkout", async () => {
     render(view());
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
     await screen.findByText("$29");
@@ -76,9 +76,6 @@ describe("subscription before task presentation", () => {
       "free",
       expect.objectContaining({
         source: "regional_subscription_first",
-        pricing_experiment: expect.objectContaining({
-          displayedAmountDollars: 29,
-        }),
       }),
     );
     expect(mockCapture).toHaveBeenCalledWith(
@@ -144,7 +141,7 @@ describe("subscription before task presentation", () => {
     );
     render(view());
     await screen.findByText("Retry pricing");
-    expect(screen.queryByText("$25")).not.toBeInTheDocument();
+    expect(screen.queryByText("$29")).not.toBeInTheDocument();
     expect(screen.queryByText("Send task")).not.toBeInTheDocument();
     mockFetch.mockResolvedValue(response(price));
     fireEvent.click(screen.getByText("Retry pricing"));

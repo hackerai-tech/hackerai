@@ -20,17 +20,12 @@ import {
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
-import {
-  captureAuthenticatedEvent,
-  captureUpgradeCtaImpression,
-} from "@/lib/analytics/client";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import type { PricingDialogContext } from "../hooks/usePricingDialog";
 import {
-  PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-  proMonthlyPricingAssignmentForVariant,
-  proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentPresentation,
-} from "@/lib/experiments/pro-monthly-pricing";
+  PRO_MONTHLY_PRICE_LOOKUP_KEY,
+  type ProMonthlyPricePresentation,
+} from "@/lib/pricing/pro-monthly";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -69,9 +64,6 @@ type PricingIntentCopy = {
   proPlusButtonText: string;
   ultraButtonText: string;
 };
-
-const PRICING_EXPOSURE_RETRY_MS = 500;
-const PRICING_EXPOSURE_MAX_ATTEMPTS = 10;
 
 export function getPricingIntentCopy(
   context: PricingDialogContext | undefined,
@@ -244,13 +236,12 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
   const capturedPricingCtaImpressionRef = React.useRef(false);
-  const capturedPricingExperimentExposureRef = React.useRef(false);
-  const [pricingExperiment, setPricingExperiment] = React.useState<
-    ProMonthlyPricingExperimentPresentation | undefined
+  const [proMonthlyPrice, setProMonthlyPrice] = React.useState<
+    ProMonthlyPricePresentation | undefined
   >();
-  const [pricingExperimentResolved, setPricingExperimentResolved] =
+  const [proMonthlyPriceResolved, setProMonthlyPriceResolved] =
     React.useState(false);
-  const [pricingExperimentUnavailable, setPricingExperimentUnavailable] =
+  const [proMonthlyPriceUnavailable, setProMonthlyPriceUnavailable] =
     React.useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
@@ -260,67 +251,66 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   } | null>(null);
   const pricingIntentCopy = getPricingIntentCopy(context, subscription);
   const monthlyProPrice =
-    subscription === "free" && pricingExperiment
-      ? pricingExperiment.displayedAmountDollars
+    subscription === "free" && proMonthlyPrice
+      ? proMonthlyPrice.displayedAmountDollars
       : PRICING.pro.monthly;
   const displayedMonthlyProPrice =
-    subscription === "free" && pricingExperimentUnavailable
+    subscription === "free" && proMonthlyPriceUnavailable
       ? "—"
-      : subscription === "free" && !pricingExperimentResolved
+      : subscription === "free" && !proMonthlyPriceResolved
         ? "…"
         : monthlyProPrice;
-  const activePricingExperiment =
-    subscription === "free" && !isYearly ? pricingExperiment : undefined;
 
   React.useEffect(() => {
-    if (!isOpen || pricingExperimentResolved) return;
+    if (!isOpen || proMonthlyPriceResolved) return;
     if (subscription !== "free") return;
 
     const controller = new AbortController();
-    setPricingExperimentUnavailable(false);
+    setProMonthlyPriceUnavailable(false);
     void fetch("/api/pricing/pro-monthly-experiment", {
       cache: "no-store",
       signal: controller.signal,
     })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Pricing assignment unavailable");
+        if (!response.ok) throw new Error("Pro monthly price unavailable");
         const value = (await response.json()) as {
-          key?: unknown;
-          variant?: unknown;
           priceLookupKey?: unknown;
           displayedAmountDollars?: unknown;
+          currency?: unknown;
+          billingInterval?: unknown;
           stripePriceId?: unknown;
         };
         if (controller.signal.aborted) return;
-        const expected = proMonthlyPricingAssignmentForVariant(
-          value.variant === "test" ? "test" : "control",
-        );
         const stripePriceId =
           typeof value.stripePriceId === "string" &&
           value.stripePriceId.length > 0
             ? value.stripePriceId
             : undefined;
         const isValid =
-          value.key === expected.key &&
-          value.priceLookupKey === expected.priceLookupKey &&
-          value.displayedAmountDollars === expected.displayedAmountDollars &&
+          value.priceLookupKey === PRO_MONTHLY_PRICE_LOOKUP_KEY &&
+          value.displayedAmountDollars === PRICING.pro.monthly &&
+          value.currency === "usd" &&
+          value.billingInterval === "month" &&
           stripePriceId;
-        if (!isValid) throw new Error("Invalid pricing assignment");
-        setPricingExperiment({
-          ...expected,
+        if (!isValid) throw new Error("Invalid Pro monthly price");
+        setProMonthlyPrice({
+          priceLookupKey: PRO_MONTHLY_PRICE_LOOKUP_KEY,
+          displayedAmountDollars: PRICING.pro.monthly,
+          currency: "usd",
+          billingInterval: "month",
           stripePriceId,
         });
-        setPricingExperimentResolved(true);
+        setProMonthlyPriceResolved(true);
       })
       .catch((error: unknown) => {
         if ((error as { name?: unknown })?.name === "AbortError") return;
-        setPricingExperiment(undefined);
-        setPricingExperimentUnavailable(true);
-        setPricingExperimentResolved(false);
+        setProMonthlyPrice(undefined);
+        setProMonthlyPriceUnavailable(true);
+        setProMonthlyPriceResolved(false);
       });
 
     return () => controller.abort();
-  }, [isOpen, pricingExperimentResolved, subscription]);
+  }, [isOpen, proMonthlyPriceResolved, subscription]);
 
   // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
   React.useEffect(() => {
@@ -331,52 +321,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
   React.useEffect(() => {
     if (!isOpen) {
-      capturedPricingExperimentExposureRef.current = false;
-      return;
-    }
-    if (
-      !activePricingExperiment ||
-      capturedPricingExperimentExposureRef.current
-    ) {
-      return;
-    }
-
-    let exposureCaptureAttempts = 0;
-    let exposureRetryTimeout: ReturnType<typeof setTimeout> | undefined;
-    const captureExperimentExposure = () => {
-      exposureCaptureAttempts += 1;
-      if (
-        captureAuthenticatedEvent(
-          PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-          proMonthlyPricingExperimentProperties(activePricingExperiment),
-        )
-      ) {
-        capturedPricingExperimentExposureRef.current = true;
-        return;
-      }
-      if (exposureCaptureAttempts < PRICING_EXPOSURE_MAX_ATTEMPTS) {
-        exposureRetryTimeout = setTimeout(
-          captureExperimentExposure,
-          PRICING_EXPOSURE_RETRY_MS,
-        );
-      }
-    };
-    captureExperimentExposure();
-
-    return () => {
-      if (exposureRetryTimeout) clearTimeout(exposureRetryTimeout);
-    };
-  }, [activePricingExperiment, isOpen]);
-
-  React.useEffect(() => {
-    if (!isOpen) {
       capturedPricingCtaImpressionRef.current = false;
       return;
     }
 
     if (
       capturedPricingCtaImpressionRef.current ||
-      (subscription === "free" && !pricingExperimentResolved)
+      (subscription === "free" && !proMonthlyPriceResolved)
     ) {
       return;
     }
@@ -388,15 +339,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       cta_text: "plan_card_buttons",
       ...(context?.reason && { reason: context.reason }),
       ...(context?.limitType && { limit_type: context.limitType }),
-      ...proMonthlyPricingExperimentProperties(activePricingExperiment),
     });
   }, [
     context?.limitType,
     context?.reason,
     context?.source,
     isOpen,
-    activePricingExperiment,
-    pricingExperimentResolved,
+    proMonthlyPriceResolved,
     subscription,
   ]);
 
@@ -423,8 +372,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           surface: "pricing_dialog",
           reason: context?.reason,
           limit_type: context?.limitType,
-          pricing_experiment:
-            plan === "pro-monthly-plan" ? activePricingExperiment : undefined,
         });
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
@@ -513,12 +460,12 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     } else if (user) {
       return {
         text:
-          subscription === "free" && !isYearly && pricingExperimentUnavailable
+          subscription === "free" && !isYearly && proMonthlyPriceUnavailable
             ? "Pricing unavailable"
             : (pricingIntentCopy?.proButtonText ?? "Get Pro"),
         disabled:
           upgradeLoading ||
-          (subscription === "free" && !isYearly && !pricingExperimentResolved),
+          (subscription === "free" && !isYearly && !proMonthlyPriceResolved),
         className: "",
         variant: "default" as const,
         onClick: () =>
