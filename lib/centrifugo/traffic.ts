@@ -2,14 +2,6 @@ import { metrics } from "@opentelemetry/api";
 
 const LARGE_RELAY_STREAM_BYTES = 1024 * 1024;
 
-const receivedBytesCounter = metrics
-  .getMeter("hackerai.local-relay")
-  .createCounter("hackerai.local_relay.received_bytes", {
-    description:
-      "Estimated Centrifugo publication bytes received by server subscriptions",
-    unit: "By",
-  });
-
 /** Record wire-subscription bytes with only bounded labels, so Trigger can
  * aggregate relay traffic across runs without searching individual logs. */
 export function recordRelayReceivedBytes(
@@ -25,6 +17,14 @@ export function recordRelayReceivedBytes(
   );
   const matched = receivedBytes - unmatched;
   try {
+    // The shared module can load before Trigger registers its meter provider.
+    const receivedBytesCounter = metrics
+      .getMeter("hackerai.local-relay")
+      .createCounter("hackerai.local_relay.received_bytes", {
+        description:
+          "Estimated Centrifugo publication bytes received by server subscriptions",
+        unit: "By",
+      });
     if (matched > 0) {
       receivedBytesCounter.add(matched, {
         operation,
