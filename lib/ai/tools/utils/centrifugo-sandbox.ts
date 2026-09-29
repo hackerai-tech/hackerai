@@ -21,6 +21,7 @@ import {
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import {
   estimateRelayPayloadBytes,
+  recordRelayReceivedBytes,
   relayTrafficSampleRate,
 } from "@/lib/centrifugo/traffic";
 import {
@@ -355,6 +356,10 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.userId;
   }
 
+  getRelayTrafficSource(): "agent-long" | "chat-handler" {
+    return this.triggerRunId ? "agent-long" : "chat-handler";
+  }
+
   getWsUrl(): string {
     return this.config.wsUrl;
   }
@@ -446,11 +451,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let unmatchedPayloadBytesEstimate = 0;
       let receivedPublications = 0;
       let unmatchedPublications = 0;
+      let trafficMetricRecorded = false;
       const startedAt = Date.now();
       const reassembler = new CentrifugoMessageReassembler();
 
       const onAbort = () => fail(new Error("Desktop file request aborted"));
       const cleanup = () => {
+        if (!trafficMetricRecorded) {
+          trafficMetricRecorded = true;
+          recordRelayReceivedBytes(
+            "file",
+            this.triggerRunId ? "agent-long" : "chat-handler",
+            receivedPayloadBytesEstimate,
+            unmatchedPayloadBytesEstimate,
+          );
+        }
         const sampleRate = relayTrafficSampleRate(
           requestId,
           receivedPayloadBytesEstimate,
@@ -694,6 +709,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let unmatchedPayloadBytesEstimate = 0;
         let receivedPublications = 0;
         let unmatchedPublications = 0;
+        let trafficMetricRecorded = false;
         let cancelRequested = false;
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
@@ -712,6 +728,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let tFirstMessage = 0;
 
         const cleanup = () => {
+          if (!trafficMetricRecorded) {
+            trafficMetricRecorded = true;
+            recordRelayReceivedBytes(
+              "command",
+              this.triggerRunId ? "agent-long" : "chat-handler",
+              receivedPayloadBytesEstimate,
+              unmatchedPayloadBytesEstimate,
+            );
+          }
           // Sample ordinary commands, but always record large streams. This
           // attributes relay traffic without logging command or output data.
           const outputBytes = stdoutBytes + stderrBytes;

@@ -5,7 +5,10 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingStatusContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
-import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  subscriptionCurrentPeriodEndMs,
+  subscriptionPlanFromPrice,
+} from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
@@ -191,7 +194,9 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       invoice.status === "paid" && { renewalInvoicePaid: true }),
     ...(renewalPaymentFailure && { renewalPaymentFailure }),
     ...(price?.id && { stripePriceId: price.id }),
-    ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
+    ...(subscriptionPlanFromPrice(price) && {
+      stripePriceLookupKey: subscriptionPlanFromPrice(price),
+    }),
     ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),
     ...(price?.currency && { renewalCurrency: price.currency }),
     ...(price?.recurring?.interval && {
