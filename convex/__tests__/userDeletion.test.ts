@@ -12,6 +12,7 @@ jest.mock("../_generated/server", () => ({
 }));
 
 jest.mock("convex/values", () => ({
+  ...jest.requireActual<typeof import("convex/values")>("convex/values"),
   v: new Proxy(
     {},
     {
@@ -39,20 +40,37 @@ jest.mock("../fileAggregate", () => ({
 
 type Row = { _id: string; [key: string]: any };
 type Tables = Record<string, Row[]>;
-type ReadCounter = { value: number };
+type ReadCounter = { value: number; bytes: number };
+const { getDocumentSize } =
+  jest.requireActual<typeof import("convex/values")>("convex/values");
+
+function countBytes(counter: ReadCounter, row: Row | null | undefined) {
+  if (row) counter.bytes += getDocumentSize(row);
+  if (counter.bytes > 16 * 1024 * 1024)
+    throw new Error("transaction read limit exceeded");
+}
 
 function createQueryResult(rows: Row[], readCounter: ReadCounter) {
   return {
+    async *[Symbol.asyncIterator]() {
+      for (const row of rows) {
+        readCounter.value += 1;
+        countBytes(readCounter, row);
+        yield row;
+      }
+    },
     collect: jest.fn(async () => rows),
     first: jest.fn(async () => {
       const result = rows[0] ?? null;
       if (result) readCounter.value += 1;
+      countBytes(readCounter, result);
       return result;
     }),
     unique: jest.fn(async () => rows[0] ?? null),
     take: jest.fn(async (limit: number) => {
       const result = rows.slice(0, limit);
       readCounter.value += result.length;
+      result.forEach((row) => countBytes(readCounter, row));
       return result;
     }),
     order: jest.fn(() => createQueryResult(rows, readCounter)),
@@ -98,6 +116,7 @@ function createQueryBuilder(
         const start = cursor ? Number(cursor) : 0;
         const page = tableRows().slice(start, start + numItems);
         readCounter.value += page.length;
+        page.forEach((row) => countBytes(readCounter, row));
         const next = start + page.length;
         return {
           page,
@@ -112,7 +131,7 @@ function createQueryBuilder(
 function createMockCtx(tables: Tables, subject = "user_123") {
   const deletedIds: string[] = [];
   const patches: Array<{ id: string; patch: Record<string, any> }> = [];
-  const readCounter: ReadCounter = { value: 0 };
+  const readCounter: ReadCounter = { value: 0, bytes: 0 };
   const scheduler = {
     runAfter: jest.fn().mockResolvedValue(undefined),
   };
@@ -126,12 +145,20 @@ function createMockCtx(tables: Tables, subject = "user_123") {
       readCounter.value += 1;
       for (const rows of Object.values(tables)) {
         const row = rows.find((candidate) => candidate._id === id);
-        if (row) return row;
+        if (row) {
+          countBytes(readCounter, row);
+          return row;
+        }
       }
       return null;
     }),
     delete: jest.fn(async (id: string) => {
       deletedIds.push(id);
+      for (const rows of Object.values(tables))
+        countBytes(
+          readCounter,
+          rows.find((row) => row._id === id),
+        );
       for (const [table, rows] of Object.entries(tables)) {
         const next = rows.filter((row) => row._id !== id);
         if (next.length !== rows.length) {
@@ -144,6 +171,7 @@ function createMockCtx(tables: Tables, subject = "user_123") {
       for (const rows of Object.values(tables)) {
         const row = rows.find((candidate) => candidate._id === id);
         if (!row) continue;
+        countBytes(readCounter, row);
         for (const [key, value] of Object.entries(patch)) {
           if (value === undefined) {
             delete row[key];
@@ -1259,6 +1287,177 @@ describe("userDeletion", () => {
     expect(tables.feedback).toHaveLength(0);
     expect(thirdBatchReads).toBeLessThanOrEqual(100);
     expect(row(tables, "chats", "chat-doc")).toBeUndefined();
+  });
+
+  it.each(["service", "residue"])(
+    "bounds aggregate bytes and finishes large records through %s cleanup",
+    async (entry) => {
+      const { deleteAllUserDataByService, cleanupDeletedUserResidue } =
+        await import("../userDeletion");
+      const payload = "x".repeat(900 * 1024);
+      const tables: Tables = {
+        messages: Array.from({ length: 24 }, (_, i) => ({
+          _id: `m${i}`,
+          user_id: "user_123",
+          chat_id: "chat",
+          parts: [{ text: payload }],
+          feedback_id: `f${i}`,
+        })),
+        feedback: Array.from({ length: 24 }, (_, i) => ({
+          _id: `f${i}`,
+          feedback_details: payload,
+        })),
+        chats: [
+          {
+            _id: "chat",
+            id: "chat",
+            user_id: "user_123",
+            latest_summary_id: "legacy",
+            title: payload,
+          },
+        ],
+        chat_summaries: [
+          { _id: "summary", chat_id: "chat", summary_text: payload },
+          { _id: "legacy", chat_id: "legacy", summary_text: payload },
+        ],
+        subagent_messages: Array.from({ length: 6 }, (_, i) => ({
+          _id: `sm${i}`,
+          user_id: "user_123",
+          parts: [{ text: payload }],
+        })),
+        subagent_runs: [
+          { _id: "run", user_id: "user_123", objective: payload },
+        ],
+        notes: Array.from({ length: 6 }, (_, i) => ({
+          _id: `n${i}`,
+          user_id: "user_123",
+          content: payload,
+        })),
+        usage_logs: Array.from({ length: 6 }, (_, i) => ({
+          _id: `u${i}`,
+          user_id: "user_123",
+          content: payload,
+        })),
+      };
+      const { ctx, readCounter, deletedIds } = createMockCtx(tables);
+      let completed = false;
+      let passes = 0;
+      while (!completed && passes < 50) {
+        readCounter.bytes = 0;
+        const before = deletedIds.length;
+        const result =
+          entry === "service"
+            ? await deleteAllUserDataByService.handler(ctx as any, {
+                serviceKey: "service_key",
+                userId: "user_123",
+              })
+            : await cleanupDeletedUserResidue.handler(ctx as any, {
+                serviceKey: "service_key",
+                userIds: ["user_123"],
+                dryRun: false,
+              });
+        expect(readCounter.bytes).toBeLessThan(16 * 1024 * 1024);
+        for (const feedback of tables.feedback) {
+          expect(
+            tables.messages.some(
+              (message) => message.feedback_id === feedback._id,
+            ),
+          ).toBe(true);
+        }
+        if (
+          tables.messages.length ||
+          tables.subagent_messages.length ||
+          tables.subagent_runs.length
+        )
+          expect(tables.chats).toHaveLength(1);
+        expect(
+          deletedIds.length > before ||
+            Object.values(result.anonymized).some((n) => Number(n) > 0) ||
+            !result.hasMore,
+        ).toBe(true);
+        completed = !result.hasMore;
+        passes += 1;
+      }
+      expect(completed).toBe(true);
+      expect(passes).toBeGreaterThan(1);
+      for (const table of [
+        "messages",
+        "feedback",
+        "chats",
+        "chat_summaries",
+        "subagent_messages",
+        "subagent_runs",
+        "notes",
+      ])
+        expect(tables[table]).toHaveLength(0);
+      expect(tables.usage_logs.every((row) => row.user_id !== "user_123")).toBe(
+        true,
+      );
+    },
+  );
+
+  it.each(["chat_summaries", "subagent_events", "subagent_work_items"])(
+    "bounds orphan %s parent reads and preserves pagination",
+    async (table) => {
+      const { cleanupDeletedUserResidue } = await import("../userDeletion");
+      const payload = "x".repeat(900 * 1024);
+      const tables: Tables = {
+        [table]: Array.from({ length: 12 }, (_, i) => ({
+          _id: `row${i}`,
+          chat_id: `c${i}`,
+          subagent_id: `s${i}`,
+          content: payload,
+        })),
+        chats: Array.from({ length: 12 }, (_, i) => ({
+          _id: `c${i}`,
+          id: `c${i}`,
+          title: payload,
+        })),
+        subagent_runs: Array.from({ length: 12 }, (_, i) => ({
+          _id: `s${i}`,
+          subagent_id: `s${i}`,
+          objective: payload,
+        })),
+      };
+      const { ctx, readCounter } = createMockCtx(tables);
+      let cursor: string | undefined;
+      let scanned = 0;
+      for (let i = 0; i < 3; i++) {
+        readCounter.bytes = 0;
+        const result = await cleanupDeletedUserResidue.handler(ctx as any, {
+          serviceKey: "service_key",
+          ...(table === "chat_summaries"
+            ? { deleteOrphanChatSummaries: true }
+            : { orphanSubagentTable: table }),
+          orphanNumItems: 1000,
+          orphanCursor: cursor,
+        });
+        expect(readCounter.bytes).toBeLessThan(16 * 1024 * 1024);
+        scanned +=
+          table === "chat_summaries"
+            ? result.orphanChatSummariesScanned
+            : result.orphanSubagentRowsScanned;
+        cursor =
+          table === "chat_summaries"
+            ? result.orphanChatSummariesContinueCursor
+            : result.orphanSubagentRowsContinueCursor;
+        expect(result.hasMore).toBe(i < 2);
+      }
+      expect(scanned).toBe(12);
+      expect(tables[table]).toHaveLength(12);
+    },
+  );
+
+  it("rejects combining both orphan passes in one transaction", async () => {
+    const { cleanupDeletedUserResidue } = await import("../userDeletion");
+    const { ctx } = createMockCtx(seedTables());
+    await expect(
+      cleanupDeletedUserResidue.handler(ctx as any, {
+        serviceKey: "service_key",
+        deleteOrphanChatSummaries: true,
+        orphanSubagentTable: "subagent_events",
+      }),
+    ).rejects.toThrow("separate mutation");
   });
 
   it("fails user deletion if S3 cleanup scheduling fails", async () => {
