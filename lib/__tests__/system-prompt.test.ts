@@ -2,6 +2,30 @@ import { describe, expect, it } from "@jest/globals";
 import { systemPrompt } from "@/lib/system-prompt";
 
 describe("systemPrompt security instructions", () => {
+  it.each([
+    ["ask", null, false],
+    ["agent", null, true],
+    ["agent", "Connected local or remote host", false],
+  ] as const)(
+    "includes the live-target authorization rule only for cloud execution (%s, %s)",
+    async (mode, sandboxContext, expected) => {
+      const prompt = await systemPrompt(
+        "user_123",
+        mode,
+        "pro",
+        "agent-model",
+        null,
+        sandboxContext,
+      );
+
+      expect(prompt).toContain("<authorized_security_posture>");
+      expect(prompt).toContain("</authorized_security_posture>");
+      expect(prompt.includes("Before actively testing any live target")).toBe(
+        expected,
+      );
+    },
+  );
+
   it.each([null, "Local sandbox context"])(
     "scopes general Agent lifecycle guidance to Agent mode (%s)",
     async (sandboxContext) => {
