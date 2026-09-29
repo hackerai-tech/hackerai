@@ -6,6 +6,8 @@ import Loading from "@/components/ui/loading";
 import { SlowLoadingNotice } from "@/app/components/SlowLoadingNotice";
 import { useHasAuthenticatedBefore } from "@/app/hooks/useHasAuthenticatedBefore";
 import { ChatRoutePresentationProvider } from "@/app/contexts/ChatRoutePresentationContext";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import TeamPricingDialog from "@/app/components/TeamPricingDialog";
 
 const fullWidthShell = (
   <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
@@ -29,12 +31,17 @@ export default function ChatRouteLayout({
 }) {
   const { isLoading, isAuthenticated } = useConvexAuth();
   const hasAuthHint = useHasAuthenticatedBefore();
+  const { teamPricingDialogOpen, setTeamPricingDialogOpen } = useGlobalState();
 
   if (isAuthenticated || (isLoading && hasAuthHint)) {
     return (
       <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
         <ChatRoutePresentationProvider>
           <ChatLayout>{children}</ChatLayout>
+          <TeamPricingDialog
+            isOpen={teamPricingDialogOpen}
+            onClose={() => setTeamPricingDialogOpen(false)}
+          />
         </ChatRoutePresentationProvider>
       </div>
     );
