@@ -4,11 +4,12 @@ import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-con
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
-export const FREE_ASK_DEEPSEEK_V41_KEY = "free_ask_deepseek_v4_1_conversion_v1";
+export const FREE_AGENT_GLM_FLASH_KEY =
+  "free_agent_glm_5_3_flash_conversion_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_ASK_DEEPSEEK_V41_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_AGENT_GLM_FLASH_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
@@ -31,12 +32,12 @@ export async function evaluateFlashRouting({
   hasImages: boolean;
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || hasImages) return undefined;
-  const isFreeAsk =
-    mode === "ask" &&
+  const isFreeAgent =
+    mode === "agent" &&
     subscription === "free" &&
-    selectedModel === "ask-model-free-glm";
-  const key = isFreeAsk
-    ? FREE_ASK_DEEPSEEK_V41_KEY
+    selectedModel === "agent-model-free";
+  const key = isFreeAgent
+    ? FREE_AGENT_GLM_FLASH_KEY
     : mode === "agent" &&
         subscription !== "free" &&
         selectedModel === "model-deepseek-v4-flash-0731"
@@ -48,16 +49,16 @@ export async function evaluateFlashRouting({
     const flags = await posthog.evaluateFlags(userId, { flagKeys: [key] });
     const variant = flags.getFlag(key);
     if (variant !== "control" && variant !== "test") return undefined;
-    if (isFreeAsk) {
+    if (isFreeAgent) {
       return {
         key,
         variant,
         modelKey:
-          variant === "control" ? selectedModel : "ask-model-free-deepseek-v41",
+          variant === "control" ? selectedModel : "model-glm-5.3-flash-agent",
         configuredModel:
           variant === "control"
-            ? "z-ai/glm-5.3-flash"
-            : "deepseek/deepseek-v4.1-flash",
+            ? "deepseek/deepseek-v4.1-flash"
+            : "z-ai/glm-5.3-flash",
       };
     }
     return {
