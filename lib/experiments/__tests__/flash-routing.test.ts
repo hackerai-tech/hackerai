@@ -3,19 +3,24 @@ import {
   getActiveFlashRoutingAssignment,
   createFlashRoutingExposureRecorder,
   PAID_AGENT_FLASH_RETURN_KEY,
-  FREE_ASK_DEEPSEEK_V41_KEY,
+  FREE_AGENT_GLM_FLASH_KEY,
   FLASH_ROUTING_EXPOSURE_EVENT,
 } from "@/lib/experiments/flash-routing";
 
-const free = {
+const freeAsk = {
   userId: "test-user",
   subscription: "free" as const,
   mode: "ask" as const,
   selectedModel: "ask-model-free-glm",
   hasImages: false,
 };
+const freeAgent = {
+  ...freeAsk,
+  mode: "agent" as const,
+  selectedModel: "agent-model-free",
+};
 const paid = {
-  ...free,
+  ...freeAsk,
   subscription: "pro" as const,
   mode: "agent" as const,
   selectedModel: "model-deepseek-v4-flash-0731",
@@ -26,32 +31,32 @@ const flags = (variant: unknown) => ({
 
 describe("Flash routing experiments", () => {
   it.each(["control", "test"] as const)(
-    "routes free Ask %s and records only actual matching exposure",
+    "routes free Agent %s and records only actual matching exposure",
     async (variant) => {
       const posthog = flags(variant);
       const assignment = await evaluateFlashRouting({
-        ...free,
+        ...freeAgent,
         posthog: posthog as never,
       });
       const configuredModel =
         variant === "control"
-          ? "z-ai/glm-5.3-flash"
-          : "deepseek/deepseek-v4.1-flash";
+          ? "deepseek/deepseek-v4.1-flash"
+          : "z-ai/glm-5.3-flash";
       expect(assignment).toEqual({
-        key: FREE_ASK_DEEPSEEK_V41_KEY,
+        key: FREE_AGENT_GLM_FLASH_KEY,
         variant,
         modelKey:
           variant === "control"
-            ? "ask-model-free-glm"
-            : "ask-model-free-deepseek-v41",
+            ? "agent-model-free"
+            : "model-glm-5.3-flash-agent",
         configuredModel,
       });
       expect(posthog.evaluateFlags).toHaveBeenCalledWith("test-user", {
-        flagKeys: [FREE_ASK_DEEPSEEK_V41_KEY],
+        flagKeys: [FREE_AGENT_GLM_FLASH_KEY],
       });
       const capture = jest.fn();
       const record = createFlashRoutingExposureRecorder({
-        ...free,
+        ...freeAgent,
         posthog: { capture },
         assignment,
         requestId: "free-request",
@@ -66,9 +71,9 @@ describe("Flash routing experiments", () => {
           distinctId: "test-user",
           event: FLASH_ROUTING_EXPOSURE_EVENT,
           properties: expect.objectContaining({
-            experiment_key: FREE_ASK_DEEPSEEK_V41_KEY,
-            [`$feature/${FREE_ASK_DEEPSEEK_V41_KEY}`]: variant,
-            mode: "ask",
+            experiment_key: FREE_AGENT_GLM_FLASH_KEY,
+            [`$feature/${FREE_AGENT_GLM_FLASH_KEY}`]: variant,
+            mode: "agent",
             subscription: "free",
             configured_model: configuredModel,
           }),
@@ -111,9 +116,16 @@ describe("Flash routing experiments", () => {
   );
 
   it.each([
-    { ...free, mode: "agent" as const },
-    { ...free, subscription: "pro" as const },
-    { ...free, selectedModel: "ask-model-free" },
+    freeAsk,
+    { ...freeAsk, mode: "agent" as const },
+    { ...freeAsk, subscription: "pro" as const },
+    { ...freeAsk, selectedModel: "ask-model-free" },
+    { ...freeAgent, mode: "ask" as const },
+    { ...freeAgent, subscription: "pro" as const },
+    { ...freeAgent, selectedModel: "model-deepseek-v4-flash-vision" },
+    { ...freeAgent, selectedModel: "model-glm-5.3-flash-agent" },
+    { ...freeAgent, hasImages: true },
+    { ...freeAgent, userId: "" },
     { ...paid, mode: "ask" as const },
     { ...paid, subscription: "free" as const },
     { ...paid, selectedModel: "model-deepseek-v4-pro-0813" },
@@ -122,9 +134,9 @@ describe("Flash routing experiments", () => {
     { ...paid, selectedModel: "model-opus-4.6" },
     { ...paid, selectedModel: "model-deepseek-v4-flash-vision" },
     { ...paid, hasImages: true },
-    { ...free, hasImages: true },
-    { ...free, userId: "" },
-    { ...free, selectedModel: "model-glm-5.3-flash" },
+    { ...freeAsk, hasImages: true },
+    { ...freeAsk, userId: "" },
+    { ...freeAsk, selectedModel: "model-glm-5.3-flash" },
   ])("does not evaluate excluded requests: %j", async (scope) => {
     const posthog = flags("test");
     expect(
@@ -136,7 +148,7 @@ describe("Flash routing experiments", () => {
   it.each([true, false, undefined, "unknown"])(
     "retains current behavior for %s",
     async (variant) => {
-      for (const scope of [free, paid]) {
+      for (const scope of [freeAgent, paid]) {
         expect(
           await evaluateFlashRouting({
             ...scope,

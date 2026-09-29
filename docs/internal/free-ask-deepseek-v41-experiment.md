@@ -2,6 +2,19 @@
 
 Owner and decision record: [HAC-133](https://linear.app/hackerai/issue/HAC-133).
 
+## Closeout decision — September 29, 2026
+
+The owner chose GLM 5.3 Flash as the Free Ask default after the early DeepSeek
+arm showed a model-cost guardrail breach. This is a cost-led product decision,
+not a demonstrated difference in seven-day paid conversion: no exposed user had
+complete seven-day follow-up at the decision snapshot. The independent Preview
+and Production flags were disabled on September 29, so new eligible requests
+use the existing GLM default. Removing the experiment evaluation and exposure
+code requires a deployment; keep both flags disabled until that cleanup is live.
+Historical exposure and outcome events remain available for the final readout.
+
+The design below describes the retired experiment, not current routing.
+
 `free_ask_deepseek_v4_1_conversion_v1` compares GLM 5.3 Flash (`control`)
 with DeepSeek V4.1 Flash (`test`). Assignment uses the authenticated user ID.
 Only free Ask requests already routed to `ask-model-free-glm`, without image
