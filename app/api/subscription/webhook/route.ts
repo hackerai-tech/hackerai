@@ -43,6 +43,7 @@ import {
   type BillingFailureProperties,
 } from "@/lib/billing/subscription-payment-failure";
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
+import { subscriptionTierFromPrice } from "@/lib/billing/current-subscription";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
 import {
   LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON,
@@ -2230,7 +2231,7 @@ async function handleSubscriptionUpdated(
     if (customerId) {
       const currentPrice = subscription.items?.data[0]?.price;
       const lookupKey = currentPrice?.lookup_key ?? null;
-      const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
+      const tier = subscriptionTierFromPrice(currentPrice) ?? null;
       const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
 
       if (userIds.length === 0) {
@@ -2257,9 +2258,7 @@ async function handleSubscriptionUpdated(
 
   const currentPrice = subscription.items?.data[0]?.price;
   const currentLookupKey = currentPrice?.lookup_key ?? null;
-  let currentTier = currentLookupKey
-    ? planLookupKeyToTier(currentLookupKey)
-    : null;
+  let currentTier = subscriptionTierFromPrice(currentPrice) ?? null;
 
   // Fallback: infer current tier from product when lookup_key is missing
   if (!currentTier && currentPrice?.product) {
@@ -2274,11 +2273,11 @@ async function handleSubscriptionUpdated(
       null;
   }
 
-  const prevLookupKey = previousItems?.data?.[0]?.price?.lookup_key ?? null;
   const previousPriceId = previousItems?.data?.[0]?.price?.id;
-  const previousTier = prevLookupKey
-    ? planLookupKeyToTier(prevLookupKey)
-    : null;
+  const previousTier =
+    subscriptionTierFromPrice(
+      previousItems?.data?.[0]?.price as Stripe.Price | undefined,
+    ) ?? null;
 
   // If tiers are the same, invoice.paid will handle the reset
   if (currentTier === previousTier) return;

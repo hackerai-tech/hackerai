@@ -33,20 +33,12 @@ import {
 } from "@/lib/analytics/paid-funnel";
 import { checkoutStartedEventUuid } from "@/lib/analytics/paid-funnel-server";
 import {
-  PRO_MONTHLY_CONTROL_LOOKUP_KEY,
-  PRO_MONTHLY_PRICING_METADATA,
-  proMonthlyPricingExperimentMetadata,
-  proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentAssignment,
-} from "@/lib/experiments/pro-monthly-pricing";
-import { evaluateProMonthlyPricingExperiment } from "@/lib/experiments/pro-monthly-pricing.server";
+  PRO_MONTHLY_PRICE_LOOKUP_KEY,
+  isCurrentProMonthlyPrice,
+} from "@/lib/pricing/pro-monthly";
 import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
-
-function stripeProductId(product: Stripe.Price["product"]): string | undefined {
-  return typeof product === "string" ? product : product?.id;
-}
 
 function canManageOrganizationBilling(
   membership: Awaited<
@@ -73,7 +65,6 @@ function isReusableCheckoutSession(
     organizationId,
     requestedPlan,
     resolvedPriceLookupKey,
-    pricingExperiment,
     quantity,
     successUrl,
     cancelUrl,
@@ -81,13 +72,14 @@ function isReusableCheckoutSession(
     organizationId: string;
     requestedPlan: string;
     resolvedPriceLookupKey: string;
-    pricingExperiment: ProMonthlyPricingExperimentAssignment | undefined;
     quantity: number;
     successUrl: string;
     cancelUrl: string;
   },
 ): boolean {
   if (!session.url) return false;
+  // An older open session may still hold the $25 Price despite the new lookup.
+  if (requestedPlan === PRO_MONTHLY_PRICE_LOOKUP_KEY) return false;
   if (session.success_url !== successUrl || session.cancel_url !== cancelUrl)
     return false;
   if (session.metadata?.workOSOrganizationId !== organizationId) return false;
@@ -101,17 +93,6 @@ function isReusableCheckoutSession(
   ) {
     return false;
   }
-  if (
-    session.metadata?.[PRO_MONTHLY_PRICING_METADATA.experimentKey] !==
-      pricingExperiment?.key ||
-    session.metadata?.[PRO_MONTHLY_PRICING_METADATA.experimentVariant] !==
-      pricingExperiment?.variant ||
-    session.metadata?.[PRO_MONTHLY_PRICING_METADATA.priceLookupKey] !==
-      pricingExperiment?.priceLookupKey
-  ) {
-    return false;
-  }
-
   const checkoutQuantity = session.metadata?.checkoutQuantity;
   return checkoutQuantity
     ? checkoutQuantity === String(quantity)
@@ -227,7 +208,6 @@ async function findReusableCheckoutSession({
   organizationId,
   requestedPlan,
   resolvedPriceLookupKey,
-  pricingExperiment,
   quantity,
   successUrl,
   cancelUrl,
@@ -236,7 +216,6 @@ async function findReusableCheckoutSession({
   organizationId: string;
   requestedPlan: string;
   resolvedPriceLookupKey: string;
-  pricingExperiment: ProMonthlyPricingExperimentAssignment | undefined;
   quantity: number;
   successUrl: string;
   cancelUrl: string;
@@ -255,7 +234,6 @@ async function findReusableCheckoutSession({
         organizationId,
         requestedPlan,
         resolvedPriceLookupKey,
-        pricingExperiment,
         quantity,
         successUrl,
         cancelUrl,
@@ -392,16 +370,7 @@ export const POST = async (req: NextRequest) => {
             | "team-monthly-plan"
             | "team-yearly-plan")
         : "pro-monthly-plan";
-    const pricingExperiment = await evaluateProMonthlyPricingExperiment({
-      userId,
-      subscription,
-      requestedPlan: subscriptionLevel,
-    });
-    const resolvedPriceLookupKey =
-      pricingExperiment?.priceLookupKey ?? subscriptionLevel;
-    const pricingExperimentMetadata = pricingExperiment
-      ? proMonthlyPricingExperimentMetadata(pricingExperiment)
-      : {};
+    const resolvedPriceLookupKey = subscriptionLevel;
 
     // Quantity is only used for team plans, defaults to 1 for individual plans
     const quantity =
@@ -464,17 +433,13 @@ export const POST = async (req: NextRequest) => {
     }
 
     // Retrieve price ID from Stripe
-    // The client selects only a logical plan. The server-authoritative
-    // experiment assignment resolves that plan to an allowlisted Price lookup
-    // key, so a client can never submit an arbitrary Stripe Price.
+    // The client selects only a logical plan. Stripe resolves that allowlisted
+    // lookup key; the Pro monthly Price is checked against the displayed $29.
     let price;
 
     try {
       price = await stripe.prices.list({
-        lookup_keys:
-          pricingExperiment?.variant === "test"
-            ? [resolvedPriceLookupKey, PRO_MONTHLY_CONTROL_LOOKUP_KEY]
-            : [resolvedPriceLookupKey],
+        lookup_keys: [resolvedPriceLookupKey],
       });
 
       // Check if price data exists and has at least one item
@@ -501,43 +466,27 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
-    const selectedPrice =
-      price.data.find(
-        (candidate) => candidate.lookup_key === resolvedPriceLookupKey,
-      ) ?? price.data[0];
-    const controlPrice =
-      pricingExperiment?.variant === "test"
-        ? price.data.find(
-            (candidate) =>
-              candidate.lookup_key === PRO_MONTHLY_CONTROL_LOOKUP_KEY,
-          )
-        : undefined;
+    const selectedPrice = price.data.find(
+      (candidate) => candidate.lookup_key === resolvedPriceLookupKey,
+    );
+    if (!selectedPrice) {
+      return json({ error: "Subscription plan not found" }, { status: 404 });
+    }
     if (
-      pricingExperiment?.variant === "test" &&
-      (selectedPrice.lookup_key !== pricingExperiment.priceLookupKey ||
-        selectedPrice.active === false ||
-        selectedPrice.currency !== "usd" ||
-        selectedPrice.unit_amount !== 2_900 ||
-        selectedPrice.recurring?.interval !== "month" ||
-        selectedPrice.recurring.interval_count !== 1 ||
-        selectedPrice.type !== "recurring" ||
-        !controlPrice ||
-        stripeProductId(selectedPrice.product) !==
-          stripeProductId(controlPrice.product))
+      resolvedPriceLookupKey === PRO_MONTHLY_PRICE_LOOKUP_KEY &&
+      !isCurrentProMonthlyPrice(selectedPrice)
     ) {
-      logger.error("Experimental Stripe Price is misconfigured", undefined, {
-        event: "billing.pricing_experiment_price_invalid",
+      logger.error("Pro monthly Stripe Price is misconfigured", undefined, {
+        event: "billing.pro_monthly_price_invalid",
         request_id: requestId,
         service: "hackerai-web",
         environment: getEnvironment(),
         route: "/api/subscribe",
-        experiment_key: pricingExperiment.key,
-        experiment_variant: pricingExperiment.variant,
         stripe_price_id: selectedPrice.id,
         stripe_price_lookup_key: selectedPrice.lookup_key,
       });
       return json(
-        { error: "Experimental subscription price is unavailable" },
+        { error: "Pro monthly price is unavailable" },
         { status: 503 },
       );
     }
@@ -706,7 +655,6 @@ export const POST = async (req: NextRequest) => {
       organizationId: organization.id,
       requestedPlan: subscriptionLevel,
       resolvedPriceLookupKey,
-      pricingExperiment,
       quantity,
       successUrl: successUrl.toString(),
       cancelUrl: cancelUrl.toString(),
@@ -731,7 +679,6 @@ export const POST = async (req: NextRequest) => {
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
           resolvedPriceLookupKey,
-          ...pricingExperimentMetadata,
           checkoutQuantity: String(quantity),
           checkoutAttemptId,
           ...(checkoutSource && { checkoutSource }),
@@ -746,7 +693,6 @@ export const POST = async (req: NextRequest) => {
             workOSOrganizationId: organization.id,
             requestedPlan: subscriptionLevel,
             resolvedPriceLookupKey,
-            ...pricingExperimentMetadata,
             checkoutQuantity: String(quantity),
             checkoutAttemptId,
             ...(checkoutSource && { checkoutSource }),
@@ -773,7 +719,6 @@ export const POST = async (req: NextRequest) => {
           workOSOrganizationId: organization.id,
           requestedPlan: subscriptionLevel,
           resolvedPriceLookupKey,
-          ...pricingExperimentMetadata,
           checkoutQuantity: String(quantity),
           checkoutAttemptId,
           ...(checkoutSource && { checkoutSource }),
@@ -910,7 +855,6 @@ export const POST = async (req: NextRequest) => {
         $set: {
           last_checkout_started_at: new Date().toISOString(),
         },
-        ...proMonthlyPricingExperimentProperties(pricingExperiment),
       }),
     );
     after(() => phLogger.flush());
@@ -918,12 +862,6 @@ export const POST = async (req: NextRequest) => {
     return json({
       url: session.url,
       checkoutAttemptId,
-      ...(pricingExperiment && {
-        pricingExperiment: {
-          ...pricingExperiment,
-          stripePriceId: selectedPrice.id,
-        },
-      }),
     });
   } catch (error: unknown) {
     if (error instanceof ChatSDKError) {
