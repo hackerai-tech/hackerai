@@ -21,6 +21,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
 import {
   estimateRelayPayloadBytes,
+  recordRelayReceivedBytes,
   relayTrafficSampleRate,
 } from "@/lib/centrifugo/traffic";
 import {
@@ -194,12 +195,22 @@ export async function createCentrifugoPtyHandle(
   let unmatchedPublications = 0;
   let ptyDataBytes = 0;
   let nextTrafficCheckpointBytes = 1024 * 1024;
+  let recordedPayloadBytesEstimate = 0;
+  let recordedUnmatchedPayloadBytesEstimate = 0;
   const startedAt = Date.now();
   const reassembler = new CentrifugoMessageReassembler();
 
   const { exited, resolveOnce: resolveExitedOnce } = createResolvableExited();
 
   const logTraffic = (phase: "checkpoint" | "complete") => {
+    recordRelayReceivedBytes(
+      "pty",
+      sandbox.getRelayTrafficSource(),
+      receivedPayloadBytesEstimate - recordedPayloadBytesEstimate,
+      unmatchedPayloadBytesEstimate - recordedUnmatchedPayloadBytesEstimate,
+    );
+    recordedPayloadBytesEstimate = receivedPayloadBytesEstimate;
+    recordedUnmatchedPayloadBytesEstimate = unmatchedPayloadBytesEstimate;
     const sampleRate =
       phase === "checkpoint"
         ? 1

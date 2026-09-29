@@ -1,4 +1,48 @@
+import { metrics } from "@opentelemetry/api";
+
 const LARGE_RELAY_STREAM_BYTES = 1024 * 1024;
+
+const receivedBytesCounter = metrics
+  .getMeter("hackerai.local-relay")
+  .createCounter("hackerai.local_relay.received_bytes", {
+    description:
+      "Estimated Centrifugo publication bytes received by server subscriptions",
+    unit: "By",
+  });
+
+/** Record wire-subscription bytes with only bounded labels, so Trigger can
+ * aggregate relay traffic across runs without searching individual logs. */
+export function recordRelayReceivedBytes(
+  operation: "command" | "file" | "pty" | "presence",
+  source: "agent-long" | "chat-handler" | "presence-route" | "sandbox-manager",
+  receivedBytes: number,
+  unmatchedBytes = 0,
+): void {
+  if (!Number.isFinite(receivedBytes) || receivedBytes <= 0) return;
+  const unmatched = Math.min(
+    receivedBytes,
+    Math.max(0, Number.isFinite(unmatchedBytes) ? unmatchedBytes : 0),
+  );
+  const matched = receivedBytes - unmatched;
+  try {
+    if (matched > 0) {
+      receivedBytesCounter.add(matched, {
+        operation,
+        source,
+        correlation: "matched",
+      });
+    }
+    if (unmatched > 0) {
+      receivedBytesCounter.add(unmatched, {
+        operation,
+        source,
+        correlation: "unmatched",
+      });
+    }
+  } catch {
+    // Telemetry must never interrupt a sandbox operation.
+  }
+}
 
 /** Approximate received WebSocket payload size without copying large content. */
 export function estimateRelayPayloadBytes(value: unknown): number {

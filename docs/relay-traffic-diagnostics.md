@@ -44,3 +44,24 @@ per publication and is intended for attribution, not billing reconciliation.
 These server logs cannot attribute bytes sent to standalone local or Desktop
 clients; if Cloudflare grows without a corresponding server-side increase,
 inspect relay-side metrics or client diagnostics before changing traffic rules.
+
+Trigger workers also emit the unsampled OpenTelemetry counter
+`hackerai.local_relay.received_bytes`. Query the Production `metrics` table for
+that metric in a fixed UTC window, grouping by `attributes` and summing
+`metric_value`. The bounded attributes are `operation` (`command`, `file`,
+`pty`, or `presence`), `source` (`agent-long`, `chat-handler`,
+`presence-route`, or `sandbox-manager`), and `correlation` (`matched` or
+`unmatched`). Trigger attaches the run identity. PTY checkpoints emit only
+new bytes, so summing them with the final remainder does not double count.
+The counter records subscription-delivered payload estimates, including
+fanout, and excludes WebSocket framing, replies, and standalone clients.
+Vercel requests continue to use the structured logs; the Trigger metrics
+table does not cover a Vercel process without a metric exporter.
+
+```sql
+SELECT attributes, sum(metric_value) AS received_bytes
+FROM metrics
+WHERE metric_name = 'hackerai.local_relay.received_bytes'
+GROUP BY attributes
+ORDER BY received_bytes DESC
+```
