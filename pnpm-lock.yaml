@@ -128,6 +128,9 @@ importers:
       '@openrouter/ai-sdk-provider':
         specifier: ^2.10.0
         version: 2.10.0(ai@6.0.287(zod@4.6.5))(zod@4.6.5)
+      '@opentelemetry/api':
+        specifier: 1.9.1
+        version: 1.9.1
       '@posthog/ai':
         specifier: 8.13.1
         version: 8.13.1(76bfff6dc3eb97c95e746a68a3e0c64f)

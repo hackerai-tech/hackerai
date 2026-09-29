@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { PublicationContext, Subscription } from "centrifuge";
-import { estimateRelayPayloadBytes, relayTrafficSampleRate } from "./traffic";
+import {
+  estimateRelayPayloadBytes,
+  recordRelayReceivedBytes,
+  relayTrafficSampleRate,
+} from "./traffic";
 
 /** Count publications for the entire wire subscription, including time spent
  * waiting for other connections' presence replies. Never retain payloads. */
@@ -35,6 +39,7 @@ export function trackPresenceTraffic(
     finished = true;
     sub.removeListener("publication", onPublication);
     sub.removeListener("subscribed", onSubscribed);
+    recordRelayReceivedBytes("presence", context.source, bytes);
     const sampleRate = relayTrafficSampleRate(probeId, bytes);
     if (sampleRate === null) return;
 
