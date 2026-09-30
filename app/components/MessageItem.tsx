@@ -86,7 +86,7 @@ interface MessageItemProps {
     RateLimitWarningData,
     { warningType: "agent-run-spend-cap" }
   >;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void | Promise<void>;
   onBranchMessage?: (messageId: string) => void;
   onFeedback: (messageId: string, type: "positive" | "negative") => void;
   onFeedbackSubmit: (details: string) => Promise<void>;

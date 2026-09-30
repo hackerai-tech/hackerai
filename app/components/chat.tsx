@@ -73,6 +73,7 @@ import {
   stripAgentLongHeartbeatParts,
   stripAgentLongHeartbeatPartsFromMessages,
 } from "@/lib/chat/agent-long-heartbeat";
+import { createAgentPartialSaveQueue } from "@/lib/chat/agent-partial-save-queue";
 import { getAgentLongMessageProgressFingerprint } from "@/lib/chat/agent-long-message-progress";
 import { hasVisibleAssistantContent } from "@/lib/chat/abort-persistence";
 import { toast } from "sonner";
@@ -842,7 +843,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const browserStreamFinishedRef = useRef(false);
   const activeChatIdRef = useRef(chatId);
   const streamChatIdRef = useRef(chatId);
-  const agentLongPartialSaveKeysRef = useRef<Set<string>>(new Set());
+  const agentLongPartialSavesRef = useRef(createAgentPartialSaveQueue());
   const agentLongRunCorrelationRef = useRef<{
     runId: string;
     token: string;
@@ -1387,35 +1388,30 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       if (!partialMessage) return;
 
       const saveKey = `${chatId}:${partialMessage.id}`;
-      if (agentLongPartialSaveKeysRef.current.has(saveKey)) return;
-      agentLongPartialSaveKeysRef.current.add(saveKey);
       const runCorrelation = agentLongRunCorrelationRef.current;
-
-      void fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chatId,
-          message: partialMessage,
-          generationStartedAt: partialMessage.generationStartedAt,
-          generationTimeMs: partialMessage.generationTimeMs,
-          clientReason,
-          ...(runCorrelation
-            ? {
-                triggerRunId: runCorrelation.runId,
-                runCorrelationToken: runCorrelation.token,
-              }
-            : {}),
-        }),
-      })
-        .then((response) => {
-          if (!response.ok) {
-            agentLongPartialSaveKeysRef.current.delete(saveKey);
-          }
-        })
-        .catch(() => {
-          agentLongPartialSaveKeysRef.current.delete(saveKey);
-        });
+      if (!runCorrelation) return;
+      // Capture the request now: the correlation ref is cleared on completion.
+      const requestBody = JSON.stringify({
+        chatId,
+        message: partialMessage,
+        generationStartedAt: partialMessage.generationStartedAt,
+        generationTimeMs: partialMessage.generationTimeMs,
+        clientReason,
+        triggerRunId: runCorrelation.runId,
+        runCorrelationToken: runCorrelation.token,
+      });
+      return agentLongPartialSavesRef.current.save(
+        chatId,
+        saveKey,
+        async () => {
+          const response = await fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: requestBody,
+          });
+          if (!response.ok) throw new Error("Could not save Agent progress.");
+        },
+      );
     },
     [chatId],
   );
@@ -1608,7 +1604,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         trackedAgentLongRunId ?? undefined,
         requestGeneration,
       );
-      saveAgentLongPartialSnapshot("resume_terminal_204");
+      void saveAgentLongPartialSnapshot("resume_terminal_204")?.catch(() => {
+        // Retain the failed request so an explicit recovery can retry the save.
+      });
 
       // The transport also polls the status endpoint and can deliver a
       // synthetic finish after a terminal status. Give it a brief chance to
@@ -2159,6 +2157,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
+    prepareAgentRecovery: () => agentLongPartialSavesRef.current.flush(chatId),
     getAgentRunRequestGeneration: () => agentLongRequestGenerationRef.current,
     onAgentRunAlreadyFinished: markAgentRunUiTerminal,
     onStopCallback: () => {

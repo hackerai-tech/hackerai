@@ -1,11 +1,14 @@
-import { RefObject } from "react";
+import { useRef, RefObject } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useCommittedRef, useLatestRef } from "@/app/hooks/useLatestRef";
 import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { shouldUseAgentLongForAgent } from "@/lib/chat/agent-routing";
-import { AGENT_CANCEL_ENDPOINT } from "@/lib/api/agent-endpoints";
+import {
+  AGENT_CANCEL_ENDPOINT,
+  AGENT_RESUME_ENDPOINT,
+} from "@/lib/api/agent-endpoints";
 import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
@@ -62,6 +65,7 @@ interface UseChatHandlersProps {
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
   resumeActiveRun?: () => void | Promise<void>;
+  prepareAgentRecovery?: () => Promise<void>;
   getAgentRunRequestGeneration?: () => number;
   onAgentRunAlreadyFinished?: (
     runId: string | undefined,
@@ -104,6 +108,7 @@ export const useChatHandlers = ({
   hasManuallyStoppedRef,
   activeTriggerRunRef,
   resumeActiveRun,
+  prepareAgentRecovery,
   getAgentRunRequestGeneration,
   onAgentRunAlreadyFinished,
   onStopCallback,
@@ -152,6 +157,10 @@ export const useChatHandlers = ({
   const desktopEnvironmentIdRef = useLatestRef(desktopEnvironmentId);
   const agentPermissionModeRef = useLatestRef(agentPermissionMode);
   const subscriptionRef = useLatestRef(subscription);
+  const recoveryPendingRef = useRef(false);
+  const currentChatIdRef = useLatestRef(chatId);
+  const todosRef = useLatestRef(todos);
+  const statusRef = useLatestRef(status);
   const sidebarOpenRef = useLatestRef(sidebarOpen);
   const sidebarContentRef = useLatestRef(sidebarContent);
 
@@ -346,8 +355,10 @@ export const useChatHandlers = ({
     if (messages.length === 0) return messages;
 
     // Normalize messages to mark incomplete tools as interrupted/completed
-    const { messages: normalizedMessages, hasChanges } =
-      normalizeMessages(messages);
+    const { messages: normalizedMessages, hasChanges } = normalizeMessages(
+      messages,
+      { userInitiatedAbort: true },
+    );
 
     const stopTime = Date.now();
     const normalizedLastMessage =
@@ -802,6 +813,19 @@ export const useChatHandlers = ({
 
   const handleRetry = async (options: RetryOptions = {}) => {
     if (sendDisabledReasonRef.current) return;
+    if (
+      isAgentMode(chatModeRef.current) &&
+      getAutoContinueChainAssistantIds(messages).length > 0
+    ) {
+      try {
+        await continueSavedTask(options);
+      } catch {
+        toast.error(
+          "Could not resume. Your saved progress is still available.",
+        );
+      }
+      return;
+    }
     setIsAutoResuming(false);
     resetAutoContinueCount?.();
 
@@ -975,32 +999,64 @@ export const useChatHandlers = ({
     );
   };
 
-  const handleContinue = (selectedModelOverride?: SelectedModel) => {
-    if (sendDisabledReasonRef.current) return;
-    if (status === "streaming" || status === "submitted") return;
-    hasManuallyStoppedRef.current = false;
-    resetAutoContinueCount?.();
-    const continuationSelectedModel =
-      selectedModelOverride ?? requestSelectedModelRef.current;
-    runChatAction("continue response", () =>
-      sendMessage(
-        {
-          text: AUTO_CONTINUE_PROMPT,
-          metadata: { isAutoContinue: true },
-        },
+  const continueSavedTask = async (options: RetryOptions = {}) => {
+    if (sendDisabledReasonRef.current || recoveryPendingRef.current) return;
+    if (statusRef.current === "streaming" || statusRef.current === "submitted")
+      return;
+    recoveryPendingRef.current = true;
+    const requestGeneration = getAgentRunRequestGeneration?.();
+    const isCurrentRequest = () =>
+      currentChatIdRef.current === chatId &&
+      getAgentRunRequestGeneration?.() === requestGeneration;
+    try {
+      if (isAgentMode(chatModeRef.current)) {
+        // An interrupted browser connection does not mean the worker stopped.
+        await getPendingAgentLongRunStart(chatId);
+        if (!isCurrentRequest() || sendDisabledReasonRef.current) return;
+        const response = await fetch(
+          `${AGENT_RESUME_ENDPOINT}?chatId=${encodeURIComponent(chatId)}`,
+          { cache: "no-store" },
+        );
+        if (!isCurrentRequest() || sendDisabledReasonRef.current) return;
+        if (response.status === 200) {
+          if (!resumeActiveRun)
+            throw new Error("Could not reconnect to the active Agent run.");
+          await resumeActiveRun();
+          return;
+        }
+        if (response.status !== 204)
+          throw new Error("Could not check the Agent run. Try again.");
+        // The next run loads its context from Convex, so it must not race a
+        // client fallback save that is still in flight (or previously failed).
+        await prepareAgentRecovery?.();
+        if (!isCurrentRequest() || sendDisabledReasonRef.current) return;
+      }
+      hasManuallyStoppedRef.current = false;
+      setIsAutoResuming(false);
+      resetAutoContinueCount?.();
+      await sendMessage(
+        { text: AUTO_CONTINUE_PROMPT, metadata: { isAutoContinue: true } },
         {
           body: {
             mode: chatModeRef.current,
             isAutoContinue: true,
-            todos,
-            sandboxPreference,
+            todos: todosRef.current,
+            sandboxPreference: sandboxPreferenceRef.current,
+            desktopEnvironmentId: desktopEnvironmentIdRef.current,
             agentPermissionMode: agentPermissionModeRef.current,
-            selectedModel: continuationSelectedModel,
+            selectedModel:
+              options.selectedModel ?? requestSelectedModelRef.current,
+            ...(options.limitRescue && { limitRescue: options.limitRescue }),
           },
         },
-      ),
-    );
+      );
+    } finally {
+      recoveryPendingRef.current = false;
+    }
   };
+
+  const handleContinue = (selectedModelOverride?: SelectedModel) =>
+    continueSavedTask({ selectedModel: selectedModelOverride });
 
   const handleSendNow = async (messageId: string) => {
     if (sendDisabledReasonRef.current) return;

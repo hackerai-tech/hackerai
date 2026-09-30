@@ -1,6 +1,6 @@
 import type { UIToolInvocation } from "ai";
 import { ChatMessage } from "@/types/chat";
-import { ABORTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
+import { getIncompleteToolErrorText } from "@/lib/chat/tool-abort-utils";
 
 /**
  * Checks if a part is a completed reasoning block with redacted text.
@@ -97,6 +97,7 @@ interface DataPart {
  */
 export const normalizeMessages = (
   messages: ChatMessage[],
+  options?: { userInitiatedAbort?: boolean },
 ): {
   messages: ChatMessage[];
   lastMessage: ChatMessage[];
@@ -176,6 +177,7 @@ export const normalizeMessages = (
         const transformedPart = transformTerminalToolPart(
           part as TerminalToolPart,
           terminalDataMap,
+          options?.userInitiatedAbort,
         );
         processedParts.push(transformedPart);
         messageChanged = true;
@@ -215,6 +217,7 @@ export const normalizeMessages = (
 const transformTerminalToolPart = (
   terminalPart: TerminalToolPart,
   terminalDataMap: Map<string, string>,
+  userInitiatedAbort = false,
 ): BaseToolPart => {
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
 
@@ -225,7 +228,7 @@ const transformTerminalToolPart = (
       toolCallId: terminalPart.toolCallId,
       state: "output-error",
       input: terminalPart.input,
-      errorText: ABORTED_TOOL_ERROR_TEXT,
+      errorText: getIncompleteToolErrorText(undefined, userInitiatedAbort),
       output: {
         output: stdout,
       },
@@ -237,10 +240,10 @@ const transformTerminalToolPart = (
     toolCallId: terminalPart.toolCallId,
     state: "output-error",
     input: terminalPart.input,
-    errorText: ABORTED_TOOL_ERROR_TEXT,
+    errorText: getIncompleteToolErrorText(undefined, userInitiatedAbort),
     output: {
       result: {
-        exitCode: 130, // Standard exit code for SIGINT (interrupted)
+        ...(userInitiatedAbort ? { exitCode: 130 } : {}),
         stdout: stdout,
         stderr: "",
       },

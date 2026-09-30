@@ -984,6 +984,7 @@ export async function saveMessage({
   isHidden,
   wasAborted,
   wasPreemptiveTimeout,
+  userInitiatedAbort,
   abliterationRouting,
 }: {
   chatId: string;
@@ -1005,6 +1006,7 @@ export async function saveMessage({
   isHidden?: boolean;
   wasAborted?: boolean;
   wasPreemptiveTimeout?: boolean;
+  userInitiatedAbort?: boolean;
   abliterationRouting?: AbliterationRoutingMarker;
 }) {
   let fixedParts = message.parts;
@@ -1016,6 +1018,7 @@ export async function saveMessage({
     fixedParts =
       message.role === "assistant"
         ? fixIncompleteMessageParts(message.parts, {
+            userInitiatedAbort,
             logContext: {
               service: "chat-handler",
               source: "save_message",

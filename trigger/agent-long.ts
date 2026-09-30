@@ -5093,6 +5093,7 @@ export const agentLongTask = task({
                                 !isAborted &&
                                   state.streamFinishReason === "stop",
                               ),
+                            userInitiatedAbort: isUserInitiatedAbort,
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,

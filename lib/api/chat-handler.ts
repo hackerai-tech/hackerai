@@ -2917,6 +2917,7 @@ export const createChatHandler = () => {
                                 !isAborted &&
                                   state.streamFinishReason === "stop",
                               ),
+                            userInitiatedAbort: isUserInitiatedAbort,
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,

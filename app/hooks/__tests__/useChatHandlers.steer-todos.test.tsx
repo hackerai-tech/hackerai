@@ -135,7 +135,13 @@ describe("useChatHandlers steer todo handoff", () => {
     });
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
-      value: jest.fn(async () => ({ ok: true, status: 200 }) as Response),
+      value: jest.fn(
+        async (url: unknown) =>
+          ({
+            ok: true,
+            status: String(url).includes("/resume?") ? 204 : 200,
+          }) as Response,
+      ),
     });
   });
 
@@ -361,7 +367,7 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["handleRegenerate", "handleRetry", "handleEditMessage"] as const)(
+  it.each(["handleRegenerate", "handleEditMessage"] as const)(
     "%s rechecks a disconnect while stopping before mutating the task",
     async (method) => {
       let finishStop!: (value: null) => void;
@@ -489,7 +495,7 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
-  it("deletes a persisted trailing response before retrying it", async () => {
+  it("preserves persisted progress and todos when retrying an Agent task", async () => {
     const regenerate = jest.fn();
     const { result } = renderHook(() =>
       useChatHandlers({
@@ -510,20 +516,14 @@ describe("useChatHandlers steer todo handoff", () => {
       await result.current.handleRetry();
     });
 
-    expect(mockDeleteLastAssistantMessage).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      resetSummary: true,
-      todos: [],
-    });
-    expect(
-      mockDeleteLastAssistantMessage.mock.invocationCallOrder[0],
-    ).toBeLessThan(regenerate.mock.invocationCallOrder[0]);
-    expect(regenerate).toHaveBeenCalledWith(
+    expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+    expect(mockSetTodos).not.toHaveBeenCalled();
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { isAutoContinue: true } }),
       expect.objectContaining({
-        body: expect.objectContaining({
-          messages: [],
-          regenerate: true,
-        }),
+        body: expect.objectContaining({ todos, isAutoContinue: true }),
       }),
     );
   });
@@ -677,7 +677,7 @@ describe("useChatHandlers steer todo handoff", () => {
     );
   });
 
-  it("resets the continuation count before a manual continue", () => {
+  it("resets the continuation count before a manual continue", async () => {
     const { result } = renderHook(() =>
       useChatHandlers({
         chatId: "chat-1",
@@ -695,8 +695,8 @@ describe("useChatHandlers steer todo handoff", () => {
       }),
     );
 
-    act(() => {
-      result.current.handleContinue();
+    await act(async () => {
+      await result.current.handleContinue();
     });
 
     expect(mockResetAutoContinueCount).toHaveBeenCalledTimes(1);
@@ -852,5 +852,122 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockSetTodos).not.toHaveBeenCalled();
     expect(mockSetMessages).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
+  });
+});
+
+describe("Agent recovery ordering", () => {
+  const recoveryProps = () => ({
+    chatId: "chat-1",
+    messages,
+    sendMessage: mockSendMessage,
+    stop: mockStop,
+    regenerate: jest.fn(),
+    setMessages: mockSetMessages,
+    isExistingChat: true,
+    status: "error" as const,
+    isSendingNowRef: { current: false },
+    hasManuallyStoppedRef: { current: false },
+    resumeActiveRun: jest.fn(async () => {}),
+  });
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Object.defineProperty(globalThis, "fetch", {
+      configurable: true,
+      value: jest.fn(async () => ({ status: 204 }) as Response),
+    });
+  });
+
+  it("reconnects a live worker without canceling or starting another run", async () => {
+    jest.mocked(fetch).mockResolvedValueOnce({ status: 200 } as Response);
+    const props = recoveryProps();
+    const { result } = renderHook(() => useChatHandlers(props));
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(props.resumeActiveRun).toHaveBeenCalledTimes(1);
+    expect(mockCancelStream).not.toHaveBeenCalled();
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
+  });
+
+  it("waits for saved progress, preserves model and billing choices, and coalesces clicks", async () => {
+    let finishSave!: () => void;
+    const save = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    const props = { ...recoveryProps(), prepareAgentRecovery: () => save };
+    const { result } = renderHook(() => useChatHandlers(props));
+    let retry!: Promise<void>;
+    act(() => {
+      retry = result.current.handleRetry({ selectedModel: "auto" });
+    });
+    await act(async () => {
+      await result.current.handleRetry();
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    await act(async () => {
+      finishSave();
+      await retry;
+    });
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          selectedModel: "auto",
+          todos,
+          sandboxPreference: "e2b",
+        }),
+      }),
+    );
+    expect(props.regenerate).not.toHaveBeenCalled();
+  });
+
+  it.each(["preflight", "save"])(
+    "preserves history when %s fails",
+    async (failure) => {
+      if (failure === "preflight")
+        jest.mocked(fetch).mockResolvedValueOnce({ status: 503 } as Response);
+      const props = {
+        ...recoveryProps(),
+        prepareAgentRecovery: async () => {
+          if (failure === "save") throw new Error("offline");
+        },
+      };
+      const { result } = renderHook(() => useChatHandlers(props));
+      await act(async () => {
+        await result.current.handleRetry();
+      });
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
+      expect(mockSetTodos).not.toHaveBeenCalled();
+      expect(mockSetMessages).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not send into another chat after navigation during recovery", async () => {
+    let finishSave!: () => void;
+    const save = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    const props = recoveryProps();
+    const { result, rerender } = renderHook(
+      ({ chatId }) =>
+        useChatHandlers({ ...props, chatId, prepareAgentRecovery: () => save }),
+      { initialProps: { chatId: "chat-1" } },
+    );
+    let retry!: Promise<void>;
+    act(() => {
+      retry = result.current.handleRetry();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    rerender({ chatId: "chat-2" });
+    await act(async () => {
+      finishSave();
+      await retry;
+    });
+    expect(mockSendMessage).not.toHaveBeenCalled();
   });
 });
