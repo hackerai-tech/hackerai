@@ -93,7 +93,11 @@ export class DefaultSandboxManager implements SandboxManager {
     if (this.acquisition) return this.acquisition;
     if (this.sandbox) {
       if (isE2BSandbox(this.sandbox)) {
-        await assertCloudWorkspaceAvailable(this.userID, "e2b");
+        await assertCloudWorkspaceAvailable(
+          this.userID,
+          "e2b",
+          this.sandbox.sandboxId,
+        );
         await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
           source: "default_manager_cache",
         });
