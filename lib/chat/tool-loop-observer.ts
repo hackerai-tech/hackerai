@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-/** Diagnostic only: a repeated result is evidence to inspect, not proof of failure. */
+/** A repeated result is evidence to inspect, not proof of failure. */
 export type AgentGuardrailObservation = {
   reason: string;
   action: "observe" | "nudge" | "exclude" | "halt";

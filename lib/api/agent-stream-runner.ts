@@ -408,6 +408,13 @@ export type AgentStreamState = {
   agentStepCount: number;
   /** Observation history survives provider retries, but never retains tool content. */
   toolLoopObserver: ToolLoopObserver;
+  /** Aggregate-only recovery state survives provider replacements. */
+  pendingToolCycleRecovery?: {
+    toolNames: string[];
+    repeatCount: number;
+    cycleLength: number;
+  };
+  toolCycleRecoveryCount: number;
   /** True only when the final provider attempt stopped at the step condition. */
   stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
@@ -443,6 +450,7 @@ export function initAgentStreamState(
     configuredMaxSteps: 0,
     agentStepCount: 0,
     toolLoopObserver: new ToolLoopObserver(),
+    toolCycleRecoveryCount: 0,
     stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
@@ -808,8 +816,10 @@ export async function createAgentStream(
       AgentGuardrailObservation,
       "step_count" | "configured_max_steps"
     >,
+    { deduplicate = true }: { deduplicate?: boolean } = {},
   ) => {
     if (
+      deduplicate &&
       !state.toolLoopObserver.shouldReport(
         observation.reason,
         observation.action,
@@ -1052,6 +1062,18 @@ export async function createAgentStream(
     excludedTools?: ReadonlySet<string>;
   };
 
+  // Repeated results are a reason to inspect progress, not proof of failure.
+  // Bound interventions across provider replacements; never force extra steps.
+  const toolCycleNudge =
+    "[REPEATED TOOL RESULTS] A tool/result cycle has repeated without new output. " +
+    "Check whether this is intentional verification or stalled work. If stalled, inspect the error and prerequisites, revise the hypothesis, and choose a different verification step. " +
+    "If blocked, explain the specific missing prerequisite and what remains unverified. Do not rerun completed work or treat repeated output as proof of success.";
+  let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
+  const markToolCycleRecoveryPrepared = (recovery: DoomLoopRecovery) => {
+    if (recovery.nudge?.includes(toolCycleNudge))
+      preparedToolCycleRecovery = state.pendingToolCycleRecovery;
+  };
+
   const getDoomLoopRecovery = (
     steps: unknown[],
     stepNumber: number,
@@ -1061,7 +1083,7 @@ export async function createAgentStream(
     );
 
     if (loopCheck.severity === "none") {
-      return {};
+      return state.pendingToolCycleRecovery ? { nudge: toolCycleNudge } : {};
     }
 
     console.log(
@@ -1080,7 +1102,10 @@ export async function createAgentStream(
     });
 
     const recovery: DoomLoopRecovery = {
-      nudge: generateDoomLoopNudge(loopCheck),
+      nudge: [
+        generateDoomLoopNudge(loopCheck),
+        ...(state.pendingToolCycleRecovery ? [toolCycleNudge] : []),
+      ].join("\n\n"),
     };
     console.log("[doom-loop] Injecting nudge as last user message");
 
@@ -1525,6 +1550,23 @@ export async function createAgentStream(
     abortSignal,
     providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
+      if (!abortSignal.aborted && preparedToolCycleRecovery) {
+        const recovery = preparedToolCycleRecovery;
+        preparedToolCycleRecovery = undefined;
+        state.pendingToolCycleRecovery = undefined;
+        state.toolCycleRecoveryCount++;
+        reportGuardrail(
+          {
+            reason: "repeated_tool_result_cycle",
+            action: "nudge",
+            tool_names: recovery.toolNames,
+            repeat_count: recovery.repeatCount,
+            cycle_length: recovery.cycleLength,
+          },
+          // These actual exposures are already bounded to two per run.
+          { deduplicate: false },
+        );
+      }
       if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
       exposeHistory();
       ctx.onModelStreamStart?.();
@@ -1533,6 +1575,7 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
           ? stepNumber
@@ -1739,6 +1782,7 @@ export async function createAgentStream(
                 providerOptions,
                 activeTools,
               });
+              markToolCycleRecoveryPrepared(loopRecovery);
               return {
                 model: getNamespacedLanguageModel(
                   continuationModelInfo.languageModel,
@@ -1964,6 +2008,7 @@ export async function createAgentStream(
                   providerOptions,
                   activeTools,
                 });
+                markToolCycleRecoveryPrepared(loopRecovery);
                 return {
                   model: getNamespacedLanguageModel(
                     continuationModelInfo.languageModel,
@@ -2083,6 +2128,7 @@ export async function createAgentStream(
           providerOptions,
           activeTools,
         });
+        markToolCycleRecoveryPrepared(loopRecovery);
         return {
           model: getNamespacedLanguageModel(
             effectiveModelInfo.languageModel,
@@ -2405,7 +2451,13 @@ export async function createAgentStream(
             toolResults ?? [],
             new Set(Object.keys(ctx.tools)),
           );
-          if (observation)
+          if (observation) {
+            if (
+              state.toolCycleRecoveryCount < 2 &&
+              !state.pendingToolCycleRecovery
+            ) {
+              state.pendingToolCycleRecovery = observation;
+            }
             reportGuardrail({
               reason: "repeated_tool_result_cycle",
               action: "observe",
@@ -2414,6 +2466,7 @@ export async function createAgentStream(
               cycle_length: observation.cycleLength,
               run_cost_dollars: currentCostDollars,
             });
+          }
         } catch {
           // Diagnostic inspection must not prevent settlement of completed work.
         }

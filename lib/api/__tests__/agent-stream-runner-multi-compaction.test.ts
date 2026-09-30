@@ -1552,6 +1552,36 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toContain(
       "private",
     );
+    const prepared = await replacement.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(prepared.messages)).toContain(
+      "[REPEATED TOOL RESULTS]",
+    );
+    expect(
+      onAgentGuardrail.mock.calls.some(([event]) => event.action === "nudge"),
+    ).toBe(false);
+    replacement.experimental_onStepStart({ model: { modelId: "test-model" } });
+    expect(onAgentGuardrail).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        reason: "repeated_tool_result_cycle",
+        action: "nudge",
+        repeat_count: 3,
+      }),
+    );
+    expect(state.pendingToolCycleRecovery).toBeUndefined();
+    expect(state.toolCycleRecoveryCount).toBe(1);
+    expect(JSON.stringify(onAgentGuardrail.mock.calls)).not.toContain(
+      "private",
+    );
+    const next = await replacement.prepareStep({
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    });
+    expect(JSON.stringify(next.messages)).not.toContain(
+      "[REPEATED TOOL RESULTS]",
+    );
     onAgentGuardrail.mockImplementation(() => {
       throw new Error("Telemetry unavailable");
     });
@@ -1565,6 +1595,194 @@ describe("createAgentStream repeated compaction", () => {
     await expect(replacement.onStepFinish(step)).resolves.toBeUndefined();
     expect(settleUsageAfterStep).toHaveBeenCalledTimes(6);
   });
+
+  it("bounds alternating-result recovery across provider replacements and preserves cancellation", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the fixture")],
+      {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      },
+    );
+    const onAgentGuardrail = jest.fn();
+    const context = createTestStreamContext({
+      tools: { file: {} },
+      onAgentGuardrail,
+      summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      usageTracker: {
+        setAuthoritativeModelCostForStep: jest.fn(),
+        computeCostDollars: () => 0,
+      },
+    }) as any;
+    let stream = (await createAgentStream("test-model", context, state)) as any;
+    for (let round = 0; round < 3; round++) {
+      for (let lap = 0; lap < 3; lap++) {
+        for (const path of ["a", "b"]) {
+          await stream.onStepFinish({
+            response: { modelId: "test-model" },
+            toolCalls: [
+              {
+                toolCallId: "read",
+                toolName: "file",
+                input: { path: `${round}/${path}` },
+              },
+            ],
+            toolResults: [{ toolCallId: "read", output: "unchanged error" }],
+          });
+        }
+      }
+      stream = (await createAgentStream("test-model", context, state)) as any;
+      const prepared = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      expect(
+        JSON.stringify(prepared.messages).includes("[REPEATED TOOL RESULTS]"),
+      ).toBe(round < 2);
+      if (round === 0) {
+        context.abortController.abort();
+        stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+        expect(state.toolCycleRecoveryCount).toBe(0);
+        expect(state.pendingToolCycleRecovery).toBeDefined();
+        context.abortController = new AbortController();
+        stream = (await createAgentStream("test-model", context, state)) as any;
+        await stream.prepareStep({
+          steps: [],
+          messages: [{ role: "user", content: "Retry" }],
+        });
+      }
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+    }
+    expect(state.toolCycleRecoveryCount).toBe(2);
+    expect(
+      onAgentGuardrail.mock.calls.filter(([event]) => event.action === "nudge"),
+    ).toHaveLength(2);
+    expect(context.abortController.signal.aborted).toBe(false);
+    expect(state.stoppedDueToDoomLoop).toBe(false);
+  });
+
+  it.each(["ask", "polling", "changing-output"])(
+    "does not nudge %s steps",
+    async (scenario) => {
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const toolName =
+        scenario === "polling" ? "interact_terminal_session" : "file";
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode: scenario === "ask" ? "ask" : "agent",
+          tools: { [toolName]: {} },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      for (let i = 0; i < 6; i++) {
+        await stream.onStepFinish({
+          response: { modelId: "test-model" },
+          toolCalls: [
+            { toolCallId: "call", toolName, input: { action: "wait" } },
+          ],
+          toolResults: [
+            {
+              toolCallId: "call",
+              output: scenario === "changing-output" ? String(i) : "unchanged",
+            },
+          ],
+        });
+      }
+      const prepared = await stream.prepareStep({
+        steps: [],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      expect(JSON.stringify(prepared.messages)).not.toContain(
+        "[REPEATED TOOL RESULTS]",
+      );
+      expect(state.pendingToolCycleRecovery).toBeUndefined();
+    },
+  );
+
+  it.each(["durable", "rolling"])(
+    "keeps recovery in %s compaction requests",
+    async (kind) => {
+      const summary = uiMessage("summary", "Continue the fixture.");
+      const tracker = {
+        hasSummarized: kind === "rolling",
+        summarizationCount: kind === "rolling" ? 1 : 0,
+        recordSummarization() {
+          this.hasSummarized = true;
+          this.summarizationCount++;
+        },
+      };
+      mockRunSummarizationStep.mockResolvedValue({
+        summarizationAttempted: true,
+        needsSummarization: true,
+        summarizedMessages: [summary],
+      });
+      mockCompactModelMessagesInRun.mockResolvedValue({
+        summaryMessage: summary,
+        summaryText: "Continue the fixture.",
+        summarizationUsage: { inputTokens: 10, outputTokens: 2 },
+      });
+      if (kind === "rolling")
+        mockGetProviderPromptPressure.mockReturnValue({
+          reason: "serialized_message_bytes",
+          reasons: [],
+        });
+      const state = initAgentStreamState([uiMessage("initial", "Inspect")], {
+        usedTokens: 120_000,
+        maxTokens: 128_000,
+      });
+      const onAgentGuardrail = jest.fn();
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          tools: { file: {} },
+          summarizationTracker: tracker,
+          onAgentGuardrail,
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      for (let i = 0; i < 3; i++) {
+        await stream.onStepFinish({
+          response: { modelId: "test-model" },
+          toolCalls: [
+            {
+              toolCallId: "read",
+              toolName: "file",
+              input: { path: "fixture" },
+            },
+          ],
+          toolResults: [{ toolCallId: "read", output: "unchanged" }],
+        });
+      }
+      const prepared = await stream.prepareStep({
+        steps: kind === "rolling" ? [{ toolResults: [] }] : [],
+        messages: [{ role: "user", content: "old context ".repeat(4_000) }],
+      });
+      expect(JSON.stringify(prepared.messages)).toContain(
+        "[REPEATED TOOL RESULTS]",
+      );
+      if (kind === "rolling")
+        expect(mockCompactModelMessagesInRun).toHaveBeenCalled();
+      else expect(mockRunSummarizationStep).toHaveBeenCalled();
+      stream.experimental_onStepStart({ model: { modelId: "test-model" } });
+      expect(state.toolCycleRecoveryCount).toBe(1);
+      expect(onAgentGuardrail).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: "nudge" }),
+      );
+    },
+  );
 
   it("reports the first provider chunk to startup timing", async () => {
     const onModelChunk = jest.fn();
