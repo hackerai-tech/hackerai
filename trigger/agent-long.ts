@@ -3958,6 +3958,12 @@ export const agentLongTask = task({
                   generationStartedAt: retryStartTime,
                   generationTimeMs: fallbackGenerationTimeMs,
                   finishReason: state.streamFinishReason,
+                  userInitiatedAbort:
+                    retryAborted &&
+                    triggerSignal.aborted &&
+                    !state.stoppedDueToBudgetExhaustion &&
+                    !state.stoppedDueToAgentRunSpendCap &&
+                    !state.stoppedDueToElapsedTimeout,
                   abliterationRouting: abliteratedTelemetry?.getRoutingMarker(
                     !retryAborted && state.streamFinishReason === "stop",
                   ),

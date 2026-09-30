@@ -945,6 +945,26 @@ describe("Agent recovery ordering", () => {
     },
   );
 
+  it("continues from persisted history with an uncertainty warning after a terminal save rejection", async () => {
+    const props = {
+      ...recoveryProps(),
+      prepareAgentRecovery: async () => true,
+    };
+    const { result } = renderHook(() => useChatHandlers(props));
+    await act(async () => {
+      await result.current.handleContinue();
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining(
+          "Some recent streamed output could not be saved",
+        ),
+      }),
+      expect.anything(),
+    );
+    expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
+  });
+
   it("does not send into another chat after navigation during recovery", async () => {
     let finishSave!: () => void;
     const save = new Promise<void>((resolve) => {

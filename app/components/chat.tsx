@@ -1404,12 +1404,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         chatId,
         saveKey,
         async () => {
-          const response = await fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
+          return fetch(AGENT_PARTIAL_SAVE_ENDPOINT, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: requestBody,
           });
-          if (!response.ok) throw new Error("Could not save Agent progress.");
         },
       );
     },

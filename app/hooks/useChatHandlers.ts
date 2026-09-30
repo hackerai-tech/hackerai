@@ -65,7 +65,7 @@ interface UseChatHandlersProps {
   hasManuallyStoppedRef: RefObject<boolean>;
   activeTriggerRunRef?: RefObject<string | undefined>;
   resumeActiveRun?: () => void | Promise<void>;
-  prepareAgentRecovery?: () => Promise<void>;
+  prepareAgentRecovery?: () => Promise<boolean | void>;
   getAgentRunRequestGeneration?: () => number;
   onAgentRunAlreadyFinished?: (
     runId: string | undefined,
@@ -1008,6 +1008,7 @@ export const useChatHandlers = ({
     const isCurrentRequest = () =>
       currentChatIdRef.current === chatId &&
       getAgentRunRequestGeneration?.() === requestGeneration;
+    let partialSaveRejected = false;
     try {
       if (isAgentMode(chatModeRef.current)) {
         // An interrupted browser connection does not mean the worker stopped.
@@ -1028,14 +1029,24 @@ export const useChatHandlers = ({
           throw new Error("Could not check the Agent run. Try again.");
         // The next run loads its context from Convex, so it must not race a
         // client fallback save that is still in flight (or previously failed).
-        await prepareAgentRecovery?.();
+        partialSaveRejected = (await prepareAgentRecovery?.()) === true;
         if (!isCurrentRequest() || sendDisabledReasonRef.current) return;
+      }
+      if (partialSaveRejected) {
+        toast.warning(
+          "Some recent output could not be saved. Resuming from the last saved progress.",
+        );
       }
       hasManuallyStoppedRef.current = false;
       setIsAutoResuming(false);
       resetAutoContinueCount?.();
       await sendMessage(
-        { text: AUTO_CONTINUE_PROMPT, metadata: { isAutoContinue: true } },
+        {
+          text: partialSaveRejected
+            ? `${AUTO_CONTINUE_PROMPT} Some recent streamed output could not be saved. Inspect the current state before repeating any action whose outcome is uncertain.`
+            : AUTO_CONTINUE_PROMPT,
+          metadata: { isAutoContinue: true },
+        },
         {
           body: {
             mode: chatModeRef.current,
