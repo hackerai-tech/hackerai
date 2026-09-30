@@ -105,6 +105,15 @@ describe("token-bucket async functions", () => {
       // Add static method used by the code
       (MockRatelimit as any).tokenBucket = jest.fn().mockReturnValue({});
 
+      jest.doMock("../paid-bucket", () => ({
+        limitPaidBucket: (
+          _redis: unknown,
+          key: string,
+          _tierMax: number,
+          rate: number,
+        ) => mockLimitFn(key.replace("usage:monthly:", ""), { rate }),
+      }));
+
       jest.doMock("@upstash/ratelimit", () => ({
         Ratelimit: MockRatelimit,
       }));
@@ -625,6 +634,66 @@ describe("token-bucket async functions", () => {
   });
 
   describe("deductUsage", () => {
+    it("fully refunds an estimate when authoritative provider cost is zero", async () => {
+      const { deductUsage } = getIsolatedModule();
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        10000,
+        10000,
+        500,
+        undefined,
+        0,
+        undefined,
+        0,
+        undefined,
+        { pointsDeducted: 60 },
+        undefined,
+        "zero-cost",
+      );
+      expect(result).toEqual({
+        includedPointsDeducted: 0,
+        extraUsagePointsDeducted: 0,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.any(String),
+        ["usage:monthly:user-123:pro"],
+        ["usage-refund:zero-cost:settlement-refund", 60, 250000],
+      );
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("retains the actual charge and reports failure when an estimate refund is not stored", async () => {
+      const { deductUsage } = getIsolatedModule();
+      const errorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      mockEvalFn.mockRejectedValueOnce(new Error("Redis unavailable"));
+      try {
+        const result = await deductUsage(
+          "user-123",
+          "pro",
+          10000,
+          5000,
+          500,
+          undefined,
+          0.002,
+          undefined,
+          0,
+          undefined,
+          { pointsDeducted: 60 },
+        );
+        expect(result).toMatchObject({
+          includedPointsDeducted: 60,
+          usageDeductionFailed: true,
+          usageDeductionFailureReason: "deduction_failed",
+        });
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
     it("should deduct additional cost after processing", async () => {
       const { deductUsage } = getIsolatedModule();
 
@@ -1186,6 +1255,7 @@ describe("token-bucket async functions", () => {
           expect.any(Number),
           expect.any(Number),
           30 * 24 * 60 * 60,
+          0,
         ],
       );
     });
@@ -1210,6 +1280,7 @@ describe("token-bucket async functions", () => {
             nowSeconds * 1000,
             (periodEndSeconds - 30 * 24 * 60 * 60) * 1000,
             32 * 24 * 60 * 60,
+            periodEndSeconds * 1000,
           ],
         );
       } finally {
@@ -1232,6 +1303,7 @@ describe("token-bucket async functions", () => {
           expect.any(Number),
           expect.any(Number),
           30 * 24 * 60 * 60,
+          0,
         ],
       );
     });
@@ -1256,6 +1328,7 @@ describe("token-bucket async functions", () => {
             nowSeconds * 1000,
             nowSeconds * 1000,
             30 * 24 * 60 * 60,
+            stalePeriodEndSeconds * 1000,
           ],
         );
       } finally {
@@ -1410,6 +1483,7 @@ describe("token-bucket async functions", () => {
             transition.occurredAtMs,
             transition.subscriptionId,
             transition.invoiceId,
+            periodEndSeconds * 1000,
           ],
         );
       } finally {
