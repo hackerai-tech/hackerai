@@ -1606,7 +1606,7 @@ describe("createAgentStream repeated compaction", () => {
     );
     const onAgentGuardrail = jest.fn();
     const context = createTestStreamContext({
-      tools: { file: {} },
+      tools: { run_terminal_cmd: {} },
       onAgentGuardrail,
       summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
       usageTracker: {
@@ -1623,11 +1623,26 @@ describe("createAgentStream repeated compaction", () => {
             toolCalls: [
               {
                 toolCallId: "read",
-                toolName: "file",
-                input: { path: `${round}/${path}` },
+                toolName: "run_terminal_cmd",
+                input: { command: `check-${round}-${path}` },
               },
             ],
-            toolResults: [{ toolCallId: "read", output: "unchanged error" }],
+            toolResults: [
+              {
+                toolCallId: "read",
+                output: {
+                  result: {
+                    output: "unchanged error",
+                    exitCode: 2,
+                    status: "failed",
+                    session: `${round}-${lap}-${path}`,
+                    recordPath: `/records/${round}-${lap}-${path}.json`,
+                    executionEnvironment: "cloud",
+                    workingDirectory: "/home/user",
+                  },
+                },
+              },
+            ],
           });
         }
       }

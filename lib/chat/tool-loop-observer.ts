@@ -18,6 +18,44 @@ type Step = { fingerprint: string; toolNames: string[] };
 const MAX_PERIOD = 4;
 const REPORT_LAPS = [3, 5] as const;
 const POLLING_TOOLS = new Set(["interact_terminal_session", "wait_for_agents"]);
+const TERMINAL_BOOKKEEPING_FIELDS = new Set([
+  "session",
+  "recordPath",
+  "pid",
+  "rawSnapshot",
+]);
+
+// New handles and replay bytes are not new command evidence. Preserve stdout,
+// errors, exit status and provenance so real output or environment changes
+// still break the cycle. Other tools keep their complete result fingerprint.
+function comparisonOutput(toolName: string, output: unknown): unknown {
+  try {
+    if (
+      toolName !== "run_terminal_cmd" ||
+      !output ||
+      typeof output !== "object" ||
+      Object.getPrototypeOf(output) !== Object.prototype
+    )
+      return output;
+    const result = (output as Record<string, unknown>).result;
+    if (
+      !result ||
+      typeof result !== "object" ||
+      Object.getPrototypeOf(result) !== Object.prototype
+    )
+      return output;
+    return {
+      ...output,
+      result: Object.fromEntries(
+        Object.entries(result).filter(
+          ([key]) => !TERMINAL_BOOKKEEPING_FIELDS.has(key),
+        ),
+      ),
+    };
+  } catch {
+    return output; // The bounded fingerprint rejects unsupported values.
+  }
+}
 
 // Never retain inputs/results or emit their hashes. Oversized, cyclic, or exotic
 // values break observation rather than adding work to an already expensive run.
@@ -111,7 +149,11 @@ export class ToolLoopObserver {
               ),
             )
           : call.input;
-      const signature = fingerprint([call.toolName, input, result.output]);
+      const signature = fingerprint([
+        call.toolName,
+        input,
+        comparisonOutput(call.toolName, result.output),
+      ]);
       if (!signature) return clear();
       signatures.push(signature);
     }
