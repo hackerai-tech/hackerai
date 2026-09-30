@@ -162,15 +162,18 @@ async function sourceFileProof(source: MiosaSandbox, path: string) {
 
 export const recoverMiosaE2BWorkspace = schemaTask({
   id: "recover-miosa-e2b-workspace-2026-09-29",
-  schema: z.object({
-    userId: z.string().regex(/^user_[A-Z0-9]+$/),
-    cloneId: z.string().uuid(),
-  }),
+  schema: z
+    .object({
+      userId: z.string().regex(/^user_[A-Z0-9]+$/),
+      cloneId: z.string().uuid().optional(),
+      snapshotId: z.string().uuid().optional(),
+    })
+    .refine((value) => !!value.cloneId !== !!value.snapshotId),
   queue: { concurrencyLimit: 1 },
   maxDuration: 4 * 60 * 60,
   retry: { maxAttempts: 1 },
   machine: { preset: "small-1x" },
-  run: async ({ userId, cloneId }, { ctx }) => {
+  run: async ({ userId, cloneId, snapshotId }, { ctx }) => {
     if (ctx.environment.type.toLowerCase() !== "production")
       throw new AbortTaskRunError("Recovery is production-only");
     assertTriggerRunRegion({
@@ -203,7 +206,17 @@ export const recoverMiosaE2BWorkspace = schemaTask({
       throw new AbortTaskRunError(
         "Source identity or preservation state mismatch",
       );
-    let clone = await miosa.sandboxes.get(cloneId);
+    if (snapshotId) {
+      const snapshot = (await original.snapshots.list()).find(
+        (candidate) => candidate.id === snapshotId,
+      );
+      if (snapshot?.status !== "ready")
+        throw new AbortTaskRunError("Recovery snapshot is not ready");
+    }
+    let clone = cloneId
+      ? await miosa.sandboxes.get(cloneId)
+      : await original.snapshots.restore(snapshotId!);
+    const verifiedCloneId = clone.id;
     if (
       clone.id === original.id ||
       clone.data.external_user_id !== original.data.external_user_id ||
@@ -257,7 +270,7 @@ export const recoverMiosaE2BWorkspace = schemaTask({
         sandboxVersion: "v12",
         e2bCluster: cluster.cluster,
         recoverySourceId: recovery.miosaId,
-        recoveryCloneId: cloneId,
+        recoveryCloneId: verifiedCloneId,
       },
     });
     await e2bCommand(target, `mkdir -m 700 '${stage}'`);
@@ -329,7 +342,7 @@ export const recoverMiosaE2BWorkspace = schemaTask({
     if (
       info.metadata?.userID !== userId ||
       info.metadata?.recoverySourceId !== recovery.miosaId ||
-      info.metadata?.recoveryCloneId !== cloneId
+      info.metadata?.recoveryCloneId !== verifiedCloneId
     )
       throw new Error("Destination identity mismatch");
     await commitRecoveredE2BWorkspace({
