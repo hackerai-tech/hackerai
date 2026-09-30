@@ -3958,12 +3958,8 @@ export const agentLongTask = task({
                   generationStartedAt: retryStartTime,
                   generationTimeMs: fallbackGenerationTimeMs,
                   finishReason: state.streamFinishReason,
-                  userInitiatedAbort:
-                    retryAborted &&
-                    triggerSignal.aborted &&
-                    !state.stoppedDueToBudgetExhaustion &&
-                    !state.stoppedDueToAgentRunSpendCap &&
-                    !state.stoppedDueToElapsedTimeout,
+                  // Trigger cancellation has no user-stop provenance. Keep
+                  // unknown interruptions neutral; the client labels explicit Stop.
                   abliterationRouting: abliteratedTelemetry?.getRoutingMarker(
                     !retryAborted && state.streamFinishReason === "stop",
                   ),
@@ -5099,7 +5095,7 @@ export const agentLongTask = task({
                                 !isAborted &&
                                   state.streamFinishReason === "stop",
                               ),
-                            userInitiatedAbort: isUserInitiatedAbort,
+                            // A Trigger abort alone does not establish a user stop.
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,
