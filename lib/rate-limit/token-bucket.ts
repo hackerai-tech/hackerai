@@ -340,8 +340,13 @@ type MonthlyLimiter = {
   limiter: {
     limit: (
       key: string,
-      options?: { rate?: number },
-    ) => Promise<{ remaining: number; reset: number; success?: boolean }>;
+      options?: { rate?: number; allowPartial?: boolean },
+    ) => Promise<{
+      remaining: number;
+      reset: number;
+      success?: boolean;
+      deducted?: number;
+    }>;
   };
   key: string;
 };
@@ -401,10 +406,13 @@ const deductAdditionalUsagePoints = async ({
   if (fromBucket > 0) {
     const bucketResult = await monthly.limiter.limit(monthly.key, {
       rate: fromBucket,
+      allowPartial: true,
     });
-    if (bucketResult.success !== false) {
-      includedDeducted = fromBucket;
-    }
+    // A concurrent request may have spent part of the peeked balance. Consume
+    // what remains atomically before charging the uncovered cost to Extra Usage.
+    includedDeducted =
+      bucketResult.deducted ??
+      (bucketResult.success !== false ? fromBucket : 0);
   }
 
   const fromExtraUsage = normalizedAdditionalCost - includedDeducted;
@@ -867,12 +875,17 @@ const createRateLimiter = (
     monthlyLimit,
     monthly: {
       limiter: {
-        limit: (key: string, options?: { rate?: number }) =>
+        limit: (
+          key: string,
+          options?: { rate?: number; allowPartial?: boolean },
+        ) =>
           limitPaidBucket(
             redis!,
             `usage:monthly:${key}`,
             monthlyLimit,
             options?.rate ?? 1,
+            Date.now(),
+            options?.allowPartial ?? false,
           ),
       },
       key: `${userId}:${subscription}`,
@@ -1014,15 +1027,14 @@ export const checkTokenBucketLimit = async (
       }),
     });
 
-    // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
-    let monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
-
-    // Step 1.5: For new team members, apply seat debt from removed members
+    // Initialize a new seat and transfer its debt in one transaction before
+    // another request can observe and spend an undebited allowance.
     if (isNewTeamBucket) {
       await applyTeamSeatDebt(userId, organizationId!);
-      // Re-peek after debt burn to get accurate remaining
-      monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
     }
+
+    // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
+    let monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
 
     // Price-specific and prorated cycles store their authoritative allowance.
     const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
@@ -2456,10 +2468,34 @@ export const clearOrgRemovedUsage = async (orgId: string): Promise<void> => {
   }
 };
 
+const APPLY_TEAM_SEAT_DEBT_SCRIPT = `
+local bucketKey = KEYS[1]
+local debtKey = KEYS[2]
+local flagKey = KEYS[3]
+local tierMax = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+if redis.call("EXISTS", flagKey) == 1 then return 0 end
+
+local allocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation")) or tierMax
+allocation = math.max(0, math.min(tierMax, allocation))
+local tokens = tonumber(redis.call("HGET", bucketKey, "tokens")) or allocation
+tokens = math.max(0, math.min(allocation, tokens))
+local debt = math.max(0, tonumber(redis.call("GET", debtKey)) or 0)
+local debit = math.min(debt, tierMax, tokens)
+if debit > 0 then
+  redis.call("HSET", bucketKey, "tokens", tokens - debit)
+  redis.call("HSETNX", bucketKey, "refilledAt", now)
+  redis.call("DECRBY", debtKey, debit)
+end
+redis.call("SET", flagKey, "1", "EX", ttl)
+return debit
+`;
+
 /**
- * Apply seat debt to a new team member's bucket on first use.
- * Burns up to one seat's worth (400k points) from their bucket, debiting the
- * org counter by the same amount. Uses a flag key to ensure idempotency.
+ * Transfer removed-member usage to a new seat atomically. The organization
+ * counter decreases only by the points actually consumed, and concurrent
+ * requests cannot observe a new full allowance before its debt is applied.
  */
 export const applyTeamSeatDebt = async (
   userId: string,
@@ -2468,55 +2504,15 @@ export const applyTeamSeatDebt = async (
   const redis = createRedisClient();
   if (!redis) return;
 
-  const flagKey = debtAppliedKey(orgId, userId);
-
-  try {
-    // Atomically claim the flag — if SET NX returns null, another request already claimed it
-    const claimed = await redis.set(flagKey, 1, {
-      ex: THIRTY_DAYS_SECONDS,
-      nx: true,
-    });
-    if (!claimed) return;
-
-    // Atomically claim up to one seat's worth of debt.
-    // decrby is atomic, so concurrent new members can't claim the same debt.
-    const key = orgRemovedUsageKey(orgId);
-    const afterDecr = await redis.decrby(key, TEAM_CREDITS);
-    // afterDecr = oldDebt - TEAM_CREDITS
-    // If afterDecr >= 0: we claimed a full TEAM_CREDITS of debt
-    // If afterDecr < 0: debt was less than TEAM_CREDITS, refund the excess
-    // If afterDecr <= -TEAM_CREDITS: there was no debt at all
-    const overclaim = Math.max(0, -afterDecr);
-    const debit = TEAM_CREDITS - overclaim;
-
-    if (debit <= 0) {
-      // No debt existed — restore counter and skip
-      await redis.incrby(key, TEAM_CREDITS);
-      return;
-    }
-
-    // Restore any excess we claimed beyond actual debt
-    if (overclaim > 0) {
-      await redis.incrby(key, overclaim);
-    }
-
-    // Burn the claimed debt from the user's bucket
-    try {
-      const { monthly } = createRateLimiter(redis, userId, "team");
-      const result = await monthly.limiter.limit(monthly.key, { rate: debit });
-      if (result.success === false) {
-        throw new Error("Team seat debt exceeds the remaining allowance");
-      }
-    } catch (burnError) {
-      // Bucket burn failed — restore the debt we claimed so it's not lost
-      await redis.incrby(key, debit);
-      // Clear the flag so a retry can re-attempt
-      await redis.del(flagKey);
-      throw burnError;
-    }
-  } catch (error) {
-    console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
-  }
+  await redis.eval(
+    APPLY_TEAM_SEAT_DEBT_SCRIPT,
+    [
+      getMonthlyBucketKey(userId, "team"),
+      orgRemovedUsageKey(orgId),
+      debtAppliedKey(orgId, userId),
+    ],
+    [TEAM_CREDITS, Date.now(), THIRTY_DAYS_SECONDS],
+  );
 };
 
 // =============================================================================

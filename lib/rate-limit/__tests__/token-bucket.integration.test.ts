@@ -111,7 +111,13 @@ describe("token-bucket async functions", () => {
           key: string,
           _tierMax: number,
           rate: number,
-        ) => mockLimitFn(key.replace("usage:monthly:", ""), { rate }),
+          _nowMs: number,
+          allowPartial: boolean,
+        ) =>
+          mockLimitFn(key.replace("usage:monthly:", ""), {
+            rate,
+            ...(allowPartial && { allowPartial }),
+          }),
       }));
 
       jest.doMock("@upstash/ratelimit", () => ({
@@ -1671,6 +1677,52 @@ describe("token-bucket async functions", () => {
       });
     });
 
+    it("uses the remaining included points when another settlement wins the race", async () => {
+      const { deductUsage } = getIsolatedModule();
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 100,
+          reset: Date.now() + 3600000,
+        })
+        .mockResolvedValueOnce({
+          success: false,
+          remaining: 0,
+          deducted: 40,
+          reset: Date.now() + 3600000,
+        });
+
+      const result = await deductUsage(
+        "user-123",
+        "pro",
+        0,
+        0,
+        0,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        100 / 12000,
+        undefined,
+        0,
+        undefined,
+        { pointsDeducted: 0, extraUsagePointsDeducted: 0 },
+      );
+
+      expect(mockLimitFn).toHaveBeenLastCalledWith("user-123:pro", {
+        rate: 100,
+        allowPartial: true,
+      });
+      expect(mockDeductFromBalance).toHaveBeenCalledWith(
+        "user-123",
+        60,
+        undefined,
+      );
+      expect(result).toMatchObject({
+        includedPointsDeducted: 40,
+        extraUsagePointsDeducted: 60,
+        uncoveredPoints: 0,
+        usageDeductionFailed: false,
+      });
+    });
+
     it("should deduct overflow from extra usage when bucket has insufficient balance", async () => {
       const { deductUsage } = getIsolatedModule();
 
@@ -2188,6 +2240,60 @@ describe("token-bucket async functions", () => {
   });
 
   describe("concurrent deduction safety", () => {
+    it("applies seat debt before exposing the first team allowance", async () => {
+      mockExistsFn.mockResolvedValueOnce(0);
+      mockEvalFn.mockImplementation(async (script: string) => {
+        if (script.includes("local debtKey = KEYS[2]")) {
+          expect(mockLimitFn).not.toHaveBeenCalled();
+          return 400_000;
+        }
+        return [-1, -1, 0];
+      });
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+      });
+      const { checkTokenBucketLimit } = getIsolatedModule();
+      await expect(
+        checkTokenBucketLimit(
+          "user-123",
+          "team",
+          1000,
+          undefined,
+          undefined,
+          "org-123",
+        ),
+      ).rejects.toMatchObject({ type: "rate_limit" });
+      expect(mockEvalFn).toHaveBeenCalledWith(
+        expect.stringContaining("local debtKey = KEYS[2]"),
+        [
+          "usage:monthly:user-123:team",
+          "team:removed_usage:org-123",
+          "team:debt_applied:org-123:user-123",
+        ],
+        [400_000, expect.any(Number), 30 * 24 * 60 * 60],
+      );
+    });
+
+    it("does not admit a new team request when the debt transaction fails", async () => {
+      mockExistsFn.mockResolvedValueOnce(0);
+      mockEvalFn.mockRejectedValueOnce(new Error("Redis unavailable"));
+      const { checkTokenBucketLimit } = getIsolatedModule();
+      await expect(
+        checkTokenBucketLimit(
+          "user-123",
+          "team",
+          1000,
+          undefined,
+          undefined,
+          "org-123",
+        ),
+      ).rejects.toBeDefined();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+      expect(mockDeductFromTeamBalance).not.toHaveBeenCalled();
+    });
+
     it("should reject a concurrent check when its final deduction fails", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 

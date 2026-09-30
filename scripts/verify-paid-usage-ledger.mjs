@@ -29,6 +29,7 @@ const limitLua = script(limitSource, "PAID_BUCKET_LIMIT_SCRIPT");
 const paidLua = script(bucketSource, "APPLY_PAID_BUCKET_RESET_SCRIPT");
 const holdLua = script(bucketSource, "FREEZE_DELINQUENT_BUCKET_SCRIPT");
 const initLua = script(bucketSource, "SET_MONTHLY_BUCKET_STATE_SCRIPT");
+const seatDebtLua = script(bucketSource, "APPLY_TEAM_SEAT_DEBT_SCRIPT");
 const directory = mkdtempSync(join(tmpdir(), "paid-ledger-"));
 const socket = join(directory, "redis.sock");
 const redisCli = process.env.REDIS_CLI_BIN ?? "redis-cli";
@@ -210,6 +211,67 @@ try {
     paid("reject", start, start + 31 * day, "in_reject", 50);
     assert.deepEqual(limit("reject", start, 70), [0, 50, start + 31 * day, 50]);
     assert.equal(limit("reject", start, 30)[1], 20);
+  });
+  await check(
+    "settlement consumes the partial balance after a concurrent debit",
+    () => {
+      paid("partial", start, start + 31 * day, "in_partial", 100);
+      assert.equal(limit("partial", start)[1], 100);
+      limit("partial", start, 60);
+      assert.deepEqual(
+        evalLua(limitLua, "partial", [250000, 30 * day, start, 100, 1]),
+        [0, 0, start + 31 * day, 100, 40],
+      );
+    },
+  );
+  await check(
+    "seat debt transfers once before a new allowance is spendable",
+    () => {
+      command("SET", "seat:debt", 400000);
+      const apply = () =>
+        command(
+          "EVAL",
+          seatDebtLua,
+          3,
+          "seat:bucket",
+          "seat:debt",
+          "seat:flag",
+          400000,
+          start,
+          30 * 86400,
+        );
+      assert.equal(apply(), 400000);
+      assert.equal(apply(), 0);
+      assert.equal(command("GET", "seat:debt"), "0");
+      assert.equal(command("HGET", "seat:bucket", "tokens"), "0");
+    },
+  );
+  await check("seat debt only claims credits actually consumed", () => {
+    command("SET", "partial-seat:debt", 400000);
+    command(
+      "HSET",
+      "partial-seat:bucket",
+      "tokens",
+      10000,
+      "cycleAllocation",
+      400000,
+    );
+    assert.equal(
+      command(
+        "EVAL",
+        seatDebtLua,
+        3,
+        "partial-seat:bucket",
+        "partial-seat:debt",
+        "partial-seat:flag",
+        400000,
+        start,
+        30 * 86400,
+      ),
+      10000,
+    );
+    assert.equal(command("GET", "partial-seat:debt"), "390000");
+    assert.equal(command("HGET", "partial-seat:bucket", "tokens"), "0");
   });
   await check("parallel debits spend the allowance exactly once", async () => {
     paid("concurrent", start, start + 31 * day, "in_parallel", 100);

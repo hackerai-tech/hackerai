@@ -21,6 +21,25 @@ describe("paid bucket adapter", () => {
     });
   });
 
+  it("reports the exact partial debit for final settlement", async () => {
+    const evalMock = jest
+      .fn()
+      .mockResolvedValue([0, 0, 1790812800000, 100, 40]);
+    const result = await limitPaidBucket(
+      { eval: evalMock } as unknown as Pick<Redis, "eval">,
+      "usage:monthly:user_1:pro",
+      100,
+      100,
+      1790700000000,
+      true,
+    );
+    expect(result).toMatchObject({
+      success: false,
+      remaining: 0,
+      deducted: 40,
+    });
+  });
+
   it.each([-1, NaN, Infinity])(
     "rejects invalid debit %s before contacting Redis",
     async (debit) => {
