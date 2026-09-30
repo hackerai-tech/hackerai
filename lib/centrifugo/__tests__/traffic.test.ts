@@ -22,10 +22,26 @@ test("records relay bytes when the meter provider registers after module import"
     operation: "command",
     source: "agent-long",
     correlation: "matched",
+    channel: "connection",
   });
   expect(add).toHaveBeenCalledWith(2, {
     operation: "command",
     source: "agent-long",
     correlation: "unmatched",
+    channel: "connection",
+  });
+});
+
+test("separates isolated operation bytes from legacy channel bytes without operation identifiers", () => {
+  const add = jest.fn();
+  metrics.setGlobalMeterProvider({
+    getMeter: () => ({ createCounter: () => ({ add }) }),
+  } as unknown as MeterProvider);
+  recordRelayReceivedBytes("file", "agent-long", 50, 0, "operation");
+  expect(add).toHaveBeenCalledWith(50, {
+    operation: "file",
+    source: "agent-long",
+    correlation: "matched",
+    channel: "operation",
   });
 });

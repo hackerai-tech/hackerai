@@ -1,77 +1,52 @@
 import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
 import type { Subscription } from "centrifuge";
 import { trackPresenceTraffic } from "../presence-traffic";
+import { recordRelayReceivedBytes } from "../traffic";
 
-jest.mock("node:crypto", () => ({ randomUUID: jest.fn() }));
-const context = {
-  source: "presence-route" as const,
-  userId: "user",
-  connectionId: "conn",
-};
+jest.mock("../traffic", () => ({
+  ...jest.requireActual("../traffic"),
+  recordRelayReceivedBytes: jest.fn(),
+}));
 
-describe("presence traffic", () => {
-  let log: jest.SpyInstance;
-  beforeEach(() => {
-    jest
-      .mocked(randomUUID)
-      .mockReturnValue("00000000-0000-4000-8000-000000000000");
-    log = jest.spyOn(console, "log").mockImplementation(() => {});
+afterEach(() => jest.clearAllMocks());
+
+test("records UTF-8 incidental presence traffic once and removes only its observer", () => {
+  const sub = new EventEmitter();
+  const otherListener = jest.fn();
+  sub.on("publication", otherListener);
+  const finish = trackPresenceTraffic(sub as Subscription, "presence-route");
+  sub.emit("publication", {
+    data: { data: "秘密", command: "private command", token: "secret-token" },
   });
-  afterEach(() => jest.restoreAllMocks());
+  sub.emit("publication", { data: { content: "private file" } });
+  finish();
+  finish();
+  sub.emit("publication", { data: { data: "after cleanup" } });
+  const bytes = 128 * 2 + 6 + 15 + 12;
+  expect(recordRelayReceivedBytes).toHaveBeenCalledTimes(1);
+  expect(recordRelayReceivedBytes).toHaveBeenCalledWith(
+    "presence",
+    "presence-route",
+    bytes,
+    bytes,
+  );
+  expect(
+    JSON.stringify(jest.mocked(recordRelayReceivedBytes).mock.calls),
+  ).not.toMatch(/秘密|private command|private file|secret-token/);
+  expect(sub.listenerCount("publication")).toBe(1);
+  expect(otherListener).toHaveBeenCalledTimes(3);
+});
 
-  it("counts reconnects and UTF-8 fanout without recording content, and completes only once", () => {
-    const sub = new EventEmitter();
-    const otherListener = jest.fn();
-    sub.on("publication", otherListener);
-    const finish = trackPresenceTraffic(sub as Subscription, context);
-    sub.emit("subscribed", {});
-    sub.emit("publication", {
-      data: { data: "秘密", command: "private command", token: "secret-token" },
-    });
-    sub.emit("subscribed", {});
-    sub.emit("publication", { data: { content: "private file" } });
-    finish(false);
-    finish(true);
-    sub.emit("publication", { data: { data: "after cleanup" } });
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
-      sample_rate: 8,
-      presence_reliable: false,
-      received_publications: 2,
-      received_payload_bytes_estimate: 128 * 2 + 6 + 15 + 12,
-      subscription_events: 2,
-    });
-    expect(JSON.stringify(log.mock.calls)).not.toMatch(
-      /秘密|private command|private file|secret-token/,
-    );
-    expect(sub.listenerCount("publication")).toBe(1);
-    expect(otherListener).toHaveBeenCalledTimes(3);
-    expect(sub.listenerCount("subscribed")).toBe(0);
-  });
-
-  it("keeps every large probe even when its ID is outside the small-probe sample", () => {
-    jest
-      .mocked(randomUUID)
-      .mockReturnValue("ffffffff-ffff-4fff-8fff-ffffffffffff");
-    const sub = new EventEmitter();
-    const finish = trackPresenceTraffic(sub as Subscription, context);
-    sub.emit("publication", { data: { data: "x".repeat(1024 * 1024) } });
-    finish(true);
-    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
-      sample_rate: 1,
-      received_payload_bytes_estimate: 1024 * 1024 + 128,
-    });
-  });
-
-  it("samples small probes and removes observers even when no log is emitted", () => {
-    jest
-      .mocked(randomUUID)
-      .mockReturnValue("ffffffff-ffff-4fff-8fff-ffffffffffff");
-    const sub = new EventEmitter();
-    const finish = trackPresenceTraffic(sub as Subscription, context);
-    finish(true);
-    expect(log).not.toHaveBeenCalled();
-    expect(sub.eventNames()).toEqual([]);
-  });
+test("records every probe without random sampling or a subscription-event observer", () => {
+  const sub = new EventEmitter();
+  const finish = trackPresenceTraffic(sub as Subscription, "sandbox-manager");
+  sub.emit("publication", { data: { data: "x".repeat(1024 * 1024) } });
+  finish();
+  expect(recordRelayReceivedBytes).toHaveBeenCalledWith(
+    "presence",
+    "sandbox-manager",
+    1024 * 1024 + 128,
+    1024 * 1024 + 128,
+  );
+  expect(sub.eventNames()).toEqual([]);
 });

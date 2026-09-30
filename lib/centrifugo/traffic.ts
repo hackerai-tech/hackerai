@@ -1,7 +1,5 @@
 import { metrics } from "@opentelemetry/api";
 
-const LARGE_RELAY_STREAM_BYTES = 1024 * 1024;
-
 /** Record wire-subscription bytes with only bounded labels, so Trigger can
  * aggregate relay traffic across runs without searching individual logs. */
 export function recordRelayReceivedBytes(
@@ -9,6 +7,7 @@ export function recordRelayReceivedBytes(
   source: "agent-long" | "chat-handler" | "presence-route" | "sandbox-manager",
   receivedBytes: number,
   unmatchedBytes = 0,
+  channel: "operation" | "connection" = "connection",
 ): void {
   if (!Number.isFinite(receivedBytes) || receivedBytes <= 0) return;
   const unmatched = Math.min(
@@ -30,6 +29,7 @@ export function recordRelayReceivedBytes(
         operation,
         source,
         correlation: "matched",
+        channel,
       });
     }
     if (unmatched > 0) {
@@ -37,6 +37,7 @@ export function recordRelayReceivedBytes(
         operation,
         source,
         correlation: "unmatched",
+        channel,
       });
     }
   } catch {
@@ -58,13 +59,4 @@ export function estimateRelayPayloadBytes(value: unknown): number {
     bytes += Buffer.byteLength(JSON.stringify(payload.entries), "utf8");
   }
   return bytes;
-}
-
-/** Log all large subscriptions and a deterministic 1/8 sample of the rest. */
-export function relayTrafficSampleRate(
-  id: string,
-  bytes: number,
-): number | null {
-  if (bytes >= LARGE_RELAY_STREAM_BYTES) return 1;
-  return Number.parseInt(id.replaceAll("-", "").slice(0, 1), 16) < 2 ? 8 : null;
 }

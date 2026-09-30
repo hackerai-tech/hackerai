@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
 
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
-  const finishTraffic: Array<(reliable: boolean) => void> = [];
+  const finishTraffic: Array<() => void> = [];
   const cleanups: Array<() => void> = [];
   const probeStart = Date.now();
   try {
@@ -70,13 +70,7 @@ export async function GET(request: NextRequest) {
             sandboxConnectionChannel(userId, connection.connectionId),
           );
           subscriptions.push(sub);
-          finishTraffic.push(
-            trackPresenceTraffic(sub, {
-              source: "presence-route",
-              userId,
-              connectionId: connection.connectionId,
-            }),
-          );
+          finishTraffic.push(trackPresenceTraffic(sub, "presence-route"));
 
           const timeout = setTimeout(() => {
             cleanup();
@@ -135,7 +129,7 @@ export async function GET(request: NextRequest) {
     });
   } finally {
     cleanups.forEach((cleanup) => cleanup());
-    finishTraffic.forEach((finish) => finish(presenceReliable));
+    finishTraffic.forEach((finish) => finish());
     for (const sub of subscriptions) {
       sub.removeAllListeners();
       sub.unsubscribe();

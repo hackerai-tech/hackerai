@@ -11,6 +11,7 @@ import { EventEmitter } from "events";
 import { CentrifugoSandbox, parseSandboxMessage } from "../centrifugo-sandbox";
 import { createCentrifugoPtyHandle } from "../centrifugo-pty-adapter";
 import { estimateRelayPayloadBytes } from "@/lib/centrifugo/traffic";
+import * as relayTraffic from "@/lib/centrifugo/traffic";
 import type { CentrifugoConfig } from "../centrifugo-sandbox";
 import {
   LOCAL_COMMAND_RELAY_UNSUBSCRIBED_ERROR_CODE,
@@ -21,6 +22,11 @@ import {
   CentrifugoMessageReassembler,
   fragmentCentrifugoMessage,
 } from "@/packages/local/src/centrifugo-transport";
+
+jest.mock("@/lib/centrifugo/traffic", () => ({
+  ...jest.requireActual("@/lib/centrifugo/traffic"),
+  recordRelayReceivedBytes: jest.fn(),
+}));
 
 // Track all created mock subscriptions and clients for assertions
 let mockSubscriptions: MockSubscription[];
@@ -136,6 +142,7 @@ function startCommand(
 
 describe("CentrifugoSandbox", () => {
   beforeEach(() => {
+    jest.mocked(relayTraffic.recordRelayReceivedBytes).mockClear();
     mockSubscriptions = [];
     mockClients = [];
     jest.useFakeTimers();
@@ -307,9 +314,9 @@ describe("CentrifugoSandbox", () => {
     await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
   });
 
-  it("includes the threshold-crossing PTY chunk in its checkpoint", async () => {
+  it("records PTY byte increments at checkpoints and completion without double counting", async () => {
     const sandbox = createSandbox();
-    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const metricSpy = jest.mocked(relayTraffic.recordRelayReceivedBytes);
     try {
       const pending = createCentrifugoPtyHandle(sandbox, {
         command: "large output",
@@ -331,36 +338,31 @@ describe("CentrifugoSandbox", () => {
           data: "private-output-".repeat(75_000),
         },
       });
-      const checkpoint = logSpy.mock.calls
-        .map(([value]) => {
-          try {
-            return JSON.parse(String(value)) as Record<string, unknown>;
-          } catch {
-            return null;
-          }
-        })
-        .find(
-          (value) =>
-            value?.event === "local_relay_pty_traffic" &&
-            value.phase === "checkpoint",
-        );
-      expect(checkpoint).toEqual(
-        expect.objectContaining({
-          sample_rate: 1,
-          pty_data_bytes: Buffer.byteLength(
-            "private-output-".repeat(75_000),
-            "utf8",
-          ),
-        }),
+      const chunkBytes = estimateRelayPayloadBytes({
+        data: "private-output-".repeat(75_000),
+      });
+      expect(metricSpy).toHaveBeenCalledWith(
+        "pty",
+        "chat-handler",
+        128 + chunkBytes,
+        0,
+        "connection",
       );
-      expect(JSON.stringify(checkpoint)).not.toContain("private-output");
 
       sub.emit("publication", {
         data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
       });
       await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
+      expect(metricSpy).toHaveBeenCalledTimes(2);
+      expect(metricSpy).toHaveBeenLastCalledWith(
+        "pty",
+        "chat-handler",
+        128,
+        0,
+        "connection",
+      );
     } finally {
-      logSpy.mockRestore();
+      metricSpy.mockClear();
     }
   });
 
@@ -910,9 +912,10 @@ describe("CentrifugoSandbox", () => {
       await expect(promise).resolves.toMatchObject({ exitCode: 0 });
     });
 
-    it("logs only traffic counts and identifiers for a large command stream", async () => {
+    it("records aggregate bytes for a large command without per-operation traffic logs", async () => {
       const sandbox = createSandbox();
       const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const metricSpy = jest.mocked(relayTraffic.recordRelayReceivedBytes);
       const output = "private-output-".repeat(75_000);
       try {
         const { promise } = startCommand(sandbox, "private-command", {
@@ -930,37 +933,32 @@ describe("CentrifugoSandbox", () => {
         });
         await promise;
 
-        const trafficLog = logSpy.mock.calls
-          .map(([value]) => {
-            try {
-              return JSON.parse(String(value)) as Record<string, unknown>;
-            } catch {
-              return null;
-            }
-          })
-          .find((value) => value?.event === "local_relay_command_traffic");
-        expect(trafficLog).toEqual(
-          expect.objectContaining({
-            user_id: "user-1",
-            connection_id: "conn-1",
-            command_id: FIXED_UUID,
-            sample_rate: 1,
-            stdout_bytes: Buffer.byteLength(output, "utf8"),
-            stderr_bytes: 0,
-            output_chunks: 1,
-            command_publish_attempts: 1,
-          }),
+        expect(metricSpy).toHaveBeenCalledTimes(1);
+        expect(metricSpy).toHaveBeenCalledWith(
+          "command",
+          "chat-handler",
+          Buffer.byteLength(output, "utf8") + 256,
+          0,
+          "connection",
         );
-        expect(JSON.stringify(trafficLog)).not.toContain("private-output");
-        expect(JSON.stringify(trafficLog)).not.toContain("private-command");
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "local_relay_command_traffic",
+        );
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "private-output",
+        );
+        expect(JSON.stringify(logSpy.mock.calls)).not.toContain(
+          "private-command",
+        );
       } finally {
         logSpy.mockRestore();
+        metricSpy.mockClear();
       }
     });
 
     it("counts large publications for other commands as relay fanout", async () => {
       const sandbox = createSandbox();
-      const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+      const metricSpy = jest.mocked(relayTraffic.recordRelayReceivedBytes);
       try {
         const { promise } = startCommand(sandbox, "echo own", {
           timeoutMs: 5000,
@@ -988,32 +986,17 @@ describe("CentrifugoSandbox", () => {
         });
         await promise;
 
-        const trafficLog = logSpy.mock.calls
-          .map(([value]) => {
-            try {
-              return JSON.parse(String(value)) as Record<string, unknown>;
-            } catch {
-              return null;
-            }
-          })
-          .find((value) => value?.event === "local_relay_command_traffic");
-        expect(trafficLog).toEqual(
-          expect.objectContaining({
-            sample_rate: 1,
-            stdout_bytes: 0,
-            unmatched_publications: 2,
-            received_payload_bytes_estimate: expect.any(Number),
-            unmatched_payload_bytes_estimate: expect.any(Number),
-          }),
+        const fanoutBytes = 2 * (1024 * 1024 + 128);
+        expect(metricSpy).toHaveBeenCalledTimes(1);
+        expect(metricSpy).toHaveBeenCalledWith(
+          "command",
+          "chat-handler",
+          fanoutBytes + 128,
+          fanoutBytes,
+          "connection",
         );
-        expect(
-          trafficLog?.received_payload_bytes_estimate as number,
-        ).toBeGreaterThan(1024 * 1024);
-        expect(
-          trafficLog?.unmatched_payload_bytes_estimate as number,
-        ).toBeGreaterThan(2 * 1024 * 1024);
       } finally {
-        logSpy.mockRestore();
+        metricSpy.mockClear();
       }
     });
 
