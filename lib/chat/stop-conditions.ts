@@ -12,6 +12,7 @@ export const OUTPUT_LIMIT_FINISH_REASON = "length";
 
 export const BUDGET_EXHAUSTION_FINISH_REASON = "budget-exhausted";
 export const STEP_LIMIT_FINISH_REASON = "step-limit";
+export const CLIENT_SAVED_FINISH_REASON = "trigger_crashed_client_saved";
 
 export function stepLimitReached(state: {
   maxSteps: number;

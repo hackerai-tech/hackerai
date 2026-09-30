@@ -2445,6 +2445,15 @@ export const createChatHandler = () => {
                                       generationTimeMs:
                                         Date.now() - fallbackStartTime,
                                       finishReason: state.streamFinishReason,
+                                      userInitiatedAbort:
+                                        retryAborted &&
+                                        !(
+                                          preemptiveTimeout?.isPreemptive() ??
+                                          false
+                                        ) &&
+                                        !state.stoppedDueToBudgetExhaustion &&
+                                        !state.stoppedDueToAgentRunSpendCap &&
+                                        !state.stoppedDueToElapsedTimeout,
                                       abliterationRouting:
                                         abliteratedTelemetry?.getRoutingMarker(
                                           !retryAborted &&
@@ -2917,6 +2926,7 @@ export const createChatHandler = () => {
                                 !isAborted &&
                                   state.streamFinishReason === "stop",
                               ),
+                            userInitiatedAbort: isUserInitiatedAbort,
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,

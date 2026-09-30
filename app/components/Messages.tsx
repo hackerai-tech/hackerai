@@ -197,7 +197,7 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void | Promise<void>;
   onRetry: (options?: RetryOptions) => void | Promise<void>;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void | Promise<void>;
   onReconnect?: () => void;
   onEditMessage: (
     messageId: string,

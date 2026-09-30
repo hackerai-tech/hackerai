@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface BudgetExhaustedNoticeProps {
-  onContinue?: () => void;
+  onContinue?: () => void | Promise<void>;
+  pending?: boolean;
 }
 
 /** Mounted only for a stopped run, including when its saved chat is reopened. */
@@ -21,6 +22,7 @@ export const BudgetExhaustedNotice = (props: BudgetExhaustedNoticeProps) => (
 
 const UsageBudgetExhaustedNotice = ({
   onContinue,
+  pending = false,
 }: BudgetExhaustedNoticeProps) => {
   const { subscription, isCheckingProPlan } = useGlobalState();
   const { user } = useAuth();
@@ -128,10 +130,10 @@ const UsageBudgetExhaustedNotice = ({
               type="button"
               size="sm"
               variant={canContinue ? "default" : "outline"}
-              disabled={isLoading}
-              onClick={() => onContinue()}
+              disabled={isLoading || pending}
+              onClick={() => void onContinue()}
             >
-              {canContinue ? "Continue" : "Try again"}
+              {pending ? "Resuming…" : canContinue ? "Continue" : "Try again"}
             </Button>
           )}
         </div>

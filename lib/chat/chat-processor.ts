@@ -18,7 +18,7 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import {
-  ABORTED_TOOL_ERROR_TEXT,
+  INTERRUPTED_TOOL_ERROR_TEXT,
   getIncompleteToolErrorText,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
@@ -247,7 +247,7 @@ function logIncompleteToolPartHandled({
 
 function createAbortedToolPart(
   part: any,
-  errorText = ABORTED_TOOL_ERROR_TEXT,
+  errorText = INTERRUPTED_TOOL_ERROR_TEXT,
 ): any | null {
   if (
     !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
@@ -279,7 +279,10 @@ function createAbortedToolPart(
  */
 export function fixIncompleteMessageParts(
   parts: any[],
-  options?: { logContext?: IncompleteMessagePartsLogContext },
+  options?: {
+    logContext?: IncompleteMessagePartsLogContext;
+    userInitiatedAbort?: boolean;
+  },
 ): any[] {
   // First pass: fix incomplete tool invocations
   const partsWithFixedTools = parts.map((part: any) => {
@@ -302,7 +305,10 @@ export function fixIncompleteMessageParts(
       if (isIncomplete && part.output == null && part.result == null) {
         const abortedPart = createAbortedToolPart(
           part,
-          getIncompleteToolErrorText(options?.logContext?.finishReason),
+          getIncompleteToolErrorText(
+            options?.logContext?.finishReason,
+            options?.userInitiatedAbort,
+          ),
         );
         if (abortedPart) {
           logIncompleteToolPartHandled({

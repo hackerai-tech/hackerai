@@ -753,7 +753,7 @@ describe("fixIncompleteMessageParts", () => {
       toolCallId: "call_1",
       state: "output-error",
       input: { title: "Test", content: "Content" },
-      errorText: "Stopped by user before the tool completed.",
+      errorText: expect.stringContaining("Execution was interrupted"),
     });
   });
 
@@ -826,7 +826,7 @@ describe("fixIncompleteMessageParts", () => {
       type: "tool-create_note",
       state: "output-error",
       input: { title: "Partial" },
-      errorText: "Stopped by user before the tool completed.",
+      errorText: expect.stringContaining("Execution was interrupted"),
     });
   });
 
@@ -857,7 +857,7 @@ describe("fixIncompleteMessageParts", () => {
         brief: "Test with cloudscraper to handle Cloudflare challenge",
         path: "/home/user/telenet_cloudscraper.py",
       },
-      errorText: "Stopped by user before the tool completed.",
+      errorText: expect.stringContaining("Execution was interrupted"),
     });
   });
 

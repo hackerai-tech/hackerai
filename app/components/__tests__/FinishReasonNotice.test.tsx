@@ -8,7 +8,13 @@ jest.mock("../BlockedChatBillingRecovery", () => ({
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest } from "@jest/globals";
 import React from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 
 import { DataStreamProvider, useDataStream } from "../DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
@@ -365,7 +371,7 @@ describe("FinishReasonNotice", () => {
       expect(screen.getByRole("button", { name: "Add credits" })).toBeEnabled();
       fireEvent.click(screen.getByRole("button", { name: "Try again" }));
       expect(onContinue).toHaveBeenCalledTimes(1);
-      expect(onContinue).toHaveBeenCalledWith();
+      expect(onContinue).toHaveBeenCalledWith(undefined);
       // A rejected attempt must not permanently hide the recovery actions.
       expect(screen.getByRole("button", { name: "Add credits" })).toBeEnabled();
     });
@@ -396,4 +402,36 @@ describe("FinishReasonNotice", () => {
       expect(outerDiv).toHaveClass("mt-2", "w-full");
     });
   });
+});
+
+it.each(["step-limit", "trigger_crashed_client_saved"])(
+  "offers recovery for %s",
+  (finishReason) => {
+    renderNotice({ finishReason, onContinue: jest.fn() });
+    expect(
+      screen.getByRole("button", { name: /Continue|Resume task/ }),
+    ).toBeEnabled();
+  },
+);
+
+it("keeps recovery available after a rejected continuation and prevents double clicks", async () => {
+  let reject!: (error: Error) => void;
+  const onContinue = jest.fn(
+    () =>
+      new Promise<void>((_, fail) => {
+        reject = fail;
+      }),
+  );
+  renderNotice({ finishReason: "step-limit", onContinue });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  const pending = screen.getByRole("button", { name: "Resuming…" });
+  expect(pending).toBeDisabled();
+  fireEvent.click(pending);
+  expect(onContinue).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    reject(new Error("offline"));
+  });
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled(),
+  );
 });
