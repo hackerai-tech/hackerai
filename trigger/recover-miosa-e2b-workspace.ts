@@ -167,13 +167,18 @@ export const recoverMiosaE2BWorkspace = schemaTask({
       userId: z.string().regex(/^user_[A-Z0-9]+$/),
       cloneId: z.string().uuid().optional(),
       snapshotId: z.string().uuid().optional(),
+      minEntries: z.number().int().positive().max(250_000),
+      minBytes: z.number().int().positive().max(MAX_WORKSPACE_BYTES),
     })
     .refine((value) => !!value.cloneId !== !!value.snapshotId),
   queue: { concurrencyLimit: 1 },
   maxDuration: 4 * 60 * 60,
   retry: { maxAttempts: 1 },
   machine: { preset: "small-1x" },
-  run: async ({ userId, cloneId, snapshotId }, { ctx }) => {
+  run: async (
+    { userId, cloneId, snapshotId, minEntries, minBytes },
+    { ctx },
+  ) => {
     if (ctx.environment.type.toLowerCase() !== "production")
       throw new AbortTaskRunError("Recovery is production-only");
     assertTriggerRunRegion({
@@ -233,6 +238,8 @@ export const recoverMiosaE2BWorkspace = schemaTask({
         60 * 60,
       ),
     );
+    if (capture.entries < minEntries || capture.bytes < minBytes)
+      throw new Error("Recovery snapshot is missing expected workspace data");
     const verified = JSON.parse(
       await miosaCommand(
         clone,
