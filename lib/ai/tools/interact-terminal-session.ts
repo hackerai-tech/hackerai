@@ -25,6 +25,7 @@ import {
   resolveToolErrorMessage,
 } from "./utils/sandbox-fallback";
 import { createTerminalRecordStore } from "./utils/terminal-execution-record";
+import { terminalExecutionProvenance } from "./utils/terminal-execution-provenance";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
 const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
@@ -558,6 +559,10 @@ export const createInteractTerminalSession = (context: ToolContext) => {
           if (record) {
             return {
               result: {
+                ...terminalExecutionProvenance(
+                  getAgentApprovalSandboxIdentity(sandbox),
+                  record.workingDirectory,
+                ),
                 session: sessionId,
                 recordPath: store.pathFor(sessionId),
                 recovered: true,
@@ -590,6 +595,13 @@ export const createInteractTerminalSession = (context: ToolContext) => {
         const result = await handler();
         if (session) {
           await ptySessionManager.checkpoint(session);
+          Object.assign(
+            result.result,
+            terminalExecutionProvenance(
+              session.sandboxIdentity,
+              session.workingDirectory,
+            ),
+          );
           result.result.session = sessionId;
           if (session.recordPath) result.result.recordPath = session.recordPath;
           if (session.recordPersistenceFailed)

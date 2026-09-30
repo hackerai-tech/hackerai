@@ -272,6 +272,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const sandbox = {
       sandboxKind: "centrifugo" as const,
       getConnectionId: () => "local-fixture",
+      getWorkingDirectory: () => "/tmp/fixture",
       isWindows: () => false,
       supportsNativeFileRelay: () => true,
       files: {
@@ -352,6 +353,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       expect(running.result).toMatchObject({
         waitExpired: true,
         status: "running",
+        executionEnvironment: "connected-host",
+        workingDirectory: "/tmp/fixture",
       });
       await closed;
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -369,6 +372,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         resumable: false,
         status: "completed",
         exitCode: 0,
+        executionEnvironment: "connected-host",
+        workingDirectory: "/tmp/fixture",
       });
       expect(recovered.result.output).toContain("FINAL_EVIDENCE");
       expect(sandbox.commands.run).toHaveBeenCalledTimes(countBeforeRecovery);
@@ -989,13 +994,27 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       timeout: 5,
       interactive: false,
     });
-    await runTool(tool, {
+    const completed = await runTool(tool, {
       command: "echo ok",
       brief: "print a status",
       is_background: false,
       timeout: 5,
       interactive: false,
     });
+
+    expect(completed).toMatchObject({
+      result: {
+        executionEnvironment: "cloud",
+        workingDirectory: "/home/user",
+        exitCode: 0,
+        networkEvidenceLimitation: expect.stringContaining(
+          "does not prove an open target port",
+        ),
+      },
+    });
+    expect(JSON.stringify(await getModelOutput(tool, completed))).toContain(
+      "networkEvidenceLimitation",
+    );
 
     const browserCall = e2b.commands.run.mock.calls.find(
       ([command]) => command === "agent-browser open https://example.com",
@@ -1055,13 +1074,24 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     };
     const { context } = makeContext({ sandbox: miosa });
 
-    await runTool(createRunTerminalCmd(context), {
+    const completed = await runTool(createRunTerminalCmd(context), {
       command: "agent-browser open https://example.com",
       brief: "open a browser page",
       is_background: false,
       timeout: 5,
       interactive: false,
     });
+
+    expect(completed).toMatchObject({
+      result: {
+        executionEnvironment: "cloud",
+        workingDirectory: "/home/user",
+        exitCode: 0,
+      },
+    });
+    expect((completed as any).result).not.toHaveProperty(
+      "networkEvidenceLimitation",
+    );
 
     const browserCall = miosa.commands.run.mock.calls.find(([command]) =>
       command.includes("agent-browser open"),

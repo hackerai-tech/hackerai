@@ -9,6 +9,7 @@ import type {
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
+import { terminalExecutionProvenance } from "./utils/terminal-execution-provenance";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
@@ -106,6 +107,8 @@ const getTerminalProcessStatus = (
   return undefined;
 };
 
+type TerminalCommandResult = { result: Record<string, unknown> };
+
 type RunTerminalCmdInput = {
   command: string;
   brief?: string;
@@ -146,6 +149,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const recoveryFields = (session: PtySession | null) =>
     session
       ? {
+          ...terminalExecutionProvenance(
+            session.sandboxIdentity,
+            session.workingDirectory,
+          ),
           session: session.sessionId,
           ...(session.recordPath ? { recordPath: session.recordPath } : {}),
           ...(session.outputPath ? { outputPath: session.outputPath } : {}),
@@ -785,7 +792,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             writer.write(part);
           };
 
-          return new Promise((resolve, reject) => {
+          const provenance = terminalExecutionProvenance(
+            getAgentApprovalSandboxIdentity(sandboxInstance),
+            isCentrifugoSandbox(sandboxInstance)
+              ? sandboxInstance.getWorkingDirectory?.()
+              : buildSandboxCommandOptions(sandboxInstance).cwd,
+          );
+          return new Promise<TerminalCommandResult>((resolve, reject) => {
             let resolved = false;
             let execution: any = null;
             let handler: ReturnType<typeof createTerminalHandler> | null = null;
@@ -1412,7 +1425,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   await forgetUnexposedCommandSession();
                 }
               });
-          });
+          }).then((output) => ({
+            ...output,
+            result: { ...output.result, ...provenance },
+          }));
         } // end of executeCommand
       } catch (error) {
         return {

@@ -246,6 +246,49 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     mockWaitForOutput.mockImplementation(immediateWaitForOutput);
   });
 
+  test.each(["e2b", "miosa", "connection:private-fixture"] as const)(
+    "keeps %s execution context in session reads and model output",
+    async (identity) => {
+      const { context, ptySessionManager } = makeContext({
+        sandbox: makeFakeE2BSandbox(),
+      });
+      const handle = makeFakeHandle();
+      const session = await ptySessionManager.create("chat-1", {
+        cols: 120,
+        rows: 30,
+        sandboxIdentity: identity,
+        originalCommand: "fixture",
+        workingDirectory: "/tmp/fixture",
+        createHandle: async () => handle,
+      });
+      try {
+        handle.emit(new TextEncoder().encode("connection succeeded\n"));
+        const tool = createInteractTerminalSession(context);
+        for (const action of ["view", "wait"]) {
+          const output = await runTool(tool, {
+            action,
+            session: session.sessionId,
+          });
+          const modelOutput = await (tool.toModelOutput as any)({ output });
+          const result = JSON.parse(modelOutput.value).result;
+          expect(result).toMatchObject({
+            executionEnvironment: identity.startsWith("connection:")
+              ? "connected-host"
+              : "cloud",
+            workingDirectory: "/tmp/fixture",
+          });
+          expect(Boolean(result.networkEvidenceLimitation)).toBe(
+            identity === "e2b",
+          );
+          expect(modelOutput.value).not.toContain("private-fixture");
+          expect(result).not.toHaveProperty("rawSnapshot");
+        }
+      } finally {
+        await ptySessionManager.closeAll("chat-1");
+      }
+    },
+  );
+
   test("send on unknown session returns structured error", async () => {
     const { context } = makeContext({ sandbox: makeFakeE2BSandbox() });
     const tool = createInteractTerminalSession(context);
@@ -339,8 +382,9 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       result: { output: string; exitCode: number | null };
     };
     expect(terminate).toHaveBeenCalledTimes(1);
-    expect(killed.result).toEqual({
+    expect(killed.result).toMatchObject({
       session: session.sessionId,
+      executionEnvironment: "cloud",
       output: "Successfully killed non-interactive command session.",
       exitCode: null,
     });
