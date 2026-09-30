@@ -1,3 +1,4 @@
+import { OperationChannelRouter } from "@/packages/local/src/operation-channels";
 import { Centrifuge, errorCodes, type Subscription } from "centrifuge";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import { DesktopRelayTelemetry } from "@/lib/analytics/desktop-relay";
@@ -22,7 +23,10 @@ import {
   DEFAULT_PTY_COLS,
   DEFAULT_PTY_ROWS,
 } from "@/lib/ai/tools/utils/pty-session-manager";
-import { CentrifugoPublishQueue } from "@/packages/local/src/centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  CentrifugoPublishQueue,
+} from "@/packages/local/src/centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "@/packages/local/src/centrifugo-endpoints";
 import { LOCAL_SANDBOX_HEARTBEAT_INTERVAL_MS } from "@/lib/centrifugo/presence";
 
@@ -198,6 +202,7 @@ interface DesktopBridgeConfig {
       commands: boolean;
       pty: boolean;
       files?: boolean;
+      operationChannels?: boolean;
     };
   }) => Promise<{
     connectionId: string;
@@ -231,6 +236,7 @@ export class DesktopSandboxBridge {
   private startupGeneration = 0;
   private config: DesktopBridgeConfig;
   private publishQueue: CentrifugoPublishQueue | null = null;
+  private operationRouter: OperationChannelRouter<Subscription> | null = null;
   private nativeFileIpcAvailable: boolean | null = null;
 
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -348,6 +354,8 @@ export class DesktopSandboxBridge {
     this.client = null;
     this.subscription = null;
     this.publishQueue = null;
+    this.operationRouter?.stop();
+    this.operationRouter = null;
     this.connectionId = null;
     try {
       subscription?.unsubscribe();
@@ -399,7 +407,12 @@ export class DesktopSandboxBridge {
         ...(environmentId ? { environmentId } : {}),
         connectionName: osInfo?.hostname || "Desktop",
         osInfo,
-        capabilities: { commands: true, pty: true, files },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files,
+          operationChannels: true,
+        },
       });
 
     if (wasStopped()) {
@@ -572,9 +585,7 @@ export class DesktopSandboxBridge {
       });
     });
 
-    this.subscription.on("publication", (ctx) => {
-      const message = ctx.data;
-
+    const handleIncoming = (message: unknown) => {
       if (!isTargetedIncomingMessage(message)) {
         return;
       }
@@ -663,6 +674,28 @@ export class DesktopSandboxBridge {
         default:
           break;
       }
+    };
+    const operationRouter = new OperationChannelRouter<Subscription>(
+      client,
+      userId,
+      connectionId,
+    );
+    this.operationRouter = operationRouter;
+    const reassembler = new CentrifugoMessageReassembler();
+    this.subscription.on("publication", (ctx) => {
+      const message = reassembler.accept(ctx.data);
+      if (
+        !message ||
+        this.isStoppingOrStopped ||
+        this.operationRouter !== operationRouter
+      )
+        return;
+      void operationRouter.dispatch(message, handleIncoming).catch((error) => {
+        console.error(
+          "[DesktopSandboxBridge] Operation subscription failed:",
+          error,
+        );
+      });
     });
 
     this.subscription.subscribe();
@@ -1573,9 +1606,15 @@ export class DesktopSandboxBridge {
       );
     }
     try {
-      await this.publishQueue.publish(
-        message as unknown as Record<string, unknown>,
-      );
+      const queue = this.publishQueue;
+      const payload = message as unknown as Record<string, unknown>;
+      if (this.operationRouter) {
+        await this.operationRouter.publish(payload, (value) =>
+          queue.publish(value),
+        );
+      } else {
+        await queue.publish(payload);
+      }
     } catch (error) {
       if (!classifyDesktopStreamPublishFailure(error)) {
         console.error(
@@ -1773,6 +1812,8 @@ export class DesktopSandboxBridge {
     this.stopHeartbeat();
     this.relayTelemetry.flush();
     this.publishQueue = null;
+    this.operationRouter?.stop();
+    this.operationRouter = null;
     if (this.connectionId) {
       try {
         await this.config.disconnectDesktop({

@@ -12,6 +12,7 @@
  *   npx @hackerai/local --token TOKEN
  */
 
+import { OperationChannelRouter } from "./operation-channels";
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket from "ws";
@@ -90,6 +91,7 @@ interface ClientCapabilities {
   commands: boolean;
   pty: boolean;
   commandStdin: boolean;
+  operationChannels: boolean;
 }
 
 interface CentrifugoCommandMessage {
@@ -302,6 +304,7 @@ export class LocalSandboxClient {
   private processRunner: ProcessRunner;
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
+  private operationRouter?: OperationChannelRouter<Subscription>;
   private incomingReassembler = new CentrifugoMessageReassembler();
   private cleanupPromise?: Promise<void>;
   private exitRequested = false;
@@ -418,6 +421,7 @@ export class LocalSandboxClient {
       commands: true,
       pty: isPtyAvailable(),
       commandStdin: this.privateArtifactStorageReady,
+      operationChannels: true,
     };
   }
 
@@ -583,12 +587,8 @@ export class LocalSandboxClient {
       await this.subscription.publish(message);
     });
 
-    this.subscription.on("publication", (ctx: PublicationContext) => {
+    const handleIncoming = (message: unknown) => {
       if (this.isShuttingDown) return;
-
-      const message = this.incomingReassembler.accept(ctx.data);
-
-      if (!message) return;
 
       if (!isTargetedIncomingMessage(message)) {
         return;
@@ -650,6 +650,21 @@ export class LocalSandboxClient {
         default:
           break;
       }
+    };
+    const operationRouter = new OperationChannelRouter<Subscription>(
+      this.centrifuge,
+      this.userId!,
+      this.connectionId!,
+    );
+    this.operationRouter = operationRouter;
+    this.subscription.on("publication", (ctx: PublicationContext) => {
+      const message = this.incomingReassembler.accept(ctx.data);
+      if (!message || this.isShuttingDown) return;
+      void operationRouter
+        .dispatch(message, handleIncoming)
+        .catch((error: unknown) => {
+          console.error("Operation subscription failed:", error);
+        });
     });
 
     this.centrifuge.on("disconnected", (ctx) => {
@@ -710,9 +725,15 @@ export class LocalSandboxClient {
       return;
     }
     try {
-      await this.publishQueue.publish(
-        data as unknown as Record<string, unknown>,
-      );
+      const queue = this.publishQueue;
+      const payload = data as unknown as Record<string, unknown>;
+      if (this.operationRouter) {
+        await this.operationRouter.publish(payload, (value) =>
+          queue.publish(value),
+        );
+      } else {
+        await queue.publish(payload);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       console.error(chalk.red(`Publish failed: ${msg}`));
@@ -1199,6 +1220,8 @@ export class LocalSandboxClient {
       this.subscription = undefined;
     }
     this.publishQueue = undefined;
+    this.operationRouter?.stop();
+    this.operationRouter = undefined;
     if (this.centrifuge) {
       this.centrifuge.disconnect();
       this.centrifuge = undefined;

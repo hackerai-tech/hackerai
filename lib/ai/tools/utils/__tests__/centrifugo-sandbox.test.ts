@@ -27,6 +27,7 @@ let mockSubscriptions: MockSubscription[];
 let mockClients: MockCentrifugeClient[];
 
 class MockSubscription extends EventEmitter {
+  ready = jest.fn().mockResolvedValue(undefined);
   subscribe = jest.fn();
   unsubscribe = jest.fn();
   publish = jest.fn().mockResolvedValue(undefined);
@@ -42,6 +43,7 @@ class MockSubscription extends EventEmitter {
 class MockCentrifugeClient extends EventEmitter {
   connect = jest.fn();
   disconnect = jest.fn();
+  removeSubscription = jest.fn();
 
   newSubscription = jest.fn(() => {
     const sub = new MockSubscription();
@@ -63,6 +65,7 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
 }));
 
 jest.mock("@/lib/centrifugo/types", () => ({
+  ...jest.requireActual("@/lib/centrifugo/types"),
   sandboxConnectionChannel: jest.fn(
     (userId: string, connectionId: string) =>
       `sandbox:connection:${connectionId}#${userId}`,
@@ -142,6 +145,140 @@ describe("CentrifugoSandbox", () => {
   afterEach(() => {
     jest.useRealTimers();
     crypto.randomUUID = originalRandomUUID;
+  });
+
+  it("dispatches an isolated command once, releases control, and cancels on its operation channel", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        capabilities: { commands: true, pty: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    let cancel!: () => Promise<boolean>;
+    const pending = sandbox.commands.run("bounded command", {
+      onCancelReady: (value) => {
+        cancel = value;
+      },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    const control = mockSubscriptions[1];
+    expect(control.publish).toHaveBeenCalledTimes(1);
+    expect(control.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "command", operationChannel: true }),
+    );
+    expect(mockClients[0].newSubscription).toHaveBeenNthCalledWith(
+      1,
+      `sandbox:operation:conn-1:command:${FIXED_UUID}#user-1`,
+    );
+    const canceled = cancel();
+    expect(reply.publish).not.toHaveBeenCalled();
+    reply.emit("publication", {
+      data: { type: "operation_ready", commandId: FIXED_UUID },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(control.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockClients[0].removeSubscription).toHaveBeenCalledWith(control);
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "command_cancel" }),
+    );
+    reply.emit("publication", {
+      data: {
+        type: "command_cancel_result",
+        commandId: FIXED_UUID,
+        canceled: true,
+      },
+    });
+    await expect(canceled).resolves.toBe(true);
+    await expect(pending).resolves.toMatchObject({ exitCode: 130 });
+    expect(reply.unsubscribe).toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("uses an isolated file reply channel and never republishes a write after reconnect", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        isDesktop: true,
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
+      },
+      defaultConfig,
+    );
+    const pending = sandbox.files.write("/tmp/bounded-test", "hello");
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    const control = mockSubscriptions[1];
+    expect(control.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "file_write", operationChannel: true }),
+    );
+    reply.emit("publication", {
+      data: { type: "operation_ready", requestId: FIXED_UUID },
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    reply.emit("subscribed");
+    expect(control.publish).toHaveBeenCalledTimes(1);
+    reply.emit("publication", {
+      data: { type: "file_ok", requestId: FIXED_UUID },
+    });
+    await expect(pending).resolves.toBeUndefined();
+    expect(control.unsubscribe).toHaveBeenCalled();
+    expect(reply.unsubscribe).toHaveBeenCalled();
+  });
+
+  it("keeps isolated PTY controls on the session channel", async () => {
+    const sandbox = new CentrifugoSandbox(
+      "user-1",
+      {
+        ...defaultConnection,
+        capabilities: { commands: true, pty: true, operationChannels: true },
+      },
+      defaultConfig,
+    );
+    const pending = createCentrifugoPtyHandle(sandbox, {
+      command: "bounded pty",
+      cols: 80,
+      rows: 24,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    const reply = mockSubscriptions[0];
+    reply.emit("subscribed");
+    await jest.advanceTimersByTimeAsync(0);
+    const control = mockSubscriptions[1];
+    reply.emit("publication", {
+      data: { type: "operation_ready", sessionId: FIXED_UUID },
+    });
+    reply.emit("publication", {
+      data: { type: "pty_ready", sessionId: FIXED_UUID, pid: 1 },
+    });
+    const handle = await pending;
+    await jest.advanceTimersByTimeAsync(0);
+    await handle.sendInput(new TextEncoder().encode("bounded input"));
+    await handle.resize(100, 40);
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pty_input" }),
+    );
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pty_resize" }),
+    );
+    expect(control.publish).toHaveBeenCalledTimes(1);
+    expect(control.unsubscribe).toHaveBeenCalled();
+    reply.emit("publication", {
+      data: { type: "pty_exit", sessionId: FIXED_UUID, exitCode: 0 },
+    });
+    await expect(handle.exited).resolves.toEqual({ exitCode: 0 });
   });
 
   it("publishes PTY creation once across subscription reconnects", async () => {
