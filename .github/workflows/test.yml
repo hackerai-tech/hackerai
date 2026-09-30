@@ -39,5 +39,11 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      - name: Verify paid usage transactions against Redis
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y redis-server
+          node scripts/verify-paid-usage-ledger.mjs
+
       - name: Run tests with coverage
         run: pnpm test:ci

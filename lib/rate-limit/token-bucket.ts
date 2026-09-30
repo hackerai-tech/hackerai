@@ -7,7 +7,7 @@ import {
   ABLITERATION_LARGE_V2_PRICING,
 } from "@/lib/ai/abliteration";
 import { randomUUID } from "node:crypto";
-import { Ratelimit } from "@upstash/ratelimit";
+import { limitPaidBucket } from "./paid-bucket";
 import { ChatSDKError } from "@/lib/errors";
 import type {
   SubscriptionTier,
@@ -340,8 +340,13 @@ type MonthlyLimiter = {
   limiter: {
     limit: (
       key: string,
-      options?: { rate?: number },
-    ) => Promise<{ remaining: number; reset: number; success?: boolean }>;
+      options?: { rate?: number; allowPartial?: boolean },
+    ) => Promise<{
+      remaining: number;
+      reset: number;
+      success?: boolean;
+      deducted?: number;
+    }>;
   };
   key: string;
 };
@@ -401,10 +406,13 @@ const deductAdditionalUsagePoints = async ({
   if (fromBucket > 0) {
     const bucketResult = await monthly.limiter.limit(monthly.key, {
       rate: fromBucket,
+      allowPartial: true,
     });
-    if (bucketResult.success !== false) {
-      includedDeducted = fromBucket;
-    }
+    // A concurrent request may have spent part of the peeked balance. Consume
+    // what remains atomically before charging the uncovered cost to Extra Usage.
+    includedDeducted =
+      bucketResult.deducted ??
+      (bucketResult.success !== false ? fromBucket : 0);
   }
 
   const fromExtraUsage = normalizedAdditionalCost - includedDeducted;
@@ -668,8 +676,10 @@ if targetRefilledAt >= 0 then
     "tokens", targetRemaining,
     "cycleAllocation", targetAllocation,
     "cycleTierMax", tierMax,
-    "refilledAt", targetRefilledAt
+    "refilledAt", targetRefilledAt,
+    "billingPeriodEndMs", targetRefilledAt + 30 * 24 * 60 * 60 * 1000
   )
+  redis.call("PERSIST", key)
 else
   redis.call(
     "HSET",
@@ -708,6 +718,7 @@ local currentAllocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocatio
 if existingTransitionType == "payment_failed"
   and existingSubscriptionId == subscriptionId
   and existingInvoiceId == invoiceId then
+  redis.call("PERSIST", bucketKey)
   return {2, currentTokens, currentAllocation}
 end
 
@@ -737,7 +748,7 @@ redis.call(
   "billingSubscriptionId", subscriptionId,
   "billingInvoiceId", invoiceId
 )
-redis.call("EXPIRE", bucketKey, expireSeconds)
+redis.call("PERSIST", bucketKey)
 return {1, remaining, allocation}
 `;
 
@@ -752,6 +763,7 @@ local expireSeconds = tonumber(ARGV[6])
 local transitionAtMs = tonumber(ARGV[7])
 local subscriptionId = ARGV[8]
 local invoiceId = ARGV[9]
+local periodEndMs = tonumber(ARGV[10])
 
 local existingTransitionType = redis.call("HGET", bucketKey, "billingTransitionType")
 local existingTransitionAtMs = tonumber(redis.call("HGET", bucketKey, "billingTransitionAtMs"))
@@ -761,6 +773,10 @@ local existingInvoiceId = redis.call("HGET", bucketKey, "billingInvoiceId")
 if existingTransitionType == "paid"
   and existingSubscriptionId == subscriptionId
   and existingInvoiceId == invoiceId then
+  if periodEndMs > 0 then
+    redis.call("HSET", bucketKey, "billingPeriodEndMs", periodEndMs)
+    redis.call("PERSIST", bucketKey)
+  end
   return {2, 0, 0}
 end
 
@@ -791,7 +807,12 @@ redis.call(
   "billingSubscriptionId", subscriptionId,
   "billingInvoiceId", invoiceId
 )
-redis.call("EXPIRE", bucketKey, expireSeconds)
+if periodEndMs > 0 then
+  redis.call("HSET", bucketKey, "billingPeriodEndMs", periodEndMs)
+  redis.call("PERSIST", bucketKey)
+else
+  redis.call("EXPIRE", bucketKey, expireSeconds)
+end
 return {
   1,
   recoveredFromPaymentFailure and 1 or 0,
@@ -853,11 +874,20 @@ const createRateLimiter = (
   return {
     monthlyLimit,
     monthly: {
-      limiter: new Ratelimit({
-        redis: redis!,
-        limiter: Ratelimit.tokenBucket(monthlyLimit, "30 d", monthlyLimit),
-        prefix: "usage:monthly",
-      }),
+      limiter: {
+        limit: (
+          key: string,
+          options?: { rate?: number; allowPartial?: boolean },
+        ) =>
+          limitPaidBucket(
+            redis!,
+            `usage:monthly:${key}`,
+            monthlyLimit,
+            options?.rate ?? 1,
+            Date.now(),
+            options?.allowPartial ?? false,
+          ),
+      },
       key: `${userId}:${subscription}`,
     },
   };
@@ -997,19 +1027,16 @@ export const checkTokenBucketLimit = async (
       }),
     });
 
+    // Initialize a new seat and transfer its debt in one transaction before
+    // another request can observe and spend an undebited allowance.
+    if (isNewTeamBucket) {
+      await applyTeamSeatDebt(userId, organizationId!);
+    }
+
     // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
     let monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
 
-    // Step 1.5: For new team members, apply seat debt from removed members
-    if (isNewTeamBucket) {
-      await applyTeamSeatDebt(userId, organizationId!);
-      // Re-peek after debt burn to get accurate remaining
-      monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
-    }
-
-    // Price-specific and prorated cycles store their authoritative allowance
-    // in the bucket. Re-apply the cap if Upstash's 30-day refill races ahead
-    // of the Stripe renewal webhook.
+    // Price-specific and prorated cycles store their authoritative allowance.
     const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
     const enforcedCycleAllocation = await enforceStoredCycleAllocation(
       redis,
@@ -1356,7 +1383,11 @@ export const deductUsage = async (
     // Calculate actual billable cost from the UsageTracker's resolved provider
     // or hybrid total. Legacy callers without a resolved total retain the
     // aggregate token fallback.
-    if (resolvedCostDollars !== undefined && resolvedCostDollars > 0) {
+    if (
+      resolvedCostDollars !== undefined &&
+      Number.isFinite(resolvedCostDollars) &&
+      resolvedCostDollars >= 0
+    ) {
       actualCostPoints = billableCostDollarsToPoints(resolvedCostDollars);
     } else {
       const modelForActualCost = actualModelName ?? modelName;
@@ -1425,7 +1456,7 @@ export const deductUsage = async (
         initialIncludedPoints,
       );
       if (includedRefundPoints > 0) {
-        await refundBucketTokens(
+        const refunded = await refundBucketTokens(
           userId,
           subscription,
           includedRefundPoints,
@@ -1433,6 +1464,12 @@ export const deductUsage = async (
             ? `${usageSettlementId}:settlement-refund`
             : randomUUID(),
         );
+        if (!refunded) {
+          return withFinalCoverage(
+            lastKnownDeductionResult,
+            "deduction_failed",
+          );
+        }
         lastKnownDeductionResult = buildDeductionResult(
           0,
           0,
@@ -1523,9 +1560,8 @@ const refundBucketTokens = async (
 };
 
 /**
- * Reset rate limit bucket for a user by deleting their Redis key.
- * On next request, Upstash Ratelimit creates a fresh bucket at full capacity.
- * Called when a subscription renews or changes tier.
+ * Initialize a paid allowance. Subscription invoice handlers use the
+ * idempotent payment transition below rather than this administrative helper.
  */
 export const resetRateLimitBuckets = async (
   userId: string,
@@ -1638,7 +1674,18 @@ export const resetRateLimitBucketAfterPayment = async (
       ? Math.floor(transition.occurredAtMs)
       : nowMs;
   const [outcomeCode, recoveredCode, paymentFailureAtMsRaw] = await redis.eval<
-    [number, number, number, number, number, number, number, string, string],
+    [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+      string,
+      string,
+      number,
+    ],
     [number, number, number]
   >(
     APPLY_PAID_BUCKET_RESET_SCRIPT,
@@ -1653,6 +1700,11 @@ export const resetRateLimitBucketAfterPayment = async (
       transitionAtMs,
       transition.subscriptionId,
       transition.invoiceId,
+      periodEndSeconds &&
+      Number.isFinite(periodEndSeconds) &&
+      periodEndSeconds > 0
+        ? periodEndSeconds * 1000
+        : 0,
     ],
   );
 
@@ -1726,7 +1778,9 @@ export const capCurrentCycleAllocation = async (
         `Failed to initialize the current cycle for user ${userId}`,
       );
     }
-    await redis.expire(monthlyKey, getCycleExpireSeconds(periodEndSeconds));
+    if (!periodEndSeconds) {
+      await redis.expire(monthlyKey, getCycleExpireSeconds());
+    }
     return {
       created: true,
       previousAllocation: tierMax,
@@ -1760,10 +1814,12 @@ export const capCurrentCycleAllocation = async (
     [monthlyKey],
     [requestedTargetAllocation, tierMax, targetRefilledAt],
   );
-  await redis.expire(
-    monthlyKey,
-    getCycleExpireSeconds(periodEndSeconds, nowSeconds),
-  );
+  if (!periodEndSeconds) {
+    await redis.expire(
+      monthlyKey,
+      getCycleExpireSeconds(undefined, nowSeconds),
+    );
+  }
 
   return {
     created: false,
@@ -1963,6 +2019,7 @@ local tierMax = tonumber(ARGV[3])
 local cycleStartedAt = tonumber(ARGV[4])
 local refilledAt = tonumber(ARGV[5])
 local expireSeconds = tonumber(ARGV[6])
+local periodEndMs = tonumber(ARGV[7])
 
 redis.call("DEL", bucketKey)
 redis.call(
@@ -1974,7 +2031,12 @@ redis.call(
   "cycleStartedAt", cycleStartedAt,
   "refilledAt", refilledAt
 )
-redis.call("EXPIRE", bucketKey, expireSeconds)
+if periodEndMs > 0 then
+  redis.call("HSET", bucketKey, "billingPeriodEndMs", periodEndMs)
+  redis.call("PERSIST", bucketKey)
+else
+  redis.call("EXPIRE", bucketKey, expireSeconds)
+end
 return remaining
 `;
 
@@ -1991,6 +2053,7 @@ local cycleStartedAt = tonumber(ARGV[5])
 local refilledAt = tonumber(ARGV[6])
 local expireSeconds = tonumber(ARGV[7])
 local completedTtlSeconds = tonumber(ARGV[8])
+local periodEndMs = tonumber(ARGV[9])
 
 if redis.call("GET", claimKey) ~= expectedClaim then
   return {0, 0}
@@ -2019,7 +2082,12 @@ redis.call(
   "cycleStartedAt", cycleStartedAt,
   "refilledAt", refilledAt
 )
-redis.call("EXPIRE", bucketKey, expireSeconds)
+if periodEndMs > 0 then
+  redis.call("HSET", bucketKey, "billingPeriodEndMs", periodEndMs)
+  redis.call("PERSIST", bucketKey)
+else
+  redis.call("EXPIRE", bucketKey, expireSeconds)
+end
 redis.call("SET", completedKey, "1", "EX", completedTtlSeconds)
 redis.call("DEL", stashKey, claimKey)
 return {1, remaining}
@@ -2150,7 +2218,10 @@ const writeMonthlyBucketState = async (
     periodEndSeconds > nowSeconds
       ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
       : nowMs;
-  await redis.eval<[number, number, number, number, number, number], number>(
+  await redis.eval<
+    [number, number, number, number, number, number, number],
+    number
+  >(
     SET_MONTHLY_BUCKET_STATE_SCRIPT,
     [getMonthlyBucketKey(userId, tier)],
     [
@@ -2160,6 +2231,11 @@ const writeMonthlyBucketState = async (
       nowMs,
       refilledAt,
       getCycleExpireSeconds(periodEndSeconds, nowSeconds),
+      periodEndSeconds &&
+      Number.isFinite(periodEndSeconds) &&
+      periodEndSeconds > 0
+        ? periodEndSeconds * 1000
+        : 0,
     ],
   );
 };
@@ -2206,7 +2282,7 @@ export const applyProratedTierChangeBucket = async (
       : 0;
   const storedResetAtMs = state.resetAtMs || fallbackResetAtMs;
   // Never let a delayed proration webhook overwrite a newer renewal bucket.
-  if (state.resetAtMs > 0 && state.resetAtMs <= nowMs) return null;
+  if (storedResetAtMs > 0 && storedResetAtMs <= nowMs) return null;
 
   const tierMax = MONTHLY_CREDITS[newTier] ?? 0;
   const newCycleMax = normalizeCycleAllocation(
@@ -2233,7 +2309,7 @@ export const applyProratedTierChangeBucket = async (
     ? (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000
     : nowMs;
   const [applied, appliedRemaining] = await redis.eval<
-    [string, number, number, number, number, number, number, number],
+    [string, number, number, number, number, number, number, number, number],
     [number, number]
   >(
     APPLY_TIER_CHANGE_BUCKET_SCRIPT,
@@ -2247,6 +2323,14 @@ export const applyProratedTierChangeBucket = async (
       refilledAt,
       getCycleExpireSeconds(periodEndSeconds, Math.floor(nowMs / 1000)),
       TIER_CHANGE_COMPLETED_TTL_SECONDS,
+      // Only monthly invoices supply this option. Preserve the stashed cycle's
+      // deadline; annual tier changes must retain their timer-based refill.
+      options.periodEndSeconds &&
+      Number.isFinite(options.periodEndSeconds) &&
+      options.periodEndSeconds > 0 &&
+      periodEndSeconds
+        ? periodEndSeconds * 1000
+        : 0,
     ],
   );
   if (applied !== 1) return null;
@@ -2261,15 +2345,13 @@ export const applyProratedTierChangeBucket = async (
 
 /**
  * Initialize a prorated token bucket for a mid-cycle upgrade.
- * Works by creating a full-capacity bucket then "burning" the excess.
+ * Writes the prorated allocation and remaining credits atomically.
  *
  * @param consumedCredits - Credits already consumed from the old tier this cycle.
  *   Deducted from the prorated allocation so users can't "double-dip".
  * @param periodEndSeconds - Optional Stripe `current_period_end` (unix seconds).
- *   When supplied, the bucket's internal `refilledAt` is rewritten so Upstash's
- *   reported reset (`refilledAt + 30 d`) lands on the actual invoice date
- *   instead of 30 days from now. Matters for mid-cycle upgrades, where the
- *   remaining cycle is shorter than 30 days.
+ *   When supplied, expiry of the paid allowance follows this deadline and
+ *   requires a new paid invoice instead of an automatic 30-day refill.
  */
 export const initProratedBucket = async (
   userId: string,
@@ -2386,10 +2468,34 @@ export const clearOrgRemovedUsage = async (orgId: string): Promise<void> => {
   }
 };
 
+const APPLY_TEAM_SEAT_DEBT_SCRIPT = `
+local bucketKey = KEYS[1]
+local debtKey = KEYS[2]
+local flagKey = KEYS[3]
+local tierMax = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+local ttl = tonumber(ARGV[3])
+if redis.call("EXISTS", flagKey) == 1 then return 0 end
+
+local allocation = tonumber(redis.call("HGET", bucketKey, "cycleAllocation")) or tierMax
+allocation = math.max(0, math.min(tierMax, allocation))
+local tokens = tonumber(redis.call("HGET", bucketKey, "tokens")) or allocation
+tokens = math.max(0, math.min(allocation, tokens))
+local debt = math.max(0, tonumber(redis.call("GET", debtKey)) or 0)
+local debit = math.min(debt, tierMax, tokens)
+if debit > 0 then
+  redis.call("HSET", bucketKey, "tokens", tokens - debit)
+  redis.call("HSETNX", bucketKey, "refilledAt", now)
+  redis.call("DECRBY", debtKey, debit)
+end
+redis.call("SET", flagKey, "1", "EX", ttl)
+return debit
+`;
+
 /**
- * Apply seat debt to a new team member's bucket on first use.
- * Burns up to one seat's worth (400k points) from their bucket, debiting the
- * org counter by the same amount. Uses a flag key to ensure idempotency.
+ * Transfer removed-member usage to a new seat atomically. The organization
+ * counter decreases only by the points actually consumed, and concurrent
+ * requests cannot observe a new full allowance before its debt is applied.
  */
 export const applyTeamSeatDebt = async (
   userId: string,
@@ -2398,52 +2504,15 @@ export const applyTeamSeatDebt = async (
   const redis = createRedisClient();
   if (!redis) return;
 
-  const flagKey = debtAppliedKey(orgId, userId);
-
-  try {
-    // Atomically claim the flag — if SET NX returns null, another request already claimed it
-    const claimed = await redis.set(flagKey, 1, {
-      ex: THIRTY_DAYS_SECONDS,
-      nx: true,
-    });
-    if (!claimed) return;
-
-    // Atomically claim up to one seat's worth of debt.
-    // decrby is atomic, so concurrent new members can't claim the same debt.
-    const key = orgRemovedUsageKey(orgId);
-    const afterDecr = await redis.decrby(key, TEAM_CREDITS);
-    // afterDecr = oldDebt - TEAM_CREDITS
-    // If afterDecr >= 0: we claimed a full TEAM_CREDITS of debt
-    // If afterDecr < 0: debt was less than TEAM_CREDITS, refund the excess
-    // If afterDecr <= -TEAM_CREDITS: there was no debt at all
-    const overclaim = Math.max(0, -afterDecr);
-    const debit = TEAM_CREDITS - overclaim;
-
-    if (debit <= 0) {
-      // No debt existed — restore counter and skip
-      await redis.incrby(key, TEAM_CREDITS);
-      return;
-    }
-
-    // Restore any excess we claimed beyond actual debt
-    if (overclaim > 0) {
-      await redis.incrby(key, overclaim);
-    }
-
-    // Burn the claimed debt from the user's bucket
-    try {
-      const { monthly } = createRateLimiter(redis, userId, "team");
-      await monthly.limiter.limit(monthly.key, { rate: debit });
-    } catch (burnError) {
-      // Bucket burn failed — restore the debt we claimed so it's not lost
-      await redis.incrby(key, debit);
-      // Clear the flag so a retry can re-attempt
-      await redis.del(flagKey);
-      throw burnError;
-    }
-  } catch (error) {
-    console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
-  }
+  await redis.eval(
+    APPLY_TEAM_SEAT_DEBT_SCRIPT,
+    [
+      getMonthlyBucketKey(userId, "team"),
+      orgRemovedUsageKey(orgId),
+      debtAppliedKey(orgId, userId),
+    ],
+    [TEAM_CREDITS, Date.now(), THIRTY_DAYS_SECONDS],
+  );
 };
 
 // =============================================================================
