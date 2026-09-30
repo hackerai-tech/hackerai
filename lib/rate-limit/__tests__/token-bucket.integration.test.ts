@@ -302,6 +302,28 @@ describe("token-bucket async functions", () => {
       expect(mockHsetFn).not.toHaveBeenCalled();
     });
 
+    it.each([{ monthlyPeriodEnd: true }, { monthlyPeriodEnd: false }])(
+      "preserves the stashed deadline only for monthly tier changes ($monthlyPeriodEnd)",
+      async ({ monthlyPeriodEnd }) => {
+        const resetAtMs = Date.now() + 12 * 24 * 60 * 60 * 1000;
+        mockEvalFn
+          .mockResolvedValueOnce(tierChangeState({ resetAtMs }))
+          .mockResolvedValueOnce([1, 100_000]);
+        const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+        await applyProratedTierChangeBucket("user-123", "pro-plus", {
+          identity,
+          ...(monthlyPeriodEnd && {
+            periodEndSeconds: Math.floor(Date.now() / 1000) - 60,
+          }),
+        });
+
+        expect(mockEvalFn.mock.calls[1][2][8]).toBe(
+          monthlyPeriodEnd ? Math.ceil(resetAtMs / 1000) * 1000 : 0,
+        );
+      },
+    );
+
     it("does not create credits when no tier-change state exists", async () => {
       mockEvalFn.mockResolvedValueOnce(null);
       const { applyProratedTierChangeBucket } = getIsolatedModule();
@@ -315,6 +337,19 @@ describe("token-bucket async functions", () => {
 
       expect(mockDelFn).not.toHaveBeenCalled();
       expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("rejects an expired webhook deadline when the stash has no deadline", async () => {
+      mockEvalFn.mockResolvedValueOnce(tierChangeState({ resetAtMs: 0 }));
+      const { applyProratedTierChangeBucket } = getIsolatedModule();
+
+      await expect(
+        applyProratedTierChangeBucket("user-123", "pro-plus", {
+          identity,
+          periodEndSeconds: Math.floor(Date.now() / 1000) - 60,
+        }),
+      ).resolves.toBeNull();
+      expect(mockEvalFn).toHaveBeenCalledTimes(1);
     });
 
     it("does not let a delayed proration overwrite a newer cycle", async () => {
@@ -1308,7 +1343,7 @@ describe("token-bucket async functions", () => {
       );
     });
 
-    it("does not backdate reset metadata for a stale Stripe period end", async () => {
+    it("retains an expired monthly deadline instead of minting a new cycle", async () => {
       const nowSeconds = 1_700_000_000;
       const stalePeriodEndSeconds = nowSeconds - 60;
       const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nowSeconds * 1000);

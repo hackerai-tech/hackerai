@@ -2270,7 +2270,7 @@ export const applyProratedTierChangeBucket = async (
       : 0;
   const storedResetAtMs = state.resetAtMs || fallbackResetAtMs;
   // Never let a delayed proration webhook overwrite a newer renewal bucket.
-  if (state.resetAtMs > 0 && state.resetAtMs <= nowMs) return null;
+  if (storedResetAtMs > 0 && storedResetAtMs <= nowMs) return null;
 
   const tierMax = MONTHLY_CREDITS[newTier] ?? 0;
   const newCycleMax = normalizeCycleAllocation(
@@ -2311,10 +2311,13 @@ export const applyProratedTierChangeBucket = async (
       refilledAt,
       getCycleExpireSeconds(periodEndSeconds, Math.floor(nowMs / 1000)),
       TIER_CHANGE_COMPLETED_TTL_SECONDS,
+      // Only monthly invoices supply this option. Preserve the stashed cycle's
+      // deadline; annual tier changes must retain their timer-based refill.
       options.periodEndSeconds &&
       Number.isFinite(options.periodEndSeconds) &&
-      options.periodEndSeconds > 0
-        ? options.periodEndSeconds * 1000
+      options.periodEndSeconds > 0 &&
+      periodEndSeconds
+        ? periodEndSeconds * 1000
         : 0,
     ],
   );

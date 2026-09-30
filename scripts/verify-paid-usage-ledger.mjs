@@ -132,6 +132,22 @@ try {
       assert.equal(command("TTL", key), -1);
     },
   );
+  await check(
+    "paying an expired period does not create a fresh 30-day allowance",
+    () => {
+      const key = "expired-payment";
+      paid(key, start + 40 * day, start + 31 * day);
+      assert.deepEqual(limit(key, start + 40 * day, 1), [
+        0,
+        0,
+        start + 31 * day,
+        250000,
+      ]);
+      assert.equal(limit(key, start + 100 * day)[1], 0);
+      assert.equal(paid(key, start + 40 * day, start + 31 * day)[0], 2);
+      assert.equal(limit(key, start + 100 * day)[1], 0);
+    },
+  );
   for (const days of [28, 29, 30, 31]) {
     await check(
       `${days}-day paid month expires without minting an unpaid allowance`,
