@@ -49,7 +49,7 @@ export default async function redirectToBillingPortal(
   if (returnUrl && flow === "payment_method") {
     returnUrl.searchParams.set("billing-recovery-return", "1");
   }
-  if (returnUrl && options?.surface === "blocked_chat") {
+  if (returnUrl && flow === "payment_method") {
     returnUrl.searchParams.set("refresh", "entitlements");
   }
   let billingPortalSession:

@@ -28,6 +28,28 @@ scan is bounded to 1,000 events and skips collection if history is incomplete or
 the customer event is older than Stripe's 30-day retention. API lookup failures
 retry webhook delivery. Restricted Stripe keys need Events read permission.
 
+## Pricing and Account recovery
+
+A failed payment-history lookup keeps recovery controls and the checkout block
+available, but the copy states that billing status could not be verified rather
+than asserting an unpaid invoice. Explicit status checks fetch fresh data before
+updating the pricing cache or clearing a checkout review warning.
+
+Pricing checks authenticated billing status before enabling paid plan changes.
+Delinquent renewals display a persistent recovery panel with the actual invoice
+balance, card update, and a payment-status recheck. Pay invoice is offered only
+when the invoice belongs to the current customer's uncanceled automatic renewal;
+the server repeats those checks and retrieves a fresh hosted payment URL at click
+time. Opening that URL does not charge an invoice or restore access.
+
+Former subscribers retain payment management in Account settings after dropping
+to Free. An unresolved canceled renewal uses the existing checkout safety guard
+and shows billing help instead of invoice payment: paying an old invoice does not
+restart a canceled subscription. Card management remains independent of that
+review. Status lookup failures stay unknown and offer retry instead of enabling a
+new checkout. Card-update returns request an entitlement refresh; payment status
+and access still require successful payment and the ordinary admission checks.
+
 ## Blocked-chat recovery
 
 Blocked Ask/Agent errors, saved budget stops, and exhausted composer warnings

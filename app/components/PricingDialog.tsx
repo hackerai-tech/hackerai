@@ -9,6 +9,9 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
+import { useBillingRecoveryStatus } from "../hooks/useBillingRecoveryStatus";
+import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
+import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
@@ -230,10 +233,31 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   onClose,
   context,
 }) => {
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
-  const { upgradeLoading, handleUpgrade } = useUpgrade();
+  const {
+    upgradeLoading,
+    handleUpgrade,
+    billingReviewRequired,
+    clearBillingReview,
+  } = useUpgrade();
+  const billing = useBillingRecoveryStatus(isOpen);
+  const billingBlocked = Boolean(
+    user &&
+    (billing.isLoading ||
+      billing.error ||
+      billingReviewRequired ||
+      billing.data?.checkoutRequiresReview ||
+      billing.data?.subscriptionStatus === "past_due" ||
+      billing.data?.subscriptionStatus === "unpaid"),
+  );
+  const checkBilling = async () => {
+    const status = await getSubscriptionCancellationStatus();
+    await billing.mutate(status, { revalidate: false });
+    if (status && !status.checkoutRequiresReview) clearBillingReview?.();
+    return status;
+  };
   const [isYearly, setIsYearly] = React.useState(false);
   const capturedPricingCtaImpressionRef = React.useRef(false);
   const [proMonthlyPrice, setProMonthlyPrice] = React.useState<
@@ -364,6 +388,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     planName: string,
     price: number,
   ) => {
+    if (billingBlocked) return;
     // If user is free, upgrade directly using checkout
     if (subscription === "free") {
       try {
@@ -465,6 +490,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
             : (pricingIntentCopy?.proButtonText ?? "Get Pro"),
         disabled:
           upgradeLoading ||
+          billingBlocked ||
           (subscription === "free" && !isYearly && !proMonthlyPriceResolved),
         className: "",
         variant: "default" as const,
@@ -506,7 +532,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           : (pricingIntentCopy?.proPlusButtonText ?? "Get Pro+");
       return {
         text: buttonText,
-        disabled: upgradeLoading,
+        disabled: upgradeLoading || billingBlocked,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
@@ -546,7 +572,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           subscription === "pro" || subscription === "pro-plus"
             ? "Upgrade to Ultra"
             : (pricingIntentCopy?.ultraButtonText ?? "Get Ultra"),
-        disabled: upgradeLoading,
+        disabled: upgradeLoading || billingBlocked,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
@@ -603,7 +629,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           <div className="relative grid grid-cols-[1fr_auto_1fr] px-6 py-4 md:pt-[4.5rem] md:pb-6">
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
-              <DialogTitle className="text-3xl font-semibold">
+              <DialogTitle className="text-center text-2xl font-semibold sm:text-3xl">
                 {pricingIntentCopy?.title ?? "Upgrade your plan"}
               </DialogTitle>
               {pricingIntentCopy && (
@@ -629,6 +655,58 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           </div>
 
           <div className="px-6 pb-8">
+            {user && (
+              <div className="mx-auto mb-6 w-full max-w-[88rem]">
+                {billing.isLoading && (
+                  <p
+                    role="status"
+                    className="text-center text-sm text-muted-foreground"
+                  >
+                    Checking your billing status…
+                  </p>
+                )}
+                {billing.error && !billingReviewRequired && (
+                  <div role="status" className="rounded-xl border p-4 text-sm">
+                    <p>
+                      We couldn’t check your billing status. Try again, or ask
+                      your billing administrator for help.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      disabled={billing.isValidating}
+                      onClick={() => void checkBilling().catch(() => {})}
+                    >
+                      Check again
+                    </Button>
+                  </div>
+                )}
+                {(billing.data || billingReviewRequired) && (
+                  <BillingRecoveryPanel
+                    key={`${user.id}:${organizationId ?? ""}:${billing.data?.latestInvoiceId ?? "review"}`}
+                    status={
+                      billingReviewRequired
+                        ? {
+                            ...billing.data,
+                            hasActiveSubscription: false,
+                            cancelAtPeriodEnd: false,
+                            checkoutRequiresReview: true,
+                          }
+                        : billing.data!
+                    }
+                    subscription={subscription}
+                    surface="pricing_dialog"
+                    onCheck={checkBilling}
+                  />
+                )}
+                {billingBlocked && !billing.isLoading && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Resolve your billing issue before changing plans.
+                  </p>
+                )}
+              </div>
+            )}
             <div
               className={cn(
                 "mx-auto grid w-full max-w-[88rem] grid-cols-1 gap-6 md:grid-cols-2",

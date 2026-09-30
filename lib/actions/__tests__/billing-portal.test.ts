@@ -78,7 +78,8 @@ describe("redirectToBillingPortal", () => {
 
     expect(mockCreateBillingPortalSession).toHaveBeenCalledWith({
       customer: "cus_123",
-      return_url: "https://hackerai.co/?billing-recovery-return=1",
+      return_url:
+        "https://hackerai.co/?billing-recovery-return=1&refresh=entitlements",
       flow_data: { type: "payment_method_update" },
     });
     expect(mockPostHogEvent).toHaveBeenCalledWith(
