@@ -16,6 +16,8 @@
  *   Server  →  pty_kill     →  Local runner
  */
 
+import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
+import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -170,7 +172,10 @@ export async function createCentrifugoPtyHandle(
   const sessionId = crypto.randomUUID();
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
-  const channel = sandboxConnectionChannel(userId, connectionId);
+  const isolated = sandbox.supportsOperationChannels();
+  const channel = isolated
+    ? sandboxOperationChannel(userId, connectionId, "pty", sessionId)
+    : sandboxConnectionChannel(userId, connectionId);
 
   // Long-lived token: PTY sessions can last minutes.
   const tokenExpSeconds = 600;
@@ -220,6 +225,7 @@ export async function createCentrifugoPtyHandle(
         JSON.stringify({
           timestamp: new Date().toISOString(),
           event: "local_relay_pty_traffic",
+          operation_channel: isolated,
           phase,
           user_id: userId,
           connection_id: connectionId,
@@ -372,6 +378,7 @@ export async function createCentrifugoPtyHandle(
     subscription = client.newSubscription(channel);
 
     subscription.on("publication", (ctx) => {
+      if (ctx.data?.type === "operation_ready") return;
       receivedPublications += 1;
       const payloadBytes = estimateRelayPayloadBytes(ctx.data);
       receivedPayloadBytesEstimate += payloadBytes;
@@ -468,7 +475,17 @@ export async function createCentrifugoPtyHandle(
       };
 
       createPublishAttempts += 1;
-      subscription!.publish(createPayload).catch((err: unknown) => {
+      const dispatch = isolated
+        ? dispatchIsolatedOperation(
+            client,
+            userId,
+            connectionId,
+            createPayload as unknown as Record<string, unknown>,
+            () => !cleanedUp,
+            subscription!,
+          )
+        : subscription!.publish(createPayload);
+      dispatch.catch((err: unknown) => {
         failTransport(
           `failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,
         );

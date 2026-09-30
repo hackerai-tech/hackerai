@@ -1,3 +1,5 @@
+import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
+import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
@@ -332,6 +334,10 @@ export class CentrifugoSandbox extends EventEmitter {
     );
   }
 
+  supportsOperationChannels(): boolean {
+    return this.connectionInfo.capabilities?.operationChannels === true;
+  }
+
   supportsCommandStdin(): boolean {
     return this.connectionInfo.capabilities?.commandStdin === true;
   }
@@ -430,10 +436,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     }
 
     const requestId = crypto.randomUUID();
-    const channel = sandboxConnectionChannel(
-      this.userId,
-      this.connectionInfo.connectionId,
-    );
+    const isolated = this.supportsOperationChannels();
+    const channel = isolated
+      ? sandboxOperationChannel(
+          this.userId,
+          this.connectionInfo.connectionId,
+          "file",
+          requestId,
+        )
+      : sandboxConnectionChannel(this.userId, this.connectionInfo.connectionId);
     const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
     const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
     signal?.throwIfAborted();
@@ -475,6 +486,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             JSON.stringify({
               timestamp: new Date().toISOString(),
               event: "local_relay_file_traffic",
+              operation_channel: isolated,
               service: this.triggerRunId ? "agent-long" : "chat-handler",
               user_id: this.userId,
               connection_id: this.connectionInfo.connectionId,
@@ -539,6 +551,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription = client.newSubscription(channel);
       subscription.on("publication", (ctx) => {
+        if (ctx.data?.type === "operation_ready") return;
         if (settled) return;
         receivedPublications += 1;
         const payloadBytes = estimateRelayPayloadBytes(ctx.data);
@@ -588,8 +601,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
         void (async () => {
           try {
-            const presence = await subscription!.presence();
+            const presence = isolated ? null : await subscription!.presence();
             if (
+              presence !== null &&
               !presenceHasConnectionId(
                 presence,
                 this.connectionInfo.connectionId,
@@ -629,7 +643,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
           try {
             requestPublishAttempts += 1;
-            await subscription.publish(request);
+            if (isolated) {
+              await dispatchIsolatedOperation(
+                client,
+                this.userId,
+                this.connectionInfo.connectionId,
+                request as unknown as Record<string, unknown>,
+                () => !settled,
+                subscription!,
+              );
+            } else {
+              await subscription.publish(request);
+            }
           } catch (error) {
             fail(
               new Error(
@@ -675,10 +700,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
-      const channel = sandboxConnectionChannel(
-        this.userId,
-        this.connectionInfo.connectionId,
-      );
+      const isolated = this.supportsOperationChannels();
+      const channel = isolated
+        ? sandboxOperationChannel(
+            this.userId,
+            this.connectionInfo.connectionId,
+            "command",
+            commandId,
+          )
+        : sandboxConnectionChannel(
+            this.userId,
+            this.connectionInfo.connectionId,
+          );
 
       // Generate short-lived JWT for this subscription (30s + command timeout)
       const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
@@ -749,6 +782,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               JSON.stringify({
                 timestamp: new Date().toISOString(),
                 event: "local_relay_command_traffic",
+                operation_channel: isolated,
                 service: this.triggerRunId ? "agent-long" : "chat-handler",
                 user_id: this.userId,
                 connection_id: this.connectionInfo.connectionId,
@@ -913,6 +947,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         subscription = client.newSubscription(channel);
 
         subscription.on("publication", (ctx) => {
+          if (ctx.data?.type === "operation_ready") return;
           if (settled) return;
           receivedPublications += 1;
           const payloadBytes = estimateRelayPayloadBytes(ctx.data);
@@ -1073,8 +1108,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
           void (async () => {
             try {
-              const presence = await subscription!.presence();
+              const presence = isolated ? null : await subscription!.presence();
               if (
+                presence !== null &&
                 !presenceHasConnectionId(
                   presence,
                   this.connectionInfo.connectionId,
@@ -1130,7 +1166,16 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             commandPublishInFlight = true;
             commandPublishAttempts += 1;
             (async () => {
-              if (opts?.stdin === undefined) {
+              if (isolated) {
+                await dispatchIsolatedOperation(
+                  client,
+                  this.userId,
+                  this.connectionInfo.connectionId,
+                  commandMessage as unknown as Record<string, unknown>,
+                  () => !settled,
+                  subscription!,
+                );
+              } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
                 // not implement transport-fragment reassembly.
                 await subscription!.publish(commandMessage);

@@ -20,6 +20,7 @@ const mockClient = {
   newSubscription: jest.fn().mockReturnValue(mockSubscription),
   connect: jest.fn(),
   disconnect: jest.fn(),
+  removeSubscription: jest.fn(),
   on: jest.fn(),
   ready: jest.fn().mockResolvedValue(undefined),
 };
@@ -148,6 +149,57 @@ beforeEach(() => {
 
 afterEach(() => {
   global.fetch = originalFetch;
+});
+
+it("publishes native file replies only on the requested operation channel", async () => {
+  const bridge = new DesktopSandboxBridge(buildConfig());
+  await bridge.start();
+  const reply = {
+    ...mockSubscription,
+    on: jest.fn(),
+    publish: jest.fn().mockResolvedValue(undefined),
+    unsubscribe: jest.fn(),
+    removeAllListeners: jest.fn(),
+  };
+  mockClient.newSubscription.mockReturnValueOnce(reply);
+  const native = mockInvokeHandler;
+  mockInvokeHandler = async (cmd, args) => {
+    if (cmd === "desktop_file_request")
+      return {
+        path: "/tmp/test",
+        sizeBytes: 5,
+        totalLines: 1,
+        content: "hello",
+      };
+    return native(cmd, args);
+  };
+  try {
+    getPublicationHandler()({
+      data: {
+        type: "file_read",
+        requestId: "isolated-file",
+        path: "/tmp/test",
+        targetConnectionId: "conn-123",
+        operationChannel: true,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockClient.newSubscription).toHaveBeenCalledWith(
+      "sandbox:operation:conn-123:file:isolated-file#user-456",
+    );
+    expect(reply.publish).toHaveBeenCalledWith({
+      type: "operation_ready",
+      requestId: "isolated-file",
+    });
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "file_read_result", content: "hello" }),
+    );
+    expect(mockSubscription.publish).not.toHaveBeenCalled();
+    expect(reply.unsubscribe).toHaveBeenCalled();
+    expect(mockClient.removeSubscription).toHaveBeenCalledWith(reply);
+  } finally {
+    await bridge.stop();
+  }
 });
 
 // ── desktop capability registration ───────────────────────────────────
@@ -306,7 +358,12 @@ describe("desktop capability registration", () => {
 
     expect(config.connectDesktop).toHaveBeenCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
       }),
     );
   });
@@ -326,7 +383,12 @@ describe("desktop capability registration", () => {
     await bridge.start();
     expect(config.connectDesktop).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: false },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: false,
+          operationChannels: true,
+        },
       }),
     );
     expect(global.fetch).toHaveBeenCalledWith(
@@ -341,7 +403,12 @@ describe("desktop capability registration", () => {
     await bridge.start();
     expect(config.connectDesktop).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
       }),
     );
     await bridge.stop();
@@ -360,7 +427,12 @@ describe("desktop capability registration", () => {
     await bridge.start();
     expect(config.connectDesktop).toHaveBeenCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
       }),
     );
     expect(global.fetch).not.toHaveBeenCalled();
@@ -382,7 +454,12 @@ describe("desktop capability registration", () => {
       await started;
       expect(config.connectDesktop).toHaveBeenCalledWith(
         expect.objectContaining({
-          capabilities: { commands: true, pty: true, files: false },
+          capabilities: {
+            commands: true,
+            pty: true,
+            files: false,
+            operationChannels: true,
+          },
         }),
       );
     } finally {

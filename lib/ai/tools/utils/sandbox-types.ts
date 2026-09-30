@@ -24,6 +24,7 @@ export interface ConnectionInfo {
     pty: boolean;
     files?: boolean;
     commandStdin?: boolean;
+    operationChannels?: boolean;
   };
 }
 
