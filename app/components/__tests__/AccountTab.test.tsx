@@ -267,6 +267,39 @@ describe("AccountTab", () => {
     );
   });
 
+  it("offers access refresh after a status recheck confirms the renewal is paid", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "past_due",
+      latestInvoiceId: "in_renewal",
+      renewalPaymentRequired: true,
+    } as never);
+    render(<AccountTab />);
+    const check = await screen.findByRole("button", {
+      name: "Check payment status",
+    });
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "active",
+      latestInvoiceId: "in_renewal",
+      renewalInvoicePaid: true,
+    } as never);
+    await userEvent.click(check);
+    await waitFor(() =>
+      expect(mockToastSuccess).toHaveBeenCalledWith(
+        "Your renewal invoice is paid. Refresh to update your access.",
+        expect.objectContaining({
+          action: expect.objectContaining({ label: "Refresh" }),
+        }),
+      ),
+    );
+    expect(
+      screen.queryByRole("region", { name: "Subscription payment recovery" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("updates the tab when cancellation is scheduled from the dialog", async () => {
     const currentPeriodEnd = Date.UTC(2026, 6, 31, 12);
     const expectedPeriodEnd = new Intl.DateTimeFormat(undefined, {

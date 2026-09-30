@@ -30,6 +30,11 @@ retry webhook delivery. Restricted Stripe keys need Events read permission.
 
 ## Pricing and Account recovery
 
+A failed payment-history lookup keeps recovery controls and the checkout block
+available, but the copy states that billing status could not be verified rather
+than asserting an unpaid invoice. Explicit status checks fetch fresh data before
+updating the pricing cache or clearing a checkout review warning.
+
 Pricing checks authenticated billing status before enabling paid plan changes.
 Delinquent renewals display a persistent recovery panel with the actual invoice
 balance, card update, and a payment-status recheck. Pay invoice is offered only

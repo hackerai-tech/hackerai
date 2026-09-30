@@ -1,9 +1,12 @@
 import "@testing-library/jest-dom";
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockHandleUpgrade = jest.fn();
 const mockFetch = jest.fn();
+const mockClearBillingReview = jest.fn();
+let mockBillingReviewRequired = false;
 let mockBilling = {
   data: { hasActiveSubscription: false, cancelAtPeriodEnd: false } as
     | import("@/lib/billing/api-types").SubscriptionCancellationStatus
@@ -27,6 +30,8 @@ jest.mock("@/app/hooks/useUpgrade", () => ({
   useUpgrade: () => ({
     upgradeLoading: false,
     handleUpgrade: mockHandleUpgrade,
+    billingReviewRequired: mockBillingReviewRequired,
+    clearBillingReview: mockClearBillingReview,
   }),
 }));
 jest.mock("@/app/hooks/useBillingRecoveryStatus", () => ({
@@ -71,6 +76,7 @@ const currentPrice = {
 describe("PricingDialog Pro monthly price", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockBillingReviewRequired = false;
     mockBilling = {
       data: { hasActiveSubscription: false, cancelAtPeriodEnd: false },
       isLoading: false,
@@ -80,6 +86,60 @@ describe("PricingDialog Pro monthly price", () => {
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: mockFetch,
+    });
+  });
+
+  it("preserves review controls when a fresh status check fails despite a healthy cached status", async () => {
+    mockBillingReviewRequired = true;
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => currentPrice,
+    } as never);
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    mockFetch.mockRejectedValueOnce(new Error("Billing unavailable") as never);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Check payment status" }),
+    );
+    expect(
+      await screen.findByText(
+        "We couldn't verify your billing status. Please try again.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Get billing help" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Get Pro+" })).toBeDisabled();
+    expect(mockClearBillingReview).not.toHaveBeenCalled();
+    expect(mockBilling.mutate).not.toHaveBeenCalled();
+  });
+
+  it("updates cached status and clears review only after a successful fresh check", async () => {
+    mockBillingReviewRequired = true;
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => currentPrice,
+    } as never);
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const fresh = { hasActiveSubscription: false, cancelAtPeriodEnd: false };
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => fresh,
+    } as never);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Check payment status" }),
+    );
+    await waitFor(() =>
+      expect(mockClearBillingReview).toHaveBeenCalledTimes(1),
+    );
+    expect(mockBilling.mutate).toHaveBeenCalledWith(fresh, {
+      revalidate: false,
     });
   });
 

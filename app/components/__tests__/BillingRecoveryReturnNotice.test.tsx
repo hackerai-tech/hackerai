@@ -20,6 +20,26 @@ const statusMock = jest.mocked(getSubscriptionCancellationStatus);
 
 afterEach(() => window.history.replaceState(null, "", "/"));
 
+it("reports unavailable billing history without claiming an unresolved payment", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    checkoutRequiresReview: true,
+    billingReviewUnavailable: true,
+  });
+  render(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.warning).toHaveBeenCalledWith(
+      "We couldn't verify your billing status",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Review billing" }),
+      }),
+    ),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+});
+
 it("keeps canceled-renewal review separate from successful card management", async () => {
   window.history.replaceState(null, "", "/?billing-recovery-return=1");
   statusMock.mockResolvedValue({

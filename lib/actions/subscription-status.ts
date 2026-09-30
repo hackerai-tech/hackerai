@@ -96,14 +96,30 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   const currentSubscription = currentSubscriptions[0];
 
   if (!currentSubscription) {
+    let checkoutRequiresReview: boolean;
+    let billingReviewUnavailable = false;
+    try {
+      checkoutRequiresReview = await hasRecentCanceledRenewalAtRisk(
+        stripe,
+        stripeCustomerId,
+      );
+    } catch (error) {
+      phLogger.error("billing_subscription_status_action_failed", {
+        event: "billing_subscription_status_action_failed",
+        ...billingFields,
+        stage: "canceled_renewal_risk",
+        duration_ms: Date.now() - startedAt,
+        error,
+      });
+      checkoutRequiresReview = true;
+      billingReviewUnavailable = true;
+    }
     return {
       hasActiveSubscription: false,
       cancelAtPeriodEnd: false,
       billingAccountAvailable: true,
-      checkoutRequiresReview: await hasRecentCanceledRenewalAtRisk(
-        stripe,
-        stripeCustomerId,
-      ),
+      checkoutRequiresReview,
+      ...(billingReviewUnavailable && { billingReviewUnavailable: true }),
     };
   }
 

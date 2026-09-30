@@ -95,6 +95,26 @@ describe("BillingRecoveryPanel", () => {
     ).toBeEnabled();
   });
 
+  it("keeps review actions available without claiming a failed payment when history is unavailable", () => {
+    draw({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      checkoutRequiresReview: true,
+      billingReviewUnavailable: true,
+    });
+    expect(
+      screen.getByText("We couldn’t verify your billing status"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Update card" })).toBeEnabled();
+    expect(
+      screen.getByRole("link", { name: "Get billing help" }),
+    ).toBeVisible();
+    expect(screen.queryByText(/An unresolved payment/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Pay invoice" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not offer invoice payment without server eligibility", () => {
     draw({ ...overdue, renewalInvoicePayable: false });
     expect(

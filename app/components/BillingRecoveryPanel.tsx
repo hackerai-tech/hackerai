@@ -158,7 +158,9 @@ export function BillingRecoveryPanel({
         );
       } else if (next.checkoutRequiresReview) {
         setMessage(
-          "Your previous payment still needs review. Contact billing support.",
+          next.billingReviewUnavailable
+            ? "We couldn't verify your payment history. Try again or contact billing support."
+            : "Your previous payment still needs review. Contact billing support.",
         );
       } else if (
         next.renewalPaymentRequired ||
@@ -191,7 +193,9 @@ export function BillingRecoveryPanel({
         <div className="min-w-0 space-y-2">
           <h3 className="font-semibold text-foreground">
             {review
-              ? "Your previous subscription has ended"
+              ? status.billingReviewUnavailable
+                ? "We couldn’t verify your billing status"
+                : "Your previous subscription has ended"
               : authentication
                 ? "Confirm your renewal payment"
                 : recovery
@@ -200,7 +204,9 @@ export function BillingRecoveryPanel({
           </h3>
           <p className="text-muted-foreground">
             {review
-              ? "An unresolved payment from your previous subscription needs review before you can subscribe again. Paying an old invoice won’t restart that subscription."
+              ? status.billingReviewUnavailable
+                ? "Your previous subscription has ended, but we couldn’t check its payment history. Review billing or try again before subscribing."
+                : "An unresolved payment from your previous subscription needs review before you can subscribe again. Paying an old invoice won’t restart that subscription."
               : authentication
                 ? "Your bank needs you to confirm this payment. Complete verification securely with Stripe."
                 : recovery

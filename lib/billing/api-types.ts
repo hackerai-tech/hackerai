@@ -22,6 +22,8 @@ export type SubscriptionCancellationStatus = {
   billingAccountAvailable?: boolean;
   /** New checkout is blocked by the existing canceled-renewal safety guard. */
   checkoutRequiresReview?: boolean;
+  /** Payment-history lookup failed; review is required without asserting an unpaid invoice. */
+  billingReviewUnavailable?: boolean;
   hasActiveSubscription: boolean;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;

@@ -28,11 +28,14 @@ export function BillingRecoveryReturnNotice() {
         if (!mounted || checkId !== latestCheck.current) return;
         if (status.checkoutRequiresReview) {
           toast.warning(
-            "Your previous subscription payment still needs review",
+            status.billingReviewUnavailable
+              ? "We couldn't verify your billing status"
+              : "Your previous subscription payment still needs review",
             {
               id: NOTICE_ID,
-              description:
-                "Updating your card does not restart an ended subscription. Open Account settings for billing help.",
+              description: status.billingReviewUnavailable
+                ? "We couldn't check your payment history. Open Account settings to retry or get billing help."
+                : "Updating your card does not restart an ended subscription. Open Account settings for billing help.",
               action: {
                 label: "Review billing",
                 onClick: () => openSettingsDialog("Account"),

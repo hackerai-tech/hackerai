@@ -11,6 +11,7 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
 import { useBillingRecoveryStatus } from "../hooks/useBillingRecoveryStatus";
 import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
+import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
@@ -252,7 +253,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       billing.data?.subscriptionStatus === "unpaid"),
   );
   const checkBilling = async () => {
-    const status = await billing.mutate();
+    const status = await getSubscriptionCancellationStatus();
+    await billing.mutate(status, { revalidate: false });
     if (status && !status.checkoutRequiresReview) clearBillingReview?.();
     return status;
   };

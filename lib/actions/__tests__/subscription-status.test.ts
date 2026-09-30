@@ -196,6 +196,26 @@ describe("getSubscriptionCancellationStatusAction", () => {
     );
   });
 
+  it("keeps review controls available without claiming an unpaid invoice when history lookup fails", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    const error = new Error("Stripe history unavailable");
+    mockCanceledRenewalAtRisk.mockRejectedValueOnce(error as never);
+    const { default: getStatus } = await import("../subscription-status");
+    expect(await getStatus()).toMatchObject({
+      hasActiveSubscription: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: true,
+      billingReviewUnavailable: true,
+    });
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_subscription_status_action_failed",
+      expect.objectContaining({ stage: "canceled_renewal_risk", error }),
+    );
+  });
+
   it("does not log expected billing context failures", async () => {
     const error = new Error("No billing account found for this organization");
     mockGetBillingStatusContext.mockRejectedValue(error as never);
