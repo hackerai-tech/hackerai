@@ -301,121 +301,133 @@ export const recoverMiosaE2BWorkspace = schemaTask({
         recoveryInputId: verifiedInputId,
       },
     });
-    await e2bCommand(target, `mkdir -m 700 '${stage}'`);
-    const chunkPath = "/tmp/hackerai-recovery-chunk";
-    await copyFile(
-      transferSource,
-      target,
-      `${stage}/source.tar.gz`,
-      `${stage}/source.tar.gz`,
-      capture.archiveBytes,
-      capture.archiveDigest,
-      chunkPath,
-    );
-    const restored = JSON.parse(
-      await e2bCommand(
-        target,
-        transferCommand("restore", stage, "miosa-to-e2b"),
-        60 * 60_000,
-      ),
-    ) as { archiveDigest?: string; homeDigest?: string };
-    if (
-      restored.archiveDigest !== capture.archiveDigest ||
-      restored.homeDigest !== capture.homeDigest
-    )
-      throw new Error("Restored workspace verification failed");
-    for (const path of externalFiles) {
-      const proof = await sourceFileProof(transferSource, path);
-      await e2bCommand(
-        target,
-        `mkdir -p '${path.substring(0, path.lastIndexOf("/"))}'`,
-      );
+    let committed = false;
+    try {
+      await e2bCommand(target, `mkdir -m 700 '${stage}'`);
+      const chunkPath = "/tmp/hackerai-recovery-chunk";
       await copyFile(
         transferSource,
         target,
-        path,
-        path,
-        proof.bytes,
-        proof.digest,
+        `${stage}/source.tar.gz`,
+        `${stage}/source.tar.gz`,
+        capture.archiveBytes,
+        capture.archiveDigest,
         chunkPath,
       );
-    }
-    await e2bCommand(target, transferCommand("install", stage, "miosa-to-e2b"));
-    const home = JSON.parse(
+      await target.setTimeout(75 * 60_000);
+      const restored = JSON.parse(
+        await e2bCommand(
+          target,
+          transferCommand("restore", stage, "miosa-to-e2b"),
+          60 * 60_000,
+        ),
+      ) as { archiveDigest?: string; homeDigest?: string };
+      if (
+        restored.archiveDigest !== capture.archiveDigest ||
+        restored.homeDigest !== capture.homeDigest
+      )
+        throw new Error("Restored workspace verification failed");
+      for (const path of externalFiles) {
+        const proof = await sourceFileProof(transferSource, path);
+        await e2bCommand(
+          target,
+          `mkdir -p '${path.substring(0, path.lastIndexOf("/"))}'`,
+        );
+        await copyFile(
+          transferSource,
+          target,
+          path,
+          path,
+          proof.bytes,
+          proof.digest,
+          chunkPath,
+        );
+      }
       await e2bCommand(
         target,
-        transferCommand("verify-home", stage, "miosa-to-e2b"),
-        60 * 60_000,
-      ),
-    ) as { homeDigest?: string };
-    if (home.homeDigest !== capture.homeDigest)
-      throw new Error("Installed workspace verification failed");
-    await target.pause();
-    const resumed = await E2BSandbox.connect(target.sandboxId, {
-      ...cluster.connectionOptions,
-      timeoutMs: 20 * 60_000,
-    });
-    const persisted = JSON.parse(
-      await e2bCommand(
-        resumed,
-        transferCommand("verify-home", stage, "miosa-to-e2b"),
-        60 * 60_000,
-      ),
-    ) as { homeDigest?: string };
-    if (persisted.homeDigest !== capture.homeDigest)
-      throw new Error("Workspace persistence verification failed");
-    const info = await E2BSandbox.getInfo(target.sandboxId, {
-      ...cluster.connectionOptions,
-    });
-    if (
-      info.metadata?.userID !== userId ||
-      info.metadata?.recoverySourceId !== recovery.miosaId ||
-      info.metadata?.recoveryInputId !== verifiedInputId
-    )
-      throw new Error("Destination identity mismatch");
-    if (originalSnapshotId) {
-      await assertHashcatSuspended(transferSource);
-      const finalSource = JSON.parse(
-        await miosaCommand(
-          transferSource,
-          transferCommand("verify-source", stage, "miosa-to-e2b"),
-          60 * 60,
+        transferCommand("install", stage, "miosa-to-e2b"),
+      );
+      await target.setTimeout(75 * 60_000);
+      const home = JSON.parse(
+        await e2bCommand(
+          target,
+          transferCommand("verify-home", stage, "miosa-to-e2b"),
+          60 * 60_000,
         ),
-      ) as Partial<Capture>;
+      ) as { homeDigest?: string };
+      if (home.homeDigest !== capture.homeDigest)
+        throw new Error("Installed workspace verification failed");
+      await target.pause();
+      const resumed = await E2BSandbox.connect(target.sandboxId, {
+        ...cluster.connectionOptions,
+        timeoutMs: 75 * 60_000,
+      });
+      const persisted = JSON.parse(
+        await e2bCommand(
+          resumed,
+          transferCommand("verify-home", stage, "miosa-to-e2b"),
+          60 * 60_000,
+        ),
+      ) as { homeDigest?: string };
+      if (persisted.homeDigest !== capture.homeDigest)
+        throw new Error("Workspace persistence verification failed");
+      await e2bCommand(resumed, `rm -rf -- '${stage}'`);
+      const info = await E2BSandbox.getInfo(target.sandboxId, {
+        ...cluster.connectionOptions,
+      });
       if (
-        finalSource.digest !== capture.digest ||
-        finalSource.homeDigest !== capture.homeDigest ||
-        finalSource.entries !== capture.entries ||
-        finalSource.bytes !== capture.bytes
+        info.metadata?.userID !== userId ||
+        info.metadata?.recoverySourceId !== recovery.miosaId ||
+        info.metadata?.recoveryInputId !== verifiedInputId
       )
-        throw new Error("Original source changed before cutover");
-      await original.pause();
-      await original.refresh();
-      if (original.state !== "paused")
-        throw new Error("Original source did not pause before cutover");
+        throw new Error("Destination identity mismatch");
+      if (originalSnapshotId) {
+        await assertHashcatSuspended(transferSource);
+        const finalSource = JSON.parse(
+          await miosaCommand(
+            transferSource,
+            transferCommand("verify-source", stage, "miosa-to-e2b"),
+            60 * 60,
+          ),
+        ) as Partial<Capture>;
+        if (
+          finalSource.digest !== capture.digest ||
+          finalSource.homeDigest !== capture.homeDigest ||
+          finalSource.entries !== capture.entries ||
+          finalSource.bytes !== capture.bytes
+        )
+          throw new Error("Original source changed before cutover");
+        await original.pause();
+        await original.refresh();
+        if (original.state !== "paused")
+          throw new Error("Original source did not pause before cutover");
+      }
+      await commitRecoveredE2BWorkspace({
+        userId,
+        sourceId: recovery.miosaId,
+        previousE2BId: recovery.e2bId,
+        recoveryOwnerRunId: recovery.ownerRunId,
+        destinationId: target.sandboxId,
+        region: REGION,
+      });
+      committed = true;
+      const pinned = await readCloudMigrationState(userId);
+      if (
+        pinned?.phase !== "e2b" ||
+        pinned.sourceId !== recovery.miosaId ||
+        pinned.destinationId !== target.sandboxId ||
+        pinned.region !== REGION
+      )
+        throw new Error("Recovery pin read-back failed");
+      return {
+        status: "verified_and_pinned",
+        destinationId: target.sandboxId,
+        entries: capture.entries,
+        bytes: capture.bytes,
+        archiveBytes: capture.archiveBytes,
+      };
+    } finally {
+      if (!committed) await target.kill().catch(() => {});
     }
-    await commitRecoveredE2BWorkspace({
-      userId,
-      sourceId: recovery.miosaId,
-      previousE2BId: recovery.e2bId,
-      recoveryOwnerRunId: recovery.ownerRunId,
-      destinationId: target.sandboxId,
-      region: REGION,
-    });
-    const pinned = await readCloudMigrationState(userId);
-    if (
-      pinned?.phase !== "e2b" ||
-      pinned.sourceId !== recovery.miosaId ||
-      pinned.destinationId !== target.sandboxId ||
-      pinned.region !== REGION
-    )
-      throw new Error("Recovery pin read-back failed");
-    return {
-      status: "verified_and_pinned",
-      destinationId: target.sandboxId,
-      entries: capture.entries,
-      bytes: capture.bytes,
-      archiveBytes: capture.archiveBytes,
-    };
   },
 });
