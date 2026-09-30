@@ -157,6 +157,7 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
         join(source, "home/user/hc_final_run/rockyou.txt"),
       );
       expect(() => run("export")).toThrow();
+      rmSync(stage, { recursive: true, force: true });
       const capture = run("export", stage, source, "miosa-to-e2b");
       mkdirSync(destinationStage);
       copyFileSync(

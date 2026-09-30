@@ -160,6 +160,15 @@ async function sourceFileProof(source: MiosaSandbox, path: string) {
   return proof;
 }
 
+async function assertHashcatSuspended(source: MiosaSandbox) {
+  const active = await miosaCommand(
+    source,
+    `ps -C hashcat -o stat= | awk '$1 !~ /^T/ {n++} END {print n+0}'`,
+    30,
+  );
+  if (active !== "0") throw new Error("Source workload is still active");
+}
+
 export const recoverMiosaE2BWorkspace = schemaTask({
   id: "recover-miosa-e2b-workspace-2026-09-29",
   schema: z
@@ -167,16 +176,22 @@ export const recoverMiosaE2BWorkspace = schemaTask({
       userId: z.string().regex(/^user_[A-Z0-9]+$/),
       cloneId: z.string().uuid().optional(),
       snapshotId: z.string().uuid().optional(),
+      originalSnapshotId: z.string().uuid().optional(),
       minEntries: z.number().int().positive().max(250_000),
       minBytes: z.number().int().positive().max(MAX_WORKSPACE_BYTES),
     })
-    .refine((value) => !!value.cloneId !== !!value.snapshotId),
+    .refine(
+      (value) =>
+        [value.cloneId, value.snapshotId, value.originalSnapshotId].filter(
+          Boolean,
+        ).length === 1,
+    ),
   queue: { concurrencyLimit: 1 },
   maxDuration: 4 * 60 * 60,
   retry: { maxAttempts: 1 },
   machine: { preset: "small-1x" },
   run: async (
-    { userId, cloneId, snapshotId, minEntries, minBytes },
+    { userId, cloneId, snapshotId, originalSnapshotId, minEntries, minBytes },
     { ctx },
   ) => {
     if (ctx.environment.type.toLowerCase() !== "production")
@@ -205,35 +220,40 @@ export const recoverMiosaE2BWorkspace = schemaTask({
     const miosa = await createMiosaClient(65 * 60_000, 0);
     const original = await miosa.sandboxes.get(recovery.miosaId);
     if (
-      original.state !== "paused" ||
+      original.state !== (originalSnapshotId ? "running" : "paused") ||
       original.data.external_user_id !== miosaExternalUserId(userId)
     )
       throw new AbortTaskRunError(
         "Source identity or preservation state mismatch",
       );
-    if (snapshotId) {
+    const recoverySnapshotId = snapshotId ?? originalSnapshotId;
+    if (recoverySnapshotId) {
       const snapshot = (await original.snapshots.list()).find(
-        (candidate) => candidate.id === snapshotId,
+        (candidate) => candidate.id === recoverySnapshotId,
       );
       if (snapshot?.status !== "ready")
         throw new AbortTaskRunError("Recovery snapshot is not ready");
     }
-    let clone = cloneId
-      ? await miosa.sandboxes.get(cloneId)
-      : await original.snapshots.restore(snapshotId!);
-    const verifiedCloneId = clone.id;
+    let transferSource = originalSnapshotId
+      ? original
+      : cloneId
+        ? await miosa.sandboxes.get(cloneId)
+        : await original.snapshots.restore(snapshotId!);
+    const verifiedInputId = transferSource.id;
     if (
-      clone.id === original.id ||
-      clone.data.external_user_id !== original.data.external_user_id ||
-      clone.data.template_id !== original.data.template_id
+      (!originalSnapshotId && transferSource.id === original.id) ||
+      transferSource.data.external_user_id !== original.data.external_user_id ||
+      transferSource.data.template_id !== original.data.template_id
     )
       throw new AbortTaskRunError("Recovery clone identity mismatch");
-    if (clone.state === "paused") clone = await clone.resume(randomUUID());
-    await waitForMiosaReadiness(clone);
+    if (transferSource.state === "paused")
+      transferSource = await transferSource.resume(randomUUID());
+    await waitForMiosaReadiness(transferSource);
+    if (originalSnapshotId) await assertHashcatSuspended(transferSource);
     const stage = `/.hackerai-migration-${randomUUID()}`;
     const capture = safeCapture(
       await miosaCommand(
-        clone,
+        transferSource,
         transferCommand("export", stage, "miosa-to-e2b"),
         60 * 60,
       ),
@@ -242,7 +262,7 @@ export const recoverMiosaE2BWorkspace = schemaTask({
       throw new Error("Recovery snapshot is missing expected workspace data");
     const verified = JSON.parse(
       await miosaCommand(
-        clone,
+        transferSource,
         transferCommand("verify-source", stage, "miosa-to-e2b"),
         60 * 60,
       ),
@@ -254,6 +274,7 @@ export const recoverMiosaE2BWorkspace = schemaTask({
       verified.bytes !== capture.bytes
     )
       throw new Error("Source changed during recovery");
+    if (originalSnapshotId) await assertHashcatSuspended(transferSource);
     const cluster = getE2BClusterRouting(REGION).createCluster;
     const previousTarget = await E2BSandbox.getInfo(recovery.e2bId, {
       ...cluster.connectionOptions,
@@ -277,13 +298,13 @@ export const recoverMiosaE2BWorkspace = schemaTask({
         sandboxVersion: "v12",
         e2bCluster: cluster.cluster,
         recoverySourceId: recovery.miosaId,
-        recoveryCloneId: verifiedCloneId,
+        recoveryInputId: verifiedInputId,
       },
     });
     await e2bCommand(target, `mkdir -m 700 '${stage}'`);
     const chunkPath = "/tmp/hackerai-recovery-chunk";
     await copyFile(
-      clone,
+      transferSource,
       target,
       `${stage}/source.tar.gz`,
       `${stage}/source.tar.gz`,
@@ -304,13 +325,13 @@ export const recoverMiosaE2BWorkspace = schemaTask({
     )
       throw new Error("Restored workspace verification failed");
     for (const path of externalFiles) {
-      const proof = await sourceFileProof(clone, path);
+      const proof = await sourceFileProof(transferSource, path);
       await e2bCommand(
         target,
         `mkdir -p '${path.substring(0, path.lastIndexOf("/"))}'`,
       );
       await copyFile(
-        clone,
+        transferSource,
         target,
         path,
         path,
@@ -349,9 +370,30 @@ export const recoverMiosaE2BWorkspace = schemaTask({
     if (
       info.metadata?.userID !== userId ||
       info.metadata?.recoverySourceId !== recovery.miosaId ||
-      info.metadata?.recoveryCloneId !== verifiedCloneId
+      info.metadata?.recoveryInputId !== verifiedInputId
     )
       throw new Error("Destination identity mismatch");
+    if (originalSnapshotId) {
+      await assertHashcatSuspended(transferSource);
+      const finalSource = JSON.parse(
+        await miosaCommand(
+          transferSource,
+          transferCommand("verify-source", stage, "miosa-to-e2b"),
+          60 * 60,
+        ),
+      ) as Partial<Capture>;
+      if (
+        finalSource.digest !== capture.digest ||
+        finalSource.homeDigest !== capture.homeDigest ||
+        finalSource.entries !== capture.entries ||
+        finalSource.bytes !== capture.bytes
+      )
+        throw new Error("Original source changed before cutover");
+      await original.pause();
+      await original.refresh();
+      if (original.state !== "paused")
+        throw new Error("Original source did not pause before cutover");
+    }
     await commitRecoveredE2BWorkspace({
       userId,
       sourceId: recovery.miosaId,
