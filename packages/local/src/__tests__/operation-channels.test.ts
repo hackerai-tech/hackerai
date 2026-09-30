@@ -228,6 +228,24 @@ describe("operation channels", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  it("keeps a long-lived PTY subscribed for the server's one-hour session lifetime", async () => {
+    await router.dispatch(request("long", "pty_create"), jest.fn());
+    await jest.advanceTimersByTimeAsync(60 * 60000);
+    expect(subs[0].unsubscribe).not.toHaveBeenCalled();
+    await router.publish({
+      type: "pty_data",
+      sessionId: "long",
+      data: "still active",
+    });
+    expect(subs[0].publish).toHaveBeenLastCalledWith({
+      type: "pty_data",
+      sessionId: "long",
+      data: "still active",
+    });
+    await router.publish({ type: "pty_exit", sessionId: "long", exitCode: 0 });
+    expect(subs[0].unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("stop during readiness prevents execution and releases every subscription", async () => {
     let ready!: () => void;
     const sub = new Subscription();

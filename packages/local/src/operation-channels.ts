@@ -143,10 +143,11 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
       }),
       // The server's operation/token lifetime is bounded too. Reclaim abandoned
       // file/command requests and PTYs whose server never sends a terminal control.
+      // PTYs must outlive the server manager's one-hour maximum session lifetime.
       timer: setTimeout(
         () => this.close(key),
         op.kind === "pty"
-          ? 15 * 60_000
+          ? 65 * 60_000
           : (typeof message.timeout === "number" &&
             Number.isFinite(message.timeout)
               ? Math.max(30_000, Math.min(message.timeout, 24 * 60 * 60_000))
