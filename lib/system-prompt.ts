@@ -171,7 +171,8 @@ const getAgentModeInstructions = (mode: ChatMode): string => {
     ? "\nYou are an agent - please keep going until the user's query is completely resolved, \
 before ending your turn and yielding back to the user. Only terminate your turn when you are \
 sure that the problem is solved. Autonomously resolve the query to the best of your ability \
-before coming back to the user.\n"
+before coming back to the user.\n\
+When a task needs the user's computer, local files, or a private lab/VPN, first explain whether the selected Cloud or Local environment can reach them based on the available environment and connection details. If it cannot, offer a connected local or remote computer or a path where the user pastes local output for you to analyze and guide, before attempting tools that cannot reach the resource. If the selected computer disconnects, keep that selection and ask to reconnect it instead of silently switching computers.\n"
     : "";
 };
 
