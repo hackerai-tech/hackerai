@@ -160,10 +160,42 @@ async function sourceFileProof(source: MiosaSandbox, path: string) {
   return proof;
 }
 
-async function assertHashcatSuspended(source: MiosaSandbox) {
+async function assertWorkspaceQuiesced(source: MiosaSandbox) {
+  // The operator suspends customer jobs before using the live-source path.
+  // A process with this cwd, or a writable fd into the workspace, can make
+  // the exported archive stale before MIOSA finishes pausing the source.
+  const inspect = String.raw`
+import os
+root = '/home/user'
+active = 0
+for name in os.listdir('/proc'):
+    if not name.isdigit() or int(name) == os.getpid(): continue
+    proc = '/proc/' + name
+    try:
+        with open(proc + '/status') as status:
+            state = next(line.split()[1] for line in status if line.startswith('State:'))
+        if state in ('T', 't', 'Z', 'X'): continue
+        try: cwd = os.readlink(proc + '/cwd')
+        except FileNotFoundError: continue
+        if cwd == root or cwd.startswith(root + '/'):
+            active += 1
+            continue
+        for fd in os.listdir(proc + '/fd'):
+            try:
+                path = os.readlink(proc + '/fd/' + fd)
+                if path != root and not path.startswith(root + '/'): continue
+                with open(proc + '/fdinfo/' + fd) as info:
+                    flags = next(line.split()[1] for line in info if line.startswith('flags:'))
+                if int(flags, 8) & os.O_ACCMODE:
+                    active += 1
+                    break
+            except FileNotFoundError: continue
+    except FileNotFoundError: continue
+print(active)
+`;
   const active = await miosaCommand(
     source,
-    `ps -C hashcat -o stat= | awk '$1 !~ /^T/ {n++} END {print n+0}'`,
+    `/usr/bin/python3 -I -c '${inspect.replaceAll("'", `'"'"'`)}'`,
     30,
   );
   if (active !== "0") throw new Error("Source workload is still active");
@@ -249,7 +281,7 @@ export const recoverMiosaE2BWorkspace = schemaTask({
     if (transferSource.state === "paused")
       transferSource = await transferSource.resume(randomUUID());
     await waitForMiosaReadiness(transferSource);
-    if (originalSnapshotId) await assertHashcatSuspended(transferSource);
+    if (originalSnapshotId) await assertWorkspaceQuiesced(transferSource);
     const stage = `/.hackerai-migration-${randomUUID()}`;
     const capture = safeCapture(
       await miosaCommand(
@@ -274,7 +306,7 @@ export const recoverMiosaE2BWorkspace = schemaTask({
       verified.bytes !== capture.bytes
     )
       throw new Error("Source changed during recovery");
-    if (originalSnapshotId) await assertHashcatSuspended(transferSource);
+    if (originalSnapshotId) await assertWorkspaceQuiesced(transferSource);
     const cluster = getE2BClusterRouting(REGION).createCluster;
     const previousTarget = await E2BSandbox.getInfo(recovery.e2bId, {
       ...cluster.connectionOptions,
@@ -343,6 +375,28 @@ export const recoverMiosaE2BWorkspace = schemaTask({
           chunkPath,
         );
       }
+      if (originalSnapshotId) {
+        await assertWorkspaceQuiesced(transferSource);
+        const finalSource = JSON.parse(
+          await miosaCommand(
+            transferSource,
+            transferCommand("verify-source", stage, "miosa-to-e2b"),
+            60 * 60,
+          ),
+        ) as Partial<Capture>;
+        if (
+          finalSource.digest !== capture.digest ||
+          finalSource.homeDigest !== capture.homeDigest ||
+          finalSource.entries !== capture.entries ||
+          finalSource.bytes !== capture.bytes
+        )
+          throw new Error("Original source changed before cutover");
+        await assertWorkspaceQuiesced(transferSource);
+        await original.pause();
+        await original.refresh();
+        if (original.state !== "paused")
+          throw new Error("Original source did not pause before cutover");
+      }
       await e2bCommand(
         target,
         transferCommand("install", stage, "miosa-to-e2b"),
@@ -381,27 +435,6 @@ export const recoverMiosaE2BWorkspace = schemaTask({
         info.metadata?.recoveryInputId !== verifiedInputId
       )
         throw new Error("Destination identity mismatch");
-      if (originalSnapshotId) {
-        await assertHashcatSuspended(transferSource);
-        const finalSource = JSON.parse(
-          await miosaCommand(
-            transferSource,
-            transferCommand("verify-source", stage, "miosa-to-e2b"),
-            60 * 60,
-          ),
-        ) as Partial<Capture>;
-        if (
-          finalSource.digest !== capture.digest ||
-          finalSource.homeDigest !== capture.homeDigest ||
-          finalSource.entries !== capture.entries ||
-          finalSource.bytes !== capture.bytes
-        )
-          throw new Error("Original source changed before cutover");
-        await original.pause();
-        await original.refresh();
-        if (original.state !== "paused")
-          throw new Error("Original source did not pause before cutover");
-      }
       await commitRecoveredE2BWorkspace({
         userId,
         sourceId: recovery.miosaId,
