@@ -1,7 +1,12 @@
 import type { AnySandbox } from "@/types";
+import { createRedisClient } from "@/lib/rate-limit/redis";
+import { CloudMigrationUnavailableError } from "../cloud-migration-state";
+import { refreshE2BSandboxLeaseBestEffort } from "../sandbox";
 import { DefaultSandboxManager } from "../sandbox-manager";
 import { HybridSandboxManager } from "../hybrid-sandbox-manager";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
+
+jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
 jest.mock("../cloud-sandbox", () => ({
   ensureCloudSandboxConnection: jest.fn(),
@@ -45,7 +50,62 @@ describe.each(["default", "hybrid"] as const)(
             context,
           );
 
-    beforeEach(() => jest.resetAllMocks());
+    const redis = {
+      get: jest.fn(async () => null),
+      eval: jest.fn(async () => 1),
+    };
+
+    beforeEach(() => {
+      jest.resetAllMocks();
+      redis.get.mockResolvedValue(null);
+      redis.eval.mockResolvedValue(1);
+      jest.mocked(createRedisClient).mockReturnValue(redis as never);
+    });
+
+    it.each([false, true])(
+      "reuses the verified recovered destination on repeated tools (initial: %s)",
+      async (initial) => {
+        redis.eval.mockImplementation(async (...args: unknown[]) => {
+          const values = args[2] as string[];
+          return values[1] === e2b.sandboxId ? 1 : 0;
+        });
+        acquire.mockResolvedValue({ sandbox: e2b, provider: "e2b" });
+        const manager = createManager(initial ? e2b : undefined);
+
+        for (let request = 0; request < 3; request++) {
+          await expect(manager.getSandbox()).resolves.toEqual({ sandbox: e2b });
+        }
+        expect(acquire).toHaveBeenCalledTimes(initial ? 0 : 1);
+        expect(refreshE2BSandboxLeaseBestEffort).toHaveBeenCalledTimes(
+          initial ? 3 : 2,
+        );
+      },
+    );
+
+    it("rejects a cached client after the recovered destination changes", async () => {
+      redis.eval.mockImplementation(async (...args: unknown[]) => {
+        const values = args[2] as string[];
+        return values[1] === "another-destination" ? 1 : 0;
+      });
+      const manager = createManager(e2b);
+
+      await expect(manager.getSandbox()).rejects.toBeInstanceOf(
+        CloudMigrationUnavailableError,
+      );
+      expect(refreshE2BSandboxLeaseBestEffort).not.toHaveBeenCalled();
+      expect(acquire).not.toHaveBeenCalled();
+    });
+
+    it("keeps cached tools blocked while workspace recovery is fenced", async () => {
+      redis.eval.mockResolvedValue(0);
+      const manager = createManager(e2b);
+
+      await expect(manager.getSandbox()).rejects.toBeInstanceOf(
+        CloudMigrationUnavailableError,
+      );
+      expect(refreshE2BSandboxLeaseBestEffort).not.toHaveBeenCalled();
+      expect(acquire).not.toHaveBeenCalled();
+    });
 
     it("shares one acquisition across concurrent tool requests", async () => {
       let complete!: (result: {
