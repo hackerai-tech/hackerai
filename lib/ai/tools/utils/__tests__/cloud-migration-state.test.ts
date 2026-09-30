@@ -4,6 +4,7 @@ import {
   assertCloudWorkspaceAvailable,
   claimCloudMigration,
   claimCloudWorkspaceCleanup,
+  commitRecoveredE2BWorkspace,
   readCloudMigrationState,
   CloudMigrationUnavailableError,
   registerE2BMigrationLease,
@@ -22,8 +23,38 @@ describe("persistent cloud migration fence", () => {
       async (
         script: string,
         [key, activity]: string[],
-        [expected, next]: string[],
+        [expected, next, owner, committed]: string[],
       ) => {
+        if (script.includes("old.recovery")) {
+          const raw = records.get(key);
+          if (!raw) return 0;
+          const state = JSON.parse(raw);
+          if (
+            state.phase !== "cleanup" ||
+            state.recovery?.operation !== "miosa-to-e2b" ||
+            state.recovery.phase !== "claimed" ||
+            state.recovery.miosaId !== expected ||
+            state.recovery.e2bId !== next ||
+            state.recovery.ownerRunId !== owner
+          )
+            return 0;
+          records.set(key, committed);
+          return 1;
+        }
+        if (script.includes("cjson.decode")) {
+          const raw = records.get(key);
+          if (raw) {
+            const state = JSON.parse(raw);
+            if (
+              state.phase !== "e2b" ||
+              !state.destinationId ||
+              state.destinationId !== (next ?? "")
+            )
+              return 0;
+          }
+          records.set(activity, "active");
+          return 1;
+        }
         if (script.includes("'EXISTS'")) {
           if (records.has(key)) return 0;
           if (script.includes("'EX'")) {
@@ -128,6 +159,69 @@ describe("persistent cloud migration fence", () => {
     await expect(
       assertCloudWorkspaceAvailable("user-1", "e2b"),
     ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+  });
+
+  it("only leases the exact recovered E2B sandbox and keeps MIOSA fenced", async () => {
+    const pinned = {
+      version: 1,
+      phase: "e2b",
+      token: "recovery-token",
+      sourceId: "miosa-source",
+      destinationId: "verified-e2b",
+      region: "us-east-1",
+    };
+    records.set("cloud_workspace_migration:v1:user-1", JSON.stringify(pinned));
+    expect(await readCloudMigrationState("user-1")).toEqual(pinned);
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "e2b", "verified-e2b"),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "e2b"),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "e2b", "stale-e2b"),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "miosa"),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    const cleanup = await claimCloudWorkspaceCleanup("user-1", false);
+    expect((await readCloudMigrationState("user-1"))?.phase).toBe("cleanup");
+    await cleanup.finish(false);
+    expect(await readCloudMigrationState("user-1")).toEqual(pinned);
+  });
+
+  it("commits a verified E2B recovery only from the exact claimed fence", async () => {
+    const key = "cloud_workspace_migration:v1:user-1";
+    const recovery = {
+      operation: "miosa-to-e2b",
+      phase: "claimed",
+      miosaId: "miosa-source",
+      e2bId: "old-e2b",
+      ownerRunId: "run_operator",
+    };
+    records.set(
+      key,
+      JSON.stringify({ version: 1, phase: "cleanup", token: "old", recovery }),
+    );
+    const options = {
+      userId: "user-1",
+      sourceId: "miosa-source",
+      previousE2BId: "old-e2b",
+      recoveryOwnerRunId: "run_operator",
+      destinationId: "new-e2b",
+      region: "us-east-1" as const,
+    };
+    await expect(
+      commitRecoveredE2BWorkspace({ ...options, previousE2BId: "wrong" }),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    expect(JSON.parse(records.get(key)!)).toMatchObject({ phase: "cleanup" });
+    await commitRecoveredE2BWorkspace(options);
+    expect(await readCloudMigrationState("user-1")).toMatchObject({
+      phase: "e2b",
+      sourceId: "miosa-source",
+      destinationId: "new-e2b",
+      region: "us-east-1",
+    });
   });
 
   it("releases a denied inspection without affecting another user", async () => {

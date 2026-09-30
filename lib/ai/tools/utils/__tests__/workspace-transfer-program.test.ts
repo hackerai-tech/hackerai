@@ -24,7 +24,12 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
       target: string,
       stage: string,
       destinationStage: string;
-    const run = (operation: string, selectedStage = stage, root = source) => {
+    const run = (
+      operation: string,
+      selectedStage = stage,
+      root = source,
+      mode?: "miosa-to-e2b",
+    ) => {
       const result = spawnSync(
         "python3",
         [
@@ -35,6 +40,7 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
           operation,
           selectedStage,
           root,
+          ...(mode ? [mode] : []),
         ],
         { encoding: "utf8" },
       );
@@ -143,6 +149,31 @@ import { WORKSPACE_TRANSFER_PROGRAM } from "../workspace-transfer-program";
       expect(readFileSync(join(source, "etc/custom.conf"), "utf8")).toBe(
         "do not migrate",
       );
+    });
+    it("preserves only the two known MIOSA tool links in reverse recovery", () => {
+      mkdirSync(join(source, "home/user/hc_final_run"));
+      symlinkSync(
+        "/usr/share/wordlists/rockyou.txt",
+        join(source, "home/user/hc_final_run/rockyou.txt"),
+      );
+      expect(() => run("export")).toThrow();
+      rmSync(stage, { recursive: true, force: true });
+      const capture = run("export", stage, source, "miosa-to-e2b");
+      mkdirSync(destinationStage);
+      copyFileSync(
+        join(stage, "source.tar.gz"),
+        join(destinationStage, "source.tar.gz"),
+      );
+      expect(
+        run("restore", destinationStage, target, "miosa-to-e2b").homeDigest,
+      ).toBe(capture.homeDigest);
+      symlinkSync(
+        "/usr/share/wordlists/unexpected.txt",
+        join(source, "home/user/hc_final_run/unexpected.txt"),
+      );
+      expect(() =>
+        run("verify-source", stage, source, "miosa-to-e2b"),
+      ).toThrow();
     });
     it("does not follow a directory swapped for a symlink during traversal", () => {
       const workspace = join(source, "home/user");

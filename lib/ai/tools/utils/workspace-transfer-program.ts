@@ -4,12 +4,18 @@ export const WORKSPACE_TRANSFER_PROGRAM = String.raw`
 import base64, hashlib, json, os, shutil, stat, sys, tarfile, time
 
 MAX_BYTES = 12 * 1024**3
-MAX_ARCHIVE = 4 * 1024**3
+mode = sys.argv[4] if len(sys.argv) > 4 else 'e2b-to-miosa'
+reverse = mode == 'miosa-to-e2b'
+MAX_ARCHIVE = (9 if reverse else 4) * 1024**3
 MAX_ENTRIES = 250000
-deadline = time.monotonic() + 1200
+deadline = time.monotonic() + (3600 if reverse else 1200)
 operation, stage = sys.argv[1:3]
 root = sys.argv[3] if len(sys.argv) > 3 else '/'
 home = 'home/user'
+allowed_external_links = {
+    '/usr/share/wordlists/rockyou.txt',
+    '/usr/share/android-framework-res/framework-res.apk',
+} if reverse else set()
 safe_failures = {
     'changed', 'external_hardlink', 'external_symlink', 'limit', 'mount',
     'socket', 'unsupported_entry', 'unsupported_workspace_entry',
@@ -139,7 +145,7 @@ def scan(archive=None):
             metadata.append(target)
             if in_home:
                 resolved = os.path.normpath(os.path.join('/' + os.path.dirname(name), target))
-                if resolved != '/' + home and not resolved.startswith('/' + home + '/'): raise ValueError('external_symlink')
+                if resolved != '/' + home and not resolved.startswith('/' + home + '/') and resolved not in allowed_external_links: raise ValueError('external_symlink')
         elif stat.S_ISCHR(info.st_mode) or stat.S_ISBLK(info.st_mode):
             metadata.append(info.st_rdev)
         elif not (stat.S_ISDIR(info.st_mode) or stat.S_ISFIFO(info.st_mode)):
@@ -215,7 +221,7 @@ def restore():
                     shutil.copyfileobj(source, destination, 1024 * 1024)
             elif member.issym():
                 resolved = os.path.normpath(os.path.join('/' + os.path.dirname(name), member.linkname))
-                if resolved != '/' + home and not resolved.startswith('/' + home + '/'): raise ValueError('external_symlink')
+                if resolved != '/' + home and not resolved.startswith('/' + home + '/') and resolved not in allowed_external_links: raise ValueError('external_symlink')
                 os.symlink(member.linkname, path)
             elif member.islnk():
                 if member.linkname != os.path.normpath(member.linkname) or not member.linkname.startswith(home + '/'):
@@ -272,9 +278,10 @@ except Exception as error:
 export const transferCommand = (
   operation: "export" | "verify-source" | "verify-home" | "restore" | "install",
   stage: string,
+  mode: "e2b-to-miosa" | "miosa-to-e2b" = "e2b-to-miosa",
 ) => {
   if (!/^\/\.hackerai-migration-[a-f0-9-]{36}$/.test(stage))
     throw new Error("Invalid migration stage");
   const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-  return `/usr/bin/python3 -I -B -c ${quote(WORKSPACE_TRANSFER_PROGRAM)} ${operation} ${quote(stage)}`;
+  return `/usr/bin/python3 -I -B -c ${quote(WORKSPACE_TRANSFER_PROGRAM)} ${operation} ${quote(stage)} / ${mode}`;
 };
