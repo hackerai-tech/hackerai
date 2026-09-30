@@ -16,16 +16,40 @@ type MigrationState = {
   owner?: { runId: string; attempt: number };
 };
 
+/** Exact E2B destination after a verified recovery from a MIOSA workspace. */
+export type RecoveredE2BState = {
+  version: 1;
+  phase: "e2b";
+  token: string;
+  sourceId: string;
+  destinationId: string;
+  region: TriggerRunRegion;
+};
+
 type CleanupState = {
   version: 1;
   phase: "cleanup" | "deleted";
   token: string;
   // Retain the destination pin for crash recovery and failed deletion retries.
-  migration?: MigrationState;
+  migration?: MigrationState | RecoveredE2BState;
   sourceId?: never;
   region?: never;
   destinationId?: never;
 };
+
+function isRecoveredE2BState(value: RecoveredE2BState): boolean {
+  return (
+    value.version === 1 &&
+    value.phase === "e2b" &&
+    typeof value.token === "string" &&
+    !!value.token &&
+    typeof value.sourceId === "string" &&
+    !!value.sourceId &&
+    typeof value.destinationId === "string" &&
+    !!value.destinationId &&
+    ["us-east-1", "us-west-2"].includes(value.region)
+  );
+}
 
 function isMigrationState(value: MigrationState): boolean {
   return (
@@ -67,12 +91,12 @@ export function registerE2BMigrationLease(sandbox: Sandbox, userId: string) {
 export async function refreshE2BMigrationLease(sandbox: Sandbox) {
   const userId = e2bUsers.get(sandbox);
   if (!userId) throw new CloudMigrationUnavailableError();
-  await assertCloudWorkspaceAvailable(userId, "e2b");
+  await assertCloudWorkspaceAvailable(userId, "e2b", sandbox.sandboxId);
 }
 
 export async function readCloudMigrationState(
   userId: string,
-): Promise<MigrationState | CleanupState | null> {
+): Promise<MigrationState | RecoveredE2BState | CleanupState | null> {
   const redis = createRedisClient();
   if (!redis) {
     if (process.env.NODE_ENV === "production")
@@ -80,9 +104,9 @@ export async function readCloudMigrationState(
     return null;
   }
   try {
-    const value = await redis.get<MigrationState | CleanupState>(
-      keyFor(userId),
-    );
+    const value = await redis.get<
+      MigrationState | RecoveredE2BState | CleanupState
+    >(keyFor(userId));
     if (value === null) return null;
     const valid =
       value.phase === "cleanup" || value.phase === "deleted"
@@ -90,13 +114,55 @@ export async function readCloudMigrationState(
           typeof value.token === "string" &&
           !!value.token &&
           (value.migration === undefined ||
-            (value.migration.phase === "miosa" &&
-              isMigrationState(value.migration)))
-        : isMigrationState(value as MigrationState);
+            (value.migration.phase === "e2b"
+              ? isRecoveredE2BState(value.migration)
+              : value.migration.phase === "miosa" &&
+                isMigrationState(value.migration)))
+        : value.phase === "e2b"
+          ? isRecoveredE2BState(value)
+          : isMigrationState(value as MigrationState);
     if (!valid) {
       throw new CloudMigrationUnavailableError();
     }
     return value;
+  } catch {
+    throw new CloudMigrationUnavailableError();
+  }
+}
+
+/** Complete the one-way recovery only after the destination's files and
+ * pause/resume behavior have been verified. The existing cleanup fence stays
+ * in place if another operator changes it or any check fails. */
+export async function commitRecoveredE2BWorkspace(options: {
+  userId: string;
+  sourceId: string;
+  previousE2BId: string;
+  recoveryOwnerRunId: string;
+  destinationId: string;
+  region: TriggerRunRegion;
+}) {
+  const redis = createRedisClient();
+  if (!redis) throw new CloudMigrationUnavailableError();
+  const state: RecoveredE2BState = {
+    version: 1,
+    phase: "e2b",
+    token: randomUUID(),
+    sourceId: options.sourceId,
+    destinationId: options.destinationId,
+    region: options.region,
+  };
+  try {
+    const committed = await redis.eval(
+      `local raw = redis.call('GET', KEYS[1]); if not raw then return 0 end; local ok, old = pcall(cjson.decode, raw); if not ok or type(old) ~= 'table' or old.version ~= 1 or old.phase ~= 'cleanup' or type(old.recovery) ~= 'table' or old.recovery.operation ~= 'miosa-to-e2b' or old.recovery.phase ~= 'claimed' or old.recovery.miosaId ~= ARGV[1] or old.recovery.e2bId ~= ARGV[2] or old.recovery.ownerRunId ~= ARGV[3] then return 0 end; redis.call('SET', KEYS[1], ARGV[4]); return 1`,
+      [keyFor(options.userId)],
+      [
+        options.sourceId,
+        options.previousE2BId,
+        options.recoveryOwnerRunId,
+        JSON.stringify(state),
+      ],
+    );
+    if (committed !== 1) throw new CloudMigrationUnavailableError();
   } catch {
     throw new CloudMigrationUnavailableError();
   }
@@ -166,6 +232,7 @@ export async function claimCloudMigration(
 export async function assertCloudWorkspaceAvailable(
   userId: string,
   provider: "e2b" | "miosa",
+  sandboxId?: string,
 ) {
   if (provider === "e2b") {
     const redis = createRedisClient();
@@ -175,12 +242,12 @@ export async function assertCloudWorkspaceAvailable(
       return;
     }
     try {
-      // Acquiring/renewing E2B use and claiming migration share the same atomic
-      // boundary. A checker cannot slip between a state read and SDK use.
+      // Older workers reject every migration key. New workers may only renew
+      // an exact, verified E2B pin; a checking/cleanup state remains fenced.
       const available = await redis.eval(
-        `if redis.call('EXISTS', KEYS[1]) == 1 then return 0 end redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
+        `local raw = redis.call('GET', KEYS[1]); if raw then local ok, state = pcall(cjson.decode, raw); if not ok or type(state) ~= 'table' or state.phase ~= 'e2b' or type(state.destinationId) ~= 'string' or state.destinationId == '' or state.destinationId ~= ARGV[2] then return 0 end end; redis.call('SET', KEYS[2], 'active', 'EX', ARGV[1]); return 1`,
         [keyFor(userId), activityKeyFor(userId)],
-        [String(ACTIVITY_TTL_SECONDS)],
+        [String(ACTIVITY_TTL_SECONDS), sandboxId ?? ""],
       );
       if (available !== 1) throw new CloudMigrationUnavailableError();
       return;
@@ -204,6 +271,7 @@ export async function claimCloudWorkspaceCleanup(
   if (
     observed &&
     observed.phase !== "miosa" &&
+    observed.phase !== "e2b" &&
     !(permanent && observed.phase === "deleted")
   ) {
     throw new CloudMigrationUnavailableError();
@@ -218,7 +286,7 @@ export async function claimCloudWorkspaceCleanup(
   }
   const key = keyFor(userId);
   const migration =
-    observed?.phase === "miosa"
+    observed?.phase === "miosa" || observed?.phase === "e2b"
       ? observed
       : observed?.phase === "deleted"
         ? (observed.migration ?? null)

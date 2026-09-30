@@ -109,6 +109,34 @@ describe("cloud sandbox provider routing", () => {
     },
   );
 
+  it("routes a verified E2B recovery to its exact sandbox while MIOSA is paused", async () => {
+    jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
+    mockMigrationRead.mockResolvedValue({
+      phase: "e2b",
+      region: "us-east-1",
+      destinationId: "verified-e2b",
+    });
+    const sandbox = { sandboxId: "verified-e2b" };
+    mockEnsureE2B.mockResolvedValue({ sandbox });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { provider: "miosa", triggerRegion: "us-east-1" },
+      }),
+    ).resolves.toEqual({ sandbox, provider: "e2b" });
+    expect(mockEnsureMiosa).not.toHaveBeenCalled();
+    expect(mockEnsureE2B).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ destinationId: "verified-e2b" }),
+    );
+    expect(mockMigrationAssert).toHaveBeenCalledWith(
+      "user-1",
+      "e2b",
+      "verified-e2b",
+    );
+  });
+
   it("preserves a cached MIOSA workspace while paused instead of replacing its files", async () => {
     jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
     await expect(

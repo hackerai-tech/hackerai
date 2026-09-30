@@ -4,6 +4,7 @@ jest.mock("@e2b/code-interpreter", () => {
     Sandbox: class {
       static list = jest.fn();
       static connect = jest.fn();
+      static getInfo = jest.fn();
       static create = jest.fn();
       static kill = jest.fn();
     },
@@ -45,6 +46,7 @@ import { E2BRegionUnavailableError } from "../e2b-cluster";
 type MockSandboxApi = {
   list: jest.Mock;
   connect: jest.Mock;
+  getInfo: jest.Mock;
   create: jest.Mock;
   kill: jest.Mock;
 };
@@ -362,6 +364,93 @@ describe("E2B sandbox lease lifecycle", () => {
       timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
     });
     expect(setSandbox).toHaveBeenCalledWith(connectedSandbox);
+  });
+
+  it("connects only the verified E2B pin without listing older workspaces", async () => {
+    sandboxApi.getInfo.mockResolvedValue({
+      state: "paused",
+      metadata: {
+        userID: "user-1",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+        sandboxVersion: "v12",
+      },
+    });
+    const pinned = { sandboxId: "verified-e2b" } as Sandbox;
+    sandboxApi.connect.mockResolvedValue(pinned);
+    const setSandbox = jest.fn();
+
+    await expect(
+      ensureSandboxConnection(
+        { userID: "user-1", setSandbox },
+        { destinationId: "verified-e2b", triggerRegion: "us-east-1" },
+      ),
+    ).resolves.toEqual({ sandbox: pinned });
+    expect(sandboxApi.list).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.connect).toHaveBeenCalledWith(
+      "verified-e2b",
+      expect.anything(),
+    );
+    expect(setSandbox).toHaveBeenCalledWith(pinned);
+  });
+
+  it("fails closed when the E2B pin belongs to a different user", async () => {
+    sandboxApi.getInfo.mockResolvedValue({
+      state: "paused",
+      metadata: {
+        userID: "someone-else",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+        sandboxVersion: "v12",
+      },
+    });
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          { destinationId: "verified-e2b", triggerRegion: "us-east-1" },
+        ),
+      ).rejects.toThrow();
+      expect(sandboxApi.connect).not.toHaveBeenCalled();
+      expect(sandboxApi.list).not.toHaveBeenCalled();
+      expect(sandboxApi.create).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("validates a recovered pin even when the caller already holds that sandbox", async () => {
+    sandboxApi.getInfo.mockResolvedValue({
+      state: "paused",
+      metadata: {
+        userID: "someone-else",
+        template: "terminal-agent-sandbox",
+        e2bCluster: "us",
+        sandboxVersion: "v12",
+      },
+    });
+    const errorLog = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        ensureSandboxConnection(
+          { userID: "user-1", setSandbox: jest.fn() },
+          {
+            initialSandbox: { sandboxId: "verified-e2b" } as Sandbox,
+            destinationId: "verified-e2b",
+            triggerRegion: "us-east-1",
+          },
+        ),
+      ).rejects.toThrow();
+      expect(sandboxApi.getInfo).toHaveBeenCalledWith(
+        "verified-e2b",
+        expect.anything(),
+      );
+      expect(sandboxApi.connect).not.toHaveBeenCalled();
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("creates new sandboxes with pause and automatic resume enabled", async () => {

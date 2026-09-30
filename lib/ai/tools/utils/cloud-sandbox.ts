@@ -51,6 +51,7 @@ export type CloudSandboxAcquisitionContext = {
 
 const ensureE2BCloudSandboxConnection = (options: {
   userId: string;
+  destinationId?: string;
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
@@ -70,6 +71,7 @@ const ensureE2BCloudSandboxConnection = (options: {
       triggerRegion: options.context?.triggerRegion,
       acquisitionId: options.context?.acquisitionId,
       triggerRunId: options.context?.triggerRunId,
+      destinationId: options.destinationId,
     },
   );
 
@@ -244,7 +246,8 @@ export async function ensureCloudSandboxConnection(options: {
   if (isMiosaCloudSandboxPaused()) {
     // Never expose the stale E2B source of a committed migration. Recovery
     // must preserve the newer MIOSA files before this fence can be cleared.
-    if (migrationState) throw new CloudMigrationUnavailableError();
+    if (migrationState && migrationState.phase !== "e2b")
+      throw new CloudMigrationUnavailableError();
     if (options.initialSandbox && isMiosaSandbox(options.initialSandbox)) {
       throw new MiosaWorkspaceUnavailableError();
     }
@@ -259,16 +262,20 @@ export async function ensureCloudSandboxConnection(options: {
   }
   if (
     migrationState &&
-    (migrationState.phase !== "miosa" ||
+    ((migrationState.phase !== "miosa" && migrationState.phase !== "e2b") ||
       migrationState.region !== options.context?.triggerRegion ||
-      (options.initialSandbox && isE2BSandbox(options.initialSandbox)))
+      (migrationState.phase === "miosa" &&
+        options.initialSandbox &&
+        isE2BSandbox(options.initialSandbox)))
   ) {
     throw new CloudMigrationUnavailableError();
   }
   const preferredProvider = migrationState
-    ? "miosa"
+    ? migrationState.phase === "miosa"
+      ? "miosa"
+      : "e2b"
     : (options.context?.provider ?? "e2b");
-  if (migrationState) {
+  if (migrationState?.phase === "miosa") {
     options = {
       ...options,
       context: {
@@ -277,6 +284,15 @@ export async function ensureCloudSandboxConnection(options: {
         selectionReason: migrationState.destinationId
           ? "miosa_file_workspace_migration"
           : "miosa_empty_workspace_migration",
+      },
+    };
+  } else if (migrationState?.phase === "e2b") {
+    options = {
+      ...options,
+      context: {
+        ...options.context,
+        provider: "e2b",
+        selectionReason: "miosa_e2b_recovered",
       },
     };
   }
@@ -447,13 +463,27 @@ export async function ensureCloudSandboxConnection(options: {
   }
 
   try {
-    await assertCloudWorkspaceAvailable(options.userId, "e2b");
+    await assertCloudWorkspaceAvailable(
+      options.userId,
+      "e2b",
+      migrationState?.phase === "e2b"
+        ? migrationState.destinationId
+        : undefined,
+    );
     // Do not publish a connection until a racing migration has been excluded.
     const result = await ensureE2BCloudSandboxConnection({
       ...options,
+      destinationId:
+        migrationState?.phase === "e2b"
+          ? migrationState.destinationId
+          : undefined,
       setSandbox: () => {},
     });
-    await assertCloudWorkspaceAvailable(options.userId, "e2b");
+    await assertCloudWorkspaceAvailable(
+      options.userId,
+      "e2b",
+      result.sandbox.sandboxId,
+    );
     registerE2BMigrationLease(result.sandbox, options.userId);
     options.setSandbox(result.sandbox);
     recordOutcome("e2b", "success");

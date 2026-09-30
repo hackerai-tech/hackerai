@@ -91,13 +91,14 @@ export const ensureSandboxConnection = async (
     triggerRegion?: TriggerRunRegion;
     acquisitionId?: string;
     triggerRunId?: string;
+    destinationId?: string;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion } = options;
 
   // Return existing sandbox if already connected
-  if (initialSandbox) {
+  if (initialSandbox && !options.destinationId) {
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -113,6 +114,38 @@ export const ensureSandboxConnection = async (
   try {
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
+    if (options.destinationId) {
+      // A recovered workspace is pinned to one verified sandbox. Never let
+      // discovery choose an older copy or create an empty replacement.
+      phase = "connect";
+      const info = await Sandbox.getInfo(options.destinationId, {
+        ...createCluster.connectionOptions,
+        requestTimeoutMs: 10000,
+      });
+      if (
+        !["running", "paused"].includes(info.state) ||
+        info.metadata?.userID !== userID ||
+        info.metadata?.template !== createCluster.template ||
+        info.metadata?.e2bCluster !== createCluster.cluster ||
+        info.metadata?.sandboxVersion !== SANDBOX_VERSION
+      )
+        throw new Error("Pinned E2B workspace identity mismatch");
+      const sandbox = await retryWithBackoff(
+        () =>
+          Sandbox.connect(options.destinationId!, {
+            ...createCluster.connectionOptions,
+            timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+          }),
+        {
+          maxRetries: MAX_CONNECT_RETRIES,
+          baseDelayMs: 400,
+          jitterMs: 40,
+        },
+      );
+      setSandbox(sandbox);
+      reportBoot("reuse_existing", 0);
+      return { sandbox };
+    }
     phase = "discovery";
 
     // Step 1: Look only in the cluster selected for this request. Crossing
