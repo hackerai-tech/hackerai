@@ -83,6 +83,7 @@ type Route<S extends ChannelSubscription> = {
 export class OperationChannelRouter<S extends ChannelSubscription> {
   private routes = new Map<string, Route<S>>();
   private closed = new Set<string>();
+  private legacy = new Map<string, ReturnType<typeof setTimeout>>();
   private stopped = false;
 
   constructor(
@@ -98,6 +99,15 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     return `${op.kind}:${op.id}`;
   }
 
+  private deadline(message: Message, op: Operation): number {
+    // Allow the server's full one-hour PTY lifetime and a cleanup grace period.
+    return op.kind === "pty"
+      ? 65 * 60_000
+      : (typeof message.timeout === "number" && Number.isFinite(message.timeout)
+          ? Math.max(30_000, Math.min(message.timeout, 24 * 60 * 60_000))
+          : 120_000) + 60_000;
+  }
+
   /** Subscribe before executing. Repeated start publications never replay an operation. */
   async dispatch(
     value: unknown,
@@ -111,10 +121,29 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     if (
       op &&
       START_TYPES.has(String(message.type)) &&
-      (this.routes.has(this.key(op)) || this.closed.has(this.key(op)))
+      (this.routes.has(this.key(op)) ||
+        this.closed.has(this.key(op)) ||
+        this.legacy.has(this.key(op)))
     )
       return;
     if (message.operationChannel !== true) {
+      if (
+        op &&
+        (START_TYPES.has(String(message.type)) ||
+          CONTROL_TYPES.has(String(message.type)))
+      ) {
+        const key = this.key(op);
+        if (
+          !this.legacy.has(key) &&
+          !this.routes.has(key) &&
+          !this.closed.has(key)
+        ) {
+          this.legacy.set(
+            key,
+            setTimeout(() => this.closeLegacy(key), this.deadline(message, op)),
+          );
+        }
+      }
       handle(message);
       return;
     }
@@ -141,18 +170,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
           throw new Error("Relay operation is closed");
         await subscription.publish(fragment);
       }),
-      // The server's operation/token lifetime is bounded too. Reclaim abandoned
-      // file/command requests and PTYs whose server never sends a terminal control.
-      // PTYs must outlive the server manager's one-hour maximum session lifetime.
-      timer: setTimeout(
-        () => this.close(key),
-        op.kind === "pty"
-          ? 65 * 60_000
-          : (typeof message.timeout === "number" &&
-            Number.isFinite(message.timeout)
-              ? Math.max(30_000, Math.min(message.timeout, 24 * 60 * 60_000))
-              : 120_000) + 60_000,
-      ),
+      timer: setTimeout(() => this.close(key), this.deadline(message, op)),
     };
     this.routes.set(key, route);
     let started = false;
@@ -208,27 +226,43 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
     }
   }
 
-  /** Returns false only for legacy responses. Never broadcast a late isolated response. */
-  async publish(message: Message): Promise<boolean> {
-    if (this.stopped) return true;
+  /** Publish only for requests accepted by this connection; late/unknown output is discarded. */
+  async publish(
+    message: Message,
+    publishLegacy: (message: Message) => Promise<unknown> = async () => {},
+  ): Promise<void> {
+    if (this.stopped) return;
     const op = operation(message);
-    if (!op) return false;
+    if (!op) return;
     const key = this.key(op);
     const route = this.routes.get(key);
-    if (!route) return this.closed.has(key);
-    await route.queue.publish(message);
-    if (END_TYPES.has(String(message.type))) this.close(key);
-    return true;
+    if (route) {
+      await route.queue.publish(message);
+      if (END_TYPES.has(String(message.type))) this.close(key);
+    } else if (this.legacy.has(key)) {
+      await publishLegacy(message);
+      if (END_TYPES.has(String(message.type))) this.closeLegacy(key);
+    }
+  }
+
+  private closeLegacy(key: string): void {
+    clearTimeout(this.legacy.get(key));
+    this.legacy.delete(key);
+    this.rememberClosed(key);
+  }
+
+  private rememberClosed(key: string): void {
+    this.closed.add(key);
+    // Bound duplicate-start history. Unknown responses still cannot fall back.
+    if (this.closed.size > 4096)
+      this.closed.delete(this.closed.values().next().value!);
   }
 
   private close(key: string): void {
     const route = this.routes.get(key);
     if (!route) return;
     this.routes.delete(key);
-    this.closed.add(key);
-    // Bound completed-operation deduplication for long-lived Desktop sessions.
-    if (this.closed.size > 4096)
-      this.closed.delete(this.closed.values().next().value!);
+    this.rememberClosed(key);
     clearTimeout(route.timer);
     route.subscription.unsubscribe();
     route.subscription.removeAllListeners();
@@ -238,6 +272,7 @@ export class OperationChannelRouter<S extends ChannelSubscription> {
   stop(): void {
     this.stopped = true;
     for (const key of this.routes.keys()) this.close(key);
+    for (const key of this.legacy.keys()) this.closeLegacy(key);
     this.closed.clear();
   }
 }

@@ -725,15 +725,15 @@ export class LocalSandboxClient {
       return;
     }
     try {
-      if (
-        await this.operationRouter?.publish(
-          data as unknown as Record<string, unknown>,
-        )
-      )
-        return;
-      await this.publishQueue.publish(
-        data as unknown as Record<string, unknown>,
-      );
+      const queue = this.publishQueue;
+      const payload = data as unknown as Record<string, unknown>;
+      if (this.operationRouter) {
+        await this.operationRouter.publish(payload, (value) =>
+          queue.publish(value),
+        );
+      } else {
+        await queue.publish(payload);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       console.error(chalk.red(`Publish failed: ${msg}`));

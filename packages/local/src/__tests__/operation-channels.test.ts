@@ -94,7 +94,7 @@ describe("operation channels", () => {
         requestId: "file",
         message: "late",
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBeUndefined();
     expect(subs[1].publish).toHaveBeenCalledTimes(1);
   });
 
@@ -204,9 +204,34 @@ describe("operation channels", () => {
     await router.dispatch(legacy, handle);
     expect(handle).toHaveBeenCalledWith(legacy);
     expect(client.newSubscription).not.toHaveBeenCalled();
-    await expect(
-      router.publish({ type: "stdout", commandId: "old", data: "old" }),
-    ).resolves.toBe(false);
+    const legacyPublish = jest.fn().mockResolvedValue(undefined);
+    await router.publish(
+      { type: "stdout", commandId: "old", data: "old" },
+      legacyPublish,
+    );
+    expect(legacyPublish).toHaveBeenCalledWith({
+      type: "stdout",
+      commandId: "old",
+      data: "old",
+    });
+  });
+
+  it("does not publish unknown or previous-connection output through the legacy callback", async () => {
+    const legacyPublish = jest.fn().mockResolvedValue(undefined);
+    await router.publish(
+      { type: "stdout", commandId: "from-old-connection", data: "late" },
+      legacyPublish,
+    );
+    await router.dispatch(request("cmd"), jest.fn());
+    await router.publish(
+      { type: "exit", commandId: "cmd", exitCode: 0 },
+      legacyPublish,
+    );
+    await router.publish(
+      { type: "stdout", commandId: "cmd", data: "late" },
+      legacyPublish,
+    );
+    expect(legacyPublish).not.toHaveBeenCalled();
   });
 
   it("cleans up failed readiness and abandoned routes without executing or broadcasting", async () => {
@@ -224,7 +249,7 @@ describe("operation channels", () => {
     expect(subs[0].unsubscribe).toHaveBeenCalled();
     await expect(
       router.publish({ type: "file_ok", requestId: "file" }),
-    ).resolves.toBe(true);
+    ).resolves.toBeUndefined();
     expect(jest.getTimerCount()).toBe(0);
   });
 

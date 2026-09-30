@@ -1606,15 +1606,15 @@ export class DesktopSandboxBridge {
       );
     }
     try {
-      if (
-        await this.operationRouter?.publish(
-          message as unknown as Record<string, unknown>,
-        )
-      )
-        return;
-      await this.publishQueue.publish(
-        message as unknown as Record<string, unknown>,
-      );
+      const queue = this.publishQueue;
+      const payload = message as unknown as Record<string, unknown>;
+      if (this.operationRouter) {
+        await this.operationRouter.publish(payload, (value) =>
+          queue.publish(value),
+        );
+      } else {
+        await queue.publish(payload);
+      }
     } catch (error) {
       if (!classifyDesktopStreamPublishFailure(error)) {
         console.error(
