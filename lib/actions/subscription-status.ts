@@ -11,6 +11,8 @@ import {
 } from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
+import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
+import { isPayableRenewalInvoice } from "@/lib/billing/renewal-invoice";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import {
   invoicePaymentIntentId,
@@ -97,6 +99,11 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
     return {
       hasActiveSubscription: false,
       cancelAtPeriodEnd: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: await hasRecentCanceledRenewalAtRisk(
+        stripe,
+        stripeCustomerId,
+      ),
     };
   }
 
@@ -163,6 +170,18 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   );
   const pendingPrice = pendingChange?.price;
   return {
+    billingAccountAvailable: true,
+    ...(renewalPaymentRequired &&
+      typeof invoice === "object" &&
+      invoice && {
+        renewalInvoiceAmountRemaining: invoice.amount_remaining,
+        renewalInvoiceCurrency: invoice.currency,
+        renewalInvoicePayable: isPayableRenewalInvoice(
+          currentSubscription,
+          invoice,
+          stripeCustomerId,
+        ),
+      }),
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
     currentPeriodEnd,

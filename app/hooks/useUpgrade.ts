@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createCheckoutNavigationDiagnostics } from "@/lib/billing/checkout-navigation-diagnostics";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {
   captureAuthenticatedEvent,
   getPostHogRequestHeaders,
@@ -28,8 +29,13 @@ import {
 let upgradeInFlight = false;
 
 export const useUpgrade = () => {
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [billingReviewScope, setBillingReviewScope] = useState<string | null>(
+    null,
+  );
+  const billingScope = `${user?.id ?? ""}:${organizationId ?? ""}`;
+  const billingReviewRequired = billingReviewScope === billingScope;
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -168,6 +174,19 @@ export const useUpgrade = () => {
 
         if (!res.ok) {
           diagnostics.failed("http_error", res.status);
+          if (data?.code === "recent_renewal_payment_needs_review") {
+            setBillingReviewScope(billingScope);
+            toast.error("Your previous subscription payment needs review", {
+              description:
+                "Open Account settings to update your card or get billing help.",
+              duration: Infinity,
+              action: {
+                label: "Review billing",
+                onClick: () => openSettingsDialog("Account"),
+              },
+            });
+            return;
+          }
           toast.error(
             data?.error || `Something went wrong (HTTP ${res.status})`,
           );
@@ -298,5 +317,7 @@ export const useUpgrade = () => {
   return {
     upgradeLoading,
     handleUpgrade,
+    billingReviewRequired,
+    clearBillingReview: () => setBillingReviewScope(null),
   };
 };

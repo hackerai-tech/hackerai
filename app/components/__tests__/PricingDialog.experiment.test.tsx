@@ -4,6 +4,14 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
 const mockHandleUpgrade = jest.fn();
 const mockFetch = jest.fn();
+let mockBilling = {
+  data: { hasActiveSubscription: false, cancelAtPeriodEnd: false } as
+    | import("@/lib/billing/api-types").SubscriptionCancellationStatus
+    | undefined,
+  isLoading: false,
+  error: undefined as Error | undefined,
+  mutate: jest.fn(),
+};
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
   useAuth: () => ({ user: { id: "user_free" } }),
@@ -21,6 +29,10 @@ jest.mock("@/app/hooks/useUpgrade", () => ({
     handleUpgrade: mockHandleUpgrade,
   }),
 }));
+jest.mock("@/app/hooks/useBillingRecoveryStatus", () => ({
+  useBillingRecoveryStatus: () => mockBilling,
+}));
+
 jest.mock("@/app/hooks/useTauri", () => ({ navigateToAuth: jest.fn() }));
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
@@ -59,9 +71,61 @@ const currentPrice = {
 describe("PricingDialog Pro monthly price", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockBilling = {
+      data: { hasActiveSubscription: false, cancelAtPeriodEnd: false },
+      isLoading: false,
+      error: undefined,
+      mutate: jest.fn(),
+    };
     Object.defineProperty(globalThis, "fetch", {
       configurable: true,
       value: mockFetch,
+    });
+  });
+
+  it("shows the canceled-renewal review panel and disables plan purchases", async () => {
+    mockBilling.data = {
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: true,
+    };
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        priceLookupKey: "pro-monthly-plan",
+        currency: "usd",
+        billingInterval: "month",
+        displayedAmountDollars: 29,
+        stripePriceId: "price_test",
+      }),
+    } as never);
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(
+      screen.getByRole("region", { name: "Subscription payment recovery" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Get billing help" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Get Pro+" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Get Ultra" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Pay invoice" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it("keeps plan purchases disabled while billing status is unknown", async () => {
+    mockBilling.data = undefined;
+    mockBilling.error = new Error("Billing unavailable");
+    mockFetch.mockRejectedValue(new Error("Pricing unavailable") as never);
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Get Pro+" })).toBeDisabled();
+    await act(async () => {
+      await Promise.resolve();
     });
   });
 

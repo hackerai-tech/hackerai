@@ -204,10 +204,10 @@ describe("AccountTab", () => {
 
     render(<AccountTab />);
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(
-      "Your latest renewal payment was declined for insufficient funds. The invoice is still unpaid",
-    );
+    const alert = await screen.findByRole("region", {
+      name: "Subscription payment recovery",
+    });
+    expect(alert).toHaveTextContent("Your renewal payment didn’t go through");
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "recovery_prompt_impressed",
       expect.objectContaining({
@@ -220,12 +220,13 @@ describe("AccountTab", () => {
 
     const user = userEvent.setup();
     await user.click(
-      within(alert).getByRole("button", { name: "Update payment" }),
+      within(alert).getByRole("button", { name: "Update card" }),
     );
 
     await waitFor(() => {
       expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
         "payment_method",
+        { surface: "account_settings", returnPath: "/" },
       );
     });
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(

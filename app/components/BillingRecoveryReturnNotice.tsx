@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 const NOTICE_ID = "billing-recovery-return";
 
@@ -25,7 +26,25 @@ export function BillingRecoveryReturnNotice() {
       try {
         const status = await getSubscriptionCancellationStatus();
         if (!mounted || checkId !== latestCheck.current) return;
-        if (
+        if (status.checkoutRequiresReview) {
+          toast.warning(
+            "Your previous subscription payment still needs review",
+            {
+              id: NOTICE_ID,
+              description:
+                "Updating your card does not restart an ended subscription. Open Account settings for billing help.",
+              action: {
+                label: "Review billing",
+                onClick: () => openSettingsDialog("Account"),
+              },
+            },
+          );
+        } else if (!status.hasActiveSubscription) {
+          toast.info("You can choose a plan to subscribe again", {
+            id: NOTICE_ID,
+            description: "Updating a card does not start a subscription.",
+          });
+        } else if (
           status.renewalInvoicePaid &&
           (status.subscriptionStatus === "active" ||
             status.subscriptionStatus === "trialing")

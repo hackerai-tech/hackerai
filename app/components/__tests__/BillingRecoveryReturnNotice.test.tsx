@@ -20,6 +20,45 @@ const statusMock = jest.mocked(getSubscriptionCancellationStatus);
 
 afterEach(() => window.history.replaceState(null, "", "/"));
 
+it("keeps canceled-renewal review separate from successful card management", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    billingAccountAvailable: true,
+    checkoutRequiresReview: true,
+  });
+  render(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Your previous subscription payment still needs review",
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Review billing" }),
+      }),
+    ),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("does not claim payment restored access for a canceled subscription", async () => {
+  window.history.replaceState(null, "", "/?billing-recovery-return=1");
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    billingAccountAvailable: true,
+    checkoutRequiresReview: false,
+  });
+  render(<BillingRecoveryReturnNotice />);
+  await waitFor(() =>
+    expect(toast.info).toHaveBeenCalledWith(
+      "You can choose a plan to subscribe again",
+      expect.anything(),
+    ),
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+});
+
 it("reports an unpaid retry after portal return and supports checking again", async () => {
   window.history.replaceState(
     { route: "chat" },

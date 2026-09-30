@@ -126,6 +126,16 @@ export async function redirectToBillingPortal(
   return url;
 }
 
+export async function openRenewalInvoice(): Promise<string> {
+  const { url } = await billingFetchJson<{ url?: unknown }>(
+    "/api/billing/renewal-invoice",
+    { method: "POST" },
+  );
+  if (typeof url !== "string" || !url)
+    throw new Error("Failed to open invoice payment page");
+  return url;
+}
+
 export async function keepSubscription(): Promise<KeepSubscriptionResult> {
   return billingFetchJson<KeepSubscriptionResult>("/api/billing/keep", {
     method: "POST",

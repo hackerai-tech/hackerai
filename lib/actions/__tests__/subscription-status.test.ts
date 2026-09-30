@@ -5,6 +5,10 @@ const mockRetrievePrice = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockGetBillingStatusContext = jest.fn();
 const mockPostHogError = jest.fn();
+const mockCanceledRenewalAtRisk = jest.fn();
+jest.mock("@/lib/billing/canceled-renewal-invoice", () => ({
+  hasRecentCanceledRenewalAtRisk: mockCanceledRenewalAtRisk,
+}));
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -29,6 +33,7 @@ jest.mock("@/lib/posthog/server", () => ({
 describe("getSubscriptionCancellationStatusAction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCanceledRenewalAtRisk.mockResolvedValue(false as never);
     mockGetBillingStatusContext.mockResolvedValue({
       organizationId: "org_123",
       user: { id: "user_123" },
@@ -77,6 +82,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
     await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
       hasActiveSubscription: true,
+      billingAccountAvailable: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd: 1_782_444_800_000,
       subscriptionStatus: "active",
@@ -118,6 +124,7 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
     await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
       hasActiveSubscription: true,
+      billingAccountAvailable: true,
       cancelAtPeriodEnd: false,
       currentPeriodEnd: 1_782_444_800_000,
       subscriptionStatus: "past_due",
@@ -141,8 +148,28 @@ describe("getSubscriptionCancellationStatusAction", () => {
 
     await expect(getSubscriptionCancellationStatusAction()).resolves.toEqual({
       hasActiveSubscription: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: false,
       cancelAtPeriodEnd: false,
     });
+  });
+
+  it("keeps billing accessible and exposes the existing checkout block after cancellation", async () => {
+    mockListSubscriptions.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    mockCanceledRenewalAtRisk.mockResolvedValue(true as never);
+    const { default: getStatus } = await import("../subscription-status");
+    expect(await getStatus()).toMatchObject({
+      hasActiveSubscription: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: true,
+    });
+    expect(mockCanceledRenewalAtRisk).toHaveBeenCalledWith(
+      expect.anything(),
+      "cus_123",
+    );
   });
 
   it("logs the action stage when Stripe subscription lookup fails", async () => {
