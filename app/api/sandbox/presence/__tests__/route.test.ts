@@ -8,12 +8,6 @@ jest.mock("next/server", () => ({
     }),
   },
 }));
-import { randomUUID } from "node:crypto";
-
-jest.mock("node:crypto", () => ({
-  ...jest.requireActual("node:crypto"),
-  randomUUID: jest.fn(),
-}));
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserID: jest.fn().mockResolvedValue("user"),
 }));
@@ -22,6 +16,11 @@ jest.mock("@/lib/centrifugo/jwt", () => ({
 }));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { warn: jest.fn(), error: jest.fn() },
+}));
+import { recordRelayReceivedBytes } from "@/lib/centrifugo/traffic";
+jest.mock("@/lib/centrifugo/traffic", () => ({
+  ...jest.requireActual("@/lib/centrifugo/traffic"),
+  recordRelayReceivedBytes: jest.fn(),
 }));
 const mockQuery = jest.fn();
 const mockMutation = jest.fn();
@@ -89,9 +88,6 @@ describe.each(["presence-route", "sandbox-manager"] as const)(
         "wss://relay.example.com/connection/websocket";
       process.env.NEXT_PUBLIC_CONVEX_URL = "https://test.convex.cloud";
       process.env.CONVEX_SERVICE_ROLE_KEY = "test-key";
-      jest
-        .mocked(randomUUID)
-        .mockReturnValue("00000000-0000-4000-8000-000000000000");
       mockQuery.mockResolvedValue(
         ["one", "two"].map((connectionId) => ({
           connectionId,
@@ -115,17 +111,17 @@ describe.each(["presence-route", "sandbox-manager"] as const)(
       mockSubs[0].emit("subscribed", {});
       await flush();
       mockSubs[0].emit("publication", { data: { data: "incidental" } });
-      expect(log).not.toHaveBeenCalled();
+      expect(recordRelayReceivedBytes).not.toHaveBeenCalled();
       mockSubs[1].presence.mockResolvedValue({ clients: {} });
       mockSubs[1].emit("subscribed", {});
       expect((await (await response).json()).onlineCount).toBe(1);
-      expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
+      expect(recordRelayReceivedBytes).toHaveBeenCalledWith(
+        "presence",
         source,
-        connection_id: "one",
-        received_publications: 1,
-        received_payload_bytes_estimate: 138,
-        presence_reliable: true,
-      });
+        138,
+        138,
+      );
+      expect(log).not.toHaveBeenCalled();
       expect(mockMutation).not.toHaveBeenCalled();
       for (const sub of mockSubs) {
         expect(sub.unsubscribe).toHaveBeenCalledTimes(1);
@@ -151,11 +147,14 @@ describe.each(["presence-route", "sandbox-manager"] as const)(
           mockSubs[0].emit("subscribed", {});
         }
         expect((await response).status).toBe(200);
-        expect(log).toHaveBeenCalledTimes(2);
-        expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({
-          received_publications: 1,
-          presence_reliable: false,
-        });
+        expect(recordRelayReceivedBytes).toHaveBeenCalledTimes(2);
+        expect(recordRelayReceivedBytes).toHaveBeenCalledWith(
+          "presence",
+          source,
+          135,
+          135,
+        );
+        expect(log).not.toHaveBeenCalled();
         expect(mockMutation).not.toHaveBeenCalled();
         expect(jest.getTimerCount()).toBe(0);
         expect(mockDisconnect).toHaveBeenCalledTimes(1);

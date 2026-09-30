@@ -197,7 +197,7 @@ async function queryLiveSandboxConnectionIds(
   let presenceReliable = false;
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
-  const finishTraffic: Array<(reliable: boolean) => void> = [];
+  const finishTraffic: Array<() => void> = [];
   const cleanups: Array<() => void> = [];
 
   try {
@@ -212,14 +212,7 @@ async function queryLiveSandboxConnectionIds(
             sandboxConnectionChannel(userId, connectionId),
           );
           subscriptions.push(sub);
-          finishTraffic.push(
-            trackPresenceTraffic(sub, {
-              source: "sandbox-manager",
-              userId,
-              connectionId: connectionId,
-              chatId,
-            }),
-          );
+          finishTraffic.push(trackPresenceTraffic(sub, "sandbox-manager"));
 
           const timeout = setTimeout(() => {
             cleanup();
@@ -282,7 +275,7 @@ async function queryLiveSandboxConnectionIds(
     };
   } finally {
     cleanups.forEach((cleanup) => cleanup());
-    finishTraffic.forEach((finish) => finish(presenceReliable));
+    finishTraffic.forEach((finish) => finish());
     try {
       for (const sub of subscriptions) {
         sub.removeAllListeners();

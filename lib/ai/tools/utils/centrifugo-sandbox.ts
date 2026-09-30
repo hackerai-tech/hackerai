@@ -24,7 +24,6 @@ import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import {
   estimateRelayPayloadBytes,
   recordRelayReceivedBytes,
-  relayTrafficSampleRate,
 } from "@/lib/centrifugo/traffic";
 import {
   CentrifugoMessageReassembler,
@@ -456,14 +455,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
-      let requestPublishAttempts = 0;
-      let subscriptionEvents = 0;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
-      let receivedPublications = 0;
-      let unmatchedPublications = 0;
       let trafficMetricRecorded = false;
-      const startedAt = Date.now();
       const reassembler = new CentrifugoMessageReassembler();
 
       const onAbort = () => fail(new Error("Desktop file request aborted"));
@@ -475,34 +469,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             this.triggerRunId ? "agent-long" : "chat-handler",
             receivedPayloadBytesEstimate,
             unmatchedPayloadBytesEstimate,
-          );
-        }
-        const sampleRate = relayTrafficSampleRate(
-          requestId,
-          receivedPayloadBytesEstimate,
-        );
-        if (sampleRate !== null) {
-          console.log(
-            JSON.stringify({
-              timestamp: new Date().toISOString(),
-              event: "local_relay_file_traffic",
-              operation_channel: isolated,
-              service: this.triggerRunId ? "agent-long" : "chat-handler",
-              user_id: this.userId,
-              connection_id: this.connectionInfo.connectionId,
-              chat_id: this.chatId ?? null,
-              trigger_run_id: this.triggerRunId ?? null,
-              request_id: requestId,
-              request_type: input.type,
-              sample_rate: sampleRate,
-              received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-              unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-              received_publications: receivedPublications,
-              unmatched_publications: unmatchedPublications,
-              subscription_events: subscriptionEvents,
-              request_publish_attempts: requestPublishAttempts,
-              duration_ms: Date.now() - startedAt,
-            }),
+            isolated ? "operation" : "connection",
           );
         }
         signal?.removeEventListener("abort", onAbort);
@@ -553,11 +520,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       subscription.on("publication", (ctx) => {
         if (ctx.data?.type === "operation_ready") return;
         if (settled) return;
-        receivedPublications += 1;
+
         const payloadBytes = estimateRelayPayloadBytes(ctx.data);
         receivedPayloadBytesEstimate += payloadBytes;
         if (!fragmentMatchesCorrelation(ctx.data, "requestId", requestId)) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -566,7 +532,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         if (!reassembled) return;
         const message = parseFileResponseMessage(reassembled);
         if (!message || message.requestId !== requestId) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -594,7 +559,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription.on("subscribed", () => {
         if (settled || !subscription) return;
-        subscriptionEvents += 1;
+
         // File writes and appends are not safe to replay after a reconnect.
         if (requestDispatchStarted) return;
         requestDispatchStarted = true;
@@ -642,7 +607,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           } as FileRequestMessage;
 
           try {
-            requestPublishAttempts += 1;
             if (isolated) {
               await dispatchIsolatedOperation(
                 client,
@@ -733,15 +697,8 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let publishedCommand = false;
         let commandPublishInFlight = false;
         let commandDispatchStarted = false;
-        let subscriptionEvents = 0;
-        let commandPublishAttempts = 0;
-        let stdoutBytes = 0;
-        let stderrBytes = 0;
-        let outputChunks = 0;
         let receivedPayloadBytesEstimate = 0;
         let unmatchedPayloadBytesEstimate = 0;
-        let receivedPublications = 0;
-        let unmatchedPublications = 0;
         let trafficMetricRecorded = false;
         let cancelRequested = false;
         let cancelPublishStarted = false;
@@ -768,39 +725,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               this.triggerRunId ? "agent-long" : "chat-handler",
               receivedPayloadBytesEstimate,
               unmatchedPayloadBytesEstimate,
-            );
-          }
-          // Sample ordinary commands, but always record large streams. This
-          // attributes relay traffic without logging command or output data.
-          const outputBytes = stdoutBytes + stderrBytes;
-          const sampleRate = relayTrafficSampleRate(
-            commandId,
-            Math.max(outputBytes, receivedPayloadBytesEstimate),
-          );
-          if (sampleRate !== null) {
-            console.log(
-              JSON.stringify({
-                timestamp: new Date().toISOString(),
-                event: "local_relay_command_traffic",
-                operation_channel: isolated,
-                service: this.triggerRunId ? "agent-long" : "chat-handler",
-                user_id: this.userId,
-                connection_id: this.connectionInfo.connectionId,
-                chat_id: this.chatId ?? null,
-                trigger_run_id: this.triggerRunId ?? null,
-                command_id: commandId,
-                sample_rate: sampleRate,
-                stdout_bytes: stdoutBytes,
-                stderr_bytes: stderrBytes,
-                output_chunks: outputChunks,
-                received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-                unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-                received_publications: receivedPublications,
-                unmatched_publications: unmatchedPublications,
-                subscription_events: subscriptionEvents,
-                command_publish_attempts: commandPublishAttempts,
-                duration_ms: Date.now() - t0,
-              }),
+              isolated ? "operation" : "connection",
             );
           }
           if (timeoutId) {
@@ -949,11 +874,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         subscription.on("publication", (ctx) => {
           if (ctx.data?.type === "operation_ready") return;
           if (settled) return;
-          receivedPublications += 1;
+
           const payloadBytes = estimateRelayPayloadBytes(ctx.data);
           receivedPayloadBytesEstimate += payloadBytes;
           if (!fragmentMatchesCorrelation(ctx.data, "commandId", commandId)) {
-            unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
@@ -969,13 +893,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               typeof reassembled.type === "string" &&
               IGNORED_MESSAGE_TYPES.has(reassembled.type)
             ) {
-              unmatchedPublications += 1;
               unmatchedPayloadBytesEstimate += payloadBytes;
             }
             return;
           }
           if (message.commandId !== commandId) {
-            unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
@@ -1016,14 +938,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
           switch (message.type) {
             case "stdout":
-              stdoutBytes += Buffer.byteLength(message.data, "utf8");
-              outputChunks += 1;
               stdout += message.data;
               opts?.onStdout?.(message.data);
               break;
             case "stderr":
-              stderrBytes += Buffer.byteLength(message.data, "utf8");
-              outputChunks += 1;
               stderr += message.data;
               opts?.onStderr?.(message.data);
               break;
@@ -1098,7 +1016,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         // ensuring we receive messages published to the channel.
         subscription.on("subscribed", () => {
           if (settled) return;
-          subscriptionEvents += 1;
+
           // A reconnect may emit "subscribed" again while a command is still
           // running. Never execute the same command twice, including when the
           // second event arrives before the first presence check completes.
@@ -1164,7 +1082,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             };
 
             commandPublishInFlight = true;
-            commandPublishAttempts += 1;
+
             (async () => {
               if (isolated) {
                 await dispatchIsolatedOperation(
