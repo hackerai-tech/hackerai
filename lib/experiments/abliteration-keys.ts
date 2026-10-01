@@ -1,1 +1,2 @@
 export const ABLITERATED_EXPERIMENT_KEY = "abliterated_paid_moderated_v1";
+export const ABLITERATED_MAX_EXPERIMENT_KEY = "abliterated_max_moderated_v1";

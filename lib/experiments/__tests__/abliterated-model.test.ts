@@ -1,6 +1,7 @@
 import {
   evaluateAbliteratedModel,
   ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATION_CONTINUITY_FLAG,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
@@ -311,7 +312,13 @@ describe("moderation-gated Abliteration assignment", () => {
         ...defaults,
         ...overrides,
         posthog: {
-          getFeatureFlagResult: jest.fn().mockResolvedValue(flagResult("test")),
+          getFeatureFlagResult: jest
+            .fn()
+            .mockImplementation(async (key: string) =>
+              flagResult(
+                key === ABLITERATED_MAX_EXPERIMENT_KEY ? false : "test",
+              ),
+            ),
         },
       }),
     ).toMatchObject({
@@ -439,6 +446,98 @@ describe("moderation-gated Abliteration assignment", () => {
     allowsAbliterationContinuation: true,
     independentAbliterationResponses: 2,
   };
+  describe.each(["ask", "agent"] as const)(
+    "Max first-step trial in %s",
+    (mode) => {
+      it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+        "uses base Abliteration for authorized %s Max requests and preserves controls",
+        async (subscription) => {
+          for (const variant of ["test", "control"] as const) {
+            const getFeatureFlagResult = jest
+              .fn()
+              .mockResolvedValue(flagResult(variant));
+            const selectedModel = "model-glm-5.3" as const;
+            await expect(
+              evaluateAbliteratedModel({
+                ...defaults,
+                mode,
+                subscription,
+                selectedModel,
+                selectedModelOverride: "hackerai-max",
+                posthog: { getFeatureFlagResult },
+              }),
+            ).resolves.toMatchObject({
+              key: ABLITERATED_MAX_EXPERIMENT_KEY,
+              variant,
+              modelKey:
+                variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+              baselineModel: selectedModel,
+              selectionSource: "moderation",
+            });
+            expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+          }
+        },
+      );
+      it.each([
+        { selectedModelOverride: "auto" as const },
+        { selectedModelOverride: "hackerai-standard" as const },
+        { selectedModelOverride: "hackerai-pro" as const },
+        { moderationEligible: false },
+        {
+          moderationEligible: false,
+          allowsAbliterationContinuation: true,
+          independentAbliterationResponses: 5,
+        },
+        { subscription: "free" as const },
+        { limitRescue: true },
+      ])(
+        "does not enroll outside the moderated Max population: %j",
+        async (overrides) => {
+          const getFeatureFlagResult = jest
+            .fn()
+            .mockImplementation(async (key: string) =>
+              flagResult(
+                key === ABLITERATED_MAX_EXPERIMENT_KEY ? "test" : false,
+              ),
+            );
+          await expect(
+            evaluateAbliteratedModel({
+              ...defaults,
+              mode,
+              selectedModelOverride: "hackerai-max",
+              ...overrides,
+              posthog: { getFeatureFlagResult },
+            }),
+          ).resolves.toBeUndefined();
+          expect(
+            getFeatureFlagResult.mock.calls.some(
+              ([key]) => key === ABLITERATED_MAX_EXPERIMENT_KEY,
+            ),
+          ).toBe(false);
+        },
+      );
+      it.each([false, undefined, "unexpected"])(
+        "preserves the baseline when the new flag returns %s and the legacy flag is off",
+        async (value) => {
+          const getFeatureFlagResult = jest
+            .fn()
+            .mockImplementation(async (key: string) =>
+              flagResult(
+                key === ABLITERATED_MAX_EXPERIMENT_KEY ? value : false,
+              ),
+            );
+          await expect(
+            evaluateAbliteratedModel({
+              ...defaults,
+              mode,
+              selectedModelOverride: "hackerai-max",
+              posthog: { getFeatureFlagResult },
+            }),
+          ).resolves.toBeUndefined();
+        },
+      );
+    },
+  );
   it("uses history only within parent treatment and an explicitly enabled continuity flag", async () => {
     const getFeatureFlagResult = jest
       .fn()

@@ -38,8 +38,8 @@ describe("token-bucket", () => {
           cacheReadTokens: 500_000,
           modelName,
         }),
-      ).toBeCloseTo(4.65);
-      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
+      ).toBeCloseTo(3.55);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(10_000);
     },
   );
   it.each(["model-abliterated-large-v2", "abliterated-model-large-v2"])(

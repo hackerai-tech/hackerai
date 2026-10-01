@@ -900,6 +900,8 @@ describe("captureAgentCompletionAnalytics", () => {
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],
+    ["ask", "abliterated_max_moderated_v1"],
+    ["agent", "abliterated_max_moderated_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {

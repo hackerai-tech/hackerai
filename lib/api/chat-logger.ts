@@ -40,7 +40,10 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
-import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliteration-keys";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+} from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -1769,7 +1772,10 @@ export function captureAgentCompletionAnalytics(
     }
   }
 
-  if (args.experiment?.key === ABLITERATED_EXPERIMENT_KEY) {
+  if (
+    args.experiment?.key === ABLITERATED_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_MAX_EXPERIMENT_KEY
+  ) {
     try {
       posthog?.capture({
         distinctId: userId,

@@ -1,7 +1,13 @@
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
-import { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
-export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+} from "./abliteration-keys";
+export {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+} from "./abliteration-keys";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -16,7 +22,8 @@ import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-res
 
 export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
-  key: typeof ABLITERATED_EXPERIMENT_KEY;
+  key:
+    typeof ABLITERATED_EXPERIMENT_KEY | typeof ABLITERATED_MAX_EXPERIMENT_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -131,6 +138,26 @@ export async function evaluateAbliteratedModel({
 
   const experimentKey = ABLITERATED_EXPERIMENT_KEY;
   try {
+    // Callers normalize the selector against current Max entitlements first.
+    // This independent trial never inherits the historical continuity route.
+    if (selectedModelOverride === "hackerai-max" && moderationEligible) {
+      const maxVariant = await getPostHogFlagWithoutExposure(
+        posthog,
+        ABLITERATED_MAX_EXPERIMENT_KEY,
+        userId,
+        { subscription, subscription_tier: subscription },
+      );
+      if (maxVariant === "test" || maxVariant === "control") {
+        return {
+          key: ABLITERATED_MAX_EXPERIMENT_KEY,
+          variant: maxVariant,
+          modelKey:
+            maxVariant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+          baselineModel: selectedModel,
+          selectionSource: "moderation",
+        };
+      }
+    }
     const variant = await getPostHogFlagWithoutExposure(
       posthog,
       experimentKey,
