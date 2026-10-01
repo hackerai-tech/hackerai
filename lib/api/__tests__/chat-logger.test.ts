@@ -946,6 +946,8 @@ describe("captureAgentCompletionAnalytics", () => {
             experiment_variant: "test",
             experiment_request_id: "message",
             fallback_served: true,
+            has_response_content: true,
+            step_limit_reached: false,
           }),
         }),
       );

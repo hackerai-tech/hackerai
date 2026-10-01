@@ -1787,6 +1787,9 @@ export function captureAgentCompletionAnalytics(
           mode,
           subscription_tier: subscription,
           outcome,
+          has_response_content: args.hasResponseContent,
+          step_limit_reached:
+            args.stepLimitTelemetry?.stepLimitReached ?? false,
           abort_source: args.abortSource,
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,
