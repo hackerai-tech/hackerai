@@ -5,13 +5,22 @@ import {
   subscriptionFirstCountryFromRequest,
 } from "../regional-subscription-first.server";
 
-const mockGetFeatureFlag = jest.fn();
+const flagResult = (value: boolean | string | undefined) =>
+  value === undefined
+    ? undefined
+    : {
+        key: "regional_subscription_first_v1",
+        enabled: value !== false,
+        variant: typeof value === "string" ? value : undefined,
+        payload: undefined,
+      };
+const mockGetFeatureFlagResult = jest.fn();
 const mockCapture = jest.fn();
 const mockFlush = jest.fn();
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
   default: () => ({
-    getFeatureFlag: mockGetFeatureFlag,
+    getFeatureFlagResult: mockGetFeatureFlagResult,
     capture: mockCapture,
     flush: mockFlush,
   }),
@@ -38,7 +47,7 @@ describe("regional subscription access", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.VERCEL = "1";
-    mockGetFeatureFlag.mockResolvedValue("test");
+    mockGetFeatureFlagResult.mockResolvedValue(flagResult("test"));
     mockFlush.mockResolvedValue(undefined);
   });
   afterEach(() => {
@@ -74,7 +83,7 @@ describe("regional subscription access", () => {
       await expect(
         enforceRegionalSubscriptionFirst({ ...base, subscription }),
       ).resolves.toBeUndefined();
-      expect(mockGetFeatureFlag).not.toHaveBeenCalled();
+      expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
       expect(mockCapture).not.toHaveBeenCalled();
     },
   );
@@ -85,14 +94,14 @@ describe("regional subscription access", () => {
       await expect(
         enforceRegionalSubscriptionFirst({ ...base, country }),
       ).resolves.toBeUndefined();
-      expect(mockGetFeatureFlag).not.toHaveBeenCalled();
+      expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
     },
   );
 
   it.each([false, true, undefined, "unexpected"])(
     "preserves access for inactive/invalid flag %s",
     async (value) => {
-      mockGetFeatureFlag.mockResolvedValue(value);
+      mockGetFeatureFlagResult.mockResolvedValue(flagResult(value));
       await expect(
         enforceRegionalSubscriptionFirst(base),
       ).resolves.toBeUndefined();
@@ -101,7 +110,7 @@ describe("regional subscription access", () => {
   );
 
   it("allows controls and captures their zero-cost exposure", async () => {
-    mockGetFeatureFlag.mockResolvedValue("control");
+    mockGetFeatureFlagResult.mockResolvedValue(flagResult("control"));
     await expect(enforceRegionalSubscriptionFirst(base)).resolves.toEqual({
       variant: "control",
       country: "IN",
@@ -112,7 +121,7 @@ describe("regional subscription access", () => {
   it("does not count a presentation lookup as exposure", async () => {
     await evaluateRegionalSubscriptionFirst(base);
     expect(mockCapture).not.toHaveBeenCalled();
-    expect(mockGetFeatureFlag).toHaveBeenCalledWith(
+    expect(mockGetFeatureFlagResult).toHaveBeenCalledWith(
       "regional_subscription_first_v1",
       "user-1",
       expect.objectContaining({ sendFeatureFlagEvents: false }),
@@ -120,7 +129,7 @@ describe("regional subscription access", () => {
   });
 
   it("restores access on flag failure and after subscription activation", async () => {
-    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    mockGetFeatureFlagResult.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
       enforceRegionalSubscriptionFirst(base),
     ).resolves.toBeUndefined();

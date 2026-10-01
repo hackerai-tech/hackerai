@@ -33,14 +33,19 @@ describe("paid survey selection", () => {
 
   it("evaluates only the paid flag and reserves without model attribution", async () => {
     const posthog = {
-      getFeatureFlag: jest.fn(async () => true),
+      getFeatureFlagResult: jest.fn(async () => ({
+        key: PAID_TASK_OUTCOME_FLAG,
+        enabled: true,
+        variant: undefined,
+        payload: undefined,
+      })),
       capture: jest.fn(),
     };
 
     const selected = await selectTaskOutcomeSurvey({ ...base, posthog });
 
     expect(selected).toBeDefined();
-    expect(posthog.getFeatureFlag).toHaveBeenCalledWith(
+    expect(posthog.getFeatureFlagResult).toHaveBeenCalledWith(
       PAID_TASK_OUTCOME_FLAG,
       "user",
       expect.objectContaining({
@@ -79,20 +84,30 @@ describe("paid survey selection", () => {
     "does not evaluate the flag for %s users",
     async (subscription) => {
       const posthog = {
-        getFeatureFlag: jest.fn(async () => true),
+        getFeatureFlagResult: jest.fn(async () => ({
+          key: PAID_TASK_OUTCOME_FLAG,
+          enabled: true,
+          variant: undefined,
+          payload: undefined,
+        })),
         capture: jest.fn(),
       };
 
       await selectTaskOutcomeSurvey({ ...base, subscription, posthog });
 
-      expect(posthog.getFeatureFlag).not.toHaveBeenCalled();
+      expect(posthog.getFeatureFlagResult).not.toHaveBeenCalled();
       expect(mutation).not.toHaveBeenCalled();
     },
   );
 
   it("fails closed when the flag is off", async () => {
     const posthog = {
-      getFeatureFlag: jest.fn(async () => false),
+      getFeatureFlagResult: jest.fn(async () => ({
+        key: PAID_TASK_OUTCOME_FLAG,
+        enabled: false,
+        variant: undefined,
+        payload: undefined,
+      })),
       capture: jest.fn(),
     };
 
@@ -106,7 +121,7 @@ describe("paid survey selection", () => {
       selectTaskOutcomeSurvey({
         ...base,
         posthog: {
-          getFeatureFlag: jest.fn(async () => {
+          getFeatureFlagResult: jest.fn(async () => {
             throw Error("offline");
           }),
           capture: jest.fn(),
@@ -119,7 +134,12 @@ describe("paid survey selection", () => {
       selectTaskOutcomeSurvey({
         ...base,
         posthog: {
-          getFeatureFlag: jest.fn(async () => true),
+          getFeatureFlagResult: jest.fn(async () => ({
+            key: PAID_TASK_OUTCOME_FLAG,
+            enabled: true,
+            variant: undefined,
+            payload: undefined,
+          })),
           capture: jest.fn(),
         },
       }),

@@ -1811,3 +1811,224 @@ describe("desktop-local sandbox file helpers", () => {
     ).toBeNull();
   });
 });
+
+describe("attachment write fallback observability", () => {
+  const context = {
+    service: "agent-long" as const,
+    requestId: "run-diagnostics",
+    userId: "user-test",
+    chatId: "chat-test",
+    environment: "PREVIEW",
+    release: "20261001.1",
+  };
+  const probeOutput = JSON.stringify({
+    probe_status: "ok",
+    command_uid: 1000,
+    command_gid: 1000,
+    target_exists: true,
+    target_uid: 0,
+    target_mode: 0o400,
+    target_writable: false,
+    available_bytes: 10000,
+    available_inodes: 42,
+    filesystem_read_only: false,
+    write_probe_result: "writable",
+    private_filename: "DO_NOT_LOG",
+  });
+  let eventSpy: jest.SpyInstance;
+  let warnSpy: jest.SpyInstance;
+  let infoSpy: jest.SpyInstance;
+  let errorSpy: jest.SpyInstance;
+  beforeEach(() => {
+    eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
+    errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    eventSpy.mockRestore();
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+  const makeSandbox = (finalFailure = false, probeFailure = false) => ({
+    sandboxId: "e2b-test-sandbox",
+    commands: {
+      run: jest.fn(async (command: string) => {
+        if (command.startsWith("timeout --kill-after=1s 3s python3")) {
+          if (probeFailure) throw new Error("probe timeout");
+          return { exitCode: 0, stdout: probeOutput, stderr: "" };
+        }
+        if (command.includes("for base in"))
+          return {
+            exitCode: 0,
+            stdout: "/tmp/hackerai-upload/fallback/test.pdf",
+            stderr: "",
+          };
+        if (
+          command.startsWith("curl") &&
+          (command.includes("/home/user/upload") || finalFailure)
+        )
+          throw Object.assign(new Error("curl: (23) Failure writing output"), {
+            exitCode: 23,
+            stderr: "curl: (23) Failure writing output",
+          });
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }),
+    },
+  });
+  const file = {
+    kind: "url" as const,
+    url: "https://private.example/private.pdf?X-Amz-Signature=DO_NOT_LOG",
+    localPath: "/home/user/upload/private.pdf",
+  };
+
+  it("retains the initial reason and reports recovered uploads without analytics sandbox IDs or private paths", async () => {
+    const sandbox = makeSandbox();
+    const result = await uploadSandboxFiles([file], async () => sandbox, {
+      logContext: context,
+    });
+    expect(result.failedCount).toBe(0);
+    expect(result.pathRewrites).toHaveLength(1);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_fallback",
+      expect.objectContaining({
+        initial_failure_reason: "attachment_write_failed",
+        initial_failure_exit_code: 23,
+        fallback_outcome: "recovered",
+        diagnostics_target_uid: 0,
+        diagnostics_target_writable: false,
+        diagnostics_write_probe_result: "writable",
+        release: context.release,
+        environment: "PREVIEW",
+        trigger_run_id: context.requestId,
+        staging_attempt: "initial",
+      }),
+    );
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_completed",
+      expect.objectContaining({
+        total_count: 1,
+        recovered_count: 1,
+        failed_count: 0,
+        direct_success_count: 0,
+      }),
+    );
+    const logs = JSON.stringify([
+      warnSpy.mock.calls,
+      infoSpy.mock.calls,
+      errorSpy.mock.calls,
+    ]);
+    expect(logs).toContain("e2b-test-sandbox");
+    expect(logs).not.toMatch(
+      /private\.pdf|private\.example|X-Amz|DO_NOT_LOG|\/home\/user|\/tmp/,
+    );
+    expect(JSON.stringify(eventSpy.mock.calls)).not.toMatch(
+      /sandbox_id|e2b-test-sandbox|DO_NOT_LOG|private\.pdf/,
+    );
+  });
+
+  it("reports unsuccessful fallback even if the best-effort probe fails", async () => {
+    const result = await uploadSandboxFiles(
+      [file],
+      async () => makeSandbox(true, true),
+      { logContext: context },
+    );
+    expect(result.failedCount).toBe(1);
+    expect(result.failureDetails?.[0]).toMatchObject({
+      exitCode: 23,
+      reason: "attachment_write_failed",
+    });
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_fallback",
+      expect.objectContaining({
+        initial_failure_exit_code: 23,
+        final_failure_exit_code: 23,
+        fallback_outcome: "failed",
+        diagnostics_probe_status: "unavailable",
+      }),
+    );
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_completed",
+      expect.objectContaining({
+        total_count: 1,
+        failed_count: 1,
+        recovered_count: 0,
+      }),
+    );
+  });
+
+  it("caps E2B probes at three per staging attempt during simultaneous failures", async () => {
+    const sandbox = makeSandbox();
+    const files = Array.from({ length: 5 }, (_, i) => ({
+      ...file,
+      localPath: `/home/user/upload/file-${i}`,
+    }));
+    const result = await uploadSandboxFiles(files, async () => sandbox, {
+      logContext: context,
+    });
+    expect(result.failedCount).toBe(0);
+    expect(
+      sandbox.commands.run.mock.calls.filter(([command]) =>
+        command.startsWith("timeout --kill-after=1s 3s python3"),
+      ),
+    ).toHaveLength(3);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_fallback",
+      expect.objectContaining({
+        fallback_outcome: "recovered",
+        diagnostics_probe_status: "budget_exhausted",
+      }),
+    );
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_completed",
+      expect.objectContaining({
+        total_count: 5,
+        recovered_count: 5,
+        failed_count: 0,
+      }),
+    );
+  });
+
+  it("does not probe or emit fallback diagnostics for healthy uploads", async () => {
+    const sandbox = {
+      sandboxId: "e2b-test-sandbox",
+      commands: {
+        run: jest.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" })),
+      },
+    };
+    await uploadSandboxFiles([file], async () => sandbox, {
+      logContext: context,
+    });
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(eventSpy).toHaveBeenCalledTimes(1);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_completed",
+      expect.objectContaining({
+        total_count: 1,
+        recovered_count: 0,
+        direct_success_count: 1,
+      }),
+    );
+  });
+
+  it("skips E2B filesystem diagnostics on the MIOSA adapter", async () => {
+    const sandbox = { ...makeSandbox(), sandboxKind: "miosa" };
+    await uploadSandboxFiles([file], async () => sandbox, {
+      logContext: context,
+    });
+    expect(
+      sandbox.commands.run.mock.calls.some(([command]) =>
+        command.startsWith("timeout --kill-after=1s 3s python3"),
+      ),
+    ).toBe(false);
+    expect(eventSpy).toHaveBeenCalledWith(
+      "sandbox_attachment_staging_fallback",
+      expect.objectContaining({
+        sandbox_provider: "miosa",
+        diagnostics_probe_status: "not_e2b",
+        fallback_outcome: "recovered",
+      }),
+    );
+  });
+});
