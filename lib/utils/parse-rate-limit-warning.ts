@@ -222,7 +222,8 @@ export function parseRateLimitWarning(
 
   const cutOff = rawData.cutOff === true;
 
-  // Dedup by severity tier — don't spam users with info-level warnings.
+  // Monthly info warnings retain their existing weekly cooldown. Daily
+  // warnings must remain visible after each reset and cannot share that key.
   // Mid-stream emits skip this gate; server-side highestThresholdEmitted
   // already prevents duplicates within a single stream.
   if (
@@ -231,7 +232,8 @@ export function parseRateLimitWarning(
     typeof window !== "undefined" &&
     window.localStorage
   ) {
-    const dedupHours = SEVERITY_DEDUP_HOURS[severity] ?? 0;
+    const dedupHours =
+      bucketType === "daily" ? 0 : (SEVERITY_DEDUP_HOURS[severity] ?? 0);
     if (dedupHours > 0) {
       const storageKey = `${TOKEN_BUCKET_WARNING_KEY_PREFIX}${severity}`;
       const lastShown = localStorage.getItem(storageKey);
