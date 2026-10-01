@@ -1103,8 +1103,15 @@ export const createOpenRouterPatchFetch =
       return attachOpenRouterStreamErrorMetadata(initialResponse);
     }
 
-    if (parserFailure === "generic_parse") {
-      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody, true);
+    if (
+      parserFailure === "generic_parse" ||
+      (!requestUsesPdfParserEngine(parsedRequestBody, "mistral-ocr") &&
+        !requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai"))
+    ) {
+      const sandboxBody = createSandboxPdfRecoveryBody(
+        parsedRequestBody,
+        parserFailure === "generic_parse",
+      );
       if (!sandboxBody.changed) {
         return attachOpenRouterStreamErrorMetadata(initialResponse);
       }

@@ -1289,6 +1289,23 @@ describe("OpenRouter PDF parser recovery", () => {
     expect(response).toBe(originalResponse);
   });
 
+  it("preserves the parser error without an OCR plugin or matching sandbox attachment", async () => {
+    const request = { ...createPdfParserRequest(false), plugins: [] };
+    const originalResponse = parserErrorResponse(
+      PDF_PARSER_INVALID_DOCUMENT_ERROR,
+    );
+    const fetchMock = jest.fn().mockResolvedValueOnce(originalResponse);
+    const patchedFetch = createOpenRouterPatchFetch(fetchMock as typeof fetch);
+
+    const response = await patchedFetch("https://openrouter.test/chat", {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+
+    expect(response).toBe(originalResponse);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["Failed to parse ", "Failed to parse : report.pdf"])(
     "falls back to sandbox paths for generic file parsing error %s",
     async (providerMessage) => {
