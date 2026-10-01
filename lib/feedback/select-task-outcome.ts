@@ -1,3 +1,4 @@
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { PostHog } from "posthog-node";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "../db/convex-client";
@@ -5,7 +6,7 @@ import { taskOutcomeProperties } from "../analytics/task-outcome";
 import { PAID_TASK_OUTCOME_FLAG } from "./task-outcome";
 
 export async function selectTaskOutcomeSurvey(args: {
-  posthog: Pick<PostHog, "getFeatureFlag" | "capture"> | null;
+  posthog: Pick<PostHog, "getFeatureFlagResult" | "capture"> | null;
   userId: string;
   chatId: string;
   messageId: string;
@@ -16,10 +17,6 @@ export async function selectTaskOutcomeSurvey(args: {
   const { posthog } = args;
   if (!posthog || !process.env.CONVEX_SERVICE_ROLE_KEY) return;
   try {
-    const flagOptions = {
-      sendFeatureFlagEvents: false,
-      personProperties: { subscription_tier: args.subscription },
-    };
     const paidEligible = ["pro", "pro-plus", "ultra"].includes(
       args.subscription,
     );
@@ -39,10 +36,11 @@ export async function selectTaskOutcomeSurvey(args: {
     };
     if (!paidEligible) return;
     if (
-      (await posthog.getFeatureFlag(
+      (await getPostHogFlagWithoutExposure(
+        posthog,
         PAID_TASK_OUTCOME_FLAG,
         args.userId,
-        flagOptions,
+        { subscription_tier: args.subscription },
       )) !== true
     )
       return;

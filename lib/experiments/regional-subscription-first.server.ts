@@ -1,3 +1,4 @@
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import type { NextRequest } from "next/server";
 import type { PostHog } from "posthog-node";
 import PostHogClient from "@/app/posthog";
@@ -36,7 +37,7 @@ export async function evaluateRegionalSubscriptionFirst({
   userId: string;
   subscription: string;
   country?: string;
-  posthog?: Pick<PostHog, "getFeatureFlag"> | null;
+  posthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
 }): Promise<RegionalSubscriptionAssignment | undefined> {
   if (
     !userId ||
@@ -45,16 +46,12 @@ export async function evaluateRegionalSubscriptionFirst({
   )
     return;
   try {
-    const variant = await posthog?.getFeatureFlag(
+    if (!posthog) return;
+    const variant = await getPostHogFlagWithoutExposure(
+      posthog,
       REGIONAL_SUBSCRIPTION_FIRST_KEY,
       userId,
-      {
-        sendFeatureFlagEvents: false,
-        personProperties: {
-          subscription: "free",
-          regional_subscription_country: country,
-        },
-      },
+      { subscription: "free", regional_subscription_country: country },
     );
     if (variant === "control" || variant === "test")
       return { variant, country };

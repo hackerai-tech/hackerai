@@ -1,3 +1,4 @@
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
 import { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
 export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
@@ -97,7 +98,7 @@ export async function evaluateAbliteratedModel({
   messages,
   limitRescue = false,
 }: {
-  posthog: Pick<PostHog, "getFeatureFlag"> | null;
+  posthog: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
   selectedModel: ModelName;
   subscription: SubscriptionTier;
@@ -130,23 +131,21 @@ export async function evaluateAbliteratedModel({
 
   const experimentKey = ABLITERATED_EXPERIMENT_KEY;
   try {
-    // This pinned SDK's evaluateFlags.getFlag emits exposure on access. Use the
-    // supported no-event API until it supports deferring exposure explicitly.
-    const variant = await posthog.getFeatureFlag(experimentKey, userId, {
-      sendFeatureFlagEvents: false,
-      personProperties: { subscription, subscription_tier: subscription },
-    });
+    const variant = await getPostHogFlagWithoutExposure(
+      posthog,
+      experimentKey,
+      userId,
+      { subscription, subscription_tier: subscription },
+    );
     if (variant !== "test" && variant !== "control") return undefined;
     if (!moderationEligible) {
       // History is a preference within parent treatment, never an authorization.
       if (variant !== "test") return undefined;
-      const continuityEnabled = await posthog.getFeatureFlag(
+      const continuityEnabled = await getPostHogFlagWithoutExposure(
+        posthog,
         ABLITERATION_CONTINUITY_FLAG,
         userId,
-        {
-          sendFeatureFlagEvents: false,
-          personProperties: { subscription, subscription_tier: subscription },
-        },
+        { subscription, subscription_tier: subscription },
       );
       if (continuityEnabled !== true) return undefined;
     }

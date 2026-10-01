@@ -3,12 +3,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 const mockCapture = jest.fn();
 const mockCaptureException = jest.fn();
 const mockGetFlag = jest.fn();
-const mockGetFeatureFlag = jest.fn();
+const mockGetFeatureFlagResult = jest.fn();
 const mockEvaluateFlags = jest.fn();
 const mockPostHogClient = jest.fn(() => ({
   capture: mockCapture,
   captureException: mockCaptureException,
-  getFeatureFlag: mockGetFeatureFlag,
+  getFeatureFlagResult: mockGetFeatureFlagResult,
   evaluateFlags: mockEvaluateFlags,
 }));
 const mockEmitPostHogLog = jest.fn(() => true);
@@ -27,6 +27,7 @@ const {
   getPostHogFeatureFlagForUser,
   getPostHogBooleanFlagDecisionForUser,
   getPostHogFeatureFlagValueForUser,
+  getPostHogFeatureFlagRawValueForUser,
   getPostHogFeatureFlagVariantForUser,
   phLogger,
 } = require("../server") as typeof import("../server");
@@ -36,7 +37,7 @@ describe("phLogger", () => {
     mockCapture.mockClear();
     mockCaptureException.mockClear();
     mockGetFlag.mockReset();
-    mockGetFeatureFlag.mockReset();
+    mockGetFeatureFlagResult.mockReset();
     mockEvaluateFlags.mockReset();
     mockPostHogClient.mockClear();
     mockEmitPostHogLog.mockClear();
@@ -69,19 +70,23 @@ describe("phLogger", () => {
     await expect(
       getPostHogBooleanFlagDecisionForUser("history", "user"),
     ).resolves.toBeNull();
-    mockGetFeatureFlag.mockResolvedValueOnce(false);
+    mockGetFlag.mockReturnValueOnce(false);
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
     await expect(
       getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBe(false);
 
-    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
       getPostHogFeatureFlagValueForUser("example-feature-flag", "user_123"),
     ).resolves.toBeNull();
   });
 
   it("evaluates multivariate flags and ignores non-variant values", async () => {
-    mockGetFeatureFlag.mockResolvedValueOnce("test");
+    mockGetFeatureFlagResult.mockResolvedValueOnce({
+      enabled: true,
+      variant: "test",
+    });
     await expect(
       getPostHogFeatureFlagVariantForUser(
         "hac46-pro-monthly-29-pricing",
@@ -89,13 +94,14 @@ describe("phLogger", () => {
         { sendFeatureFlagEvents: false },
       ),
     ).resolves.toBe("test");
-    expect(mockGetFeatureFlag).toHaveBeenLastCalledWith(
+    expect(mockGetFeatureFlagResult).toHaveBeenLastCalledWith(
       "hac46-pro-monthly-29-pricing",
       "user_123",
       { sendFeatureFlagEvents: false },
     );
 
-    mockGetFeatureFlag.mockResolvedValueOnce(true);
+    mockGetFlag.mockReturnValueOnce(true);
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
     await expect(
       getPostHogFeatureFlagVariantForUser(
         "hac46-pro-monthly-29-pricing",
@@ -103,12 +109,44 @@ describe("phLogger", () => {
       ),
     ).resolves.toBeUndefined();
 
-    mockGetFeatureFlag.mockRejectedValueOnce(new Error("unavailable"));
+    mockEvaluateFlags.mockRejectedValueOnce(new Error("unavailable"));
     await expect(
       getPostHogFeatureFlagVariantForUser(
         "hac46-pro-monthly-29-pricing",
         "user_123",
       ),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(["test", true, false, undefined, 42])(
+    "preserves raw flag value %s and unavailable results",
+    async (value) => {
+      mockGetFlag.mockReturnValueOnce(value);
+      mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
+      await expect(
+        getPostHogFeatureFlagRawValueForUser("retention", "user"),
+      ).resolves.toBe(
+        typeof value === "boolean" || typeof value === "string" ? value : null,
+      );
+      expect(mockEvaluateFlags).toHaveBeenCalledWith("user", {
+        flagKeys: ["retention"],
+      });
+    },
+  );
+
+  it("preserves variant lookups with automatic exposure and suppressed lookup failures", async () => {
+    mockGetFlag.mockReturnValueOnce("control");
+    mockEvaluateFlags.mockResolvedValueOnce({ getFlag: mockGetFlag });
+    await expect(
+      getPostHogFeatureFlagVariantForUser("experiment", "user"),
+    ).resolves.toBe("control");
+    expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
+
+    mockGetFeatureFlagResult.mockRejectedValueOnce(new Error("unavailable"));
+    await expect(
+      getPostHogFeatureFlagVariantForUser("experiment", "user", {
+        sendFeatureFlagEvents: false,
+      }),
     ).resolves.toBeUndefined();
   });
 

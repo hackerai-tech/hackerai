@@ -2855,6 +2855,8 @@ export const agentLongTask = task({
                       requestId: ctx.run.id,
                       userId,
                       chatId,
+                      environment: ctx.environment.type,
+                      release: ctx.deployment?.version,
                     },
                   },
                 );

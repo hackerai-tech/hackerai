@@ -1,5 +1,6 @@
 import "server-only";
 
+import { probeSandboxUploadWrite } from "./sandbox-upload-diagnostics";
 import { abortableDelay as delay } from "./abortable-delay";
 import {
   runAttachmentCommand,
@@ -99,6 +100,8 @@ type UploadSandboxFilesOptions = {
     requestId?: string;
     userId: string;
     chatId: string;
+    environment?: string;
+    release?: string;
   };
 };
 
@@ -822,20 +825,6 @@ const downloadFileToSandbox = async (
     result = await runSandboxCommand(sandbox, curlCmd, signal);
   }
 
-  // Best-effort diagnostics probe — never let this mask the original error.
-  let diagnostics = "";
-  try {
-    const probe = await runSandboxCommand(
-      sandbox,
-      `df -h /home/user 2>&1 || true; id 2>&1 || true`,
-      signal,
-    );
-    diagnostics = (probe.stdout || "").slice(0, 1024);
-  } catch (error) {
-    throwIfAttachmentAborted(signal, error);
-    // ignore probe failures
-  }
-
   // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
   let safeUrl = url;
   try {
@@ -849,8 +838,7 @@ const downloadFileToSandbox = async (
     `Failed to download file: ${result.stderr}\n` +
       `  url: ${safeUrl}\n` +
       `  path: ${localPath}\n` +
-      `  exitCode: ${result.exitCode}` +
-      (diagnostics ? `\n  diagnostics:\n${diagnostics}` : ""),
+      `  exitCode: ${result.exitCode}`,
   );
 };
 
@@ -941,8 +929,11 @@ const resolveWritableUploadFallbackPath = async (
 const stageSandboxFile = async (
   sandbox: any,
   file: SandboxFile,
-  signal?: AbortSignal,
+  options: UploadSandboxFilesOptions | undefined,
+  probeBudget: { remaining: number },
+  stagingAttempt: "initial" | "fresh_sandbox_retry",
 ): Promise<SandboxFilePathRewrite | null> => {
+  const signal = options?.signal;
   signal?.throwIfAborted();
   try {
     if (file.kind === "url") {
@@ -957,6 +948,55 @@ const stageSandboxFile = async (
       throw error;
     }
 
+    const sandboxFields = getSandboxLogFields(sandbox);
+    const diagnostics =
+      sandboxFields.sandbox_provider === "e2b" && probeBudget.remaining-- > 0
+        ? await probeSandboxUploadWrite(sandbox, file.localPath, signal)
+        : {
+            probe_status:
+              sandboxFields.sandbox_provider === "e2b"
+                ? "budget_exhausted"
+                : "not_e2b",
+          };
+    const initialReason = classifySandboxUploadFailureReason(
+      file,
+      error,
+      classifySandboxUploadReadinessFailure(error),
+    );
+    const recordOutcome = (
+      outcome: "retrying" | "recovered" | "failed" | "unavailable",
+      finalError?: unknown,
+    ) => {
+      const fields = {
+        ...sandboxFields,
+        staging_attempt: stagingAttempt,
+        failure_kind: file.kind,
+        initial_failure_reason: initialReason,
+        initial_failure_exit_code: extractCommandExitCode(error),
+        fallback_outcome: outcome,
+        ...(finalError !== undefined && {
+          final_failure_reason: classifySandboxUploadFailureReason(
+            file,
+            finalError,
+            classifySandboxUploadReadinessFailure(finalError),
+          ),
+          final_failure_exit_code: extractCommandExitCode(finalError),
+        }),
+        ...Object.fromEntries(
+          Object.entries(diagnostics).map(([key, value]) => [
+            `diagnostics_${key}`,
+            value,
+          ]),
+        ),
+      };
+      logSandboxUploadEvent(
+        "sandbox_attachment_staging_fallback",
+        sandbox,
+        options,
+        fields,
+        outcome === "recovered" ? "info" : "warn",
+      );
+    };
     let fallbackPath: string | null;
     try {
       fallbackPath = await resolveWritableUploadFallbackPath(
@@ -966,17 +1006,17 @@ const stageSandboxFile = async (
       );
     } catch (fallbackError) {
       throwIfAttachmentAborted(signal, fallbackError);
+      recordOutcome("unavailable", fallbackError);
       // E2B throws for a nonzero exit instead of returning it. A failed
       // best-effort directory probe must not replace the transfer cause.
       throw error;
     }
     if (!fallbackPath || fallbackPath === file.localPath) {
+      recordOutcome("unavailable");
       throw error;
     }
 
-    console.warn(
-      "[sandbox-upload] destination is not writable, retrying attachment staging in a reserved fallback directory",
-    );
+    recordOutcome("retrying");
 
     const fallbackFile = { ...file, localPath: fallbackPath } as SandboxFile;
     try {
@@ -997,6 +1037,7 @@ const stageSandboxFile = async (
       }
     } catch (fallbackError) {
       throwIfAttachmentAborted(signal, fallbackError);
+      recordOutcome("failed", fallbackError);
       const originalMessage =
         error instanceof Error ? error.message : String(error);
       const fallbackMessage =
@@ -1011,6 +1052,7 @@ const stageSandboxFile = async (
       );
     }
 
+    recordOutcome("recovered");
     return { from: file.localPath, to: fallbackPath };
   }
 };
@@ -1126,14 +1168,72 @@ const shouldRetryWithFreshSandbox = (
   return value === true;
 };
 
+/** Sandbox IDs stay in operational logs, never product analytics. */
+const logSandboxUploadEvent = (
+  event: string,
+  sandbox: any,
+  options: UploadSandboxFilesOptions | undefined,
+  fields: Record<string, unknown>,
+  level: "info" | "warn",
+) => {
+  try {
+    const context = options?.logContext;
+    const release =
+      context?.release ??
+      process.env.VERCEL_GIT_COMMIT_SHA ??
+      process.env.GITHUB_SHA;
+    const common = {
+      ...fields,
+      service: context?.service ?? "chat-handler",
+      environment:
+        context?.environment ??
+        process.env.TRIGGER_ENV ??
+        process.env.VERCEL_ENV ??
+        process.env.NODE_ENV ??
+        "unknown",
+      request_id: context?.requestId ?? null,
+      chat_id: context?.chatId ?? null,
+      release:
+        typeof release === "string" && /^[\w.-]{1,128}$/.test(release)
+          ? release
+          : "unknown",
+      ...(context?.service === "agent-long" && {
+        trigger_run_id: context.requestId ?? null,
+      }),
+      sandbox_attachment_diagnostics_version: 1,
+    };
+    const sandboxId =
+      typeof sandbox.sandboxId === "string" &&
+      /^[\w-]{1,128}$/.test(sandbox.sandboxId)
+        ? sandbox.sandboxId
+        : undefined;
+    const payload = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level,
+      event,
+      ...common,
+      ...(sandboxId && { sandbox_id: sandboxId }),
+    });
+    if (level === "warn") console.warn(payload);
+    else console.info(payload);
+    if (context?.userId)
+      phLogger.event(event, { userId: context.userId, ...common });
+  } catch {
+    // Diagnostics must never turn a recovered attachment into a chat failure.
+  }
+};
+
 const uploadSandboxFilesOnce = async (
   sandboxFiles: SandboxFile[],
   sandbox: any,
   options?: UploadSandboxFilesOptions,
+  stagingAttempt: "initial" | "fresh_sandbox_retry" = "initial",
 ): Promise<SandboxUploadResult> => {
+  // Concurrent attachments share a cap; diagnostics must not amplify a failure.
+  const probeBudget = { remaining: 3 };
   const results = await Promise.allSettled(
     sandboxFiles.map((file) =>
-      stageSandboxFile(sandbox, file, options?.signal),
+      stageSandboxFile(sandbox, file, options, probeBudget, stagingAttempt),
     ),
   );
 
@@ -1159,6 +1259,22 @@ const uploadSandboxFilesOnce = async (
       "transfer",
       sandbox,
     ),
+  );
+
+  logSandboxUploadEvent(
+    "sandbox_attachment_staging_completed",
+    sandbox,
+    options,
+    {
+      ...getSandboxLogFields(sandbox),
+      staging_attempt: stagingAttempt,
+      total_count: sandboxFiles.length,
+      failed_count: failedIndices.length,
+      recovered_count: pathRewrites.length,
+      direct_success_count:
+        sandboxFiles.length - failedIndices.length - pathRewrites.length,
+    },
+    "info",
   );
 
   if (failureDetails.length > 0) {
@@ -1511,6 +1627,7 @@ export const uploadSandboxFiles = async (
     sandboxFiles,
     sandbox,
     options,
+    retriedWithFreshSandbox ? "fresh_sandbox_retry" : "initial",
   );
 
   if (
@@ -1540,6 +1657,7 @@ export const uploadSandboxFiles = async (
         sandboxFiles,
         refreshedSandbox,
         options,
+        "fresh_sandbox_retry",
       );
       return { ...retryResult, retriedWithFreshSandbox: true };
     } catch (error) {

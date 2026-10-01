@@ -29,7 +29,7 @@ const mockHandleInitialChatAndUserMessage = jest.fn<any>();
 const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
 const mockGetUserIDAndPro = jest.fn<any>();
-const mockGetFeatureFlag = jest.fn<any>();
+const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
 
 jest.mock("@/lib/auth/get-user-id", () => ({
@@ -43,7 +43,7 @@ jest.mock("@/lib/suspensions", () => ({
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
   default: () => ({
-    getFeatureFlag: mockGetFeatureFlag,
+    getFeatureFlagResult: mockGetFeatureFlagResult,
     capture: jest.fn(),
     flush: jest.fn<any>().mockResolvedValue(undefined),
   }),
@@ -435,7 +435,12 @@ describe("regional subscription gate before Agent dispatch", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.VERCEL = "1";
-    mockGetFeatureFlag.mockResolvedValue("test");
+    mockGetFeatureFlagResult.mockResolvedValue({
+      key: "regional_subscription_first_v1",
+      enabled: true,
+      variant: "test",
+      payload: undefined,
+    });
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user-free",
       subscription: "free",

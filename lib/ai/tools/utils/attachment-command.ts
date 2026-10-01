@@ -46,6 +46,7 @@ export async function runAttachmentCommand(
   // Keep the start request alive until it yields a PID, even if Stop arrives
   // meanwhile. Aborting that request would lose the handle needed for cleanup.
   const handle = await sandbox.commands.run(command, {
+    ...options,
     background: true,
     requestTimeoutMs: 10_000,
   });
