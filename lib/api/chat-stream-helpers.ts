@@ -143,6 +143,7 @@ export function sendRateLimitWarnings(
     subscription: SubscriptionTier;
     mode: ChatMode;
     rateLimitInfo: {
+      freeDailyCost?: boolean;
       remaining: number;
       limit: number;
       resetTime: Date;
@@ -176,6 +177,21 @@ export function sendRateLimitWarnings(
     return;
   }
 
+  if (subscription === "free" && rateLimitInfo.freeDailyCost) {
+    const usedPercent =
+      100 * (1 - rateLimitInfo.remaining / rateLimitInfo.limit);
+    if (!rateLimitInfo.rateLimitSkipped && usedPercent >= 75) {
+      emitTokenBucketThresholdWarning(writer, {
+        bucketType: "daily",
+        usedPercent,
+        projectedUsedPoints: rateLimitInfo.limit - rateLimitInfo.remaining,
+        monthlyLimitPoints: rateLimitInfo.limit,
+        resetTime: rateLimitInfo.resetTime,
+        subscription,
+      });
+    }
+    return;
+  }
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
     const warningThreshold = Math.max(1, Math.ceil(rateLimitInfo.limit * 0.3));
@@ -241,6 +257,7 @@ export function sendRateLimitWarnings(
  * one of these and let the helper format the dollar/severity payload.
  */
 export interface TokenBucketEmitContext {
+  bucketType?: "daily" | "monthly";
   /** Used percentage (0–100+), pre-rounding. */
   usedPercent: number;
   /** Points consumed against the monthly bucket so far. */
@@ -267,7 +284,7 @@ export function emitTokenBucketThresholdWarning(
     ctx.usedPercent >= 90 ? "warning" : "info";
   writeRateLimitWarning(writer, {
     warningType: "token-bucket",
-    bucketType: "monthly",
+    bucketType: ctx.bucketType ?? "monthly",
     remainingPercent,
     resetTime: ctx.resetTime.toISOString(),
     subscription: ctx.subscription,

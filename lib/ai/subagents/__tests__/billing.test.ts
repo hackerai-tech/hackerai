@@ -6,12 +6,12 @@ import {
 } from "../billing";
 
 describe("checkSubagentBillingCapacity", () => {
-  const checkFreeMonthlyCostLimit =
-    jest.fn<SubagentBillingCapacityDependencies["checkFreeMonthlyCostLimit"]>();
+  const checkFreeCostBudget =
+    jest.fn<SubagentBillingCapacityDependencies["checkFreeCostBudget"]>();
   const checkRateLimitCapacity =
     jest.fn<SubagentBillingCapacityDependencies["checkRateLimitCapacity"]>();
   const dependencies = {
-    checkFreeMonthlyCostLimit,
+    checkFreeCostBudget,
     checkRateLimitCapacity,
   };
 
@@ -20,7 +20,7 @@ describe("checkSubagentBillingCapacity", () => {
   });
 
   it("inherits the parent daily request authorization for free children", async () => {
-    checkFreeMonthlyCostLimit.mockResolvedValue({
+    checkFreeCostBudget.mockResolvedValue({
       monthlyLimitPoints: 2_500,
       monthlyRemainingAtStart: 1_000,
       monthlyResetTime: new Date("2026-10-01T00:00:00Z"),
@@ -42,13 +42,13 @@ describe("checkSubagentBillingCapacity", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(checkFreeMonthlyCostLimit).toHaveBeenCalledWith("quota-subject");
+    expect(checkFreeCostBudget).toHaveBeenCalledWith("quota-subject");
     expect(checkRateLimitCapacity).not.toHaveBeenCalled();
   });
 
   it("still blocks free children when the monthly cost cap is exhausted", async () => {
     const error = new Error("monthly cost exhausted");
-    checkFreeMonthlyCostLimit.mockRejectedValue(error);
+    checkFreeCostBudget.mockRejectedValue(error);
 
     await expect(
       checkSubagentBillingCapacity(
@@ -97,6 +97,6 @@ describe("checkSubagentBillingCapacity", () => {
       "org-123",
       undefined,
     );
-    expect(checkFreeMonthlyCostLimit).not.toHaveBeenCalled();
+    expect(checkFreeCostBudget).not.toHaveBeenCalled();
   });
 });

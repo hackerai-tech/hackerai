@@ -1,3 +1,8 @@
+import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
+import {
+  evaluateFreeAgentBudget,
+  freeAgentBudgetPolicy,
+} from "@/lib/experiments/free-agent-budget";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
@@ -86,7 +91,7 @@ import { UsageTracker } from "@/lib/usage-tracker";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   acquireFreeRunConcurrencyLock,
-  checkFreeMonthlyCostLimit,
+  checkFreeCostBudget,
   checkRateLimit,
   checkRateLimitCapacity,
   isHandledUserRateLimitError,
@@ -1855,6 +1860,7 @@ export const agentLongTask = task({
       finishCloudSandboxLifecycle,
     });
 
+    let posthog: ReturnType<typeof PostHogClient> = null;
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
     // Register before async setup and handle a signal already canceled while
@@ -1928,7 +1934,7 @@ export const agentLongTask = task({
         subscription,
         selectedModelOverride,
       });
-      const posthog = PostHogClient();
+      posthog = PostHogClient();
       const cloudSandboxSelection =
         !sandboxPreference || sandboxPreference === "e2b"
           ? await selectCloudSandboxProvider({
@@ -1949,7 +1955,24 @@ export const agentLongTask = task({
         subscription,
         country: payload.regionalFreeCountry,
       });
-      const freeLimits = regionalFreeLimits;
+      const freeAgentBudget = await evaluateFreeAgentBudget({
+        posthog,
+        userId,
+        mode,
+        subscription,
+        requestId: ctx.run.id,
+      });
+      const freeLimits = freeAgentBudgetPolicy(
+        freeAgentBudget,
+        regionalFreeLimits,
+      );
+      const freeDailySettlement = freeLimits?.agentDailyBudget
+        ? new FreeDailyCostSettlement(
+            freeUsageSubject,
+            freeLimits,
+            crypto.randomUUID(),
+          )
+        : undefined;
       // Check capacity before moderation/model work, then consume the daily
       // request atomically under the free-run lock when execution starts.
       if (subscription === "free") {
@@ -1963,7 +1986,7 @@ export const agentLongTask = task({
           freeQuotaSubject,
           freeLimits,
         );
-        await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
+        await checkFreeCostBudget(freeUsageSubject, freeLimits);
       }
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -2247,7 +2270,7 @@ export const agentLongTask = task({
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
+                ? await checkFreeCostBudget(freeUsageSubject, freeLimits)
                 : null;
 
             try {
@@ -2522,12 +2545,22 @@ export const agentLongTask = task({
                 freeLimits,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
                 );
                 releaseFreeRunLock = lock.release;
+                const refreshed = await checkFreeCostBudget(
+                  freeUsageSubject,
+                  freeLimits,
+                );
+                if (freeDailySettlement && freeMonthlyBudgetSnapshot) {
+                  // Monitor subtracts cumulative run cost; add back this run's
+                  // settled cost so other work during the wait reduces capacity.
+                  freeMonthlyBudgetSnapshot.monthlyRemainingAtStart =
+                    refreshed.monthlyRemainingAtStart +
+                    freeDailySettlement.settledPoints;
+                }
               }
             };
             const revalidateAfterAutoReview = async ({
@@ -2610,7 +2643,7 @@ export const agentLongTask = task({
                 freeLimits,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
+                await checkFreeCostBudget(freeUsageSubject, freeLimits);
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -2646,7 +2679,18 @@ export const agentLongTask = task({
               resolveSandboxIdentity: resolveApprovalSandboxIdentity,
               workingDirectory: projectContext.workingDirectory,
               beforeSuspend:
-                subscription === "free" ? releaseFreeRunLockOnce : undefined,
+                subscription === "free"
+                  ? async () => {
+                      if (freeDailySettlement) {
+                        await freeDailySettlement.settle(
+                          usageTracker.computeCostDollars(activeModelName) +
+                            (await getSandboxSessionCost()) +
+                            getTriggerRunUsage().totalCostDollars,
+                        );
+                      }
+                      await releaseFreeRunLockOnce();
+                    }
+                  : undefined,
               revalidateAfterSuspend: revalidateAfterApprovalSuspend,
               revalidateAfterAutoReview,
               autoReviewAssignment,
@@ -3163,10 +3207,16 @@ export const agentLongTask = task({
                     },
                   });
                 } else if (subscription === "free") {
-                  await recordFreeMonthlyCost(
-                    freeUsageSubject,
-                    usageCostRecord.costDollars,
-                  );
+                  if (freeDailySettlement) {
+                    await freeDailySettlement.settle(
+                      usageCostRecord.costDollars,
+                    );
+                  } else {
+                    await recordFreeMonthlyCost(
+                      freeUsageSubject,
+                      usageCostRecord.costDollars,
+                    );
+                  }
                 } else {
                   const deductionResult = await deductUsage(
                     userId,
@@ -3261,6 +3311,7 @@ export const agentLongTask = task({
                   agentPermissionMode,
                   analyticsRequestContext,
                   experiment: routingExperimentContext,
+                  freeAgentBudget,
                   usage: usageCostRecord,
                   ...(sandboxCost > 0 && { sandboxUsage }),
                   ...(triggerRunCost > 0 && { triggerRunUsage }),
@@ -3292,7 +3343,12 @@ export const agentLongTask = task({
                 force,
                 model,
               }) => {
-                if (!usageSettlementState || hasRecordedUsage) return;
+                if (hasRecordedUsage) return;
+                if (freeDailySettlement) {
+                  await freeDailySettlement.settle(currentCostDollars);
+                  return;
+                }
+                if (!usageSettlementState) return;
                 if (
                   !shouldSettleUsageMidRun({
                     state: usageSettlementState,
@@ -3369,6 +3425,7 @@ export const agentLongTask = task({
                   deduction: deductionResult,
                   forced: force,
                   experiment: routingExperimentContext,
+                  freeAgentBudget,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -3893,6 +3950,7 @@ export const agentLongTask = task({
                 hadSummarization: summarizationTracker.hasSummarized,
                 isAutoContinue: !!isAutoContinue,
                 experiment: routingExperimentContext,
+                freeAgentBudget,
                 stepLimitTelemetry: buildAgentStepLimitTelemetry({
                   configuredMaxSteps: state.configuredMaxSteps,
                   stepCount: state.agentStepCount,
@@ -4912,6 +4970,7 @@ export const agentLongTask = task({
                         hadSummarization: summarizationTracker.hasSummarized,
                         isAutoContinue: !!isAutoContinue,
                         experiment: routingExperimentContext,
+                        freeAgentBudget,
                         stepLimitTelemetry: buildAgentStepLimitTelemetry({
                           configuredMaxSteps: state.configuredMaxSteps,
                           stepCount: state.agentStepCount,
@@ -5390,6 +5449,8 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
+      // Flush quota-check exposure even when a preflight limit prevents streaming.
+      await posthog?.shutdown().catch(() => undefined);
       triggerSignal.removeEventListener("abort", forwardTriggerAbort);
       await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();

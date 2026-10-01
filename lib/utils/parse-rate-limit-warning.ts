@@ -16,7 +16,7 @@ const WARNING_TYPES = [
 ] as const;
 type RawWarningType = (typeof WARNING_TYPES)[number];
 
-const BUCKET_TYPES = ["monthly"] as const;
+const BUCKET_TYPES = ["monthly", "daily"] as const;
 type RawBucketType = (typeof BUCKET_TYPES)[number];
 
 function isString(v: unknown): v is string {
@@ -154,7 +154,7 @@ export function parseRateLimitWarning(
 
   if (warningType === "extra-usage-active") {
     const bucketType = rawData.bucketType as RawBucketType | undefined;
-    if (!bucketType || !BUCKET_TYPES.includes(bucketType)) {
+    if (bucketType !== "monthly") {
       return null;
     }
     // Mid-stream emits bypass per-reset-period dedup so the user sees the

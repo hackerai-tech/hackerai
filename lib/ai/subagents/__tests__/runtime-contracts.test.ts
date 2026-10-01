@@ -228,7 +228,7 @@ describe("security validation subagent runtime contracts", () => {
     const billing = read("lib/ai/subagents/billing.ts");
     expect(child).toContain("checkSubagentBillingCapacity");
     expect(billing).toContain('if (input.subscription === "free")');
-    expect(billing).toContain("checkFreeMonthlyCostLimit");
+    expect(billing).toContain("checkFreeCostBudget");
     expect(billing).toContain("return undefined");
     expect(billing).toContain("checkRateLimitCapacity");
     expect(child).toContain("isHandledUserRateLimitError");
