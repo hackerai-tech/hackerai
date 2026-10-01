@@ -44,7 +44,7 @@ describe("SandboxSelector", () => {
   it("keeps its trigger within constrained mobile toolbars", () => {
     render(<SandboxSelector value="desktop" />);
 
-    expect(screen.getByRole("button", { name: /local/i })).toHaveClass(
+    expect(screen.getByRole("button", { name: /This computer/i })).toHaveClass(
       "max-w-full",
       "min-w-0",
       "shrink",
@@ -63,11 +63,11 @@ describe("SandboxSelector", () => {
     })) as typeof fetch;
   });
 
-  it("shows Local reconnecting instead of Cloud while Desktop reconnects", () => {
+  it("shows This computer reconnecting instead of Cloud while Desktop reconnects", () => {
     render(<SandboxSelector value="desktop" />);
 
     expect(
-      screen.getByRole("button", { name: /Local reconnecting/i }),
+      screen.getByRole("button", { name: /This computer reconnecting/i }),
     ).toBeInTheDocument();
   });
 
@@ -75,7 +75,7 @@ describe("SandboxSelector", () => {
     mockGlobalState.desktopEnvironmentId = "this-desktop";
     render(<SandboxSelector value="desktop-environment:this-desktop" />);
     expect(
-      screen.getByRole("button", { name: /Local reconnecting/i }),
+      screen.getByRole("button", { name: /This computer reconnecting/i }),
     ).toBeInTheDocument();
   });
 
@@ -107,19 +107,21 @@ describe("SandboxSelector", () => {
     expect(screen.getByRole("button", { name: "Other" })).toBeInTheDocument();
   });
 
-  it("keeps the selected local label neutral while connections hydrate", () => {
+  it("keeps the selected computer label neutral while connections hydrate", () => {
     mockGlobalState.desktopBridgeStatus = "idle";
     mockGlobalState.localConnections = undefined;
 
     render(<SandboxSelector value="desktop" />);
 
     expect(
-      screen.getByRole("button", { name: /^Local$/i }),
+      screen.getByRole("button", { name: /^This computer$/i }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Local unavailable/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/This computer unavailable/i),
+    ).not.toBeInTheDocument();
   });
 
-  it("shows Local unavailable instead of Cloud after Desktop recovery fails", () => {
+  it("shows This computer unavailable instead of Cloud after Desktop recovery fails", () => {
     mockGlobalState.desktopBridgeStatus = "failed";
     mockGlobalState.localConnections = [
       { connectionId: "stale-desktop", isDesktop: true },
@@ -128,7 +130,7 @@ describe("SandboxSelector", () => {
     render(<SandboxSelector value="desktop" />);
 
     expect(
-      screen.getByRole("button", { name: /Local unavailable/i }),
+      screen.getByRole("button", { name: /This computer unavailable/i }),
     ).toBeInTheDocument();
   });
 
@@ -218,7 +220,12 @@ describe("SandboxSelector", () => {
       rerender(<SandboxSelector value={value} onChange={onChange} />);
       expect(onChange).not.toHaveBeenCalled();
       fireEvent.click(
-        screen.getByRole("button", { name: /Local unavailable/i }),
+        screen.getByRole("button", {
+          name:
+            value === "desktop"
+              ? "This computer unavailable"
+              : "Selected computer unavailable",
+        }),
       );
       fireEvent.click(await screen.findByRole("button", { name: "Cloud" }));
       expect(onChange).toHaveBeenCalledTimes(1);
