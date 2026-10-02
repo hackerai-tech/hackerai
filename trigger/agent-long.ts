@@ -2019,6 +2019,9 @@ export const agentLongTask = task({
           fetched.independentAbliterationResponses,
         messages: processedMessages,
         limitRescue: Boolean(limitRescue),
+        ...(ctx.environment.type === "PREVIEW" && {
+          previewDiagnosticContext: { chatId, requestId: ctx.run.id },
+        }),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 

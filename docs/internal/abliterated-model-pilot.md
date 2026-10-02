@@ -6,6 +6,40 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
+## Independent Max first-step trial
+
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the independent
+`abliterated_max_moderated_v1` trial. It applies only to the authorized
+`hackerai-max` selector in Ask and Agent, across paid plans; Ultra is a
+subscription tier, not this trial's model gate. A moderation-eligible request
+uses base `abliterated-model` for generation step 1 in treatment, including
+text-only Max requests that the historical pilot routed to Large v2. Controls
+retain the exact selected baseline. Later steps and provider recovery use the
+saved baseline. Free, rescue, unsupported-input and moderation gates remain.
+
+The new flag takes precedence when it returns `control` or `test`; disabled or
+missing assignment retains the historical flag behavior. Historical paid,
+expansion and continuity flags must remain disabled during this trial. Its
+authenticated-user assignment and analytics key are independent of historical
+pilot cohorts. The original routing contract below describes the historical
+parent flag, not the Max trial.
+
+Use `abliterated_model_eligible` as the assigned-request denominator, including
+requests blocked before output. Keep actual content exposure separate. Compare
+deduplicated natural completions and user-weighted outcomes with uncertainty
+clustered by user. For retention, join the same assigned users to immutable
+pre-entry billing periods and subscription identities; retain pre-renewal
+cancellations and split pending cancellations, pauses, payment failures and
+annual billing. Missing baseline coverage prevents a renewal-safety conclusion.
+Team seats require a separate shared-subscription analysis and must not be
+counted as independent subscribers. Keep rollout decisions, powered sample-size
+targets, review dates and flag cleanup in HAC-142.
+
+Both Vercel and Trigger need the new code deployed before new requests can use
+the flag. Preview and Production require independent runtime-to-PostHog identity
+verification. A passing provider smoke test does not establish the user-facing
+Ask/Agent journey or subscriber retention.
+
 ## Free-user exclusion
 
 Free-user Abliteration pilots are stopped. The shared assignment eligibility

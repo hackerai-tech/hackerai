@@ -1,11 +1,17 @@
 import {
   evaluateAbliteratedModel,
   ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATION_CONTINUITY_FLAG,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
 import type { SelectedModel, SubscriptionTier } from "@/types";
+import { phLogger } from "@/lib/posthog/server";
+
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { info: jest.fn() },
+}));
 import {
   ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
@@ -37,6 +43,7 @@ describe("Abliteration model identity", () => {
 describe("moderation-gated Abliteration assignment", () => {
   const originalKey = process.env.ABLITERATION_API_KEY;
   beforeEach(() => {
+    jest.clearAllMocks();
     process.env.ABLITERATION_API_KEY = "test-only-placeholder";
   });
   afterAll(() => {
@@ -111,6 +118,121 @@ describe("moderation-gated Abliteration assignment", () => {
     moderationEligible: true,
     messages,
   };
+  describe("Preview Max diagnostics", () => {
+    const previewDiagnosticContext = {
+      chatId: "test-chat",
+      requestId: "test-run",
+    };
+    it.each([
+      {
+        moderationEligible: false,
+        variant: "test",
+        reason: "moderation_not_eligible",
+      },
+      {
+        moderationEligible: true,
+        variant: false,
+        reason: "flag_inactive_or_unmatched",
+      },
+      {
+        moderationEligible: true,
+        variant: undefined,
+        reason: "flag_unavailable",
+      },
+      { moderationEligible: true, variant: "test", reason: "assigned" },
+    ])(
+      "records the decision without content: $reason",
+      async ({ moderationEligible, variant, reason }) => {
+        const getFeatureFlagResult = jest
+          .fn()
+          .mockResolvedValue(flagResult(variant));
+        const result = await evaluateAbliteratedModel({
+          ...defaults,
+          moderationEligible,
+          selectedModelOverride: "hackerai-max",
+          posthog: { getFeatureFlagResult },
+          previewDiagnosticContext,
+        });
+        expect(phLogger.info).toHaveBeenCalledWith(
+          "Preview Max Abliteration assignment decision",
+          expect.objectContaining({
+            reason,
+            moderation_eligible: moderationEligible,
+            provider_configured: true,
+            requestId: "test-run",
+          }),
+        );
+        expect(result?.variant).toBe(
+          reason === "assigned" ? "test" : undefined,
+        );
+        expect(
+          JSON.stringify(jest.mocked(phLogger.info).mock.calls),
+        ).not.toContain("private test prompt");
+        if (!moderationEligible)
+          expect(getFeatureFlagResult).not.toHaveBeenCalled();
+      },
+    );
+    it("reports a missing provider before any flag lookup", async () => {
+      delete process.env.ABLITERATION_API_KEY;
+      const getFeatureFlagResult = jest.fn();
+      await evaluateAbliteratedModel({
+        ...defaults,
+        selectedModelOverride: "hackerai-max",
+        posthog: { getFeatureFlagResult },
+        previewDiagnosticContext,
+      });
+      expect(phLogger.info).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          reason: "provider_not_configured",
+          provider_configured: false,
+        }),
+      );
+      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+    });
+    it("reports lookup failures and retains baseline", async () => {
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockRejectedValue(new Error("unavailable"));
+      await expect(
+        evaluateAbliteratedModel({
+          ...defaults,
+          selectedModelOverride: "hackerai-max",
+          posthog: { getFeatureFlagResult },
+          previewDiagnosticContext,
+        }),
+      ).resolves.toBeUndefined();
+      expect(phLogger.info).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ reason: "flag_lookup_failed" }),
+      );
+    });
+    it("does not diagnose Production calls and cannot alter treatment on logger failure", async () => {
+      const posthog = {
+        getFeatureFlagResult: jest.fn().mockResolvedValue(flagResult("test")),
+      };
+      await evaluateAbliteratedModel({
+        ...defaults,
+        selectedModelOverride: "hackerai-max",
+        posthog,
+      });
+      expect(phLogger.info).not.toHaveBeenCalled();
+      jest.mocked(phLogger.info).mockImplementationOnce(() => {
+        throw new Error("logging unavailable");
+      });
+      await expect(
+        evaluateAbliteratedModel({
+          ...defaults,
+          selectedModelOverride: "hackerai-max",
+          posthog,
+          previewDiagnosticContext,
+        }),
+      ).resolves.toMatchObject({
+        variant: "test",
+        modelKey: "model-abliterated",
+      });
+    });
+  });
   it.each([undefined, "auto", "hackerai-standard"] as const)(
     "routes an eligible %s request only for an explicit test variant",
     async (selectedModelOverride) => {
@@ -311,7 +433,13 @@ describe("moderation-gated Abliteration assignment", () => {
         ...defaults,
         ...overrides,
         posthog: {
-          getFeatureFlagResult: jest.fn().mockResolvedValue(flagResult("test")),
+          getFeatureFlagResult: jest
+            .fn()
+            .mockImplementation(async (key: string) =>
+              flagResult(
+                key === ABLITERATED_MAX_EXPERIMENT_KEY ? false : "test",
+              ),
+            ),
         },
       }),
     ).toMatchObject({
@@ -439,6 +567,98 @@ describe("moderation-gated Abliteration assignment", () => {
     allowsAbliterationContinuation: true,
     independentAbliterationResponses: 2,
   };
+  describe.each(["ask", "agent"] as const)(
+    "Max first-step trial in %s",
+    (mode) => {
+      it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+        "uses base Abliteration for authorized %s Max requests and preserves controls",
+        async (subscription) => {
+          for (const variant of ["test", "control"] as const) {
+            const getFeatureFlagResult = jest
+              .fn()
+              .mockResolvedValue(flagResult(variant));
+            const selectedModel = "model-glm-5.3" as const;
+            await expect(
+              evaluateAbliteratedModel({
+                ...defaults,
+                mode,
+                subscription,
+                selectedModel,
+                selectedModelOverride: "hackerai-max",
+                posthog: { getFeatureFlagResult },
+              }),
+            ).resolves.toMatchObject({
+              key: ABLITERATED_MAX_EXPERIMENT_KEY,
+              variant,
+              modelKey:
+                variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+              baselineModel: selectedModel,
+              selectionSource: "moderation",
+            });
+            expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+          }
+        },
+      );
+      it.each([
+        { selectedModelOverride: "auto" as const },
+        { selectedModelOverride: "hackerai-standard" as const },
+        { selectedModelOverride: "hackerai-pro" as const },
+        { moderationEligible: false },
+        {
+          moderationEligible: false,
+          allowsAbliterationContinuation: true,
+          independentAbliterationResponses: 5,
+        },
+        { subscription: "free" as const },
+        { limitRescue: true },
+      ])(
+        "does not enroll outside the moderated Max population: %j",
+        async (overrides) => {
+          const getFeatureFlagResult = jest
+            .fn()
+            .mockImplementation(async (key: string) =>
+              flagResult(
+                key === ABLITERATED_MAX_EXPERIMENT_KEY ? "test" : false,
+              ),
+            );
+          await expect(
+            evaluateAbliteratedModel({
+              ...defaults,
+              mode,
+              selectedModelOverride: "hackerai-max",
+              ...overrides,
+              posthog: { getFeatureFlagResult },
+            }),
+          ).resolves.toBeUndefined();
+          expect(
+            getFeatureFlagResult.mock.calls.some(
+              ([key]) => key === ABLITERATED_MAX_EXPERIMENT_KEY,
+            ),
+          ).toBe(false);
+        },
+      );
+      it.each([false, undefined, "unexpected"])(
+        "preserves the baseline when the new flag returns %s and the legacy flag is off",
+        async (value) => {
+          const getFeatureFlagResult = jest
+            .fn()
+            .mockImplementation(async (key: string) =>
+              flagResult(
+                key === ABLITERATED_MAX_EXPERIMENT_KEY ? value : false,
+              ),
+            );
+          await expect(
+            evaluateAbliteratedModel({
+              ...defaults,
+              mode,
+              selectedModelOverride: "hackerai-max",
+              posthog: { getFeatureFlagResult },
+            }),
+          ).resolves.toBeUndefined();
+        },
+      );
+    },
+  );
   it("uses history only within parent treatment and an explicitly enabled continuity flag", async () => {
     const getFeatureFlagResult = jest
       .fn()
