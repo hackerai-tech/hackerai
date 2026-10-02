@@ -34,7 +34,7 @@ import {
   priceBillingInterval,
   subscriptionMrrDollars,
 } from "@/lib/billing/subscription-mrr";
-import { voidOpenCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
+import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import type { SubscriptionTier } from "@/types";
 import {
   proMonthlyPricingAssignmentFromMetadata,
@@ -298,7 +298,7 @@ export default async function cancelSubscriptionAction(
 
   if (cancelImmediately) {
     try {
-      const invoiceResult = await voidOpenCanceledRenewalInvoice(
+      const invoiceResult = await voidUnpaidCanceledRenewalInvoice(
         stripe,
         updatedSubscription,
       );

@@ -45,6 +45,7 @@ import {
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 import { subscriptionTierFromPrice } from "@/lib/billing/current-subscription";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
+import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import {
   LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON,
   reconcileLateSubscriptionPayment,
@@ -2526,6 +2527,21 @@ async function handleSubscriptionDeleted(
       ? subscription.customer
       : subscription.customer?.id;
   if (!customerId) return;
+
+  // Cleanup is Stripe-only and validates its own plan/invoice eligibility. Run
+  // it before plan or user hydration can return early and acknowledge deletion.
+  if (subscription.cancellation_details?.reason === "payment_failed") {
+    const renewalResult = await voidUnpaidCanceledRenewalInvoice(
+      stripe,
+      subscription,
+    );
+    phLogger.info("billing_canceled_renewal_cleanup", {
+      stripe_event_id: stripeEventId,
+      stripe_subscription_id: subscription.id,
+      stripe_invoice_id: stripeObjectId(subscription.latest_invoice),
+      result: renewalResult,
+    });
+  }
 
   let price = subscription.items?.data[0]?.price;
   const lookupKey = price?.lookup_key ?? null;
