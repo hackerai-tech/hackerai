@@ -2096,6 +2096,85 @@ describe("CentrifugoSandbox", () => {
       }
     }, 15000);
 
+    it.each([
+      ["UTF-8 transcript", "秘密🙂\n'$(literal)'\n".repeat(20_000)],
+      ["binary file", Buffer.alloc(600_000, 253)],
+      ["ArrayBuffer", new Uint8Array(180_000).fill(241).buffer],
+      ["empty file", ""],
+      ["empty binary file", Buffer.alloc(0)],
+    ])(
+      "round-trips a %s through bounded POSIX commands",
+      async (_, content) => {
+        const { execFileSync } = jest.requireActual("node:child_process");
+        const { mkdtempSync, readFileSync, rmSync, writeFileSync } =
+          jest.requireActual("node:fs");
+        const { tmpdir } = jest.requireActual("node:os");
+        const directory = mkdtempSync(`${tmpdir()}/hackerai-write-`);
+        const path = `${directory}/quoted ' transcript.txt`;
+        const sandbox = createSandbox();
+        (sandbox as any).shellKind = "bash";
+        const commands: string[] = [];
+        (sandbox as any).commands.run = jest.fn(async (command: string) => {
+          commands.push(command);
+          // Enforce the complete argument budget, including quoting and path.
+          if (Buffer.byteLength(command, "utf8") > 16 * 1024) {
+            throw new Error("spawn E2BIG");
+          }
+          execFileSync("/bin/bash", ["-c", command]);
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+        try {
+          writeFileSync(path, "old bytes that must be truncated");
+          await sandbox.files.write(
+            path,
+            content as string | Buffer | ArrayBuffer,
+          );
+          const expected =
+            typeof content === "string"
+              ? Buffer.from(content)
+              : Buffer.from(content as ArrayBuffer);
+          expect(readFileSync(path)).toEqual(expected);
+          expect(commands.length).toBeGreaterThan(0);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("rejects an oversized POSIX path before sending any command", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).shellKind = "bash";
+      const run = jest.fn();
+      (sandbox as any).commands.run = run;
+      await expect(
+        sandbox.files.write(`/tmp/${"界".repeat(6000)}/file`, "value"),
+      ).rejects.toThrow("File path exceeds the local file command limit");
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it.each(["failure", "cancel"])(
+      "stops a chunked POSIX write after %s",
+      async (reason) => {
+        const sandbox = createSandbox();
+        (sandbox as any).shellKind = "bash";
+        const controller = new AbortController();
+        let writes = 0;
+        (sandbox as any).commands.run = jest.fn(async (command: string) => {
+          if (command.startsWith("printf") && ++writes === 2) {
+            if (reason === "cancel") controller.abort();
+            else return { stdout: "", stderr: "disk full", exitCode: 1 };
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+        await expect(
+          sandbox.files.write("/tmp/partial", "x".repeat(100_000), {
+            signal: controller.signal,
+          }),
+        ).rejects.toThrow(reason === "failure" ? "disk full" : undefined);
+        expect(writes).toBe(2);
+      },
+    );
+
     it("cleans the cmd Base64 temporary file when a chunk command rejects", async () => {
       const sandbox = createSandbox({
         osInfo: {
