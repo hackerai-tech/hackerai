@@ -262,7 +262,19 @@ function mockLateRenewal() {
     status_transitions: { paid_at: paidAt },
     parent: { subscription_details: { subscription: "sub_late" } },
     lines: {
-      data: [subscriptionInvoiceLine("sub_late", "price_pro", 2500)],
+      data: [
+        {
+          ...subscriptionInvoiceLine("sub_late", "price_pro", 2500, 1),
+          parent: {
+            type: "subscription_item_details",
+            subscription_item_details: {
+              subscription: "sub_late",
+              subscription_item: "si_late",
+              proration: false,
+            },
+          },
+        },
+      ],
       has_more: false,
     },
   };
@@ -276,7 +288,7 @@ function mockLateRenewal() {
     ended_at: endedAt,
     cancellation_details: { reason: "payment_failed" },
     metadata: {},
-    items: { data: [{ quantity: 1, price }] },
+    items: { data: [{ id: "si_late", quantity: 1, price }] },
   };
   const refund = {
     id: "re_late",
@@ -3354,10 +3366,25 @@ describe("POST /api/subscription/webhook", () => {
     );
   });
 
-  it.each(["open", "uncollectible"])(
-    "retires an unpaid %s renewal when Stripe cancels an individual subscription",
-    async (status) => {
+  it.each([
+    ["open", "resolved"],
+    ["uncollectible", "resolved"],
+    ["open", "empty"],
+    ["uncollectible", "empty"],
+    ["uncollectible", "failed"],
+  ])(
+    "retires an unpaid %s renewal with %s user resolution",
+    async (status, userResolution) => {
       const { invoice, subscription } = mockLateRenewal();
+      if (userResolution === "empty") {
+        mockListMemberships.mockResolvedValue({
+          autoPagination: jest.fn().mockResolvedValue([]),
+        } as never);
+      } else if (userResolution === "failed") {
+        mockListMemberships.mockRejectedValue(
+          new Error("WorkOS unavailable") as never,
+        );
+      }
       const canceled = {
         ...subscription,
         items: {
@@ -3431,6 +3458,7 @@ describe("POST /api/subscription/webhook", () => {
           items: {
             data: [
               {
+                id: "si_late",
                 quantity: 1,
                 price: {
                   ...subscription.items.data[0].price,

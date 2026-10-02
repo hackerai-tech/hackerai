@@ -83,14 +83,16 @@ voluntary cancellations are outside this policy.
 
 On `customer.subscription.deleted` with reason `payment_failed`, the handler
 voids the latest wholly unpaid automatic renewal for a single recognized,
-licensed individual plan. Both `open` and `uncollectible` invoices can still be
+licensed individual plan, with exactly one invoice line matching that subscription
+item and a quantity of one. Both `open` and `uncollectible` invoices can still be
 paid, so both are eligible. This deliberately retires that failed renewal debt
 instead of collecting money for a subscription that cannot be restarted. It
 does not grant access or usage; the customer starts a new subscription normally.
 Team, metered, unfamiliar, partial-payment, proration, mixed-item, credit-note,
 and support-adjusted cases remain for review. Pending payment processing or
 authentication also prevents cleanup. Cleanup failures retry the deletion
-webhook before it is marked processed. A concurrent paid invoice stays under
+webhook before it is marked processed. Cleanup runs even if customer-user lookup
+fails or finds no users. A concurrent paid invoice stays under
 the existing late-payment reconciliation policy.
 
 This prevents future eligible canceled renewals from leaving a payable old

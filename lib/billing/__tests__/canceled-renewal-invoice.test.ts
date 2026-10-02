@@ -22,6 +22,7 @@ const automaticSubscription = {
     has_more: false,
     data: [
       {
+        id: "si_old",
         quantity: 1,
         price: {
           id: "price_pro_plus",
@@ -47,11 +48,13 @@ function invoice(overrides: Record<string, unknown> = {}) {
       has_more: false,
       data: [
         {
+          quantity: 1,
           pricing: { price_details: { price: "price_pro_plus" } },
           parent: {
             type: "subscription_item_details",
             subscription_item_details: {
               subscription: "sub_old",
+              subscription_item: "si_old",
               proration: false,
             },
           },
@@ -261,6 +264,55 @@ describe("canceled renewal invoice", () => {
     await expect(voidUnpaidCanceledRenewalInvoice(stripe, other)).resolves.toBe(
       "not_applicable",
     );
+    expect(voidInvoice).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { quantity: 2 },
+    { quantity: null },
+    {
+      parent: {
+        type: "subscription_item_details",
+        subscription_item_details: {
+          subscription: "sub_old",
+          subscription_item: "si_other",
+          proration: false,
+        },
+      },
+    },
+    { pricing: { price_details: { price: "price_other" } } },
+  ])(
+    "preserves a historical renewal that does not match the current item: %j",
+    async (lineOverrides) => {
+      const currentInvoice = invoice();
+      const { stripe, voidInvoice } = stripeMock(
+        invoice({
+          lines: {
+            has_more: false,
+            data: [{ ...currentInvoice.lines.data[0], ...lineOverrides }],
+          },
+        }),
+      );
+      await expect(
+        voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+      ).resolves.toBe("not_applicable");
+      expect(voidInvoice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves a renewal with multiple matching lines", async () => {
+    const currentInvoice = invoice();
+    const { stripe, voidInvoice } = stripeMock(
+      invoice({
+        lines: {
+          has_more: false,
+          data: [currentInvoice.lines.data[0], currentInvoice.lines.data[0]],
+        },
+      }),
+    );
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+    ).resolves.toBe("not_applicable");
     expect(voidInvoice).not.toHaveBeenCalled();
   });
 

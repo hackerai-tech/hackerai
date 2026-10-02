@@ -42,6 +42,7 @@ export async function getCanceledRenewalInvoice(
   return invoice;
 }
 
+/** Retire a safely unpaid renewal without racing payment or support reconciliation. */
 export async function voidUnpaidCanceledRenewalInvoice(
   stripe: Stripe,
   subscription: Stripe.Subscription,
@@ -56,6 +57,7 @@ export async function voidUnpaidCanceledRenewalInvoice(
     if (
       subscription.items?.has_more ||
       subscription.items?.data.length !== 1 ||
+      !item?.id ||
       item?.quantity !== 1 ||
       item.price.recurring?.usage_type !== "licensed" ||
       (!["pro", "pro-plus", "ultra"].includes(tier ?? "") &&
@@ -76,6 +78,7 @@ export async function voidUnpaidCanceledRenewalInvoice(
     (invoice.post_payment_credit_notes_amount ?? 0) > 0 ||
     invoice.lines?.has_more ||
     !invoice.lines?.data.length ||
+    (automaticCancellation && invoice.lines.data.length !== 1) ||
     invoice.lines.data.some(
       (line) =>
         line.parent?.type !== "subscription_item_details" ||
@@ -83,8 +86,12 @@ export async function voidUnpaidCanceledRenewalInvoice(
           subscription.id ||
         line.parent.subscription_item_details?.proration !== false ||
         (automaticCancellation &&
-          stripeObjectId(line.pricing?.price_details?.price) !==
-            item?.price.id),
+          (line.quantity !== 1 ||
+            stripeObjectId(
+              line.parent.subscription_item_details?.subscription_item,
+            ) !== item?.id ||
+            stripeObjectId(line.pricing?.price_details?.price) !==
+              item?.price.id)),
     )
   ) {
     return "not_applicable";
