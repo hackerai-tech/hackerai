@@ -70,7 +70,8 @@ export async function voidUnpaidCanceledRenewalInvoice(
   if (!invoice) return "not_applicable";
   if (invoice.status === "paid") return "paid";
   if (
-    !["open", "uncollectible"].includes(invoice.status ?? "") ||
+    (invoice.status !== "open" &&
+      !(automaticCancellation && invoice.status === "uncollectible")) ||
     invoice.amount_remaining <= 0 ||
     invoice.amount_paid !== 0 ||
     (automaticCancellation && invoice.starting_balance > 0) ||

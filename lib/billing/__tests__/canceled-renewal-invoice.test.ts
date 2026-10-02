@@ -359,6 +359,19 @@ describe("canceled renewal invoice", () => {
     ).resolves.toBe(true);
   });
 
+  it("preserves written-off renewals on manual cancellation and keeps checkout blocked", async () => {
+    const { stripe, voidInvoice } = stripeMock(
+      invoice({ status: "uncollectible" }),
+    );
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, subscription),
+    ).resolves.toBe("not_applicable");
+    expect(voidInvoice).not.toHaveBeenCalled();
+    await expect(
+      hasRecentCanceledRenewalAtRisk(stripe, "cus_123", endedAt + 120),
+    ).resolves.toBe(true);
+  });
+
   it("keeps a collectible invoice blocked even with a support note", async () => {
     for (const status of ["open", "uncollectible"]) {
       const { stripe } = stripeMock(
