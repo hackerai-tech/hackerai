@@ -121,17 +121,20 @@ export async function evaluateAbliteratedModel({
   previewDiagnosticContext?: { chatId: string; requestId: string };
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
-  const reportMaxDecision = (reason: string, variant?: string) => {
-    if (!previewDiagnosticContext || selectedModelOverride !== "hackerai-max")
-      return;
+  const isProOrMax =
+    selectedModelOverride === "hackerai-pro" ||
+    selectedModelOverride === "hackerai-max";
+  const reportDecision = (reason: string, variant?: string) => {
+    if (!previewDiagnosticContext || !isProOrMax) return;
     try {
-      phLogger.info("Preview Max Abliteration assignment decision", {
+      phLogger.info("Preview Abliteration assignment decision", {
         userId,
         chatId: previewDiagnosticContext.chatId,
         requestId: previewDiagnosticContext.requestId,
         experiment_key: ABLITERATED_MAX_EXPERIMENT_KEY,
         mode,
         subscription_tier: subscription,
+        selected_model_override: selectedModelOverride,
         moderation_eligible: moderationEligible,
         provider_configured: providerConfigured,
         posthog_configured: Boolean(posthog),
@@ -166,39 +169,40 @@ export async function evaluateAbliteratedModel({
     else if (limitRescue) reason = "limit_rescue";
     else if (!messages.length || messagesContainUnsupportedFiles(messages))
       reason = "unsupported_input";
-    reportMaxDecision(reason);
+    reportDecision(reason);
     return undefined;
   }
 
   const experimentKey = ABLITERATED_EXPERIMENT_KEY;
   try {
-    // Callers normalize the selector against current Max entitlements first.
+    // Callers normalize the selector against current entitlements first.
     // This independent trial never inherits the historical continuity route.
-    if (selectedModelOverride === "hackerai-max" && moderationEligible) {
-      const maxVariant = await getPostHogFlagWithoutExposure(
+    // Keep the original key so expanding to Pro preserves Max assignments.
+    if (isProOrMax && moderationEligible) {
+      const trialVariant = await getPostHogFlagWithoutExposure(
         posthog,
         ABLITERATED_MAX_EXPERIMENT_KEY,
         userId,
         { subscription, subscription_tier: subscription },
       );
-      if (maxVariant === "test" || maxVariant === "control") {
-        reportMaxDecision("assigned", maxVariant);
+      if (trialVariant === "test" || trialVariant === "control") {
+        reportDecision("assigned", trialVariant);
         return {
           key: ABLITERATED_MAX_EXPERIMENT_KEY,
-          variant: maxVariant,
+          variant: trialVariant,
           modelKey:
-            maxVariant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+            trialVariant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
           baselineModel: selectedModel,
           selectionSource: "moderation",
         };
       }
-      reportMaxDecision(
-        maxVariant === false
+      reportDecision(
+        trialVariant === false
           ? "flag_inactive_or_unmatched"
           : "flag_unavailable",
       );
     } else if (!moderationEligible) {
-      reportMaxDecision("moderation_not_eligible");
+      reportDecision("moderation_not_eligible");
     }
     const variant = await getPostHogFlagWithoutExposure(
       posthog,
@@ -233,7 +237,7 @@ export async function evaluateAbliteratedModel({
       baselineModel: selectedModel,
     };
   } catch {
-    reportMaxDecision("flag_lookup_failed");
+    reportDecision("flag_lookup_failed");
     return undefined;
   }
 }
