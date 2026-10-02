@@ -1111,7 +1111,10 @@ export const useChatHandlers = ({
       }
 
       if (sendDisabledReasonRef.current) return;
-      if (sendQueuedMessage) {
+      if (
+        sendQueuedMessage &&
+        (chatModeRef.current === "agent" || message.deliveryStatus)
+      ) {
         await sendQueuedMessage(messageId, {
           mode: chatModeRef.current,
           todos,

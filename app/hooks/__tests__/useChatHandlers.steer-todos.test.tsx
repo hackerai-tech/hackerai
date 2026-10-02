@@ -23,6 +23,7 @@ const mockClearInput = jest.fn();
 const mockClearUploadedFiles = jest.fn();
 const mockResetAutoContinueCount = jest.fn();
 let mockInput = "";
+let mockChatMode = "agent";
 let mockQueuedDeliveryStatus: "failed" | undefined;
 
 const todos: Todo[] = [
@@ -66,7 +67,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     getInput: () => mockInput,
     uploadedFiles: [],
-    chatMode: "agent",
+    chatMode: mockChatMode,
     clearInput: mockClearInput,
     clearUploadedFiles: mockClearUploadedFiles,
     todos,
@@ -131,6 +132,7 @@ describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInput = "";
+    mockChatMode = "agent";
     mockQueuedDeliveryStatus = undefined;
     Object.defineProperty(navigator, "onLine", {
       configurable: true,
@@ -177,6 +179,48 @@ describe("useChatHandlers steer todo handoff", () => {
     expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
     expect(global.fetch).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, "failed"] as const)(
+    "routes Ask Send Now by the selected item's delivery state: %s",
+    async (deliveryStatus) => {
+      mockChatMode = "ask";
+      mockQueuedDeliveryStatus = deliveryStatus;
+      const sendQueuedMessage = jest.fn(async () => {});
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages,
+          sendMessage: mockSendMessage,
+          sendQueuedMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: true,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      await act(() => result.current.handleSendNow("queued-1"));
+      if (deliveryStatus) {
+        expect(sendQueuedMessage).toHaveBeenCalledWith(
+          "queued-1",
+          expect.any(Object),
+        );
+        expect(mockSendMessage).not.toHaveBeenCalled();
+        expect(mockRemoveQueuedMessage).not.toHaveBeenCalled();
+      } else {
+        expect(sendQueuedMessage).not.toHaveBeenCalled();
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "Change direction" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ mode: "ask" }),
+          }),
+        );
+        expect(mockRemoveQueuedMessage).toHaveBeenCalledWith("queued-1");
+      }
+    },
+  );
 
   it("waits for a pending start and cancels its exact run after an early Stop", async () => {
     let finishStart!: (response: Response) => void;
