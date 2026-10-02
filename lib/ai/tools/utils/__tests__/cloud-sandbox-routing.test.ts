@@ -124,33 +124,36 @@ describe("cloud sandbox provider routing", () => {
     },
   );
 
-  it("uses a concurrent winner and never publishes the losing fresh workspace", async () => {
-    const observed = {
-      phase: "checking",
-      sourceId: "old",
-      region: "us-east-1",
-    };
-    mockMigrationRead.mockResolvedValueOnce(observed).mockResolvedValue({
-      phase: "e2b",
-      region: "us-east-1",
-      destinationId: "winner",
-    });
-    mockFallbackPin.mockResolvedValue(false);
-    const loser = { sandboxId: "loser" },
-      winner = { sandboxId: "winner" };
-    mockEnsureE2B
-      .mockResolvedValueOnce({ sandbox: loser })
-      .mockResolvedValueOnce({ sandbox: winner });
-    await expect(
-      ensureCloudSandboxConnection({
-        userId: "user-1",
-        setSandbox,
-        context: { triggerRegion: "us-east-1" },
-      }),
-    ).resolves.toEqual({ sandbox: winner, provider: "e2b" });
-    expect(setSandbox).not.toHaveBeenCalledWith(loser);
-    expect(setSandbox).toHaveBeenCalledWith(winner);
-  });
+  it.each(["us-east-1", "us-west-2"] as const)(
+    "uses a concurrent %s winner and never publishes the losing fresh workspace",
+    async (winnerRegion) => {
+      const observed = {
+        phase: "checking",
+        sourceId: "old",
+        region: "us-east-1",
+      };
+      mockMigrationRead.mockResolvedValueOnce(observed).mockResolvedValue({
+        phase: "e2b",
+        region: winnerRegion,
+        destinationId: "winner",
+      });
+      mockFallbackPin.mockResolvedValue(false);
+      const loser = { sandboxId: "loser" },
+        winner = { sandboxId: "winner" };
+      mockEnsureE2B
+        .mockResolvedValueOnce({ sandbox: loser })
+        .mockResolvedValueOnce({ sandbox: winner });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { triggerRegion: "us-east-1" },
+        }),
+      ).resolves.toEqual({ sandbox: winner, provider: "e2b" });
+      expect(setSandbox).not.toHaveBeenCalledWith(loser);
+      expect(setSandbox).toHaveBeenCalledWith(winner);
+    },
+  );
 
   it("retains a potentially pinned fallback when the Redis write acknowledgement is lost", async () => {
     mockMigrationRead.mockResolvedValue({ phase: "checking", sourceId: "old" });
@@ -208,32 +211,59 @@ describe("cloud sandbox provider routing", () => {
     },
   );
 
-  it("routes a verified E2B recovery to its exact sandbox while MIOSA is paused", async () => {
-    jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
-    mockMigrationRead.mockResolvedValue({
-      phase: "e2b",
-      region: "us-east-1",
-      destinationId: "verified-e2b",
-    });
-    const sandbox = { sandboxId: "verified-e2b" };
-    mockEnsureE2B.mockResolvedValue({ sandbox });
-    await expect(
-      ensureCloudSandboxConnection({
-        userId: "user-1",
-        setSandbox,
-        context: { provider: "miosa", triggerRegion: "us-east-1" },
-      }),
-    ).resolves.toEqual({ sandbox, provider: "e2b" });
-    expect(mockEnsureMiosa).not.toHaveBeenCalled();
-    expect(mockEnsureE2B).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ destinationId: "verified-e2b" }),
-    );
-    expect(mockMigrationAssert).toHaveBeenCalledWith(
-      "user-1",
-      "e2b",
-      "verified-e2b",
-    );
+  it.each(["us-east-1", "us-west-2"] as const)(
+    "routes a verified E2B recovery from %s to its exact sandbox while MIOSA is paused",
+    async (triggerRegion) => {
+      jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
+      mockMigrationRead.mockResolvedValue({
+        phase: "e2b",
+        region: "us-east-1",
+        destinationId: "verified-e2b",
+      });
+      const sandbox = { sandboxId: "verified-e2b" };
+      mockEnsureE2B.mockResolvedValue({ sandbox });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { provider: "miosa", triggerRegion },
+        }),
+      ).resolves.toEqual({ sandbox, provider: "e2b" });
+      expect(mockEnsureMiosa).not.toHaveBeenCalled();
+      expect(mockEnsureE2B).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ destinationId: "verified-e2b" }),
+      );
+      expect(mockMigrationAssert).toHaveBeenCalledWith(
+        "user-1",
+        "e2b",
+        "verified-e2b",
+      );
+    },
+  );
+
+  it("keeps a US E2B pin fenced from a European worker", async () => {
+    const original = process.env.E2B_EU_API_KEY;
+    process.env.E2B_EU_API_KEY = "test-eu-key";
+    try {
+      mockMigrationRead.mockResolvedValue({
+        phase: "e2b",
+        region: "us-east-1",
+        destinationId: "us-workspace",
+      });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { provider: "e2b", triggerRegion: "eu-central-1" },
+        }),
+      ).rejects.toThrow("migration fence");
+      expect(mockEnsureE2B).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) delete process.env.E2B_EU_API_KEY;
+      else process.env.E2B_EU_API_KEY = original;
+    }
   });
 
   it("preserves a cached MIOSA workspace while paused instead of replacing its files", async () => {

@@ -109,7 +109,7 @@ function isRecoveredE2BState(value: RecoveredE2BState): boolean {
     !!value.sourceId &&
     typeof value.destinationId === "string" &&
     !!value.destinationId &&
-    ["us-east-1", "us-west-2"].includes(value.region)
+    ["us-east-1", "us-west-2", "eu-central-1"].includes(value.region)
   );
 }
 

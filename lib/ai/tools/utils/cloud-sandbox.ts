@@ -126,7 +126,11 @@ async function ensureFreshMigrationFallback(
   }
 
   const state = await readCloudMigrationState(options.userId);
-  if (state?.phase !== "e2b" || state.region !== region)
+  if (
+    state?.phase !== "e2b" ||
+    getE2BClusterRouting(state.region).createCluster.cluster !==
+      getE2BClusterRouting(region).createCluster.cluster
+  )
     throw new CloudMigrationUnavailableError();
   await assertCloudWorkspaceAvailable(
     options.userId,
@@ -361,7 +365,12 @@ export async function ensureCloudSandboxConnection(options: {
   if (
     migrationState &&
     ((migrationState.phase !== "miosa" && migrationState.phase !== "e2b") ||
-      migrationState.region !== options.context?.triggerRegion ||
+      (migrationState.phase === "e2b"
+        ? !options.context?.triggerRegion ||
+          getE2BClusterRouting(migrationState.region).createCluster.cluster !==
+            getE2BClusterRouting(options.context.triggerRegion).createCluster
+              .cluster
+        : migrationState.region !== options.context?.triggerRegion) ||
       (migrationState.phase === "miosa" &&
         options.initialSandbox &&
         isE2BSandbox(options.initialSandbox)))
