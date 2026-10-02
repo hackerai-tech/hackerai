@@ -33,6 +33,10 @@ const mockStop = jest.fn();
 const mockHandleSubmit = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
+const mockFetchAgentLongStream =
+  jest.fn<
+    typeof import("@/lib/chat/agent-long-transport").fetchAgentLongStream
+  >();
 const mockResumeAgentLongStream =
   jest.fn<
     typeof import("@/lib/chat/agent-long-transport").resumeAgentLongStream
@@ -41,6 +45,9 @@ jest.mock("@/lib/chat/agent-long-transport", () => ({
   ...jest.requireActual<typeof import("@/lib/chat/agent-long-transport")>(
     "@/lib/chat/agent-long-transport",
   ),
+  fetchAgentLongStream: (
+    ...args: Parameters<typeof mockFetchAgentLongStream>
+  ) => mockFetchAgentLongStream(...args),
   resumeAgentLongStream: (
     ...args: Parameters<typeof mockResumeAgentLongStream>
   ) => mockResumeAgentLongStream(...args),
@@ -328,19 +335,25 @@ const DisconnectedQueueHarness = () => {
   );
 };
 
-const QueueEditingHarness = () => {
+const QueueEditingHarness = ({
+  mode = "agent",
+}: {
+  mode?: "agent" | "ask";
+}) => {
   const {
     messageQueue,
     queueMessage,
+    setChatMode,
     updateQueuedMessage,
     setEditingQueuedMessageId,
   } = useGlobalState();
   const hasSetActualEditingId = useRef(false);
 
   useEffect(() => {
+    setChatMode(mode);
     queueMessage("original queued message");
     setEditingQueuedMessageId("queued-message-id");
-  }, [queueMessage, setEditingQueuedMessageId]);
+  }, [queueMessage, setEditingQueuedMessageId, setChatMode, mode]);
 
   useEffect(() => {
     if (messageQueue[0] && !hasSetActualEditingId.current) {
@@ -940,13 +953,85 @@ describe("Chat Component Integration", () => {
       rerender(view());
       await waitFor(() =>
         expect(mockSendMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ text: "continue" }),
+          expect.objectContaining({
+            parts: [{ type: "text", text: "continue" }],
+          }),
           expect.objectContaining({
             body: expect.objectContaining({ sandboxPreference: "desktop" }),
           }),
         ),
       );
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+    });
+
+    it("removes a queued item only when its actual Agent transport acknowledges the matching turn", async () => {
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      let finish!: () => void;
+      mockSendMessage.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      render(
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      const payload = (
+        mockSendMessage.mock.calls.at(-1) as unknown as [unknown]
+      )[0];
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockFetchAgentLongStream.mockImplementationOnce(
+        async (_init, onRunStarted) => {
+          onRunStarted?.({
+            chatId: "queued-message-id",
+            runId: "synthetic-run",
+          });
+          return {} as Response;
+        },
+      );
+      await act(async () => {
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            chatId: "queued-message-id",
+            messages: [payload],
+          }),
+        });
+      });
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
+      await act(async () => {
+        finish();
+      });
+    });
+
+    it("preserves automatic and manual Ask queue dispatch", async () => {
+      render(
+        <TestWrapper>
+          <QueueEditingHarness mode="ask" />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save queued edit" }));
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "updated queued message" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ mode: "ask" }),
+          }),
+        ),
+      );
+      expect(screen.getByTestId("queue-state")).toHaveTextContent("Queued: 0");
+      expect(mockChatHandlerArgs.sendQueuedMessage).toBeUndefined();
     });
 
     it("keeps an edited queued message pending, then resumes with updated text", async () => {
@@ -969,11 +1054,13 @@ describe("Chat Component Integration", () => {
 
       await waitFor(() => {
         expect(mockSendMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ text: "updated queued message" }),
+          expect.objectContaining({
+            parts: [{ type: "text", text: "updated queued message" }],
+          }),
           expect.anything(),
         );
         expect(screen.getByTestId("queue-state")).toHaveTextContent(
-          "Queued: 0",
+          "Queued: 1",
         );
       });
     });
