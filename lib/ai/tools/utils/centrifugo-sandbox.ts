@@ -1198,8 +1198,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return `${base}${separator}${relative}`;
   }
 
-  // Max chunk size ~500KB base64 to stay under size limits (bash path)
-  private static readonly MAX_CHUNK_SIZE = 500 * 1024;
+  // Bound the complete shell argument, including quoting and path, below
+  // Linux per-argument and Windows Git Bash process command-line limits.
+  private static readonly MAX_POSIX_FILE_COMMAND_BYTES = 16 * 1024;
 
   // Keep native file relay messages comfortably below common WebSocket frame
   // limits after JSON overhead. Base64 chunks must stay divisible by 4.
@@ -1808,6 +1809,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const { useBash, path, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
       const fileName = path.split(/[/\\]/).pop() || "file";
+      const escapedPath = escapePath(path);
+      const commandBudget = CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      const overhead = Buffer.byteLength(
+        `printf '%s' "" | base64 -d >> ${escapedPath}`,
+        "utf8",
+      );
+      const chunkSize = Math.floor((commandBudget - overhead) / 4) * 4;
+      if (useBash && chunkSize < 4) {
+        // Reject before even issuing mkdir with an oversized path argument.
+        throw new Error("File path exceeds the local file command limit");
+      }
 
       // Ensure parent directory exists. Pass the native (unconverted) dir
       // so ensureDirectory re-applies its own shell-aware path handling.
@@ -1831,7 +1843,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       if (!useBash) {
         // Windows cmd.exe: use certutil to decode base64
-        const escapedPath = escapePath(path);
         const b64 = isBinary
           ? contentStr
           : Buffer.from(contentStr).toString("base64");
@@ -1876,50 +1887,43 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           );
           throw error;
         }
-      } else if (
-        isBinary &&
-        contentStr.length > CentrifugoSandbox.MAX_CHUNK_SIZE
-      ) {
-        // POSIX: Chunk large binary files to stay under size limits
-        const chunks: string[] = [];
-        for (
-          let i = 0;
-          i < contentStr.length;
-          i += CentrifugoSandbox.MAX_CHUNK_SIZE
+      } else {
+        const literalCommand = isBinary
+          ? undefined
+          : `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
+        if (
+          literalCommand &&
+          Buffer.byteLength(literalCommand, "utf8") <= commandBudget
         ) {
-          chunks.push(
-            contentStr.slice(i, i + CentrifugoSandbox.MAX_CHUNK_SIZE),
-          );
+          const result = await this.runFileCommand(literalCommand, {
+            displayName: `Writing: ${fileName}`,
+            signal,
+          });
+          if (result.exitCode !== 0) {
+            throw new Error(`Failed to write file: ${result.stderr}`);
+          }
+          return;
         }
 
-        const escapedPath = escapePath(path);
-        for (let i = 0; i < chunks.length; i++) {
-          const operator = i === 0 ? ">" : ">>";
+        // Encode large text as well as binary data. Chunking base64 on a
+        // multiple of four preserves UTF-8 bytes and avoids shell expansion.
+        const encoded = isBinary
+          ? contentStr
+          : Buffer.from(contentStr, "utf8").toString("base64");
+        for (
+          let offset = 0;
+          offset < encoded.length || offset === 0;
+          offset += chunkSize
+        ) {
+          const chunk = encoded.slice(offset, offset + chunkSize);
+          const operator = offset === 0 ? ">" : ">>";
           const result = await this.runFileCommand(
-            `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
-            { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
+            `printf '%s' "${chunk}" | base64 -d ${operator} ${escapedPath}`,
+            { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
             throw new Error(`Failed to write file: ${result.stderr}`);
           }
-        }
-      } else {
-        const escapedPath = escapePath(path);
-        // Quote text as one literal argument; printf preserves trailing newlines
-        // exactly, unlike a heredoc which always adds a final newline.
-        let command: string;
-        if (isBinary) {
-          command = `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`;
-        } else {
-          command = `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
-        }
-
-        const result = await this.runFileCommand(command, {
-          displayName: `Writing: ${fileName}`,
-          signal,
-        });
-        if (result.exitCode !== 0) {
-          throw new Error(`Failed to write file: ${result.stderr}`);
         }
       }
     },
