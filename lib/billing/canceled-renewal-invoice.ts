@@ -73,6 +73,7 @@ export async function voidUnpaidCanceledRenewalInvoice(
     !["open", "uncollectible"].includes(invoice.status ?? "") ||
     invoice.amount_remaining <= 0 ||
     invoice.amount_paid !== 0 ||
+    (automaticCancellation && invoice.starting_balance > 0) ||
     invoice.metadata?.hackeraiLatePaymentResolution ||
     (invoice.pre_payment_credit_notes_amount ?? 0) > 0 ||
     (invoice.post_payment_credit_notes_amount ?? 0) > 0 ||

@@ -2528,6 +2528,21 @@ async function handleSubscriptionDeleted(
       : subscription.customer?.id;
   if (!customerId) return;
 
+  // Cleanup is Stripe-only and validates its own plan/invoice eligibility. Run
+  // it before plan or user hydration can return early and acknowledge deletion.
+  if (subscription.cancellation_details?.reason === "payment_failed") {
+    const renewalResult = await voidUnpaidCanceledRenewalInvoice(
+      stripe,
+      subscription,
+    );
+    phLogger.info("billing_canceled_renewal_cleanup", {
+      stripe_event_id: stripeEventId,
+      stripe_subscription_id: subscription.id,
+      stripe_invoice_id: stripeObjectId(subscription.latest_invoice),
+      result: renewalResult,
+    });
+  }
+
   let price = subscription.items?.data[0]?.price;
   const lookupKey = price?.lookup_key ?? null;
   let tier: SubscriptionTier | null = null;
@@ -2562,21 +2577,6 @@ async function handleSubscriptionDeleted(
 
   const { userIds, orgId, reason } =
     await resolveUserIdsFromCustomer(customerId);
-  // Stripe cleanup does not depend on a successful user lookup. Do it before
-  // the no-users return so the deletion cannot be acknowledged with a payable
-  // eligible renewal left behind. API/permissions errors retry this delivery.
-  if (subscription.cancellation_details?.reason === "payment_failed") {
-    const renewalResult = await voidUnpaidCanceledRenewalInvoice(
-      stripe,
-      subscription,
-    );
-    phLogger.info("billing_canceled_renewal_cleanup", {
-      stripe_event_id: stripeEventId,
-      stripe_subscription_id: subscription.id,
-      stripe_invoice_id: stripeObjectId(subscription.latest_invoice),
-      result: renewalResult,
-    });
-  }
   if (userIds.length === 0) {
     const message = `[Subscription Webhook] subscription.deleted: could not resolve users for customer ${customerId} (${reason ?? "unknown"})`;
     if (reason === "customer_deleted") {

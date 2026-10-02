@@ -137,6 +137,7 @@ describe("canceled renewal invoice", () => {
 
   it.each([
     { amount_paid: 1000 },
+    { starting_balance: 1000 },
     { metadata: { hackeraiLatePaymentResolution: "reviewed" } },
     { pre_payment_credit_notes_amount: 1000 },
     { post_payment_credit_notes_amount: 1000 },

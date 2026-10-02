@@ -3495,6 +3495,78 @@ describe("POST /api/subscription/webhook", () => {
     expect(mockVoidInvoice).toHaveBeenCalledTimes(2);
   });
 
+  it.each([false, true])(
+    "cleans up a known grandfathered plan before a failed subscription lookup (void retry: %s)",
+    async (failVoid) => {
+      const { invoice, subscription } = mockLateRenewal();
+      const priceId = HACKERAI_PRO_20_MONTHLY_PRICE_ID;
+      mockConstructEvent.mockReturnValue({
+        id: "evt_canceled_grandfathered",
+        type: "customer.subscription.deleted",
+        data: {
+          object: {
+            ...subscription,
+            items: {
+              data: [
+                {
+                  ...subscription.items.data[0],
+                  price: {
+                    ...subscription.items.data[0].price,
+                    id: priceId,
+                    lookup_key: null,
+                    recurring: { usage_type: "licensed" },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      });
+      mockRetrieveInvoice.mockResolvedValue({
+        ...invoice,
+        status: "uncollectible",
+        amount_paid: 0,
+        amount_remaining: 2500,
+        lines: {
+          has_more: false,
+          data: [
+            {
+              ...invoice.lines.data[0],
+              pricing: { price_details: { price: priceId } },
+            },
+          ],
+        },
+      } as never);
+      mockRetrieveSubscription.mockRejectedValue(
+        new Error("Subscription lookup unavailable") as never,
+      );
+      mockListInvoicePayments.mockResolvedValue({
+        data: [],
+        has_more: false,
+      } as never);
+      const { POST } = await import("../route");
+      if (failVoid) {
+        mockVoidInvoice.mockRejectedValueOnce(
+          new Error("Invoice write permission missing") as never,
+        );
+        await expect(POST(makeWebhookRequest())).rejects.toThrow(
+          "Invoice write permission missing",
+        );
+        expect(mockRetrieveSubscription).not.toHaveBeenCalled();
+        expect(mockConvexMutation).not.toHaveBeenCalledWith(
+          "extraUsage.checkAndMarkWebhook",
+          { serviceKey: "service_key", eventId: "evt_canceled_grandfathered" },
+        );
+      }
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      expect(mockVoidInvoice).toHaveBeenCalledWith(invoice.id);
+      expect(mockVoidInvoice.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRetrieveSubscription.mock.invocationCallOrder[0],
+      );
+      expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    },
+  );
+
   it("completes terminal cancellation bookkeeping before retrying failed hydration", async () => {
     mockGetReferralRewardConfig.mockReturnValue({
       enabled: true,

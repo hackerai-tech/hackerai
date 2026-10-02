@@ -88,7 +88,7 @@ item and a quantity of one. Both `open` and `uncollectible` invoices can still b
 paid, so both are eligible. This deliberately retires that failed renewal debt
 instead of collecting money for a subscription that cannot be restarted. It
 does not grant access or usage; the customer starts a new subscription normally.
-Team, metered, unfamiliar, partial-payment, proration, mixed-item, credit-note,
+Team, metered, unfamiliar, partial-payment, prior-debt, proration, mixed-item, credit-note,
 and support-adjusted cases remain for review. Pending payment processing or
 authentication also prevents cleanup. Cleanup failures retry the deletion
 webhook before it is marked processed. Cleanup runs even if customer-user lookup
