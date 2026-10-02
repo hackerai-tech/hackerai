@@ -150,6 +150,24 @@ describe("SandboxSelector", () => {
     expect(screen.getByRole("button", { name: /4p3x/i })).toBeInTheDocument();
   });
 
+  it.each([
+    ["failed", "This computer unavailable"],
+    ["connecting", "This computer reconnecting"],
+  ])(
+    "keeps the compact %s label short with an accessible status",
+    (status, label) => {
+      mockGlobalState.desktopBridgeStatus = status;
+      render(<SandboxSelector value="desktop" compact />);
+
+      expect(screen.getByText("This computer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: label })).toHaveAttribute(
+        "title",
+        label,
+      );
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    },
+  );
+
   it("caps long remote names in the chat toolbar without losing the full name", () => {
     const hostname = "admin1-HP-EliteDesk-800-G3-SFF-with-a-long-suffix";
     mockGlobalState.desktopBridgeStatus = "connected";
@@ -166,7 +184,7 @@ describe("SandboxSelector", () => {
 
     expect(screen.getByRole("button", { name: hostname })).toHaveClass(
       "max-w-full",
-      "sm:max-w-44",
+      "sm:max-w-64",
       "min-w-0",
     );
     expect(screen.getByTitle(hostname)).toBeInTheDocument();

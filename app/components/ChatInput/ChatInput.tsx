@@ -995,21 +995,22 @@ const ChatInputContent = ({
             this strip whenever its own width is constrained, even on desktop. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
+            className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-wrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
           >
             <div
-              className="min-w-0 flex-1"
+              className="min-w-0 flex-[1_1_13rem]"
               data-testid="chat-input-mobile-sandbox"
             >
               <SandboxSelector
                 value={sandboxPreference}
                 onChange={setSandboxPreference}
+                compact
               />
             </div>
             <div
-              className={`ml-auto min-w-0 max-w-[56%] shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />
