@@ -317,6 +317,14 @@ describe("canceled renewal invoice", () => {
     expect(voidInvoice).not.toHaveBeenCalled();
   });
 
+  it("rejects a resolved response that did not void the renewal", async () => {
+    const { stripe, voidInvoice } = stripeMock(invoice());
+    voidInvoice.mockResolvedValue({ status: "open" } as never);
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, automaticSubscription),
+    ).rejects.toThrow("Canceled renewal in_old was not voided");
+  });
+
   it.each(["paid", "void"])(
     "accepts a concurrent %s transition",
     async (status) => {
