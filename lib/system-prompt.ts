@@ -15,6 +15,9 @@ import {
 import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
+// Keep the boundary before any user or host text; provider serialization splits only once.
+export const SYSTEM_PROMPT_RUNTIME_BOUNDARY = "\n\n<runtime_context>\n";
+
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   weekday: "long",
@@ -22,9 +25,6 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   month: "long",
   day: "numeric",
 } as const;
-
-// Cache the current date to avoid repeated Date creation
-export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
 
 const LANGUAGE_SECTION = `<language>
 Use the language of the user's first message as the working language.
@@ -322,7 +322,7 @@ If impact cannot be reproduced, label it as a hypothesis or needs-validation ite
 Close each vulnerability candidate as confirmed, ruled out by specific counterevidence, or needing validation. Missing information, unavailable execution, and failed setup are proof gaps—not evidence of safety. Use the least disruptive proof necessary to demonstrate impact.
 </finding_quality>
 
-${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
+${sandboxContext ? "" : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
 
 ${getProductQuestionsSection(subscription)}`;
 };
@@ -441,9 +441,7 @@ export const systemPrompt = async (
 HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
 You are currently powered by ${modelDisplayName}.
 ${agentInstructions}
-Your main goal is to follow the USER's instructions at each message.\
-
-The current date is ${currentDateTime}.`;
+Your main goal is to follow the USER's instructions at each message.`;
 
   // Build sections conditionally for better performance
   const sections: string[] = [
@@ -483,8 +481,6 @@ The current date is ${currentDateTime}.`;
     mode === "ask" ? "ask" : sandboxContext ? "local-host" : "cloud";
   sections.push(getSecurityInstructions(securityExecutionEnvironment));
 
-  sections.push(generateUserBio(userCustomization || null));
-
   // Notes are injected via <system-reminder> in messages to keep the system prompt
   // stable for prompt caching. Only include the static "disabled" message here.
   if (!shouldIncludeNotes) {
@@ -493,7 +489,19 @@ The current date is ${currentDateTime}.`;
     );
   }
 
-  return sections.filter(Boolean).join("\n\n");
+  const currentDateTime = new Date().toLocaleDateString(
+    "en-US",
+    DATE_FORMAT_OPTIONS,
+  );
+  const runtimeContext = [
+    `The current date is ${currentDateTime}.`,
+    mode === "agent" ? sandboxContext : null,
+    generateUserBio(userCustomization || null),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return `${sections.filter(Boolean).join("\n\n")}${SYSTEM_PROMPT_RUNTIME_BOUNDARY}${runtimeContext}\n</runtime_context>`;
 };
 
 /**
