@@ -64,7 +64,10 @@ import {
   getExtraUsageBalance,
   getTeamExtraUsageState,
 } from "@/lib/extra-usage";
-import { systemPrompt } from "@/lib/system-prompt";
+import {
+  systemPrompt,
+  SYSTEM_PROMPT_RUNTIME_BOUNDARY,
+} from "@/lib/system-prompt";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractErrorDetails,
@@ -1122,19 +1125,25 @@ const ANTHROPIC_CACHE_BREAKPOINT = {
 };
 
 /**
- * Build a system prompt with an Anthropic cache breakpoint.
- * Returns a structured system message for Anthropic models, plain string otherwise.
+ * Cache the reusable instructions before runtime context, then the full prompt.
+ * Non-Anthropic routes and stored prompts without a boundary keep their shape.
  */
 export function buildSystemPrompt(
   systemPrompt: string,
   modelName: string,
-): string | SystemModelMessage {
+): string | SystemModelMessage | SystemModelMessage[] {
   if (!isAnthropicModel(modelName)) return systemPrompt;
-  return {
+  const boundary = systemPrompt.indexOf(SYSTEM_PROMPT_RUNTIME_BOUNDARY);
+  const contents =
+    boundary > 0
+      ? [systemPrompt.slice(0, boundary), systemPrompt.slice(boundary)]
+      : [systemPrompt];
+  const messages: SystemModelMessage[] = contents.map((content) => ({
     role: "system",
-    content: systemPrompt,
+    content,
     providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
-  } satisfies SystemModelMessage;
+  }));
+  return messages.length === 1 ? messages[0] : messages;
 }
 
 /**
