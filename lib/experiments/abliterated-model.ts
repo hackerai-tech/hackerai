@@ -1,4 +1,5 @@
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
+import { phLogger } from "@/lib/posthog/server";
 import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
 import {
   ABLITERATED_EXPERIMENT_KEY,
@@ -104,6 +105,7 @@ export async function evaluateAbliteratedModel({
   independentAbliterationResponses = 0,
   messages,
   limitRescue = false,
+  previewDiagnosticContext,
 }: {
   posthog: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
@@ -116,7 +118,30 @@ export async function evaluateAbliteratedModel({
   independentAbliterationResponses?: number;
   messages: UIMessage[];
   limitRescue?: boolean;
+  previewDiagnosticContext?: { chatId: string; requestId: string };
 }): Promise<AbliteratedAssignment | undefined> {
+  const providerConfigured = isAbliterationConfigured();
+  const reportMaxDecision = (reason: string, variant?: string) => {
+    if (!previewDiagnosticContext || selectedModelOverride !== "hackerai-max")
+      return;
+    try {
+      phLogger.info("Preview Max Abliteration assignment decision", {
+        userId,
+        chatId: previewDiagnosticContext.chatId,
+        requestId: previewDiagnosticContext.requestId,
+        experiment_key: ABLITERATED_MAX_EXPERIMENT_KEY,
+        mode,
+        subscription_tier: subscription,
+        moderation_eligible: moderationEligible,
+        provider_configured: providerConfigured,
+        posthog_configured: Boolean(posthog),
+        reason,
+        ...(variant && { variant }),
+      });
+    } catch {
+      // Diagnostics must never change assignment or provider behavior.
+    }
+  };
   const historyEligible =
     subscription !== "free" &&
     allowsAbliterationContinuation &&
@@ -124,7 +149,7 @@ export async function evaluateAbliteratedModel({
     independentAbliterationResponses >= ABLITERATION_HISTORY_THRESHOLD;
   if (
     !posthog ||
-    !isAbliterationConfigured() ||
+    !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
       mode,
@@ -133,8 +158,17 @@ export async function evaluateAbliteratedModel({
       messages,
       limitRescue,
     })
-  )
+  ) {
+    let reason = "moderation_not_eligible";
+    if (!posthog) reason = "posthog_not_configured";
+    else if (!providerConfigured) reason = "provider_not_configured";
+    else if (subscription === "free") reason = "free_user";
+    else if (limitRescue) reason = "limit_rescue";
+    else if (!messages.length || messagesContainUnsupportedFiles(messages))
+      reason = "unsupported_input";
+    reportMaxDecision(reason);
     return undefined;
+  }
 
   const experimentKey = ABLITERATED_EXPERIMENT_KEY;
   try {
@@ -148,6 +182,7 @@ export async function evaluateAbliteratedModel({
         { subscription, subscription_tier: subscription },
       );
       if (maxVariant === "test" || maxVariant === "control") {
+        reportMaxDecision("assigned", maxVariant);
         return {
           key: ABLITERATED_MAX_EXPERIMENT_KEY,
           variant: maxVariant,
@@ -157,6 +192,13 @@ export async function evaluateAbliteratedModel({
           selectionSource: "moderation",
         };
       }
+      reportMaxDecision(
+        maxVariant === false
+          ? "flag_inactive_or_unmatched"
+          : "flag_unavailable",
+      );
+    } else if (!moderationEligible) {
+      reportMaxDecision("moderation_not_eligible");
     }
     const variant = await getPostHogFlagWithoutExposure(
       posthog,
@@ -191,6 +233,7 @@ export async function evaluateAbliteratedModel({
       baselineModel: selectedModel,
     };
   } catch {
+    reportMaxDecision("flag_lookup_failed");
     return undefined;
   }
 }

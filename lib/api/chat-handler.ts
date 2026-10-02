@@ -577,6 +577,9 @@ export const createChatHandler = () => {
           fetched.independentAbliterationResponses,
         messages: processedMessages,
         limitRescue: Boolean(limitRescue),
+        ...(process.env.VERCEL_ENV === "preview" && {
+          previewDiagnosticContext: { chatId, requestId },
+        }),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
