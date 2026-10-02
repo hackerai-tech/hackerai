@@ -45,6 +45,7 @@ import {
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 import { subscriptionTierFromPrice } from "@/lib/billing/current-subscription";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
+import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import {
   LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON,
   reconcileLateSubscriptionPayment,
@@ -2667,6 +2668,20 @@ async function handleSubscriptionDeleted(
     tier,
     price,
     lifecycle: "subscription_deleted",
+  });
+
+  // Stripe stops retries on cancellation but leaves old invoice links payable.
+  // Retire eligible unpaid renewals before acknowledging this delivery. A
+  // permissions/API failure must retry rather than strand the customer.
+  const renewalResult = await voidUnpaidCanceledRenewalInvoice(
+    stripe,
+    subscription,
+  );
+  phLogger.info("billing_canceled_renewal_cleanup", {
+    stripe_event_id: stripeEventId,
+    stripe_subscription_id: subscription.id,
+    stripe_invoice_id: latestInvoiceId,
+    result: renewalResult,
   });
 }
 

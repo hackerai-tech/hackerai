@@ -81,6 +81,22 @@ subscription, credit note, support resolution, partial payment, or unrelated
 refund requires manual reconciliation. Payments made before cancellation and
 voluntary cancellations are outside this policy.
 
+On `customer.subscription.deleted` with reason `payment_failed`, the handler
+voids the latest wholly unpaid automatic renewal for a single recognized,
+licensed individual plan. Both `open` and `uncollectible` invoices can still be
+paid, so both are eligible. This deliberately retires that failed renewal debt
+instead of collecting money for a subscription that cannot be restarted. It
+does not grant access or usage; the customer starts a new subscription normally.
+Team, metered, unfamiliar, partial-payment, proration, mixed-item, credit-note,
+and support-adjusted cases remain for review. Pending payment processing or
+authentication also prevents cleanup. Cleanup failures retry the deletion
+webhook before it is marked processed. A concurrent paid invoice stays under
+the existing late-payment reconciliation policy.
+
+This prevents future eligible canceled renewals from leaving a payable old
+invoice link or blocking a fresh checkout. It does not backfill already processed
+cancellations or change how an existing ambiguous paid invoice is resolved.
+
 An in-app cancellation of a `past_due` or `unpaid` subscription ends service
 immediately. The cancellation path voids its latest open automatic renewal
 invoice only when nothing has been paid and every line is a non-prorated
@@ -133,7 +149,9 @@ chat after the customer refreshes their entitlement session.
    WorkOS, and access state; they are not a substitute for this journey.
 5. The late-payment refund path needs Invoice Payments read and Refunds read/write
    access. Verify successful `refund.created` and `refund.updated` deliveries,
-   including when the Charge object has no legacy `invoice` field.
+   including when the Charge object has no legacy `invoice` field. Cancellation
+   cleanup additionally requires Invoices write and PaymentIntents read access;
+   verify the restricted webhook key supports `invoices.voidInvoice`.
 
 ## Manual sandbox journey (required)
 
@@ -167,12 +185,20 @@ detaches existing methods and has no sandbox guard).
 8. Check an attachment-only event, a stale default-card event, and a canceled
    subscription: none initiates collection. Remove disposable test artifacts only
    after recording sanitized outcomes and confirming their exact IDs.
-9. In a separate sandbox case, let renewal failures cancel the subscription, then
-   pay its latest renewal invoice. Confirm exactly one full refund, no paid access
-   or usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
-   deliveries: no additional refund or accounting entry. Repeat with a credited
-   replacement subscription and with an existing partial refund: both require
-   manual review and must not create another refund.
+9. In a separate sandbox case, let renewal failures cancel an individual licensed
+   subscription. Confirm deletion delivery voids its latest unpaid renewal
+   (`open` and `uncollectible` cases), the old hosted invoice cannot accept payment,
+   and a fresh checkout is allowed. Replay deletion: no additional write, access,
+   usage, or charge. Make the void API fail once: delivery must retry and complete
+   cleanup, rather than acknowledge and strand the invoice. Repeat with a partial
+   payment, credit note, mixed item, team plan, and processing/authentication
+   payment: none is voided automatically.
+10. For the late-payment race, hold deletion delivery until its latest renewal is
+    paid after cancellation. Confirm exactly one full refund, no paid access or
+    usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
+    deliveries: no additional refund or accounting entry. Repeat with a credited
+    replacement subscription and with an existing partial refund: both require
+    manual review and must not create another refund.
 
 Measure recovered users/invoices within a fixed window after the first renewal
 failure, joining by subscription and invoice. Separate card selection, actual

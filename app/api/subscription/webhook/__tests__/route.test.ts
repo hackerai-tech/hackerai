@@ -22,6 +22,7 @@ const mockListSubscriptions = jest.fn();
 const mockListStripeEvents = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockPayInvoice = jest.fn();
+const mockVoidInvoice = jest.fn();
 const mockListInvoiceLineItems = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockRetrieveCharge = jest.fn();
@@ -72,6 +73,7 @@ jest.mock("@/app/api/stripe", () => ({
     invoices: {
       retrieve: mockRetrieveInvoice,
       pay: mockPayInvoice,
+      voidInvoice: mockVoidInvoice,
       listLineItems: mockListInvoiceLineItems,
     },
     paymentIntents: {
@@ -495,6 +497,7 @@ describe("POST /api/subscription/webhook", () => {
       referrerRewardDollars: 0,
     });
     mockPayInvoice.mockResolvedValue({ status: "paid" } as never);
+    mockVoidInvoice.mockResolvedValue({ status: "void" } as never);
     mockUpdateSubscription.mockResolvedValue({} as never);
     mockListStripeEvents.mockResolvedValue({
       data: [],
@@ -3349,6 +3352,119 @@ describe("POST /api/subscription/webhook", () => {
         attemptCount: 4,
       }),
     );
+  });
+
+  it.each(["open", "uncollectible"])(
+    "retires an unpaid %s renewal when Stripe cancels an individual subscription",
+    async (status) => {
+      const { invoice, subscription } = mockLateRenewal();
+      const canceled = {
+        ...subscription,
+        items: {
+          data: [
+            {
+              ...subscription.items.data[0],
+              price: {
+                ...subscription.items.data[0].price,
+                recurring: {
+                  interval: "month",
+                  interval_count: 1,
+                  usage_type: "licensed",
+                },
+              },
+            },
+          ],
+        },
+      };
+      mockConstructEvent.mockReturnValue({
+        id: "evt_canceled_renewal",
+        type: "customer.subscription.deleted",
+        created: subscription.ended_at,
+        data: { object: canceled },
+      });
+      mockRetrieveInvoice.mockResolvedValue({
+        ...invoice,
+        status,
+        amount_paid: 0,
+        amount_remaining: 2500,
+        status_transitions: { paid_at: null },
+      } as never);
+      mockListInvoicePayments.mockResolvedValue({
+        data: [],
+        has_more: false,
+      } as never);
+
+      const { POST } = await import("../route");
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      expect(mockVoidInvoice).toHaveBeenCalledWith(invoice.id);
+      expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+      expect(mockCreateRefund).not.toHaveBeenCalled();
+      expect(mockPostHogInfo).toHaveBeenCalledWith(
+        "billing_canceled_renewal_cleanup",
+        expect.objectContaining({
+          result: "voided",
+          stripe_invoice_id: invoice.id,
+        }),
+      );
+
+      // A replay observes Stripe's durable void state and does not void again.
+      mockRetrieveInvoice.mockResolvedValue({
+        ...invoice,
+        status: "void",
+        amount_paid: 0,
+        amount_remaining: 0,
+      } as never);
+      expect((await POST(makeWebhookRequest())).status).toBe(200);
+      expect(mockVoidInvoice).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("retries cancellation cleanup after a Stripe write failure", async () => {
+    const { invoice, subscription } = mockLateRenewal();
+    mockConstructEvent.mockReturnValue({
+      id: "evt_canceled_renewal_retry",
+      type: "customer.subscription.deleted",
+      created: subscription.ended_at,
+      data: {
+        object: {
+          ...subscription,
+          items: {
+            data: [
+              {
+                quantity: 1,
+                price: {
+                  ...subscription.items.data[0].price,
+                  recurring: { usage_type: "licensed" },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    mockRetrieveInvoice.mockResolvedValue({
+      ...invoice,
+      status: "uncollectible",
+      amount_paid: 0,
+      amount_remaining: 2500,
+    } as never);
+    mockListInvoicePayments.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    mockVoidInvoice.mockRejectedValueOnce(
+      new Error("Invoice write permission missing") as never,
+    );
+    const { POST } = await import("../route");
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "Invoice write permission missing",
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.checkAndMarkWebhook",
+      { serviceKey: "service_key", eventId: "evt_canceled_renewal_retry" },
+    );
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockVoidInvoice).toHaveBeenCalledTimes(2);
   });
 
   it("completes terminal cancellation bookkeeping before retrying failed hydration", async () => {

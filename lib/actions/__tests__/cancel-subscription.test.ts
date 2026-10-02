@@ -16,6 +16,7 @@ const mockUpdateSubscription = jest.fn();
 const mockCancelSubscription = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockVoidInvoice = jest.fn();
+const mockListInvoicePayments = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockPostHogError = jest.fn();
@@ -30,6 +31,7 @@ jest.mock("@/app/api/stripe", () => ({
       cancel: mockCancelSubscription,
     },
     invoices: { retrieve: mockRetrieveInvoice, voidInvoice: mockVoidInvoice },
+    invoicePayments: { list: mockListInvoicePayments },
   },
 }));
 
@@ -54,6 +56,11 @@ describe("cancelSubscriptionAction", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockListInvoicePayments.mockResolvedValue({
+      data: [],
+      has_more: false,
+    } as never);
+    mockVoidInvoice.mockResolvedValue({ status: "void" } as never);
     delete process.env.CONVEX_SERVICE_ROLE_KEY;
     mockGetConvexClient.mockReturnValue({
       mutation: mockConvexMutation,
