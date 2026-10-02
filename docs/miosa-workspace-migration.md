@@ -4,8 +4,13 @@ Owner and rollout: [HAC-113](https://linear.app/hackerai/issue/HAC-113).
 
 Migration is currently paused in code in all environments. Scheduling and worker
 flag rechecks return disabled regardless of PostHog targeting. Keep the migration
-flag inactive in both projects. Existing committed fences remain intact and
-require verified reverse transfer or explicit reset before E2B can be used.
+flag inactive in both projects. Users blocked by a migration receive a fresh,
+isolated E2B workspace so Agent execution can continue. The routing record pins
+that exact E2B sandbox and retains the complete previous fence in
+`recoveryPending`; original workspaces and staged archives are not modified.
+Previous files are not available in this fresh workspace until separately
+recovered. Do not overwrite the new workspace during recovery: it may already
+contain new user work. Reset and account-deletion fences never permit fallback.
 The procedures below apply only after reviewed resumption of the rollout.
 
 This replaces pristine-template fingerprinting. No baseline JSON is required.
@@ -62,10 +67,14 @@ automatically cleared.
 ## Cutover and recovery
 
 Keep the durable Redis fence and deploy fence-aware Ask/Agent workers before
-activation. Both providers are unavailable to new application acquisitions while
-the copy holds the fence. A request arriving then receives the existing
-workspace-recovery error and must retry after migration; no active run is
-interrupted to force eligibility. Monitor this user-visible interruption.
+activation. A request blocked by a checking fence or reverse-recovery fence,
+or by a committed MIOSA workspace while MIOSA is paused, creates a fresh E2B
+workspace without discovering or connecting any recovery copy. An atomic
+compare-and-set replaces only the observed routing record, preserving it in
+`recoveryPending`. A concurrent request reconnects to the winning pin; an older
+migration job loses its ownership and cannot replace the new route. An unknown
+Redis write outcome retains the newly created sandbox for reconciliation.
+Account cleanup/deletion and unreadable Redis records still block acquisitions.
 
 Prepared destinations use private, unique migration names, not the normal
 workspace name. Failed copies destroy only that prepared destination and remove
@@ -73,10 +82,11 @@ their own source staging directory before releasing the fence. Unconfirmed
 cleanup, process death or uncertain commit retains the fence for operator
 recovery. Never bulk-clear migration records or give them a TTL.
 
-Committed records pin an exact destination ID. Missing or broken destinations
-fail safely; neither creation of an empty replacement nor fallback to the stale
-E2B copy is permitted. Flag rollback stops new migrations, including in-flight
-copies before installation, while migrated users retain Miosa. Legacy committed
+Committed records pin an exact destination ID. Missing or broken E2B destinations
+fail safely; fallback never resumes the stale E2B copy. MIOSA acquisition failures
+with a migration record use the same fresh E2B fallback described above. Flag
+rollback stops new migrations, including in-flight copies before installation.
+Legacy committed
 empty-migration records remain readable. Cleanup atomically owns the same Redis
 key before enumerating either provider, including when no migration existed.
 An active checking claim blocks cleanup before enumeration; never revoke it to
@@ -138,7 +148,8 @@ On the actual Preview URL using disposable paid test accounts:
    destination cleanup, lost commit acknowledgement and destination loss. Confirm
    no partial destination or stale E2B copy becomes available.
 6. Create a Miosa-only file, disable the flag and simulate acquisition failure.
-   The user must stay pinned to the copied destination. Verify explicit reset.
+   Verify a fresh E2B fallback is pinned, both original copies remain untouched,
+   and reconnect uses the fallback rather than either original. Verify explicit reset.
 
 `miosa_e2b_file_migration_checked` reports bounded reason/count/duration fields;
 `miosa_e2b_file_migration_exposed` records actual acquisition after cutover.

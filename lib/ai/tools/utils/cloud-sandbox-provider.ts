@@ -14,6 +14,7 @@ export type CloudSandboxSelectionReason =
   | "miosa_empty_workspace_migration"
   | "miosa_file_workspace_migration"
   | "miosa_e2b_recovered"
+  | "migration_e2b_fallback"
   | "miosa_configuration_unavailable"
   | "miosa_region_unavailable";
 

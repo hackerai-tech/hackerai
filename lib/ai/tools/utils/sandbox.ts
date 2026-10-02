@@ -92,13 +92,14 @@ export const ensureSandboxConnection = async (
     acquisitionId?: string;
     triggerRunId?: string;
     destinationId?: string;
+    createOnly?: boolean;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion } = options;
 
   // Return existing sandbox if already connected
-  if (initialSandbox && !options.destinationId) {
+  if (initialSandbox && !options.destinationId && !options.createOnly) {
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -157,7 +158,7 @@ export const ensureSandboxConnection = async (
       cluster: E2BClusterConfig;
     };
     const discoveredSandboxes: DiscoveredSandbox[] = [];
-    for (const cluster of discoveryClusters) {
+    for (const cluster of options.createOnly ? [] : discoveryClusters) {
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
         query: {
@@ -288,6 +289,9 @@ export const ensureSandboxConnection = async (
             secure: "true",
             sandboxVersion: SANDBOX_VERSION,
             e2bCluster: createCluster.cluster,
+            ...(options.createOnly && {
+              workspacePurpose: "migration-fallback",
+            }),
           },
         });
 

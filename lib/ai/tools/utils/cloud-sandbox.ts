@@ -13,7 +13,10 @@ import {
 } from "./miosa-sandbox";
 import { phLogger } from "@/lib/posthog/server";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
-import { getConfiguredE2BClustersForCleanup } from "./e2b-cluster";
+import {
+  getConfiguredE2BClustersForCleanup,
+  getE2BClusterRouting,
+} from "./e2b-cluster";
 import {
   assertFreshMiosaEnrollment,
   MiosaEnrollmentError,
@@ -35,6 +38,9 @@ import {
   CloudMigrationUnavailableError,
   claimCloudWorkspaceCleanup,
   registerE2BMigrationLease,
+  canUseFreshE2BFallback,
+  pinFreshE2BFallback,
+  type CloudMigrationState,
 } from "./cloud-migration-state";
 
 export type CloudSandboxAcquisitionContext = {
@@ -52,6 +58,7 @@ export type CloudSandboxAcquisitionContext = {
 const ensureE2BCloudSandboxConnection = (options: {
   userId: string;
   destinationId?: string;
+  createOnly?: boolean;
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
@@ -72,8 +79,93 @@ const ensureE2BCloudSandboxConnection = (options: {
       acquisitionId: options.context?.acquisitionId,
       triggerRunId: options.context?.triggerRunId,
       destinationId: options.destinationId,
+      createOnly: options.createOnly,
     },
   );
+
+async function ensureFreshMigrationFallback(
+  options: Parameters<typeof ensureE2BCloudSandboxConnection>[0],
+  observed: CloudMigrationState,
+): Promise<{ sandbox: AnySandbox; provider: "e2b" }> {
+  const region = options.context?.triggerRegion;
+  if (!region || !canUseFreshE2BFallback(observed))
+    throw new CloudMigrationUnavailableError();
+
+  // Never discover or resume the old E2B source or an unverified staged copy.
+  const fresh = await ensureE2BCloudSandboxConnection({
+    ...options,
+    initialSandbox: null,
+    destinationId: undefined,
+    createOnly: true,
+    setSandbox: () => {},
+  });
+  let pinned = false;
+  let pinAcknowledged = false;
+  try {
+    pinned = await pinFreshE2BFallback({
+      userId: options.userId,
+      observed,
+      destinationId: fresh.sandbox.sandboxId,
+      region,
+    });
+    pinAcknowledged = true;
+  } finally {
+    // An unknown write outcome may already point at this sandbox. Retain it
+    // rather than destroying a potentially authoritative destination.
+    if (pinAcknowledged && !pinned) {
+      // This connection has never been published or allowed to execute tools.
+      // A concurrent winner's workspace and all recovery copies stay intact.
+      try {
+        await Sandbox.kill(fresh.sandbox.sandboxId, {
+          ...getE2BClusterRouting(region).createCluster.connectionOptions,
+        });
+      } catch {
+        console.warn("Unused migration fallback cleanup failed");
+      }
+    }
+  }
+
+  const state = await readCloudMigrationState(options.userId);
+  if (
+    state?.phase !== "e2b" ||
+    getE2BClusterRouting(state.region).createCluster.cluster !==
+      getE2BClusterRouting(region).createCluster.cluster
+  )
+    throw new CloudMigrationUnavailableError();
+  await assertCloudWorkspaceAvailable(
+    options.userId,
+    "e2b",
+    state.destinationId,
+  );
+  const result = pinned
+    ? fresh
+    : await ensureE2BCloudSandboxConnection({
+        ...options,
+        initialSandbox: null,
+        destinationId: state.destinationId,
+        createOnly: false,
+        setSandbox: () => {},
+      });
+  await assertCloudWorkspaceAvailable(
+    options.userId,
+    "e2b",
+    result.sandbox.sandboxId,
+  );
+  registerE2BMigrationLease(result.sandbox, options.userId);
+  options.setSandbox(result.sandbox);
+  phLogger.event("cloud_sandbox_provider_fallback", {
+    userId: options.userId,
+    chat_id: options.context?.chatId,
+    trigger_run_id: options.context?.triggerRunId,
+    from_provider: "miosa",
+    to_provider: "e2b",
+    sandbox_provider: "e2b",
+    fallback_stage: "migration",
+    recovery_pending: !!state.recoveryPending,
+    cloud_sandbox_provider_fallback_event_version: 4,
+  });
+  return { ...result, provider: "e2b" };
+}
 
 const ensureMiosaCloudSandboxConnection = (options: {
   userId: string;
@@ -243,6 +335,16 @@ export async function ensureCloudSandboxConnection(options: {
     context: { ...options.context, acquisitionId: randomUUID() },
   };
   const migrationState = await readCloudMigrationState(options.userId);
+  if (
+    migrationState &&
+    canUseFreshE2BFallback(migrationState) &&
+    (migrationState.phase !== "miosa" ||
+      isMiosaCloudSandboxPaused() ||
+      migrationState.region !== options.context?.triggerRegion ||
+      (options.initialSandbox && isE2BSandbox(options.initialSandbox)))
+  ) {
+    return ensureFreshMigrationFallback(options, migrationState);
+  }
   if (isMiosaCloudSandboxPaused()) {
     // Never expose the stale E2B source of a committed migration. Recovery
     // must preserve the newer MIOSA files before this fence can be cleared.
@@ -263,7 +365,12 @@ export async function ensureCloudSandboxConnection(options: {
   if (
     migrationState &&
     ((migrationState.phase !== "miosa" && migrationState.phase !== "e2b") ||
-      migrationState.region !== options.context?.triggerRegion ||
+      (migrationState.phase === "e2b"
+        ? !options.context?.triggerRegion ||
+          getE2BClusterRouting(migrationState.region).createCluster.cluster !==
+            getE2BClusterRouting(options.context.triggerRegion).createCluster
+              .cluster
+        : migrationState.region !== options.context?.triggerRegion) ||
       (migrationState.phase === "miosa" &&
         options.initialSandbox &&
         isE2BSandbox(options.initialSandbox)))
@@ -292,7 +399,9 @@ export async function ensureCloudSandboxConnection(options: {
       context: {
         ...options.context,
         provider: "e2b",
-        selectionReason: "miosa_e2b_recovered",
+        selectionReason: migrationState.recoveryPending
+          ? "migration_e2b_fallback"
+          : "miosa_e2b_recovered",
       },
     };
   }
@@ -391,7 +500,11 @@ export async function ensureCloudSandboxConnection(options: {
     } catch (error) {
       // A migration committed during acquisition keeps its durable Miosa pin.
       // This read does not acquire an E2B use lease when fallback is unsafe.
-      if (await readCloudMigrationState(options.userId)) {
+      const failedMigration = await readCloudMigrationState(options.userId);
+      if (failedMigration && canUseFreshE2BFallback(failedMigration)) {
+        return ensureFreshMigrationFallback(options, failedMigration);
+      }
+      if (failedMigration) {
         throw new CloudMigrationUnavailableError();
       }
       if (!(error instanceof MiosaEnrollmentError)) {
