@@ -88,6 +88,29 @@ it("keeps an identical instruction prefix across host, profile and date changes"
   expect(b.map((message) => message.content).join("")).toBe(second);
 });
 
+it("refreshes the runtime date across midnight without changing the instruction prefix", async () => {
+  jest.useFakeTimers();
+  try {
+    jest.setSystemTime(new Date(2026, 9, 2, 23, 59, 59));
+    const first = buildSystemPrompt(
+      await makePrompt("host", "Alice"),
+      claudeRoute,
+    );
+    jest.setSystemTime(new Date(2026, 9, 3, 0, 0, 1));
+    const second = buildSystemPrompt(
+      await makePrompt("host", "Alice"),
+      claudeRoute,
+    );
+    if (!Array.isArray(first) || !Array.isArray(second))
+      throw new Error("Expected two system blocks");
+    expect(first[0]).toEqual(second[0]);
+    expect(first[1].content).toContain("Friday, October 2, 2026");
+    expect(second[1].content).toContain("Saturday, October 3, 2026");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 it("preserves cloud, local, Ask and approval distinctions without promoting context", async () => {
   const cloud = await systemPrompt(
     "user",

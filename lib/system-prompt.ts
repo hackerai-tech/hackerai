@@ -26,9 +26,6 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   day: "numeric",
 } as const;
 
-// Cache the current date to avoid repeated Date creation
-export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
-
 const LANGUAGE_SECTION = `<language>
 Use the language of the user's first message as the working language.
 All thinking and responses MUST be conducted in the working language.
@@ -492,6 +489,10 @@ Your main goal is to follow the USER's instructions at each message.`;
     );
   }
 
+  const currentDateTime = new Date().toLocaleDateString(
+    "en-US",
+    DATE_FORMAT_OPTIONS,
+  );
   const runtimeContext = [
     `The current date is ${currentDateTime}.`,
     mode === "agent" ? sandboxContext : null,
