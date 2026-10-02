@@ -9,7 +9,9 @@ import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import {
   assertCloudWorkspaceAvailable,
   registerE2BMigrationLease,
+  CloudMigrationUnavailableError,
 } from "./cloud-migration-state";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import {
@@ -21,6 +23,7 @@ import {
   getCloudSandboxProviderForInstance,
   isCentrifugoSandbox,
   isE2BSandbox,
+  isMiosaSandbox,
 } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
 
@@ -92,19 +95,28 @@ export class DefaultSandboxManager implements SandboxManager {
   }> {
     if (this.acquisition) return this.acquisition;
     if (this.sandbox) {
+      let reacquire =
+        isMiosaSandbox(this.sandbox) && isMiosaCloudSandboxPaused();
       if (isE2BSandbox(this.sandbox)) {
-        await assertCloudWorkspaceAvailable(
-          this.userID,
-          "e2b",
-          this.sandbox.sandboxId,
-        );
-        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-          source: "default_manager_cache",
-        });
+        try {
+          await assertCloudWorkspaceAvailable(
+            this.userID,
+            "e2b",
+            this.sandbox.sandboxId,
+          );
+          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+            source: "default_manager_cache",
+          });
+        } catch (error) {
+          if (!(error instanceof CloudMigrationUnavailableError)) throw error;
+          reacquire = true;
+        }
       }
-      return { sandbox: this.sandbox };
+      if (!reacquire) return { sandbox: this.sandbox };
+      this.sandbox = null;
     }
 
+    if (this.acquisition) return this.acquisition;
     this.acquisition = this.acquireSandbox().finally(() => {
       this.acquisition = null;
     });

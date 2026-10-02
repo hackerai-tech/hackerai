@@ -16,7 +16,7 @@ type MigrationState = {
   owner?: { runId: string; attempt: number };
 };
 
-/** Exact E2B destination after a verified recovery from a MIOSA workspace. */
+/** Exact E2B destination: restored files, or a fresh workspace with recoveryPending. */
 export type RecoveredE2BState = {
   version: 1;
   phase: "e2b";
@@ -24,6 +24,9 @@ export type RecoveredE2BState = {
   sourceId: string;
   destinationId: string;
   region: TriggerRunRegion;
+  // A fresh fallback restores execution, not files. Retain the entire previous
+  // fence so recovery can reconcile both workspaces without overwriting either.
+  recoveryPending?: MigrationState | CleanupState;
 };
 
 type CleanupState = {
@@ -35,7 +38,66 @@ type CleanupState = {
   sourceId?: never;
   region?: never;
   destinationId?: never;
+  recovery?: {
+    operation: string;
+    miosaId?: string;
+    [key: string]: unknown;
+  };
 };
+
+export type CloudMigrationState =
+  MigrationState | RecoveredE2BState | CleanupState;
+
+export function canUseFreshE2BFallback(state: CloudMigrationState): boolean {
+  return (
+    ((state.phase === "checking" || state.phase === "miosa") &&
+      !!state.sourceId) ||
+    (state.phase === "cleanup" &&
+      state.recovery?.operation === "miosa-to-e2b" &&
+      typeof state.recovery.miosaId === "string" &&
+      !!state.recovery.miosaId)
+  );
+}
+
+/** Atomically replace only the observed migration fence. Older migration jobs
+ * lose their compare-and-set ownership; the original files remain untouched. */
+export async function pinFreshE2BFallback(options: {
+  userId: string;
+  observed: CloudMigrationState;
+  destinationId: string;
+  region: TriggerRunRegion;
+}): Promise<boolean> {
+  if (!canUseFreshE2BFallback(options.observed))
+    throw new CloudMigrationUnavailableError();
+  const redis = createRedisClient();
+  if (!redis) throw new CloudMigrationUnavailableError();
+  const sourceId =
+    options.observed.phase === "checking" || options.observed.phase === "miosa"
+      ? options.observed.sourceId
+      : options.observed.phase === "cleanup"
+        ? options.observed.recovery!.miosaId!
+        : "";
+  const next: RecoveredE2BState = {
+    version: 1,
+    phase: "e2b",
+    token: randomUUID(),
+    sourceId,
+    destinationId: options.destinationId,
+    region: options.region,
+    recoveryPending: options.observed as MigrationState | CleanupState,
+  };
+  try {
+    return (
+      (await redis.eval(
+        `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+        [keyFor(options.userId)],
+        [JSON.stringify(options.observed), JSON.stringify(next)],
+      )) === 1
+    );
+  } catch {
+    throw new CloudMigrationUnavailableError();
+  }
+}
 
 function isRecoveredE2BState(value: RecoveredE2BState): boolean {
   return (

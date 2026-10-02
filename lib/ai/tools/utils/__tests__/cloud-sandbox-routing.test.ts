@@ -10,6 +10,7 @@ const mockPostHogEvent = jest.fn();
 const mockMigrationRead = jest.fn();
 const mockMigrationAssert = jest.fn();
 const mockCooldownGuard = jest.fn();
+const mockFallbackPin = jest.fn();
 
 jest.mock("../miosa-acquisition-cooldown", () => ({
   ...jest.requireActual("../miosa-acquisition-cooldown"),
@@ -18,6 +19,7 @@ jest.mock("../miosa-acquisition-cooldown", () => ({
 }));
 
 jest.mock("../cloud-migration-state", () => ({
+  ...jest.requireActual("../cloud-migration-state"),
   readCloudMigrationState: (...args: unknown[]) => mockMigrationRead(...args),
   assertCloudWorkspaceAvailable: (...args: unknown[]) =>
     mockMigrationAssert(...args),
@@ -27,6 +29,7 @@ jest.mock("../cloud-migration-state", () => ({
     }
   },
   registerE2BMigrationLease: jest.fn(),
+  pinFreshE2BFallback: (...args: unknown[]) => mockFallbackPin(...args),
 }));
 
 jest.mock("@e2b/code-interpreter", () => ({
@@ -67,6 +70,102 @@ describe("cloud sandbox provider routing", () => {
     mockCooldownGuard.mockReset().mockResolvedValue(undefined);
     mockMigrationRead.mockResolvedValue(null);
     mockMigrationAssert.mockResolvedValue(undefined);
+    mockFallbackPin.mockReset().mockResolvedValue(true);
+  });
+
+  it.each(["checking", "miosa", "cleanup"] as const)(
+    "uses a fresh pinned E2B workspace for a stranded %s migration",
+    async (phase) => {
+      jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
+      const observed = {
+        version: 1,
+        phase,
+        token: "owned-fence",
+        sourceId: "old-e2b",
+        region: "us-east-1",
+        ...(phase === "cleanup" && {
+          recovery: {
+            operation: "miosa-to-e2b",
+            miosaId: "old-miosa",
+            phase: "destination_staged",
+            capture: { entries: 18656 },
+          },
+        }),
+      };
+      mockMigrationRead.mockResolvedValueOnce(observed).mockResolvedValue({
+        phase: "e2b",
+        region: "us-east-1",
+        destinationId: "fresh-e2b",
+        recoveryPending: observed,
+      });
+      const sandbox = { sandboxId: "fresh-e2b" };
+      mockEnsureE2B.mockResolvedValue({ sandbox });
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          initialSandbox: { sandboxId: "old-e2b" } as never,
+          context: { provider: "miosa", triggerRegion: "us-east-1" },
+        }),
+      ).resolves.toEqual({ sandbox, provider: "e2b" });
+      expect(mockEnsureE2B).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          createOnly: true,
+          initialSandbox: null,
+          destinationId: undefined,
+        }),
+      );
+      expect(mockFallbackPin).toHaveBeenCalledWith(
+        expect.objectContaining({ observed, destinationId: "fresh-e2b" }),
+      );
+      expect(mockEnsureMiosa).not.toHaveBeenCalled();
+      expect(setSandbox).toHaveBeenCalledWith(sandbox);
+    },
+  );
+
+  it("uses a concurrent winner and never publishes the losing fresh workspace", async () => {
+    const observed = {
+      phase: "checking",
+      sourceId: "old",
+      region: "us-east-1",
+    };
+    mockMigrationRead.mockResolvedValueOnce(observed).mockResolvedValue({
+      phase: "e2b",
+      region: "us-east-1",
+      destinationId: "winner",
+    });
+    mockFallbackPin.mockResolvedValue(false);
+    const loser = { sandboxId: "loser" },
+      winner = { sandboxId: "winner" };
+    mockEnsureE2B
+      .mockResolvedValueOnce({ sandbox: loser })
+      .mockResolvedValueOnce({ sandbox: winner });
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { triggerRegion: "us-east-1" },
+      }),
+    ).resolves.toEqual({ sandbox: winner, provider: "e2b" });
+    expect(setSandbox).not.toHaveBeenCalledWith(loser);
+    expect(setSandbox).toHaveBeenCalledWith(winner);
+  });
+
+  it("retains a potentially pinned fallback when the Redis write acknowledgement is lost", async () => {
+    mockMigrationRead.mockResolvedValue({ phase: "checking", sourceId: "old" });
+    mockEnsureE2B.mockResolvedValue({ sandbox: { sandboxId: "fresh" } });
+    mockFallbackPin.mockRejectedValue(new Error("write acknowledgement lost"));
+    await expect(
+      ensureCloudSandboxConnection({
+        userId: "user-1",
+        setSandbox,
+        context: { triggerRegion: "us-east-1" },
+      }),
+    ).rejects.toThrow("write acknowledgement lost");
+    const { Sandbox } = await import("@e2b/code-interpreter");
+    expect(Sandbox.kill).not.toHaveBeenCalled();
+    expect(setSandbox).not.toHaveBeenCalled();
   });
 
   it("routes stale MIOSA assignments to E2B while paused without opening MIOSA", async () => {

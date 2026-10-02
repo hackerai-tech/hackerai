@@ -10,10 +10,12 @@ or rollout flag requests MIOSA. Keep both rollout and migration flags inactive
 in each PostHog project. Existing active runs on older workers may finish;
 the code guard requires deploying both web and Trigger workers.
 
-Committed migration fences and cached MIOSA workspaces fail safely while paused.
-Their files remain preserved. Never clear a committed fence or reconnect the
-retained E2B source without a verified reverse transfer or explicit workspace
-reset. Cleanup still needs both providers' credentials.
+Migration-blocked users and cached MIOSA clients use a fresh, isolated E2B
+workspace while paused. The exact fallback sandbox is pinned; the old routing
+record is retained in `recoveryPending` and original files are not modified.
+Old files require separate recovery and are not present in the fresh workspace.
+Never reconnect the stale E2B source or overwrite new fallback files with a
+recovery copy. Cleanup still needs both providers' credentials.
 
 Resuming requires a reviewed change to `isMiosaCloudSandboxPaused`, independent
 environment verification and the acceptance checks below before reactivating

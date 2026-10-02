@@ -21,13 +21,16 @@ import {
   getCloudSandboxProviderForInstance,
   isCentrifugoSandbox,
   isE2BSandbox,
+  isMiosaSandbox,
   type ConnectionInfo,
 } from "./sandbox-types";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import {
   assertCloudWorkspaceAvailable,
   registerE2BMigrationLease,
+  CloudMigrationUnavailableError,
 } from "./cloud-migration-state";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -864,19 +867,28 @@ export class HybridSandboxManager implements SandboxManager {
   private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     if (this.cloudAcquisition) return this.cloudAcquisition;
     if (!this.isLocal && this.sandbox) {
+      let reacquire =
+        isMiosaSandbox(this.sandbox) && isMiosaCloudSandboxPaused();
       if (isE2BSandbox(this.sandbox)) {
-        await assertCloudWorkspaceAvailable(
-          this.userID,
-          "e2b",
-          this.sandbox.sandboxId,
-        );
-        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-          source: "hybrid_manager_cache",
-        });
+        try {
+          await assertCloudWorkspaceAvailable(
+            this.userID,
+            "e2b",
+            this.sandbox.sandboxId,
+          );
+          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+            source: "hybrid_manager_cache",
+          });
+        } catch (error) {
+          if (!(error instanceof CloudMigrationUnavailableError)) throw error;
+          reacquire = true;
+        }
       }
-      return { sandbox: this.sandbox };
+      if (!reacquire) return { sandbox: this.sandbox };
+      this.sandbox = null;
     }
 
+    if (this.cloudAcquisition) return this.cloudAcquisition;
     this.cloudAcquisition = this.acquireCloudSandbox().finally(() => {
       this.cloudAcquisition = null;
     });

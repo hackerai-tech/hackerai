@@ -5,6 +5,10 @@ import { refreshE2BSandboxLeaseBestEffort } from "../sandbox";
 import { DefaultSandboxManager } from "../sandbox-manager";
 import { HybridSandboxManager } from "../hybrid-sandbox-manager";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
+import { isMiosaCloudSandboxPaused } from "../miosa-rollout";
+jest.mock("../miosa-rollout", () => ({
+  isMiosaCloudSandboxPaused: jest.fn(() => false),
+}));
 
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
 
@@ -57,6 +61,7 @@ describe.each(["default", "hybrid"] as const)(
 
     beforeEach(() => {
       jest.resetAllMocks();
+      jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(false);
       redis.get.mockResolvedValue(null);
       redis.eval.mockResolvedValue(1);
       jest.mocked(createRedisClient).mockReturnValue(redis as never);
@@ -82,29 +87,47 @@ describe.each(["default", "hybrid"] as const)(
       },
     );
 
-    it("rejects a cached client after the recovered destination changes", async () => {
+    it("reacquires the current E2B pin after the cached destination changes", async () => {
       redis.eval.mockImplementation(async (...args: unknown[]) => {
         const values = args[2] as string[];
         return values[1] === "another-destination" ? 1 : 0;
       });
       const manager = createManager(e2b);
-
-      await expect(manager.getSandbox()).rejects.toBeInstanceOf(
-        CloudMigrationUnavailableError,
-      );
+      const current = { sandboxId: "another-destination" } as AnySandbox;
+      acquire.mockResolvedValue({ sandbox: current, provider: "e2b" });
+      await expect(manager.getSandbox()).resolves.toEqual({ sandbox: current });
       expect(refreshE2BSandboxLeaseBestEffort).not.toHaveBeenCalled();
-      expect(acquire).not.toHaveBeenCalled();
+      expect(acquire).toHaveBeenCalledTimes(1);
     });
 
     it("keeps cached tools blocked while workspace recovery is fenced", async () => {
       redis.eval.mockResolvedValue(0);
+      acquire.mockRejectedValue(new CloudMigrationUnavailableError());
       const manager = createManager(e2b);
 
       await expect(manager.getSandbox()).rejects.toBeInstanceOf(
         CloudMigrationUnavailableError,
       );
       expect(refreshE2BSandboxLeaseBestEffort).not.toHaveBeenCalled();
-      expect(acquire).not.toHaveBeenCalled();
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
+    it("reacquires E2B instead of reusing a cached MIOSA client while paused", async () => {
+      jest.mocked(isMiosaCloudSandboxPaused).mockReturnValue(true);
+      acquire.mockResolvedValue({ sandbox: e2b, provider: "e2b" });
+      const manager = createManager(miosa);
+      await expect(manager.getSandbox()).resolves.toEqual({ sandbox: e2b });
+      expect(acquire).toHaveBeenCalledTimes(1);
+    });
+
+    it("shares reacquisition after concurrent cached tools hit a migration fence", async () => {
+      redis.eval.mockResolvedValue(0);
+      acquire.mockResolvedValue({ sandbox: e2b, provider: "e2b" });
+      const manager = createManager(e2b);
+      await expect(
+        Promise.all(Array.from({ length: 10 }, () => manager.getSandbox())),
+      ).resolves.toEqual(Array(10).fill({ sandbox: e2b }));
+      expect(acquire).toHaveBeenCalledTimes(1);
     });
 
     it("shares one acquisition across concurrent tool requests", async () => {

@@ -348,6 +348,32 @@ describe("E2B sandbox lease lifecycle", () => {
     await Promise.all([firstRun, secondRun]);
   });
 
+  it("creates isolated E2B without discovering or connecting recovery copies", async () => {
+    listSandbox();
+    const fresh = { sandboxId: "fresh-e2b" } as Sandbox;
+    sandboxApi.create.mockResolvedValue(fresh);
+    expect(
+      await ensureSandboxConnection(
+        { userID: "user-1", setSandbox: jest.fn() },
+        {
+          initialSandbox: { sandboxId: "stale-e2b" } as Sandbox,
+          createOnly: true,
+        },
+      ),
+    ).toEqual({ sandbox: fresh });
+    expect(sandboxApi.list).not.toHaveBeenCalled();
+    expect(sandboxApi.connect).not.toHaveBeenCalled();
+    expect(sandboxApi.create).toHaveBeenCalledWith(
+      "terminal-agent-sandbox",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          userID: "user-1",
+          workspacePurpose: "migration-fallback",
+        }),
+      }),
+    );
+  });
+
   it("uses the renewable cloud lease when reconnecting a paused sandbox", async () => {
     const connectedSandbox = { sandboxId: "sandbox-1" } as unknown as Sandbox;
     listSandbox({ state: "paused" });

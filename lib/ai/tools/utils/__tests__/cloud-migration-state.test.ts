@@ -9,6 +9,8 @@ import {
   CloudMigrationUnavailableError,
   registerE2BMigrationLease,
   refreshE2BMigrationLease,
+  pinFreshE2BFallback,
+  canUseFreshE2BFallback,
 } from "../cloud-migration-state";
 
 jest.mock("@/lib/rate-limit/redis", () => ({ createRedisClient: jest.fn() }));
@@ -77,6 +79,64 @@ describe("persistent cloud migration fence", () => {
     jest.clearAllMocks();
     (createRedisClient as jest.Mock).mockReturnValue(redis);
   });
+
+  it("pins fresh E2B, retains the whole recovery record, and invalidates stale job ownership", async () => {
+    const claim = await claimCloudMigration(
+      "user-1",
+      "original-e2b",
+      "us-east-1",
+    );
+    const observed = (await readCloudMigrationState("user-1"))!;
+    await expect(
+      pinFreshE2BFallback({
+        userId: "user-1",
+        observed,
+        destinationId: "fresh-e2b",
+        region: "us-east-1",
+      }),
+    ).resolves.toBe(true);
+    expect(await readCloudMigrationState("user-1")).toEqual(
+      expect.objectContaining({
+        phase: "e2b",
+        destinationId: "fresh-e2b",
+        recoveryPending: observed,
+      }),
+    );
+    await expect(claim!.commit("prepared-miosa")).rejects.toBeInstanceOf(
+      CloudMigrationUnavailableError,
+    );
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "e2b", "fresh-e2b"),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertCloudWorkspaceAvailable("user-1", "e2b", "original-e2b"),
+    ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    await expect(
+      pinFreshE2BFallback({
+        userId: "user-1",
+        observed,
+        destinationId: "loser",
+        region: "us-east-1",
+      }),
+    ).resolves.toBe(false);
+    expect((await readCloudMigrationState("user-1"))?.phase).toBe("e2b");
+  });
+
+  it.each(["cleanup", "deleted"] as const)(
+    "never bypasses an account %s fence",
+    async (phase) => {
+      const observed = { version: 1 as const, phase, token: "account-cleanup" };
+      expect(canUseFreshE2BFallback(observed)).toBe(false);
+      await expect(
+        pinFreshE2BFallback({
+          userId: "user-1",
+          observed,
+          destinationId: "fresh",
+          region: "us-east-1",
+        }),
+      ).rejects.toBeInstanceOf(CloudMigrationUnavailableError);
+    },
+  );
 
   it("lets only one checker claim a user and blocks both providers while checking", async () => {
     await claimCloudMigration("user-1", "source", "us-east-1");
