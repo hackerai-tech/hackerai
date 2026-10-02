@@ -135,6 +135,11 @@ interface GlobalStateType {
   editingQueuedMessageId: string | null;
   setEditingQueuedMessageId: (messageId: string | null) => void;
   removeQueuedMessage: (id: string) => void;
+  setQueuedMessageDelivery: (
+    id: string,
+    status: "sending" | "failed",
+    firstAttemptAt: number,
+  ) => void;
   clearQueue: () => void;
 
   // Queue behavior preference
@@ -1166,10 +1171,29 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     );
   }, []);
 
+  const setQueuedMessageDelivery = useCallback(
+    (
+      id: string,
+      deliveryStatus: "sending" | "failed",
+      firstAttemptAt: number,
+    ) => {
+      setMessageQueue((prev) =>
+        prev.map((message) =>
+          message.id === id
+            ? { ...message, deliveryStatus, firstAttemptAt }
+            : message,
+        ),
+      );
+    },
+    [],
+  );
+
   const updateQueuedMessage = useCallback((id: string, text: string) => {
     setMessageQueue((prev) =>
       prev.map((message) =>
-        message.id === id ? { ...message, text } : message,
+        message.id === id && !message.deliveryStatus
+          ? { ...message, text }
+          : message,
       ),
     );
   }, []);
@@ -1353,6 +1377,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     editingQueuedMessageId,
     setEditingQueuedMessageId,
     removeQueuedMessage,
+    setQueuedMessageDelivery,
     clearQueue,
 
     queueBehavior,

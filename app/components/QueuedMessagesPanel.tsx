@@ -72,7 +72,11 @@ const QueuedMessageMenu = ({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
-        <DropdownMenuItem className="cursor-pointer" onSelect={onEdit}>
+        <DropdownMenuItem
+          disabled={!!message.deliveryStatus}
+          className="cursor-pointer"
+          onSelect={onEdit}
+        >
           <Pencil />
           Edit message
         </DropdownMenuItem>
@@ -170,6 +174,16 @@ const QueuedMessageRow = ({
             <div className="text-sm truncate text-foreground">
               {message.text}
             </div>
+            {message.deliveryStatus && (
+              <div
+                className="text-xs text-muted-foreground mt-0.5"
+                role="status"
+              >
+                {message.deliveryStatus === "sending"
+                  ? "Checking delivery…"
+                  : "Delivery not confirmed. Retry checks for an active run first."}
+              </div>
+            )}
             {message.files && message.files.length > 0 && (
               <div className="text-xs text-muted-foreground mt-0.5">
                 {message.files.length} file
@@ -186,16 +200,19 @@ const QueuedMessageRow = ({
             type="button"
             size="sm"
             variant="ghost"
+            disabled={message.deliveryStatus === "sending"}
             onClick={() => onSendNow(message.id)}
             className="h-7 px-2 text-xs"
             title={
-              isStreaming
-                ? "Stop the current response and steer with this message"
-                : "Send this queued message now"
+              message.deliveryStatus === "failed"
+                ? "Check for an active run before retrying this message"
+                : isStreaming
+                  ? "Stop the current response and steer with this message"
+                  : "Send this queued message now"
             }
           >
             <CornerDownRight className="w-3 h-3 mr-1" />
-            Steer
+            {message.deliveryStatus === "failed" ? "Retry" : "Steer"}
           </Button>
           <Button
             type="button"

@@ -183,3 +183,31 @@ describe("QueuedMessagesPanel", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+it("shows a held failure with explicit Retry and disables sends while checking", () => {
+  const props = {
+    onSendNow: jest.fn(),
+    onEdit: jest.fn(),
+    onEditingMessageChange: jest.fn(),
+    onDelete: jest.fn(),
+    isStreaming: false,
+  };
+  const { rerender } = render(
+    <QueuedMessagesPanel
+      {...props}
+      messages={[{ ...messages[0], deliveryStatus: "failed" }]}
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent(
+    "Delivery not confirmed",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(props.onSendNow).toHaveBeenCalledWith(messages[0].id);
+  rerender(
+    <QueuedMessagesPanel
+      {...props}
+      messages={[{ ...messages[0], deliveryStatus: "sending" }]}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
+});

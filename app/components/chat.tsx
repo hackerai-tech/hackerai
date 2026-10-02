@@ -28,6 +28,7 @@ import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
+import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
@@ -588,6 +589,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     messageQueue,
     editingQueuedMessageId,
     removeQueuedMessage,
+    setQueuedMessageDelivery,
     clearQueue,
     todos,
     sandboxPreference,
@@ -900,6 +902,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
+    () => {},
+  );
   const transportRef = useRef(
     new DefaultChatTransport({
       api: "/api/chat",
@@ -942,6 +947,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               messagesRef.current,
             ),
           };
+          const request =
+            typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+          const queuedMessageId = request?.messages?.at(-1)?.id;
           return fetchAgentLongStream(
             init,
             (run) => {
@@ -951,6 +959,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   run.chatId !== activeChatIdRef.current)
               ) {
                 return;
+              }
+              if (
+                typeof request?.chatId === "string" &&
+                typeof queuedMessageId === "string"
+              ) {
+                queuedAdmissionRef.current(request.chatId, queuedMessageId);
               }
               setAgentLongRunId(run.runId);
               if (run.runCorrelationToken) {
@@ -1278,6 +1292,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     [regenerateUnchecked, computerSendDisabledReasonRef],
   );
+
+  const { send: sendQueuedMessage, accept: acceptQueuedMessage } =
+    useQueuedMessageDelivery({
+      chatId,
+      messages,
+      queue: messageQueue,
+      enabled: shouldUseAgentLong,
+      isStopped: () => hasManuallyStoppedRef.current,
+      getRequestGeneration: () => agentLongRequestGenerationRef.current,
+      sendDisabledReason: computerSendDisabledReason,
+      sendMessage,
+      resumeStream,
+      remove: removeQueuedMessage,
+      setDelivery: setQueuedMessageDelivery,
+    });
+  useLayoutEffect(() => {
+    queuedAdmissionRef.current = acceptQueuedMessage;
+  }, [acceptQueuedMessage]);
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -2074,8 +2106,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       status === "ready" &&
+      shouldUseAgentLong &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
+      !messageQueue[0].deliveryStatus &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
@@ -2084,43 +2118,26 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setIsProcessingQueue(true);
       const nextMessage = messageQueue[0];
 
-      if (nextMessage) {
-        try {
-          const sendPromise = sendMessage(
-            {
-              text: nextMessage.text,
-              files: nextMessage.files as any,
-              metadata: { createdAt: nextMessage.timestamp },
-            },
-            {
-              body: {
-                mode: chatModeRef.current,
-                todos: todosRef.current,
-                sandboxPreference: sandboxPreferenceRef.current,
-                agentPermissionMode: agentPermissionModeRef.current,
-                selectedModel: requestSelectedModelRef.current,
-              },
-            },
-          );
-          removeQueuedMessage(nextMessage.id);
-          sendPromise.catch((error) => {
-            console.error("Failed to send queued message:", error);
-          });
-        } catch (error) {
-          console.error("Failed to send queued message:", error);
-        }
+      if (nextMessage && !nextMessage.deliveryStatus) {
+        void sendQueuedMessage(nextMessage.id, {
+          mode: chatModeRef.current,
+          todos: todosRef.current,
+          sandboxPreference: sandboxPreferenceRef.current,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel: requestSelectedModelRef.current,
+        });
       }
 
       setTimeout(() => setIsProcessingQueue(false), 100);
     }
   }, [
     status,
+    shouldUseAgentLong,
     messageQueue,
     editingQueuedMessageId,
     computerSendDisabledReason,
     isProcessingQueue,
-    removeQueuedMessage,
-    sendMessage,
+    sendQueuedMessage,
     chatModeRef,
     todosRef,
     sandboxPreferenceRef,
@@ -2147,6 +2164,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     messages,
     sendMessage,
+    sendQueuedMessage,
     stop,
     regenerate,
     setMessages,
