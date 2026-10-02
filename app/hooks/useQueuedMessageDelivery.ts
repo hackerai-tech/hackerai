@@ -7,7 +7,7 @@ import { getPendingAgentLongRunStart } from "@/lib/chat/agent-long-transport";
 import { toast } from "sonner";
 
 // Explicit retries stay well inside the Agent route's six-hour dedupe TTL.
-const QUEUED_SEND_RETRY_WINDOW_MS = 5 * 60 * 1000;
+const QUEUED_SEND_RETRY_WINDOW_MS = 5 * 60 * 60 * 1000;
 
 type Attempt = {
   chatId: string;
@@ -28,7 +28,7 @@ type Props = {
   remove: (id: string) => void;
   setDelivery: (
     id: string,
-    status: "sending" | "failed",
+    status: NonNullable<QueuedMessage["deliveryStatus"]>,
     firstAttemptAt: number,
   ) => void;
 };
@@ -81,9 +81,10 @@ export function useQueuedMessageDelivery(props: Props) {
         active.current === attempt &&
         current.current.chatId === attempt.chatId &&
         current.current.queue.some((item) => item.id === id);
+      let heldStatus: "failed" | "active" = "failed";
       initial.setDelivery(id, "sending", firstAttemptAt);
       try {
-        if (message.deliveryStatus === "failed") {
+        if (message.deliveryStatus) {
           // A lost POST response does not prove the durable run failed to start.
           // Reconnect first; a retry retains the original user-message ID so the
           // route's existing idempotency key also covers a late admission race.
@@ -102,6 +103,9 @@ export function useQueuedMessageDelivery(props: Props) {
           )
             return;
           if (response.status === 200) {
+            // A run handle alone does not identify the queued turn. Keep it
+            // held without claiming this specific message was admitted.
+            heldStatus = "active";
             await current.current.resumeStream();
             return;
           }
@@ -162,7 +166,7 @@ export function useQueuedMessageDelivery(props: Props) {
           );
       } finally {
         if (isCurrent() && !attempt.accepted)
-          current.current.setDelivery(id, "failed", firstAttemptAt);
+          current.current.setDelivery(id, heldStatus, firstAttemptAt);
         if (active.current === attempt) active.current = null;
       }
     },

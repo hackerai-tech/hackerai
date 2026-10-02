@@ -137,7 +137,7 @@ interface GlobalStateType {
   removeQueuedMessage: (id: string) => void;
   setQueuedMessageDelivery: (
     id: string,
-    status: "sending" | "failed",
+    status: NonNullable<QueuedMessage["deliveryStatus"]>,
     firstAttemptAt: number,
   ) => void;
   clearQueue: () => void;
@@ -1174,7 +1174,7 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   const setQueuedMessageDelivery = useCallback(
     (
       id: string,
-      deliveryStatus: "sending" | "failed",
+      deliveryStatus: NonNullable<QueuedMessage["deliveryStatus"]>,
       firstAttemptAt: number,
     ) => {
       setMessageQueue((prev) =>

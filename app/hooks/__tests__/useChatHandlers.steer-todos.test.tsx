@@ -23,6 +23,7 @@ const mockClearInput = jest.fn();
 const mockClearUploadedFiles = jest.fn();
 const mockResetAutoContinueCount = jest.fn();
 let mockInput = "";
+let mockQueuedDeliveryStatus: "failed" | undefined;
 
 const todos: Todo[] = [
   {
@@ -76,6 +77,7 @@ jest.mock("@/app/contexts/GlobalState", () => ({
     messageQueue: [
       {
         id: "queued-1",
+        deliveryStatus: mockQueuedDeliveryStatus,
         text: "Change direction",
         files: [],
         timestamp: 123,
@@ -129,6 +131,7 @@ describe("useChatHandlers steer todo handoff", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockInput = "";
+    mockQueuedDeliveryStatus = undefined;
     Object.defineProperty(navigator, "onLine", {
       configurable: true,
       value: true,
@@ -143,6 +146,36 @@ describe("useChatHandlers steer todo handoff", () => {
           }) as Response,
       ),
     });
+  });
+
+  it("routes generic Retry through queued recovery without canceling or regenerating an uncertain run", async () => {
+    mockQueuedDeliveryStatus = "failed";
+    const sendQueuedMessage = jest.fn(async () => {});
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages: [{ id: "queued-1", role: "user", parts: [] }],
+        sendMessage: mockSendMessage,
+        sendQueuedMessage,
+        stop: mockStop,
+        regenerate: jest.fn(),
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "error",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+        activeTriggerRunRef: { current: "uncertain-run" },
+      }),
+    );
+    await act(() => result.current.handleRetry({ selectedModel: "auto" }));
+    expect(sendQueuedMessage).toHaveBeenCalledWith(
+      "queued-1",
+      expect.objectContaining({ selectedModel: "auto" }),
+    );
+    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(mockStop).not.toHaveBeenCalled();
+    expect(mockDeleteLastAssistantMessage).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("waits for a pending start and cancels its exact run after an early Stop", async () => {

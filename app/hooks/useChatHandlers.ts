@@ -818,6 +818,16 @@ export const useChatHandlers = ({
 
   const handleRetry = async (options: RetryOptions = {}) => {
     if (sendDisabledReasonRef.current) return;
+    const lastUserId = messages.findLast(
+      (message) => message.role === "user",
+    )?.id;
+    const queuedAttempt = messageQueue.find(
+      (message) => message.id === lastUserId && message.deliveryStatus,
+    );
+    if (queuedAttempt && sendQueuedMessage) {
+      await handleSendNow(queuedAttempt.id, options);
+      return;
+    }
     if (
       isAgentMode(chatModeRef.current) &&
       getAutoContinueChainAssistantIds(messages).length > 0
@@ -1074,7 +1084,10 @@ export const useChatHandlers = ({
   const handleContinue = (selectedModelOverride?: SelectedModel) =>
     continueSavedTask({ selectedModel: selectedModelOverride });
 
-  const handleSendNow = async (messageId: string) => {
+  const handleSendNow = async (
+    messageId: string,
+    options: RetryOptions = {},
+  ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
     if (
@@ -1104,7 +1117,9 @@ export const useChatHandlers = ({
           todos,
           sandboxPreference,
           agentPermissionMode: agentPermissionModeRef.current,
-          selectedModel: requestSelectedModelRef.current,
+          selectedModel:
+            options.selectedModel ?? requestSelectedModelRef.current,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
         });
         return;
       }

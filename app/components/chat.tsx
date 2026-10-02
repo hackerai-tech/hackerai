@@ -2106,7 +2106,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     if (
       status === "ready" &&
-      shouldUseAgentLong &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
       !messageQueue[0].deliveryStatus &&
@@ -2119,13 +2118,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       const nextMessage = messageQueue[0];
 
       if (nextMessage && !nextMessage.deliveryStatus) {
-        void sendQueuedMessage(nextMessage.id, {
+        const body = {
           mode: chatModeRef.current,
           todos: todosRef.current,
           sandboxPreference: sandboxPreferenceRef.current,
           agentPermissionMode: agentPermissionModeRef.current,
           selectedModel: requestSelectedModelRef.current,
-        });
+        };
+        if (shouldUseAgentLong) {
+          void sendQueuedMessage(nextMessage.id, body);
+        } else {
+          try {
+            const sending = sendMessage(
+              {
+                text: nextMessage.text,
+                files: nextMessage.files as any,
+                metadata: { createdAt: nextMessage.timestamp },
+              },
+              { body },
+            );
+            removeQueuedMessage(nextMessage.id);
+            void sending.catch((error) =>
+              console.error("Failed to send queued message:", error),
+            );
+          } catch (error) {
+            console.error("Failed to send queued message:", error);
+          }
+        }
       }
 
       setTimeout(() => setIsProcessingQueue(false), 100);
@@ -2138,6 +2157,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     computerSendDisabledReason,
     isProcessingQueue,
     sendQueuedMessage,
+    sendMessage,
+    removeQueuedMessage,
     chatModeRef,
     todosRef,
     sandboxPreferenceRef,
@@ -2164,7 +2185,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     messages,
     sendMessage,
-    sendQueuedMessage,
+    sendQueuedMessage:
+      shouldUseAgentLong ||
+      messageQueue.some((message) => message.deliveryStatus)
+        ? sendQueuedMessage
+        : undefined,
     stop,
     regenerate,
     setMessages,

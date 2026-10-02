@@ -335,7 +335,11 @@ const DisconnectedQueueHarness = () => {
   );
 };
 
-const QueueEditingHarness = () => {
+const QueueEditingHarness = ({
+  mode = "agent",
+}: {
+  mode?: "agent" | "ask";
+}) => {
   const {
     messageQueue,
     queueMessage,
@@ -346,10 +350,10 @@ const QueueEditingHarness = () => {
   const hasSetActualEditingId = useRef(false);
 
   useEffect(() => {
-    setChatMode("agent");
+    setChatMode(mode);
     queueMessage("original queued message");
     setEditingQueuedMessageId("queued-message-id");
-  }, [queueMessage, setEditingQueuedMessageId, setChatMode]);
+  }, [queueMessage, setEditingQueuedMessageId, setChatMode, mode]);
 
   useEffect(() => {
     if (messageQueue[0] && !hasSetActualEditingId.current) {
@@ -1008,6 +1012,26 @@ describe("Chat Component Integration", () => {
       await act(async () => {
         finish();
       });
+    });
+
+    it("preserves automatic and manual Ask queue dispatch", async () => {
+      render(
+        <TestWrapper>
+          <QueueEditingHarness mode="ask" />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save queued edit" }));
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "updated queued message" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ mode: "ask" }),
+          }),
+        ),
+      );
+      expect(screen.getByTestId("queue-state")).toHaveTextContent("Queued: 0");
+      expect(mockChatHandlerArgs.sendQueuedMessage).toBeUndefined();
     });
 
     it("keeps an edited queued message pending, then resumes with updated text", async () => {

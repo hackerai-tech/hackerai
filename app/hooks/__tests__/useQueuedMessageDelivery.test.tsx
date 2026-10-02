@@ -163,7 +163,7 @@ it("reconnects an active run without resending or discarding the queued intent",
   });
   expect(resumeStream).toHaveBeenCalledTimes(1);
   expect(sendMessage).not.toHaveBeenCalled();
-  expect(result.current.queue[0].deliveryStatus).toBe("failed");
+  expect(result.current.queue[0].deliveryStatus).toBe("active");
 });
 
 it("retries only after a 204 and retains the user-message ID instead of appending a duplicate", async () => {
@@ -206,7 +206,7 @@ it("does not retry outside the bounded deduplication window", async () => {
     message: {
       ...message,
       deliveryStatus: "failed",
-      firstAttemptAt: Date.now() - 300_000,
+      firstAttemptAt: Date.now() - 5 * 60 * 60 * 1000,
     },
   });
   await act(() => result.current.send(message.id, {}));
@@ -335,3 +335,18 @@ it.each(["stop", "new request"])(
     expect(result.current.queue[0].deliveryStatus).toBe("failed");
   },
 );
+
+it("can explicitly check a held active-run item again without dispatching a parallel request", async () => {
+  fetchMock.mockResolvedValueOnce({ status: 200 });
+  const { result } = setup({
+    message: {
+      ...message,
+      deliveryStatus: "active",
+      firstAttemptAt: Date.now(),
+    },
+  });
+  await act(() => result.current.send(message.id, {}));
+  expect(resumeStream).toHaveBeenCalledTimes(1);
+  expect(sendMessage).not.toHaveBeenCalled();
+  expect(result.current.queue[0].deliveryStatus).toBe("active");
+});

@@ -181,7 +181,9 @@ const QueuedMessageRow = ({
               >
                 {message.deliveryStatus === "sending"
                   ? "Checking delivery…"
-                  : "Delivery not confirmed. Retry checks for an active run first."}
+                  : message.deliveryStatus === "active"
+                    ? "Active run found. Check delivery after it finishes."
+                    : "Delivery not confirmed. Retry checks for an active run first."}
               </div>
             )}
             {message.files && message.files.length > 0 && (
@@ -204,7 +206,7 @@ const QueuedMessageRow = ({
             onClick={() => onSendNow(message.id)}
             className="h-7 px-2 text-xs"
             title={
-              message.deliveryStatus === "failed"
+              message.deliveryStatus && message.deliveryStatus !== "sending"
                 ? "Check for an active run before retrying this message"
                 : isStreaming
                   ? "Stop the current response and steer with this message"
@@ -212,7 +214,11 @@ const QueuedMessageRow = ({
             }
           >
             <CornerDownRight className="w-3 h-3 mr-1" />
-            {message.deliveryStatus === "failed" ? "Retry" : "Steer"}
+            {message.deliveryStatus === "active"
+              ? "Check delivery"
+              : message.deliveryStatus === "failed"
+                ? "Retry"
+                : "Steer"}
           </Button>
           <Button
             type="button"
