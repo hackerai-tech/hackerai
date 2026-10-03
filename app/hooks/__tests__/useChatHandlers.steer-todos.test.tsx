@@ -150,13 +150,20 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
-  it("routes generic Retry through queued recovery without canceling or regenerating an uncertain run", async () => {
+  it("retries the latest queued message without native findLast or replacing an uncertain run", async () => {
     mockQueuedDeliveryStatus = "failed";
     const sendQueuedMessage = jest.fn(async () => {});
+    const history = [
+      { id: "older-user", role: "user", parts: [] },
+      { id: "older-assistant", role: "assistant", parts: [] },
+      { id: "queued-1", role: "user", parts: [] },
+    ] as ChatMessage[];
+    Object.defineProperty(history, "findLast", { value: undefined });
+    Object.freeze(history);
     const { result } = renderHook(() =>
       useChatHandlers({
         chatId: "chat-1",
-        messages: [{ id: "queued-1", role: "user", parts: [] }],
+        messages: history,
         sendMessage: mockSendMessage,
         sendQueuedMessage,
         stop: mockStop,

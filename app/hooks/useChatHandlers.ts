@@ -695,8 +695,10 @@ export const useChatHandlers = ({
     const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
-      message_id: messages.findLast((message) => message.role === "assistant")
-        ?.id,
+      message_id: messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "assistant")?.id,
       mode: chatModeRef.current,
       selected_model: requestSelectedModelRef.current ?? "auto",
     });
@@ -751,8 +753,10 @@ export const useChatHandlers = ({
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
     captureAuthenticatedEvent("chat_response_regeneration_requested", {
       chat_id: chatId,
-      message_id: messages.findLast((message) => message.role === "assistant")
-        ?.id,
+      message_id: messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "assistant")?.id,
       mode: chatModeRef.current,
       selected_model: requestSelectedModelRef.current ?? "auto",
     });
@@ -818,9 +822,10 @@ export const useChatHandlers = ({
 
   const handleRetry = async (options: RetryOptions = {}) => {
     if (sendDisabledReasonRef.current) return;
-    const lastUserId = messages.findLast(
-      (message) => message.role === "user",
-    )?.id;
+    const lastUserId = messages
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user")?.id;
     const queuedAttempt = messageQueue.find(
       (message) => message.id === lastUserId && message.deliveryStatus,
     );
