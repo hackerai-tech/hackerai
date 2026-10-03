@@ -214,6 +214,10 @@ fn supervise_pty(
     sessions: Arc<Mutex<HashMap<String, PtySession>>>,
 ) {
     let output_channel = on_data.clone();
+    // Serialize the terminal event with output so a timed-out reader cannot
+    // deliver late data after exit (including after reuse of the session ID).
+    let output_closed = Arc::new(Mutex::new(false));
+    let reader_output_closed = output_closed.clone();
     let reader_shutdown = shutdown.clone();
     let reader_thread = thread::spawn(move || {
         let mut buf = [0u8; 4096];
@@ -225,6 +229,12 @@ fn supervise_pty(
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let closed = reader_output_closed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if *closed {
+                        break;
+                    }
                     if output_channel.send(chunk).is_err() {
                         reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
                         break;
@@ -266,18 +276,33 @@ fn supervise_pty(
             }
         }
     };
-    // Preserve output-before-exit ordering; only the child owner emits exit.
-    let _ = reader_thread.join();
-    // Cleanup is local: publishing exit closes the relay route, so a later
-    // remote kill is neither necessary nor a reliable way to release resources.
-    if let Ok(mut sessions) = sessions.lock() {
+    // Release the master/writer before draining: ConPTY keeps its output
+    // pipe open until the pseudoconsole closes. Drop outside the map lock.
+    let completed = if let Ok(mut sessions) = sessions.lock() {
         if sessions
             .get(&session_id)
             .is_some_and(|session| Arc::ptr_eq(&session.reader_shutdown, &shutdown))
         {
-            sessions.remove(&session_id);
+            sessions.remove(&session_id)
+        } else {
+            None
         }
+    } else {
+        None
+    };
+    drop(completed);
+    // Descendants may retain slave handles even after the owned child exits.
+    // Drain available output, but never let that delay the terminal event forever.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !reader_thread.is_finished() && std::time::Instant::now() < deadline {
+        thread::sleep(std::time::Duration::from_millis(10));
     }
+    shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    if reader_thread.is_finished() {
+        let _ = reader_thread.join();
+    }
+    let mut closed = output_closed.lock().unwrap_or_else(|e| e.into_inner());
+    *closed = true;
     send_exit(&on_data, exit_code, &session_id);
 }
 
@@ -410,6 +435,62 @@ mod tests {
         let (_, exit_code) = wait_for_exit(&rx);
         assert_ne!(exit_code, 0);
         assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn blocked_reader_cannot_delay_exit_or_publish_late_output() {
+        struct BlockedReader(Receiver<()>);
+        impl Read for BlockedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.0.recv().unwrap();
+                buf[0] = b'L';
+                Ok(1)
+            }
+        }
+        #[derive(Debug)]
+        struct ExitedChild;
+        impl portable_pty::ChildKiller for ExitedChild {
+            fn kill(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn clone_killer(&self) -> Box<dyn portable_pty::ChildKiller + Send + Sync> {
+                Box::new(Self)
+            }
+        }
+        impl portable_pty::Child for ExitedChild {
+            fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> {
+                Ok(Some(portable_pty::ExitStatus::with_exit_code(7)))
+            }
+            fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> {
+                Ok(portable_pty::ExitStatus::with_exit_code(7))
+            }
+            fn process_id(&self) -> Option<u32> {
+                None
+            }
+        }
+        let (release, blocked) = mpsc::channel();
+        let (channel, rx) = channel();
+        let supervisor = thread::spawn(move || {
+            supervise_pty(
+                Box::new(BlockedReader(blocked)),
+                Box::new(ExitedChild),
+                channel,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                "blocked".into(),
+                Arc::new(Mutex::new(HashMap::new())),
+            )
+        });
+        let started = Instant::now();
+        let (output, exit_code) = wait_for_exit(&rx);
+        assert_eq!(exit_code, 7);
+        assert!(output.is_empty());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        supervisor.join().unwrap();
+        release.send(()).unwrap();
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1)).is_err(),
+            "output arrived after exit"
+        );
     }
 
     #[test]
