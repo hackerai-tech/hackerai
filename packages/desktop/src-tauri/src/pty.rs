@@ -2,23 +2,21 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::ipc::Channel;
 
 use crate::platform;
 
-const OUTPUT_BUFFER_MAX_BYTES: usize = 32 * 1024;
-
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reader_shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct PtyManager {
-    sessions: HashMap<String, PtySession>,
+    sessions: Arc<Mutex<HashMap<String, PtySession>>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -30,7 +28,7 @@ pub struct PtyCreateResult {
 impl PtyManager {
     pub fn new() -> Self {
         Self {
-            sessions: HashMap::new(),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -44,7 +42,11 @@ impl PtyManager {
         env: Option<HashMap<String, String>>,
         on_data: Channel<String>,
     ) -> Result<PtyCreateResult, String> {
-        if self.sessions.contains_key(&session_id) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        if sessions.contains_key(&session_id) {
             return Err(format!("Session '{}' already exists", session_id));
         }
 
@@ -81,54 +83,49 @@ impl PtyManager {
             }
         }
 
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("Failed to spawn command: {}", e))?;
-
-        let pid = child.process_id();
-
+        // Acquire fallible handles before spawning so setup failures cannot orphan a child.
         let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| format!("Failed to clone PTY reader: {}", e))?;
-
-        let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let shutdown_clone = shutdown_flag.clone();
-
-        let session_id_clone = session_id.clone();
-        thread::spawn(move || {
-            pty_reader_thread(reader, on_data, shutdown_clone, session_id_clone);
-        });
-
-        // Take the writer ONCE at creation time and cache it. Calling
-        // take_writer() on every send_input duplicates the fd each time,
-        // which was causing sendInput failures and eventual resource issues.
         let writer = pair
             .master
             .take_writer()
             .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
-
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn command: {}", e))?;
+        let pid = child.process_id();
+        let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = PtySession {
             master: pair.master,
-            child,
+            killer: child.clone_killer(),
             writer,
-            reader_shutdown: shutdown_flag,
+            reader_shutdown: shutdown_flag.clone(),
         };
-
+        drop(pair.slave);
         let result = PtyCreateResult {
             pid,
             session_id: session_id.clone(),
         };
 
-        self.sessions.insert(session_id, session);
+        sessions.insert(session_id.clone(), session);
+        drop(sessions);
+        let sessions = self.sessions.clone();
+        thread::spawn(move || {
+            supervise_pty(reader, child, on_data, shutdown_flag, session_id, sessions);
+        });
 
         Ok(result)
     }
 
     pub fn send_input(&mut self, session_id: &str, data: &str) -> Result<(), String> {
-        let session = self
+        let mut sessions = self
             .sessions
+            .lock()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        let session = sessions
             .get_mut(session_id)
             .ok_or_else(|| session_not_found_err(session_id))?;
 
@@ -146,8 +143,11 @@ impl PtyManager {
     }
 
     pub fn resize(&mut self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let session = self
+        let sessions = self
             .sessions
+            .lock()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        let session = sessions
             .get(session_id)
             .ok_or_else(|| session_not_found_err(session_id))?;
 
@@ -165,27 +165,30 @@ impl PtyManager {
     }
 
     pub fn kill(&mut self, session_id: &str) -> Result<(), String> {
-        let mut session = self
+        let mut sessions = self
             .sessions
-            .remove(session_id)
-            .ok_or_else(|| session_not_found_err(session_id))?;
-
+            .lock()
+            .map_err(|e| format!("Lock poisoned: {}", e))?;
+        // Natural completion may already have removed the session.
+        let Some(session) = sessions.get_mut(session_id) else {
+            return Ok(());
+        };
+        session
+            .killer
+            .kill()
+            .map_err(|e| format!("Failed to kill PTY child: {}", e))?;
         session
             .reader_shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        session
-            .child
-            .kill()
-            .map_err(|e| format!("Failed to kill PTY child: {}", e))?;
-
-        let _ = session.child.wait();
-
+        // The supervisor owns wait() and removes resources after output drains.
         Ok(())
     }
 
     pub fn stop_all(&mut self) {
-        let session_ids: Vec<String> = self.sessions.keys().cloned().collect();
+        let session_ids: Vec<String> = match self.sessions.lock() {
+            Ok(sessions) => sessions.keys().cloned().collect(),
+            Err(_) => return,
+        };
         for id in session_ids {
             if let Err(e) = self.kill(&id) {
                 log::warn!("Failed to kill PTY session '{}': {}", id, e);
@@ -194,69 +197,63 @@ impl PtyManager {
     }
 }
 
-fn pty_reader_thread(
+fn supervise_pty(
     mut reader: Box<dyn Read + Send>,
+    mut child: Box<dyn portable_pty::Child + Send + Sync>,
     on_data: Channel<String>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     session_id: String,
+    sessions: Arc<Mutex<HashMap<String, PtySession>>>,
 ) {
     let mut buf = [0u8; 4096];
-    let mut output_buffer = Vec::with_capacity(OUTPUT_BUFFER_MAX_BYTES);
-
+    let mut transport_failed = false;
     loop {
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
-
         match reader.read(&mut buf) {
-            Ok(0) => {
-                // EOF -- flush remaining buffer and send exit
-                flush_buffer(&on_data, &mut output_buffer);
-                send_exit(&on_data, 0, &session_id);
-                break;
-            }
+            Ok(0) => break,
             Ok(n) => {
-                output_buffer.extend_from_slice(&buf[..n]);
-
-                // For interactive PTY, flush immediately after every read to
-                // minimize latency. The server's idle timer needs to see output
-                // as soon as it arrives. Batching caused prompts to arrive late,
-                // after the idle timer had already fired.
-                if !output_buffer.is_empty() {
-                    let chunk = String::from_utf8_lossy(&output_buffer).to_string();
-                    if on_data.send(chunk).is_err() {
-                        // IPC channel closed (window gone / subscription dropped):
-                        // no point reading further — bail so the thread exits.
-                        log::debug!(
-                            "PTY reader channel closed for session '{}', exiting reader",
-                            session_id
-                        );
-                        break;
-                    }
-                    output_buffer.clear();
+                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                if on_data.send(chunk).is_err() {
+                    transport_failed = true;
+                    break;
                 }
             }
             Err(e) => {
+                // Unix PTYs can report EIO instead of EOF after the slave closes.
+                #[cfg(unix)]
+                if e.raw_os_error() == Some(libc::EIO) {
+                    break;
+                }
                 log::warn!("PTY reader error for session '{}': {}", session_id, e);
-                flush_buffer(&on_data, &mut output_buffer);
-                send_exit(&on_data, -1, &session_id);
+                transport_failed = true;
                 break;
             }
         }
     }
+    if transport_failed {
+        let _ = child.kill();
+    }
+    let exit_code = match child.wait() {
+        Ok(status) if !transport_failed => status.exit_code() as i32,
+        _ => -1,
+    };
+    // Cleanup is local: publishing exit closes the relay route, so a later
+    // remote kill is neither necessary nor a reliable way to release resources.
+    if let Ok(mut sessions) = sessions.lock() {
+        if sessions
+            .get(&session_id)
+            .is_some_and(|session| Arc::ptr_eq(&session.reader_shutdown, &shutdown))
+        {
+            sessions.remove(&session_id);
+        }
+    }
+    send_exit(&on_data, exit_code, &session_id);
 }
 
 fn session_not_found_err(id: &str) -> String {
     format!("Session '{}' not found", id)
-}
-
-fn flush_buffer(on_data: &Channel<String>, buf: &mut Vec<u8>) {
-    if buf.is_empty() {
-        return;
-    }
-    let chunk = String::from_utf8_lossy(buf).to_string();
-    let _ = on_data.send(chunk);
-    buf.clear();
 }
 
 fn send_exit(on_data: &Channel<String>, exit_code: i32, session_id: &str) {
@@ -281,5 +278,113 @@ fn get_shell_exec_flag(shell: &str) -> &'static str {
         "/C"
     } else {
         "-c"
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::{self, Receiver};
+    use std::time::{Duration, Instant};
+
+    fn channel() -> (Channel<String>, Receiver<String>) {
+        let (tx, rx) = mpsc::channel();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                let data: String = serde_json::from_str(&json).unwrap();
+                let _ = tx.send(data);
+            }
+            Ok(())
+        });
+        (channel, rx)
+    }
+
+    fn wait_for_exit(rx: &Receiver<String>) -> (String, i64) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = String::new();
+        loop {
+            let data = rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+                if value["type"] == "exit" {
+                    return (output, value["exitCode"].as_i64().unwrap());
+                }
+            }
+            output.push_str(&data);
+        }
+    }
+
+    #[test]
+    fn reports_real_exit_after_output_and_releases_completed_sessions() {
+        let mut manager = PtyManager::new();
+        for code in [0, 7] {
+            let (channel, rx) = channel();
+            manager
+                .create(
+                    "completion".into(),
+                    format!("printf audit-output; exit {code}"),
+                    80,
+                    24,
+                    None,
+                    None,
+                    channel,
+                )
+                .unwrap();
+            let (output, exit_code) = wait_for_exit(&rx);
+            assert_eq!(output, "audit-output");
+            assert_eq!(exit_code, code);
+            assert!(manager.sessions.lock().unwrap().is_empty());
+            // Cleanup after natural completion is idempotent.
+            manager.kill("completion").unwrap();
+        }
+    }
+
+    #[test]
+    fn killing_a_running_child_reaps_and_removes_it() {
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "cancel".into(),
+                "exec sleep 30".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        manager.kill("cancel").unwrap();
+        let (_, exit_code) = wait_for_exit(&rx);
+        assert_ne!(exit_code, 0);
+        assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn broken_output_channel_terminates_and_cleans_up_the_child() {
+        let (tx, rx) = mpsc::channel();
+        let channel = Channel::<String>::new(move |_| {
+            let _ = tx.send(());
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed test channel").into())
+        });
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "closed".into(),
+                "printf output; exec sleep 30".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !manager.sessions.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "child was not cleaned up");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
