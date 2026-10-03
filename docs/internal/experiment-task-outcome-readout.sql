@@ -1,6 +1,7 @@
 -- PostHog HogQL. Replace the three UTC bounds with the recorded HAC-120 phase
 -- activation, cohort end and readout cutoff. Run independently in each project.
--- Exclude the recorded internal/test distinct IDs before public comparison.
+-- Replace internal_test_distinct_ids with a comma-separated list of quoted
+-- recorded internal/test IDs before execution; the cohort excludes them upstream.
 -- Reconcile every original request ID with Convex; selected telemetry can fail.
 WITH cohort AS (
     SELECT distinct_id, toString(properties.survey_request_id) AS request_id,
@@ -15,6 +16,7 @@ WITH cohort AS (
       AND properties.survey_kind = 'current_experiment'
       AND properties.feedback_phase = 'abliterated_max_moderated_feedback_v1'
       AND properties.experiment_key = 'abliterated_max_moderated_v1'
+      AND distinct_id NOT IN ({internal_test_distinct_ids})
       AND timestamp >= toDateTime('{activation_utc}', 'UTC')
       AND timestamp < toDateTime('{cohort_end_utc}', 'UTC')
     GROUP BY distinct_id, request_id
