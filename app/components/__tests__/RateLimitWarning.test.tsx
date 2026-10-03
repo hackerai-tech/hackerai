@@ -327,3 +327,31 @@ describe("RateLimitWarning", () => {
     ).toBeInTheDocument();
   });
 });
+
+it("shows the daily Free Agent allowance and reset on a mid-stream cutoff", () => {
+  render(
+    <RateLimitWarning
+      onDismiss={jest.fn()}
+      data={{
+        warningType: "token-bucket",
+        bucketType: "daily",
+        subscription: "free",
+        remainingPercent: 0,
+        usedDollars: 0.1,
+        limitDollars: 0.1,
+        capReason: "free_daily_cost_exhausted",
+        midStream: true,
+        cutOff: true,
+        resetTime: new Date(Date.now() + 3600000),
+      }}
+    />,
+  );
+  expect(
+    screen.getByText(
+      /today's free Agent allowance and this response was cut off/,
+    ),
+  ).toBeVisible();
+  expect(screen.getByText(/midnight UTC/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Keep going" })).toBeVisible();
+  expect(screen.queryByText(/monthly usage/)).not.toBeInTheDocument();
+});

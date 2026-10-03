@@ -70,6 +70,78 @@ describe("checkRateLimit", () => {
   };
 
   describe("free users", () => {
+    it("treatment Agent admission and resume use cost capacity without consuming request units", async () => {
+      const { checkRateLimit, checkRateLimitCapacity } = getIsolatedModule();
+      const get = jest.fn().mockResolvedValue(800);
+      mockCreateRedisClient.mockReturnValue({ get, eval: mockEvalFn });
+      const policy = {
+        dailyRequests: 3,
+        monthlyCostDollars: 0.1,
+        agentDailyBudget: {
+          bucket: new Date().toISOString().slice(0, 10),
+          resetTimestamp: Date.now() + 86400000,
+        },
+      };
+      const admitted = await checkRateLimit(
+        "user",
+        "agent",
+        "free",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "shared-quota",
+        policy,
+      );
+      const resumed = await checkRateLimitCapacity(
+        "user",
+        "agent",
+        "free",
+        undefined,
+        undefined,
+        undefined,
+        "shared-quota",
+        policy,
+      );
+      expect(admitted).toMatchObject({
+        freeDailyCost: true,
+        limit: 1000,
+        remaining: 200,
+      });
+      expect(resumed.remaining).toBe(200);
+      expect(get).toHaveBeenCalledWith(
+        `free_agent_daily_cost:shared-quota:${policy.agentDailyBudget.bucket}`,
+      );
+      expect(mockEvalFn).not.toHaveBeenCalled();
+      expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();
+    });
+
+    it("Ask still consumes request units even if an Agent daily policy is present", async () => {
+      const { checkRateLimit } = getIsolatedModule();
+      const get = jest.fn();
+      mockCreateRedisClient.mockReturnValue({ get, eval: mockEvalFn });
+      await checkRateLimit(
+        "user",
+        "ask",
+        "free",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "shared-quota",
+        {
+          dailyRequests: 3,
+          monthlyCostDollars: 0.1,
+          agentDailyBudget: {
+            bucket: "unused",
+            resetTimestamp: Date.now() + 86400000,
+          },
+        },
+      );
+      expect(mockEvalFn).toHaveBeenCalled();
+      expect(get).not.toHaveBeenCalled();
+    });
+
     it("peeks at post-wait Agent capacity without consuming units", async () => {
       const { checkRateLimitCapacity } = getIsolatedModule();
 

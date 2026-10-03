@@ -1,3 +1,8 @@
+import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
+import {
+  evaluateFreeAgentBudget,
+  freeAgentBudgetPolicy,
+} from "@/lib/experiments/free-agent-budget";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -49,7 +54,7 @@ import {
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
-  checkFreeMonthlyCostLimit,
+  checkFreeCostBudget,
   checkRateLimit,
   deductUsage,
   deductUsageDelta,
@@ -503,10 +508,27 @@ export const createChatHandler = () => {
         subscription,
         country: regionalFreeCountryFromRequest(req),
       });
-      const freeLimits = regionalFreeLimits;
+      const freeAgentBudget = await evaluateFreeAgentBudget({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        mode,
+        subscription,
+        requestId,
+      });
+      const freeLimits = freeAgentBudgetPolicy(
+        freeAgentBudget,
+        regionalFreeLimits,
+      );
+      const freeDailySettlement = freeLimits?.agentDailyBudget
+        ? new FreeDailyCostSettlement(
+            freeUsageSubject,
+            freeLimits,
+            crypto.randomUUID(),
+          )
+        : undefined;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
+          ? await checkFreeCostBudget(freeUsageSubject, freeLimits)
           : null;
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
@@ -1349,10 +1371,16 @@ export const createChatHandler = () => {
                     },
                   });
                 } else if (subscription === "free") {
-                  await recordFreeMonthlyCost(
-                    freeUsageSubject,
-                    usageCostRecord.costDollars,
-                  );
+                  if (freeDailySettlement) {
+                    await freeDailySettlement.settle(
+                      usageCostRecord.costDollars,
+                    );
+                  } else {
+                    await recordFreeMonthlyCost(
+                      freeUsageSubject,
+                      usageCostRecord.costDollars,
+                    );
+                  }
                 } else {
                   const deductionResult = await deductUsage(
                     userId,
@@ -1448,6 +1476,7 @@ export const createChatHandler = () => {
                   responseModel: state.responseModel,
                   analyticsRequestContext,
                   experiment: routingExperimentContext,
+                  freeAgentBudget,
                   fallbackServed:
                     state.responseModel && retryUsedFallbackModel
                       ? true
@@ -1478,7 +1507,12 @@ export const createChatHandler = () => {
                 force,
                 model,
               }) => {
-                if (!usageSettlementState || hasRecordedUsage) return;
+                if (hasRecordedUsage) return;
+                if (freeDailySettlement) {
+                  await freeDailySettlement.settle(currentCostDollars);
+                  return;
+                }
+                if (!usageSettlementState) return;
                 if (
                   !shouldSettleUsageMidRun({
                     state: usageSettlementState,
@@ -1553,6 +1587,7 @@ export const createChatHandler = () => {
                   deduction: deductionResult,
                   forced: force,
                   experiment: routingExperimentContext,
+                  freeAgentBudget,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -2369,6 +2404,7 @@ export const createChatHandler = () => {
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
                                   experiment: routingExperimentContext,
+                                  freeAgentBudget,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -2708,6 +2744,7 @@ export const createChatHandler = () => {
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
                       experiment: routingExperimentContext,
+                      freeAgentBudget,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,
