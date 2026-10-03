@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "cbb0f57058a97cc78d19c3cdd0171d1b41d498fd",
+  "sourceCommit": "99c0711687ac7d6acbe5a214143f97b8d6f8f282",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -52,10 +52,10 @@
       "filename": "aws",
       "name": "aws",
       "description": "AWS cloud security testing covering IAM misconfigurations, S3 exposure, metadata abuse, and privilege escalation paths",
-      "contentBytes": 9664,
+      "contentBytes": 10265,
       "internal": false,
       "sourcePath": "cloud/aws.md",
-      "sourceSha256": "0b45273cb543c4316f216e50e248fd8d4d074a19fecceec26b95baf1c50293e4"
+      "sourceSha256": "e228d9774ea97d3f01157e5cc405f041e0c7d0d041ec0a58a5956968fb90b909"
     },
     {
       "id": "cloud/azure",
@@ -85,10 +85,10 @@
       "filename": "kubernetes",
       "name": "kubernetes",
       "description": "Kubernetes cluster security testing - RBAC, API exposure, container escapes, network policies, secrets, and supply chain",
-      "contentBytes": 11390,
+      "contentBytes": 12015,
       "internal": false,
       "sourcePath": "cloud/kubernetes.md",
-      "sourceSha256": "90bc45d15f36abfc4581454e4f09dbc3a250792ee9a400a2d5cbc93aee75e492"
+      "sourceSha256": "b2183a6794f864676de57cefc2938df88e3e418f462b60792dea3b62beaecc1b"
     },
     {
       "id": "coordination/root_agent",
@@ -162,10 +162,10 @@
       "filename": "django",
       "name": "django",
       "description": "Security testing playbook for Django applications covering ORM injection, middleware gaps, auth/session flaws, and template issues",
-      "contentBytes": 9407,
+      "contentBytes": 10689,
       "internal": false,
       "sourcePath": "frameworks/django.md",
-      "sourceSha256": "340a8e6af1748a6de6caff6e068277b5483c27ebe31a70af4593bbb54607e7a7"
+      "sourceSha256": "995afca1c114f5f84b6f828a18ae1fb0a204f0709aaa8dcc5a9773783ac7b319"
     },
     {
       "id": "frameworks/fastapi",
@@ -173,10 +173,10 @@
       "filename": "fastapi",
       "name": "fastapi",
       "description": "Security testing playbook for FastAPI applications covering ASGI, dependency injection, and API vulnerabilities",
-      "contentBytes": 7298,
+      "contentBytes": 8217,
       "internal": false,
       "sourcePath": "frameworks/fastapi.md",
-      "sourceSha256": "0d3a9728e3007ec15f1c383f0339651a9882b37c705fd5014001d1356067f17f"
+      "sourceSha256": "4d1ee5916a2f8d145afe47a329c630196ca9d9a86e19af85c877d83366db9aa4"
     },
     {
       "id": "frameworks/nestjs",
@@ -184,10 +184,10 @@
       "filename": "nestjs",
       "name": "nestjs",
       "description": "Security testing playbook for NestJS applications covering guards, pipes, decorators, module boundaries, and multi-transport auth",
-      "contentBytes": 10532,
+      "contentBytes": 12107,
       "internal": false,
       "sourcePath": "frameworks/nestjs.md",
-      "sourceSha256": "b8b80ff16b9dbb3356bbf3b45098a8c721654c586110a0518a0bdb49736c93e5"
+      "sourceSha256": "cb1bfd975f89493a9bf3a293b4c4d8e6421ab04ce6d9f900421ab5a3b8ead7dc"
     },
     {
       "id": "frameworks/nextjs",
@@ -195,10 +195,10 @@
       "filename": "nextjs",
       "name": "nextjs",
       "description": "Security testing playbook for Next.js covering App Router, Server Actions, RSC, and Edge runtime vulnerabilities",
-      "contentBytes": 7828,
+      "contentBytes": 10444,
       "internal": false,
       "sourcePath": "frameworks/nextjs.md",
-      "sourceSha256": "4fc68770c92c1c434b89cccc04bcf399da7b4e3369b9bde7d8ae8104faf94638"
+      "sourceSha256": "7b4d3d0e26b944800ae5b01ed79908f1d532360cf356941ce8954501e538b8a0"
     },
     {
       "id": "protocols/graphql",
@@ -206,10 +206,10 @@
       "filename": "graphql",
       "name": "graphql",
       "description": "GraphQL security testing covering introspection, resolver injection, batching attacks, and authorization bypass",
-      "contentBytes": 7845,
+      "contentBytes": 8527,
       "internal": false,
       "sourcePath": "protocols/graphql.md",
-      "sourceSha256": "6bbad1805d0c16575deda46c149264d21398cb3f9b41b37acdb979e5478a5726"
+      "sourceSha256": "884bc5aabeee41a0e3731af9406b8a8b3d5eaf2d3df4f82e7abaec52ea39eb80"
     },
     {
       "id": "protocols/oauth",
@@ -217,10 +217,10 @@
       "filename": "oauth",
       "name": "oauth",
       "description": "OAuth 2.0 and OIDC flow security testing covering redirect manipulation, token leakage, PKCE bypass, and client misconfiguration",
-      "contentBytes": 8185,
+      "contentBytes": 9151,
       "internal": false,
       "sourcePath": "protocols/oauth.md",
-      "sourceSha256": "e8e3e342dceda15cb95e26f0dd3c290f59891b4b7f98ffcebd5ce2c4e7e8efcf"
+      "sourceSha256": "05602f134b076d9c4af19586863787ad9f69e7bef3b27546d9fa43a4a17af2e3"
     },
     {
       "id": "reconnaissance/asset_discovery",
@@ -294,10 +294,10 @@
       "filename": "active_directory",
       "name": "active_directory",
       "description": "Active Directory / Kerberos domain testing covering roasting, delegation abuse, AD CS (ESC1-ESC17), NTLM coercion+relay, DACL abuse, and credential dumping",
-      "contentBytes": 14697,
+      "contentBytes": 16210,
       "internal": false,
       "sourcePath": "technologies/active_directory.md",
-      "sourceSha256": "0257f4a92c1f79db9e3a23b86613b554bcd7ae15b2afde4a072556cc1bc74dbc"
+      "sourceSha256": "8de6e20567fe6ec8c791669a783e15a26f82e55e2f694edab2caef430d68150b"
     },
     {
       "id": "technologies/auth0",
@@ -305,10 +305,10 @@
       "filename": "auth0",
       "name": "auth0",
       "description": "Auth0 tenant security testing covering misconfigured rules/actions, scope escalation, MFA bypass, and cross-application token confusion",
-      "contentBytes": 7473,
+      "contentBytes": 8291,
       "internal": false,
       "sourcePath": "technologies/auth0.md",
-      "sourceSha256": "4eb05cedc4884c06704fca8c840f60f2a2ed988f1118d75f0c67c75a6e1ad13b"
+      "sourceSha256": "e31f075700fdefd4b3eb82a8025531d30a286e16b878a085a4e5f4cd0333ff21"
     },
     {
       "id": "technologies/electron_desktop_apps",
@@ -338,10 +338,10 @@
       "filename": "grafana_prometheus",
       "name": "grafana_prometheus",
       "description": "Grafana, Prometheus, Alertmanager and exporter security testing — turning exposed observability into SSRF, credential theft, RCE, and lateral movement into the internal network",
-      "contentBytes": 16587,
+      "contentBytes": 17375,
       "internal": false,
       "sourcePath": "technologies/grafana_prometheus.md",
-      "sourceSha256": "652086c68cd38d2df7ac90b90ab2d1f78eedcbe7a803d0c0eebad3823fd2f993"
+      "sourceSha256": "f7c274f6f89e1a8a07ff929388ce84deeff57e2aeefd31cb57c0fcdc923baa9d"
     },
     {
       "id": "technologies/llm_applications",
@@ -349,10 +349,10 @@
       "filename": "llm_applications",
       "name": "llm-applications",
       "description": "End-to-end security testing for LLM, RAG, embedding, agent, and model-serving applications. Covers the OWASP Top 10 for LLM Applications 2026 (LLM01-LLM10): prompt injection, sensitive disclosure, excessive agency, supply chain, data/model poisoning, unbounded consumption, misinformation, hidden context exposure, vector weaknesses, and improper output handling. Use for architecture mapping, source review, black-box testing, and complete LLM application assessments.",
-      "contentBytes": 23014,
+      "contentBytes": 23214,
       "internal": false,
       "sourcePath": "technologies/llm_applications.md",
-      "sourceSha256": "25efa6489641ceddae829969b79ce7d4bcf2324dcc11a808a255e0b8df40bad4"
+      "sourceSha256": "84dd66db527ace752b958eb2aa84a51fdcaf5144f8fada72f714388b0cafdb99"
     },
     {
       "id": "technologies/supabase",
@@ -360,10 +360,10 @@
       "filename": "supabase",
       "name": "supabase",
       "description": "Supabase security testing covering Row Level Security, PostgREST, Edge Functions, and service key exposure",
-      "contentBytes": 9382,
+      "contentBytes": 11416,
       "internal": false,
       "sourcePath": "technologies/supabase.md",
-      "sourceSha256": "6495396e516f3a6b0a8117908072cfb3f2d0df806fbaafc022c9ac4fe41ac651"
+      "sourceSha256": "036b27a34eaa0d7351b88e1aeddeb55f3155e5cb1ea131e1de7add280f9f6ea1"
     },
     {
       "id": "vulnerabilities/agentic_system_security",
@@ -371,10 +371,10 @@
       "filename": "agentic_system_security",
       "name": "agentic-system-security",
       "description": "Security testing for authorized AI agents and MCP-style tool ecosystems, covering effective authority, tool/resource/prompt inventory, confused-deputy behavior, side-effect authorization, cross-tenant isolation, executable component supply chain, shadow integrations, and repeatable safety regression",
-      "contentBytes": 14690,
+      "contentBytes": 16336,
       "internal": false,
       "sourcePath": "vulnerabilities/agentic_system_security.md",
-      "sourceSha256": "c1319e1a37bea036341db83ccf34f7f420351d3c0daade0e7257638e3e261750"
+      "sourceSha256": "8e7e3183c2afcd5fa908b6a2c8b01470769a8f202d9fd667d08961ccf3b98813"
     },
     {
       "id": "vulnerabilities/argument_injection",
@@ -415,10 +415,10 @@
       "filename": "browser_security",
       "name": "browser-security",
       "description": "Browser-internals security testing for browsing-context relationships, postMessage, client-side path traversal, XS-Leaks, service workers, Web Workers, navigation behavior, CSP interactions, caches, and cross-origin state machines",
-      "contentBytes": 12670,
+      "contentBytes": 13516,
       "internal": false,
       "sourcePath": "vulnerabilities/browser_security.md",
-      "sourceSha256": "934e878edbc551a36bd1264658d26b787fa6942911917691330f2e081955d395"
+      "sourceSha256": "4c67bc9016fb5e644d2955190ae2d204f3af33807e01bced6d3fb310eeb86418"
     },
     {
       "id": "vulnerabilities/business_logic",
@@ -459,10 +459,10 @@
       "filename": "http_request_smuggling",
       "name": "http-request-smuggling",
       "description": "HTTP request smuggling testing covering CL.TE, TE.CL, H2.CL, H2.TE, and HTTP/2 desync techniques with practical detection and exploitation methodology",
-      "contentBytes": 11709,
+      "contentBytes": 12728,
       "internal": false,
       "sourcePath": "vulnerabilities/http_request_smuggling.md",
-      "sourceSha256": "8e8613192c9c40b6065f9c7360c01bd6e87dcdf7665a591db8b21082f16ae5ec"
+      "sourceSha256": "519ef11b74d1bc3cf7f1a03a838ceebe56777d082b4edaf2aef14535cce6e5f4"
     },
     {
       "id": "vulnerabilities/idor",
@@ -492,10 +492,10 @@
       "filename": "insecure_deserialization",
       "name": "insecure-deserialization",
       "description": "Insecure deserialization testing for Java, Python, PHP, .NET, Ruby, and Node.js covering gadget chains, type confusion, and safe validation",
-      "contentBytes": 11114,
+      "contentBytes": 12260,
       "internal": false,
       "sourcePath": "vulnerabilities/insecure_deserialization.md",
-      "sourceSha256": "7489f280bd5e7f9b2f55e1d2753777aa13565fe3f6bc1b9b1564d690918f9224"
+      "sourceSha256": "bfb681a6930f44ca4a2aa63a5529fdf6c4248e07897e8d67d36d4f29c4d6c904"
     },
     {
       "id": "vulnerabilities/insecure_file_uploads",
@@ -536,10 +536,10 @@
       "filename": "nosql_injection",
       "name": "nosql-injection",
       "description": "NoSQL injection testing covering MongoDB operator injection, authentication bypass, blind extraction, GraphQL variable injection, and Redis/DynamoDB/Elasticsearch/Neo4j-specific attack surfaces",
-      "contentBytes": 14368,
+      "contentBytes": 14619,
       "internal": false,
       "sourcePath": "vulnerabilities/nosql_injection.md",
-      "sourceSha256": "2625feb5ef614853271de8f266eefd48ef864df87dc82f440257d23cfc319d41"
+      "sourceSha256": "1bddffe3071fb6a831d59a9c7d4909e13f0865582b01d65fdfe7d66b86159f45"
     },
     {
       "id": "vulnerabilities/open_redirect",
@@ -558,10 +558,10 @@
       "filename": "path_traversal_lfi_rfi",
       "name": "path-traversal-lfi-rfi",
       "description": "Path traversal and file inclusion testing for local/remote file access and code execution",
-      "contentBytes": 10174,
+      "contentBytes": 10823,
       "internal": false,
       "sourcePath": "vulnerabilities/path_traversal_lfi_rfi.md",
-      "sourceSha256": "53699702c52ea9495d10065c038cd1f8d4dc603e796028aa00f5192150473942"
+      "sourceSha256": "74f23ea2fb5a00f7838242d249d6a2ad2253ffa227f2439949229f7b6f2709eb"
     },
     {
       "id": "vulnerabilities/prototype_pollution",
@@ -569,10 +569,10 @@
       "filename": "prototype_pollution",
       "name": "prototype-pollution",
       "description": "Client and server prototype pollution testing covering JavaScript object merge bugs, Node.js RCE chains, and filter bypasses",
-      "contentBytes": 6821,
+      "contentBytes": 7250,
       "internal": false,
       "sourcePath": "vulnerabilities/prototype_pollution.md",
-      "sourceSha256": "8d1cf48adfcd6839fc5c5e391b9cf612f79f991f6b62699a733456be3984dc6e"
+      "sourceSha256": "06e0b2da334bb6a5faf9126653968905e9cfe17b667f98c1fe859febbac3e4d8"
     },
     {
       "id": "vulnerabilities/race_conditions",
@@ -635,10 +635,10 @@
       "filename": "ssti",
       "name": "ssti",
       "description": "Server-side template injection across Jinja / Mako / Velocity / Freemarker / Thymeleaf / Twig / Handlebars / EJS / ERB with engine fingerprinting, sandbox escape, and RCE gadget chains",
-      "contentBytes": 18782,
+      "contentBytes": 19075,
       "internal": false,
       "sourcePath": "vulnerabilities/ssti.md",
-      "sourceSha256": "c0a2303674917aeb7da9d3445920aea26372b4f46e5c76a31577e1b9a709b2aa"
+      "sourceSha256": "870f1761369956e06cdc4699df02b2e4c163feff85fea88411475df77f5ab9df"
     },
     {
       "id": "vulnerabilities/subdomain_takeover",
@@ -657,10 +657,10 @@
       "filename": "weak_password_detection",
       "name": "weak-password-detection",
       "description": "Weak password detection, credential stuffing, and brute-force testing using common passwords, system-generated credentials, and HTTP fuzzing / NSE brute-force tooling",
-      "contentBytes": 9639,
+      "contentBytes": 10422,
       "internal": false,
       "sourcePath": "vulnerabilities/weak_password_detection.md",
-      "sourceSha256": "21b1e25aa23ed0083a1dc6b3156b14a44651dfdb62aef24fd090ab8bb20beace"
+      "sourceSha256": "eae7da078a05f9f8db6d93d888b8e6d10808f2d8d36c22777fffdce96a3c1fc8"
     },
     {
       "id": "vulnerabilities/xss",
@@ -668,10 +668,10 @@
       "filename": "xss",
       "name": "xss",
       "description": "XSS testing covering reflected, stored, and DOM-based vectors with CSP bypass techniques",
-      "contentBytes": 7330,
+      "contentBytes": 7786,
       "internal": false,
       "sourcePath": "vulnerabilities/xss.md",
-      "sourceSha256": "f219113bcb5732d6499bbe2d07d0eab16e3e1e52574d6b3fddb58db68287a43b"
+      "sourceSha256": "3eba51fd17b527eccaad21a9f1a07aa638ffd61d85f573c49360229e068bcc97"
     },
     {
       "id": "vulnerabilities/xxe",
