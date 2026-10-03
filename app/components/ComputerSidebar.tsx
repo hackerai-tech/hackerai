@@ -325,9 +325,25 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
   const isFullscreen = isExpanded && !computerSidebarOverlay;
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const [isWrapped, setIsWrapped] = useState(true);
   const [isFollowingLive, setIsFollowingLive] = useState(followLiveOnOpen);
   const previousToolCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isFullscreen || !sidebarOpen || !sidebarRef.current) return;
+
+    const previousFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    fullscreenButtonRef.current?.focus();
+
+    return () => {
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [isFullscreen, sidebarOpen]);
 
   const navigateManually = useCallback(
     (content: SidebarContent, context: { isLatest: boolean }) => {
@@ -555,6 +571,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   return (
     <div
+      ref={sidebarRef}
       className={
         isFullscreen
           ? "fixed inset-0 z-50 h-full w-full bg-background p-4"
@@ -593,6 +610,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   <TooltipTrigger asChild>
                     <button
                       type="button"
+                      ref={fullscreenButtonRef}
                       onClick={() => setIsExpanded((expanded) => !expanded)}
                       className="hidden desktop:inline-flex w-7 h-7 relative rounded-md items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       aria-label={

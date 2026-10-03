@@ -177,6 +177,32 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(mockCloseSidebar).not.toHaveBeenCalled();
   });
 
+  it("moves focus inside on pointer expansion and restores it on exit", () => {
+    render(
+      <>
+        <button type="button">Chat control</button>
+        <ComputerSidebarBase
+          sidebarOpen
+          sidebarContent={activeSidebarContent}
+          closeSidebar={mockCloseSidebar}
+          status="streaming"
+        />
+      </>,
+    );
+    const previousFocus = screen.getByRole("button", { name: "Chat control" });
+    previousFocus.focus();
+
+    // fireEvent.click does not focus the clicked button, matching browsers
+    // where pointer activation leaves focus outside the sidebar.
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(
+      screen.getByRole("button", { name: "Exit full screen" }),
+    ).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(previousFocus).toHaveFocus();
+  });
+
   it("restores with Escape and closes with the separate minimize button", () => {
     render(
       <ComputerSidebarBase
