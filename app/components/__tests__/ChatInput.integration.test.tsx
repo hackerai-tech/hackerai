@@ -1002,13 +1002,13 @@ describe("ChatInput - Integration Tests", () => {
         "sm:mx-6",
         "-mt-2",
         "min-h-10",
-        "flex-wrap",
+        "flex-nowrap",
         "rounded-b-[18px]",
         "md:hidden",
       );
       expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
         "min-w-0",
-        "flex-[1_1_13rem]",
+        "flex-1",
       );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
         "ml-auto",
