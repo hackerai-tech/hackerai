@@ -2,7 +2,7 @@ import { WorkOS } from "@workos-inc/node";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import chalk from "chalk";
-import { getTestUsers } from "./test-users-config";
+import { getTestUsers, getTestUserEmails } from "./test-users-config";
 
 // Load environment variables from .env.e2e first, then .env.local
 dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -24,13 +24,13 @@ async function deleteTestUsers() {
     process.exit(1);
   }
 
-  const testUsers = getTestUsers();
+  const testUsers = Object.values(getTestUserEmails());
   for (const testUser of testUsers) {
-    console.log(chalk.cyan(`\nDeleting ${testUser.email}...`));
+    console.log(chalk.cyan(`\nDeleting ${testUser}...`));
 
     try {
       const usersList = await workos.userManagement.listUsers({
-        email: testUser.email,
+        email: testUser,
       });
 
       if (usersList.data.length > 0) {

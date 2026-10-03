@@ -36,23 +36,33 @@ function testPassword(tier: TestUserTier): string {
   return value;
 }
 
+/** Email-only maintenance does not require authentication credentials. */
+export function getTestUserEmails(): Record<TestUserTier, string> {
+  return {
+    free: process.env.TEST_FREE_TIER_USER ?? DEFAULTS.free.email,
+    pro: process.env.TEST_PRO_TIER_USER ?? DEFAULTS.pro.email,
+    ultra: process.env.TEST_ULTRA_TIER_USER ?? DEFAULTS.ultra.email,
+  };
+}
+
 /**
  * Returns test users as an array (for scripts that iterate over all users).
  */
 export function getTestUsers(): TestUser[] {
+  const emails = getTestUserEmails();
   return [
     {
-      email: process.env.TEST_FREE_TIER_USER ?? DEFAULTS.free.email,
+      email: emails.free,
       password: testPassword("free"),
       tier: "free",
     },
     {
-      email: process.env.TEST_PRO_TIER_USER ?? DEFAULTS.pro.email,
+      email: emails.pro,
       password: testPassword("pro"),
       tier: "pro",
     },
     {
-      email: process.env.TEST_ULTRA_TIER_USER ?? DEFAULTS.ultra.email,
+      email: emails.ultra,
       password: testPassword("ultra"),
       tier: "ultra",
     },

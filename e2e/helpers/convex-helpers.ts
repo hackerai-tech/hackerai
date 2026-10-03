@@ -3,7 +3,7 @@ import * as path from "path";
 import { WorkOS } from "@workos-inc/node";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
-import { getTestUsersRecord } from "../../scripts/test-users-config";
+import { getTestUserEmails } from "../../scripts/test-users-config";
 
 function loadEnv(): void {
   dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -28,7 +28,7 @@ export async function getProUserId(): Promise<string | null> {
   if (!workosKey || !workosClientId) return null;
   try {
     const workos = new WorkOS(workosKey, { clientId: workosClientId });
-    const proEmail = getTestUsersRecord().pro.email;
+    const proEmail = getTestUserEmails().pro;
     const { data } = await workos.userManagement.listUsers({
       email: proEmail,
     });
