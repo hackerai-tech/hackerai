@@ -23,6 +23,11 @@ let mockSubagentRealtime: ReturnType<
   retry: mockRetrySubagentRealtime,
 };
 let mockSidebarContent: SidebarContent | null = null;
+let mockComputerSidebarOverlay = false;
+
+jest.mock("@/hooks/use-workspace-layout", () => ({
+  useComputerSidebarOverlay: () => mockComputerSidebarOverlay,
+}));
 
 jest.mock("next/dynamic", () => ({
   __esModule: true,
@@ -133,6 +138,7 @@ const otherToolMessage = {
 
 describe("ComputerSidebar reconnect behavior", () => {
   beforeEach(() => {
+    mockComputerSidebarOverlay = false;
     jest.useFakeTimers();
     jest.clearAllMocks();
     mockUseQuery.mockReset();
@@ -148,6 +154,63 @@ describe("ComputerSidebar reconnect behavior", () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+  });
+
+  it("expands and restores without closing or remounting the terminal", () => {
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        status="streaming"
+      />,
+    );
+    const terminal = screen.getByTestId("terminal-code-block");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByTestId("terminal-code-block")).toBe(terminal);
+
+    fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("terminal-code-block")).toBe(terminal);
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+  });
+
+  it("restores with Escape and closes with the separate minimize button", () => {
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        status="streaming"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Minimize sidebar" }));
+    expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps only the existing minimize control on small screens", () => {
+    mockComputerSidebarOverlay = true;
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        status="streaming"
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Expand sidebar" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Minimize sidebar" }));
+    expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
   });
 
   it("does not close or jump while streaming replay temporarily misses active content", () => {
