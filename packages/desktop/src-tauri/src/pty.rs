@@ -8,9 +8,11 @@ use tauri::ipc::Channel;
 
 use crate::platform;
 
+pub(crate) type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: PtyWriter,
     reader_shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -99,7 +101,7 @@ impl PtyManager {
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = PtySession {
             master: pair.master,
-            writer,
+            writer: Arc::new(Mutex::new(writer)),
             reader_shutdown: shutdown_flag.clone(),
         };
         drop(pair.slave);
@@ -118,25 +120,26 @@ impl PtyManager {
         Ok(result)
     }
 
-    pub fn send_input(&mut self, session_id: &str, data: &str) -> Result<(), String> {
-        let mut sessions = self
+    pub(crate) fn input_writer(&self, session_id: &str) -> Result<PtyWriter, String> {
+        let sessions = self
             .sessions
             .lock()
             .map_err(|e| format!("Lock poisoned: {}", e))?;
         let session = sessions
-            .get_mut(session_id)
+            .get(session_id)
             .ok_or_else(|| session_not_found_err(session_id))?;
+        Ok(session.writer.clone())
+    }
 
-        session
-            .writer
+    /// Serialize input for one terminal without holding either manager lock.
+    pub(crate) fn write_input(writer: PtyWriter, data: &str) -> Result<(), String> {
+        let mut writer = writer.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        writer
             .write_all(data.as_bytes())
             .map_err(|e| format!("Failed to write to PTY: {}", e))?;
-
-        session
-            .writer
+        writer
             .flush()
             .map_err(|e| format!("Failed to flush PTY writer: {}", e))?;
-
         Ok(())
     }
 
@@ -435,6 +438,58 @@ mod tests {
         let (_, exit_code) = wait_for_exit(&rx);
         assert_ne!(exit_code, 0);
         assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn blocked_input_does_not_prevent_cancellation_or_cleanup() {
+        struct BlockedWriter {
+            entered: mpsc::Sender<()>,
+            release: Receiver<()>,
+        }
+        impl Write for BlockedWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.entered.send(()).unwrap();
+                self.release.recv().unwrap();
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "blocked-input".into(),
+                "exec sleep 30".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        let (entered, writing) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut("blocked-input")
+            .unwrap()
+            .writer = Arc::new(Mutex::new(Box::new(BlockedWriter {
+            entered,
+            release: blocked,
+        })));
+        let writer = manager.input_writer("blocked-input").unwrap();
+        let write = thread::spawn(move || PtyManager::write_input(writer, "input"));
+        writing.recv_timeout(Duration::from_secs(1)).unwrap();
+        manager.kill("blocked-input").unwrap();
+        let (_, exit_code) = wait_for_exit(&rx);
+        assert_ne!(exit_code, 0);
+        assert!(manager.sessions.lock().unwrap().is_empty());
+        release.send(()).unwrap();
+        write.join().unwrap().unwrap();
     }
 
     #[test]
