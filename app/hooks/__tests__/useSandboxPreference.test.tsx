@@ -39,6 +39,7 @@ type BridgeConfig = {
       | "unauthenticated"
       | "connection_not_found"
       | "ownership_mismatch"
+      | "session_replaced"
       | "connection_inactive"
       | "transport_disconnected",
   ) => void;
@@ -487,7 +488,9 @@ describe("useSandboxPreference", () => {
               ?.onTerminated?.(
                 resumeEvent === "focus"
                   ? "unauthenticated"
-                  : "ownership_mismatch",
+                  : resumeEvent === "online"
+                    ? "session_replaced"
+                    : "ownership_mismatch",
               );
           });
           await act(async () => {

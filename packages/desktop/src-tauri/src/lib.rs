@@ -1833,8 +1833,14 @@ async fn execute_pty_input(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
-    manager.send_input(&session_id, &data)
+    let writer = {
+        let manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        manager.input_writer(&session_id)?
+    };
+    // Backpressure must not hold manager locks or block a Tauri async worker.
+    tauri::async_runtime::spawn_blocking(move || pty::PtyManager::write_input(writer, &data))
+        .await
+        .map_err(|error| format!("PTY input task failed: {}", error))?
 }
 
 #[tauri::command]
