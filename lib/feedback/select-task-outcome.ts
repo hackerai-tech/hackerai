@@ -3,7 +3,15 @@ import type { PostHog } from "posthog-node";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "../db/convex-client";
 import { taskOutcomeProperties } from "../analytics/task-outcome";
-import { PAID_TASK_OUTCOME_FLAG } from "./task-outcome";
+import {
+  PAID_TASK_OUTCOME_FLAG,
+  EXPERIMENT_TASK_OUTCOME_FLAG,
+  EXPERIMENT_TASK_OUTCOME_PHASE,
+} from "./task-outcome";
+import {
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  type AbliteratedAssignment,
+} from "../experiments/abliterated-model";
 
 export async function selectTaskOutcomeSurvey(args: {
   posthog: Pick<PostHog, "getFeatureFlagResult" | "capture"> | null;
@@ -13,6 +21,8 @@ export async function selectTaskOutcomeSurvey(args: {
   mode: "ask" | "agent";
   subscription: string;
   release?: string;
+  assignment?: AbliteratedAssignment;
+  selectedModelOverride?: string;
 }) {
   const { posthog } = args;
   if (!posthog || !process.env.CONVEX_SERVICE_ROLE_KEY) return;
@@ -34,20 +44,50 @@ export async function selectTaskOutcomeSurvey(args: {
         process.env.GITHUB_SHA ||
         "unknown",
     };
-    if (!paidEligible) return;
+    const experimentEligible =
+      args.assignment?.key === ABLITERATED_MAX_EXPERIMENT_KEY &&
+      args.assignment.selectionSource === "moderation" &&
+      (args.assignment.variant === "control" ||
+        args.assignment.variant === "test") &&
+      (args.selectedModelOverride === "hackerai-pro" ||
+        args.selectedModelOverride === "hackerai-max") &&
+      ["pro", "pro-plus", "ultra", "team"].includes(args.subscription);
+    // Never fall through to a different cohort for an assigned trial request.
+    if (args.assignment && !experimentEligible) return;
+    if (!experimentEligible && !paidEligible) return;
     if (
       (await getPostHogFlagWithoutExposure(
         posthog,
-        PAID_TASK_OUTCOME_FLAG,
+        experimentEligible
+          ? EXPERIMENT_TASK_OUTCOME_FLAG
+          : PAID_TASK_OUTCOME_FLAG,
         args.userId,
         { subscription_tier: args.subscription },
       )) !== true
     )
       return;
-    const row = await getConvexClient().mutation(
-      api.taskOutcomeSurveys.reserve,
-      { ...context, survey_kind: "new_paid" },
-    );
+    const row =
+      experimentEligible && args.assignment
+        ? await getConvexClient().mutation(
+            api.taskOutcomeSurveys.reserveExperiment,
+            {
+              ...context,
+              survey_kind: "current_experiment",
+              experiment_key: ABLITERATED_MAX_EXPERIMENT_KEY,
+              experiment_variant: args.assignment.variant,
+              // Abliteration telemetry uses the original assistant ID as request ID.
+              experiment_request_id: args.messageId,
+              selected_model_override: args.selectedModelOverride as
+                "hackerai-pro" | "hackerai-max",
+              assigned_model: args.assignment.modelKey,
+              baseline_model: args.assignment.baselineModel,
+              feedback_phase: EXPERIMENT_TASK_OUTCOME_PHASE,
+            },
+          )
+        : await getConvexClient().mutation(api.taskOutcomeSurveys.reserve, {
+            ...context,
+            survey_kind: "new_paid",
+          });
     if (!row) return;
     try {
       posthog.capture({

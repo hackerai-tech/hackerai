@@ -1,4 +1,9 @@
 export const PAID_TASK_OUTCOME_FLAG = "paid_task_outcome_feedback_v1";
+// Feedback delivery is independent of the model's existing allocation.
+export const EXPERIMENT_TASK_OUTCOME_FLAG =
+  "abliterated_task_outcome_feedback_v1";
+export const EXPERIMENT_TASK_OUTCOME_PHASE =
+  "abliterated_max_moderated_feedback_v1";
 export const NEW_PAID_SURVEY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const PAID_TASK_OUTCOME_ANSWERS = {
   solved: "Solved my task",

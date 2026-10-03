@@ -595,6 +595,8 @@ export const createChatHandler = () => {
         : undefined;
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
+        assignment: abliteratedExperiment,
+        selectedModelOverride,
         posthog,
         userId,
         chatId,
