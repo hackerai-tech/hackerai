@@ -232,13 +232,25 @@ async function createTestUsers() {
   );
   console.log();
   console.log(chalk.cyan(`   TEST_FREE_TIER_USER=${users[0].email}`));
-  console.log(chalk.cyan(`   TEST_FREE_TIER_PASSWORD=${users[0].password}`));
+  console.log(
+    chalk.cyan(
+      `   TEST_FREE_TIER_PASSWORD=[configured separately; value hidden]`,
+    ),
+  );
   console.log();
   console.log(chalk.cyan(`   TEST_PRO_TIER_USER=${users[1].email}`));
-  console.log(chalk.cyan(`   TEST_PRO_TIER_PASSWORD=${users[1].password}`));
+  console.log(
+    chalk.cyan(
+      `   TEST_PRO_TIER_PASSWORD=[configured separately; value hidden]`,
+    ),
+  );
   console.log();
   console.log(chalk.cyan(`   TEST_ULTRA_TIER_USER=${users[2].email}`));
-  console.log(chalk.cyan(`   TEST_ULTRA_TIER_PASSWORD=${users[2].password}`));
+  console.log(
+    chalk.cyan(
+      `   TEST_ULTRA_TIER_PASSWORD=[configured separately; value hidden]`,
+    ),
+  );
   console.log();
 
   console.log("\n2. Run verification script to verify all emails:");
