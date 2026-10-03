@@ -67,8 +67,9 @@ worker's environment selection.
 
 Before public enrollment, complete Preview checkout, payment activation, direct
 API enforcement and rollback acceptance, verify both runtime identities, and
-complete CI/review. The owner-approved 50/50 split supersedes the earlier 10%
-enrollment proposal; do not reinterpret it as 50% enrollment split in half.
+complete CI/review. The owner-approved Production allocation is control 0% /
+test 100%, with 100% eligible enrollment. This supersedes the earlier 10%
+enrollment proposal and the completed 50/50 experiment.
 
 ## Measurement and decision
 
