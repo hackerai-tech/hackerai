@@ -6,7 +6,52 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## Independent paid-model first-step trial
+## Paid first-step trial without moderation selection
+
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) also owns the separate
+`abliterated_paid_first_step_v2` trial. The original `v1` key belongs to a retired
+experiment and must not be reused. Assignment happens before moderation, using
+the authenticated paid user's stable identity. Explicit treatment skips the
+moderation API and uses base `abliterated-model` on generation step 1, regardless
+of selector or moderation score. Both enrolled arms override the older moderated
+trial: controls keep their selected baseline and existing moderation processing.
+Unenrolled requests retain the existing route. A missing flag, unknown variant,
+lookup failure or missing provider credential never skips moderation.
+
+Free requests, paid free-allowance rescue and unsupported file inputs remain
+excluded. Entitlements, quotas, concurrency, sandbox access and tool approvals
+retain their existing checks. Later steps and provider recovery use the saved
+baseline. Because treatment does not classify the input, it does not manufacture
+platform authorization for those baseline calls. This comparison measures the
+combined model route and removal of the moderation call, not the isolated model
+effect. Image preprocessing and bounded provider recovery remain shared with the
+moderated route; auxiliary calls and subagents stay outside the trial.
+
+Eligibility, exposure, provider and response outcomes use the new experiment key
+and `selection_source=paid_first_step`. `moderation_checked=false` distinguishes
+unclassified treatment from a checked request that did not meet the old threshold.
+Successful new-trial responses cannot seed historical moderation continuity.
+Use eligible assignments as the intention-to-treat denominator, including
+requests that never serve output; exposure still requires actual provider output.
+Natural completion requires success, stop, nonempty content and no step limit.
+Keep absent outcomes and provider cost reports unknown rather than zero.
+
+Repeated requests are clustered by authenticated user, and subscriber comparisons
+use equal follow-up windows and immutable pre-entry billing periods. Report the
+old cohort's crossover boundary when a user enters this trial; the older trial's
+later retention can no longer be treated as exclusive exposure. Team seats share
+a subscription and do not count as independent subscriber observations. The
+historical Pro/Max task-feedback sampler does not cover this trial, so completion
+alone is not evidence of usefulness. Keep sample-size planning, allocation,
+review dates, rollback and cleanup decisions in HAC-142 and PostHog.
+
+Preview and Production flags are separate. Deploy Vercel and Trigger independently
+and verify each runtime's PostHog project before activation. Test a benign paid
+Ask and Agent request in Preview, verify step-1 exposure with moderation unchecked,
+and exercise a second generation to confirm the saved baseline. Check rendered
+completion and reload persistence. Flag changes apply only to new requests/runs.
+
+## Moderation-selected paid-model first-step trial
 
 [HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the independent
 `abliterated_max_moderated_v1` trial. It applies to all authorized model choices

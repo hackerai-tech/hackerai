@@ -30,15 +30,91 @@ const makeMessage = (text: string): UIMessage => ({
 
 describe("processChatMessages authorization metadata", () => {
   const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+  const originalAbliterationKey = process.env.ABLITERATION_API_KEY;
 
   beforeEach(() => {
     process.env.OPENAI_API_KEY = "test-key";
+    process.env.ABLITERATION_API_KEY = "test-only-key";
     mockModerationsCreate.mockReset();
   });
 
   afterEach(() => {
     process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+    if (originalAbliterationKey === undefined)
+      delete process.env.ABLITERATION_API_KEY;
+    else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
   });
+  it("skips the moderation API only for explicit paid first-step treatment", async () => {
+    const getFeatureFlagResult = jest
+      .fn()
+      .mockResolvedValue({ enabled: true, variant: "test" });
+    const result = await processChatMessages({
+      messages: [makeMessage("Explain how to sort three numbers in Python")],
+      mode: "agent",
+      userId: "user-1",
+      subscription: "pro",
+      abliterationPosthog: { getFeatureFlagResult },
+    });
+    expect(mockModerationsCreate).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      paidFirstStepVariant: "test",
+      moderationChecked: false,
+      platformAuthorized: false,
+      allowsAbliterationContinuation: false,
+    });
+  });
+  it.each(["control", false, undefined])(
+    "preserves the moderation API for %s",
+    async (variant) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [
+          { categories: { illicit: false }, category_scores: { illicit: 0.5 } },
+        ],
+      });
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue(
+          variant === undefined
+            ? undefined
+            : { enabled: variant !== false, variant },
+        );
+      const result = await processChatMessages({
+        messages: [makeMessage("Explain how to sort three numbers in Python")],
+        mode: "ask",
+        userId: "user-1",
+        subscription: "pro",
+        abliterationPosthog: { getFeatureFlagResult },
+      });
+      expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
+      expect(result.moderationChecked).toBe(true);
+      expect(result.platformAuthorized).toBe(true);
+      expect(result.paidFirstStepVariant).toBe(
+        variant === "control" ? "control" : undefined,
+      );
+    },
+  );
+  it.each([{ subscription: "free" as const }, { limitRescue: true }])(
+    "preserves moderation and never enrolls excluded requests: %j",
+    async (overrides) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [{ categories: {}, category_scores: { illicit: 0 } }],
+      });
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue({ enabled: true, variant: "test" });
+      const result = await processChatMessages({
+        messages: [makeMessage("Explain how to sort three numbers in Python")],
+        mode: "ask",
+        userId: "user-1",
+        subscription: "pro",
+        ...overrides,
+        abliterationPosthog: { getFeatureFlagResult },
+      });
+      expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
+      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+      expect(result.paidFirstStepVariant).toBeUndefined();
+    },
+  );
 
   it("returns the authorization decision without changing provider-ready UI messages", async () => {
     mockModerationsCreate.mockResolvedValue({

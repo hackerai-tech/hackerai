@@ -73,7 +73,7 @@ export class AbliteratedModelTelemetry {
     upstream_model_fallback_served: false,
   };
   private successfulAbliterationGeneration = false;
-  private selectionSource: "moderation" | "history";
+  private selectionSource: "moderation" | "history" | "paid_first_step";
   private readonly startedAt = Date.now();
   private readonly properties: Record<string, string | number | boolean>;
 
@@ -103,7 +103,10 @@ export class AbliteratedModelTelemetry {
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
       generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
-      moderation_eligible: this.selectionSource === "moderation",
+      moderation_eligible:
+        args.assignment.moderationEligible ??
+        this.selectionSource === "moderation",
+      moderation_checked: args.assignment.moderationChecked ?? true,
       selection_source: this.selectionSource,
       independent_history_count: args.assignment.independentHistoryCount ?? 0,
       routing_version: 2,
