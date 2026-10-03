@@ -6,6 +6,14 @@ Activation follows verified deployment and acceptance; HAC-118 records live stat
 
 ## Policy
 
+The owner extended the subscription requirement to Indonesia (ID). The
+subscription gate recognizes IN/PK/BD/NG/ID; its operational flag targets eligible
+free accounts at 100% treatment in each environment. Indonesia retains ordinary
+free limits when the gate is disabled or unavailable. The separate permanent
+regional allowance continues to cover IN/PK/BD/NG only. Adding a country to the
+gate requires both Vercel and Trigger code deployments plus both PostHog flag
+definitions; changing the flags alone cannot expand the application's allowlist.
+
 `regional_subscription_first_v1` assigns authenticated free accounts from
 trusted Vercel ingress countries IN/PK/BD/NG with analytics allowed. A missing,
 disabled or unavailable flag, declined consent, unknown geography and paid
