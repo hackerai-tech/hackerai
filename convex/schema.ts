@@ -348,6 +348,15 @@ export default defineSchema({
 
   task_outcome_surveys: defineTable(taskOutcomeFields)
     .index("by_user_id", ["user_id"])
+    .index("by_user_id_and_last_interaction_at", [
+      "user_id",
+      "last_interaction_at",
+    ])
+    .index("by_user_id_and_experiment_key_and_feedback_phase", [
+      "user_id",
+      "experiment_key",
+      "feedback_phase",
+    ])
     .index("by_user_id_and_survey_kind", ["user_id", "survey_kind"])
     .index("by_request_id", ["request_id"]),
 

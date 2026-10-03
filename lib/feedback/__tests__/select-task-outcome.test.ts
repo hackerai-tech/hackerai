@@ -146,3 +146,157 @@ describe("paid survey selection", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("current Pro/Max experiment feedback", () => {
+  const assignment = {
+    key: "abliterated_max_moderated_v1" as const,
+    variant: "control" as const,
+    modelKey: "model-deepseek-v4-pro" as const,
+    baselineModel: "model-deepseek-v4-pro" as const,
+    selectionSource: "moderation" as const,
+  };
+  const oldKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.CONVEX_SERVICE_ROLE_KEY = "test-key";
+    mutation.mockImplementation(async (_api, context) => ({
+      _id: "survey",
+      ...context,
+    }));
+  });
+  afterAll(() => {
+    if (oldKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
+    else process.env.CONVEX_SERVICE_ROLE_KEY = oldKey;
+  });
+  it.each(["control", "test"] as const)(
+    "selects %s identically before any generation outcome",
+    async (variant) => {
+      const posthog = {
+        getFeatureFlagResult: jest.fn(async () => ({ enabled: true })),
+        capture: jest.fn(),
+      };
+      const selected = await selectTaskOutcomeSurvey({
+        ...base,
+        posthog,
+        assignment: { ...assignment, variant },
+        selectedModelOverride: "hackerai-pro",
+      });
+      expect(selected).toBeDefined();
+      expect(posthog.getFeatureFlagResult).toHaveBeenCalledWith(
+        "abliterated_task_outcome_feedback_v1",
+        "user",
+        {
+          sendFeatureFlagEvents: false,
+          personProperties: { subscription_tier: "pro" },
+        },
+      );
+      expect(mutation.mock.calls[0][1]).toMatchObject({
+        survey_kind: "current_experiment",
+        experiment_key: assignment.key,
+        experiment_variant: variant,
+        request_id: "request",
+        experiment_request_id: "request",
+        selected_model_override: "hackerai-pro",
+        feedback_phase: "abliterated_max_moderated_feedback_v1",
+      });
+      expect(mutation.mock.calls[0][1]).not.toHaveProperty("paid_started_at");
+      await selected?.linkMessage("fallback");
+      expect(mutation.mock.calls[1][1]).toMatchObject({
+        request_id: "request",
+        message_id: "fallback",
+      });
+      expect(posthog.capture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          properties: expect.objectContaining({
+            experiment_request_id: "request",
+            experiment_variant: variant,
+          }),
+        }),
+      );
+    },
+  );
+  it.each(["pro", "pro-plus", "ultra", "team"])(
+    "supports authorized %s members in Ask and Agent",
+    async (subscription) => {
+      for (const mode of ["ask", "agent"] as const) {
+        const posthog = {
+          getFeatureFlagResult: jest.fn(async () => ({ enabled: true })),
+          capture: jest.fn(),
+        };
+        expect(
+          await selectTaskOutcomeSurvey({
+            ...base,
+            posthog,
+            subscription,
+            mode,
+            assignment,
+            selectedModelOverride: "hackerai-max",
+          }),
+        ).toBeDefined();
+      }
+    },
+  );
+  it.each([
+    { subscription: "free" },
+    { selectedModelOverride: "hackerai-standard" },
+    {
+      assignment: {
+        ...assignment,
+        key: "abliterated_paid_moderated_v1" as const,
+      },
+    },
+    { assignment: { ...assignment, selectionSource: "history" as const } },
+  ])(
+    "excludes nonparticipants and historical cohorts without evaluating delivery",
+    async (overrides) => {
+      const posthog = {
+        getFeatureFlagResult: jest.fn(async () => ({ enabled: true })),
+        capture: jest.fn(),
+      };
+      await selectTaskOutcomeSurvey({
+        ...base,
+        posthog,
+        assignment,
+        selectedModelOverride: "hackerai-max",
+        ...overrides,
+      });
+      expect(posthog.getFeatureFlagResult).not.toHaveBeenCalled();
+      expect(mutation).not.toHaveBeenCalled();
+    },
+  );
+  it.each([false, undefined])(
+    "fails closed without feedback configuration (%s), with no cohort fallback",
+    async (enabled) => {
+      const posthog = {
+        getFeatureFlagResult: jest.fn(async () =>
+          enabled === undefined ? undefined : { enabled },
+        ),
+        capture: jest.fn(),
+      };
+      await selectTaskOutcomeSurvey({
+        ...base,
+        posthog,
+        assignment,
+        selectedModelOverride: "hackerai-max",
+      });
+      expect(mutation).not.toHaveBeenCalled();
+      expect(posthog.getFeatureFlagResult).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("preserves recovery even if selection analytics or linkage fails", async () => {
+    const posthog = {
+      getFeatureFlagResult: jest.fn(async () => ({ enabled: true })),
+      capture: jest.fn(() => {
+        throw Error("offline");
+      }),
+    };
+    const selected = await selectTaskOutcomeSurvey({
+      ...base,
+      posthog,
+      assignment,
+      selectedModelOverride: "hackerai-max",
+    });
+    mutation.mockRejectedValueOnce(Error("offline"));
+    await expect(selected?.linkMessage("fallback")).resolves.toBeUndefined();
+  });
+});

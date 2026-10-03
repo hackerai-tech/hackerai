@@ -3,6 +3,7 @@ import {
   linkMessage,
   record,
   reserve,
+  reserveExperiment,
 } from "../taskOutcomeSurveys";
 import { TASK_OUTCOME_COOLDOWN_MS } from "../../lib/feedback/task-outcome";
 
@@ -246,5 +247,160 @@ describe("new paid task outcome feedback", () => {
     expect(
       await invoke(record, ctx, { id: row._id, action: "shown" }),
     ).toBeNull();
+  });
+});
+
+describe("current experiment reservation", () => {
+  const experimentArgs = {
+    ...args,
+    survey_kind: "current_experiment",
+    experiment_key: "abliterated_max_moderated_v1",
+    experiment_variant: "control",
+    experiment_request_id: args.request_id,
+    feedback_phase: "abliterated_max_moderated_feedback_v1",
+    selected_model_override: "hackerai-max",
+    assigned_model: "baseline",
+    baseline_model: "baseline",
+  };
+  beforeEach(() => jest.spyOn(Date, "now").mockReturnValue(1_800_000_000_000));
+  afterEach(() => jest.restoreAllMocks());
+  it.each(["control", "test"])(
+    "reserves %s without first-week payment evidence",
+    async (experiment_variant) => {
+      const { ctx, paidStarts, payments, rows } = setup();
+      paidStarts.length = 0;
+      payments.length = 0;
+      expect(
+        await invoke(reserveExperiment, ctx, {
+          ...experimentArgs,
+          experiment_variant,
+          subscription_tier: "team",
+        }),
+      ).toMatchObject({
+        experiment_variant,
+        experiment_request_id: args.request_id,
+        selected_at: Date.now(),
+      });
+      expect(rows[0]).not.toHaveProperty("paid_start_event_id");
+    },
+  );
+  it("retains original assignment through replacement messages and repeated requests", async () => {
+    const { ctx, rows } = setup();
+    await invoke(reserveExperiment, ctx, experimentArgs);
+    expect(
+      await invoke(reserveExperiment, ctx, {
+        ...experimentArgs,
+        experiment_variant: "test",
+      }),
+    ).toBeNull();
+    await invoke(linkMessage, ctx, { ...args, message_id: "recovery" });
+    expect(rows[0]).toMatchObject({
+      request_id: args.request_id,
+      experiment_request_id: args.request_id,
+      experiment_variant: "control",
+      message_id: "recovery",
+    });
+    expect(rows).toHaveLength(1);
+  });
+  it("never invites the same user twice in the same phase after expiry or dismissal", async () => {
+    const { ctx, rows } = setup();
+    const row = await invoke(reserveExperiment, ctx, experimentArgs);
+    await invoke(record, ctx, { id: row._id, action: "shown" });
+    await invoke(record, ctx, { id: row._id, action: "dismissed" });
+    jest
+      .mocked(Date.now)
+      .mockReturnValue(Date.now() + TASK_OUTCOME_COOLDOWN_MS + 1);
+    expect(
+      await invoke(reserveExperiment, ctx, {
+        ...experimentArgs,
+        request_id: "next",
+        experiment_request_id: "next",
+        message_id: "next",
+      }),
+    ).toBeNull();
+    expect(rows).toHaveLength(1);
+  });
+  it("shares the cooldown with historical cohorts and preserves selected nonresponse", async () => {
+    const { ctx, rows } = setup();
+    await invoke(reserve, ctx, args);
+    const next = {
+      ...experimentArgs,
+      request_id: "next",
+      experiment_request_id: "next",
+      message_id: "next",
+    };
+    expect(await invoke(reserveExperiment, ctx, next)).toBeNull();
+    jest
+      .mocked(Date.now)
+      .mockReturnValue(Date.now() + TASK_OUTCOME_COOLDOWN_MS + 1);
+    const row = await invoke(reserveExperiment, ctx, next);
+    expect(row).not.toBeNull();
+    jest.mocked(Date.now).mockReturnValue(row.expires_at);
+    expect(
+      await invoke(getForMessage, ctx, {
+        chat_id: args.chat_id,
+        message_id: "next",
+      }),
+    ).toBeNull();
+    expect(rows[1]).not.toHaveProperty("answer");
+    expect(rows[1]).not.toHaveProperty("viewed_at");
+  });
+  it("keeps claim distinct from view and makes answers idempotent", async () => {
+    const { ctx, rows } = setup();
+    const row = await invoke(reserveExperiment, ctx, experimentArgs);
+    await invoke(record, ctx, { id: row._id, action: "shown" });
+    expect(rows[0]).not.toHaveProperty("viewed_at");
+    expect(
+      await invoke(record, ctx, { id: row._id, action: "shown" }),
+    ).toBeNull();
+    await invoke(record, ctx, { id: row._id, action: "viewed" });
+    await invoke(record, ctx, {
+      id: row._id,
+      action: "answered",
+      answer: "not_checked",
+    });
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "not_checked",
+      }),
+    ).toMatchObject({ answer: "not_checked" });
+    expect(
+      await invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      }),
+    ).toBeNull();
+    expect(await invoke(getForMessage, ctx, args)).toBeNull();
+  });
+  it("rejects free users, mismatched requests, nonowners and bad service credentials", async () => {
+    const { ctx } = setup();
+    for (const patch of [
+      { subscription_tier: "free" },
+      { experiment_request_id: "other" },
+      { message_id: "other" },
+      { user_id: "other" },
+    ]) {
+      expect(
+        await invoke(reserveExperiment, ctx, { ...experimentArgs, ...patch }),
+      ).toBeNull();
+    }
+    await expect(
+      invoke(reserveExperiment, ctx, {
+        ...experimentArgs,
+        serviceKey: "wrong",
+      }),
+    ).rejects.toThrow();
+    const row = await invoke(reserveExperiment, ctx, experimentArgs);
+    ctx.auth.getUserIdentity = async () => ({ subject: "other" });
+    await expect(
+      invoke(record, ctx, {
+        id: row._id,
+        action: "answered",
+        answer: "solved",
+      }),
+    ).rejects.toThrow();
   });
 });

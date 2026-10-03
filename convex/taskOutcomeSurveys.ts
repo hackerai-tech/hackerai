@@ -1,8 +1,9 @@
 import { v, ConvexError } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { type MutationCtx, mutation, query } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
+  experimentTaskOutcomeContext,
   taskOutcomeAnswer,
   taskOutcomeContext,
   taskOutcomeDocument,
@@ -16,6 +17,74 @@ import {
   reasonsForAnswer,
 } from "../lib/feedback/task-outcome";
 
+// One transaction owns request deduplication and the cooldown across cohorts.
+async function canReserve(
+  ctx: MutationCtx,
+  args: { user_id: string; chat_id: string; request_id: string },
+  now: number,
+) {
+  if (await isUserDeletionFenced(ctx.db, args.user_id)) return false;
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q) => q.eq("id", args.chat_id))
+    .unique();
+  if (!chat || chat.user_id !== args.user_id) return false;
+  const existing = await ctx.db
+    .query("task_outcome_surveys")
+    .withIndex("by_request_id", (q) => q.eq("request_id", args.request_id))
+    .unique();
+  if (existing) return false;
+  const previous = await ctx.db
+    .query("task_outcome_surveys")
+    .withIndex("by_user_id_and_last_interaction_at", (q) =>
+      q.eq("user_id", args.user_id),
+    )
+    .order("desc")
+    .first();
+  if (previous && now - previous.last_interaction_at < TASK_OUTCOME_COOLDOWN_MS)
+    return false;
+  return true;
+}
+
+export const reserveExperiment = mutation({
+  args: {
+    serviceKey: v.string(),
+    user_id: v.string(),
+    ...experimentTaskOutcomeContext,
+  },
+  returns: v.union(taskOutcomeDocument, v.null()),
+  handler: async (ctx, { serviceKey, ...args }) => {
+    validateServiceKey(serviceKey);
+    // Trusted callers already enforce model entitlement, moderation, and input
+    // gates. Team participation is per authenticated member, never per payer.
+    if (
+      !["pro", "pro-plus", "ultra", "team"].includes(args.subscription_tier) ||
+      args.experiment_request_id !== args.request_id ||
+      args.message_id !== args.request_id
+    )
+      return null;
+    const now = Date.now();
+    if (!(await canReserve(ctx, args, now))) return null;
+    const enrolled = await ctx.db
+      .query("task_outcome_surveys")
+      .withIndex("by_user_id_and_experiment_key_and_feedback_phase", (q) =>
+        q
+          .eq("user_id", args.user_id)
+          .eq("experiment_key", args.experiment_key)
+          .eq("feedback_phase", args.feedback_phase),
+      )
+      .first();
+    if (enrolled) return null;
+    const id = await ctx.db.insert("task_outcome_surveys", {
+      ...args,
+      selected_at: now,
+      last_interaction_at: now,
+      expires_at: now + TASK_OUTCOME_EXPIRY_MS,
+    });
+    return await ctx.db.get(id);
+  },
+});
+
 // Service-only reservation occurs before model-priced checks or generation. The
 // indexed read + insert is atomic, including simultaneous runs on other devices.
 export const reserve = mutation({
@@ -23,28 +92,8 @@ export const reserve = mutation({
   returns: v.union(taskOutcomeDocument, v.null()),
   handler: async (ctx, { serviceKey, ...args }) => {
     validateServiceKey(serviceKey);
-    if (await isUserDeletionFenced(ctx.db, args.user_id)) return null;
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.chat_id))
-      .unique();
-    if (!chat || chat.user_id !== args.user_id) return null;
-    const existing = await ctx.db
-      .query("task_outcome_surveys")
-      .withIndex("by_request_id", (q) => q.eq("request_id", args.request_id))
-      .unique();
-    if (existing) return null;
-    const previous = await ctx.db
-      .query("task_outcome_surveys")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.user_id))
-      .order("desc")
-      .first();
     const now = Date.now();
-    if (
-      previous &&
-      now - previous.last_interaction_at < TASK_OUTCOME_COOLDOWN_MS
-    )
-      return null;
+    if (!(await canReserve(ctx, args, now))) return null;
     // Paid cohort enrollment is derived from durable billing evidence inside
     // this transaction, not from browser properties or model assignment.
     if (!["pro", "pro-plus", "ultra"].includes(args.subscription_tier))
