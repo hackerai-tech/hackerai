@@ -6,12 +6,13 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## Independent Pro and Max first-step trial
+## Independent paid-model first-step trial
 
 [HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the independent
-`abliterated_max_moderated_v1` trial. It applies only to the authorized
-`hackerai-pro` and `hackerai-max` selectors in Ask and Agent, across paid plans;
-Ultra is a subscription tier, not this trial's model gate. A moderation-eligible request
+`abliterated_max_moderated_v1` trial. It applies to all authorized model choices
+(Auto, Standard, Pro and Max) in Ask and Agent for paid plans. An omitted selector
+retains normal Auto behavior; model entitlements are normalized before assignment.
+A moderation-eligible request
 uses base `abliterated-model` for generation step 1 in treatment, including
 text-only Pro/Max requests that the historical pilot routed to Large v2. Controls
 retain the exact selected baseline. Later steps and provider recovery use the
@@ -22,12 +23,17 @@ missing assignment retains the historical flag behavior. Historical paid,
 expansion and continuity flags must remain disabled during this trial. Its
 authenticated-user assignment and analytics key are independent of historical
 pilot cohorts. The original routing contract below describes the historical
-parent flag, not the Pro/Max trial. The key retains its original Max name to
-preserve user assignments. Record the Pro expansion's deployment boundary for
+parent flag, not the current trial. The key retains its original Max name to
+preserve user assignments. Record each selector expansion's deployment boundary for
 each runtime and stratify completion by `selected_model_override`, mode and
 rollout phase. Do not pool the earlier Max-only population with the expanded
-population as though its composition were unchanged. Users using both selectors
+population as though its composition were unchanged. Users using multiple selectors
 retain one assignment and count once in subscriber cancellation comparisons.
+
+The independently sampled task-outcome feedback workflow remains scoped to Pro
+and Max. Its coverage must be reported separately from all-model completion and
+subscription cancellation outcomes. Auxiliary and subagent model calls remain
+outside this primary-request trial.
 
 Use `abliterated_model_eligible` as the assigned-request denominator, including
 requests blocked before output. Keep actual content exposure separate. Compare

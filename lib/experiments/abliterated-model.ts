@@ -121,11 +121,8 @@ export async function evaluateAbliteratedModel({
   previewDiagnosticContext?: { chatId: string; requestId: string };
 }): Promise<AbliteratedAssignment | undefined> {
   const providerConfigured = isAbliterationConfigured();
-  const isProOrMax =
-    selectedModelOverride === "hackerai-pro" ||
-    selectedModelOverride === "hackerai-max";
   const reportDecision = (reason: string, variant?: string) => {
-    if (!previewDiagnosticContext || !isProOrMax) return;
+    if (!previewDiagnosticContext) return;
     try {
       phLogger.info("Preview Abliteration assignment decision", {
         userId,
@@ -177,8 +174,8 @@ export async function evaluateAbliteratedModel({
   try {
     // Callers normalize the selector against current entitlements first.
     // This independent trial never inherits the historical continuity route.
-    // Keep the original key so expanding to Pro preserves Max assignments.
-    if (isProOrMax && moderationEligible) {
+    // Keep the original key so all paid selectors retain stable assignments.
+    if (moderationEligible) {
       const trialVariant = await getPostHogFlagWithoutExposure(
         posthog,
         ABLITERATED_MAX_EXPERIMENT_KEY,

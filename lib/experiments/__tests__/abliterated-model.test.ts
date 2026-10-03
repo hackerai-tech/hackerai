@@ -118,7 +118,7 @@ describe("moderation-gated Abliteration assignment", () => {
     moderationEligible: true,
     messages,
   };
-  describe("Preview Pro/Max diagnostics", () => {
+  describe("Preview paid-model diagnostics", () => {
     const previewDiagnosticContext = {
       chatId: "test-chat",
       requestId: "test-run",
@@ -248,7 +248,7 @@ describe("moderation-gated Abliteration assignment", () => {
         modelKey: "model-abliterated",
       });
       expect(getFeatureFlagResult).toHaveBeenCalledWith(
-        ABLITERATED_EXPERIMENT_KEY,
+        ABLITERATED_MAX_EXPERIMENT_KEY,
         "u",
         {
           sendFeatureFlagEvents: false,
@@ -347,7 +347,7 @@ describe("moderation-gated Abliteration assignment", () => {
           }),
         ).resolves.toMatchObject({
           modelKey: ABLITERATION_MODEL_KEY,
-          key: ABLITERATED_EXPERIMENT_KEY,
+          key: ABLITERATED_MAX_EXPERIMENT_KEY,
         });
       }
     },
@@ -568,99 +568,100 @@ describe("moderation-gated Abliteration assignment", () => {
     independentAbliterationResponses: 2,
   };
   describe.each(["ask", "agent"] as const)(
-    "Pro/Max first-step trial in %s",
+    "all paid-model first-step trial in %s",
     (mode) => {
-      describe.each(["hackerai-pro", "hackerai-max"] as const)(
-        "%s selector",
-        (selectedModelOverride) => {
-          it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-            "uses base Abliteration for authorized %s requests and preserves controls",
-            async (subscription) => {
-              for (const variant of ["test", "control"] as const) {
-                const getFeatureFlagResult = jest
-                  .fn()
-                  .mockResolvedValue(flagResult(variant));
-                const selectedModel = "model-glm-5.3" as const;
-                await expect(
-                  evaluateAbliteratedModel({
-                    ...defaults,
-                    mode,
-                    subscription,
-                    selectedModel,
-                    selectedModelOverride,
-                    posthog: { getFeatureFlagResult },
-                  }),
-                ).resolves.toMatchObject({
-                  key: ABLITERATED_MAX_EXPERIMENT_KEY,
-                  variant,
-                  modelKey:
-                    variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
-                  baselineModel: selectedModel,
-                  selectionSource: "moderation",
-                });
-                expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
-              }
-            },
-          );
-          it.each([
-            { selectedModelOverride: "auto" as const },
-            { selectedModelOverride: "hackerai-standard" as const },
-            { moderationEligible: false },
-            {
-              moderationEligible: false,
-              allowsAbliterationContinuation: true,
-              independentAbliterationResponses: 5,
-            },
-            { subscription: "free" as const },
-            { limitRescue: true },
-          ])(
-            "does not enroll outside the moderated Pro/Max population: %j",
-            async (overrides) => {
+      describe.each([
+        undefined,
+        "auto",
+        "hackerai-standard",
+        "hackerai-pro",
+        "hackerai-max",
+      ] as const)("%s selector", (selectedModelOverride) => {
+        it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+          "uses base Abliteration for authorized %s requests and preserves controls",
+          async (subscription) => {
+            for (const variant of ["test", "control"] as const) {
               const getFeatureFlagResult = jest
                 .fn()
-                .mockImplementation(async (key: string) =>
-                  flagResult(
-                    key === ABLITERATED_MAX_EXPERIMENT_KEY ? "test" : false,
-                  ),
-                );
+                .mockResolvedValue(flagResult(variant));
+              const selectedModel = "model-glm-5.3" as const;
               await expect(
                 evaluateAbliteratedModel({
                   ...defaults,
                   mode,
+                  subscription,
+                  selectedModel,
                   selectedModelOverride,
-                  ...overrides,
                   posthog: { getFeatureFlagResult },
                 }),
-              ).resolves.toBeUndefined();
-              expect(
-                getFeatureFlagResult.mock.calls.some(
-                  ([key]) => key === ABLITERATED_MAX_EXPERIMENT_KEY,
+              ).resolves.toMatchObject({
+                key: ABLITERATED_MAX_EXPERIMENT_KEY,
+                variant,
+                modelKey:
+                  variant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
+                baselineModel: selectedModel,
+                selectionSource: "moderation",
+              });
+              expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+            }
+          },
+        );
+        it.each([
+          { moderationEligible: false },
+          {
+            moderationEligible: false,
+            allowsAbliterationContinuation: true,
+            independentAbliterationResponses: 5,
+          },
+          { subscription: "free" as const },
+          { limitRescue: true },
+        ])(
+          "does not enroll outside the moderated paid population: %j",
+          async (overrides) => {
+            const getFeatureFlagResult = jest
+              .fn()
+              .mockImplementation(async (key: string) =>
+                flagResult(
+                  key === ABLITERATED_MAX_EXPERIMENT_KEY ? "test" : false,
                 ),
-              ).toBe(false);
-            },
-          );
-          it.each([false, undefined, "unexpected"])(
-            "preserves the baseline when the new flag returns %s and the legacy flag is off",
-            async (value) => {
-              const getFeatureFlagResult = jest
-                .fn()
-                .mockImplementation(async (key: string) =>
-                  flagResult(
-                    key === ABLITERATED_MAX_EXPERIMENT_KEY ? value : false,
-                  ),
-                );
-              await expect(
-                evaluateAbliteratedModel({
-                  ...defaults,
-                  mode,
-                  selectedModelOverride,
-                  posthog: { getFeatureFlagResult },
-                }),
-              ).resolves.toBeUndefined();
-            },
-          );
-        },
-      );
+              );
+            await expect(
+              evaluateAbliteratedModel({
+                ...defaults,
+                mode,
+                selectedModelOverride,
+                ...overrides,
+                posthog: { getFeatureFlagResult },
+              }),
+            ).resolves.toBeUndefined();
+            expect(
+              getFeatureFlagResult.mock.calls.some(
+                ([key]) => key === ABLITERATED_MAX_EXPERIMENT_KEY,
+              ),
+            ).toBe(false);
+          },
+        );
+        it.each([false, undefined, "unexpected"])(
+          "preserves the baseline when the new flag returns %s and the legacy flag is off",
+          async (value) => {
+            const getFeatureFlagResult = jest
+              .fn()
+              .mockImplementation(async (key: string) =>
+                flagResult(
+                  key === ABLITERATED_MAX_EXPERIMENT_KEY ? value : false,
+                ),
+              );
+            await expect(
+              evaluateAbliteratedModel({
+                ...defaults,
+                mode,
+                selectedModelOverride,
+                posthog: { getFeatureFlagResult },
+              }),
+            ).resolves.toBeUndefined();
+          },
+        );
+      });
     },
   );
   it("uses history only within parent treatment and an explicitly enabled continuity flag", async () => {
