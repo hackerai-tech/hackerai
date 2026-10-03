@@ -44,6 +44,39 @@ describe("processChatMessages authorization metadata", () => {
       delete process.env.ABLITERATION_API_KEY;
     else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
   });
+
+  it.each(["ask", "agent"] as const)(
+    "keeps unavailable PDF attachments outside the unmoderated %s trial",
+    async (mode) => {
+      const textOnly = makeMessage("Summarize the attached document");
+      mockModerationsCreate.mockResolvedValue({
+        results: [{ categories: {}, category_scores: { illicit: 0 } }],
+      });
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue({ enabled: true, variant: "test" });
+      const result = await processChatMessages({
+        messages: [
+          {
+            ...textOnly,
+            parts: [
+              ...textOnly.parts,
+              { type: "file", mediaType: "application/pdf", url: "" },
+            ],
+          },
+        ],
+        mode,
+        userId: "user-1",
+        subscription: "pro",
+        abliterationPosthog: { getFeatureFlagResult },
+      });
+      expect(result.processedMessages).toEqual([textOnly]);
+      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+      expect(mockModerationsCreate).toHaveBeenCalledTimes(1);
+      expect(result.moderationChecked).toBe(true);
+      expect(result.paidFirstStepVariant).toBeUndefined();
+    },
+  );
   it("skips the moderation API only for explicit paid first-step treatment", async () => {
     const getFeatureFlagResult = jest
       .fn()

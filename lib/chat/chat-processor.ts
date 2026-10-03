@@ -810,7 +810,9 @@ export async function processChatMessages({
     posthog: abliterationPosthog,
     userId,
     subscription,
-    messages: cleanedMessages,
+    // File resolution can drop unavailable attachments. Eligibility must still
+    // see the original unsupported inputs before deciding to skip moderation.
+    messages: messagesWithLimitedFiles,
     limitRescue,
   });
   // Only explicit paid treatment skips the API. Controls, unavailable flags,
