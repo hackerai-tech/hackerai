@@ -2,23 +2,27 @@
 
 Decision record and owner: [HAC-118](https://linear.app/hackerai/issue/HAC-118),
 Ross Manko. The owner closed the experiment and authorized full eligible treatment.
-HAC-118 records live state and the Indonesia extension.
+HAC-118 records live state and the Indonesia and Iran extensions.
 
 ## Policy
 
-The owner extended the subscription requirement to Indonesia (ID). The
-subscription gate recognizes IN/PK/BD/NG/ID; its operational flag targets eligible
-free accounts at 100% treatment in each environment. Indonesia retains ordinary
+The owner extended the subscription requirement to Indonesia (ID) and Iran (IR).
+The subscription gate recognizes IN/PK/BD/NG/ID/IR; its operational flag targets
+eligible free accounts at 100% treatment in each environment. ID and IR retain ordinary
 free limits when the gate is disabled or unavailable. The separate permanent
 regional allowance continues to cover IN/PK/BD/NG only. Adding a country to the
 gate requires both Vercel and Trigger code deployments plus both PostHog flag
 definitions; changing the flags alone cannot expand the application's allowlist.
 
 `regional_subscription_first_v1` assigns authenticated free accounts from
-trusted Vercel ingress countries IN/PK/BD/NG/ID with analytics allowed. A missing,
+trusted Vercel ingress countries IN/PK/BD/NG/ID/IR with analytics allowed. A missing,
 disabled or unavailable flag, declined consent, unknown geography and paid
 accounts preserve existing access. Location reflects a connection, not residence.
 The browser never supplies authoritative country, assignment or subscription.
+An account created or authenticated through a VPN is reevaluated using each new
+task request's trusted ingress country. Returning to Iranian ingress therefore
+requires a subscription when eligible, even if its existing session stays valid.
+This gate does not alter WorkOS authentication restrictions.
 
 Test users see their existing server-selected monthly Pro price before the idle
 composer. Checkout and alternative plans use the existing subscription flow.
@@ -34,7 +38,7 @@ IN/PK/BD/NG accounts outside treatment keep the permanent regional allowance: at
 Ask/Agent requests/day and $0.10/calendar month, including stricter operational
 limits and existing referral credits. Enrollment never bypasses this policy.
 Disabling this flag restores that allowance for IN/PK/BD/NG and ordinary free
-limits for ID on new work without resetting counters. HAC-104 is closed; do not
+limits for ID/IR on new work without resetting counters. HAC-104 is closed; do not
 restart its archived allowance experiment.
 If historical participants enter this test, label their later outcomes as affected
 by subscription-first rather than an uninterrupted allowance follow-up.
@@ -48,7 +52,7 @@ active state, rollout, targeting and launch timestamp are recorded in HAC-118
 after read-back, rather than inferred from this document.
 
 Both flags target `subscription=free` and `regional_subscription_country` in
-IN/PK/BD/NG/ID. Assignment is deterministic by WorkOS user ID. The worker derives its
+IN/PK/BD/NG/ID/IR. Assignment is deterministic by WorkOS user ID. The worker derives its
 assignment using its own PostHog project and the route's trusted country payload.
 This requires new Vercel and Trigger deployments; later flag changes apply to
 new requests/runs. Browser presentation refreshes on focus or reload.

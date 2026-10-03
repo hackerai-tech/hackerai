@@ -56,7 +56,7 @@ describe("regional subscription access", () => {
     jest.useRealTimers();
   });
 
-  it.each(["IN", "PK", "BD", "NG", "ID"])(
+  it.each(["IN", "PK", "BD", "NG", "ID", "IR"])(
     "requires payment for a treatment request from %s",
     async (country) => {
       await expect(
@@ -77,14 +77,21 @@ describe("regional subscription access", () => {
     },
   );
 
-  it.each(["pro", "pro-plus", "ultra", "team"])(
-    "preserves %s access even under treatment",
-    async (subscription) => {
+  it.each(
+    ["ID", "IR"].flatMap((country) =>
+      ["pro", "pro-plus", "ultra", "team"].map((subscription) => ({
+        country,
+        subscription,
+      })),
+    ),
+  )(
+    "preserves $subscription access from $country even under treatment",
+    async ({ country, subscription }) => {
       await expect(
         enforceRegionalSubscriptionFirst({
           ...base,
           subscription,
-          country: "ID",
+          country,
         }),
       ).resolves.toBeUndefined();
       expect(mockGetFeatureFlagResult).not.toHaveBeenCalled();
@@ -92,11 +99,18 @@ describe("regional subscription access", () => {
     },
   );
 
-  it.each(["ask", "agent", "agent_worker"] as const)(
-    "requires payment for Indonesia at the %s boundary",
-    async (surface) => {
+  it.each(
+    ["ID", "IR"].flatMap((country) =>
+      (["ask", "agent", "agent_worker"] as const).map((surface) => ({
+        country,
+        surface,
+      })),
+    ),
+  )(
+    "requires payment for $country at the $surface boundary",
+    async ({ country, surface }) => {
       await expect(
-        enforceRegionalSubscriptionFirst({ ...base, country: "ID", surface }),
+        enforceRegionalSubscriptionFirst({ ...base, country, surface }),
       ).rejects.toMatchObject({
         statusCode: 403,
         metadata: { subscription_required: true },
@@ -174,6 +188,10 @@ describe("regional subscription access", () => {
   it("requires trusted ingress and consent", () => {
     expect(subscriptionFirstCountryFromRequest(request(" ng "))).toBe("NG");
     expect(subscriptionFirstCountryFromRequest(request(" id "))).toBe("ID");
+    expect(subscriptionFirstCountryFromRequest(request(" ir "))).toBe("IR");
+    expect(
+      subscriptionFirstCountryFromRequest(request("IR", "declined")),
+    ).toBeUndefined();
     expect(
       subscriptionFirstCountryFromRequest(request("ID", "declined")),
     ).toBeUndefined();
@@ -186,5 +204,23 @@ describe("regional subscription access", () => {
     expect(subscriptionFirstCountryFromRequest(request())).toBeUndefined();
     delete process.env.VERCEL;
     expect(subscriptionFirstCountryFromRequest(request("IN"))).toBeUndefined();
+  });
+
+  it("reevaluates a returning account using its current request country", async () => {
+    await expect(
+      enforceRegionalSubscriptionFirst({
+        ...base,
+        country: subscriptionFirstCountryFromRequest(request("US")),
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      enforceRegionalSubscriptionFirst({
+        ...base,
+        country: subscriptionFirstCountryFromRequest(request("IR")),
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      metadata: { subscription_required: true },
+    });
   });
 });

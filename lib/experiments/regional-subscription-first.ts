@@ -7,6 +7,7 @@ export const SUBSCRIPTION_FIRST_COUNTRIES = [
   "BD",
   "NG",
   "ID",
+  "IR",
 ] as const;
 
 export type RegionalSubscriptionAssignment = {
