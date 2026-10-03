@@ -493,6 +493,47 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_unblocks_native_input_with_an_inherited_slave() {
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "native-blocked-input".into(),
+                // Disable canonical input consumption and keep a descendant's
+                // slave handle open. Both processes ignore the initial SIGHUP.
+                "stty -icanon -echo; trap '' HUP; sleep 5 & printf ready; wait".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        let writer = manager.input_writer("native-blocked-input").unwrap();
+        let (finished, writing) = mpsc::channel();
+        let write = thread::spawn(move || {
+            let result = PtyManager::write_input(writer, &"x".repeat(4 * 1024 * 1024));
+            finished.send(result).unwrap();
+        });
+        assert!(matches!(
+            writing.recv_timeout(Duration::from_millis(200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        manager.kill("native-blocked-input").unwrap();
+        // This checks the actual blocked write, not just the terminal event or
+        // removal from the session map. No mock writer is released by the test.
+        assert!(writing
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_err());
+        write.join().unwrap();
+        let (_, exit_code) = wait_for_exit(&rx);
+        assert_ne!(exit_code, 0);
+        assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn blocked_reader_cannot_delay_exit_or_publish_late_output() {
         struct BlockedReader(Receiver<()>);
         impl Read for BlockedReader {
