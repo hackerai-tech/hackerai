@@ -1,8 +1,8 @@
 # Subscription before regional task usage
 
 Decision record and owner: [HAC-118](https://linear.app/hackerai/issue/HAC-118),
-Ross Manko. The owner authorized a Production 50/50 control/test rollout.
-Activation follows verified deployment and acceptance; HAC-118 records live state.
+Ross Manko. The owner closed the experiment and authorized full eligible treatment.
+HAC-118 records live state and the Indonesia extension.
 
 ## Policy
 
@@ -15,7 +15,7 @@ gate requires both Vercel and Trigger code deployments plus both PostHog flag
 definitions; changing the flags alone cannot expand the application's allowlist.
 
 `regional_subscription_first_v1` assigns authenticated free accounts from
-trusted Vercel ingress countries IN/PK/BD/NG with analytics allowed. A missing,
+trusted Vercel ingress countries IN/PK/BD/NG/ID with analytics allowed. A missing,
 disabled or unavailable flag, declined consent, unknown geography and paid
 accounts preserve existing access. Location reflects a connection, not residence.
 The browser never supplies authoritative country, assignment or subscription.
@@ -30,11 +30,12 @@ the subscription requirement. History and account/billing surfaces stay availabl
 In-progress tasks keep their controls and existing run policy; new requests
 reevaluate eligibility. Paid entitlement changes immediately remove the UI gate.
 
-Control accounts keep the permanent regional allowance: at most three shared
+IN/PK/BD/NG accounts outside treatment keep the permanent regional allowance: at most three shared
 Ask/Agent requests/day and $0.10/calendar month, including stricter operational
 limits and existing referral credits. Enrollment never bypasses this policy.
-Disabling this flag restores the same allowance on new work without resetting
-counters. HAC-104 is closed; do not restart its archived allowance experiment.
+Disabling this flag restores that allowance for IN/PK/BD/NG and ordinary free
+limits for ID on new work without resetting counters. HAC-104 is closed; do not
+restart its archived allowance experiment.
 If historical participants enter this test, label their later outcomes as affected
 by subscription-first rather than an uninterrupted allowance follow-up.
 
@@ -42,12 +43,12 @@ by subscription-first rather than an uninterrupted allowance follow-up.
 
 Preview project `401167` uses independent flag `887004` at 100% eligible forced
 test. Production project `144137` uses flag `886891`: the approved target is
-100% eligible enrollment with stable control/test allocation of 50/50. The actual
+100% eligible enrollment with control 0% / test 100%. The actual
 active state, rollout, targeting and launch timestamp are recorded in HAC-118
 after read-back, rather than inferred from this document.
 
 Both flags target `subscription=free` and `regional_subscription_country` in
-IN/PK/BD/NG. Assignment is deterministic by WorkOS user ID. The worker derives its
+IN/PK/BD/NG/ID. Assignment is deterministic by WorkOS user ID. The worker derives its
 assignment using its own PostHog project and the route's trusted country payload.
 This requires new Vercel and Trigger deployments; later flag changes apply to
 new requests/runs. Browser presentation refreshes on focus or reload.
