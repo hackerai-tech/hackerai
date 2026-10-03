@@ -222,6 +222,31 @@ describe("payment method recovery", () => {
     },
   );
 
+  it.each(["customer", "subscription"])(
+    "does not retry a canceled payment after repeated %s card selections",
+    async (scope) => {
+      const f = fixture();
+      // The portal can cancel the payment while its renewal invoice is still open.
+      f.pay.mockRejectedValue(
+        new Stripe.errors.StripeInvalidRequestError({
+          message: "This invoice can no longer be paid.",
+        }),
+      );
+      for (let delivery = 0; delivery < 6; delivery++) {
+        expect(
+          await recoverSubscriptionPayment({
+            ...f,
+            paymentIntent: { status: "canceled" } as Stripe.PaymentIntent,
+            customerEventCreated:
+              scope === "customer" ? f.customerEventCreated : undefined,
+          }),
+        ).toBe("skipped");
+      }
+      expect(f.update).not.toHaveBeenCalled();
+      expect(f.pay).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps the account pending if the new card requires authentication", async () => {
     const f = fixture();
     f.pay.mockRejectedValue(
@@ -230,7 +255,15 @@ describe("payment method recovery", () => {
         code: "authentication_required",
       }),
     );
-    expect(await recoverSubscriptionPayment(f)).toBe("pending");
+    expect(
+      await recoverSubscriptionPayment({
+        ...f,
+        paymentIntent: {
+          status: "requires_payment_method",
+        } as Stripe.PaymentIntent,
+      }),
+    ).toBe("pending");
+    expect(f.pay).toHaveBeenCalledTimes(1);
   });
 
   it("tolerates Stripe collecting the invoice concurrently", async () => {
@@ -249,6 +282,18 @@ describe("payment method recovery", () => {
     f.pay.mockRejectedValue(new Error("Stripe unavailable"));
     await expect(recoverSubscriptionPayment(f)).rejects.toThrow(
       "Stripe unavailable",
+    );
+  });
+
+  it("does not suppress an unpayable error without a confirmed canceled payment", async () => {
+    const f = fixture();
+    f.pay.mockRejectedValue(
+      new Stripe.errors.StripeInvalidRequestError({
+        message: "This invoice can no longer be paid.",
+      }),
+    );
+    await expect(recoverSubscriptionPayment(f)).rejects.toThrow(
+      "This invoice can no longer be paid.",
     );
   });
 
