@@ -1221,7 +1221,6 @@ export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
-const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
@@ -1274,8 +1273,8 @@ const buildProviderMap = (
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
-    // Titles are a short structured-output task and should never use reasoning.
-    "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
+    // GLM supports the title schema and requires reasoning to stay enabled.
+    "title-generator-model": or(GLM_5_3_FLASH_SLUG),
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
@@ -1309,7 +1308,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-deepseek-v4-flash-vision-pro": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
-  "title-generator-model": "May 2025",
+  "title-generator-model": "August 2026",
   "auxiliary-vision-model": "July 2026",
 };
 
@@ -1342,7 +1341,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "DeepSeek V4 Flash",
+  "title-generator-model": "GLM 5.3 Flash",
   "auxiliary-vision-model": "Auxiliary vision model",
 };
 

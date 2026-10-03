@@ -229,20 +229,23 @@ describe("buildProviderOptions fallback chain", () => {
     ).toBe("model-abliterated-large-v2");
   });
 
-  it("keeps title generation on a non-reasoning route", () => {
-    const opts = buildProviderOptions(
-      false,
-      "user-1",
-      "title-generator-model",
-      "ask",
-    );
+  it.each(["ask", "agent"] as const)(
+    "keeps %s titles on low reasoning",
+    (mode) => {
+      const opts = buildProviderOptions(
+        false,
+        "user-1",
+        "title-generator-model",
+        mode,
+      );
 
-    expect(opts.openrouter).toEqual({
-      reasoning: { enabled: false },
-      provider: { ignore: ["novita"] },
-      user: "user-1",
-    });
-  });
+      expect(opts.openrouter).toEqual({
+        reasoning: { enabled: true, effort: "low" },
+        provider: { sort: "latency", data_collection: "deny" },
+        user: "user-1",
+      });
+    },
+  );
 
   it("ignores Novita only for the previous DeepSeek Flash route", () => {
     const previousRoute = buildProviderOptions(

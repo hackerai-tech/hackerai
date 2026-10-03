@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter } from "ai";
+import { APICallError } from "ai";
 
 const mockGenerateText = jest.fn();
 const mockLanguageModel = jest.fn((modelName: string) => ({ modelName }));
 
 jest.mock("ai", () => ({
+  APICallError: jest.requireActual<typeof import("ai")>("ai").APICallError,
+  NoObjectGeneratedError:
+    jest.requireActual<typeof import("ai")>("ai").NoObjectGeneratedError,
   generateText: (...args: unknown[]) => mockGenerateText(...args),
   Output: {
     object: (config: unknown) => ({ type: "object", ...config }),
@@ -12,16 +16,18 @@ jest.mock("ai", () => ({
 }));
 
 jest.mock("@/lib/ai/providers", () => ({
-  DEEPSEEK_V4_FLASH_PREVIOUS_SLUG: "deepseek/deepseek-v4-flash",
-  getOpenRouterProviderRoutingForModel: jest.fn(() => ({
-    ignore: ["novita"],
-  })),
   myProvider: {
     languageModel: (modelName: string) => mockLanguageModel(modelName),
   },
 }));
 
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
+  buildProviderOptions: jest.fn(() => ({
+    openrouter: {
+      reasoning: { enabled: true, effort: "low" },
+      provider: { sort: "latency", data_collection: "deny" },
+    },
+  })),
   isXaiSafetyError: jest.fn(() => false),
 }));
 
@@ -74,7 +80,7 @@ describe("generateTitleFromUserMessage", () => {
     mockLanguageModel.mockClear();
   });
 
-  it("uses the title generator model without reasoning and with a small output budget", async () => {
+  it("uses the title generator model with low reasoning and a small output budget", async () => {
     mockGenerateText.mockResolvedValue({
       output: { title: "Web Recon Tips" },
     });
@@ -92,8 +98,8 @@ describe("generateTitleFromUserMessage", () => {
         maxRetries: 1,
         providerOptions: {
           openrouter: {
-            reasoning: { enabled: false },
-            provider: { ignore: ["novita"] },
+            reasoning: { enabled: true, effort: "low" },
+            provider: { sort: "latency", data_collection: "deny" },
           },
         },
         temperature: 0,
@@ -188,12 +194,18 @@ describe("generateTitleFromUserMessage", () => {
     ).resolves.toBe("what wrong you think with");
   });
 
-  it("writes the fallback title without logging when the title model fails", async () => {
+  it("writes the fallback title and logs only safe provider failure metadata", async () => {
     mockGenerateText.mockRejectedValue(
-      new Error("Unexpected end of JSON input"),
+      new APICallError({
+        message: "Private provider response with secret API key",
+        url: "https://provider.example/?key=secret",
+        requestBodyValues: { prompt: "private user prompt" },
+        responseBody: "private response",
+        statusCode: 400,
+      }),
     );
-    const consoleErrorSpy = jest
-      .spyOn(console, "error")
+    const consoleWarnSpy = jest
+      .spyOn(console, "warn")
       .mockImplementation(() => undefined);
     const writer = {
       write: jest.fn(),
@@ -211,9 +223,16 @@ describe("generateTitleFromUserMessage", () => {
       data: { chatTitle: "debug truncated title JSON responses" },
       transient: true,
     });
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      "chat_title_generation_failed",
+      {
+        category: "provider_error",
+        statusCode: 400,
+      },
+    );
 
-    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
   });
 
   it("persists the generated title after streaming it to the header", async () => {

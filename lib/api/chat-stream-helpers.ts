@@ -1042,8 +1042,9 @@ export function buildProviderOptions(
   // Flash routes omit this option so each provider model uses its default.
   const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
   const isStandardGlmFlashVision = modelName === "model-glm-5.3-flash";
+  const isTitleGeneration = modelName === "title-generator-model";
   const usesDefaultGlmFlashAgentReasoning =
-    mode === "agent" && modelId === GLM_5_3_FLASH_SLUG;
+    mode === "agent" && modelId === GLM_5_3_FLASH_SLUG && !isTitleGeneration;
   const routesThroughHighReasoningModel =
     isGrok45 ||
     isGrok46 ||
@@ -1066,35 +1067,38 @@ export function buildProviderOptions(
         ],
       }
     : baseProviderRouting;
-  const reasoning = isStandardGlmFlashVision
-    ? {
-        enabled: true,
-        effort: "high",
-      }
-    : isMediumGrok45Vision
+  // GLM titles need mandatory reasoning, kept low for the small output budget.
+  const reasoning = isTitleGeneration
+    ? { enabled: true, effort: "low" }
+    : isStandardGlmFlashVision
       ? {
           enabled: true,
-          effort: "medium",
+          effort: "high",
         }
-      : routesThroughHighReasoningModel
-        ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-          ? options.reasoningOverride
-          : {
-              enabled: true,
-              effort: "high",
-            }
-        : (options.reasoningOverride ??
-          (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-            ? {
+      : isMediumGrok45Vision
+        ? {
+            enabled: true,
+            effort: "medium",
+          }
+        : routesThroughHighReasoningModel
+          ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+            ? options.reasoningOverride
+            : {
                 enabled: true,
                 effort: "high",
               }
-            : isReasoningModel
+          : (options.reasoningOverride ??
+            (isHighReasoningModel(modelName) || isAgentDeepSeekV4
               ? {
                   enabled: true,
-                  ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                  effort: "high",
                 }
-              : { enabled: false }));
+              : isReasoningModel
+                ? {
+                    enabled: true,
+                    ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                  }
+                : { enabled: false }));
 
   return {
     openrouter: {

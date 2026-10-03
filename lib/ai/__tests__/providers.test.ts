@@ -241,7 +241,7 @@ describe("provider registry", () => {
     expect(
       (myProvider.languageModel("title-generator-model") as { modelId: string })
         .modelId,
-    ).toBe("deepseek/deepseek-v4-flash");
+    ).toBe("z-ai/glm-5.3-flash");
     expect(getModelCutoffDate("ask-model-free")).toBeUndefined();
     expect(getModelCutoffDate("agent-model-free")).toBeUndefined();
     expect(getModelDisplayName("model-grok-4.6")).toBe("xAI Grok 4.6");
@@ -269,9 +269,7 @@ describe("provider registry", () => {
     expect(getModelDisplayName("model-kimi-k3")).toBe("Moonshot Kimi K3");
     expect(getModelCutoffDate("model-opus-4.6")).toBe("July 2026");
     expect(getModelDisplayName("model-opus-4.6")).toBe("Moonshot Kimi K3");
-    expect(getModelDisplayName("title-generator-model")).toBe(
-      "DeepSeek V4 Flash",
-    );
+    expect(getModelDisplayName("title-generator-model")).toBe("GLM 5.3 Flash");
   });
 
   it("applies Kimi rather than Anthropic provider behavior to HackerAI Max", () => {
