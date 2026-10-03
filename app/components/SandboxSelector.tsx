@@ -38,7 +38,6 @@ interface SandboxSelectorProps {
   size?: "sm" | "toolbar" | "md";
   triggerLabel?: string;
   compact?: boolean;
-  wrapLabel?: boolean;
 }
 
 interface ConnectionOption {
@@ -56,7 +55,6 @@ export function SandboxSelector({
   size = "sm",
   triggerLabel,
   compact = false,
-  wrapLabel = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -337,7 +335,7 @@ export function SandboxSelector({
           variant="ghost"
           size={size === "md" ? "default" : "sm"}
           disabled={disabled}
-          className={`${buttonClassName} ${wrapLabel ? "h-auto min-h-8 py-1 whitespace-normal" : ""}`}
+          className={buttonClassName}
           title={triggerLabel ?? selectedOption?.label}
           aria-label={triggerLabel ?? selectedOption.label}
         >
@@ -345,9 +343,7 @@ export function SandboxSelector({
             aria-hidden="true"
             className={`${iconClassName}${showReconnecting ? " animate-spin motion-reduce:animate-none" : ""}`}
           />
-          <span
-            className={`min-w-0 flex-1 text-left ${wrapLabel ? "break-words leading-4" : "truncate"}`}
-          >
+          <span className="min-w-0 flex-1 truncate text-left">
             {triggerLabel ??
               (compact ? compactLabel : selectedOption.shortLabel)}
           </span>
