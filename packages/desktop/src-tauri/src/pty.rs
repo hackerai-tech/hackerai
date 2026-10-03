@@ -185,7 +185,7 @@ impl PtyManager {
         };
         for id in session_ids {
             if let Err(e) = self.kill(&id) {
-                log::warn!("Failed to kill PTY session '{}': {}", id, e);
+                log::warn!("Failed to stop PTY session: {}", e);
             }
         }
         // App exit must give supervisors time to deliver cancellation before
@@ -215,7 +215,6 @@ fn supervise_pty(
 ) {
     let output_channel = on_data.clone();
     let reader_shutdown = shutdown.clone();
-    let reader_session_id = session_id.clone();
     let reader_thread = thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -240,11 +239,7 @@ fn supervise_pty(
                     if e.raw_os_error() == Some(libc::EIO) {
                         break;
                     }
-                    log::warn!(
-                        "PTY reader error for session '{}': {}",
-                        reader_session_id,
-                        e
-                    );
+                    log::warn!("PTY reader failed: {}", e.kind());
                     reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
                     break;
                 }
