@@ -962,7 +962,7 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
-    it("renders a glass composer with a narrower sandbox context strip", async () => {
+    it("keeps compact Agent controls inside the composer", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],
@@ -997,24 +997,22 @@ describe("ChatInput - Integration Tests", () => {
         "z-10",
       );
       expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
-        "chat-input-glass-context",
-        "mx-2",
-        "sm:mx-6",
-        "-mt-2",
-        "min-h-10",
-        "flex-wrap",
-        "rounded-b-[18px]",
+        "flex",
+        "items-center",
+        "min-h-8",
         "md:hidden",
+      );
+      expect(screen.getByTestId("chat-input-surface")).toContainElement(
+        screen.getByTestId("chat-input-agent-context"),
       );
       expect(screen.getByTestId("chat-input-mobile-sandbox")).toHaveClass(
         "min-w-0",
-        "flex-[1_1_13rem]",
+        "flex-1",
       );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
         "ml-auto",
-        "max-w-full",
+        "max-w-[56%]",
         "shrink-0",
-        "md:hidden",
       );
 
       jest
@@ -1045,7 +1043,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(screen.getByRole("textbox")).toBeInTheDocument();
     });
 
-    it("moves Agent controls below the input when the composer becomes narrow", async () => {
+    it("moves Agent controls into the composer footer when it becomes narrow", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
         entitlements: [],

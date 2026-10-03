@@ -102,21 +102,21 @@ const ChatInputLoadingState = ({
     data-testid="chat-input-loading-state"
     role="status"
   >
-    <div className="mx-auto w-full min-w-0 max-w-full sm:min-w-[390px] sm:max-w-[768px]">
+    <div className="mx-auto w-full min-w-0 max-w-full sm:max-w-[768px]">
       <div
         className="chat-input-glass-surface relative z-10 flex h-[98px] flex-col justify-center gap-2 rounded-[22px] border border-black/8 px-4 shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] dark:border-border"
         data-testid="chat-input-loading-surface"
       >
         <div className="h-3 w-32 animate-pulse rounded-full bg-muted-foreground/15 motion-reduce:animate-none" />
         <div className="h-3 w-20 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none" />
+        {showAgentControls ? (
+          <div
+            aria-hidden="true"
+            className="h-3 w-40 animate-pulse rounded-full bg-muted-foreground/10 motion-reduce:animate-none md:hidden"
+            data-testid="chat-input-loading-controls"
+          />
+        ) : null}
       </div>
-      {showAgentControls ? (
-        <div
-          aria-hidden="true"
-          className="chat-input-glass-context relative z-0 mx-6 -mt-2 h-10 rounded-b-[18px] border border-t-0 border-black/8 md:hidden dark:border-border/70"
-          data-testid="chat-input-loading-controls"
-        />
-      ) : null}
     </div>
   </div>
 );
@@ -850,7 +850,7 @@ const ChatInputContent = ({
     <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
       <div
         ref={chatInputContainerRef}
-        className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
+        className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:max-w-[768px]"
         data-testid="chat-input-container"
       >
         {isOffline && (
@@ -988,33 +988,31 @@ const ChatInputContent = ({
               isOnline={!isOffline}
               sendDisabledReason={effectiveSendDisabledReason}
             />
-          </div>
-        )}
-
-        {/* Compact Agent controls below the input. The composer switches to
-            this strip whenever its own width is constrained, even on desktop. */}
-        {user && isAgent && !showAgentApprovalPrompt && (
-          <div
-            className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-wrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
-            data-compact={compactAgentControls ? "true" : "false"}
-            data-testid="chat-input-agent-context"
-          >
-            <div
-              className="min-w-0 flex-[1_1_13rem]"
-              data-testid="chat-input-mobile-sandbox"
-            >
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                compact
-              />
-            </div>
-            <div
-              className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
-              data-testid="chat-input-mobile-permission"
-            >
-              <AgentPermissionSelector analyticsSurface="chat_input" />
-            </div>
+            {user && isAgent && !showAgentApprovalPrompt && (
+              <div
+                className={`flex min-h-8 min-w-0 items-center justify-between gap-2 px-3 ${compactAgentControls ? "" : "md:hidden"}`}
+                data-compact={compactAgentControls ? "true" : "false"}
+                data-testid="chat-input-agent-context"
+              >
+                <div
+                  className="min-w-0 flex-1"
+                  data-testid="chat-input-mobile-sandbox"
+                >
+                  <SandboxSelector
+                    value={sandboxPreference}
+                    onChange={setSandboxPreference}
+                    size="toolbar"
+                    wrapLabel
+                  />
+                </div>
+                <div
+                  className="ml-auto min-w-0 max-w-[56%] shrink-0"
+                  data-testid="chat-input-mobile-permission"
+                >
+                  <AgentPermissionSelector analyticsSurface="chat_input" />
+                </div>
+              </div>
+            )}
           </div>
         )}
 
