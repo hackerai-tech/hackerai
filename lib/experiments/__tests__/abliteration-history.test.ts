@@ -17,6 +17,14 @@ const entry = (
   });
 
 describe("recent Abliteration history", () => {
+  it("never seeds the moderated history preference from unconditional paid treatment", () => {
+    expect(
+      countIndependentAbliterationResponses([
+        entry("new-a", "paid_first_step"),
+        entry("new-b", "paid_first_step"),
+      ]),
+    ).toBe(0);
+  });
   it("counts independent completed responses only, newest first", () => {
     expect(
       countIndependentAbliterationResponses([

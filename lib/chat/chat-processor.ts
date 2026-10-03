@@ -1,4 +1,6 @@
 import { getModerationResult } from "@/lib/moderation";
+import { evaluatePaidFirstStepVariant } from "@/lib/experiments/abliterated-model";
+import type { PostHog } from "posthog-node";
 import {
   normalizeMaxModelForSubscription,
   type ChatMode,
@@ -690,6 +692,8 @@ export async function processChatMessages({
   chatId,
   triggerRunId,
   requestId,
+  abliterationPosthog = null,
+  limitRescue = false,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
@@ -704,6 +708,8 @@ export async function processChatMessages({
   chatId?: string;
   triggerRunId?: string;
   requestId?: string;
+  abliterationPosthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
+  limitRescue?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
@@ -800,16 +806,28 @@ export async function processChatMessages({
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
-  // Check moderation for the last user message
-  const moderationResult = await getModerationResult(
-    cleanedMessages,
-    subscription !== "free",
-  );
+  const paidFirstStepVariant = await evaluatePaidFirstStepVariant({
+    posthog: abliterationPosthog,
+    userId,
+    subscription,
+    // File resolution can drop unavailable attachments. Eligibility must still
+    // see the original unsupported inputs before deciding to skip moderation.
+    messages: messagesWithLimitedFiles,
+    limitRescue,
+  });
+  // Only explicit paid treatment skips the API. Controls, unavailable flags,
+  // rescue and Free requests keep their existing moderation processing.
+  const moderationChecked = paidFirstStepVariant !== "test";
+  const moderationResult = moderationChecked
+    ? await getModerationResult(cleanedMessages, subscription !== "free")
+    : { shouldUncensorResponse: false, allowsAbliterationContinuation: false };
 
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    paidFirstStepVariant,
+    moderationChecked,
     platformAuthorized: moderationResult.shouldUncensorResponse,
     allowsAbliterationContinuation:
       moderationResult.allowsAbliterationContinuation,

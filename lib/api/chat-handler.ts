@@ -535,7 +535,11 @@ export const createChatHandler = () => {
         sandboxFiles,
         platformAuthorized,
         allowsAbliterationContinuation,
+        paidFirstStepVariant,
+        moderationChecked,
       } = await processChatMessages({
+        abliterationPosthog: (posthog ??= PostHogClient()),
+        limitRescue: Boolean(limitRescue),
         messages: truncatedMessages,
         mode,
         userId,
@@ -572,6 +576,8 @@ export const createChatHandler = () => {
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
+        paidFirstStepVariant,
+        moderationChecked,
         allowsAbliterationContinuation,
         independentAbliterationResponses:
           fetched.independentAbliterationResponses,

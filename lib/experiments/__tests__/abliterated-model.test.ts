@@ -1,7 +1,9 @@
 import {
   evaluateAbliteratedModel,
+  evaluatePaidFirstStepVariant,
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATION_CONTINUITY_FLAG,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
@@ -118,6 +120,135 @@ describe("moderation-gated Abliteration assignment", () => {
     moderationEligible: true,
     messages,
   };
+  describe("independent paid first-step enrollment", () => {
+    it.each(["ask", "agent"] as const)(
+      "assigns unmoderated %s requests to base Abliteration without historical lookup",
+      async (mode) => {
+        const getFeatureFlagResult = jest.fn();
+        await expect(
+          evaluateAbliteratedModel({
+            ...defaults,
+            mode,
+            selectedModel: "model-grok-4.6",
+            moderationEligible: false,
+            moderationChecked: false,
+            paidFirstStepVariant: "test",
+            posthog: { getFeatureFlagResult },
+          }),
+        ).resolves.toMatchObject({
+          key: ABLITERATED_PAID_FIRST_STEP_KEY,
+          modelKey: ABLITERATION_MODEL_KEY,
+          baselineModel: "model-grok-4.6",
+          selectionSource: "paid_first_step",
+          moderationEligible: false,
+          moderationChecked: false,
+        });
+        expect(getFeatureFlagResult).not.toHaveBeenCalled();
+      },
+    );
+    it("keeps enrolled controls on their baseline even if historical treatment is enabled", async () => {
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue(flagResult("test"));
+      await expect(
+        evaluateAbliteratedModel({
+          ...defaults,
+          paidFirstStepVariant: "control",
+          posthog: { getFeatureFlagResult },
+        }),
+      ).resolves.toMatchObject({
+        key: ABLITERATED_PAID_FIRST_STEP_KEY,
+        variant: "control",
+        modelKey: defaults.selectedModel,
+        baselineModel: defaults.selectedModel,
+      });
+      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+    });
+    it.each([true, false, "unexpected", undefined])(
+      "ignores invalid enrollment %s",
+      async (value) => {
+        const getFeatureFlagResult = jest
+          .fn()
+          .mockResolvedValue(flagResult(value));
+        await expect(
+          evaluatePaidFirstStepVariant({
+            ...defaults,
+            posthog: { getFeatureFlagResult },
+          }),
+        ).resolves.toBeUndefined();
+      },
+    );
+    it("evaluates a stable authenticated user without recording exposure", async () => {
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue(flagResult("test"));
+      await expect(
+        evaluatePaidFirstStepVariant({
+          ...defaults,
+          posthog: { getFeatureFlagResult },
+        }),
+      ).resolves.toBe("test");
+      expect(getFeatureFlagResult).toHaveBeenCalledWith(
+        ABLITERATED_PAID_FIRST_STEP_KEY,
+        defaults.userId,
+        {
+          sendFeatureFlagEvents: false,
+          personProperties: { subscription: "pro", subscription_tier: "pro" },
+        },
+      );
+    });
+    it.each([
+      { subscription: "free" as const },
+      { limitRescue: true },
+      { messages: [] },
+      {
+        messages: [
+          {
+            id: "pdf",
+            role: "user" as const,
+            parts: [
+              {
+                type: "file" as const,
+                mediaType: "application/pdf",
+                url: "https://example.test/doc.pdf",
+              },
+            ],
+          },
+        ],
+      },
+    ])("preserves exclusions before any flag lookup: %j", async (overrides) => {
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockResolvedValue(flagResult("test"));
+      await expect(
+        evaluatePaidFirstStepVariant({
+          ...defaults,
+          ...overrides,
+          posthog: { getFeatureFlagResult },
+        }),
+      ).resolves.toBeUndefined();
+      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+      await expect(
+        evaluateAbliteratedModel({
+          ...defaults,
+          ...overrides,
+          paidFirstStepVariant: "test",
+          posthog: { getFeatureFlagResult },
+        }),
+      ).resolves.toBeUndefined();
+    });
+    it("preserves current routing when the new lookup fails", async () => {
+      const getFeatureFlagResult = jest
+        .fn()
+        .mockRejectedValue(new Error("flag unavailable"));
+      await expect(
+        evaluatePaidFirstStepVariant({
+          ...defaults,
+          posthog: { getFeatureFlagResult },
+        }),
+      ).resolves.toBeUndefined();
+    });
+  });
   describe("Preview paid-model diagnostics", () => {
     const previewDiagnosticContext = {
       chatId: "test-chat",

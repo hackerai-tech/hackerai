@@ -1979,7 +1979,11 @@ export const agentLongTask = task({
         sandboxFiles,
         platformAuthorized,
         allowsAbliterationContinuation,
+        paidFirstStepVariant,
+        moderationChecked,
       } = await processChatMessages({
+        abliterationPosthog: posthog,
+        limitRescue: Boolean(limitRescue),
         messages: messagesForProcessing,
         mode,
         userId,
@@ -2014,6 +2018,8 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
+        paidFirstStepVariant,
+        moderationChecked,
         allowsAbliterationContinuation,
         independentAbliterationResponses:
           fetched.independentAbliterationResponses,

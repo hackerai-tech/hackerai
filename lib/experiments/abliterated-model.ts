@@ -4,10 +4,12 @@ import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
 import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
 } from "./abliteration-keys";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
@@ -24,11 +26,15 @@ import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-res
 export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   key:
-    typeof ABLITERATED_EXPERIMENT_KEY | typeof ABLITERATED_MAX_EXPERIMENT_KEY;
+    | typeof ABLITERATED_EXPERIMENT_KEY
+    | typeof ABLITERATED_MAX_EXPERIMENT_KEY
+    | typeof ABLITERATED_PAID_FIRST_STEP_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
-  selectionSource?: "moderation" | "history";
+  selectionSource?: "moderation" | "history" | "paid_first_step";
+  moderationEligible?: boolean;
+  moderationChecked?: boolean;
   independentHistoryCount?: number;
 };
 
@@ -69,6 +75,43 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
     ),
   );
 
+/** Resolve enrollment independently of moderation, without emitting exposure. */
+export async function evaluatePaidFirstStepVariant({
+  posthog,
+  userId,
+  subscription,
+  messages,
+  limitRescue = false,
+}: {
+  posthog: Pick<PostHog, "getFeatureFlagResult"> | null;
+  userId: string;
+  subscription: SubscriptionTier;
+  messages: UIMessage[];
+  limitRescue?: boolean;
+}): Promise<"control" | "test" | undefined> {
+  if (
+    !posthog ||
+    !isAbliterationConfigured() ||
+    subscription === "free" ||
+    limitRescue ||
+    !messages.length ||
+    messagesContainUnsupportedFiles(messages)
+  )
+    return;
+  try {
+    const variant = await getPostHogFlagWithoutExposure(
+      posthog,
+      ABLITERATED_PAID_FIRST_STEP_KEY,
+      userId,
+      { subscription, subscription_tier: subscription },
+    );
+    return variant === "control" || variant === "test" ? variant : undefined;
+  } catch {
+    // A missing/unavailable assignment preserves the existing request route.
+    return;
+  }
+}
+
 export function isEligibleForAbliteratedModel({
   subscription,
   mode,
@@ -101,6 +144,8 @@ export async function evaluateAbliteratedModel({
   mode,
   selectedModelOverride,
   moderationEligible,
+  paidFirstStepVariant,
+  moderationChecked = true,
   allowsAbliterationContinuation = false,
   independentAbliterationResponses = 0,
   messages,
@@ -114,6 +159,8 @@ export async function evaluateAbliteratedModel({
   mode: ChatMode;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
+  paidFirstStepVariant?: "control" | "test";
+  moderationChecked?: boolean;
   allowsAbliterationContinuation?: boolean;
   independentAbliterationResponses?: number;
   messages: UIMessage[];
@@ -128,11 +175,14 @@ export async function evaluateAbliteratedModel({
         userId,
         chatId: previewDiagnosticContext.chatId,
         requestId: previewDiagnosticContext.requestId,
-        experiment_key: ABLITERATED_MAX_EXPERIMENT_KEY,
+        experiment_key: paidFirstStepVariant
+          ? ABLITERATED_PAID_FIRST_STEP_KEY
+          : ABLITERATED_MAX_EXPERIMENT_KEY,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
         moderation_eligible: moderationEligible,
+        moderation_checked: moderationChecked,
         provider_configured: providerConfigured,
         posthog_configured: Boolean(posthog),
         reason,
@@ -154,7 +204,8 @@ export async function evaluateAbliteratedModel({
       subscription,
       mode,
       selectedModelOverride,
-      moderationEligible: moderationEligible || historyEligible,
+      moderationEligible:
+        moderationEligible || historyEligible || Boolean(paidFirstStepVariant),
       messages,
       limitRescue,
     })
@@ -168,6 +219,24 @@ export async function evaluateAbliteratedModel({
       reason = "unsupported_input";
     reportDecision(reason);
     return undefined;
+  }
+
+  // Both enrolled arms take precedence so controls cannot inherit the older
+  // moderated treatment. Auxiliary calls never enter this primary-call path.
+  if (paidFirstStepVariant) {
+    reportDecision("paid_first_step_assigned", paidFirstStepVariant);
+    return {
+      key: ABLITERATED_PAID_FIRST_STEP_KEY,
+      variant: paidFirstStepVariant,
+      modelKey:
+        paidFirstStepVariant === "test"
+          ? ABLITERATION_MODEL_KEY
+          : selectedModel,
+      baselineModel: selectedModel,
+      selectionSource: "paid_first_step",
+      moderationEligible,
+      moderationChecked,
+    };
   }
 
   const experimentKey = ABLITERATED_EXPERIMENT_KEY;
