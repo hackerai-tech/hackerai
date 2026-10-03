@@ -89,6 +89,65 @@ describe("useChatHandlers regenerate model", () => {
     }
   });
 
+  it.each(["handleStop", "handleRegenerate", "handleRetry"] as const)(
+    "%s works without Array.findLast and preserves message order",
+    async (handler) => {
+      const history = [
+        ...messages,
+        { id: "user-2", role: "user", parts: [] },
+        { id: "assistant-2", role: "assistant", parts: [] },
+        { id: "system-1", role: "system", parts: [] },
+      ] as ChatMessage[];
+      const originalIds = history.map((message) => message.id);
+      const stop = jest.fn();
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "chat-1",
+          messages: history,
+          sendMessage: mockSendMessage,
+          stop,
+          regenerate: mockRegenerate,
+          setMessages: mockSetMessages,
+          isExistingChat: false,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      const descriptor = Object.getOwnPropertyDescriptor(
+        Array.prototype,
+        "findLast",
+      )!;
+      Object.defineProperty(Array.prototype, "findLast", {
+        ...descriptor,
+        value: undefined,
+      });
+      try {
+        await act(async () => {
+          await result.current[handler]();
+        });
+      } finally {
+        Object.defineProperty(Array.prototype, "findLast", descriptor);
+      }
+
+      expect(history.map((message) => message.id)).toEqual(originalIds);
+      if (handler === "handleStop") {
+        expect(stop).toHaveBeenCalledTimes(1);
+      } else {
+        expect(mockRegenerate).toHaveBeenCalledTimes(1);
+        expect(mockSetMessages).toHaveBeenCalledWith(history.slice(0, 3));
+      }
+      if (handler !== "handleRetry") {
+        expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
+          handler === "handleStop"
+            ? "chat_response_stop_requested"
+            : "chat_response_regeneration_requested",
+          expect.objectContaining({ message_id: "assistant-2" }),
+        );
+      }
+    },
+  );
+
   it("uses the latest chat input model from a previously rendered regenerate callback", async () => {
     const { result, rerender } = renderHook(() =>
       useChatHandlers({
