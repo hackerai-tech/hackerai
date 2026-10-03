@@ -10,7 +10,6 @@ use crate::platform;
 
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
     writer: Box<dyn Write + Send>,
     reader_shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -100,7 +99,6 @@ impl PtyManager {
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let session = PtySession {
             master: pair.master,
-            killer: child.clone_killer(),
             writer,
             reader_shutdown: shutdown_flag.clone(),
         };
@@ -174,13 +172,9 @@ impl PtyManager {
             return Ok(());
         };
         session
-            .killer
-            .kill()
-            .map_err(|e| format!("Failed to kill PTY child: {}", e))?;
-        session
             .reader_shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
-        // The supervisor owns wait() and removes resources after output drains.
+        // The supervisor owns the child, including kill escalation and reaping.
         Ok(())
     }
 
@@ -194,6 +188,20 @@ impl PtyManager {
                 log::warn!("Failed to kill PTY session '{}': {}", id, e);
             }
         }
+        // App exit must give supervisors time to deliver cancellation before
+        // the runtime terminates. Never wait indefinitely on inherited PTY handles.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if self
+                .sessions
+                .lock()
+                .map(|sessions| sessions.is_empty())
+                .unwrap_or(true)
+            {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
 
@@ -205,40 +213,66 @@ fn supervise_pty(
     session_id: String,
     sessions: Arc<Mutex<HashMap<String, PtySession>>>,
 ) {
-    let mut buf = [0u8; 4096];
-    let mut transport_failed = false;
-    loop {
-        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            break;
-        }
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                if on_data.send(chunk).is_err() {
-                    transport_failed = true;
-                    break;
-                }
-            }
-            Err(e) => {
-                // Unix PTYs can report EIO instead of EOF after the slave closes.
-                #[cfg(unix)]
-                if e.raw_os_error() == Some(libc::EIO) {
-                    break;
-                }
-                log::warn!("PTY reader error for session '{}': {}", session_id, e);
-                transport_failed = true;
+    let output_channel = on_data.clone();
+    let reader_shutdown = shutdown.clone();
+    let reader_session_id = session_id.clone();
+    let reader_thread = thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            if reader_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                    if output_channel.send(chunk).is_err() {
+                        reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    // Unix PTYs can report EIO instead of EOF after the slave closes.
+                    #[cfg(unix)]
+                    if e.raw_os_error() == Some(libc::EIO) {
+                        break;
+                    }
+                    log::warn!(
+                        "PTY reader error for session '{}': {}",
+                        reader_session_id,
+                        e
+                    );
+                    reader_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+            }
         }
-    }
-    if transport_failed {
-        let _ = child.kill();
-    }
-    let exit_code = match child.wait() {
-        Ok(status) if !transport_failed => status.exit_code() as i32,
-        _ => -1,
+    });
+    // Keep the child owner responsive while the reader waits for output.
+    // Child::kill escalates ignored SIGHUP on Unix; clone_killer does not.
+    let exit_code = loop {
+        if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = child.kill();
+            break child
+                .wait()
+                .map(|status| status.exit_code() as i32)
+                .unwrap_or(-1);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status.exit_code() as i32,
+            Ok(None) => thread::sleep(std::time::Duration::from_millis(10)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break -1;
+            }
+        }
     };
+    // Preserve output-before-exit ordering; only the child owner emits exit.
+    let _ = reader_thread.join();
     // Cleanup is local: publishing exit closes the relay route, so a later
     // remote kill is neither necessary nor a reliable way to release resources.
     if let Ok(mut sessions) = sessions.lock() {
@@ -356,6 +390,28 @@ mod tests {
             )
             .unwrap();
         manager.kill("cancel").unwrap();
+        let (_, exit_code) = wait_for_exit(&rx);
+        assert_ne!(exit_code, 0);
+        assert!(manager.sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancellation_escalates_when_child_ignores_hangup() {
+        let (channel, rx) = channel();
+        let mut manager = PtyManager::new();
+        manager
+            .create(
+                "ignore-hup".into(),
+                "trap '' HUP; printf ready; exec sleep 30".into(),
+                80,
+                24,
+                None,
+                None,
+                channel,
+            )
+            .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "ready");
+        manager.kill("ignore-hup").unwrap();
         let (_, exit_code) = wait_for_exit(&rx);
         assert_ne!(exit_code, 0);
         assert!(manager.sessions.lock().unwrap().is_empty());
