@@ -56,12 +56,16 @@ function imageInput(part: unknown): ImageInput | undefined {
 export function createAbliterationVisionPreprocessor({
   userId,
   chatId,
+  requestId,
+  triggerRunId,
   abortSignal,
   onCost,
   describe = describeImageWithAuxiliaryVision,
 }: {
   userId: string;
   chatId: string;
+  requestId?: string;
+  triggerRunId?: string;
   abortSignal: AbortSignal;
   onCost: (cost: number) => void;
   describe?: typeof describeImageWithAuxiliaryVision;
@@ -117,6 +121,8 @@ export function createAbliterationVisionPreprocessor({
               source: task.source,
               userId,
               chatId,
+              requestId,
+              triggerRunId,
               abortSignal,
               onCost,
             }).then((result) => result.description);

@@ -48,6 +48,7 @@ import {
 } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
+import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
 import {
   connectionMatchesPreference,
   environmentPreference,
@@ -305,6 +306,7 @@ export class HybridSandboxManager implements SandboxManager {
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
+  private readonly acquisitionBudget = new CloudAcquisitionBudget();
 
   constructor(
     private userID: string,
@@ -889,9 +891,15 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     if (this.cloudAcquisition) return this.cloudAcquisition;
-    this.cloudAcquisition = this.acquireCloudSandbox().finally(() => {
-      this.cloudAcquisition = null;
-    });
+    this.cloudAcquisition = this.acquisitionBudget
+      .run(() => this.acquireCloudSandbox(), {
+        userId: this.userID,
+        chatId: this.chatId,
+        ...this.cloudSandboxContext,
+      })
+      .finally(() => {
+        this.cloudAcquisition = null;
+      });
     return this.cloudAcquisition;
   }
 

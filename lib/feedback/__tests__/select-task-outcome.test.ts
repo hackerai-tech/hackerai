@@ -168,6 +168,92 @@ describe("current Pro/Max experiment feedback", () => {
     if (oldKey === undefined) delete process.env.CONVEX_SERVICE_ROLE_KEY;
     else process.env.CONVEX_SERVICE_ROLE_KEY = oldKey;
   });
+  it.each([
+    [
+      "abliterated_paid_first_step_v2",
+      "paid_first_step",
+      "control",
+      "abliterated_paid_first_step_feedback_v2",
+    ],
+    [
+      "abliterated_paid_first_step_v2",
+      "paid_first_step",
+      "test",
+      "abliterated_paid_first_step_feedback_v2",
+    ],
+    [
+      "abliterated_paid_moderated_default_v1",
+      "moderation",
+      "test",
+      "abliterated_paid_moderated_default_feedback_v1",
+    ],
+  ] as const)(
+    "reserves %s/%s/%s with its own phase",
+    async (key, selectionSource, variant, phase) => {
+      for (const mode of ["ask", "agent"] as const) {
+        for (const selectedModelOverride of [
+          undefined,
+          "auto",
+          "hackerai-standard",
+          "hackerai-pro",
+          "hackerai-max",
+        ]) {
+          const posthog = {
+            getFeatureFlagResult: jest.fn(async () => ({ enabled: true })),
+            capture: jest.fn(),
+          };
+          const selected = await selectTaskOutcomeSurvey({
+            ...base,
+            posthog,
+            mode,
+            selectedModelOverride,
+            assignment: { ...assignment, key, selectionSource, variant },
+          });
+          expect(selected).toBeDefined();
+          expect(mutation).toHaveBeenLastCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              experiment_key: key,
+              experiment_variant: variant,
+              feedback_phase: phase,
+              experiment_request_id: base.messageId,
+              selected_model_override: selectedModelOverride ?? "auto",
+            }),
+          );
+        }
+      }
+    },
+  );
+  it.each([
+    {
+      key: "abliterated_paid_first_step_v2",
+      selectionSource: "history",
+      variant: "test",
+    },
+    {
+      key: "abliterated_paid_first_step_v2",
+      selectionSource: "moderation",
+      variant: "test",
+    },
+    {
+      key: "abliterated_paid_moderated_default_v1",
+      selectionSource: "moderation",
+      variant: "control",
+    },
+  ] as const)(
+    "does not mislabel an ineligible new-phase assignment",
+    async (overrides) => {
+      const posthog = { getFeatureFlagResult: jest.fn(), capture: jest.fn() };
+      await selectTaskOutcomeSurvey({
+        ...base,
+        posthog,
+        selectedModelOverride: "hackerai-standard",
+        assignment: { ...assignment, ...overrides },
+      });
+      expect(mutation).not.toHaveBeenCalled();
+      expect(posthog.getFeatureFlagResult).not.toHaveBeenCalled();
+    },
+  );
   it.each(["control", "test"] as const)(
     "selects %s identically before any generation outcome",
     async (variant) => {
