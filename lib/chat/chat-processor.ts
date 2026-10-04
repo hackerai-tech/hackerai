@@ -115,7 +115,7 @@ export function selectModel(
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
-      ? "agent-model-free"
+      ? "model-glm-5.3-flash-agent"
       : hasProviderImage
         ? "model-grok-4.5"
         : paidAutoTextModel
