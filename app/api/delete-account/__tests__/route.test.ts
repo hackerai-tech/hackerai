@@ -713,6 +713,15 @@ describe("POST /api/delete-account", () => {
         );
         expect(getUser).toHaveBeenCalledWith("user_123");
         if (outcome === "exhausted") {
+          expect(await response.json()).toEqual({
+            error:
+              "Account deletion needs identity-provider reconciliation. Please contact support so we can finish deleting your account.",
+          });
+          expect(mockLoggerError).toHaveBeenCalledWith(
+            "account_deletion_failed",
+            expect.objectContaining({ cause: failure }),
+            expect.objectContaining({ stage: "delete_workos_user" }),
+          );
           expect(mockLoggerWarn).toHaveBeenLastCalledWith(
             "account_identity_deletion_recovery",
             expect.objectContaining({

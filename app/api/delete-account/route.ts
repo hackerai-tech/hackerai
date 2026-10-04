@@ -91,7 +91,12 @@ async function deleteWorkosUserAfterOrganizationCleanup(
             ? "reconciliation_required"
             : "organization_propagation",
       });
-      if (attempt === 3) throw error;
+      if (attempt === 3) {
+        throw new Error(
+          "Account deletion needs identity-provider reconciliation. Please contact support so we can finish deleting your account.",
+          { cause: error },
+        );
+      }
       await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
     }
   }
