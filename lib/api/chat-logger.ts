@@ -43,6 +43,8 @@ import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-mode
 import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
@@ -1774,7 +1776,9 @@ export function captureAgentCompletionAnalytics(
 
   if (
     args.experiment?.key === ABLITERATED_EXPERIMENT_KEY ||
-    args.experiment?.key === ABLITERATED_MAX_EXPERIMENT_KEY
+    args.experiment?.key === ABLITERATED_MAX_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY
   ) {
     try {
       posthog?.capture({

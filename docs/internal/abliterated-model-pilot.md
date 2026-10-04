@@ -6,50 +6,78 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## Independent paid-model first-step trial
+## Paid first-step trial without moderation selection
 
-[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the independent
-`abliterated_max_moderated_v1` trial. It applies to all authorized model choices
-(Auto, Standard, Pro and Max) in Ask and Agent for paid plans. An omitted selector
-retains normal Auto behavior; model entitlements are normalized before assignment.
-A moderation-eligible request
-uses base `abliterated-model` for generation step 1 in treatment, including
-text-only Pro/Max requests that the historical pilot routed to Large v2. Controls
-retain the exact selected baseline. Later steps and provider recovery use the
-saved baseline. Free, rescue, unsupported-input and moderation gates remain.
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) also owns the separate
+`abliterated_paid_first_step_v2` trial. The original `v1` key belongs to a retired
+experiment and must not be reused. Assignment happens before moderation, using
+the authenticated paid user's stable identity. Explicit treatment skips the
+moderation API and uses base `abliterated-model` on generation step 1, regardless
+of selector or moderation score. Controls retain moderation and use the shipped moderated default: eligible
+requests use base Abliteration on step 1; other requests use the selected baseline.
+Unenrolled requests use that same moderated default. A missing flag, unknown variant,
+lookup failure or missing provider credential never skips moderation.
 
-The new flag takes precedence when it returns `control` or `test`; disabled or
-missing assignment retains the historical flag behavior. Historical paid,
-expansion and continuity flags must remain disabled during this trial. Its
-authenticated-user assignment and analytics key are independent of historical
-pilot cohorts. The original routing contract below describes the historical
-parent flag, not the current trial. The key retains its original Max name to
-preserve user assignments. Record each selector expansion's deployment boundary for
-each runtime and stratify completion by `selected_model_override`, mode and
-rollout phase. Do not pool the earlier Max-only population with the expanded
-population as though its composition were unchanged. Users using multiple selectors
-retain one assignment and count once in subscriber cancellation comparisons.
+Free requests, paid free-allowance rescue and unsupported file inputs remain
+excluded. Entitlements, quotas, concurrency, sandbox access and tool approvals
+retain their existing checks. Later steps and provider recovery use the saved
+baseline. Because treatment does not classify the input, it does not manufacture
+platform authorization for those baseline calls. This comparison measures the
+combined model route and removal of the moderation call, not the isolated model
+effect. Image preprocessing and bounded provider recovery remain shared with the
+moderated route; auxiliary calls and subagents stay outside the trial.
 
-The independently sampled task-outcome feedback workflow remains scoped to Pro
-and Max. Its coverage must be reported separately from all-model completion and
-subscription cancellation outcomes. Auxiliary and subagent model calls remain
-outside this primary-request trial.
+Eligibility, exposure, provider and response outcomes use the new experiment key
+and `selection_source=paid_first_step`. `moderation_checked=false` distinguishes
+unclassified treatment from a checked request that did not meet the old threshold.
+Successful new-trial responses cannot seed historical moderation continuity.
+Use eligible assignments as the intention-to-treat denominator, including
+requests that never serve output; exposure still requires actual provider output.
+Natural completion requires success, stop, nonempty content and no step limit.
+Keep absent outcomes and provider cost reports unknown rather than zero.
 
-Use `abliterated_model_eligible` as the assigned-request denominator, including
-requests blocked before output. Keep actual content exposure separate. Compare
-deduplicated natural completions and user-weighted outcomes with uncertainty
-clustered by user. For retention, join the same assigned users to immutable
-pre-entry billing periods and subscription identities; retain pre-renewal
-cancellations and split pending cancellations, pauses, payment failures and
-annual billing. Missing baseline coverage prevents a renewal-safety conclusion.
-Team seats require a separate shared-subscription analysis and must not be
-counted as independent subscribers. Keep rollout decisions, powered sample-size
-targets, review dates and flag cleanup in HAC-142.
+Repeated requests are clustered by authenticated user, and subscriber comparisons
+use equal follow-up windows and immutable pre-entry billing periods. Report the
+old cohort's crossover boundary when a user enters this trial; the older trial's
+later retention can no longer be treated as exclusive exposure. Team seats share
+a subscription and do not count as independent subscriber observations. The
+historical Pro/Max task-feedback sampler does not cover this trial, so completion
+alone is not evidence of usefulness. Keep sample-size planning, allocation,
+review dates, rollback and cleanup decisions in HAC-142 and PostHog.
 
-Both Vercel and Trigger need the new code deployed before new requests can use
-the flag. Preview and Production require independent runtime-to-PostHog identity
-verification. A passing provider smoke test does not establish the user-facing
-Ask/Agent journey or subscriber retention.
+Preview and Production flags are separate. Deploy Vercel and Trigger independently
+and verify each runtime's PostHog project before activation. Test a benign paid
+Ask and Agent request in Preview, verify step-1 exposure with moderation unchecked,
+and exercise a second generation to confirm the saved baseline. Check rendered
+completion and reload persistence. Flag changes apply only to new requests/runs.
+
+## Shipped moderation-selected paid default
+
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the shipped default.
+All authorized paid Auto, Standard, Pro and Max requests in Ask and Agent that
+qualify under the existing moderation decision use base `abliterated-model` on
+generation step 1. Later steps and provider recovery retain the exact selected
+baseline. Free users, allowance rescue, unsupported original attachments, missing
+provider configuration and requests below the moderation routing threshold retain
+the baseline. Analytics availability does not control this default.
+
+The application no longer evaluates the retired `abliterated_max_moderated_v1`,
+`abliterated_paid_moderated_v1` or continuity flags. Existing PostHog records remain
+historical; their status and percentages do not describe new runtime routing.
+New default routing uses attribution key `abliterated_paid_moderated_default_v1`,
+which is not a feature flag or randomized cohort. Do not pool those observations
+with the retired trial or label an all-treatment default a causal comparison.
+Record Vercel and Trigger rollout boundaries separately, retain old assignments
+for already-running requests, and account for crossover in subscriber follow-up.
+The old Pro/Max feedback sampler does not cover this default or the new trial.
+
+A default-route rollback needs a code revert and separate Vercel/Trigger releases;
+changing a retired flag no longer reroutes requests. Deploy and verify Preview
+and Production independently. Use deterministic moderation fixtures for gates,
+and a disposable paid moderated Agent request to verify actual served step-1
+output, saved baseline continuation, completion and reload persistence. Never
+use customer content as a test fixture. Historical contracts below describe
+retired pilots, not this shipped default.
 
 ## Free-user exclusion
 
