@@ -1,3 +1,4 @@
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -534,7 +535,6 @@ export const createChatHandler = () => {
         selectedModel,
         sandboxFiles,
         platformAuthorized,
-        allowsAbliterationContinuation,
         paidFirstStepVariant,
         moderationChecked,
       } = await processChatMessages({
@@ -578,10 +578,7 @@ export const createChatHandler = () => {
         moderationEligible: platformAuthorized,
         paidFirstStepVariant,
         moderationChecked,
-        allowsAbliterationContinuation,
-        independentAbliterationResponses:
-          fetched.independentAbliterationResponses,
-        messages: processedMessages,
+        messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
         ...(process.env.VERCEL_ENV === "preview" && {
           previewDiagnosticContext: { chatId, requestId },
@@ -1213,7 +1210,8 @@ export const createChatHandler = () => {
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
             const retrySelectionModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -1221,7 +1219,8 @@ export const createChatHandler = () => {
               selectedModelOverride,
             });
             const fallbackModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
@@ -1639,11 +1638,12 @@ export const createChatHandler = () => {
                   ...observation,
                 }),
               abliteratedTelemetry,
-              ...(activeAbliteratedExperiment?.variant === "test" && {
-                abliteratedStepRouting: {
-                  baselineModel: activeAbliteratedExperiment.baselineModel,
-                },
-              }),
+              ...(activeAbliteratedExperiment &&
+                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                  abliteratedStepRouting: {
+                    baselineModel: activeAbliteratedExperiment.baselineModel,
+                  },
+                }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
               },

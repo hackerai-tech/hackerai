@@ -4,6 +4,7 @@ import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-g
 import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "@/lib/experiments/abliterated-model";
 
 const finishPart = {
@@ -602,6 +603,35 @@ describe("Abliteration stream telemetry", () => {
       selection_source: "history",
       moderation_eligible: false,
       independent_history_count: 2,
+    });
+  });
+  it("attributes actual shipped-default output separately from the retired experiment", async () => {
+    const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+      assignment: {
+        key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+        variant: "test",
+        modelKey: "model-abliterated",
+        baselineModel: "model-grok-4.6",
+        selectionSource: "moderation",
+        moderationEligible: true,
+        moderationChecked: true,
+      },
+      messageId: "m",
+      chatId: "c",
+      mode: "agent",
+      subscription: "pro",
+    });
+    expect(events("abliterated_model_exposed")).toHaveLength(0);
+    await consume(
+      telemetry,
+      model([{ type: "text-delta", id: "t", delta: "ok" }, finishPart]),
+    );
+    expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+      experiment_key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+      moderation_checked: true,
+      moderation_eligible: true,
+      generation_step: 1,
+      requested_model: "abliterated-model",
     });
   });
   it("keeps paid first-step exposure distinct from moderation and history", async () => {

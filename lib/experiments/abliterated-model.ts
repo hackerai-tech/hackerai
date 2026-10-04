@@ -1,15 +1,16 @@
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import { phLogger } from "@/lib/posthog/server";
-import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
 import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "./abliteration-keys";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
@@ -18,17 +19,15 @@ import type { ModelName } from "@/lib/ai/providers";
 import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
 import {
   ABLITERATION_MODEL_KEY,
-  ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
-import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 
-export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   key:
     | typeof ABLITERATED_EXPERIMENT_KEY
     | typeof ABLITERATED_MAX_EXPERIMENT_KEY
-    | typeof ABLITERATED_PAID_FIRST_STEP_KEY;
+    | typeof ABLITERATED_PAID_FIRST_STEP_KEY
+    | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -37,33 +36,6 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   moderationChecked?: boolean;
   independentHistoryCount?: number;
 };
-
-const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
-  "model-deepseek-v4-flash-vision-pro",
-  "model-deepseek-v4-pro",
-  "model-deepseek-v4-pro-0813",
-  "model-grok-4.6",
-  "model-grok-4.6-pro",
-]);
-
-export const getAbliterationTreatmentModel = (
-  baselineModel: ModelName,
-  requiresVision = false,
-): ModelName =>
-  !requiresVision && LARGE_V2_BASELINE_MODELS.has(baselineModel)
-    ? ABLITERATION_LARGE_V2_MODEL_KEY
-    : ABLITERATION_MODEL_KEY;
-
-const messagesRequireVision = (messages: UIMessage[]): boolean =>
-  uiMessagesContainImageViewResult(messages) ||
-  messages.some((message) =>
-    message.parts.some(
-      (part) =>
-        part.type === "file" &&
-        typeof part.mediaType === "string" &&
-        part.mediaType.startsWith("image/"),
-    ),
-  );
 
 const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
   messages.some((message) =>
@@ -146,8 +118,6 @@ export async function evaluateAbliteratedModel({
   moderationEligible,
   paidFirstStepVariant,
   moderationChecked = true,
-  allowsAbliterationContinuation = false,
-  independentAbliterationResponses = 0,
   messages,
   limitRescue = false,
   previewDiagnosticContext,
@@ -161,8 +131,6 @@ export async function evaluateAbliteratedModel({
   moderationEligible: boolean;
   paidFirstStepVariant?: "control" | "test";
   moderationChecked?: boolean;
-  allowsAbliterationContinuation?: boolean;
-  independentAbliterationResponses?: number;
   messages: UIMessage[];
   limitRescue?: boolean;
   previewDiagnosticContext?: { chatId: string; requestId: string };
@@ -177,7 +145,7 @@ export async function evaluateAbliteratedModel({
         requestId: previewDiagnosticContext.requestId,
         experiment_key: paidFirstStepVariant
           ? ABLITERATED_PAID_FIRST_STEP_KEY
-          : ABLITERATED_MAX_EXPERIMENT_KEY,
+          : ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
@@ -192,27 +160,19 @@ export async function evaluateAbliteratedModel({
       // Diagnostics must never change assignment or provider behavior.
     }
   };
-  const historyEligible =
-    subscription !== "free" &&
-    allowsAbliterationContinuation &&
-    Number.isInteger(independentAbliterationResponses) &&
-    independentAbliterationResponses >= ABLITERATION_HISTORY_THRESHOLD;
   if (
-    !posthog ||
     !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
       mode,
       selectedModelOverride,
-      moderationEligible:
-        moderationEligible || historyEligible || Boolean(paidFirstStepVariant),
+      moderationEligible: moderationEligible || Boolean(paidFirstStepVariant),
       messages,
       limitRescue,
     })
   ) {
     let reason = "moderation_not_eligible";
-    if (!posthog) reason = "posthog_not_configured";
-    else if (!providerConfigured) reason = "provider_not_configured";
+    if (!providerConfigured) reason = "provider_not_configured";
     else if (subscription === "free") reason = "free_user";
     else if (limitRescue) reason = "limit_rescue";
     else if (!messages.length || messagesContainUnsupportedFiles(messages))
@@ -221,15 +181,15 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  // Both enrolled arms take precedence so controls cannot inherit the older
-  // moderated treatment. Auxiliary calls never enter this primary-call path.
+  // The new trial compares universal first-step use against the shipped
+  // moderation-selected default. Both arms retain the exact later-step baseline.
   if (paidFirstStepVariant) {
     reportDecision("paid_first_step_assigned", paidFirstStepVariant);
     return {
       key: ABLITERATED_PAID_FIRST_STEP_KEY,
       variant: paidFirstStepVariant,
       modelKey:
-        paidFirstStepVariant === "test"
+        paidFirstStepVariant === "test" || moderationEligible
           ? ABLITERATION_MODEL_KEY
           : selectedModel,
       baselineModel: selectedModel,
@@ -239,71 +199,16 @@ export async function evaluateAbliteratedModel({
     };
   }
 
-  const experimentKey = ABLITERATED_EXPERIMENT_KEY;
-  try {
-    // Callers normalize the selector against current entitlements first.
-    // This independent trial never inherits the historical continuity route.
-    // Keep the original key so all paid selectors retain stable assignments.
-    if (moderationEligible) {
-      const trialVariant = await getPostHogFlagWithoutExposure(
-        posthog,
-        ABLITERATED_MAX_EXPERIMENT_KEY,
-        userId,
-        { subscription, subscription_tier: subscription },
-      );
-      if (trialVariant === "test" || trialVariant === "control") {
-        reportDecision("assigned", trialVariant);
-        return {
-          key: ABLITERATED_MAX_EXPERIMENT_KEY,
-          variant: trialVariant,
-          modelKey:
-            trialVariant === "test" ? ABLITERATION_MODEL_KEY : selectedModel,
-          baselineModel: selectedModel,
-          selectionSource: "moderation",
-        };
-      }
-      reportDecision(
-        trialVariant === false
-          ? "flag_inactive_or_unmatched"
-          : "flag_unavailable",
-      );
-    } else if (!moderationEligible) {
-      reportDecision("moderation_not_eligible");
-    }
-    const variant = await getPostHogFlagWithoutExposure(
-      posthog,
-      experimentKey,
-      userId,
-      { subscription, subscription_tier: subscription },
-    );
-    if (variant !== "test" && variant !== "control") return undefined;
-    if (!moderationEligible) {
-      // History is a preference within parent treatment, never an authorization.
-      if (variant !== "test") return undefined;
-      const continuityEnabled = await getPostHogFlagWithoutExposure(
-        posthog,
-        ABLITERATION_CONTINUITY_FLAG,
-        userId,
-        { subscription, subscription_tier: subscription },
-      );
-      if (continuityEnabled !== true) return undefined;
-    }
-    return {
-      selectionSource: moderationEligible ? "moderation" : "history",
-      independentHistoryCount: independentAbliterationResponses,
-      key: experimentKey,
-      variant,
-      modelKey:
-        variant === "test"
-          ? getAbliterationTreatmentModel(
-              selectedModel,
-              messagesRequireVision(messages),
-            )
-          : selectedModel,
-      baselineModel: selectedModel,
-    };
-  } catch {
-    reportDecision("flag_lookup_failed");
-    return undefined;
-  }
+  // A shipped paid default must not depend on analytics availability or retired
+  // experiment/continuity assignments. Unmoderated requests keep their baseline.
+  reportDecision("moderated_default", "test");
+  return {
+    key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+    variant: "test",
+    modelKey: ABLITERATION_MODEL_KEY,
+    baselineModel: selectedModel,
+    selectionSource: "moderation",
+    moderationEligible,
+    moderationChecked,
+  };
 }

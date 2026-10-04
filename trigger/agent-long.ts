@@ -1,3 +1,4 @@
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
@@ -1978,7 +1979,6 @@ export const agentLongTask = task({
         selectedModel,
         sandboxFiles,
         platformAuthorized,
-        allowsAbliterationContinuation,
         paidFirstStepVariant,
         moderationChecked,
       } = await processChatMessages({
@@ -2020,10 +2020,7 @@ export const agentLongTask = task({
         moderationEligible: platformAuthorized,
         paidFirstStepVariant,
         moderationChecked,
-        allowsAbliterationContinuation,
-        independentAbliterationResponses:
-          fetched.independentAbliterationResponses,
-        messages: processedMessages,
+        messages: messagesForProcessing,
         limitRescue: Boolean(limitRescue),
         ...(ctx.environment.type === "PREVIEW" && {
           previewDiagnosticContext: { chatId, requestId: ctx.run.id },
@@ -3032,7 +3029,8 @@ export const agentLongTask = task({
             const providerRecoveryModels: string[] = [];
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
             const retrySelectionModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -3040,7 +3038,8 @@ export const agentLongTask = task({
               selectedModelOverride,
             });
             const fallbackModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
@@ -3612,11 +3611,12 @@ export const agentLongTask = task({
                 },
               },
               abliteratedTelemetry,
-              ...(activeAbliteratedExperiment?.variant === "test" && {
-                abliteratedStepRouting: {
-                  baselineModel: activeAbliteratedExperiment.baselineModel,
-                },
-              }),
+              ...(activeAbliteratedExperiment &&
+                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                  abliteratedStepRouting: {
+                    baselineModel: activeAbliteratedExperiment.baselineModel,
+                  },
+                }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
               },

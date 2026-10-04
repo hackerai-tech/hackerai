@@ -904,6 +904,8 @@ describe("captureAgentCompletionAnalytics", () => {
     ["agent", "abliterated_max_moderated_v1"],
     ["ask", "abliterated_paid_first_step_v2"],
     ["agent", "abliterated_paid_first_step_v2"],
+    ["ask", "abliterated_paid_moderated_default_v1"],
+    ["agent", "abliterated_paid_moderated_default_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {
