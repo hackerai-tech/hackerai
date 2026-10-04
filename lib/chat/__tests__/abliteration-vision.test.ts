@@ -34,6 +34,8 @@ const setup = () => {
   const preprocess = createAbliterationVisionPreprocessor({
     userId: "user",
     chatId: "chat",
+    requestId: "request-1",
+    triggerRunId: "run-1",
     abortSignal: controller.signal,
     onCost,
     describe,
@@ -54,6 +56,12 @@ it("describes every image in a 14-image history with indexed, escaped text", asy
   const original = JSON.stringify(input);
   const output = await preprocess(input);
   expect(describe).toHaveBeenCalledTimes(14);
+  expect(describe).toHaveBeenCalledWith(
+    expect.objectContaining({
+      requestId: "request-1",
+      triggerRunId: "run-1",
+    }),
+  );
   expect(exceedsAbliterationImageLimit(output)).toBe(false);
   expect(JSON.stringify(output)).toContain('index=\\"14\\"');
   expect(JSON.stringify(output)).toContain("OCR &lt;text&gt; &amp; details");

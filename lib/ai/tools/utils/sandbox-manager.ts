@@ -26,6 +26,7 @@ import {
   isMiosaSandbox,
 } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
 
 // One failed initial readiness check plus one failed reconnect is enough to
 // stop terminal retries in this Agent run. The manager only forgets its local
@@ -38,6 +39,7 @@ export class DefaultSandboxManager implements SandboxManager {
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
+  private readonly acquisitionBudget = new CloudAcquisitionBudget();
 
   constructor(
     private userID: string,
@@ -117,9 +119,14 @@ export class DefaultSandboxManager implements SandboxManager {
     }
 
     if (this.acquisition) return this.acquisition;
-    this.acquisition = this.acquireSandbox().finally(() => {
-      this.acquisition = null;
-    });
+    this.acquisition = this.acquisitionBudget
+      .run(() => this.acquireSandbox(), {
+        userId: this.userID,
+        ...this.cloudSandboxContext,
+      })
+      .finally(() => {
+        this.acquisition = null;
+      });
     return this.acquisition;
   }
 

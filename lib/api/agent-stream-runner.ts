@@ -1222,6 +1222,8 @@ export async function createAgentStream(
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
     userId: ctx.userId,
     chatId: ctx.chatId,
+    requestId: ctx.chatLogger?.getRequestId?.(),
+    triggerRunId: ctx.triggerRunId,
     abortSignal,
     onCost: (cost) => {
       ctx.usageTracker.providerCost += cost;

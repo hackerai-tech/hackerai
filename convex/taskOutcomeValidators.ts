@@ -1,6 +1,14 @@
 import { v } from "convex/values";
-import { ABLITERATED_MAX_EXPERIMENT_KEY } from "../lib/experiments/abliteration-keys";
-import { EXPERIMENT_TASK_OUTCOME_PHASE } from "../lib/feedback/task-outcome";
+import {
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+} from "../lib/experiments/abliteration-keys";
+import {
+  EXPERIMENT_TASK_OUTCOME_PHASE,
+  PAID_FIRST_STEP_TASK_OUTCOME_PHASE,
+  PAID_MODERATED_TASK_OUTCOME_PHASE,
+} from "../lib/feedback/task-outcome";
 export const taskOutcomeAnswer = v.union(
   v.literal("solved"),
   v.literal("helpful"),
@@ -30,16 +38,26 @@ export const taskOutcomeContext = {
 export const experimentTaskOutcomeContext = {
   ...taskOutcomeContext,
   survey_kind: v.literal("current_experiment"),
-  experiment_key: v.literal(ABLITERATED_MAX_EXPERIMENT_KEY),
+  experiment_key: v.union(
+    v.literal(ABLITERATED_MAX_EXPERIMENT_KEY),
+    v.literal(ABLITERATED_PAID_FIRST_STEP_KEY),
+    v.literal(ABLITERATED_PAID_MODERATED_DEFAULT_KEY),
+  ),
   experiment_variant: v.union(v.literal("control"), v.literal("test")),
   experiment_request_id: v.string(),
   selected_model_override: v.union(
+    v.literal("auto"),
+    v.literal("hackerai-standard"),
     v.literal("hackerai-pro"),
     v.literal("hackerai-max"),
   ),
   assigned_model: v.string(),
   baseline_model: v.string(),
-  feedback_phase: v.literal(EXPERIMENT_TASK_OUTCOME_PHASE),
+  feedback_phase: v.union(
+    v.literal(EXPERIMENT_TASK_OUTCOME_PHASE),
+    v.literal(PAID_FIRST_STEP_TASK_OUTCOME_PHASE),
+    v.literal(PAID_MODERATED_TASK_OUTCOME_PHASE),
+  ),
 };
 export const taskOutcomeFields = {
   ...taskOutcomeContext,

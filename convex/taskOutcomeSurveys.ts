@@ -15,7 +15,12 @@ import {
   TASK_OUTCOME_COOLDOWN_MS,
   TASK_OUTCOME_EXPIRY_MS,
   reasonsForAnswer,
+  experimentTaskOutcomePhase,
 } from "../lib/feedback/task-outcome";
+import {
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+} from "../lib/experiments/abliteration-keys";
 
 // One transaction owns request deduplication and the cooldown across cohorts.
 async function canReserve(
@@ -59,6 +64,13 @@ export const reserveExperiment = mutation({
     // gates. Team participation is per authenticated member, never per payer.
     if (
       !["pro", "pro-plus", "ultra", "team"].includes(args.subscription_tier) ||
+      experimentTaskOutcomePhase(args.experiment_key) !== args.feedback_phase ||
+      (args.experiment_key === ABLITERATED_MAX_EXPERIMENT_KEY &&
+        !["hackerai-pro", "hackerai-max"].includes(
+          args.selected_model_override,
+        )) ||
+      (args.experiment_key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY &&
+        args.experiment_variant !== "test") ||
       args.experiment_request_id !== args.request_id ||
       args.message_id !== args.request_id
     )

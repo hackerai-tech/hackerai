@@ -176,6 +176,79 @@ describe.each(["default", "hybrid"] as const)(
       expect(acquire.mock.calls[0][0].context?.provider).toBe("e2b");
     });
 
+    it("stops sequential and concurrent tools after two failed acquisitions, including resets", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      acquire.mockRejectedValue(new Error("upstream unavailable"));
+      const manager = createManager();
+      try {
+        for (let i = 0; i < 2; i++) {
+          const outcomes = await Promise.allSettled(
+            Array.from({ length: 6 }, () => manager.getSandbox()),
+          );
+          expect(
+            outcomes.every((outcome) => outcome.status === "rejected"),
+          ).toBe(true);
+          await manager.resetSandbox();
+          manager.resetHealthFailures();
+        }
+        for (let i = 0; i < 4; i++) {
+          await expect(manager.getSandbox()).rejects.toThrow(
+            "rest of this request",
+          );
+        }
+        expect(acquire).toHaveBeenCalledTimes(2);
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({
+          event: "cloud_sandbox_acquisition_budget_exhausted",
+          failed_acquisitions: 2,
+          reason: "failure_count",
+        });
+        // A different run can try again without deleting the user's workspace.
+        acquire.mockResolvedValue({ sandbox: miosa, provider: "miosa" });
+        await expect(createManager().getSandbox()).resolves.toEqual({
+          sandbox: miosa,
+        });
+      } finally {
+        warning.mockRestore();
+      }
+    });
+
+    it("does not restart a full connect budget after a long failed acquisition", async () => {
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const now = jest.spyOn(Date, "now").mockReturnValue(0);
+      acquire.mockImplementationOnce(async () => {
+        now.mockReturnValue(181_000);
+        throw new Error("504");
+      });
+      try {
+        const manager = createManager();
+        await expect(manager.getSandbox()).rejects.toThrow("504");
+        await expect(manager.getSandbox()).rejects.toThrow(
+          "rest of this request",
+        );
+        expect(acquire).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(warning.mock.calls[0][0])).toMatchObject({
+          failed_acquisition_wait_ms: 181_000,
+          reason: "failed_wait",
+        });
+      } finally {
+        now.mockRestore();
+        warning.mockRestore();
+      }
+    });
+
+    it("replenishes the failure budget only after successful acquisition", async () => {
+      const manager = createManager();
+      for (let cycle = 0; cycle < 3; cycle++) {
+        acquire.mockRejectedValueOnce(new Error("temporary"));
+        await expect(manager.getSandbox()).rejects.toThrow("temporary");
+        acquire.mockResolvedValueOnce({ sandbox: miosa, provider: "miosa" });
+        await expect(manager.getSandbox()).resolves.toEqual({ sandbox: miosa });
+        await manager.resetSandbox();
+      }
+      expect(acquire).toHaveBeenCalledTimes(6);
+    });
+
     it("clears a rejected acquisition so a later request can retry", async () => {
       const error = new Error("both providers unavailable");
       acquire

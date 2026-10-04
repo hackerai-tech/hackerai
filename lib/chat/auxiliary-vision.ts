@@ -305,6 +305,11 @@ export async function describeImageWithAuxiliaryVision({
         model: AUXILIARY_VISION_SLUG,
         media_type: mediaType,
         duration_ms: Date.now() - startedAt,
+        failure_reason: abortSignal?.aborted
+          ? "caller_aborted"
+          : timeoutController.signal.aborted
+            ? "timeout"
+            : "provider_error",
         error_name: error instanceof Error ? error.name : "UnknownError",
       }),
     );

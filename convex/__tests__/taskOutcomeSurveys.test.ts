@@ -264,6 +264,94 @@ describe("current experiment reservation", () => {
   };
   beforeEach(() => jest.spyOn(Date, "now").mockReturnValue(1_800_000_000_000));
   afterEach(() => jest.restoreAllMocks());
+  it.each([
+    [
+      "abliterated_paid_first_step_v2",
+      "abliterated_paid_first_step_feedback_v2",
+      "control",
+    ],
+    [
+      "abliterated_paid_first_step_v2",
+      "abliterated_paid_first_step_feedback_v2",
+      "test",
+    ],
+    [
+      "abliterated_paid_moderated_default_v1",
+      "abliterated_paid_moderated_default_feedback_v1",
+      "test",
+    ],
+  ])(
+    "reserves and answers new phase %s/%s/%s without rewriting old invitations",
+    async (key, phase, variant) => {
+      const { ctx, rows } = setup();
+      const old = await invoke(reserveExperiment, ctx, experimentArgs);
+      const next = {
+        ...experimentArgs,
+        request_id: "new",
+        message_id: "new",
+        experiment_request_id: "new",
+        experiment_key: key,
+        feedback_phase: phase,
+        experiment_variant: variant,
+        selected_model_override: "hackerai-standard",
+      };
+      expect(await invoke(reserveExperiment, ctx, next)).toBeNull();
+      jest
+        .mocked(Date.now)
+        .mockReturnValue(Date.now() + TASK_OUTCOME_COOLDOWN_MS + 1);
+      const current = await invoke(reserveExperiment, ctx, next);
+      expect(current).toMatchObject({
+        experiment_key: key,
+        feedback_phase: phase,
+      });
+      await invoke(record, ctx, { id: current._id, action: "shown" });
+      await invoke(record, ctx, { id: current._id, action: "viewed" });
+      await invoke(record, ctx, {
+        id: current._id,
+        action: "answered",
+        answer: "solved",
+      });
+      expect(rows[1]).toMatchObject({
+        answer: "solved",
+        experiment_key: key,
+        experiment_variant: variant,
+      });
+      expect(rows[0]).toEqual(old);
+      expect(
+        await invoke(getForMessage, ctx, {
+          chat_id: "chat-1",
+          message_id: "new",
+        }),
+      ).toBeNull();
+      jest
+        .mocked(Date.now)
+        .mockReturnValue(Date.now() + TASK_OUTCOME_COOLDOWN_MS + 1);
+      expect(
+        await invoke(reserveExperiment, ctx, {
+          ...next,
+          request_id: "again",
+          message_id: "again",
+          experiment_request_id: "again",
+        }),
+      ).toBeNull();
+    },
+  );
+  it.each([
+    { experiment_key: "abliterated_paid_first_step_v2" },
+    { feedback_phase: "abliterated_paid_first_step_feedback_v2" },
+    { selected_model_override: "hackerai-standard" },
+    {
+      experiment_key: "abliterated_paid_moderated_default_v1",
+      feedback_phase: "abliterated_paid_moderated_default_feedback_v1",
+      experiment_variant: "control",
+    },
+  ])("rejects cross-phase and invalid cohort context", async (patch) => {
+    const { ctx, rows } = setup();
+    expect(
+      await invoke(reserveExperiment, ctx, { ...experimentArgs, ...patch }),
+    ).toBeNull();
+    expect(rows).toEqual([]);
+  });
   it.each(["control", "test"])(
     "reserves %s without first-week payment evidence",
     async (experiment_variant) => {
