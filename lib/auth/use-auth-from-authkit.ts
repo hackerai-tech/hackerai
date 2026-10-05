@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useMemo,
+  useState,
+} from "react";
 import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { CrossTabMutex } from "@/lib/auth/cross-tab-mutex";
 import {
@@ -65,7 +72,9 @@ export function useAuthFromAuthKit(
   const hasResolvedOrgRef = useRef(false);
   const authContext = JSON.stringify([user?.id, sessionId, organizationId]);
   const authContextRef = useRef(authContext);
-  authContextRef.current = authContext;
+  useLayoutEffect(() => {
+    authContextRef.current = authContext;
+  }, [authContext]);
   const [recovery, setRecovery] = useState<{
     context: string;
     failedToken: string | undefined;
@@ -157,8 +166,8 @@ export function useAuthFromAuthKit(
 
   // A token-store refresh alone does not restart Convex after it has cleared
   // auth: AuthKit's getAccessToken/refresh callbacks have stable identities.
-  // Keep transient failures in loading state, then leave that state only after
-  // a usable token or a successful session check. The loading transition makes
+  // Keep transient failures in loading state until a usable token returns (or
+  // the session check clears the user). The loading transition makes
   // ConvexProviderWithAuth register auth again without rotating every token.
   useEffect(() => {
     if (!isRecovering) return;
@@ -183,10 +192,10 @@ export function useAuthFromAuthKit(
         // AuthKit checks JWT expiry and deduplicates concurrent wake refreshes.
         const token = await getAccessToken();
         if (cancelled || authContextRef.current !== recovery?.context) return;
-        const recoveryFailed = !token && (await reconcileMissingToken());
+        if (!token) await reconcileMissingToken();
         if (cancelled || authContextRef.current !== recovery?.context) return;
-        if (!recoveryFailed) {
-          accessTokenRef.current = token ?? undefined;
+        if (token) {
+          accessTokenRef.current = token;
           lastRefreshErrorAt.current = 0;
           setRecovery(null);
           return;

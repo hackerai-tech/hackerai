@@ -296,4 +296,21 @@ describe("auth recovery through ConvexProviderWithAuth", () => {
     });
     expect(fallback).toBe("new-account-token");
   });
+
+  it("keeps recovering when the session is valid but the token is still missing", async () => {
+    const view = await act(async () => render(renderApp()));
+    await loseConnection();
+    offline = false;
+    getAccessToken.mockResolvedValue(undefined);
+    // refreshAuth succeeds but preserves the same user. This does not prove
+    // that the independent token store has recovered yet.
+    await act(async () => jest.advanceTimersByTimeAsync(10_000));
+    expect(refreshAuth).toHaveBeenCalled();
+    expect(observations.at(-1)?.isLoading).toBe(true);
+    expect(screen.queryByText("Signed out")).not.toBeInTheDocument();
+    token = "eventually-recovered-token";
+    getAccessToken.mockResolvedValue(token);
+    await act(async () => view.rerender(renderApp()));
+    expect(observations.at(-1)?.isAuthenticated).toBe(true);
+  });
 });
