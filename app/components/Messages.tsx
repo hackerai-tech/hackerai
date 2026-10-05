@@ -1,4 +1,5 @@
 import { TaskOutcomeFeedback } from "./TaskOutcomeFeedback";
+import { AcquisitionSurvey } from "./AcquisitionSurvey";
 import {
   useState,
   useEffect,
@@ -192,6 +193,7 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
 };
 
 interface MessagesProps {
+  acquisitionSurvey?: { messageId: string; mode: "ask" | "agent" };
   chatId: string;
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
@@ -234,6 +236,7 @@ interface MessagesProps {
 }
 
 export const Messages = ({
+  acquisitionSurvey,
   chatId,
   messages,
   setMessages,
@@ -816,6 +819,14 @@ export const Messages = ({
                   messageId={row.message.id}
                 />
               )}
+            {acquisitionSurvey?.messageId === row.message.id &&
+              status === "ready" &&
+              !isAutoResuming && (
+                <AcquisitionSurvey
+                  key={`use-case:${row.message.id}`}
+                  activationMode={acquisitionSurvey.mode}
+                />
+              )}
           </>
         );
       }
@@ -837,6 +848,7 @@ export const Messages = ({
       );
     },
     [
+      acquisitionSurvey,
       agentRunSpendCapWarning,
       branchBoundaryIndex,
       branchedFromChatId,

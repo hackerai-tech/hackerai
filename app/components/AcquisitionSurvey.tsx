@@ -1,212 +1,301 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
-
-import { Button } from "@/components/ui/button";
 import {
-  ACQUISITION_SURVEY_ID,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { v5 as uuidv5 } from "uuid";
+import { X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useGlobalState } from "../contexts/GlobalState";
+import {
   ACQUISITION_SURVEY_STORAGE_KEY,
   ACQUISITION_SURVEY_VERSION,
-  FIRST_HEARD_OPTIONS,
-  MAIN_REASON_OPTIONS,
-  type FirstHeardAnswer,
-  type MainReasonAnswer,
+  USE_CASE_SURVEY_STORAGE_KEY,
+  USE_CASE_QUESTION,
+  USE_CASE_OPTIONS,
+  isNewSurveyUser,
+  useCaseSurveySchema,
+  type UseCaseAnswer,
+  type UseCaseSurvey,
   type SurveyActivationMode,
 } from "@/lib/analytics/acquisition-survey";
-import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureQueuedAuthenticatedEvent,
+  getIdentifiedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
+} from "@/lib/analytics/client";
 
-type SurveyState = "idle" | "visible" | "complete";
-
-function hasCompletedSurveyInStorage() {
+const completedInSession = new Set<string>();
+const storageKey = (userId: string) =>
+  `${USE_CASE_SURVEY_STORAGE_KEY}:${userId}`;
+function hasSeenSurvey(userId: string) {
+  if (completedInSession.has(userId)) return true;
   try {
-    return Boolean(window.localStorage.getItem(ACQUISITION_SURVEY_STORAGE_KEY));
+    return Boolean(
+      window.localStorage.getItem(storageKey(userId)) ||
+      window.localStorage.getItem(ACQUISITION_SURVEY_STORAGE_KEY),
+    );
   } catch {
     return false;
   }
 }
-
-function storeSurveyCompletion(value: "dismissed" | "submitted") {
+function rememberSurvey(userId: string, value: string) {
+  completedInSession.add(userId);
   try {
-    window.localStorage.setItem(ACQUISITION_SURVEY_STORAGE_KEY, value);
+    window.localStorage.setItem(storageKey(userId), value);
   } catch {
-    // Storage may be blocked or full; the survey should still close and record.
+    // Browser-local suppression remains best effort when storage is blocked.
   }
 }
 
+/** PostHog owns definitions/responses. The app owns the safe display moment. */
 export function AcquisitionSurvey({
-  eligible,
   activationMode,
 }: {
-  eligible: boolean;
   activationMode: SurveyActivationMode;
 }) {
-  const [state, setState] = useState<SurveyState>("idle");
-  const hasCheckedAvailabilityRef = useRef(false);
-  const [firstHeard, setFirstHeard] = useState<FirstHeardAnswer | "">("");
-  const [mainReason, setMainReason] = useState<MainReasonAnswer | "">("");
+  const { user, organizationId } = useAuth();
+  const { subscription } = useGlobalState();
+  const analyticsUserId = useSyncExternalStore(
+    subscribeAuthenticatedAnalytics,
+    getIdentifiedAnalyticsUserId,
+    () => null,
+  );
+  const userId = user?.id;
+  const eligible = Boolean(
+    userId &&
+    analyticsUserId === userId &&
+    !organizationId &&
+    subscription === "free" &&
+    user?.createdAt &&
+    isNewSurveyUser(user.createdAt),
+  );
+  if (!eligible || !userId) return null;
+  return (
+    <AvailableAcquisitionSurvey
+      key={userId}
+      userId={userId}
+      activationMode={activationMode}
+    />
+  );
+}
 
+function AvailableAcquisitionSurvey({
+  userId,
+  activationMode,
+}: {
+  userId: string;
+  activationMode: SurveyActivationMode;
+}) {
+  const [survey, setSurvey] = useState<UseCaseSurvey | null>(null);
   useEffect(() => {
-    if (!eligible || hasCheckedAvailabilityRef.current) return;
-    hasCheckedAvailabilityRef.current = true;
-    if (hasCompletedSurveyInStorage()) {
-      return;
-    }
-
+    if (hasSeenSurvey(userId)) return;
     const controller = new AbortController();
+    // A fetch or SDK callback must never keep a stale invitation alive after
+    // navigation, a new run, identity change, or consent withdrawal.
     void fetch("/api/experiments/acquisition-survey", {
       cache: "no-store",
       signal: controller.signal,
     })
       .then(async (response) => {
-        if (!response.ok) return false;
-        const body = (await response.json()) as { available?: unknown };
-        return body.available === true;
-      })
-      .then((available) => {
-        if (!available) {
-          setState("complete");
+        if (!response.ok || controller.signal.aborted) return;
+        const body = await response.json();
+        const parsed = useCaseSurveySchema.safeParse(body.survey);
+        if (
+          controller.signal.aborted ||
+          body.available !== true ||
+          !parsed.success ||
+          getIdentifiedAnalyticsUserId() !== userId ||
+          hasSeenSurvey(userId)
+        )
           return;
-        }
-        setState("visible");
-        captureQueuedAuthenticatedEvent({
-          event: "acquisition_survey_shown",
-          dedupeKey: ACQUISITION_SURVEY_ID,
-          properties: {
-            survey_id: ACQUISITION_SURVEY_ID,
-            survey_version: ACQUISITION_SURVEY_VERSION,
-            activation_mode: activationMode,
-          },
-        });
+        setSurvey(parsed.data);
       })
-      .catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
-          setState("complete");
-        }
+      .catch(() => {
+        /* Research must never interrupt chat. */
       });
-
     return () => controller.abort();
-  }, [activationMode, eligible]);
+  }, [userId]);
+  return survey ? (
+    <AcquisitionSurveyPrompt
+      survey={survey}
+      userId={userId}
+      activationMode={activationMode}
+    />
+  ) : null;
+}
 
-  const dismiss = () => {
-    storeSurveyCompletion("dismissed");
-    setState("complete");
-    captureQueuedAuthenticatedEvent({
-      event: "acquisition_survey_dismissed",
-      dedupeKey: ACQUISITION_SURVEY_ID,
-      properties: {
-        survey_id: ACQUISITION_SURVEY_ID,
-        survey_version: ACQUISITION_SURVEY_VERSION,
-        activation_mode: activationMode,
-      },
-    });
-  };
-
-  const submit = () => {
-    if (!firstHeard || !mainReason) return;
-    const answeredAt = new Date().toISOString();
-    storeSurveyCompletion("submitted");
-    setState("complete");
-    captureQueuedAuthenticatedEvent({
-      event: "acquisition_survey_submitted",
-      dedupeKey: ACQUISITION_SURVEY_ID,
-      properties: {
-        survey_id: ACQUISITION_SURVEY_ID,
-        survey_version: ACQUISITION_SURVEY_VERSION,
-        activation_mode: activationMode,
-        answer_source: "post_activation_survey",
-        first_heard_source: firstHeard,
-        main_reason: mainReason,
-        $set_once: {
-          acquisition_survey_first_heard: firstHeard,
-          acquisition_survey_main_reason: mainReason,
-          acquisition_survey_answered_at: answeredAt,
-          acquisition_survey_version: ACQUISITION_SURVEY_VERSION,
+export function AcquisitionSurveyPrompt({
+  survey,
+  userId,
+  activationMode,
+}: {
+  survey: UseCaseSurvey;
+  userId: string;
+  activationMode: SurveyActivationMode;
+}) {
+  const card = useRef<HTMLElement>(null);
+  const shown = useRef(false);
+  const completed = useRef(false);
+  const [state, setState] = useState<"visible" | "answered" | "dismissed">(
+    "visible",
+  );
+  const [captureFailed, setCaptureFailed] = useState(false);
+  const submissionId = uuidv5(`${userId}:${survey.id}`, uuidv5.URL);
+  const capture = useCallback(
+    (
+      event: "survey shown" | "survey sent" | "survey dismissed",
+      answer?: UseCaseAnswer,
+    ) => {
+      if (getIdentifiedAnalyticsUserId() !== userId) return false;
+      const label = USE_CASE_OPTIONS.find(
+        (option) => option.value === answer,
+      )?.label;
+      return captureQueuedAuthenticatedEvent({
+        event,
+        dedupeKey: survey.id,
+        properties: {
+          $survey_id: survey.id,
+          $survey_submission_id: submissionId,
+          $survey_questions: [
+            { id: survey.questionId, question: USE_CASE_QUESTION },
+          ],
+          survey_version: ACQUISITION_SURVEY_VERSION,
+          activation_mode: activationMode,
+          ...(answer && {
+            $survey_completed: true,
+            [`$survey_response_${survey.questionId}`]: label,
+            use_case: answer,
+          }),
+          ...(event !== "survey shown" && {
+            $set_once: {
+              marketing_use_case_survey_completed_v2: true,
+              [answer
+                ? `$survey_responded/${survey.id}`
+                : `$survey_dismissed/${survey.id}`]: true,
+              ...(answer && { marketing_use_case_v2: answer }),
+            },
+          }),
         },
+      });
+    },
+    [activationMode, submissionId, survey.id, survey.questionId, userId],
+  );
+
+  useEffect(() => {
+    if (!card.current || typeof IntersectionObserver === "undefined") return;
+    let inView = false;
+    const view = () => {
+      if (shown.current || !inView || document.visibilityState !== "visible")
+        return;
+      if (capture("survey shown")) {
+        shown.current = true;
+        rememberSurvey(userId, "shown");
+      }
+    };
+    const observer = new IntersectionObserver(
+      (entries) => {
+        inView = entries.some(
+          (entry) => entry.isIntersecting && entry.intersectionRatio >= 0.5,
+        );
+        view();
       },
-    });
+      { threshold: 0.5 },
+    );
+    observer.observe(card.current);
+    document.addEventListener("visibilitychange", view);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === storageKey(userId) && event.newValue) {
+        completed.current = true;
+        setState("dismissed");
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", view);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [capture, userId]);
+
+  const finish = (answer?: UseCaseAnswer) => {
+    if (completed.current) return;
+    // A keyboard interaction also proves actual exposure, even before the
+    // observer's callback. Never count a submission without a shown event.
+    if (!shown.current) {
+      if (!capture("survey shown")) {
+        setCaptureFailed(true);
+        return;
+      }
+      shown.current = true;
+    }
+    if (!capture(answer ? "survey sent" : "survey dismissed", answer)) {
+      setCaptureFailed(true);
+      return;
+    }
+    completed.current = true;
+    rememberSurvey(userId, answer ? "answered" : "dismissed");
+    setState(answer ? "answered" : "dismissed");
   };
-
-  if (state !== "visible") return null;
-
+  if (state === "dismissed") return null;
+  if (state === "answered")
+    return (
+      <p role="status" className="mt-4 text-sm text-muted-foreground">
+        Thanks for sharing.
+      </p>
+    );
   return (
     <aside
-      className="fixed right-4 bottom-24 z-40 w-[calc(100%-2rem)] max-w-sm rounded-lg border border-border bg-background p-5 shadow-xl"
-      aria-labelledby="acquisition-survey-title"
+      ref={card}
+      aria-label="Optional use case survey"
+      className="mt-4 rounded-xl border border-border/70 bg-muted/20 p-4"
     >
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 id="acquisition-survey-title" className="font-semibold">
-            Help us improve discovery
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Two quick questions about how you found HackerAI.
+          <p className="text-sm font-medium">{USE_CASE_QUESTION}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Optional · Help us make better guides and examples.
           </p>
         </div>
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="size-8 shrink-0"
-          onClick={dismiss}
+          className="size-7 shrink-0"
+          onClick={() => finish()}
           aria-label="Dismiss survey"
         >
           <X className="size-4" />
         </Button>
       </div>
-
-      <div className="mt-5 space-y-4">
-        <label className="block text-sm font-medium" htmlFor="first-heard">
-          Where did you first hear about HackerAI?
-        </label>
-        <select
-          id="first-heard"
-          value={firstHeard}
-          onChange={(event) =>
-            setFirstHeard(event.target.value as FirstHeardAnswer)
-          }
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-        >
-          <option value="" disabled>
-            Select one
-          </option>
-          {FIRST_HEARD_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-
-        <label className="block text-sm font-medium" htmlFor="main-reason">
-          What was your main reason for trying it?
-        </label>
-        <select
-          id="main-reason"
-          value={mainReason}
-          onChange={(event) =>
-            setMainReason(event.target.value as MainReasonAnswer)
-          }
-          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-        >
-          <option value="" disabled>
-            Select one
-          </option>
-          {MAIN_REASON_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <Button
-        type="button"
-        className="mt-5 w-full"
-        disabled={!firstHeard || !mainReason}
-        onClick={submit}
+      <div
+        role="group"
+        aria-label={USE_CASE_QUESTION}
+        className="mt-3 flex flex-wrap gap-2"
       >
-        Submit
-      </Button>
+        {USE_CASE_OPTIONS.map(({ value, label }) => (
+          <Button
+            key={value}
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-auto min-h-9 max-w-full whitespace-normal text-left"
+            onClick={() => finish(value)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      {captureFailed && (
+        <p role="status" className="mt-2 text-xs text-muted-foreground">
+          Couldn’t record your response. Please try again.
+        </p>
+      )}
     </aside>
   );
 }

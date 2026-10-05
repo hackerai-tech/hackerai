@@ -63,7 +63,15 @@ let mockChatHandlerArgs: Parameters<
   typeof import("@/app/hooks/useChatHandlers").useChatHandlers
 >[0];
 let mockRestoredChat:
-  { id: string; sandbox_type?: string; default_model_slug: string } | undefined;
+  | {
+      id: string;
+      sandbox_type?: string;
+      default_model_slug: string;
+      finish_reason?: string;
+      active_stream_id?: string;
+      active_trigger_run_id?: string;
+    }
+  | undefined;
 let mockDesktopState: Partial<
   ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
 > = {};
@@ -230,8 +238,13 @@ jest.mock("../MemoizedMarkdown", () => ({
 }));
 
 jest.mock("../Messages", () => ({
-  Messages: ({ messages }: any) => (
-    <div data-testid="messages-component">{messages.length} messages</div>
+  Messages: ({ messages, acquisitionSurvey }: any) => (
+    <div
+      data-testid="messages-component"
+      data-survey-message={acquisitionSurvey?.messageId}
+    >
+      {messages.length} messages
+    </div>
   ),
 }));
 
@@ -847,6 +860,120 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("arms the inline survey for a fresh completed response, hides during the next run, and ignores history", () => {
+      mockRouteParams = { id: "survey-chat" };
+      mockRestoredChat = {
+        id: "survey-chat",
+        default_model_slug: "ask",
+        finish_reason: "stop",
+      };
+      const userMessage = {
+        id: "survey-question",
+        role: "user",
+        parts: [{ type: "text", text: "Explain HTTP" }],
+      };
+      const assistantMessage = {
+        id: "survey-answer",
+        role: "assistant",
+        parts: [{ type: "text", text: "HTTP is a protocol." }],
+      };
+      const update = (status: string, messages: unknown[]) =>
+        mockUseChat.mockReturnValue({
+          messages,
+          status,
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        });
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      update("ready", [userMessage, assistantMessage]);
+      const { rerender } = render(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+      update("submitted", [userMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+      update("ready", [userMessage, assistantMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).toHaveAttribute(
+        "data-survey-message",
+        "survey-answer",
+      );
+      update("streaming", [userMessage, assistantMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+    });
+
+    it.each(["abort", "error", "length", "active-run", "no-text"])(
+      "does not offer research after %s",
+      (outcome) => {
+        mockRouteParams = { id: "survey-chat" };
+        mockRestoredChat = {
+          id: "survey-chat",
+          default_model_slug: "agent",
+          finish_reason: "stop",
+        };
+        const userMessage = {
+          id: "survey-question",
+          role: "user",
+          parts: [{ type: "text", text: "Explain HTTP" }],
+        };
+        const chatHelpers = {
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        };
+        mockUseChat.mockReturnValue({
+          ...chatHelpers,
+          status: "submitted",
+          messages: [userMessage],
+        });
+        const view = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>
+        );
+        const { rerender } = render(view());
+        if (outcome === "active-run")
+          mockRestoredChat.active_trigger_run_id = "running";
+        else if (outcome !== "no-text")
+          mockRestoredChat.finish_reason = outcome;
+        mockUseChat.mockReturnValue({
+          ...chatHelpers,
+          status: "ready",
+          messages: [
+            userMessage,
+            {
+              id: "survey-answer",
+              role: "assistant",
+              parts:
+                outcome === "no-text"
+                  ? [{ type: "reasoning", text: "Thinking" }]
+                  : [{ type: "text", text: "Partial output" }],
+            },
+          ],
+        });
+        rerender(view());
+        expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+          "data-survey-message",
+        );
+      },
+    );
     it("waits for restored preferences before auto-sending a fork loaded after its draft", async () => {
       mockRouteParams = { id: "late-fork" };
       mockLocalConnections = [];

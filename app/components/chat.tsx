@@ -117,7 +117,6 @@ import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
 
 import { HackingSuggestions } from "./HackingSuggestions";
-import { AcquisitionSurvey } from "./AcquisitionSurvey";
 
 const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
@@ -2287,22 +2286,39 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     ?.branched_from_title;
   const [surveyActivation, setSurveyActivation] = useState<{
     chatId: string;
+    userMessageId: string;
     mode: "ask" | "agent";
   } | null>(null);
   useEffect(() => {
-    if (status !== "submitted" && status !== "streaming") return;
+    // Only a new submission arms the survey. Mounting/reconnecting an old
+    // streaming response must not be treated as a fresh activation.
+    const submittedMessage = messages.at(-1);
+    if (
+      status !== "submitted" ||
+      submittedMessage?.role !== "user" ||
+      submittedMessage.metadata?.isAutoContinue
+    )
+      return;
     setSurveyActivation({
       chatId,
+      userMessageId: submittedMessage.id,
       mode: chatMode === "agent" ? "agent" : "ask",
     });
-  }, [chatId, chatMode, status]);
+  }, [chatId, chatMode, messages, status]);
   const lastMessage = messages.at(-1);
   const acquisitionSurveyEligible =
     surveyActivation?.chatId === chatId &&
     status === "ready" &&
+    !hasManuallyStoppedRef.current &&
+    !error &&
+    !chatDataForCurrentChat?.active_stream_id &&
+    !chatDataForCurrentChat?.active_trigger_run_id &&
+    chatDataForCurrentChat?.finish_reason === "stop" &&
     lastMessage?.role === "assistant" &&
-    hasVisibleAssistantContent([lastMessage]) &&
-    messages.some((message) => message.role === "user");
+    lastMessage.parts.some(
+      (part) => part.type === "text" && part.text.trim().length > 0,
+    ) &&
+    messages.some((message) => message.id === surveyActivation.userMessageId);
   const currentAgentRunUiId =
     agentLongRunId ??
     activeTriggerRunId ??
@@ -2351,10 +2367,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         isExistingChat={isExistingChat}
         messageCount={messages.length}
         onSubmit={handleSubmit}
-      />
-      <AcquisitionSurvey
-        eligible={acquisitionSurveyEligible}
-        activationMode={surveyActivation?.mode ?? "ask"}
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
@@ -2411,6 +2423,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       scrollRef={scrollRef}
                       contentRef={contentRef}
                       messages={messages}
+                      acquisitionSurvey={
+                        acquisitionSurveyEligible && lastMessage
+                          ? {
+                              messageId: lastMessage.id,
+                              mode: surveyActivation!.mode,
+                            }
+                          : undefined
+                      }
                       setMessages={setMessages}
                       onRegenerate={handleRegenerate}
                       onRetry={handleRetry}
