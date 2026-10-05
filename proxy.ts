@@ -1,7 +1,10 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
-import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
+import {
+  isEndedSessionRefreshError,
+  isInvalidRefreshTokenError,
+} from "@/lib/auth/expected-auth-errors";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
@@ -358,6 +361,16 @@ export default async function proxy(request: NextRequest) {
       redirectUri: getRedirectUri(),
       eagerAuth: true,
       onSessionRefreshError: ({ error }) => {
+        if (isInvalidRefreshTokenError(error)) {
+          refreshEndedSession = true;
+          console.warn(
+            JSON.stringify({
+              event: "auth.invalid_refresh_token",
+              boundary: "proxy",
+            }),
+          );
+          return;
+        }
         if (isEndedSessionRefreshError(error)) {
           refreshEndedSession = true;
           console.info(
@@ -405,6 +418,15 @@ export default async function proxy(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (isInvalidRefreshTokenError(error)) {
+      console.warn(
+        JSON.stringify({
+          event: "auth.invalid_refresh_token",
+          boundary: "proxy",
+        }),
+      );
+      return buildEndedSessionResponse(request, pathname);
+    }
     if (isEndedSessionRefreshError(error)) {
       return buildEndedSessionResponse(request, pathname);
     }

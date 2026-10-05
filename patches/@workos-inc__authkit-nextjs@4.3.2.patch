@@ -1,8 +1,8 @@
 diff --git a/dist/esm/actions.js b/dist/esm/actions.js
-index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1fa911dfb 100644
+index 48babd8e1868c58577252b8a27660fcb73e7ef98..80a909ee25938b8d8f7f8741af2b96b01a3e1fd4 100644
 --- a/dist/esm/actions.js
 +++ b/dist/esm/actions.js
-@@ -13,6 +13,56 @@ function sanitize(value) {
+@@ -13,6 +13,75 @@ function sanitize(value) {
      const { accessToken, ...sanitized } = value;
      return sanitized;
  }
@@ -39,10 +39,25 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
 +    return errorText.includes('invalid_grant') && (errorText.includes('session has already ended') ||
 +        errorText.includes('session ended due to inactivity'));
 +};
++const isInvalidRefreshTokenError = (value) => {
++    if (!value || typeof value !== "object")
++        return false;
++    const record = value;
++    if (record.name === "TokenRefreshError" && record.isTransient !== false) {
++        return false;
++    }
++    const cause = record.name === "TokenRefreshError" ? record.cause : record;
++    if (!cause || typeof cause !== "object")
++        return false;
++    const provider = cause;
++    return (provider.status === 400 &&
++        provider.error === "invalid_grant" &&
++        provider.errorDescription === "Invalid refresh token.");
++};
 +/**
 + * Client-invoked server actions run after middleware, so a session can end
 + * between the middleware check and the action's refresh. Treat only WorkOS's
-+ * exact ended-session response as signed out; all other auth errors still fail
++ * exact ended-session or terminal invalid-refresh-token response as signed out; all other auth errors still fail
 + * visibly so configuration, provider, and authorization defects are not hidden.
 + */
 +async function recoverEndedSession(loadAuth, fallback) {
@@ -50,6 +65,10 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
 +        return await loadAuth();
 +    }
 +    catch (error) {
++        if (isInvalidRefreshTokenError(error)) {
++            console.warn(JSON.stringify({ event: 'auth.invalid_refresh_token', boundary: 'server_action' }));
++            return fallback;
++        }
 +        if (!isEndedSessionRefreshError(error)) {
 +            throw error;
 +        }
@@ -59,7 +78,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -29,7 +79,7 @@ export const getOrganizationAction = async (organizationId) => {
+@@ -29,7 +98,7 @@ export const getOrganizationAction = async (organizationId) => {
      // authenticated within. The WorkOS client uses the app's API key, which can
      // read any organization in the environment, so without this check any caller
      // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -68,7 +87,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
      if (!user || sessionOrganizationId !== organizationId) {
          return null;
      }
-@@ -43,7 +93,7 @@ export const getAuthAction = async (options) => {
+@@ -43,7 +112,7 @@ export const getAuthAction = async (options) => {
      // would call redirect() to an external URL, which causes CORS errors when
      // invoked via a client-side fetch. Instead, return the sign-in URL so the
      // client can redirect via window.location.href.
@@ -77,7 +96,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
      const sanitized = sanitize(auth);
      if (options?.ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -51,10 +101,11 @@ export const getAuthAction = async (options) => {
+@@ -51,10 +120,11 @@ export const getAuthAction = async (options) => {
      }
      return sanitized;
  };
@@ -91,7 +110,7 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
      const sanitized = sanitize(auth);
      if (ensureSignedIn && !auth.user) {
          const signInUrl = await getSignInUrl();
-@@ -63,14 +114,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
+@@ -63,14 +133,14 @@ export const refreshAuthAction = async ({ ensureSignedIn, organizationId, }) =>
      return sanitized;
  };
  export const switchToOrganizationAction = async (organizationId, options) => {
@@ -108,10 +127,14 @@ index 48babd8e1868c58577252b8a27660fcb73e7ef98..508678797dee7f5f2c505465e8a652f1
      return auth.accessToken;
  }
  /**
-@@ -86,6 +137,9 @@ export async function refreshAccessTokenAction() {
+@@ -86,6 +156,13 @@ export async function refreshAccessTokenAction() {
          return { accessToken: auth.accessToken };
      }
      catch (error) {
++        if (isInvalidRefreshTokenError(error)) {
++            console.warn(JSON.stringify({ event: 'auth.invalid_refresh_token', boundary: 'server_action' }));
++            return { accessToken: undefined };
++        }
 +        if (isEndedSessionRefreshError(error)) {
 +            return { accessToken: undefined };
 +        }
@@ -152,10 +175,10 @@ index ff854d7d749c51a2c07f2b3ee3ef6f88f5aa8a99..619eacf8391e0048fbd5f0c3940d4b66
        const params = { ensureSignedIn: false, organizationId: 'org_123' };
        const result = await refreshAuthAction(params);
 diff --git a/src/actions.ts b/src/actions.ts
-index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1624a4f70 100644
+index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..55ae5130c2ed36605513ea08e418b265d7ba090e 100644
 --- a/src/actions.ts
 +++ b/src/actions.ts
-@@ -22,6 +22,64 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
+@@ -22,6 +22,84 @@ function sanitize<T extends UserInfo | NoUserInfo>(value: T) {
    return sanitized;
  }
  
@@ -200,16 +223,36 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
 +  );
 +};
 +
++const isInvalidRefreshTokenError = (value: unknown): boolean => {
++  if (!value || typeof value !== "object") return false;
++  const record = value as Record<string, unknown>;
++  if (record.name === "TokenRefreshError" && record.isTransient !== false) {
++    return false;
++  }
++  const cause = record.name === "TokenRefreshError" ? record.cause : record;
++  if (!cause || typeof cause !== "object") return false;
++  const provider = cause as Record<string, unknown>;
++  return (
++    provider.status === 400 &&
++    provider.error === "invalid_grant" &&
++    provider.errorDescription === "Invalid refresh token."
++  );
++};
++
 +/**
 + * Client-triggered server actions run after middleware, so a session can end
 + * between the middleware check and the action's refresh. Treat only WorkOS's
-+ * exact ended-session response as signed out; all other auth errors still fail
++ * exact ended-session or terminal invalid-refresh-token response as signed out; all other auth errors still fail
 + * visibly so configuration, provider, and authorization defects are not hidden.
 + */
 +async function recoverEndedSession<T>(loadAuth: () => Promise<T>, fallback: T): Promise<T> {
 +  try {
 +    return await loadAuth();
 +  } catch (error) {
++    if (isInvalidRefreshTokenError(error)) {
++      console.warn(JSON.stringify({ event: 'auth.invalid_refresh_token', boundary: 'server_action' }));
++      return fallback;
++    }
 +    if (!isEndedSessionRefreshError(error)) {
 +      throw error;
 +    }
@@ -220,7 +263,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
  /**
   * This action is only accessible to authenticated users,
   * there is no need to check the session here as the middleware will
-@@ -40,7 +98,10 @@ export const getOrganizationAction = async (organizationId: string) => {
+@@ -40,7 +118,10 @@ export const getOrganizationAction = async (organizationId: string) => {
    // authenticated within. The WorkOS client uses the app's API key, which can
    // read any organization in the environment, so without this check any caller
    // could fetch arbitrary organizations by ID (authorization bypass / IDOR).
@@ -232,7 +275,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
    if (!user || sessionOrganizationId !== organizationId) {
      return null;
    }
-@@ -56,7 +117,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -56,7 +137,7 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
    // would call redirect() to an external URL, which causes CORS errors when
    // invoked via a client-side fetch. Instead, return the sign-in URL so the
    // client can redirect via window.location.href.
@@ -241,7 +284,10 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
    const sanitized = sanitize(auth);
  
    if (options?.ensureSignedIn && !auth.user) {
-@@ -70,13 +131,16 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+@@ -67,16 +148,19 @@ export const getAuthAction = async (options?: { ensureSignedIn?: boolean }) => {
+   return sanitized;
+ };
+ 
 -export const refreshAuthAction = async ({
 -  ensureSignedIn,
 -  organizationId,
@@ -264,7 +310,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
    const sanitized = sanitize(auth);
  
    if (ensureSignedIn && !auth.user) {
-@@ -88,7 +152,10 @@ export const refreshAuthAction = async ({
+@@ -88,7 +172,10 @@ export const refreshAuthAction = async ({
  };
  
  export const switchToOrganizationAction = async (organizationId: string, options?: SwitchToOrganizationOptions) => {
@@ -276,7 +322,7 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
  };
  
  /**
-@@ -96,7 +163,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
+@@ -96,7 +183,7 @@ export const switchToOrganizationAction = async (organizationId: string, options
   * It is used to fetch the access token from the server.
   */
  export async function getAccessTokenAction() {
@@ -285,10 +331,14 @@ index dbc84f49ce8960ac2c88d31e6f98d60af4deab90..7cf8af95ddd8fa3d65db17cae3505bd1
    return auth.accessToken;
  }
  
-@@ -112,6 +179,9 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
+@@ -112,6 +199,13 @@ export async function refreshAccessTokenAction(): Promise<RefreshAccessTokenActi
      const auth = await refreshSession();
      return { accessToken: auth.accessToken };
    } catch (error) {
++    if (isInvalidRefreshTokenError(error)) {
++      console.warn(JSON.stringify({ event: 'auth.invalid_refresh_token', boundary: 'server_action' }));
++      return { accessToken: undefined };
++    }
 +    if (isEndedSessionRefreshError(error)) {
 +      return { accessToken: undefined };
 +    }

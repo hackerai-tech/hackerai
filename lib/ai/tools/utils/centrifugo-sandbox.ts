@@ -1402,6 +1402,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
   // Cache for the detected HTTP client.
   private httpClient: HttpClient | null = null;
+  private cmdPowerShellResolution?: Promise<string>;
   private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).
@@ -1556,6 +1557,45 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     }
   }
 
+  /** Probe once per sandbox, including failed resolution, without replaying a transfer. */
+  private resolveCmdPowerShell(signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
+    this.cmdPowerShellResolution ??= (async () => {
+      const marker = "hackerai-powershell-ready";
+      for (const executable of [
+        "powershell",
+        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+      ]) {
+        // Do not use runSetupCommand's retries: two read-only probes are the
+        // complete budget, shared by all uploads/downloads on this sandbox.
+        const result = await runAttachmentCommand(
+          this,
+          `${executable} -NoLogo -NoProfile -NonInteractive -Command "[Console]::WriteLine('${marker}')"`,
+          signal,
+          { displayName: "", timeoutMs: 5000 },
+        );
+        signal?.throwIfAborted();
+        if (result.exitCode === 0 && result.stdout.trim() === marker) {
+          if (executable !== "powershell") {
+            console.info(
+              JSON.stringify({
+                event: "centrifugo_powershell_fallback_selected",
+                reason: "path_probe_failed",
+                user_id: this.userId,
+                connection_id: this.connectionInfo.connectionId,
+              }),
+            );
+          }
+          return executable;
+        }
+      }
+      throw new Error(
+        "Windows PowerShell is unavailable. Repair PowerShell or install curl, then reconnect your computer and try the attachment again.",
+      );
+    })();
+    return this.cmdPowerShellResolution;
+  }
+
   private async preparePowerShellCommand(
     script: string,
     signal?: AbortSignal,
@@ -1570,15 +1610,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     const nativeScriptPath = this.toNativePath(
       this.resolveWorkingPath(scriptPath),
     );
+    const { useBash, path, escapePath } = await this.shellContext(
+      nativeScriptPath,
+      signal,
+    );
+    const executable = useBash
+      ? "powershell.exe"
+      : await this.resolveCmdPowerShell(signal);
+    signal?.throwIfAborted();
     try {
       // files.write already chunks legacy cmd.exe writes below its command
       // length limit and uses the native file relay when the client supports it.
       await this.files.write(nativeScriptPath, script, { signal });
-      const { useBash, path, escapePath } = await this.shellContext(
-        nativeScriptPath,
-        signal,
-      );
-      const executable = useBash ? "powershell.exe" : "powershell";
       return {
         command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
         cleanup: async () => {
@@ -2156,6 +2199,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           } catch (error) {
             throwIfAttachmentAborted(signal, error);
             if (
+              httpClient === "powershell" ||
               attempt === MAX_ATTEMPTS ||
               !isTransientCommandTimeoutError(error)
             ) {

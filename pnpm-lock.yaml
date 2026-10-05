@@ -74,7 +74,7 @@ overrides:
 
 patchedDependencies:
   '@workos-inc/authkit-nextjs@4.3.2':
-    hash: 4335c38245e75379a6b5d27d890c1fd16109d4aa52e28824d171cf5d0a382743
+    hash: 10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378
     path: patches/@workos-inc__authkit-nextjs@4.3.2.patch
   brace-expansion@5.0.9:
     hash: d6d97a105a1331c8c24a45bee0c3537ea0988efb506f9f6e682e77f403933e2e
@@ -206,7 +206,7 @@ importers:
         version: 3.9.9(@aws-sdk/credential-provider-web-identity@3.972.78)(ws@8.22.0)
       '@workos-inc/authkit-nextjs':
         specifier: 4.3.2
-        version: 4.3.2(patch_hash=4335c38245e75379a6b5d27d890c1fd16109d4aa52e28824d171cf5d0a382743)(@workos-inc/node@10.14.0)(next@16.3.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)
+        version: 4.3.2(patch_hash=10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378)(@workos-inc/node@10.14.0)(next@16.3.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)
       '@workos-inc/node':
         specifier: ^10.14.0
         version: 10.14.0
@@ -12207,7 +12207,7 @@ snapshots:
 
   '@workos-inc/authkit-js@0.20.0': {}
 
-  '@workos-inc/authkit-nextjs@4.3.2(patch_hash=4335c38245e75379a6b5d27d890c1fd16109d4aa52e28824d171cf5d0a382743)(@workos-inc/node@10.14.0)(next@16.3.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)':
+  '@workos-inc/authkit-nextjs@4.3.2(patch_hash=10f6954fedefddaf058350322bb84e2bfa1a80d0abd544e78ced4f9538748378)(@workos-inc/node@10.14.0)(next@16.3.6(@babel/core@7.29.6)(@opentelemetry/api@1.9.1)(@playwright/test@1.63.0)(@types/node@25.9.3)(babel-plugin-macros@3.1.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)':
     dependencies:
       '@sindresorhus/fnv1a': 3.1.0
       '@workos-inc/node': 10.14.0
@@ -14126,7 +14126,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.18.0)
+      retry-axios: 2.6.0(axios@1.18.0(debug@4.4.3))
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -16466,7 +16466,7 @@ snapshots:
 
   resumable-stream@2.2.13: {}
 
-  retry-axios@2.6.0(axios@1.18.0):
+  retry-axios@2.6.0(axios@1.18.0(debug@4.4.3)):
     dependencies:
       axios: 1.18.0(debug@4.4.3)
 

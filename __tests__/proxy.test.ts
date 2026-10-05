@@ -771,6 +771,72 @@ describe("proxy", () => {
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
   });
 
+  it.each(["throw", "callback"])(
+    "returns signed-out 401 for terminal invalid refresh token through %s",
+    async (mode) => {
+      const error = {
+        name: "TokenRefreshError",
+        isTransient: false,
+        cause: {
+          status: 400,
+          error: "invalid_grant",
+          errorDescription: "Invalid refresh token.",
+        },
+      };
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          if (mode === "throw") return Promise.reject(error);
+          options.onSessionRefreshError({ error: error.cause });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers(),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/",
+            method: "POST",
+            hasSession: true,
+            headers: { "next-action": "auth-action" },
+          }),
+        );
+        expect(response).toMatchObject({ kind: "json", init: { status: 401 } });
+        expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+        expect(warn).toHaveBeenCalledWith(
+          JSON.stringify({
+            event: "auth.invalid_refresh_token",
+            boundary: "proxy",
+          }),
+        );
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("does not convert transient refresh failures into signed-out recovery", async () => {
+    const error = {
+      name: "TokenRefreshError",
+      isTransient: true,
+      cause: {
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Invalid refresh token.",
+      },
+    };
+    mockAuthkit.mockRejectedValue(error);
+    const { default: proxy } = await import("../proxy");
+    await expect(
+      proxy(createRequest({ pathname: "/", hasSession: true })),
+    ).rejects.toBe(error);
+    expect(mockNextResponseNext).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
+  });
+
   it("stops root Server Actions when session refresh has ended", async () => {
     const endedSessionError = Object.assign(
       new Error("Failed to refresh session: Error: invalid_grant"),
