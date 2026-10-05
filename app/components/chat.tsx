@@ -602,6 +602,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
+    surveyActivation,
+    setSurveyActivation,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
@@ -2284,11 +2286,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-  const [surveyActivation, setSurveyActivation] = useState<{
-    chatId: string;
-    userMessageId: string;
-    mode: "ask" | "agent";
-  } | null>(null);
   useEffect(() => {
     // Only a new submission arms the survey. Mounting/reconnecting an old
     // streaming response must not be treated as a fresh activation.
@@ -2304,7 +2301,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       userMessageId: submittedMessage.id,
       mode: chatMode === "agent" ? "agent" : "ask",
     });
-  }, [chatId, chatMode, messages, status]);
+  }, [chatId, chatMode, messages, status, setSurveyActivation]);
   const lastMessage = messages.at(-1);
   const acquisitionSurveyEligible =
     surveyActivation?.chatId === chatId &&

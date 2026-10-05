@@ -72,7 +72,15 @@ import {
 const ENTITLEMENT_REFRESH_TIMEOUT_MS = 5_000;
 const ENTITLEMENT_REFRESH_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 
+type SurveyActivation = {
+  chatId: string;
+  userMessageId: string;
+  mode: "ask" | "agent";
+};
+
 interface GlobalStateType {
+  surveyActivation: SurveyActivation | null;
+  setSurveyActivation: (activation: SurveyActivation | null) => void;
   // File upload state
   uploadedFiles: UploadedFileState[];
   setUploadedFiles: (files: UploadedFileState[]) => void;
@@ -256,6 +264,23 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
     refreshAuth,
   } = useAuth();
   const { refresh: refreshAccessToken } = useAccessToken();
+  // A new task changes from / to /c/:id and remounts Chat. Keep only the
+  // current submission in the shared layout; never persist it across reloads.
+  const [surveySubmission, setSurveySubmission] = useState<
+    (SurveyActivation & { userId: string }) | null
+  >(null);
+  const userId = user?.id;
+  const setSurveyActivation = useCallback(
+    (activation: SurveyActivation | null) => {
+      setSurveySubmission(
+        activation && userId ? { ...activation, userId } : null,
+      );
+    },
+    [userId],
+  );
+  useEffect(() => {
+    setSurveySubmission(null);
+  }, [userId, organizationId]);
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
   const shownReferralRewardNotificationsRef = useRef(new Set<string>());
@@ -749,6 +774,11 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   );
 
   const pathname = usePathname();
+  useEffect(() => {
+    setSurveySubmission((submission) =>
+      submission && pathname === `/c/${submission.chatId}` ? submission : null,
+    );
+  }, [pathname]);
   useAutoSelectNewRemoteConnection({
     connections: localConnections,
     enabled: Boolean(user),
@@ -1312,6 +1342,9 @@ const GlobalStateProviderInner: React.FC<GlobalStateProviderProps> = ({
   );
 
   const value: GlobalStateType = {
+    surveyActivation:
+      surveySubmission?.userId === userId ? surveySubmission : null,
+    setSurveyActivation,
     uploadedFiles,
     setUploadedFiles,
     addUploadedFile,
