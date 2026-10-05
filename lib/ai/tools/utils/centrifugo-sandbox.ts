@@ -1402,53 +1402,48 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
   // Cache for the detected HTTP client.
   private httpClient: HttpClient | null = null;
-  private powerShellExecutable: Promise<string> | undefined;
+  private powerShellExecutable: string | undefined;
 
   private async resolvePowerShellExecutable(
     signal?: AbortSignal,
   ): Promise<string> {
     signal?.throwIfAborted();
     if (this.powerShellExecutable) return this.powerShellExecutable;
-    const pending = (async () => {
-      const shell = await this.detectShell(signal);
-      // Resolve on the selected computer, never against the worker's PATH.
-      const candidates =
-        shell === "bash"
-          ? [
-              "powershell.exe",
-              "pwsh.exe",
-              '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
-            ]
-          : [
-              "powershell",
-              "pwsh",
-              '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
-            ];
-      for (const executable of candidates) {
-        const result = await this.runSetupCommand(
-          `${executable} -NoLogo -NoProfile -NonInteractive -Command "Write-Output 'hackerai-powershell-ready'"`,
-          { displayName: "", timeoutMs: 5_000, signal },
-        );
-        signal?.throwIfAborted();
-        if (
-          result.exitCode === 0 &&
-          result.stdout.trim() === "hackerai-powershell-ready"
-        )
-          return executable;
-      }
-      throw new Error(
-        "No supported Windows attachment transfer client is available. Install curl or PowerShell, or restore it to PATH.",
+    // Cache only verified results: an in-flight probe belongs to its caller,
+    // so Stop cannot cancel another transfer sharing this sandbox.
+    const shell = await this.detectShell(signal);
+    // Resolve on the selected computer, never against the worker's PATH.
+    const candidates =
+      shell === "bash"
+        ? [
+            "powershell.exe",
+            "pwsh.exe",
+            '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
+          ]
+        : [
+            "powershell",
+            "pwsh",
+            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+          ];
+    for (const executable of candidates) {
+      const result = await this.runSetupCommand(
+        `${executable} -NoLogo -NoProfile -NonInteractive -Command "Write-Output 'hackerai-powershell-ready'"`,
+        { displayName: "", timeoutMs: 5_000, signal },
       );
-    })();
-    this.powerShellExecutable = pending;
-    try {
-      return await pending;
-    } catch (error) {
-      if (this.powerShellExecutable === pending)
-        this.powerShellExecutable = undefined;
-      throw error;
+      signal?.throwIfAborted();
+      if (
+        result.exitCode === 0 &&
+        result.stdout.trim() === "hackerai-powershell-ready"
+      ) {
+        this.powerShellExecutable = executable;
+        return executable;
+      }
     }
+    throw new Error(
+      "No supported Windows attachment transfer client is available. Install curl or PowerShell, or restore it to PATH.",
+    );
   }
+
   private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).

@@ -85,8 +85,10 @@ async function recordFailure(error: ChatSDKError, phase = "setup") {
 
 it.each([
   ["acquisition", "setup"],
+  ["readiness", "setup"],
   ["transfer", "setup"],
   ["acquisition", "streaming"],
+  ["readiness", "streaming"],
   ["transfer", "streaming"],
 ])(
   "preserves %s attachment phase during %s failure",

@@ -579,7 +579,7 @@ type AgentLongErrorSummary = {
   requestedPreference?: string;
   actualSandbox?: string;
   uploadFailureKind?: string;
-  uploadFailurePhase?: "acquisition" | "transfer";
+  uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -771,6 +771,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       ),
       uploadFailurePhase:
         uploadFailurePhase === "acquisition" ||
+        uploadFailurePhase === "readiness" ||
         uploadFailurePhase === "transfer"
           ? uploadFailurePhase
           : undefined,

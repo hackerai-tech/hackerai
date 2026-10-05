@@ -464,9 +464,8 @@ describe("CentrifugoSandbox", () => {
     it("bounds stalled project PowerShell script cleanup after canceling its native write", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\project");
       (sandbox as any).httpClient = "powershell";
-      (sandbox as any).powerShellExecutable = Promise.resolve(
-        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell",
-      );
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       (sandbox as any).shellKind = "cmd";
       const controller = new AbortController();
       const run = jest.spyOn(sandbox.commands, "run");
@@ -1848,11 +1847,10 @@ describe("CentrifugoSandbox", () => {
         const sandbox = createDesktopSandbox(project);
         (sandbox as any).shellKind = shell;
         (sandbox as any).httpClient = "powershell";
-        (sandbox as any).powerShellExecutable = Promise.resolve(
+        (sandbox as any).powerShellExecutable =
           (sandbox as any).shellKind === "bash"
             ? "powershell.exe"
-            : "powershell",
-        );
+            : "powershell";
         const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
           stdout: "",
           stderr: "",
@@ -2453,6 +2451,70 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
+    it.each([0, 1])(
+      "isolates Stop for concurrent Windows transfer %i during client detection",
+      async (cancelledIndex) => {
+        const sandbox = createDesktopSandbox();
+        (sandbox as any).shellKind = "cmd";
+        (sandbox as any).httpClient = "powershell";
+        sandbox.files.write = jest.fn(async () => undefined);
+        sandbox.files.remove = jest.fn(async () => undefined);
+        const controllers = [new AbortController(), new AbortController()];
+        const finishProbes: Array<() => void> = [];
+        let probesStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          probesStarted = resolve;
+        });
+        const run = jest.fn(async (command: string, options?: any) => {
+          if (!command.includes("Write-Output"))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          const signal = options?.signal as AbortSignal;
+          return new Promise<any>((resolve, reject) => {
+            const onAbort = () => reject(signal.reason);
+            signal.addEventListener("abort", onAbort, { once: true });
+            finishProbes.push(() => {
+              signal.removeEventListener("abort", onAbort);
+              resolve({
+                stdout: "hackerai-powershell-ready",
+                stderr: "",
+                exitCode: 0,
+              });
+            });
+            if (finishProbes.length === 2) probesStarted();
+          });
+        });
+        sandbox.commands.run = run;
+        const transfers = controllers.map((controller, index) =>
+          sandbox.files.downloadFromUrl(
+            "https://example.com/file",
+            `file-${index}.txt`,
+            { signal: controller.signal },
+          ),
+        );
+        const stopped = expect(transfers[cancelledIndex]).rejects.toMatchObject(
+          {
+            name: "AbortError",
+          },
+        );
+        await started;
+        controllers[cancelledIndex].abort();
+        await stopped;
+        finishProbes.forEach((finish) => finish());
+        await expect(transfers[1 - cancelledIndex]).resolves.toBeUndefined();
+        await sandbox.files.downloadFromUrl(
+          "https://example.com/file",
+          "cached.txt",
+        );
+        expect(
+          run.mock.calls.filter(([command]) =>
+            command.includes("Write-Output"),
+          ),
+        ).toHaveLength(2);
+        expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+        expect(sandbox.files.remove).toHaveBeenCalledTimes(2);
+      },
+    );
+
     it("does not stage a script when no Windows transfer client is installed", async () => {
       const sandbox = createDesktopSandbox();
       (sandbox as any).shellKind = "cmd";
@@ -2696,9 +2758,8 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
-      (sandbox as any).powerShellExecutable = Promise.resolve(
-        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell",
-      );
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       const write = jest.fn(async () => undefined);
       const remove = jest.fn(async () => undefined);
       sandbox.files.write = write;
@@ -2758,9 +2819,8 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
-      (sandbox as any).powerShellExecutable = Promise.resolve(
-        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell",
-      );
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       sandbox.files.write = jest.fn(async () => undefined);
       sandbox.files.remove = jest.fn(async () => undefined);
       const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
