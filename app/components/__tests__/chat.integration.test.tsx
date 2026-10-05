@@ -309,6 +309,16 @@ const { useGlobalState } = jest.requireActual<
 const { useComposerActions } = jest.requireActual<
   typeof import("@/app/contexts/ComposerState")
 >("@/app/contexts/ComposerState");
+const mockUseAuth = require("@workos-inc/authkit-nextjs/components").useAuth;
+const defaultAuth = mockUseAuth();
+const originalFetch = global.fetch;
+const mockSurveyAuth = () => {
+  mockUseAuth.mockReturnValue({ ...defaultAuth, user: { id: "survey-user" } });
+  global.fetch = jest
+    .fn<typeof fetch>()
+    .mockResolvedValue({ ok: false } as Response);
+};
+
 const ForkDraftSetter = () => {
   const { setInput } = useComposerActions();
   useEffect(() => setInput("continue"), [setInput]);
@@ -440,10 +450,13 @@ describe("Chat Component Integration", () => {
 
   afterAll(() => {
     window.matchMedia = originalMatchMedia;
+    global.fetch = originalFetch;
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseAuth.mockReturnValue(defaultAuth);
+    global.fetch = originalFetch;
     const convexReact = require("convex/react");
     convexReact.resetMockConvexAuth?.();
     convexReact.resetMockConvexQueries?.();
@@ -861,6 +874,7 @@ describe("Chat Component Integration", () => {
 
   describe("Message Display", () => {
     it("arms the inline survey for a fresh completed response, hides during the next run, and ignores history", () => {
+      mockSurveyAuth();
       mockRouteParams = { id: "survey-chat" };
       mockRestoredChat = {
         id: "survey-chat",
@@ -916,9 +930,101 @@ describe("Chat Component Integration", () => {
       );
     });
 
+    it("retains the first submission through the new-task remount but clears it on navigation and reload", () => {
+      mockSurveyAuth();
+      const userMessage = {
+        id: "first-question",
+        role: "user",
+        parts: [{ type: "text", text: "Explain HTTP" }],
+      };
+      const assistantMessage = {
+        id: "first-answer",
+        role: "assistant",
+        parts: [{ type: "text", text: "HTTP is a protocol." }],
+      };
+      const update = (status: string, messages: unknown[]) =>
+        mockUseChat.mockReturnValue({
+          messages,
+          status,
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        });
+      const view = () => (
+        <TestWrapper>
+          <Chat key={mockRouteParams.id ?? "new"} autoResume={false} />
+        </TestWrapper>
+      );
+      update("ready", []);
+      const { rerender, unmount } = render(view());
+      update("submitted", [userMessage]);
+      rerender(view());
+      mockRouteParams = { id: "queued-message-id" };
+      mockRestoredChat = {
+        id: "queued-message-id",
+        default_model_slug: "ask",
+        finish_reason: "stop",
+      };
+      update("ready", [userMessage, assistantMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).toHaveAttribute(
+        "data-survey-message",
+        "first-answer",
+      );
+      mockRouteParams = { id: "another-task" };
+      rerender(view());
+      mockRouteParams = { id: "queued-message-id" };
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+      update("submitted", [userMessage]);
+      rerender(view());
+      unmount();
+      update("ready", [userMessage, assistantMessage]);
+      render(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+    });
+
+    it.each(["account", "organization"])(
+      "clears survey activation when the %s changes",
+      (identity) => {
+        mockSurveyAuth();
+        mockRouteParams = { id: "survey-chat" };
+        const { result, rerender } = renderHook(() => useGlobalState(), {
+          wrapper: TestWrapper,
+        });
+        act(() =>
+          result.current.setSurveyActivation({
+            chatId: "survey-chat",
+            userMessageId: "survey-question",
+            mode: "ask",
+          }),
+        );
+        expect(result.current.surveyActivation).not.toBeNull();
+        mockUseAuth.mockReturnValue({
+          ...defaultAuth,
+          user: { id: identity === "account" ? "another-user" : "survey-user" },
+          organizationId:
+            identity === "organization" ? "another-org" : undefined,
+        });
+        rerender();
+        expect(result.current.surveyActivation).toBeNull();
+        mockSurveyAuth();
+        rerender();
+        expect(result.current.surveyActivation).toBeNull();
+      },
+    );
+
     it.each(["abort", "error", "length", "active-run", "no-text"])(
       "does not offer research after %s",
       (outcome) => {
+        mockSurveyAuth();
         mockRouteParams = { id: "survey-chat" };
         mockRestoredChat = {
           id: "survey-chat",
@@ -940,8 +1046,8 @@ describe("Chat Component Integration", () => {
         };
         mockUseChat.mockReturnValue({
           ...chatHelpers,
-          status: "submitted",
-          messages: [userMessage],
+          status: "ready",
+          messages: [],
         });
         const view = () => (
           <TestWrapper>
@@ -949,6 +1055,12 @@ describe("Chat Component Integration", () => {
           </TestWrapper>
         );
         const { rerender } = render(view());
+        mockUseChat.mockReturnValue({
+          ...chatHelpers,
+          status: "submitted",
+          messages: [userMessage],
+        });
+        rerender(view());
         if (outcome === "active-run")
           mockRestoredChat.active_trigger_run_id = "running";
         else if (outcome !== "no-text")
