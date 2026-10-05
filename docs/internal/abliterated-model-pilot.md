@@ -21,8 +21,13 @@ lookup failure or missing provider credential never skips moderation.
 Free requests, paid free-allowance rescue and unsupported file inputs remain
 excluded. Entitlements, quotas, concurrency, sandbox access and tool approvals
 retain their existing checks. Later steps and provider recovery use the saved
-baseline. Because treatment does not classify the input, it does not manufacture
-platform authorization for those baseline calls. This comparison measures the
+baseline. After an actual completed Abliteration step returns nonempty text or a
+valid tool call, later baseline requests append the provider-only annotation to
+the latest user message. This context survives retries and compaction within the
+current run; it is not persisted as user authorization and never changes tool
+permissions or approvals. Empty, rejected or failed attempts and baseline-only
+vision routes do not activate it. Record the deployed continuation policy as a
+separate experiment phase. This comparison measures the
 combined model route and removal of the moderation call, not the isolated model
 effect. Image preprocessing and bounded provider recovery remain shared with the
 moderated route; auxiliary calls and subagents stay outside the trial.
@@ -155,8 +160,10 @@ Feature-flag evaluation does not emit an exposure event.
 For the Abliteration treatment, provider-bound preparation does not append the
 trusted platform-authorization annotation. Forged authorization tags are still
 removed. Sandbox/resume reminders, saved notes, the normal system prompt, tools,
-and later agent-loop messages retain their existing behavior. Control and fallback
-providers retain their existing platform-authorization preparation.
+and the first Abliteration call retain their existing behavior. Later providers
+receive the latest-message annotation after a completed Abliteration step, or
+through the existing moderation decision. Recovery before any completed
+Abliteration step retains the existing moderation-based preparation.
 
 The provider uses the OpenAI-compatible AI SDK adapter, streaming usage, and native
 default reasoning. OpenRouter options, routing lists, user attribution, and PDF

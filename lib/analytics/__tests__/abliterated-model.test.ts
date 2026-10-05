@@ -1,6 +1,7 @@
 import type { LanguageModel } from "ai";
 import { AbliteratedModelTelemetry } from "../abliterated-model";
 import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
@@ -39,9 +40,21 @@ function model(
     }),
   } as unknown as LanguageModel;
 }
-async function consumeModel(source: LanguageModel) {
+async function consumeModel(source: LanguageModel, annotated = false) {
   if (typeof source === "string") throw new Error("unexpected model ID");
-  const result = await source.doStream({ prompt: [], maxOutputTokens: 100 });
+  const result = await source.doStream({
+    prompt: annotated
+      ? [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: PLATFORM_AUTHORIZATION_ANNOTATION },
+            ],
+          },
+        ]
+      : [],
+    maxOutputTokens: 100,
+  });
   const reader = result.stream.getReader();
   const output = [];
   while (true) {
@@ -77,6 +90,29 @@ describe("Abliteration stream telemetry", () => {
   const events = (name: string) =>
     capture.mock.calls.map(([event]) => event).filter((e) => e.event === name);
   const answer = [{ type: "text-delta", id: "t", delta: "answer" }, finishPart];
+
+  it.each([false, true])(
+    "reports actual baseline annotation presence=%s rather than inferring it from the model",
+    async (annotated) => {
+      const telemetry = create();
+      await consumeModel(
+        telemetry.wrap(model(answer, false, "deepseek/baseline"), 0),
+        annotated,
+      );
+      expect(
+        events("abliterated_model_provider_outcome")[0].properties
+          .platform_authorization_context,
+      ).toBe(annotated ? "standard" : "not_appended");
+      expect(JSON.stringify(capture.mock.calls)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      expect(telemetry.getSummary()).toMatchObject({
+        provider_annotation_telemetry_version: 1,
+        provider_annotated_attempt_count: annotated ? 1 : 0,
+        provider_annotated_served_count: annotated ? 1 : 0,
+      });
+    },
+  );
 
   it("separates a successful Abliteration step and planned baseline continuation from fallback", async () => {
     const telemetry = create();

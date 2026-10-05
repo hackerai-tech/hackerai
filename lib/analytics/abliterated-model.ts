@@ -7,6 +7,7 @@ import {
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -58,6 +59,8 @@ export class AbliteratedModelTelemetry {
     provider_tool_call_count: 0,
   };
   private exposed = false;
+  private annotatedAttempts = 0;
+  private annotatedServed = 0;
   private pendingRecovery?: { model: string; kind: "error" | "output" };
   private readonly routing = {
     model_routing_telemetry_version: 1 as const,
@@ -163,6 +166,9 @@ export class AbliteratedModelTelemetry {
         this.routing.output_recovery_fallback_served ||
         this.routing.upstream_model_fallback_served,
       provider_attempt_count: this.sequence,
+      provider_annotation_telemetry_version: 1,
+      provider_annotated_attempt_count: this.annotatedAttempts,
+      provider_annotated_served_count: this.annotatedServed,
       provider_pending_count:
         this.sequence - this.totals.provider_outcome_count,
       ...this.totals,
@@ -181,7 +187,18 @@ export class AbliteratedModelTelemetry {
       middleware: {
         specificationVersion: "v3",
         wrapStream: async ({ doStream, params }) => {
+          const annotationAppended = params.prompt.some(
+            (message) =>
+              message.role === "user" &&
+              message.content.some(
+                (part) =>
+                  part.type === "text" &&
+                  part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+              ),
+          );
           const attempt = ++this.sequence;
+          if (annotationAppended) this.annotatedAttempts++;
+          let countedAnnotatedServing = false;
           const recovery = this.pendingRecovery;
           // A subsequent call is evidence of recovery; an error without another
           // call, or a user-aborted call, is not a fallback attempt.
@@ -209,6 +226,10 @@ export class AbliteratedModelTelemetry {
           let firstContentMs: number | undefined;
           let responseModel = model.modelId;
           const recordServedRouting = () => {
+            if (annotationAppended && !countedAnnotatedServing) {
+              this.annotatedServed++;
+              countedAnnotatedServing = true;
+            }
             if (errorRecovery) {
               this.routing.provider_error_recovery_served = true;
               if (changedRecoveryModel)
@@ -229,9 +250,9 @@ export class AbliteratedModelTelemetry {
               stepIndex < ABLITERATION_MAX_GENERATION_STEPS,
             requested_model: model.modelId,
             response_model: responseModel,
-            platform_authorization_context: isAbliterationModel(model.modelId)
-              ? "not_appended"
-              : "standard",
+            platform_authorization_context: annotationAppended
+              ? "standard"
+              : "not_appended",
           });
           const finish = (
             outcome: ProviderOutcome,

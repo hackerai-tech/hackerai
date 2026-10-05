@@ -147,7 +147,10 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
-import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
+import {
+  PLATFORM_AUTHORIZATION_ANNOTATION,
+  preparePlatformAuthorizationForModel,
+} from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -406,6 +409,8 @@ export type AgentStreamState = {
   configuredMaxSteps: number;
   /** Total completed model steps across provider attempts in this request. */
   agentStepCount: number;
+  /** Provider-only continuation context; never a tool permission or persisted user claim. */
+  hasCompletedAbliterationStep: boolean;
   /** Observation history survives provider retries, but never retains tool content. */
   toolLoopObserver: ToolLoopObserver;
   /** Aggregate-only recovery state survives provider replacements. */
@@ -449,6 +454,7 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
+    hasCompletedAbliterationStep: false,
     toolLoopObserver: new ToolLoopObserver(),
     toolCycleRecoveryCount: 0,
     stoppedDueToStepLimit: false,
@@ -691,6 +697,17 @@ const buildProviderRequestDiagnostics = (args: {
     active_tools_mode: args.activeTools ? "subset" : "all",
     ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
+    platform_authorization_annotation_appended: args.messages.some(
+      (message) =>
+        message.role === "user" &&
+        (typeof message.content === "string"
+          ? message.content.includes(PLATFORM_AUTHORIZATION_ANNOTATION)
+          : message.content.some(
+              (part) =>
+                part.type === "text" &&
+                part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+            )),
+    ),
     ...getProviderToolCallDiagnostics(args.messages),
   };
 };
@@ -1237,6 +1254,8 @@ export async function createAgentStream(
   );
   let latestToolCallBatchSplitCount = 0;
   let trustedHistoryPrefix: ModelMessage[] = [];
+  const hasPlatformAnnotationContext = () =>
+    ctx.platformAuthorized || state.hasCompletedAbliterationStep;
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1272,12 +1291,12 @@ export async function createAgentStream(
       ? prepareReplayAuthorization(
           repairedMessages,
           trustedHistoryPrefix,
-          ctx.platformAuthorized,
+          hasPlatformAnnotationContext(),
           effectiveModelName,
         )
       : preparePlatformAuthorizationForModel(
           repairedMessages,
-          ctx.platformAuthorized,
+          hasPlatformAnnotationContext(),
           effectiveModelName,
         );
 
@@ -1418,7 +1437,7 @@ export async function createAgentStream(
         model: historyRoute,
         mode: ctx.mode,
         subscription: ctx.subscription,
-        authorization: ctx.platformAuthorized,
+        authorization: hasPlatformAnnotationContext(),
         notesEnabled: ctx.noteInjectionOpts.shouldIncludeNotes,
         system: ctx.currentSystemPrompt.replace(
           /^The current date is .+$/m,
@@ -2320,7 +2339,25 @@ export async function createAgentStream(
       providerMetadata,
       toolCalls,
       toolResults,
+      text,
+      finishReason,
     }) => {
+      // An assignment, failed attempt, reasoning-only output or vision baseline
+      // cannot activate this context. State survives retries within this run only.
+      if (
+        ctx.abliteratedStepRouting &&
+        isAbliterationModel(activeStepModelName) &&
+        isAbliterationModel(response.modelId) &&
+        ["stop", "tool-calls", "length"].includes(finishReason) &&
+        (Boolean(text?.trim()) ||
+          toolCalls?.some(
+            (call) =>
+              Object.hasOwn(ctx.tools, call.toolName) &&
+              !("invalid" in call && call.invalid),
+          ))
+      ) {
+        state.hasCompletedAbliterationStep = true;
+      }
       // Never persist an earlier partial candidate after an unsupported final step.
       historyToSave = undefined;
       if (
