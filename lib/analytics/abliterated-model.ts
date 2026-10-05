@@ -7,6 +7,7 @@ import {
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -181,6 +182,15 @@ export class AbliteratedModelTelemetry {
       middleware: {
         specificationVersion: "v3",
         wrapStream: async ({ doStream, params }) => {
+          const annotationAppended = params.prompt.some(
+            (message) =>
+              message.role === "user" &&
+              message.content.some(
+                (part) =>
+                  part.type === "text" &&
+                  part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+              ),
+          );
           const attempt = ++this.sequence;
           const recovery = this.pendingRecovery;
           // A subsequent call is evidence of recovery; an error without another
@@ -229,9 +239,9 @@ export class AbliteratedModelTelemetry {
               stepIndex < ABLITERATION_MAX_GENERATION_STEPS,
             requested_model: model.modelId,
             response_model: responseModel,
-            platform_authorization_context: isAbliterationModel(model.modelId)
-              ? "not_appended"
-              : "standard",
+            platform_authorization_context: annotationAppended
+              ? "standard"
+              : "not_appended",
           });
           const finish = (
             outcome: ProviderOutcome,
