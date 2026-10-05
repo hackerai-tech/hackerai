@@ -149,6 +149,71 @@ const makeLocalMessage = (): UIMessage =>
   }) as UIMessage;
 
 describe("desktop-local sandbox file helpers", () => {
+  it("marks historical desktop sources without queueing them again", () => {
+    const previous = makeLocalMessage();
+    const followup = {
+      id: "followup",
+      role: "user",
+      parts: [{ type: "text", text: "continue" }],
+    } as UIMessage;
+    const original = JSON.stringify(previous);
+    const { messages, sandboxFiles } = prepareLocalDesktopAttachmentsForTrigger(
+      [previous, followup],
+    );
+
+    expect(sandboxFiles).toEqual([]);
+    expect(JSON.stringify(messages)).toContain(
+      'staging=\\"not_requested_this_run\\"',
+    );
+    expect(JSON.stringify(messages)).not.toContain("/Users/alice/Secrets");
+    expect(JSON.stringify(previous)).toBe(original);
+  });
+
+  it("marks an old inline image as unstaged while queueing only the current input", () => {
+    const messages = [
+      {
+        id: "old",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            fileId: "image_old",
+            url: "https://storage.example/old.png",
+            filename: "old.png",
+          },
+        ],
+      },
+      {
+        id: "new",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            fileId: "image_new",
+            url: "https://storage.example/new.png",
+            filename: "new.png",
+          },
+        ],
+      },
+    ] as UIMessage[];
+    const sandboxFiles: Parameters<typeof collectSandboxFiles>[1] = [];
+    collectSandboxFiles(messages, sandboxFiles, undefined, {
+      getAttachmentTagKind: () => "inline-image",
+    });
+
+    expect(sandboxFiles).toHaveLength(1);
+    expect(sandboxFiles[0]).toMatchObject({
+      url: "https://storage.example/new.png",
+    });
+    const oldTag = messages[0].parts.find((part) => part.type === "text");
+    expect(oldTag).toMatchObject({
+      text: expect.stringContaining('staging="not_requested_this_run"'),
+    });
+    expect(oldTag).toMatchObject({
+      text: expect.stringContaining('already_visible_to_model="true"'),
+    });
+  });
+
   it("removes source paths before persistence", () => {
     const [message] = stripLocalDesktopSourcePaths([makeLocalMessage()]);
 
@@ -184,7 +249,7 @@ describe("desktop-local sandbox file helpers", () => {
         (part: any) =>
           part.type === "text" &&
           part.text ===
-            `<attachment filename="report.pdf" local_path="${sandboxFiles[0].localPath}" />`,
+            `<attachment filename="report.pdf" local_path="${sandboxFiles[0].localPath}" staging="requested_this_run" />`,
       ),
     ).toBe(true);
   });
@@ -215,7 +280,7 @@ describe("desktop-local sandbox file helpers", () => {
       text: sandboxFiles
         .map(
           (file) =>
-            `<attachment filename="report.pdf" local_path="${file.localPath}" />`,
+            `<attachment filename="report.pdf" local_path="${file.localPath}" staging="requested_this_run" />`,
         )
         .join("\n"),
     });
@@ -269,6 +334,8 @@ describe("desktop-local sandbox file helpers", () => {
     expect(newPath).toBe(sandboxFiles[0].localPath);
     expect(newPath).not.toBe(oldPath);
     expect(newTag).not.toContain("legacy_fallback_path");
+    expect(oldTag).toContain('staging="not_requested_this_run"');
+    expect(newTag).toContain('staging="requested_this_run"');
   });
 
   it("copies desktop-local files through the local sandbox instead of downloading", async () => {
