@@ -271,7 +271,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "upload_failure_error_retryable",
   "upload_failure_protocol",
   "upload_failure_url_length",
-  "upload_retried_with_fresh_sandbox",
+  "upload_retried_after_reconnect",
   "localSandboxFallbackBlocked",
   "sandboxFallbackReason",
   "requestedPreference",

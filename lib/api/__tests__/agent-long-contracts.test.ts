@@ -2319,9 +2319,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("sandbox attachment upload failures are retried and classified separately", () => {
-    expect(taskSrc).toMatch(/retryWithFreshSandboxOnTransientFailure:\s*true/);
+    expect(taskSrc).toMatch(/retryAfterReconnectOnTransientFailure:\s*true/);
     expect(chatHandlerSrc).toMatch(
-      /retryWithFreshSandboxOnTransientFailure:\s*true/,
+      /retryAfterReconnectOnTransientFailure:\s*true/,
     );
     expect(taskSrc).toMatch(/service:\s*"agent-long"/);
     expect(chatHandlerSrc).toMatch(/service:\s*"chat-handler"/);

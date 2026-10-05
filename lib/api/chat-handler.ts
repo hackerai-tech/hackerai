@@ -1033,7 +1033,7 @@ export const createChatHandler = () => {
                   ensureSandbox,
                   {
                     signal: userStopSignal.signal,
-                    retryWithFreshSandboxOnTransientFailure: true,
+                    retryAfterReconnectOnTransientFailure: true,
                     logContext: {
                       service: "chat-handler",
                       requestId,
