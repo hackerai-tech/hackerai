@@ -7,6 +7,7 @@ import { exceedsAbliterationImageLimit } from "@/lib/ai/abliteration-media";
 
 jest.mock("server-only", () => ({}));
 jest.mock("../auxiliary-vision", () => ({
+  ...jest.requireActual("../auxiliary-vision"),
   describeImageWithAuxiliaryVision: jest.fn(),
 }));
 

@@ -42,6 +42,7 @@ const mockDescribeImage = jest.fn(async () => ({
 }));
 
 jest.mock("@/lib/chat/auxiliary-vision", () => ({
+  ...jest.requireActual("@/lib/chat/auxiliary-vision"),
   describeImageWithAuxiliaryVision: (...args: unknown[]) =>
     mockDescribeImage(...args),
 }));
@@ -154,6 +155,7 @@ jest.mock("@/lib/provider-usage-cost", () => ({
   getOpenRouterUpstreamInferenceCostFromUsageRaw: () => undefined,
 }));
 jest.mock("@/lib/utils/error-utils", () => ({
+  ...jest.requireActual("@/lib/utils/error-utils"),
   classifyProviderOverflowError: () => null,
   isProviderContentBlockedFinishReasonError: () => false,
   isProviderContentFilterFinishReason: () => false,
