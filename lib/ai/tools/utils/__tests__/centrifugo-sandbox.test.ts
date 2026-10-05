@@ -2481,55 +2481,117 @@ describe("CentrifugoSandbox", () => {
       },
     );
 
-    it("stops PowerShell resolution on cancellation without staging or fallback", async () => {
+    it("keeps cancellation local while concurrent and later transfers reuse discovery", async () => {
       const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
       (sandbox as any).shellKind = "cmd";
       (sandbox as any).httpClient = "powershell";
       const controller = new AbortController();
       const write = jest.spyOn(sandbox.files, "write").mockResolvedValue();
+      jest.spyOn(sandbox.files, "remove").mockResolvedValue();
+      let releaseProbe!: (value: any) => void;
+      let startedProbe!: () => void;
+      const started = new Promise<void>((resolve) => {
+        startedProbe = resolve;
+      });
+      const probe = new Promise<any>((resolve) => {
+        releaseProbe = resolve;
+      });
       const run = jest
         .spyOn(sandbox.commands, "run")
-        .mockImplementation(async (_command, options) => {
-          expect(options?.signal).toBe(controller.signal);
-          controller.abort();
-          return {
-            stdout: "hackerai-powershell-ready",
-            stderr: "",
-            exitCode: 0,
-          };
+        .mockImplementation(async (command, options) => {
+          if (command.includes("[Console]::WriteLine")) {
+            expect(options?.signal).toBeUndefined();
+            startedProbe();
+            return probe;
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
         });
-      await expect(
-        sandbox.files.downloadFromUrl(
-          "https://example.com/file",
-          "C:\\temp\\file.txt",
-          { signal: controller.signal },
-        ),
-      ).rejects.toMatchObject({ name: "AbortError" });
-      expect(run).toHaveBeenCalledTimes(1);
+      const cancelled = sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "C:\\temp\\file.txt",
+        { signal: controller.signal },
+      );
+      const rejection = expect(cancelled).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      await started;
+      const concurrent = sandbox.files.uploadToUrl(
+        "C:\\temp\\other.txt",
+        "https://example.com/upload",
+        "text/plain",
+      );
+      controller.abort();
+      await rejection;
       expect(write).not.toHaveBeenCalled();
+      releaseProbe({
+        stdout: "hackerai-powershell-ready",
+        stderr: "",
+        exitCode: 0,
+      });
+      await concurrent;
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "C:\\temp\\later.txt",
+      );
+      expect(
+        run.mock.calls.filter(([command]) =>
+          command.includes("[Console]::WriteLine"),
+        ),
+      ).toHaveLength(1);
+      expect(write).toHaveBeenCalledTimes(2);
     });
 
-    it("does not repeat a timed-out PowerShell probe or replay a timed-out transfer", async () => {
+    it("uses the verified system executable after a PATH probe transport timeout", async () => {
+      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
+      (sandbox as any).shellKind = "cmd";
+      (sandbox as any).httpClient = "powershell";
+      jest.spyOn(sandbox.files, "write").mockResolvedValue();
+      jest.spyOn(sandbox.files, "remove").mockResolvedValue();
+      const run = jest
+        .spyOn(sandbox.commands, "run")
+        .mockRejectedValueOnce(new Error("Command timeout after 5000ms"))
+        .mockResolvedValueOnce({
+          stdout: "hackerai-powershell-ready",
+          stderr: "",
+          exitCode: 0,
+        })
+        .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "C:\\temp\\file.txt",
+      );
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(run.mock.calls[1][0]).toContain("%SystemRoot%");
+      expect(run.mock.calls[2][0]).toContain("%SystemRoot%");
+    });
+
+    it("caches exhausted probe budgets and does not replay a timed-out transfer", async () => {
       const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
       (sandbox as any).shellKind = "cmd";
       (sandbox as any).httpClient = "powershell";
       const write = jest.spyOn(sandbox.files, "write").mockResolvedValue();
       const remove = jest.spyOn(sandbox.files, "remove").mockResolvedValue();
-      const error = new Error("Command timed out after 5000ms");
+      const error = new Error("Command timeout after 120005ms");
       const run = jest.spyOn(sandbox.commands, "run").mockRejectedValue(error);
       await expect(
         sandbox.files.downloadFromUrl(
           "https://example.com/file",
           "C:\\temp\\file.txt",
         ),
-      ).rejects.toBe(error);
+      ).rejects.toMatchObject({
+        message: expect.stringContaining("Could not verify Windows PowerShell"),
+        cause: error,
+      });
       await expect(
         sandbox.files.downloadFromUrl(
           "https://example.com/file",
           "C:\\temp\\file.txt",
         ),
-      ).rejects.toBe(error);
-      expect(run).toHaveBeenCalledTimes(1);
+      ).rejects.toMatchObject({
+        message: expect.stringContaining("Could not verify Windows PowerShell"),
+        cause: error,
+      });
+      expect(run).toHaveBeenCalledTimes(2);
       expect(write).not.toHaveBeenCalled();
 
       (sandbox as any).cmdPowerShellResolution = Promise.resolve("powershell");
@@ -2539,7 +2601,7 @@ describe("CentrifugoSandbox", () => {
           "C:\\temp\\file.txt",
         ),
       ).rejects.toBe(error);
-      expect(run).toHaveBeenCalledTimes(2);
+      expect(run).toHaveBeenCalledTimes(3);
       expect(write).toHaveBeenCalledTimes(1);
       expect(remove).toHaveBeenCalledTimes(1);
     });

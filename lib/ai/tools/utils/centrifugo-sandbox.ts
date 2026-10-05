@@ -1558,23 +1558,31 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
   }
 
   /** Probe once per sandbox, including failed resolution, without replaying a transfer. */
-  private resolveCmdPowerShell(signal?: AbortSignal): Promise<string> {
+  private async resolveCmdPowerShell(signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
     this.cmdPowerShellResolution ??= (async () => {
       const marker = "hackerai-powershell-ready";
+      let probeError: unknown;
       for (const executable of [
         "powershell",
         '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
       ]) {
         // Do not use runSetupCommand's retries: two read-only probes are the
         // complete budget, shared by all uploads/downloads on this sandbox.
-        const result = await runAttachmentCommand(
-          this,
-          `${executable} -NoLogo -NoProfile -NonInteractive -Command "[Console]::WriteLine('${marker}')"`,
-          signal,
-          { displayName: "", timeoutMs: 5000 },
-        );
-        signal?.throwIfAborted();
+        let result: CommandResult;
+        try {
+          // Discovery is shared, so one caller must not cancel another caller's
+          // read-only probe. Each probe still has its own five-second deadline.
+          result = await runAttachmentCommand(
+            this,
+            `${executable} -NoLogo -NoProfile -NonInteractive -Command "[Console]::WriteLine('${marker}')"`,
+            undefined,
+            { displayName: "", timeoutMs: 5000 },
+          );
+        } catch (error) {
+          probeError = error;
+          continue;
+        }
         if (result.exitCode === 0 && result.stdout.trim() === marker) {
           if (executable !== "powershell") {
             console.info(
@@ -1589,11 +1597,28 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           return executable;
         }
       }
+      if (probeError) {
+        throw new Error(
+          "Could not verify Windows PowerShell. Check your computer connection and PowerShell installation, then reconnect and try the attachment again.",
+          { cause: probeError },
+        );
+      }
       throw new Error(
         "Windows PowerShell is unavailable. Repair PowerShell or install curl, then reconnect your computer and try the attachment again.",
       );
     })();
-    return this.cmdPowerShellResolution;
+    if (!signal) return this.cmdPowerShellResolution;
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+    try {
+      return await Promise.race([this.cmdPowerShellResolution, aborted]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 
   private async preparePowerShellCommand(
