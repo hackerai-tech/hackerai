@@ -21,6 +21,8 @@ jest.mock("posthog-js", () => ({
 }));
 
 const {
+  getIdentifiedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
   captureComputerActivationImpression,
   captureMessageFeedback,
   captureUpgradeCtaImpression,
@@ -47,6 +49,22 @@ describe("client analytics", () => {
     mockPostHog.get_distinct_id.mockClear();
     mockPostHog.get_distinct_id.mockReturnValue("user_123");
     jest.useFakeTimers().setSystemTime(new Date("2026-07-14T12:00:00Z"));
+  });
+
+  it("notifies survey consumers only of the consented, identified account", () => {
+    const listener = jest.fn();
+    const unsubscribe = subscribeAuthenticatedAnalytics(listener);
+    expect(getIdentifiedAnalyticsUserId()).toBe("user_123");
+    setAuthenticatedAnalyticsUserId("new-user");
+    expect(getIdentifiedAnalyticsUserId()).toBeNull();
+    confirmAuthenticatedAnalyticsUserId("user_123");
+    expect(getIdentifiedAnalyticsUserId()).toBeNull();
+    confirmAuthenticatedAnalyticsUserId("new-user");
+    expect(getIdentifiedAnalyticsUserId()).toBe("new-user");
+    setAuthenticatedAnalyticsUserId(null);
+    expect(getIdentifiedAnalyticsUserId()).toBeNull();
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
   });
 
   it("captures each upgrade impression surface and source once per UTC day", () => {
