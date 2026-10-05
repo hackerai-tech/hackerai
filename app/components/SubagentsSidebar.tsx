@@ -80,6 +80,7 @@ type TranscriptMessage = UIMessage & {
   messageSource?: "parent_update";
   messageType?: "query" | "instruction" | "information";
   priority?: "low" | "normal" | "high" | "urgent";
+  isEvidenceWarning?: boolean;
 };
 
 const isActive = (status: SubagentStatus) =>
@@ -298,12 +299,14 @@ const SubagentMessageActions = memo(function SubagentMessageActions({
   createdAt,
   existingFeedback,
   isHovered,
+  isLastAssistantMessage,
 }: {
   messageId: Id<"subagent_messages">;
   messageText: string;
   createdAt?: number;
   existingFeedback?: "positive" | "negative";
   isHovered: boolean;
+  isLastAssistantMessage: boolean;
 }) {
   const saveFeedback = useMutation(api.subagents.setMessageFeedback);
   const [feedback, setFeedback] = useState<"positive" | "negative" | null>(
@@ -374,7 +377,7 @@ const SubagentMessageActions = memo(function SubagentMessageActions({
       <MessageActions
         messageText={messageText}
         isUser={false}
-        isLastAssistantMessage
+        isLastAssistantMessage={isLastAssistantMessage}
         canRegenerate={false}
         onRegenerate={() => undefined}
         onEdit={() => undefined}
@@ -509,6 +512,16 @@ const Transcript = memo(function Transcript({
       messageSource: message.message_source,
       messageType: message.message_type,
       priority: message.priority,
+      // The runtime reserves the final sequence of each continuation for its
+      // evidence notice. Keep these persisted notices out of response feedback.
+      isEvidenceWarning:
+        message.role === "assistant" &&
+        message.sequence % 10_000 === 9_999 &&
+        message.parts.some(
+          (part) =>
+            part.type === "text" &&
+            part.text.startsWith("Evidence verification warning:"),
+        ),
     }));
     return liveMessage && !hasPersistedAssistant
       ? [...saved, liveMessage as TranscriptMessage]
@@ -532,6 +545,14 @@ const Transcript = memo(function Transcript({
         : undefined,
     [active, visibleMessages],
   );
+  const latestResponseId = visibleMessages
+    .filter(
+      (message) =>
+        message.role === "assistant" &&
+        !message.isEvidenceWarning &&
+        extractMessageText(message.parts).trim().length > 0,
+    )
+    .at(-1)?.id;
   const toolSidebarOrigin = useMemo<SidebarSubagentOrigin>(
     () => ({
       kind: "subagent",
@@ -728,6 +749,32 @@ const Transcript = memo(function Transcript({
             </section>
           )}
           {visibleMessages.map((message) => {
+            if (message.isEvidenceWarning) {
+              return (
+                <section
+                  key={message.id}
+                  role="note"
+                  aria-label="Evidence verification warning"
+                  className="min-w-0 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm"
+                >
+                  <div className="mb-1 flex items-center gap-2 font-medium">
+                    <CircleAlert
+                      className="h-4 w-4 shrink-0 text-amber-500"
+                      aria-hidden
+                    />
+                    Evidence could not be verified
+                  </div>
+                  <div className="break-words text-muted-foreground">
+                    <MemoizedMarkdown
+                      content={extractMessageText(message.parts).replace(
+                        /^Evidence verification warning:\s*/,
+                        "",
+                      )}
+                    />
+                  </div>
+                </section>
+              );
+            }
             const isParentUpdate = message.messageSource === "parent_update";
             const visibleParts = isParentUpdate
               ? message.parts
@@ -771,6 +818,7 @@ const Transcript = memo(function Transcript({
                       createdAt={message.createdAt}
                       existingFeedback={message.feedbackType}
                       isHovered={hoveredMessageId === message.id}
+                      isLastAssistantMessage={message.id === latestResponseId}
                     />
                   )}
               </section>
