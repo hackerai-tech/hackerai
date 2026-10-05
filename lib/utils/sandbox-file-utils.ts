@@ -347,12 +347,15 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   return -1;
 };
 
+type AttachmentStaging = "requested_this_run" | "not_requested_this_run";
+
 const formatSandboxAttachmentTag = (
   sanitizedName: string,
   localPath: string,
+  staging: AttachmentStaging,
   legacyFallbackPath?: string,
 ): string =>
-  `<attachment filename="${sanitizedName}" local_path="${localPath}"${
+  `<attachment filename="${sanitizedName}" local_path="${localPath}" staging="${staging}"${
     legacyFallbackPath
       ? ` legacy_fallback_path="${legacyFallbackPath}" use_legacy_fallback_only_if_primary_missing="true"`
       : ""
@@ -361,9 +364,10 @@ const formatSandboxAttachmentTag = (
 const formatInlineImageAttachmentTag = (
   sanitizedName: string,
   localPath: string,
+  staging: AttachmentStaging,
   legacyFallbackPath?: string,
 ): string =>
-  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}"${
+  `<inline_image_attachment filename="${sanitizedName}" sandbox_path="${localPath}" staging="${staging}"${
     legacyFallbackPath
       ? ` legacy_fallback_path="${legacyFallbackPath}" use_legacy_fallback_only_if_primary_missing="true"`
       : ""
@@ -373,15 +377,22 @@ const formatSandboxFileTag = (
   kind: SandboxAttachmentTagKind,
   sanitizedName: string,
   localPath: string,
+  staging: AttachmentStaging,
   legacyFallbackPath?: string,
 ): string =>
   kind === "inline-image"
     ? formatInlineImageAttachmentTag(
         sanitizedName,
         localPath,
+        staging,
         legacyFallbackPath,
       )
-    : formatSandboxAttachmentTag(sanitizedName, localPath, legacyFallbackPath);
+    : formatSandboxAttachmentTag(
+        sanitizedName,
+        localPath,
+        staging,
+        legacyFallbackPath,
+      );
 
 const getSandboxAttachmentIdentity = (part: any): string => {
   if (part?.storage === "local-desktop") {
@@ -459,6 +470,8 @@ export const collectSandboxFiles = (
   updatedMessages.forEach((msg, i) => {
     if (msg.role !== "user" || !msg.parts) return;
 
+    const staging: AttachmentStaging =
+      i === lastUserIdx ? "requested_this_run" : "not_requested_this_run";
     const tags: string[] = [];
     (msg.parts as any[]).forEach((part) => {
       if (part?.type !== "file") return;
@@ -490,6 +503,7 @@ export const collectSandboxFiles = (
           formatSandboxAttachmentTag(
             sanitizedName,
             localPath,
+            staging,
             i === lastUserIdx
               ? undefined
               : getLegacySandboxAttachmentLocalPath(
@@ -520,6 +534,7 @@ export const collectSandboxFiles = (
             options.getAttachmentTagKind?.(part) ?? "attachment",
             sanitizedName,
             localPath,
+            staging,
             i === lastUserIdx
               ? undefined
               : getLegacySandboxAttachmentLocalPath(
@@ -738,6 +753,9 @@ export const prepareLocalDesktopAttachmentsForTrigger = (
         formatSandboxAttachmentTag(
           sanitizedName,
           localPath,
+          messageIndex === lastUserIdx
+            ? "requested_this_run"
+            : "not_requested_this_run",
           messageIndex === lastUserIdx
             ? undefined
             : getLegacySandboxAttachmentLocalPath(
