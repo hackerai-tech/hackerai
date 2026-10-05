@@ -3,11 +3,34 @@ import { describe, expect, it } from "@jest/globals";
 import {
   collectAuthErrorText,
   isEndedSessionRefreshError,
+  isInvalidRefreshTokenError,
   isInvalidCodeVerifierError,
   isUnverifiedSignInSessionError,
 } from "../expected-auth-errors";
 
 describe("expected auth errors", () => {
+  it("recovers only an exact terminal invalid refresh token and keeps it out of ended-session filtering", () => {
+    const cause = {
+      status: 400,
+      error: "invalid_grant",
+      errorDescription: "Invalid refresh token.",
+    };
+    const wrapped = { name: "TokenRefreshError", isTransient: false, cause };
+    expect(isInvalidRefreshTokenError(cause)).toBe(true);
+    expect(isInvalidRefreshTokenError(wrapped)).toBe(true);
+    expect(isEndedSessionRefreshError(wrapped)).toBe(false);
+    for (const error of [
+      { ...wrapped, isTransient: true },
+      { ...wrapped, isTransient: undefined },
+      { ...cause, status: 429 },
+      { ...cause, status: 500 },
+      { ...cause, error: "invalid_client" },
+      { ...cause, errorDescription: "Invalid code verifier." },
+      { ...cause, errorDescription: "Unknown invalid refresh token." },
+      new Error("invalid_grant Invalid refresh token."),
+    ])
+      expect(isInvalidRefreshTokenError(error)).toBe(false);
+  });
   it("matches ended session refresh errors through nested causes", () => {
     const error = Object.assign(
       new Error("Failed to refresh session: Error: invalid_grant"),
