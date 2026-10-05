@@ -266,4 +266,34 @@ describe("auth recovery through ConvexProviderWithAuth", () => {
     await act(async () => jest.advanceTimersByTimeAsync(10_000));
     expect(observations.at(-1)?.isAuthenticated).toBe(true);
   });
+
+  it("does not clear a new account's token when an old session check finishes", async () => {
+    const view = await act(async () => render(renderApp()));
+    let finishSessionCheck!: () => void;
+    refreshAuth.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishSessionCheck = resolve;
+        }),
+    );
+    getAccessToken.mockResolvedValueOnce(undefined);
+    const oldFetch = fetchToken;
+    let oldRequest!: ReturnType<FetchToken>;
+    await act(async () => {
+      oldRequest = oldFetch();
+    });
+    user = { id: "user-2" };
+    token = "new-account-token";
+    await act(async () => view.rerender(renderApp()));
+    await act(async () => {
+      finishSessionCheck();
+      await oldRequest;
+    });
+    offline = true;
+    let fallback: string | null = null;
+    await act(async () => {
+      fallback = await fetchToken({ forceRefreshToken: true });
+    });
+    expect(fallback).toBe("new-account-token");
+  });
 });

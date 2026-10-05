@@ -273,6 +273,7 @@ export function useAuthFromAuthKit(
         if (!token) {
           const cachedToken = accessTokenRef.current;
           const recoveryFailed = await reconcileMissingToken();
+          if (authContextRef.current !== authContext) return null;
           if (recoveryFailed) {
             startRecovery();
             return cachedToken ?? null;
