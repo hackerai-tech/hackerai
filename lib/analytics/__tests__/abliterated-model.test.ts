@@ -106,6 +106,11 @@ describe("Abliteration stream telemetry", () => {
       expect(JSON.stringify(capture.mock.calls)).not.toContain(
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
+      expect(telemetry.getSummary()).toMatchObject({
+        provider_annotation_telemetry_version: 1,
+        provider_annotated_attempt_count: annotated ? 1 : 0,
+        provider_annotated_served_count: annotated ? 1 : 0,
+      });
     },
   );
 
