@@ -98,7 +98,7 @@ it.each([
         upload_failure_kind: "url",
         upload_failure_phase: phase,
         upload_failure_reason: "unknown",
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       },
     );
     const { metadata, triggerLogger } = await recordFailure(
@@ -107,7 +107,7 @@ it.each([
     );
     expect(metadata.set).toHaveBeenCalledWith("uploadFailurePhase", phase);
     expect(metadata.set).toHaveBeenCalledWith(
-      "uploadRetriedWithFreshSandbox",
+      "uploadRetriedAfterReconnect",
       true,
     );
     expect(triggerLogger.error).toHaveBeenCalledWith(
@@ -118,7 +118,7 @@ it.each([
         phase: terminalPhase,
         uploadFailurePhase: phase,
         uploadFailureReason: "unknown",
-        uploadRetriedWithFreshSandbox: true,
+        uploadRetriedAfterReconnect: true,
       }),
     );
   },

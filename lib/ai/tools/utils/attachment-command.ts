@@ -21,7 +21,11 @@ export async function runAttachmentCommand(
   sandbox: AnySandbox,
   command: string,
   signal?: AbortSignal,
-  options?: { displayName?: string; timeoutMs?: number },
+  options?: {
+    displayName?: string;
+    timeoutMs?: number;
+    requestTimeoutMs?: number;
+  },
 ) {
   signal?.throwIfAborted();
   if (!signal)
@@ -48,7 +52,7 @@ export async function runAttachmentCommand(
   const handle = await sandbox.commands.run(command, {
     ...options,
     background: true,
-    requestTimeoutMs: 10_000,
+    requestTimeoutMs: options?.requestTimeoutMs ?? 10_000,
   });
   let cancellation: Promise<void> | undefined;
   let onAbort!: () => void;

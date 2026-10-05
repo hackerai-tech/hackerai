@@ -1,3 +1,9 @@
+jest.mock("../sandbox-upload-readiness", () => ({
+  checkAttachmentReadiness: jest.fn(),
+  sampleAttachmentFailureMetrics: jest.fn(async () => ({
+    metrics_status: "unavailable",
+  })),
+}));
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
@@ -40,7 +46,7 @@ it.each([
           localPath: `/tmp/private-file-${index}`,
         })),
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       expect(result.failedCount).toBe(2);
       expect(result.pathRewrites).toEqual([]);
@@ -821,7 +827,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -829,7 +835,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result).toEqual({
         failedCount: 0,
         pathRewrites: [],
-        retriedWithFreshSandbox: true,
+        retriedAfterReconnect: true,
       });
       expect(firstRun).toHaveBeenCalledTimes(3);
       expect(refreshedRun).toHaveBeenCalledTimes(1);
@@ -874,7 +880,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -922,7 +928,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -931,7 +937,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "local_command_no_response",
         upload_failure_transient_sandbox_command: true,
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       });
       expect(getSandboxUploadUserMessage(result)).toContain(
         "Reconnect it in Remote Control",
@@ -971,7 +977,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -979,7 +985,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result).toEqual({
         failedCount: 0,
         pathRewrites: [],
-        retriedWithFreshSandbox: true,
+        retriedAfterReconnect: true,
       });
       expect(firstRun).toHaveBeenCalledTimes(3);
       expect(refreshedRun).toHaveBeenCalledTimes(1);
@@ -995,17 +1001,17 @@ describe("desktop-local sandbox file helpers", () => {
     [
       "Sandbox operation timed out. The sandbox may be overloaded. Please try again.",
       "operation_timeout",
-      "fresh_sandbox",
+      "reconnect",
     ],
     [
       "Failed creating persistent sandbox: The operation was aborted due to timeout",
       "operation_timeout",
-      "fresh_sandbox",
+      "reconnect",
     ],
     [
       "Failed creating persistent sandbox: 500: Failed to place sandbox",
       "placement_failure",
-      "fresh_sandbox",
+      "reconnect",
     ],
   ])(
     "refreshes once after retryable sandbox acquisition failure %s",
@@ -1033,7 +1039,7 @@ describe("desktop-local sandbox file helpers", () => {
           ],
           ensureSandbox,
           {
-            retryWithFreshSandboxOnTransientFailure: true,
+            retryAfterReconnectOnTransientFailure: true,
             logContext: {
               service: "agent-long",
               requestId: "run-123",
@@ -1046,7 +1052,7 @@ describe("desktop-local sandbox file helpers", () => {
         expect(result).toEqual({
           failedCount: 0,
           pathRewrites: [],
-          retriedWithFreshSandbox: true,
+          retriedAfterReconnect: true,
         });
         expect(ensureSandbox).toHaveBeenCalledTimes(2);
         expect(ensureSandbox.mock.calls[1][0]).toEqual({
@@ -1180,11 +1186,11 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
 
       expect(result.failedCount).toBe(1);
-      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(result.retriedAfterReconnect).toBeUndefined();
       expect(ensureSandbox).toHaveBeenCalledTimes(1);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_sandbox_readiness_reason: "unknown",
@@ -1215,7 +1221,7 @@ describe("desktop-local sandbox file helpers", () => {
       );
 
       expect(result.failedCount).toBe(1);
-      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(result.retriedAfterReconnect).toBeUndefined();
       expect(ensureSandbox).toHaveBeenCalledTimes(1);
     } finally {
       consoleErrorSpy.mockRestore();
@@ -1244,7 +1250,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
 
       expect(result.failedCount).toBe(1);
@@ -1252,7 +1258,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "sandbox_placement_failure",
         upload_failure_sandbox_readiness_reason: "placement_failure",
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       });
       const retryFailedLog = JSON.parse(
         String(
@@ -1267,7 +1273,7 @@ describe("desktop-local sandbox file helpers", () => {
         level: "warn",
         initial_failure_reason: "operation_timeout",
         final_failure_reason: "placement_failure",
-        recovery_strategy: "fresh_sandbox",
+        recovery_strategy: "reconnect",
       });
     } finally {
       consoleWarnSpy.mockRestore();
@@ -1298,7 +1304,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
 
       expect(ensureSandbox).toHaveBeenCalledTimes(2);
@@ -1306,7 +1312,7 @@ describe("desktop-local sandbox file helpers", () => {
         refresh: true,
         reason: "attachment_staging_sandbox_acquisition_failure",
       });
-      expect(result.retriedWithFreshSandbox).toBe(true);
+      expect(result.retriedAfterReconnect).toBe(true);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "sandbox_placement_failure",
         upload_failure_sandbox_readiness_reason: "placement_failure",
@@ -1344,18 +1350,18 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
 
       expect(result.failedCount).toBe(1);
-      expect(result.retriedWithFreshSandbox).toBe(true);
+      expect(result.retriedAfterReconnect).toBe(true);
       expect(ensureSandbox).toHaveBeenCalledTimes(2);
       expect(run).toHaveBeenCalledTimes(3);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_transient_sandbox_command: true,
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       });
     } finally {
       jest.useRealTimers();
@@ -1494,7 +1500,7 @@ describe("desktop-local sandbox file helpers", () => {
             },
           ],
           ensureSandbox,
-          { retryWithFreshSandboxOnTransientFailure: true },
+          { retryAfterReconnectOnTransientFailure: true },
         );
 
         expect(result.failedCount).toBe(1);

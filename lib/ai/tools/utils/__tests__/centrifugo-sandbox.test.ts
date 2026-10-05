@@ -464,6 +464,9 @@ describe("CentrifugoSandbox", () => {
     it("bounds stalled project PowerShell script cleanup after canceling its native write", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\project");
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable = Promise.resolve(
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell",
+      );
       (sandbox as any).shellKind = "cmd";
       const controller = new AbortController();
       const run = jest.spyOn(sandbox.commands, "run");
@@ -1845,6 +1848,11 @@ describe("CentrifugoSandbox", () => {
         const sandbox = createDesktopSandbox(project);
         (sandbox as any).shellKind = shell;
         (sandbox as any).httpClient = "powershell";
+        (sandbox as any).powerShellExecutable = Promise.resolve(
+          (sandbox as any).shellKind === "bash"
+            ? "powershell.exe"
+            : "powershell",
+        );
         const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
           stdout: "",
           stderr: "",
@@ -2390,6 +2398,128 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
+    it.each([
+      ["cmd", "pwsh"],
+      [
+        "cmd",
+        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+      ],
+      ["bash", "pwsh.exe"],
+      [
+        "bash",
+        '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
+      ],
+    ])(
+      "uses verified %s fallback %s and keeps transfer scripts private",
+      async (shell, executable) => {
+        const sandbox = createDesktopSandbox("C:\\work\\project with spaces");
+        (sandbox as any).shellKind = shell;
+        sandbox.files.write = jest.fn(async () => undefined);
+        sandbox.files.remove = jest.fn(async () => undefined);
+        const run = jest.fn(async (command: string) => {
+          if (command.includes("Write-Output"))
+            return {
+              stdout: command.startsWith(executable + " ")
+                ? "hackerai-powershell-ready"
+                : "",
+              stderr: "",
+              exitCode: command.startsWith(executable + " ") ? 0 : 1,
+            };
+          if (command.includes("-File "))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          return { stdout: "", stderr: "not found", exitCode: 1 };
+        });
+        sandbox.commands.run = run;
+        const url = "https://example.com/private?signature=secret";
+        await sandbox.files.downloadFromUrl(url, "file.txt");
+        const probes = run.mock.calls.filter(([command]) =>
+          command.includes("Write-Output"),
+        ).length;
+        await sandbox.files.uploadToUrl("file.txt", url, "text/plain");
+        expect(
+          run.mock.calls.filter(([command]) =>
+            command.includes("Write-Output"),
+          ),
+        ).toHaveLength(probes);
+        const commands = run.mock.calls
+          .filter(([command]) => command.includes("-File "))
+          .map(([command]) => command);
+        expect(commands).toHaveLength(2);
+        expect(
+          commands.every((command) => command.startsWith(executable + " ")),
+        ).toBe(true);
+        expect(commands.join("\n")).not.toContain(url);
+        expect(sandbox.files.remove).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it("does not stage a script when no Windows transfer client is installed", async () => {
+      const sandbox = createDesktopSandbox();
+      (sandbox as any).shellKind = "cmd";
+      sandbox.files.write = jest.fn();
+      const run = jest.fn(async () => ({
+        stdout: "",
+        stderr: "not found",
+        exitCode: 1,
+      }));
+      sandbox.commands.run = run;
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "file.txt"),
+      ).rejects.toThrow(
+        "No supported Windows attachment transfer client is available",
+      );
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+      expect(run).toHaveBeenCalledTimes(4);
+    });
+
+    it("retries a transient DNS failure but does not repeat a resolver thread failure", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
+      let attempts = 0;
+      const run = jest.fn(async (command: string) => {
+        if (!command.includes("curl -fsSL"))
+          throw new Error("diagnostics unavailable");
+        attempts++;
+        return attempts === 1
+          ? {
+              stdout: "",
+              stderr: "curl: (6) Could not resolve host",
+              exitCode: 6,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      });
+      sandbox.commands.run = run;
+      const transfer = sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "/tmp/file",
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+      await expect(transfer).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+      run.mockImplementation(async (command: string) => {
+        if (!command.includes("curl -fsSL"))
+          throw new Error("diagnostics unavailable");
+        return {
+          stdout: "",
+          stderr: "curl: (6) getaddrinfo() thread failed to start",
+          exitCode: 6,
+        };
+      });
+      run.mockClear();
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file"),
+      ).rejects.toThrow("getaddrinfo() thread failed to start");
+      expect(
+        run.mock.calls.filter(([command]) => command.includes("curl -fsSL")),
+      ).toHaveLength(1);
+    });
+
     it("stages and cleans a PowerShell download script when curl is unavailable on Windows", async () => {
       const sandbox = createSandbox({
         osInfo: {
@@ -2407,7 +2537,13 @@ describe("CentrifugoSandbox", () => {
               stderr: "INFO: Could not find files for the given pattern(s).",
               exitCode: 1,
             }
-          : { stdout: "", stderr: "", exitCode: 0 },
+          : {
+              stdout: command.includes("Write-Output")
+                ? "hackerai-powershell-ready"
+                : "",
+              stderr: "",
+              exitCode: 0,
+            },
       );
       (sandbox as any).commands.run = run;
 
@@ -2422,8 +2558,9 @@ describe("CentrifugoSandbox", () => {
         timeoutMs: 30000,
       });
       const commands = run.mock.calls.map(([command]) => command as string);
-      const command = commands.find((command) =>
-        command.startsWith("powershell "),
+      const command = commands.find(
+        (command) =>
+          command.startsWith("powershell ") && command.includes("-File "),
       )!;
       expect(command).toMatch(
         /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
@@ -2475,6 +2612,12 @@ describe("CentrifugoSandbox", () => {
         if (command === "where curl 2>nul") {
           return { stdout: "", stderr: "", exitCode: 1 };
         }
+        if (command.includes("Write-Output"))
+          return {
+            stdout: "hackerai-powershell-ready",
+            stderr: "",
+            exitCode: 0,
+          };
         if (command.startsWith("powershell ")) {
           return {
             stdout: "",
@@ -2501,8 +2644,9 @@ describe("CentrifugoSandbox", () => {
       );
 
       const commands = run.mock.calls.map(([command]) => command as string);
-      const command = commands.find((command) =>
-        command.startsWith("powershell "),
+      const command = commands.find(
+        (command) =>
+          command.startsWith("powershell ") && command.includes("-File "),
       )!;
       expect(command).toMatch(
         /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
@@ -2552,6 +2696,9 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable = Promise.resolve(
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell",
+      );
       const write = jest.fn(async () => undefined);
       const remove = jest.fn(async () => undefined);
       sandbox.files.write = write;
@@ -2611,6 +2758,9 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable = Promise.resolve(
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell",
+      );
       sandbox.files.write = jest.fn(async () => undefined);
       sandbox.files.remove = jest.fn(async () => undefined);
       const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
