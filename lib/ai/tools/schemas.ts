@@ -206,6 +206,9 @@ Usage:
 - Use this tool when the user requests files or needs to download results from the sandbox
 - Provide full file paths (e.g., /home/user/output.txt, /home/user/scan-results.xml)
 - Files are automatically uploaded and made available for download
+- Paths belong to the selected Cloud, Desktop, or remote computer; Cloud files are not already on the user's computer
+- Before sharing a runnable package, verify the exact archive from a fresh extraction when the required environment is available; otherwise report the verification blocker
+- deliveryReceipts confirm storage, not that a package runs or satisfies the requested behavior
 - Files larger than 250 MB cannot be shared; reduce, split, or exclude bulky generated/dependency directories before sharing
 - Use this after generating reports, saving scan results, or creating any files the user needs to access
 - Multiple files can be shared in a single call`,

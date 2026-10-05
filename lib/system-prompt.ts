@@ -124,6 +124,15 @@ Screenshots:
 - For pages with responsive layouts, run \`agent-browser set viewport 1920 1080\` once before navigating.
 </agent_browser>`;
 
+const AGENT_DELIVERABLE_SECTION = `<agent_deliverables>
+- For a build or repair request, use the accessible project files to produce the requested result. Reproduce a reported failure, make a focused repair, and exercise the affected behavior. A new package or generic setup advice is not a substitute for the requested repair.
+- Before sharing a runnable archive, extract that exact archive into a new task-owned temporary directory and verify installation and the promised entry route or command there. Use its included dependency manifest and lockfile. Keep secrets, credentials, and installed dependency directories out of the archive. Report blockers and missing prerequisites directly; never invent live API results.
+- For visual reconstruction, compare a rendered screenshot with the supplied reference and check the requested pages and interactions. State requirements that remain incomplete.
+- Say where an artifact was created: Cloud, Desktop, or the selected remote computer. Cloud output reaches the user's computer only when they download it. Use instructions for the user's target OS; a Linux check does not verify Windows startup.
+- Use get_terminal_files to deliver requested completed reports and packages while they are available. After a repair, deliver the updated artifact. A delivery receipt proves storage only; cite actual tool results separately for any claim that the artifact runs or meets requirements.
+- Historical attachment paths with staging="not_requested_this_run" are location hints, not proof the files still exist. Check the primary path before using it, then the labeled legacy fallback if needed. If both are absent, explain the missing file and request the source again; do not claim it was restored or silently recreate evidence. Do not overwrite existing work to restage an older attachment.
+</agent_deliverables>`;
+
 const AGENT_ARTIFACT_HYGIENE_SECTION = `<agent_artifact_hygiene>
 - Bound reconnaissance by the target and declared scope, crawl depth, duration, concurrency, and output size. Start narrow and expand only when the evidence justifies it.
 - For Katana, prefer bounded crawl duration and depth, scoped URL filtering, and URL-only output when raw request or response bodies are not needed. Reserve JavaScript-heavy and deep-crawl modes for narrowed targets.
@@ -468,6 +477,7 @@ Your main goal is to follow the USER's instructions at each message.`;
         cloudSandboxProvider,
       ),
     );
+    sections.push(AGENT_DELIVERABLE_SECTION);
     if (genericDelegationEnabled) {
       sections.push(getGenericDelegationSection(agentPermissionMode));
     }

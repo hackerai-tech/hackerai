@@ -17,8 +17,30 @@ available; product analytics deliberately excludes it.
 `sandbox_attachment_staging_completed` supplies an attachment-count denominator
 per staging attempt: `total_count`, `direct_success_count`, `recovered_count`,
 and `failed_count`. `staging_attempt` distinguishes `initial` from
-`fresh_sandbox_retry`; do not sum both as independent customer tasks. These
+`reconnect_retry`; do not sum both as independent customer tasks. These
 counts exclude sandbox acquisition failures and cancelled staging attempts.
+
+## Command readiness and reconnect
+
+E2B batches first run a five-second command readiness probe. A failed probe
+prevents every attachment from independently retrying against an unavailable
+command channel. Recovery permits one reconnect and one new readiness probe;
+it does not destroy or replace the workspace. `sandbox_attachment_reconnect`
+records `same_sandbox` so reconnecting a client cannot be mistaken for a new VM.
+`upload_retried_after_reconnect` replaces the misleading fresh-sandbox field.
+
+`sandbox_attachment_failure_diagnostics` distinguishes `readiness` from
+`transfer` and records allowlisted E2B CPU, memory and disk metrics when the
+control plane responds within one second. `metrics_status=unavailable` is
+inconclusive; missing metrics must never replace the original error. Metrics
+are sampled on failure and may lag the actual command failure.
+
+Local transfer failures distinguish a disconnected computer, missing Windows
+transfer client, DNS failure, and resource exhaustion. A curl DNS error with
+`getaddrinfo() thread failed to start` is resource exhaustion evidence, not
+proof of a DNS configuration problem. Windows fallback verifies PowerShell
+on the selected computer, including its system-directory executable, before
+staging a transfer script.
 
 ## E2B write probes
 

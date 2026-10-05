@@ -1,3 +1,9 @@
+jest.mock("../sandbox-upload-readiness", () => ({
+  checkAttachmentReadiness: jest.fn(),
+  sampleAttachmentFailureMetrics: jest.fn(async () => ({
+    metrics_status: "unavailable",
+  })),
+}));
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
@@ -40,7 +46,7 @@ it.each([
           localPath: `/tmp/private-file-${index}`,
         })),
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       expect(result.failedCount).toBe(2);
       expect(result.pathRewrites).toEqual([]);
@@ -149,6 +155,71 @@ const makeLocalMessage = (): UIMessage =>
   }) as UIMessage;
 
 describe("desktop-local sandbox file helpers", () => {
+  it("marks historical desktop sources without queueing them again", () => {
+    const previous = makeLocalMessage();
+    const followup = {
+      id: "followup",
+      role: "user",
+      parts: [{ type: "text", text: "continue" }],
+    } as UIMessage;
+    const original = JSON.stringify(previous);
+    const { messages, sandboxFiles } = prepareLocalDesktopAttachmentsForTrigger(
+      [previous, followup],
+    );
+
+    expect(sandboxFiles).toEqual([]);
+    expect(JSON.stringify(messages)).toContain(
+      'staging=\\"not_requested_this_run\\"',
+    );
+    expect(JSON.stringify(messages)).not.toContain("/Users/alice/Secrets");
+    expect(JSON.stringify(previous)).toBe(original);
+  });
+
+  it("marks an old inline image as unstaged while queueing only the current input", () => {
+    const messages = [
+      {
+        id: "old",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            fileId: "image_old",
+            url: "https://storage.example/old.png",
+            filename: "old.png",
+          },
+        ],
+      },
+      {
+        id: "new",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            fileId: "image_new",
+            url: "https://storage.example/new.png",
+            filename: "new.png",
+          },
+        ],
+      },
+    ] as UIMessage[];
+    const sandboxFiles: Parameters<typeof collectSandboxFiles>[1] = [];
+    collectSandboxFiles(messages, sandboxFiles, undefined, {
+      getAttachmentTagKind: () => "inline-image",
+    });
+
+    expect(sandboxFiles).toHaveLength(1);
+    expect(sandboxFiles[0]).toMatchObject({
+      url: "https://storage.example/new.png",
+    });
+    const oldTag = messages[0].parts.find((part) => part.type === "text");
+    expect(oldTag).toMatchObject({
+      text: expect.stringContaining('staging="not_requested_this_run"'),
+    });
+    expect(oldTag).toMatchObject({
+      text: expect.stringContaining('already_visible_to_model="true"'),
+    });
+  });
+
   it("removes source paths before persistence", () => {
     const [message] = stripLocalDesktopSourcePaths([makeLocalMessage()]);
 
@@ -184,7 +255,7 @@ describe("desktop-local sandbox file helpers", () => {
         (part: any) =>
           part.type === "text" &&
           part.text ===
-            `<attachment filename="report.pdf" local_path="${sandboxFiles[0].localPath}" />`,
+            `<attachment filename="report.pdf" local_path="${sandboxFiles[0].localPath}" staging="requested_this_run" />`,
       ),
     ).toBe(true);
   });
@@ -215,7 +286,7 @@ describe("desktop-local sandbox file helpers", () => {
       text: sandboxFiles
         .map(
           (file) =>
-            `<attachment filename="report.pdf" local_path="${file.localPath}" />`,
+            `<attachment filename="report.pdf" local_path="${file.localPath}" staging="requested_this_run" />`,
         )
         .join("\n"),
     });
@@ -269,6 +340,8 @@ describe("desktop-local sandbox file helpers", () => {
     expect(newPath).toBe(sandboxFiles[0].localPath);
     expect(newPath).not.toBe(oldPath);
     expect(newTag).not.toContain("legacy_fallback_path");
+    expect(oldTag).toContain('staging="not_requested_this_run"');
+    expect(newTag).toContain('staging="requested_this_run"');
   });
 
   it("copies desktop-local files through the local sandbox instead of downloading", async () => {
@@ -821,7 +894,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -829,7 +902,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result).toEqual({
         failedCount: 0,
         pathRewrites: [],
-        retriedWithFreshSandbox: true,
+        retriedAfterReconnect: true,
       });
       expect(firstRun).toHaveBeenCalledTimes(3);
       expect(refreshedRun).toHaveBeenCalledTimes(1);
@@ -874,7 +947,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -922,7 +995,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -931,7 +1004,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "local_command_no_response",
         upload_failure_transient_sandbox_command: true,
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       });
       expect(getSandboxUploadUserMessage(result)).toContain(
         "Reconnect it in Remote Control",
@@ -971,7 +1044,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
@@ -979,7 +1052,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(result).toEqual({
         failedCount: 0,
         pathRewrites: [],
-        retriedWithFreshSandbox: true,
+        retriedAfterReconnect: true,
       });
       expect(firstRun).toHaveBeenCalledTimes(3);
       expect(refreshedRun).toHaveBeenCalledTimes(1);
@@ -995,17 +1068,17 @@ describe("desktop-local sandbox file helpers", () => {
     [
       "Sandbox operation timed out. The sandbox may be overloaded. Please try again.",
       "operation_timeout",
-      "fresh_sandbox",
+      "reconnect",
     ],
     [
       "Failed creating persistent sandbox: The operation was aborted due to timeout",
       "operation_timeout",
-      "fresh_sandbox",
+      "reconnect",
     ],
     [
       "Failed creating persistent sandbox: 500: Failed to place sandbox",
       "placement_failure",
-      "fresh_sandbox",
+      "reconnect",
     ],
   ])(
     "refreshes once after retryable sandbox acquisition failure %s",
@@ -1033,7 +1106,7 @@ describe("desktop-local sandbox file helpers", () => {
           ],
           ensureSandbox,
           {
-            retryWithFreshSandboxOnTransientFailure: true,
+            retryAfterReconnectOnTransientFailure: true,
             logContext: {
               service: "agent-long",
               requestId: "run-123",
@@ -1046,7 +1119,7 @@ describe("desktop-local sandbox file helpers", () => {
         expect(result).toEqual({
           failedCount: 0,
           pathRewrites: [],
-          retriedWithFreshSandbox: true,
+          retriedAfterReconnect: true,
         });
         expect(ensureSandbox).toHaveBeenCalledTimes(2);
         expect(ensureSandbox.mock.calls[1][0]).toEqual({
@@ -1180,11 +1253,11 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
 
       expect(result.failedCount).toBe(1);
-      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(result.retriedAfterReconnect).toBeUndefined();
       expect(ensureSandbox).toHaveBeenCalledTimes(1);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_sandbox_readiness_reason: "unknown",
@@ -1215,7 +1288,7 @@ describe("desktop-local sandbox file helpers", () => {
       );
 
       expect(result.failedCount).toBe(1);
-      expect(result.retriedWithFreshSandbox).toBeUndefined();
+      expect(result.retriedAfterReconnect).toBeUndefined();
       expect(ensureSandbox).toHaveBeenCalledTimes(1);
     } finally {
       consoleErrorSpy.mockRestore();
@@ -1244,7 +1317,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
 
       expect(result.failedCount).toBe(1);
@@ -1252,7 +1325,7 @@ describe("desktop-local sandbox file helpers", () => {
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "sandbox_placement_failure",
         upload_failure_sandbox_readiness_reason: "placement_failure",
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       });
       const retryFailedLog = JSON.parse(
         String(
@@ -1267,7 +1340,7 @@ describe("desktop-local sandbox file helpers", () => {
         level: "warn",
         initial_failure_reason: "operation_timeout",
         final_failure_reason: "placement_failure",
-        recovery_strategy: "fresh_sandbox",
+        recovery_strategy: "reconnect",
       });
     } finally {
       consoleWarnSpy.mockRestore();
@@ -1298,7 +1371,7 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
 
       expect(ensureSandbox).toHaveBeenCalledTimes(2);
@@ -1306,7 +1379,7 @@ describe("desktop-local sandbox file helpers", () => {
         refresh: true,
         reason: "attachment_staging_sandbox_acquisition_failure",
       });
-      expect(result.retriedWithFreshSandbox).toBe(true);
+      expect(result.retriedAfterReconnect).toBe(true);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_reason: "sandbox_placement_failure",
         upload_failure_sandbox_readiness_reason: "placement_failure",
@@ -1344,18 +1417,18 @@ describe("desktop-local sandbox file helpers", () => {
           },
         ],
         ensureSandbox,
-        { retryWithFreshSandboxOnTransientFailure: true },
+        { retryAfterReconnectOnTransientFailure: true },
       );
       await jest.advanceTimersByTimeAsync(5_000);
       const result = await pendingResult;
 
       expect(result.failedCount).toBe(1);
-      expect(result.retriedWithFreshSandbox).toBe(true);
+      expect(result.retriedAfterReconnect).toBe(true);
       expect(ensureSandbox).toHaveBeenCalledTimes(2);
       expect(run).toHaveBeenCalledTimes(3);
       expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
         upload_failure_transient_sandbox_command: true,
-        upload_retried_with_fresh_sandbox: true,
+        upload_retried_after_reconnect: true,
       });
     } finally {
       jest.useRealTimers();
@@ -1494,7 +1567,7 @@ describe("desktop-local sandbox file helpers", () => {
             },
           ],
           ensureSandbox,
-          { retryWithFreshSandboxOnTransientFailure: true },
+          { retryAfterReconnectOnTransientFailure: true },
         );
 
         expect(result.failedCount).toBe(1);

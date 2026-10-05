@@ -579,7 +579,7 @@ type AgentLongErrorSummary = {
   requestedPreference?: string;
   actualSandbox?: string;
   uploadFailureKind?: string;
-  uploadFailurePhase?: "acquisition" | "transfer";
+  uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -592,7 +592,7 @@ type AgentLongErrorSummary = {
   uploadFailureErrorRetryable?: boolean;
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
-  uploadRetriedWithFreshSandbox?: boolean;
+  uploadRetriedAfterReconnect?: boolean;
 };
 
 const isChatNotFoundError = (error: ChatSDKError): boolean => {
@@ -771,6 +771,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       ),
       uploadFailurePhase:
         uploadFailurePhase === "acquisition" ||
+        uploadFailurePhase === "readiness" ||
         uploadFailurePhase === "transfer"
           ? uploadFailurePhase
           : undefined,
@@ -822,9 +823,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_url_length",
       ),
-      uploadRetriedWithFreshSandbox: getBooleanMetadata(
+      uploadRetriedAfterReconnect: getBooleanMetadata(
         errorMetadata,
-        "upload_retried_with_fresh_sandbox",
+        "upload_retried_after_reconnect",
       ),
     };
   }
@@ -1092,10 +1093,10 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureProtocol", summary.uploadFailureProtocol);
   if (summary.uploadFailureUrlLength != null)
     metadata.set("uploadFailureUrlLength", summary.uploadFailureUrlLength);
-  if (summary.uploadRetriedWithFreshSandbox != null) {
+  if (summary.uploadRetriedAfterReconnect != null) {
     metadata.set(
-      "uploadRetriedWithFreshSandbox",
-      summary.uploadRetriedWithFreshSandbox,
+      "uploadRetriedAfterReconnect",
+      summary.uploadRetriedAfterReconnect,
     );
   }
 
@@ -2857,7 +2858,7 @@ export const agentLongTask = task({
                   ensureSandbox,
                   {
                     signal: userStopSignal.signal,
-                    retryWithFreshSandboxOnTransientFailure: true,
+                    retryAfterReconnectOnTransientFailure: true,
                     logContext: {
                       service: "agent-long",
                       requestId: ctx.run.id,

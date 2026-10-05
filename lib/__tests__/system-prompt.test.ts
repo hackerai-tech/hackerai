@@ -22,6 +22,7 @@ describe("systemPrompt security instructions", () => {
         sandboxContext,
       );
       expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain("<agent_deliverables>");
       expect(agent).toContain(
         "coding, research, configuration, files, and pentesting",
       );
@@ -43,6 +44,7 @@ describe("systemPrompt security instructions", () => {
       expect(agent).toContain("disclose changes that could not be restored");
       expect(agent).toContain("<finding_quality>");
       expect(ask).not.toContain("<agent_lifecycle>");
+      expect(ask).not.toContain("<agent_deliverables>");
       expect(ask).not.toContain("requested outcome is sufficiently supported");
     },
   );

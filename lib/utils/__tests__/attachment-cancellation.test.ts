@@ -47,7 +47,7 @@ it.each(["success", "failure"])(
     const acquire = jest.fn(() => acquisition.promise);
     const pending = uploadSandboxFiles([file], acquire, {
       signal: controller.signal,
-      retryWithFreshSandboxOnTransientFailure: true,
+      retryAfterReconnectOnTransientFailure: true,
     });
     controller.abort();
     if (outcome === "success")
@@ -125,7 +125,7 @@ it.each(["channel", "curl"])(
     }));
     const pending = uploadSandboxFiles([file], acquire, {
       signal: controller.signal,
-      retryWithFreshSandboxOnTransientFailure: true,
+      retryAfterReconnectOnTransientFailure: true,
     });
     void pending.catch(() => {});
     await jest.advanceTimersByTimeAsync(0);
@@ -184,6 +184,7 @@ it.each(["url", "localPath"] as const)(
       throw signal.reason;
     });
     const sandbox = {
+      sandboxKind: "centrifugo",
       files: { downloadFromUrl: transfer, copyLocal: transfer },
     };
     const input: SandboxFile =

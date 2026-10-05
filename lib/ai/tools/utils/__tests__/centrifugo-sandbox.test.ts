@@ -463,8 +463,9 @@ describe("CentrifugoSandbox", () => {
 
     it("bounds stalled project PowerShell script cleanup after canceling its native write", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\project");
-      (sandbox as any).cmdPowerShellResolution = Promise.resolve("powershell");
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       (sandbox as any).shellKind = "cmd";
       const controller = new AbortController();
       const run = jest.spyOn(sandbox.commands, "run");
@@ -1844,10 +1845,12 @@ describe("CentrifugoSandbox", () => {
       async (shell, direction) => {
         const project = "C:\\work\\project with spaces";
         const sandbox = createDesktopSandbox(project);
-        (sandbox as any).cmdPowerShellResolution =
-          Promise.resolve("powershell");
         (sandbox as any).shellKind = shell;
         (sandbox as any).httpClient = "powershell";
+        (sandbox as any).powerShellExecutable =
+          (sandbox as any).shellKind === "bash"
+            ? "powershell.exe"
+            : "powershell";
         const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
           stdout: "",
           stderr: "",
@@ -2393,217 +2396,190 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
-    it("shares verified system PowerShell resolution across concurrent uploads and downloads", async () => {
-      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-      (sandbox as any).shellKind = "cmd";
-      (sandbox as any).httpClient = "powershell";
-      const systemPowerShell =
-        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"';
-      const write = jest.spyOn(sandbox.files, "write").mockResolvedValue();
-      const remove = jest.spyOn(sandbox.files, "remove").mockResolvedValue();
-      const run = jest
-        .spyOn(sandbox.commands, "run")
-        .mockImplementation(async (command) => {
-          if (command.includes("[Console]::WriteLine")) {
-            expect(write).not.toHaveBeenCalled();
-            return command.startsWith(systemPowerShell)
-              ? {
-                  stdout: "hackerai-powershell-ready\r\n",
-                  stderr: "",
-                  exitCode: 0,
-                }
-              : {
-                  stdout: "",
-                  stderr: "'powershell' is not recognized",
-                  exitCode: 1,
-                };
-          }
-          return { stdout: "", stderr: "", exitCode: 0 };
-        });
-
-      await Promise.all([
-        sandbox.files.downloadFromUrl(
-          "https://example.com/file",
-          "C:\\temp\\file.txt",
-        ),
-        sandbox.files.uploadToUrl(
-          "C:\\temp\\other.txt",
-          "https://example.com/upload",
-          "text/plain",
-        ),
-      ]);
-      const probes = run.mock.calls.filter(([command]) =>
-        command.includes("[Console]::WriteLine"),
-      );
-      expect(probes).toHaveLength(2);
-      expect(probes.every(([, options]) => options?.timeoutMs === 5000)).toBe(
-        true,
-      );
-      const transfers = run.mock.calls.filter(([command]) =>
-        command.includes(" -File "),
-      );
-      expect(transfers).toHaveLength(2);
-      expect(
-        transfers.every(([command]) => command.startsWith(systemPowerShell)),
-      ).toBe(true);
-      expect(write).toHaveBeenCalledTimes(2);
-      expect(remove).toHaveBeenCalledTimes(2);
-    });
-
     it.each([
-      { stdout: "hackerai-powershell-ready", stderr: "", exitCode: 1 },
-      { stdout: "unexpected output", stderr: "", exitCode: 0 },
+      ["cmd", "pwsh"],
+      [
+        "cmd",
+        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+      ],
+      ["bash", "pwsh.exe"],
+      [
+        "bash",
+        '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
+      ],
     ])(
-      "does not stage files or repeat failed PowerShell discovery: %j",
-      async (result) => {
-        const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-        (sandbox as any).shellKind = "cmd";
-        (sandbox as any).httpClient = "powershell";
-        const write = jest.spyOn(sandbox.files, "write").mockResolvedValue();
-        const run = jest
-          .spyOn(sandbox.commands, "run")
-          .mockResolvedValue(result);
-        await expect(
-          sandbox.files.downloadFromUrl(
-            "https://example.com/file",
-            "C:\\temp\\file.txt",
+      "uses verified %s fallback %s and keeps transfer scripts private",
+      async (shell, executable) => {
+        const sandbox = createDesktopSandbox("C:\\work\\project with spaces");
+        (sandbox as any).shellKind = shell;
+        sandbox.files.write = jest.fn(async () => undefined);
+        sandbox.files.remove = jest.fn(async () => undefined);
+        const run = jest.fn(async (command: string) => {
+          if (command.includes("Write-Output"))
+            return {
+              stdout: command.startsWith(executable + " ")
+                ? "hackerai-powershell-ready"
+                : "",
+              stderr: "",
+              exitCode: command.startsWith(executable + " ") ? 0 : 1,
+            };
+          if (command.includes("-File "))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          return { stdout: "", stderr: "not found", exitCode: 1 };
+        });
+        sandbox.commands.run = run;
+        const url = "https://example.com/private?signature=secret";
+        await sandbox.files.downloadFromUrl(url, "file.txt");
+        const probes = run.mock.calls.filter(([command]) =>
+          command.includes("Write-Output"),
+        ).length;
+        await sandbox.files.uploadToUrl("file.txt", url, "text/plain");
+        expect(
+          run.mock.calls.filter(([command]) =>
+            command.includes("Write-Output"),
           ),
-        ).rejects.toThrow("Windows PowerShell is unavailable");
-        await expect(
-          sandbox.files.uploadToUrl(
-            "C:\\temp\\file.txt",
-            "https://example.com/upload",
-            "text/plain",
-          ),
-        ).rejects.toThrow("Windows PowerShell is unavailable");
-        expect(run).toHaveBeenCalledTimes(2);
-        expect(write).not.toHaveBeenCalled();
+        ).toHaveLength(probes);
+        const commands = run.mock.calls
+          .filter(([command]) => command.includes("-File "))
+          .map(([command]) => command);
+        expect(commands).toHaveLength(2);
+        expect(
+          commands.every((command) => command.startsWith(executable + " ")),
+        ).toBe(true);
+        expect(commands.join("\n")).not.toContain(url);
+        expect(sandbox.files.remove).toHaveBeenCalledTimes(2);
       },
     );
 
-    it("keeps cancellation local while concurrent and later transfers reuse discovery", async () => {
-      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-      (sandbox as any).shellKind = "cmd";
-      (sandbox as any).httpClient = "powershell";
-      const controller = new AbortController();
-      const write = jest.spyOn(sandbox.files, "write").mockResolvedValue();
-      jest.spyOn(sandbox.files, "remove").mockResolvedValue();
-      let releaseProbe!: (value: any) => void;
-      let startedProbe!: () => void;
-      const started = new Promise<void>((resolve) => {
-        startedProbe = resolve;
-      });
-      const probe = new Promise<any>((resolve) => {
-        releaseProbe = resolve;
-      });
-      const run = jest
-        .spyOn(sandbox.commands, "run")
-        .mockImplementation(async (command, options) => {
-          if (command.includes("[Console]::WriteLine")) {
-            expect(options?.signal).toBeUndefined();
-            startedProbe();
-            return probe;
-          }
-          return { stdout: "", stderr: "", exitCode: 0 };
+    it.each([0, 1])(
+      "isolates Stop for concurrent Windows transfer %i during client detection",
+      async (cancelledIndex) => {
+        const sandbox = createDesktopSandbox();
+        (sandbox as any).shellKind = "cmd";
+        (sandbox as any).httpClient = "powershell";
+        sandbox.files.write = jest.fn(async () => undefined);
+        sandbox.files.remove = jest.fn(async () => undefined);
+        const controllers = [new AbortController(), new AbortController()];
+        const finishProbes: Array<() => void> = [];
+        let probesStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          probesStarted = resolve;
         });
-      const cancelled = sandbox.files.downloadFromUrl(
-        "https://example.com/file",
-        "C:\\temp\\file.txt",
-        { signal: controller.signal },
+        const run = jest.fn(async (command: string, options?: any) => {
+          if (!command.includes("Write-Output"))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          const signal = options?.signal as AbortSignal;
+          return new Promise<any>((resolve, reject) => {
+            const onAbort = () => reject(signal.reason);
+            signal.addEventListener("abort", onAbort, { once: true });
+            finishProbes.push(() => {
+              signal.removeEventListener("abort", onAbort);
+              resolve({
+                stdout: "hackerai-powershell-ready",
+                stderr: "",
+                exitCode: 0,
+              });
+            });
+            if (finishProbes.length === 2) probesStarted();
+          });
+        });
+        sandbox.commands.run = run;
+        const transfers = controllers.map((controller, index) =>
+          sandbox.files.downloadFromUrl(
+            "https://example.com/file",
+            `file-${index}.txt`,
+            { signal: controller.signal },
+          ),
+        );
+        const stopped = expect(transfers[cancelledIndex]).rejects.toMatchObject(
+          {
+            name: "AbortError",
+          },
+        );
+        await started;
+        controllers[cancelledIndex].abort();
+        await stopped;
+        finishProbes.forEach((finish) => finish());
+        await expect(transfers[1 - cancelledIndex]).resolves.toBeUndefined();
+        await sandbox.files.downloadFromUrl(
+          "https://example.com/file",
+          "cached.txt",
+        );
+        expect(
+          run.mock.calls.filter(([command]) =>
+            command.includes("Write-Output"),
+          ),
+        ).toHaveLength(2);
+        expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+        expect(sandbox.files.remove).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it("does not stage a script when no Windows transfer client is installed", async () => {
+      const sandbox = createDesktopSandbox();
+      (sandbox as any).shellKind = "cmd";
+      sandbox.files.write = jest.fn();
+      const run = jest.fn(async () => ({
+        stdout: "",
+        stderr: "not found",
+        exitCode: 1,
+      }));
+      sandbox.commands.run = run;
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "file.txt"),
+      ).rejects.toThrow(
+        "No supported Windows attachment transfer client is available",
       );
-      const rejection = expect(cancelled).rejects.toMatchObject({
-        name: "AbortError",
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+      expect(run).toHaveBeenCalledTimes(4);
+    });
+
+    it("retries a transient DNS failure but does not repeat a resolver thread failure", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
+      let attempts = 0;
+      const run = jest.fn(async (command: string) => {
+        if (!command.includes("curl -fsSL"))
+          throw new Error("diagnostics unavailable");
+        attempts++;
+        return attempts === 1
+          ? {
+              stdout: "",
+              stderr: "curl: (6) Could not resolve host",
+              exitCode: 6,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 };
       });
-      await started;
-      const concurrent = sandbox.files.uploadToUrl(
-        "C:\\temp\\other.txt",
-        "https://example.com/upload",
-        "text/plain",
-      );
-      controller.abort();
-      await rejection;
-      expect(write).not.toHaveBeenCalled();
-      releaseProbe({
-        stdout: "hackerai-powershell-ready",
-        stderr: "",
-        exitCode: 0,
-      });
-      await concurrent;
-      await sandbox.files.downloadFromUrl(
+      sandbox.commands.run = run;
+      const transfer = sandbox.files.downloadFromUrl(
         "https://example.com/file",
-        "C:\\temp\\later.txt",
+        "/tmp/file",
       );
+      await jest.advanceTimersByTimeAsync(1000);
+      await expect(transfer).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+      run.mockImplementation(async (command: string) => {
+        if (!command.includes("curl -fsSL"))
+          throw new Error("diagnostics unavailable");
+        return {
+          stdout: "",
+          stderr: "curl: (6) getaddrinfo() thread failed to start",
+          exitCode: 6,
+        };
+      });
+      run.mockClear();
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file"),
+      ).rejects.toThrow("getaddrinfo() thread failed to start");
       expect(
-        run.mock.calls.filter(([command]) =>
-          command.includes("[Console]::WriteLine"),
-        ),
+        run.mock.calls.filter(([command]) => command.includes("curl -fsSL")),
       ).toHaveLength(1);
-      expect(write).toHaveBeenCalledTimes(2);
-    });
-
-    it("uses the verified system executable after a PATH probe transport timeout", async () => {
-      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-      (sandbox as any).shellKind = "cmd";
-      (sandbox as any).httpClient = "powershell";
-      jest.spyOn(sandbox.files, "write").mockResolvedValue();
-      jest.spyOn(sandbox.files, "remove").mockResolvedValue();
-      const run = jest
-        .spyOn(sandbox.commands, "run")
-        .mockRejectedValueOnce(new Error("Command timeout after 5000ms"))
-        .mockResolvedValueOnce({
-          stdout: "hackerai-powershell-ready",
-          stderr: "",
-          exitCode: 0,
-        })
-        .mockResolvedValue({ stdout: "", stderr: "", exitCode: 0 });
-      await sandbox.files.downloadFromUrl(
-        "https://example.com/file",
-        "C:\\temp\\file.txt",
-      );
-      expect(run).toHaveBeenCalledTimes(3);
-      expect(run.mock.calls[1][0]).toContain("%SystemRoot%");
-      expect(run.mock.calls[2][0]).toContain("%SystemRoot%");
-    });
-
-    it("caches exhausted probe budgets and does not replay a timed-out transfer", async () => {
-      const sandbox = createSandbox({ osInfo: { platform: "win32" } } as any);
-      (sandbox as any).shellKind = "cmd";
-      (sandbox as any).httpClient = "powershell";
-      const write = jest.spyOn(sandbox.files, "write").mockResolvedValue();
-      const remove = jest.spyOn(sandbox.files, "remove").mockResolvedValue();
-      const error = new Error("Command timeout after 120005ms");
-      const run = jest.spyOn(sandbox.commands, "run").mockRejectedValue(error);
-      await expect(
-        sandbox.files.downloadFromUrl(
-          "https://example.com/file",
-          "C:\\temp\\file.txt",
-        ),
-      ).rejects.toMatchObject({
-        message: expect.stringContaining("Could not verify Windows PowerShell"),
-        cause: error,
-      });
-      await expect(
-        sandbox.files.downloadFromUrl(
-          "https://example.com/file",
-          "C:\\temp\\file.txt",
-        ),
-      ).rejects.toMatchObject({
-        message: expect.stringContaining("Could not verify Windows PowerShell"),
-        cause: error,
-      });
-      expect(run).toHaveBeenCalledTimes(2);
-      expect(write).not.toHaveBeenCalled();
-
-      (sandbox as any).cmdPowerShellResolution = Promise.resolve("powershell");
-      await expect(
-        sandbox.files.downloadFromUrl(
-          "https://example.com/file",
-          "C:\\temp\\file.txt",
-        ),
-      ).rejects.toBe(error);
-      expect(run).toHaveBeenCalledTimes(3);
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(remove).toHaveBeenCalledTimes(1);
     });
 
     it("stages and cleans a PowerShell download script when curl is unavailable on Windows", async () => {
@@ -2624,7 +2600,7 @@ describe("CentrifugoSandbox", () => {
               exitCode: 1,
             }
           : {
-              stdout: command.includes("[Console]::WriteLine")
+              stdout: command.includes("Write-Output")
                 ? "hackerai-powershell-ready"
                 : "",
               stderr: "",
@@ -2646,7 +2622,7 @@ describe("CentrifugoSandbox", () => {
       const commands = run.mock.calls.map(([command]) => command as string);
       const command = commands.find(
         (command) =>
-          command.startsWith("powershell ") && command.includes(" -File "),
+          command.startsWith("powershell ") && command.includes("-File "),
       )!;
       expect(command).toMatch(
         /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
@@ -2698,13 +2674,12 @@ describe("CentrifugoSandbox", () => {
         if (command === "where curl 2>nul") {
           return { stdout: "", stderr: "", exitCode: 1 };
         }
-        if (command.includes("[Console]::WriteLine")) {
+        if (command.includes("Write-Output"))
           return {
             stdout: "hackerai-powershell-ready",
             stderr: "",
             exitCode: 0,
           };
-        }
         if (command.startsWith("powershell ")) {
           return {
             stdout: "",
@@ -2733,7 +2708,7 @@ describe("CentrifugoSandbox", () => {
       const commands = run.mock.calls.map(([command]) => command as string);
       const command = commands.find(
         (command) =>
-          command.startsWith("powershell ") && command.includes(" -File "),
+          command.startsWith("powershell ") && command.includes("-File "),
       )!;
       expect(command).toMatch(
         /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
@@ -2783,6 +2758,8 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       const write = jest.fn(async () => undefined);
       const remove = jest.fn(async () => undefined);
       sandbox.files.write = write;
@@ -2842,6 +2819,8 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       sandbox.files.write = jest.fn(async () => undefined);
       sandbox.files.remove = jest.fn(async () => undefined);
       const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
