@@ -59,7 +59,7 @@ describe("auxiliary vision", () => {
       });
       const assertion = expect(pending).rejects.toBeDefined();
       if (reason === "caller_aborted") controller.abort();
-      else await jest.advanceTimersByTimeAsync(20_000);
+      else await jest.advanceTimersByTimeAsync(55_000);
       await assertion;
       const serialized = (console.warn as jest.Mock).mock.calls.at(-1)[0];
       expect(JSON.parse(serialized)).toMatchObject({

@@ -1,16 +1,30 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
+import type { UIMessage } from "ai";
 import {
   exceedsAbliterationImageLimit,
   type AbliterationImageMessages,
 } from "@/lib/ai/abliteration-media";
-import { describeImageWithAuxiliaryVision } from "./auxiliary-vision";
+import {
+  AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS,
+  AUXILIARY_VISION_RECOVERY_TIMEOUT_MS,
+  AuxiliaryVisionTimeoutError,
+  describeImageWithAuxiliaryVision,
+  getCachedAuxiliaryVisionDescription,
+  type AuxiliaryVisionDescriptionCacheWriter,
+} from "./auxiliary-vision";
+import {
+  extractErrorDetails,
+  getProviderErrorCategory,
+} from "@/lib/utils/error-utils";
 
 export class AbliterationVisionError extends Error {
-  constructor() {
+  readonly origin = "auxiliary_vision";
+  constructor(cause?: unknown) {
     super(
       "Image analysis could not be completed. Please retry or send fewer images.",
+      { cause },
     );
     this.name = "AbliterationVisionError";
   }
@@ -52,6 +66,15 @@ function imageInput(part: unknown): ImageInput | undefined {
   };
 }
 
+// SDK conversion decodes data URLs to bytes. Match those to their trusted UI
+// attachments without storing a second copy of the image payload.
+const imageCacheKey = ({ image, mediaType }: ImageInput) =>
+  createHash("sha256")
+    .update(mediaType)
+    .update("\0")
+    .update(image.replace(/^data:[^,]*;base64,/, ""))
+    .digest("hex");
+
 /** Reuses existing OCR calls in batches of <=4; only the outbound copy is changed. */
 export function createAbliterationVisionPreprocessor({
   userId,
@@ -61,6 +84,8 @@ export function createAbliterationVisionPreprocessor({
   abortSignal,
   onCost,
   describe = describeImageWithAuxiliaryVision,
+  getAttachmentMessages,
+  cacheDescription,
 }: {
   userId: string;
   chatId: string;
@@ -69,6 +94,9 @@ export function createAbliterationVisionPreprocessor({
   abortSignal: AbortSignal;
   onCost: (cost: number) => void;
   describe?: typeof describeImageWithAuxiliaryVision;
+  /** Only messages whose file metadata was reloaded through the owner check. */
+  getAttachmentMessages?: () => UIMessage[];
+  cacheDescription?: AuxiliaryVisionDescriptionCacheWriter;
 }) {
   // Store only summaries/hashes, not duplicate image payloads. Retain rejected
   // promises too so error recovery cannot repeat an already failed OCR batch.
@@ -104,71 +132,154 @@ export function createAbliterationVisionPreprocessor({
       }
     }
     if (tasks.length === 0) return messages;
-    const replacements = new Map<string, { type: "text"; text: string }>();
-    for (let start = 0; start < tasks.length; start += 4) {
-      abortSignal.throwIfAborted();
-      const results = await Promise.allSettled(
-        tasks.slice(start, start + 4).map(async (task, offset) => {
-          const key = createHash("sha256")
-            .update(task.input.mediaType)
-            .update("\0")
-            .update(task.input.image)
-            .digest("hex");
-          let pending = cache.get(key);
-          if (!pending) {
-            pending = describe({
-              ...task.input,
-              source: task.source,
-              userId,
-              chatId,
-              requestId,
-              triggerRunId,
-              abortSignal,
-              onCost,
-            }).then((result) => result.description);
-            cache.set(key, pending);
-          }
-          const description = await pending;
-          if (!description.trim()) throw new AbliterationVisionError();
-          const escaped = description
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;");
-          const filename = task.input.filename
-            ?.replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;")
-            .replaceAll('"', "&quot;");
-          replacements.set(task.position, {
-            type: "text",
-            text: `<image_description index="${start + offset + 1}"${filename ? ` filename="${filename}"` : ""} trust="untrusted">\n${escaped}\n</image_description>`,
+    const attachments = new Map<
+      string,
+      Array<{ fileId: string; description?: string }>
+    >();
+    for (const message of getAttachmentMessages?.() ?? []) {
+      for (const part of message.parts ?? []) {
+        if (part.type !== "file") continue;
+        const record = part as unknown as Record<string, unknown>;
+        if (typeof record.fileId !== "string") continue;
+        const input = imageInput(part);
+        if (!input) continue;
+        const key = imageCacheKey(input);
+        const entries = attachments.get(key) ?? [];
+        if (!entries.some((entry) => entry.fileId === record.fileId)) {
+          entries.push({
+            fileId: record.fileId,
+            description: getCachedAuxiliaryVisionDescription(record),
           });
-        }),
-      );
-      abortSignal.throwIfAborted();
-      if (results.some((result) => result.status === "rejected"))
-        throw new AbliterationVisionError();
+          attachments.set(key, entries);
+        }
+      }
     }
-    return messages.map((message, mi) => {
-      if (!Array.isArray(message.content)) return message;
-      return {
-        ...message,
-        content: message.content.map((part, pi) => {
-          if (part.type === "tool-result" && part.output.type === "content") {
-            return {
-              ...part,
-              output: {
-                ...part.output,
-                value: part.output.value.map(
-                  (output, oi) =>
-                    replacements.get(`${mi}:${pi}:${oi}`) ?? output,
-                ),
-              },
-            };
-          }
-          return replacements.get(`${mi}:${pi}`) ?? part;
-        }),
-      };
-    }) as T;
+    const recoveryController = new AbortController();
+    const recoveryTimeout = setTimeout(
+      () =>
+        recoveryController.abort(
+          new AuxiliaryVisionTimeoutError(AUXILIARY_VISION_RECOVERY_TIMEOUT_MS),
+        ),
+      AUXILIARY_VISION_RECOVERY_TIMEOUT_MS,
+    );
+    const recoverySignal = AbortSignal.any([
+      abortSignal,
+      recoveryController.signal,
+    ]);
+    let spent = 0;
+    const withinBudget = () =>
+      spent < AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS;
+    const replacements = new Map<string, { type: "text"; text: string }>();
+    try {
+      for (let start = 0; start < tasks.length; start += 4) {
+        recoverySignal.throwIfAborted();
+        const results = await Promise.allSettled(
+          tasks.slice(start, start + 4).map(async (task, offset) => {
+            const key = imageCacheKey(task.input);
+            // Tool screenshots are mutable and have no owned attachment identity.
+            const ownedAttachments =
+              task.source === "attachment" ? (attachments.get(key) ?? []) : [];
+            let pending = cache.get(key);
+            if (!pending) {
+              const saved = ownedAttachments.find(
+                (entry) => entry.description,
+              )?.description;
+              pending = saved
+                ? Promise.resolve(saved)
+                : (async () => {
+                    if (!withinBudget())
+                      throw new Error(
+                        "Image analysis reached its cost budget. Please retry with fewer images.",
+                      );
+                    const result = await describe({
+                      ...task.input,
+                      source: task.source,
+                      userId,
+                      chatId,
+                      requestId,
+                      triggerRunId,
+                      abortSignal: recoverySignal,
+                      canRetry: withinBudget,
+                      onCost: (cost) => {
+                        spent += cost;
+                        onCost(cost);
+                      },
+                    });
+                    // Persist each completed image before a sibling failure is surfaced.
+                    // Cache writes are best effort; the storage adapter logs failures.
+                    if (cacheDescription)
+                      await Promise.allSettled(
+                        ownedAttachments.map(({ fileId }) =>
+                          cacheDescription({
+                            userId,
+                            fileId,
+                            description: result.description,
+                            model: result.model,
+                          }),
+                        ),
+                      );
+                    return result.description;
+                  })();
+              cache.set(key, pending);
+            }
+            const description = await pending;
+            if (!description.trim()) throw new AbliterationVisionError();
+            const escaped = description
+              .replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;");
+            const filename = task.input.filename
+              ?.replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;")
+              .replaceAll('"', "&quot;");
+            replacements.set(task.position, {
+              type: "text",
+              text: `<image_description index="${start + offset + 1}"${filename ? ` filename="${filename}"` : ""} trust="untrusted">\n${escaped}\n</image_description>`,
+            });
+          }),
+        );
+        recoverySignal.throwIfAborted();
+        const failures = results.filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+        );
+        if (failures.length) {
+          const timeout = failures.find(
+            ({ reason }) =>
+              getProviderErrorCategory(extractErrorDetails(reason)) ===
+              "timeout",
+          );
+          throw new AbliterationVisionError((timeout ?? failures[0]).reason);
+        }
+      }
+      return messages.map((message, mi) => {
+        if (!Array.isArray(message.content)) return message;
+        return {
+          ...message,
+          content: message.content.map((part, pi) => {
+            if (part.type === "tool-result" && part.output.type === "content") {
+              return {
+                ...part,
+                output: {
+                  ...part.output,
+                  value: part.output.value.map(
+                    (output, oi) =>
+                      replacements.get(`${mi}:${pi}:${oi}`) ?? output,
+                  ),
+                },
+              };
+            }
+            return replacements.get(`${mi}:${pi}`) ?? part;
+          }),
+        };
+      }) as T;
+    } catch (error) {
+      abortSignal.throwIfAborted();
+      if (error instanceof AbliterationVisionError) throw error;
+      throw new AbliterationVisionError(error);
+    } finally {
+      clearTimeout(recoveryTimeout);
+    }
   };
 }

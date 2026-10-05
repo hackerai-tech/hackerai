@@ -548,7 +548,7 @@ type AgentLongErrorSummary = {
   cause?: string;
   loginRequired: boolean;
   statusCode?: number;
-  providerErrorOrigin?: "local_request_size_guard";
+  providerErrorOrigin?: ProviderTerminalError["origin"];
   localRequestId?: string;
   requestBytesBefore?: number;
   requestBytesAfter?: number;
@@ -3579,6 +3579,7 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
                   event: "agent_guardrail_observed",

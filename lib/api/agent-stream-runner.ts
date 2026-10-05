@@ -1,3 +1,4 @@
+import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
@@ -717,6 +718,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
@@ -1237,6 +1239,8 @@ export async function createAgentStream(
     );
   };
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    getAttachmentMessages: () => state.finalMessages,
+    cacheDescription: ctx.cacheVisionDescription,
     userId: ctx.userId,
     chatId: ctx.chatId,
     requestId: ctx.chatLogger?.getRequestId?.(),
