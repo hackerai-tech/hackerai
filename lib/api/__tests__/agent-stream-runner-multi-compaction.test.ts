@@ -120,7 +120,10 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: () => false,
-  toolResultsContainImageViewResult: () => false,
+  toolResultsContainImageViewResult: (toolResults: unknown[]) =>
+    jest
+      .requireActual("@/lib/chat/multimodal-tool-result-recovery")
+      .toolResultsContainImageViewResult(toolResults),
   uiMessagesContainImageViewResult: () => false,
 }));
 jest.mock("@/lib/ai/providers", () => ({
@@ -1509,7 +1512,9 @@ describe("createAgentStream repeated compaction", () => {
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),
         },
-        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        abliteratedStepRouting: {
+          baselineModel: "model-deepseek-v4-flash-0731",
+        },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {
           setAuthoritativeModelCostForStep: jest.fn(),
@@ -1518,9 +1523,22 @@ describe("createAgentStream repeated compaction", () => {
       }) as any,
       state,
     )) as any;
-    await stream.prepareStep({
-      stepNumber: 0,
-      steps: [],
+    const prepared = await stream.prepareStep({
+      stepNumber: 1,
+      steps: [
+        {
+          toolResults: [
+            {
+              toolName: "file",
+              output: {
+                action: "view",
+                kind: "image",
+                mediaType: "image/png",
+              },
+            },
+          ],
+        },
+      ],
       messages: [
         {
           role: "user",
@@ -1528,8 +1546,9 @@ describe("createAgentStream repeated compaction", () => {
         },
       ],
     });
+    expect(prepared.model.modelId).toBe("model-deepseek-v4-flash-vision");
     await stream.onStepFinish({
-      response: { modelId: "model-grok-4.5-pro", messages: [] },
+      response: { modelId: prepared.model.modelId, messages: [] },
       text: "Image inspected",
       finishReason: "stop",
       toolCalls: [],
