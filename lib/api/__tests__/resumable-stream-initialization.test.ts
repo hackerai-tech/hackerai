@@ -23,7 +23,13 @@ function runScenario(scenario: string) {
         subscriber: () => subscriber,
         publisher: () => publisher,
       })({ waitUntil: () => {} });
-      (async () => { ${scenario} })().catch(error => { console.error(error); process.exitCode = 1; });
+      const watchdog = setTimeout(() => {
+        console.error('Scenario did not complete');
+        process.exit(1);
+      }, 2000);
+      (async () => { ${scenario} })()
+        .catch(error => { console.error(error); process.exitCode = 1; })
+        .finally(() => clearTimeout(watchdog));
       `,
     ],
     { encoding: "utf8", timeout: 5000, env: {} },
