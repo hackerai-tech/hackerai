@@ -79,6 +79,9 @@ patchedDependencies:
   brace-expansion@5.0.9:
     hash: d6d97a105a1331c8c24a45bee0c3537ea0988efb506f9f6e682e77f403933e2e
     path: patches/brace-expansion@5.0.9.patch
+  resumable-stream@2.2.13:
+    hash: e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b
+    path: patches/resumable-stream@2.2.13.patch
 
 importers:
 
@@ -326,7 +329,7 @@ importers:
         version: 6.2.1(@opentelemetry/api@1.9.1)
       resumable-stream:
         specifier: ^2.2.13
-        version: 2.2.13
+        version: 2.2.13(patch_hash=e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b)
       shiki:
         specifier: ^4.4.3
         version: 4.4.3
@@ -16464,7 +16467,7 @@ snapshots:
       onetime: 7.0.0
       signal-exit: 4.1.0
 
-  resumable-stream@2.2.13: {}
+  resumable-stream@2.2.13(patch_hash=e0326699dfc78d0a142c32050160b4afe544959d316dbe557f602d1fd2c0ba5b): {}
 
   retry-axios@2.6.0(axios@1.18.0(debug@4.4.3)):
     dependencies:

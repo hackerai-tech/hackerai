@@ -273,7 +273,8 @@
     },
     "patchedDependencies": {
       "brace-expansion@5.0.9": "patches/brace-expansion@5.0.9.patch",
-      "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch"
+      "@workos-inc/authkit-nextjs@4.3.2": "patches/@workos-inc__authkit-nextjs@4.3.2.patch",
+      "resumable-stream@2.2.13": "patches/resumable-stream@2.2.13.patch"
     }
   }
 }
