@@ -1,7 +1,7 @@
 import type { SubscriptionTier } from "@/types";
 
 export const SUBAGENT_FREE_TEXT_MODEL = "agent-model-free";
-export const SUBAGENT_PAID_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+export const SUBAGENT_PAID_TEXT_MODEL = "model-deepseek-v4-flash-vision-pro";
 export const SUBAGENT_VISION_MODEL = "model-deepseek-v4-flash-vision";
 
 export const resolveSubagentTextModel = (
@@ -49,6 +49,10 @@ export const resolveSubagentModelForImageToolResults = (
   currentModel: string,
   hasImageToolResults: boolean,
 ): string => {
-  if (currentModel === SUBAGENT_VISION_MODEL) return currentModel;
+  if (
+    currentModel === SUBAGENT_VISION_MODEL ||
+    currentModel === SUBAGENT_PAID_TEXT_MODEL
+  )
+    return currentModel;
   return hasImageToolResults ? SUBAGENT_VISION_MODEL : currentModel;
 };
