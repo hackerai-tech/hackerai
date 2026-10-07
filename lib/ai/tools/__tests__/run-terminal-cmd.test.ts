@@ -1229,11 +1229,13 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     // Completed commands expose an opaque ID for later record retrieval.
     expect(result.result.session).toMatch(/^[a-f0-9]{8}$/);
     expect(result.result.pid).toBeUndefined();
-    // commands.run was invoked exactly once with the command.
-    expect(nonE2B.commands.run).toHaveBeenCalledTimes(1);
+    // Best-effort retention also uses commands.run. The user command executes
+    // exactly once even when that maintenance returns an unusable response.
     expect(
-      (nonE2B.commands.run as jest.Mock).mock.calls[0][0] as string,
-    ).toContain("echo hi");
+      nonE2B.commands.run.mock.calls.filter(([command]) =>
+        command.includes("echo hi"),
+      ),
+    ).toHaveLength(1);
   });
 
   test("retires an unsubscribed relay and retries once on its verified successor", async () => {
@@ -1242,7 +1244,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       sandboxKind: "centrifugo" as const,
       getConnectionId: () => "conn-stale",
       isWindows: () => false,
-      commands: { run: jest.fn(async () => Promise.reject(relayError)) },
+      commands: {
+        run: jest.fn(async (_command: string) => Promise.reject(relayError)),
+      },
     };
     const replacementSandbox = {
       sandboxKind: "centrifugo" as const,
@@ -1285,12 +1289,20 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         exitCode: 0,
         processStarted: true,
       });
-      expect(staleSandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(
+        staleSandbox.commands.run.mock.calls.filter(([command]) =>
+          command.includes("echo recovered"),
+        ),
+      ).toHaveLength(1);
       expect(recoverLocalConnection).toHaveBeenCalledWith(
         "conn-stale",
         "command_relay_unsubscribed",
       );
-      expect(replacementSandbox.commands.run).toHaveBeenCalledTimes(1);
+      expect(
+        replacementSandbox.commands.run.mock.calls.filter(([command]) =>
+          command.includes("echo recovered"),
+        ),
+      ).toHaveLength(1);
     } finally {
       warnSpy.mockRestore();
     }
