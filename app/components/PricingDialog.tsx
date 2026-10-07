@@ -224,12 +224,28 @@ const PlanCard: React.FC<PlanCardProps> = ({
   );
 };
 
+function DelayedBillingStatus() {
+  const [visible, setVisible] = React.useState(false);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), 300);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!visible) return null;
+  return (
+    <p role="status" className="text-center text-sm text-muted-foreground">
+      Checking your billing status…
+    </p>
+  );
+}
+
 const PricingDialog: React.FC<PricingDialogProps> = ({
   isOpen,
   onClose,
   context,
 }) => {
-  const { user, organizationId } = useAuth();
+  const { user, organizationId, loading: authLoading } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
   const {
@@ -241,7 +257,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   const billing = useBillingRecoveryStatus(isOpen);
   const billingBlocked = Boolean(
     user &&
-    (billing.isLoading ||
+    (authLoading ||
+      billing.isLoading ||
       billing.error ||
       billingReviewRequired ||
       billing.data?.checkoutRequiresReview ||
@@ -263,21 +280,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     price: number;
   } | null>(null);
   const pricingIntentCopy = getPricingIntentCopy(context, subscription);
-  const [billingLoadingDelayed, setBillingLoadingDelayed] =
-    React.useState(false);
-  const showBillingLoading =
-    isOpen && billing.isLoading && billingLoadingDelayed;
-
-  React.useEffect(() => {
-    if (!isOpen || !billing.isLoading) {
-      setBillingLoadingDelayed(false);
-      return;
-    }
-
-    const timer = setTimeout(() => setBillingLoadingDelayed(true), 300);
-    return () => clearTimeout(timer);
-  }, [isOpen, billing.isLoading]);
-
   // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
   React.useEffect(() => {
     if (isOpen && (subscription === "ultra" || subscription === "team")) {
@@ -589,14 +591,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           <div className="px-6 pb-8">
             {user && (
               <div className="mx-auto mb-6 w-full max-w-[88rem]">
-                {showBillingLoading && (
-                  <p
-                    role="status"
-                    className="text-center text-sm text-muted-foreground"
-                  >
-                    Checking your billing status…
-                  </p>
-                )}
+                {isOpen && billing.isLoading && <DelayedBillingStatus />}
                 {billing.error && !billingReviewRequired && (
                   <div role="status" className="rounded-xl border p-4 text-sm">
                     <p>

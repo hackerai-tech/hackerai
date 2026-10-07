@@ -14,6 +14,7 @@ const mockHandleUpgrade = jest.fn();
 const mockFetch = jest.fn();
 const mockClearBillingReview = jest.fn();
 let mockBillingReviewRequired = false;
+let mockAuthLoading = false;
 let mockBilling = {
   data: { hasActiveSubscription: false, cancelAtPeriodEnd: false } as
     | import("@/lib/billing/api-types").SubscriptionCancellationStatus
@@ -24,7 +25,7 @@ let mockBilling = {
 };
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
-  useAuth: () => ({ user: { id: "user_free" } }),
+  useAuth: () => ({ user: { id: "user_free" }, loading: mockAuthLoading }),
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -80,6 +81,7 @@ describe("PricingDialog prices and billing status", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockBillingReviewRequired = false;
+    mockAuthLoading = false;
     mockBilling = {
       data: { hasActiveSubscription: false, cancelAtPeriodEnd: false },
       isLoading: false,
@@ -204,6 +206,29 @@ describe("PricingDialog prices and billing status", () => {
       "free",
       expect.objectContaining({ surface: "pricing_dialog" }),
     );
+  });
+
+  it("blocks checkout during an auth refresh before the billing check is enabled", async () => {
+    mockAuthLoading = true;
+    mockBilling.data = undefined;
+    const { rerender } = render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(screen.getByText("29")).toBeVisible();
+    const proButton = screen.getByRole("button", { name: "Get Pro" });
+    expect(proButton).toBeDisabled();
+    await userEvent.click(proButton);
+    expect(mockHandleUpgrade).not.toHaveBeenCalled();
+
+    mockAuthLoading = false;
+    mockBilling.isLoading = true;
+    rerender(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(proButton).toBeDisabled();
+    mockBilling.isLoading = false;
+    mockBilling.data = {
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+    };
+    rerender(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(proButton).toBeEnabled();
   });
 
   it("hides a fast billing check while keeping checkout blocked until it completes", () => {
