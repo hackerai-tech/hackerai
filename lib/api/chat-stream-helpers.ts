@@ -611,8 +611,8 @@ const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
   "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
 
-const LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN = [
-  "model-deepseek-v4-flash-0731",
+const GLM_FLASH_AGENT_FALLBACK_CHAIN = [
+  "model-deepseek-v4-flash-vision",
   "model-deepseek-v4-pro-0813",
   "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
@@ -636,10 +636,10 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "ask-model-free-glm": GLM_FLASH_AGENT_FALLBACK_CHAIN,
   "ask-model-free-deepseek-v41": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-agent": GLM_FLASH_AGENT_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
@@ -775,10 +775,12 @@ export function getRetryFallbackModel(
     return "model-deepseek-v4-pro-0813";
   }
   if (
-    modelName === ABLITERATION_MODEL_KEY ||
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === "ask-model-free-glm"
   ) {
+    return "model-deepseek-v4-flash-vision";
+  }
+  if (modelName === ABLITERATION_MODEL_KEY) {
     return "model-deepseek-v4-flash-0731";
   }
   if (
