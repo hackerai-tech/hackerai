@@ -793,6 +793,25 @@ describe("POST /api/subscription/webhook", () => {
     },
   );
 
+  it("flags a renewal paid after requested cancellation without refunding or restoring credits", async () => {
+    const { subscription } = mockLateRenewal();
+    subscription.cancellation_details.reason = "cancellation_requested";
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+    expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_late_payment_requires_manual_reconciliation",
+      expect.objectContaining({
+        reconciliation_reason: "payment_after_non_payment_failure_cancellation",
+      }),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      expect.anything(),
+    );
+  });
+
   it("leaves compensated late payments for manual review", async () => {
     const { subscription } = mockLateRenewal();
     mockListSubscriptions.mockReturnValue([
