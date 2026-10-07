@@ -5,10 +5,12 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import {
   USE_CASE_SURVEY_STORAGE_KEY,
   USE_CASE_QUESTION,
+  USE_CASE_OPTIONS,
 } from "@/lib/analytics/acquisition-survey";
 import { surveyDefinition } from "@/lib/analytics/test-support/acquisition-survey-fixture";
 const mockCapture = jest.fn();
@@ -108,6 +110,15 @@ describe("optional inline marketing survey", () => {
   it("records one native PostHog response with only a structured use case", async () => {
     render(<AcquisitionSurvey activationMode="agent" />);
     await prompt();
+    const renderedOrder = within(
+      screen.getByRole("group", { name: USE_CASE_QUESTION }),
+    )
+      .getAllByRole("button")
+      .map(
+        (button) =>
+          USE_CASE_OPTIONS.find(({ label }) => label === button.textContent)
+            ?.value,
+      );
     fireEvent.click(
       screen.getByRole("button", { name: "Learning security / CTFs" }),
     );
@@ -125,6 +136,8 @@ describe("optional inline marketing survey", () => {
           $survey_completed: true,
           use_case: "learning",
           activation_mode: "agent",
+          option_order: renderedOrder,
+          option_order_version: 1,
           $set_once: expect.objectContaining({
             marketing_use_case_survey_completed_v2: true,
             marketing_use_case_v2: "learning",

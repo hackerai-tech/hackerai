@@ -26,6 +26,12 @@ evaluates the linked and generated targeting flags for the authenticated user.
 Client-wide feature flag polling stays disabled. Definitions cache for up to 60
 seconds; audience decisions and the authenticated endpoint do not cache.
 
+The card varies the first four choices' positions deterministically by user and
+survey to reduce position bias, keeping “Something else” last. Preserve the
+canonical PostHog choice order and question ID; capture answers by value/label,
+never by displayed index. Events include structured `option_order` and
+`option_order_version` so readouts can separate display policies.
+
 Responses live in PostHog Surveys; there is no new Convex table. `survey shown`
 means at least half the card was visible in a visible tab, or the user interacted
 with it. `survey sent` carries the actual `$survey_id`, question-ID response,
@@ -45,9 +51,9 @@ one-invitation guarantee. A queued capture is not proof of remote delivery.
 
 Prepare separate survey definitions and flags in Preview `hackerai-dev` 401167
 and Production `HackerAI` 144137. Preview uses 100% of app-eligible tests;
-Production remains inactive at 0% until a separately approved internal rollout.
-Keep both survey definitions as drafts while reviewing the PR. Enable Surveys in
-the intended project and launch its definition only during approved acceptance.
+Production uses the separately authorized rollout recorded in HAC-144. For an
+initial launch, keep definitions as drafts until approved acceptance. Enable
+Surveys and launch each definition only in its explicitly selected project.
 
 Before live testing, verify that Vercel's Preview project token is the development
 project token and resolve its designated Preview Convex account/deployment.
