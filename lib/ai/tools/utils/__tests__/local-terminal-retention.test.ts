@@ -21,7 +21,12 @@ const exec = promisify(execFile);
 const roots: string[] = [];
 
 async function fixture(
-  options: { windows?: boolean; unavailable?: boolean; hook?: string } = {},
+  options: {
+    windows?: boolean;
+    unavailable?: boolean;
+    oldNode?: boolean;
+    hook?: string;
+  } = {},
 ) {
   const root = `/tmp/hackerai-retention-${randomUUID()}`;
   roots.push(root);
@@ -48,6 +53,12 @@ async function fixture(
           Buffer.from(
             options.hook + Buffer.from(script, "base64").toString(),
           ).toString("base64"),
+        );
+      }
+      if (options.oldNode) {
+        command = command.replace(
+          'node -e "',
+          "node -e \"Object.defineProperty(process.versions, 'node', {value: '16.0.0'}); ",
         );
       }
       const { stdout } = await exec("/bin/bash", ["-c", command], {
@@ -302,7 +313,7 @@ describe("local terminal retention", () => {
     });
   });
 
-  it.each([{ windows: true }, { unavailable: true }])(
+  it.each([{ windows: true }, { unavailable: true }, { oldNode: true }])(
     "uses file APIs when the command fast path is unavailable: %j",
     async (options) => {
       const f = await fixture(options);

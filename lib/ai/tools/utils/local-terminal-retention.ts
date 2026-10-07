@@ -134,7 +134,7 @@ export async function pruneLocalTerminalRecords(
   const script = Buffer.from(RETENTION_SCRIPT).toString("base64");
   const payload = Buffer.from(JSON.stringify(input)).toString("base64");
   const result = await sandbox.commands.run(
-    `if command -v node >/dev/null 2>&1; then node -e "eval(Buffer.from('${script}','base64').toString())" '${payload}'; else printf '%s' '{"unavailable":true}'; fi`,
+    `if command -v node >/dev/null 2>&1; then node -e "if (Number(process.versions.node.split('.')[0]) < 18) process.stdout.write(JSON.stringify({unavailable:true})); else eval(Buffer.from('${script}','base64').toString())" '${payload}'; else printf '%s' '{"unavailable":true}'; fi`,
     { displayName: "", timeoutMs: 30_000 },
   );
   if (result.exitCode !== 0 || result.stdout.length > 1024)
