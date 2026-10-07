@@ -679,6 +679,30 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it.each(["ask", "agent"])(
+    "omits retained provider request bodies in %s streams",
+    async (mode) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      );
+      expect(mockStreamText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          experimental_include: { requestBody: false },
+        }),
+      );
+    },
+  );
+
   it("retains upstream exclusions on both the initial recovery request and subsequent steps", async () => {
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
       usedTokens: 1_000,

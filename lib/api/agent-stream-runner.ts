@@ -1563,6 +1563,9 @@ export async function createAgentStream(
     });
 
   return streamText({
+    // Step results outlive prompt compaction. Do not retain another serialized
+    // copy of every provider request; response messages still drive persistence.
+    experimental_include: { requestBody: false },
     model: getNamespacedLanguageModel(
       initialModelInfo.languageModel,
       generationStepOffset,

@@ -1270,6 +1270,8 @@ export const subagentTask = task({
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
               const generation = streamText({
+                // Keep tool-loop step results without retaining every serialized prompt.
+                experimental_include: { requestBody: false },
                 model: getGuardedLanguageModel(
                   activeModelName,
                   generationAttempt,
