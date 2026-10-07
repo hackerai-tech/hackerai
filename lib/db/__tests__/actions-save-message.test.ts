@@ -1652,6 +1652,11 @@ describe("regenerated chat initialization", () => {
     completeCleanup(null);
     await initialization;
     expect(ready).toBe(true);
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    const { getFunctionName } = await import("convex/server");
+    expect(getFunctionName(mockMutation.mock.calls[0]![0] as any)).toBe(
+      "chatStreams:prepareForNewStream",
+    );
   });
 
   it("does not clear another owner's cancellation state", async () => {
