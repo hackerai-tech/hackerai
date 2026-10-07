@@ -93,6 +93,7 @@ import {
   updateSubagentWorkLedger,
 } from "@/lib/db/subagents";
 import { setConvexUrl } from "@/lib/db/convex-client";
+import { createSubagentFinalizationDiagnostics } from "@/lib/ai/subagents/finalization-diagnostics";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import {
   compactMessageForStorage,
@@ -556,6 +557,16 @@ export const subagentTask = task({
 
     const usageTracker = new UsageTracker();
     let resultValue: CheckedSubagentResult | undefined;
+    const observeFinalization = createSubagentFinalizationDiagnostics(
+      {
+        subagent_id: row.subagent_id,
+        parent_trigger_run_id: row.parent_trigger_run_id,
+        trigger_run_id: ctx.run.id,
+        environment: ctx.environment.type,
+      },
+      (fields) =>
+        triggerLogger.error("[subagent] finalization write failed", fields),
+    );
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -750,9 +761,10 @@ export const subagentTask = task({
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
-              const finalizing = await markSubagentFinalizing(
-                row.subagent_id,
-                ctx.run.id,
+              const finalizing = await observeFinalization(
+                "result_submission",
+                Boolean(resultValue),
+                () => markSubagentFinalizing(row.subagent_id, ctx.run.id),
               );
               if (finalizing === "pending_messages") {
                 deferredForParentUpdate = true;
@@ -1694,7 +1706,9 @@ export const subagentTask = task({
       );
       await waitUntilComplete();
       runtimeStage = "result_finalization";
-      await markSubagentFinalizing(row.subagent_id, ctx.run.id);
+      await observeFinalization("stream_completion", Boolean(resultValue), () =>
+        markSubagentFinalizing(row.subagent_id, ctx.run.id),
+      );
 
       runtimeStage = "usage_settlement";
       const { costDollars, billingFailure } = await settleUsage();

@@ -200,7 +200,7 @@ describe("security validation subagent runtime contracts", () => {
     expectMarkerOrder(
       acceptResult,
       "await verifyResultEvidence(",
-      "await markSubagentFinalizing(",
+      "markSubagentFinalizing(",
     );
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
