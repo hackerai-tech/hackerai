@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { v5 as uuidv5 } from "uuid";
 
 export const ACQUISITION_SURVEY_FLAG_KEY = "hac-57-post-activation-survey";
 export const ACQUISITION_SURVEY_NAME = "HackerAI primary use case v2";
@@ -17,6 +18,22 @@ export const USE_CASE_OPTIONS = [
 ] as const;
 export type UseCaseAnswer = (typeof USE_CASE_OPTIONS)[number]["value"];
 export type SurveyActivationMode = "ask" | "agent";
+
+/** Vary choice positions across users without moving buttons on rerender or
+ * changing PostHog's canonical question/answer mapping. Keep Other last.
+ */
+export function getUseCaseDisplayOptions(userId: string, surveyId: string) {
+  return USE_CASE_OPTIONS.map((option) => ({
+    option,
+    rank:
+      option.value === "other"
+        ? "z"
+        : uuidv5(`${userId}:${surveyId}:${option.value}`, uuidv5.URL),
+  }))
+    .sort((a, b) => (a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : 0))
+    .map(({ option }) => option);
+}
+
 export const useCaseSurveySchema = z.object({
   id: z.guid(),
   questionId: z.guid(),
