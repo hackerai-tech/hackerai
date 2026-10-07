@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useMutation } from "convex/react";
+import { toast } from "sonner";
 import type { FindingDetailRecord } from "@/types/finding";
 
 jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
@@ -203,6 +204,24 @@ describe("FindingDetail", () => {
       screen.getByText("Could not reproduce after validating tenant scope."),
     ).toBeVisible();
     expect(screen.queryByRole("button", { name: "Close Finding" })).toBeNull();
+  });
+
+  it("dismisses closure and explains when the finding was deleted concurrently", async () => {
+    const mutation = useMutation({} as any) as jest.Mock;
+    mutation.mockResolvedValue({ closed: false, not_found: true });
+    const errorToast = jest.spyOn(toast, "error");
+    render(<FindingDetail finding={finding} surface="findings_page" />);
+    fireEvent.click(screen.getByRole("button", { name: "Close Finding" }));
+    fireEvent.change(screen.getByLabelText(/Closure note/), {
+      target: { value: "Retest complete." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close finding" }));
+    await waitFor(() =>
+      expect(errorToast).toHaveBeenCalledWith("This finding no longer exists."),
+    );
+    expect(screen.queryByRole("heading", { name: "Close finding" })).toBeNull();
+    expect(screen.queryByText("Closed")).toBeNull();
+    errorToast.mockRestore();
   });
 
   it("renders loading and deleted states", () => {

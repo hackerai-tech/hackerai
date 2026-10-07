@@ -489,7 +489,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
       );
       expect(prompt).toContain(
-        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites",
+        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level",
       );
       expect(prompt).toContain(
         "persist at most one successful create_vulnerability_report for that distinct root cause",
@@ -517,7 +517,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
       );
       expect(prompt).toContain(
-        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites",
+        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level",
       );
       expect(prompt).toContain(
         "Calibrate severity to only the weakness and impact actually demonstrated",

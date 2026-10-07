@@ -47,6 +47,7 @@ const loadSaveMessageWithMocks = async () => {
     getChatById,
     getMessagesByChatId,
     getNotes,
+    handleInitialChatAndUserMessage,
     saveChat,
     saveMessage,
     setActiveTriggerRun,
@@ -60,6 +61,7 @@ const loadSaveMessageWithMocks = async () => {
     getChatById,
     getMessagesByChatId,
     getNotes,
+    handleInitialChatAndUserMessage,
     mockCompactMessageForStorage,
     mockMutation,
     mockPhEvent,
@@ -1608,4 +1610,64 @@ it("persists server routing markers alongside usage only for assistant messages"
     abliterationRouting: marker,
   });
   expect(mockMutation.mock.calls[1][1].usage).toEqual({ inputTokens: 12 });
+});
+
+describe("regenerated chat initialization", () => {
+  const args = {
+    chatId: "chat-1",
+    userId: "user-1",
+    messages: [
+      {
+        id: "user-message-1",
+        parts: [
+          { type: "text" as const, text: "Retest the synthetic finding" },
+        ],
+      },
+    ],
+    regenerate: true,
+    chat: { user_id: "user-1", canceled_at: 123 },
+  };
+
+  it("awaits cancellation cleanup without inserting another user message", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    let completeCleanup!: (value: null) => void;
+    mockMutation.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          completeCleanup = resolve;
+        }),
+    );
+    let ready = false;
+    const initialization = handleInitialChatAndUserMessage(args).then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+    expect(mockMutation.mock.calls[0]?.[1]).toEqual({
+      serviceKey: undefined,
+      chatId: "chat-1",
+    });
+    completeCleanup(null);
+    await initialization;
+    expect(ready).toBe(true);
+  });
+
+  it("does not clear another owner's cancellation state", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    await expect(
+      handleInitialChatAndUserMessage({ ...args, userId: "other-user" }),
+    ).rejects.toThrow();
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  it("stops initialization when cancellation cleanup fails", async () => {
+    const { handleInitialChatAndUserMessage, mockMutation } =
+      await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(new Error("Unavailable"));
+    await expect(handleInitialChatAndUserMessage(args)).rejects.toThrow();
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+  });
 });

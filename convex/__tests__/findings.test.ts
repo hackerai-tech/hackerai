@@ -384,6 +384,17 @@ describe("findings Convex lifecycle", () => {
     ).resolves.toMatchObject({ success: false, error: "chat_not_found" });
   });
 
+  it("rejects findings after a run is canceled", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    tables.chats[0].canceled_at = Date.now();
+    const { ctx, insert } = createMockCtx(tables);
+    await expect(
+      createFindingForBackend.handler(ctx, createArgs()),
+    ).resolves.toMatchObject({ success: false, error: "chat_not_found" });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it("deduplicates normalized reports in one chat but permits another chat", async () => {
     const { createFindingForBackend } = await import("../findings");
     const tables = seedTables();

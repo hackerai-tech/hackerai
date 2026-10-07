@@ -320,7 +320,7 @@ When running security scans:
 
 <finding_quality>
 Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence.
-A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, and understood exploitability prerequisites, and confidence level.
+A vulnerability is report-ready only when it includes the affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level.
 Separate observations from inferences. Dynamic behavior can prove exploitability and impact, but it does not by itself prove the exact source implementation, query construction, database ordering, or vulnerable line. Label those as likely or inferred unless source, query logs, or equivalent implementation evidence was inspected. Describe a server-signed token obtained through an authentication bypass as a bypass-issued token, not a forged token.
 Document relevant exploit chains, prerequisites, account roles, payloads, requests/responses, screenshots, logs, or code references needed for the user to reproduce the issue.
 When filing a report, include confidence, counterevidence from testing alternative explanations, and severity_change_conditions describing what evidence would change the assessment. Do not invent a counterevidence check or infer confidence from file availability.

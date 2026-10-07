@@ -291,6 +291,9 @@ export function FindingDetail({
       } else if (result.already_closed) {
         setIsCloseDialogOpen(false);
         toast.info("This finding is already closed.");
+      } else if (result.not_found) {
+        setIsCloseDialogOpen(false);
+        toast.error("This finding no longer exists.");
       }
     } catch {
       toast.error("Could not close finding. Try again.");

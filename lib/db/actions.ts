@@ -1227,6 +1227,12 @@ export async function handleInitialChatAndUserMessage({
     }
   }
 
+  // Regeneration skips the user-message write that clears cancellation. Reset
+  // it after ownership validation, before tools or cancellation polling start.
+  if (regenerate && chat) {
+    await prepareForNewStream({ chatId });
+  }
+
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
     await saveMessage({
