@@ -36,6 +36,10 @@ import {
   PRO_MONTHLY_PRICE_LOOKUP_KEY,
   isCurrentProMonthlyPrice,
 } from "@/lib/pricing/pro-monthly";
+import {
+  PRO_YEARLY_PRICE_LOOKUP_KEY,
+  isCurrentProYearlyPrice,
+} from "@/lib/pricing/pro-yearly";
 import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
@@ -78,8 +82,12 @@ function isReusableCheckoutSession(
   },
 ): boolean {
   if (!session.url) return false;
-  // An older open session may still hold the $25 Price despite the new lookup.
-  if (requestedPlan === PRO_MONTHLY_PRICE_LOOKUP_KEY) return false;
+  // Open Pro sessions can still hold a historical Price after lookup transfer.
+  if (
+    requestedPlan === PRO_MONTHLY_PRICE_LOOKUP_KEY ||
+    requestedPlan === PRO_YEARLY_PRICE_LOOKUP_KEY
+  )
+    return false;
   if (session.success_url !== successUrl || session.cancel_url !== cancelUrl)
     return false;
   if (session.metadata?.workOSOrganizationId !== organizationId) return false;
@@ -434,7 +442,7 @@ export const POST = async (req: NextRequest) => {
 
     // Retrieve price ID from Stripe
     // The client selects only a logical plan. Stripe resolves that allowlisted
-    // lookup key; the Pro monthly Price is checked against the displayed $29.
+    // lookup key; Pro Prices are checked against the displayed public amounts.
     let price;
 
     try {
@@ -487,6 +495,25 @@ export const POST = async (req: NextRequest) => {
       });
       return json(
         { error: "Pro monthly price is unavailable" },
+        { status: 503 },
+      );
+    }
+
+    if (
+      resolvedPriceLookupKey === PRO_YEARLY_PRICE_LOOKUP_KEY &&
+      !isCurrentProYearlyPrice(selectedPrice)
+    ) {
+      logger.error("Pro yearly Stripe Price is misconfigured", undefined, {
+        event: "billing.pro_yearly_price_invalid",
+        request_id: requestId,
+        service: "hackerai-web",
+        environment: getEnvironment(),
+        route: "/api/subscribe",
+        stripe_price_id: selectedPrice.id,
+        stripe_price_lookup_key: selectedPrice.lookup_key,
+      });
+      return json(
+        { error: "Pro yearly price is unavailable" },
         { status: 503 },
       );
     }

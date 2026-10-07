@@ -1,4 +1,8 @@
 import { stripe } from "../stripe";
+import {
+  PRO_YEARLY_PRICE_LOOKUP_KEY,
+  isCurrentProYearlyPrice,
+} from "@/lib/pricing/pro-yearly";
 import { workos } from "../workos";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { after, NextRequest, NextResponse } from "next/server";
@@ -180,6 +184,15 @@ export const POST = async (req: NextRequest) => {
     }
 
     const targetPrice = targetPrices.data[0];
+    if (
+      targetPlan === PRO_YEARLY_PRICE_LOOKUP_KEY &&
+      !isCurrentProYearlyPrice(targetPrice)
+    ) {
+      return NextResponse.json(
+        { error: "Pro yearly price is unavailable" },
+        { status: 503 },
+      );
+    }
     const targetAmount = targetPrice.unit_amount
       ? targetPrice.unit_amount / 100
       : 0;

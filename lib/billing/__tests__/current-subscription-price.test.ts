@@ -9,6 +9,7 @@ import {
   toCurrentSubscriptionContext,
 } from "../current-subscription";
 import { GRANDFATHERED_PRO_MONTHLY_PRICE_ID } from "@/lib/pricing/pro-monthly";
+import { GRANDFATHERED_PRO_YEARLY_PRICE_ID } from "@/lib/pricing/pro-yearly";
 
 describe("grandfathered Pro monthly Price", () => {
   const price = {
@@ -41,5 +42,32 @@ describe("grandfathered Pro monthly Price", () => {
     expect(
       subscriptionTierFromPrice({ ...price, id: "price_other" }),
     ).toBeUndefined();
+  });
+});
+
+it("preserves the existing $252 annual plan after its lookup key is transferred", () => {
+  const price = {
+    id: GRANDFATHERED_PRO_YEARLY_PRICE_ID,
+    lookup_key: null,
+    unit_amount: 25200,
+    currency: "usd",
+    recurring: { interval: "year", interval_count: 1 },
+  } as Stripe.Price;
+  expect(subscriptionPlanFromPrice(price)).toBe("pro-yearly-plan");
+  expect(subscriptionTierFromPrice(price)).toBe("pro");
+  expect(
+    toCurrentSubscriptionContext({
+      id: "sub_existing_yearly",
+      status: "active",
+      cancel_at_period_end: false,
+      metadata: {},
+      items: { data: [{ id: "si_existing", price, quantity: 1 }] },
+    } as Stripe.Subscription),
+  ).toMatchObject({
+    plan: "pro-yearly-plan",
+    tier: "pro",
+    unitAmountDollars: 252,
+    billingInterval: "year",
+    priceId: GRANDFATHERED_PRO_YEARLY_PRICE_ID,
   });
 });
