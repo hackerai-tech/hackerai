@@ -14,6 +14,7 @@ import {
   usesOwnerOnlyPosixFileTransport,
   writeOwnerOnlyPosixFile,
 } from "./owner-only-posix-file";
+import { pruneLocalTerminalRecords } from "./local-terminal-retention";
 
 // Records are sandbox artifacts, not a second process registry. In particular,
 // a persisted PID must never be used to reconnect to or kill a process.
@@ -142,6 +143,17 @@ export function createTerminalRecordStore(
       if (lastPrunedAt.size > 256)
         lastPrunedAt.delete(lastPrunedAt.keys().next().value!);
       try {
+        if (
+          await pruneLocalTerminalRecords(sandbox, {
+            root,
+            directory,
+            sandboxInstance: terminalSandboxInstance(sandbox),
+            schema: z.toJSONSchema(recordSchema),
+            cutoff: Date.now() - TERMINAL_RECORD_RETENTION_MS,
+            maxRecords: MAX_RECORDS,
+          })
+        )
+          return;
         const entries = ownerOnlyPosix
           ? await listOwnerOnlyPosixFiles(sandbox, root, directory)
           : await files.list(directory);
