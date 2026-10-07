@@ -301,6 +301,13 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     let messageQueryCount = 0;
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       if (table === "chats") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1025,6 +1032,13 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     } = config;
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       const currentCall = callIndex++;
 
       if (currentCall === 0 && table === "messages") {
@@ -1179,6 +1193,13 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
     const latestSummary = makeSummaryDoc();
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       if (table === "messages") {
         return {
           withIndex: jest.fn().mockReturnValue({
@@ -1597,6 +1618,13 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     const chatDoc = makeChatDoc({ latest_summary_id: undefined });
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       if (table === "messages") {
         return {
           withIndex: jest.fn((indexName: string) => {
@@ -1676,6 +1704,13 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     };
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       if (table !== "messages") {
         throw new Error(`Unexpected table ${table}`);
       }
@@ -1728,6 +1763,13 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     };
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       if (table !== "messages") {
         throw new Error(`Unexpected table ${table}`);
       }
@@ -1795,6 +1837,13 @@ describe("regenerateWithNewContent feedback cleanup", () => {
     });
 
     mockCtx.db.query.mockImplementation((table: string) => {
+      if (table === "model_history") {
+        return {
+          withIndex: jest.fn().mockReturnValue({
+            unique: jest.fn<any>().mockResolvedValue(null),
+          }),
+        };
+      }
       if (table === "messages") {
         return {
           withIndex: jest.fn((indexName: string) => {

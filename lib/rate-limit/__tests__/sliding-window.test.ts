@@ -4,6 +4,7 @@
  * Uses jest.isolateModules() for fresh module instances with mocked dependencies.
  */
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
+import { getRegionalFreeLimits } from "../regional-free-limits";
 
 describe("sliding-window", () => {
   const mockEvalFn = jest.fn();
@@ -39,7 +40,12 @@ describe("sliding-window", () => {
         checkFreeAgentRateLimitCapacity,
       } = getIsolatedModule();
       mockCreateRedisClient.mockReturnValue({ eval: mockEvalFn });
-      const policy = { dailyRequests: 3, monthlyCostDollars: 0.1 };
+      const policy = getRegionalFreeLimits({
+        userId: "quota",
+        subscription: "free",
+        country: "NG",
+      });
+      expect(policy).toBeDefined();
       mockEvalFn
         .mockResolvedValueOnce([1, 2])
         .mockResolvedValueOnce([1, 1])

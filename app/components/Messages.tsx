@@ -1,4 +1,5 @@
 import { TaskOutcomeFeedback } from "./TaskOutcomeFeedback";
+import { AcquisitionSurvey } from "./AcquisitionSurvey";
 import {
   useState,
   useEffect,
@@ -97,36 +98,36 @@ const PendingAgentReasoning = () => (
   </div>
 );
 
-type ToolGroupMountSnapshot = {
+type RestoredAgentMessageSnapshot = {
   awaitingRestoredAgentMessage: boolean;
   chatId: string;
-  hasCommittedTimeline: boolean;
   isRestoringStream: boolean;
   restoredAgentMessageIds: ReadonlySet<string>;
-  seenAgentMessageIds: ReadonlySet<string>;
-  seenToolGroupIds: ReadonlySet<string>;
 };
 
-type ToolGroupMountStore = {
+type RestoredAgentMessageStore = {
   commit: (
     chatId: string,
     rows: readonly ChatTimelineRow[],
     isRestoringStream: boolean,
   ) => void;
-  getSnapshot: () => ToolGroupMountSnapshot;
-  markToolGroupMounted: (chatId: string, rowId: string) => void;
+  getSnapshot: () => RestoredAgentMessageSnapshot;
   subscribe: (listener: () => void) => () => void;
 };
 
-function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
-  let snapshot: ToolGroupMountSnapshot = {
+/**
+ * Remembers which Agent messages were restored by a stream reconnect so their
+ * replayed reasoning stays collapsed and replayed tool runs fold without the
+ * live delay.
+ */
+function createRestoredAgentMessageStore(
+  initialChatId: string,
+): RestoredAgentMessageStore {
+  let snapshot: RestoredAgentMessageSnapshot = {
     awaitingRestoredAgentMessage: false,
     chatId: initialChatId,
-    hasCommittedTimeline: false,
     isRestoringStream: false,
     restoredAgentMessageIds: new Set(),
-    seenAgentMessageIds: new Set(),
-    seenToolGroupIds: new Set(),
   };
   const listeners = new Set<() => void>();
 
@@ -136,17 +137,8 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
       let awaitingRestoredAgentMessage = isCurrentChat
         ? snapshot.awaitingRestoredAgentMessage
         : false;
-      const previouslySeenAgentMessageIds = isCurrentChat
-        ? snapshot.seenAgentMessageIds
-        : new Set<string>();
       const restoredAgentMessageIds = isCurrentChat
         ? new Set(snapshot.restoredAgentMessageIds)
-        : new Set<string>();
-      const seenAgentMessageIds = isCurrentChat
-        ? new Set(snapshot.seenAgentMessageIds)
-        : new Set<string>();
-      const seenToolGroupIds = isCurrentChat
-        ? new Set(snapshot.seenToolGroupIds)
         : new Set<string>();
       let changed = !isCurrentChat;
 
@@ -172,31 +164,9 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
         }
         awaitingRestoredAgentMessage = false;
       }
-
-      for (const row of rows) {
-        const isAgentMessage =
-          row.message.role === "assistant" &&
-          row.message.metadata?.mode === "agent";
-        const wasAgentMessageSeen =
-          isAgentMessage && previouslySeenAgentMessageIds.has(row.message.id);
-
-        if (isAgentMessage && !seenAgentMessageIds.has(row.message.id)) {
-          seenAgentMessageIds.add(row.message.id);
-          changed = true;
-        }
-        if (
-          row.kind === "agent-tool-group" &&
-          !wasAgentMessageSeen &&
-          !seenToolGroupIds.has(row.id)
-        ) {
-          seenToolGroupIds.add(row.id);
-          changed = true;
-        }
-      }
-
-      const hasCommittedTimeline =
-        (isCurrentChat && snapshot.hasCommittedTimeline) || rows.length > 0;
-      if (hasCommittedTimeline !== snapshot.hasCommittedTimeline) {
+      if (
+        awaitingRestoredAgentMessage !== snapshot.awaitingRestoredAgentMessage
+      ) {
         changed = true;
       }
       if (!changed) return;
@@ -204,26 +174,12 @@ function createToolGroupMountStore(initialChatId: string): ToolGroupMountStore {
       snapshot = {
         awaitingRestoredAgentMessage,
         chatId,
-        hasCommittedTimeline,
         isRestoringStream,
         restoredAgentMessageIds,
-        seenAgentMessageIds,
-        seenToolGroupIds,
       };
       listeners.forEach((listener) => listener());
     },
     getSnapshot: () => snapshot,
-    markToolGroupMounted(chatId, rowId) {
-      if (snapshot.chatId !== chatId || snapshot.seenToolGroupIds.has(rowId)) {
-        return;
-      }
-
-      snapshot = {
-        ...snapshot,
-        seenToolGroupIds: new Set(snapshot.seenToolGroupIds).add(rowId),
-      };
-      listeners.forEach((listener) => listener());
-    },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -240,12 +196,13 @@ const setElementRef = (ref: StickyElementRef, element: HTMLElement | null) => {
 };
 
 interface MessagesProps {
+  acquisitionSurvey?: { messageId: string; mode: "ask" | "agent" };
   chatId: string;
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void | Promise<void>;
   onRetry: (options?: RetryOptions) => void | Promise<void>;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void;
+  onContinue?: (selectedModelOverride?: SelectedModel) => void | Promise<void>;
   onReconnect?: () => void;
   onEditMessage: (
     messageId: string,
@@ -282,6 +239,7 @@ interface MessagesProps {
 }
 
 export const Messages = ({
+  acquisitionSurvey,
   chatId,
   messages,
   setMessages,
@@ -389,22 +347,22 @@ export const Messages = ({
   const [expandedAgentMessageIds, setExpandedAgentMessageIds] = useState<
     ReadonlySet<string>
   >(() => new Set());
-  const [toolGroupMountStore] = useState(() =>
-    createToolGroupMountStore(chatId),
+  const [restoredAgentMessageStore] = useState(() =>
+    createRestoredAgentMessageStore(chatId),
   );
-  const toolGroupMountState = useSyncExternalStore(
-    toolGroupMountStore.subscribe,
-    toolGroupMountStore.getSnapshot,
-    toolGroupMountStore.getSnapshot,
+  const restoredAgentMessageState = useSyncExternalStore(
+    restoredAgentMessageStore.subscribe,
+    restoredAgentMessageStore.getSnapshot,
+    restoredAgentMessageStore.getSnapshot,
   );
   const rawTimelineRows = useMemo(() => {
-    const isCurrentChat = toolGroupMountState.chatId === chatId;
+    const isCurrentChat = restoredAgentMessageState.chatId === chatId;
     const restoredAgentMessageIds = isCurrentChat
-      ? new Set(toolGroupMountState.restoredAgentMessageIds)
+      ? new Set(restoredAgentMessageState.restoredAgentMessageIds)
       : new Set<string>();
     if (
       isCurrentChat &&
-      (isAutoResuming || toolGroupMountState.awaitingRestoredAgentMessage)
+      (isAutoResuming || restoredAgentMessageState.awaitingRestoredAgentMessage)
     ) {
       const latestMessage = visibleMessages.at(-1);
       if (
@@ -420,16 +378,6 @@ export const Messages = ({
       status,
       lastAssistantMessageIndex,
       expandedAgentMessageIds,
-      animateNewToolGroups:
-        isCurrentChat &&
-        toolGroupMountState.hasCommittedTimeline &&
-        !isAutoResuming,
-      seenToolGroupIds: isCurrentChat
-        ? toolGroupMountState.seenToolGroupIds
-        : new Set(),
-      seenAgentMessageIds: isCurrentChat
-        ? toolGroupMountState.seenAgentMessageIds
-        : new Set(),
       restoredAgentMessageIds,
     });
   }, [
@@ -437,8 +385,8 @@ export const Messages = ({
     expandedAgentMessageIds,
     isAutoResuming,
     lastAssistantMessageIndex,
+    restoredAgentMessageState,
     status,
-    toolGroupMountState,
     visibleMessages,
   ]);
   const stableTimelineRowsRef = useRef<StableChatTimelineRowsState | null>(
@@ -454,12 +402,17 @@ export const Messages = ({
   );
   useLayoutEffect(() => {
     stableTimelineRowsRef.current = stableTimelineRowsState;
-    toolGroupMountStore.commit(
+    restoredAgentMessageStore.commit(
       chatId,
       stableTimelineRowsState.result,
       isAutoResuming,
     );
-  }, [chatId, isAutoResuming, stableTimelineRowsState, toolGroupMountStore]);
+  }, [
+    chatId,
+    isAutoResuming,
+    restoredAgentMessageStore,
+    stableTimelineRowsState,
+  ]);
   const timelineRows = stableTimelineRowsState.result;
   const navigatorItems = useMemo(
     () => deriveMessageNavigatorItems(visibleMessages, timelineRows),
@@ -769,11 +722,6 @@ export const Messages = ({
     () => ({ editingMessageId, status }),
     [editingMessageId, status],
   );
-  const handleToolGroupMount = useCallback(
-    (rowId: string) => toolGroupMountStore.markToolGroupMounted(chatId, rowId),
-    [chatId, toolGroupMountStore],
-  );
-
   const renderTimelineRow = useCallback(
     ({ item: row }: { item: ChatTimelineRow }) => {
       const rowClassName =
@@ -833,11 +781,10 @@ export const Messages = ({
           ) : (
             <AgentToolGroupRow
               activities={row.activities}
-              animateOnMount={row.animateOnMount}
-              groupId={row.id}
               isLastMessage={row.isLastMessage}
               message={row.message}
-              onMount={handleToolGroupMount}
+              restored={row.restored}
+              settled={row.settled}
               sharedFileDetails={sharedFileDetails}
               status={effectiveStatus}
               summary={row.summary}
@@ -852,6 +799,7 @@ export const Messages = ({
               index={row.messageIndex}
               messagesLength={visibleMessages.length}
               lastAssistantMessageIndex={lastAssistantMessageIndex}
+              lastUserMessageIndex={lastUserMessageIndex}
               status={status}
               canEdit={row.messageIndex === lastUserMessageIndex}
               isEditing={
@@ -895,6 +843,14 @@ export const Messages = ({
                   messageId={row.message.id}
                 />
               )}
+            {acquisitionSurvey?.messageId === row.message.id &&
+              status === "ready" &&
+              !isAutoResuming && (
+                <AcquisitionSurvey
+                  key={`use-case:${row.message.id}`}
+                  activationMode={acquisitionSurvey.mode}
+                />
+              )}
           </>
         );
       }
@@ -932,6 +888,7 @@ export const Messages = ({
     },
     [
       sourceMessageId,
+      acquisitionSurvey,
       agentRunSpendCapWarning,
       branchBoundaryIndex,
       branchedFromChatId,
@@ -950,7 +907,6 @@ export const Messages = ({
       handleShowAllFiles,
       handleStartEdit,
       handleToggleAgentWork,
-      handleToolGroupMount,
       isMobile,
       isAutoResuming,
       chatId,

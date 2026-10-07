@@ -74,6 +74,7 @@ export type CreateToolsRuntimePolicy = {
   cloudSandboxProvider?: CloudSandboxProvider;
   cloudSandboxSelectionReason?: CloudSandboxSelectionReason;
   triggerRegion?: TriggerRunRegion;
+  environment?: string;
   keepE2BLeaseAliveForRun?: boolean;
 };
 
@@ -140,6 +141,7 @@ export const createTools = (
     chatId,
     triggerRunId,
     triggerRegion: runtimePolicy.triggerRegion,
+    environment: runtimePolicy.environment,
     runKind:
       runtimePolicy.chargeSandboxRuntime === false ? "subagent" : "parent",
   };

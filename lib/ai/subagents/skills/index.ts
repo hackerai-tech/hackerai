@@ -49,34 +49,55 @@ export type ResolveSubagentSkillsResult =
   | { success: true; skills: SubagentSkill[] }
   | { success: false; error: string };
 
-export const resolveSubagentSkills = (
-  requested: readonly string[],
+export type IgnoredSubagentSkill = {
+  requested: string;
+  reason: "unknown" | "ambiguous";
+};
+
+export type ResolveDelegatedSubagentSkillsResult =
+  | {
+      success: true;
+      skills: SubagentSkill[];
+      ignoredSkills: IgnoredSubagentSkill[];
+    }
+  | { success: false; error: string };
+
+type SkillMatch =
+  | { success: true; skill: SubagentSkill }
+  | { success: false; issue: IgnoredSubagentSkill };
+
+const matchSubagentSkill = (raw: string): SkillMatch => {
+  const requested = raw.trim();
+  const exact = skillsById.get(requested);
+  const matches = exact ? [exact] : (aliases.get(requested) ?? []);
+  if (matches.length === 0) {
+    return {
+      success: false,
+      issue: { requested, reason: "unknown" },
+    };
+  }
+  if (matches.length > 1) {
+    return {
+      success: false,
+      issue: { requested, reason: "ambiguous" },
+    };
+  }
+  return { success: true, skill: matches[0] };
+};
+
+const validateResolvedSubagentSkills = (
+  requestedCount: number,
+  resolved: SubagentSkill[],
 ): ResolveSubagentSkillsResult => {
-  if (requested.length > MAX_SUBAGENT_SKILLS) {
+  if (requestedCount > MAX_SUBAGENT_SKILLS) {
     return {
       success: false,
       error: `Choose at most ${MAX_SUBAGENT_SKILLS} subagent skills.`,
     };
   }
 
-  const resolved: SubagentSkill[] = [];
   const seen = new Set<string>();
-  const invalid: string[] = [];
-  const ambiguous: string[] = [];
-
-  for (const raw of requested) {
-    const value = raw.trim();
-    const exact = skillsById.get(value);
-    const matches = exact ? [exact] : (aliases.get(value) ?? []);
-    if (matches.length === 0) {
-      invalid.push(value);
-      continue;
-    }
-    if (matches.length > 1) {
-      ambiguous.push(value);
-      continue;
-    }
-    const skill = matches[0];
+  for (const skill of resolved) {
     if (seen.has(skill.id)) {
       return {
         success: false,
@@ -84,20 +105,6 @@ export const resolveSubagentSkills = (
       };
     }
     seen.add(skill.id);
-    resolved.push(skill);
-  }
-
-  if (invalid.length > 0) {
-    return {
-      success: false,
-      error: `Unknown subagent skill(s): ${invalid.join(", ")}. Use search_skills to find exact category-qualified ids.`,
-    };
-  }
-  if (ambiguous.length > 0) {
-    return {
-      success: false,
-      error: `Ambiguous subagent skill(s): ${ambiguous.join(", ")}. Use category-qualified ids.`,
-    };
   }
 
   // Keep persisted ids and rendered prompt sections canonical so the same
@@ -117,4 +124,68 @@ export const resolveSubagentSkills = (
   }
 
   return { success: true, skills: resolved };
+};
+
+export const resolveSubagentSkills = (
+  requested: readonly string[],
+): ResolveSubagentSkillsResult => {
+  if (requested.length > MAX_SUBAGENT_SKILLS) {
+    return {
+      success: false,
+      error: `Choose at most ${MAX_SUBAGENT_SKILLS} subagent skills.`,
+    };
+  }
+
+  const resolved: SubagentSkill[] = [];
+  const invalid: string[] = [];
+  const ambiguous: string[] = [];
+
+  for (const raw of requested) {
+    const match = matchSubagentSkill(raw);
+    if (!match.success) {
+      const collection = match.issue.reason === "unknown" ? invalid : ambiguous;
+      collection.push(match.issue.requested);
+      continue;
+    }
+    resolved.push(match.skill);
+  }
+
+  if (invalid.length > 0) {
+    return {
+      success: false,
+      error: `Unknown subagent skill(s): ${invalid.join(", ")}. Use search_skills to find exact category-qualified ids.`,
+    };
+  }
+  if (ambiguous.length > 0) {
+    return {
+      success: false,
+      error: `Ambiguous subagent skill(s): ${ambiguous.join(", ")}. Use category-qualified ids.`,
+    };
+  }
+
+  return validateResolvedSubagentSkills(requested.length, resolved);
+};
+
+export const resolveDelegatedSubagentSkills = (
+  requested: readonly string[],
+): ResolveDelegatedSubagentSkillsResult => {
+  if (requested.length > MAX_SUBAGENT_SKILLS) {
+    return {
+      success: false,
+      error: `Choose at most ${MAX_SUBAGENT_SKILLS} subagent skills.`,
+    };
+  }
+
+  const resolved: SubagentSkill[] = [];
+  const ignoredSkills: IgnoredSubagentSkill[] = [];
+
+  for (const raw of requested) {
+    const match = matchSubagentSkill(raw);
+    if (match.success) resolved.push(match.skill);
+    else ignoredSkills.push(match.issue);
+  }
+
+  const validated = validateResolvedSubagentSkills(requested.length, resolved);
+  if (!validated.success) return validated;
+  return { ...validated, ignoredSkills };
 };

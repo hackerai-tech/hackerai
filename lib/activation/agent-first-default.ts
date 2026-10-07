@@ -1,5 +1,6 @@
 import type { ChatMode, SandboxPreference } from "@/types/chat";
 import type { SubscriptionTier } from "@/types";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 
 export type AgentFirstSandboxType =
   "desktop" | "remote-connection" | "e2b" | "none";
@@ -73,7 +74,7 @@ export function normalizeAgentFirstSandboxType(
   preference: SandboxPreference | null,
 ): AgentFirstSandboxType {
   if (!preference) return "none";
-  if (preference === "desktop") return "desktop";
+  if (isDesktopPreference(preference)) return "desktop";
   if (preference === "e2b") return "e2b";
   return "remote-connection";
 }

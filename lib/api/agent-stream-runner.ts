@@ -1,10 +1,11 @@
-import type { ObjectiveCheckpointRuntime } from "@/lib/ai/objective-checkpoint-runtime";
+import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
 } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
   AbliterationVisionError,
@@ -32,6 +33,7 @@ import {
 
 import {
   convertToModelMessages,
+  asSchema,
   streamText,
   type LanguageModel,
   type ModelMessage,
@@ -40,6 +42,35 @@ import {
   type ToolSet,
 } from "ai";
 import { randomUUID } from "crypto";
+import {
+  ModelHistoryReplay,
+  MODEL_HISTORY_FLAG,
+  CACHE_ALIGNED_SUMMARY_FLAG,
+  historyDigest,
+  sourceMessageDigests,
+  parseModelHistory,
+  restoreModelHistory,
+  isReplayableTextHistory,
+  prepareReplayAuthorization,
+  type ModelHistorySnapshot,
+} from "@/lib/chat/model-history";
+import {
+  loadModelHistory,
+  saveModelHistory,
+  ModelHistoryTimeoutError,
+} from "@/lib/db/model-history";
+import {
+  getPostHogFeatureFlagForUser,
+  getPostHogBooleanFlagDecisionForUser,
+  phLogger,
+} from "@/lib/posthog/server";
+import {
+  cacheHistoryProperties,
+  sampleCacheHistoryStart,
+  type CacheHistoryTelemetry,
+} from "@/lib/analytics/cache-history";
+import { getAppendedNotesUpdate } from "./chat-stream-helpers";
+import { createOpenRouterCacheSessionId } from "@/lib/ai/openrouter-cache-session";
 import {
   buildProviderOptions,
   buildSystemPrompt,
@@ -56,6 +87,7 @@ import {
   doomLoopDetected,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
   TOKEN_EXHAUSTION_FINISH_REASON,
+  STEP_LIMIT_FINISH_REASON,
   DOOM_LOOP_FINISH_REASON,
   BUDGET_EXHAUSTION_FINISH_REASON,
   AGENT_RUN_SPEND_CAP_FINISH_REASON,
@@ -65,6 +97,10 @@ import {
   detectDoomLoop,
   generateDoomLoopNudge,
 } from "@/lib/chat/doom-loop-detection";
+import {
+  ToolLoopObserver,
+  type AgentGuardrailObservation,
+} from "@/lib/chat/tool-loop-observer";
 import {
   createAssistantContentLoopMonitor,
   type AssistantContentLoopDetection,
@@ -100,6 +136,7 @@ import { compactModelMessagesInRun } from "@/lib/chat/summarization";
 import { getRecentCompleteModelTail } from "@/lib/chat/summarization/helpers";
 import { getProviderPromptPressure } from "@/lib/chat/summarization/provider-pressure";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractSubagentDeliveryClaims,
   requiresSubagentParentGate,
@@ -111,7 +148,10 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
-import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
+import {
+  PLATFORM_AUTHORIZATION_ANNOTATION,
+  preparePlatformAuthorizationForModel,
+} from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -251,8 +291,13 @@ export const resolveAgentModelForImageToolResults = (
   if (mode !== "agent" || !hasImageToolResults || auxiliaryVisionEnabled) {
     return modelName;
   }
-  // Native Pro vision needs no promotion, and must retain Pro reasoning.
-  if (modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL) return modelName;
+  // Native Standard and Pro vision need no promotion. The dedicated Standard
+  // alias also stays on GLM after compaction removes images from the context.
+  if (
+    modelName === "model-glm-5.3-flash-agent" ||
+    modelName === PRO_AGENT_DEEPSEEK_VISION_MODEL
+  )
+    return modelName;
   if (directGlmVisionEnabled) {
     if (usesGlmFlashForStandardVision(subscription, selectedModelOverride)) {
       return STANDARD_AGENT_GLM_VISION_MODEL;
@@ -337,6 +382,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
+  cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
   /** UI history before injected reminders/notes, kept for source-derived checkpoints. */
@@ -354,6 +400,8 @@ export type AgentStreamState = {
   fallbackServed: boolean | undefined;
   /** Original provider/AI SDK error captured from streamText.onError. */
   providerError: unknown;
+  /** Attribution from the failing request only, never merged with prior steps. */
+  providerErrorMetadata?: OpenRouterModelMetadata;
   /** Best-effort OpenRouter IDs/provider attribution, including failed streams. */
   openRouterMetadata: OpenRouterModelMetadata;
   /** True when a provider rejected an image-bearing tool result. */
@@ -362,6 +410,17 @@ export type AgentStreamState = {
   configuredMaxSteps: number;
   /** Total completed model steps across provider attempts in this request. */
   agentStepCount: number;
+  /** Provider-only continuation context; never a tool permission or persisted user claim. */
+  hasCompletedAbliterationStep: boolean;
+  /** Observation history survives provider retries, but never retains tool content. */
+  toolLoopObserver: ToolLoopObserver;
+  /** Aggregate-only recovery state survives provider replacements. */
+  pendingToolCycleRecovery?: {
+    toolNames: string[];
+    repeatCount: number;
+    cycleLength: number;
+  };
+  toolCycleRecoveryCount: number;
   /** True only when the final provider attempt stopped at the step condition. */
   stoppedDueToStepLimit: boolean;
   stoppedDueToTokenExhaustion: boolean;
@@ -396,6 +455,9 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
+    hasCompletedAbliterationStep: false,
+    toolLoopObserver: new ToolLoopObserver(),
+    toolCycleRecoveryCount: 0,
     stoppedDueToStepLimit: false,
     stoppedDueToTokenExhaustion: false,
     stoppedDueToElapsedTimeout: false,
@@ -636,6 +698,17 @@ const buildProviderRequestDiagnostics = (args: {
     active_tools_mode: args.activeTools ? "subset" : "all",
     ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
+    platform_authorization_annotation_appended: args.messages.some(
+      (message) =>
+        message.role === "user" &&
+        (typeof message.content === "string"
+          ? message.content.includes(PLATFORM_AUTHORIZATION_ANNOTATION)
+          : message.content.some(
+              (part) =>
+                part.type === "text" &&
+                part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+            )),
+    ),
     ...getProviderToolCallDiagnostics(args.messages),
   };
 };
@@ -645,7 +718,9 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
-  objectiveCheckpoint?: ObjectiveCheckpointRuntime;
+  cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
+  triggerRunId?: string;
+  onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
@@ -683,6 +758,8 @@ export type AgentStreamContext = {
   };
   /** Provider model IDs that must not be used by an OpenRouter fallback. */
   excludedProviderModelSlugs?: readonly string[];
+  /** Upstream exclusions apply only to the current recovery model leg. */
+  ignoredProviderSlugs?: readonly string[];
   /** elapsedTimeExceeds threshold; callers supply their platform ceiling. */
   maxDurationMs: number;
   getActiveElapsedTimeMs?: () => number;
@@ -753,6 +830,36 @@ export async function createAgentStream(
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;
+  const reportGuardrail = (
+    observation: Omit<
+      AgentGuardrailObservation,
+      "step_count" | "configured_max_steps"
+    >,
+    { deduplicate = true }: { deduplicate?: boolean } = {},
+  ) => {
+    if (
+      deduplicate &&
+      !state.toolLoopObserver.shouldReport(
+        observation.reason,
+        observation.action,
+        observation.repeat_count,
+      )
+    )
+      return;
+    try {
+      ctx.onAgentGuardrail?.({
+        ...observation,
+        // Provider-supplied unknown tool names may contain user content.
+        tool_names: observation.tool_names.map((name) =>
+          Object.hasOwn(ctx.tools, name) ? name : "unknown",
+        ),
+        step_count: state.agentStepCount,
+        configured_max_steps: configuredMaxSteps,
+      });
+    } catch {
+      // Observability must never interrupt the model stream or usage settlement.
+    }
+  };
   const toolCallRunNamespace = randomUUID().replaceAll("-", "").slice(0, 8);
   const stepUsageCostIndexes: Array<number | undefined> = [];
   let pendingDeliveryClaims: SubagentDeliveryClaim[] = [];
@@ -891,12 +998,19 @@ export async function createAgentStream(
     languageModel: LanguageModel,
     stepIndex: number,
   ): LanguageModel => {
+    const historyModel = ctx.chatLogger
+      ? withProviderModelHistory(languageModel, {
+          configured: activeStepModelName,
+          generationStep: stepIndex + 1,
+          onStart: (entry) => ctx.chatLogger?.recordProviderModelCall(entry),
+        })
+      : languageModel;
     const telemetryModel =
       ctx.abliteratedTelemetry?.wrap(
-        languageModel,
+        historyModel,
         stepIndex,
         activeStepRouting,
-      ) ?? languageModel;
+      ) ?? historyModel;
     const recoveryModel = recoverAbliterationMedia(
       ctx.providerStreamTimeout
         ? withProviderStreamTimeout(telemetryModel, ctx.providerStreamTimeout)
@@ -967,6 +1081,18 @@ export async function createAgentStream(
     excludedTools?: ReadonlySet<string>;
   };
 
+  // Repeated results are a reason to inspect progress, not proof of failure.
+  // Bound interventions across provider replacements; never force extra steps.
+  const toolCycleNudge =
+    "[REPEATED TOOL RESULTS] A tool/result cycle has repeated without new output. " +
+    "Check whether this is intentional verification or stalled work. If stalled, inspect the error and prerequisites, revise the hypothesis, and choose a different verification step. " +
+    "If blocked, explain the specific missing prerequisite and what remains unverified. Do not rerun completed work or treat repeated output as proof of success.";
+  let preparedToolCycleRecovery: AgentStreamState["pendingToolCycleRecovery"];
+  const markToolCycleRecoveryPrepared = (recovery: DoomLoopRecovery) => {
+    if (recovery.nudge?.includes(toolCycleNudge))
+      preparedToolCycleRecovery = state.pendingToolCycleRecovery;
+  };
+
   const getDoomLoopRecovery = (
     steps: unknown[],
     stepNumber: number,
@@ -976,7 +1102,7 @@ export async function createAgentStream(
     );
 
     if (loopCheck.severity === "none") {
-      return {};
+      return state.pendingToolCycleRecovery ? { nudge: toolCycleNudge } : {};
     }
 
     console.log(
@@ -987,8 +1113,18 @@ export async function createAgentStream(
       return {};
     }
 
+    reportGuardrail({
+      reason: loopCheck.reason ?? "repeated_tool_call",
+      action: loopCheck.activeToolExclusions?.length ? "exclude" : "nudge",
+      tool_names: loopCheck.toolNames,
+      repeat_count: loopCheck.consecutiveCount,
+    });
+
     const recovery: DoomLoopRecovery = {
-      nudge: generateDoomLoopNudge(loopCheck),
+      nudge: [
+        generateDoomLoopNudge(loopCheck),
+        ...(state.pendingToolCycleRecovery ? [toolCycleNudge] : []),
+      ].join("\n\n"),
     };
     console.log("[doom-loop] Injecting nudge as last user message");
 
@@ -1076,6 +1212,11 @@ export async function createAgentStream(
   ) => {
     const requestedModelSlug =
       ctx.trackedProvider.languageModel(effectiveModelName).modelId;
+    const cacheSessionId = createOpenRouterCacheSessionId({
+      chatId: ctx.chatId,
+      mode: ctx.mode,
+      requestedModelSlug,
+    });
     return buildProviderOptions(
       ctx.isReasoningModel,
       ctx.userId,
@@ -1083,12 +1224,14 @@ export async function createAgentStream(
       ctx.mode,
       {
         requestedModelSlug,
+        cacheSessionId,
         isFreeAskRequest: ctx.mode === "ask" && ctx.subscription === "free",
         hasMultimodalToolResults: streamHasImageViewResults,
         hasPdfAttachments:
           streamHasPdfAttachments && !providerPdfAttachmentsDisabled,
         pdfParserEngine,
         excludedModelSlugs: ctx.excludedProviderModelSlugs,
+        ignoredProviderSlugs: ctx.ignoredProviderSlugs,
         ...(ctx.providerReasoningOverride?.modelName === effectiveModelName && {
           reasoningOverride: ctx.providerReasoningOverride.reasoning,
         }),
@@ -1096,8 +1239,12 @@ export async function createAgentStream(
     );
   };
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    getAttachmentMessages: () => state.finalMessages,
+    cacheDescription: ctx.cacheVisionDescription,
     userId: ctx.userId,
     chatId: ctx.chatId,
+    requestId: ctx.chatLogger?.getRequestId?.(),
+    triggerRunId: ctx.triggerRunId,
     abortSignal,
     onCost: (cost) => {
       ctx.usageTracker.providerCost += cost;
@@ -1110,6 +1257,9 @@ export async function createAgentStream(
     abortSignal,
   );
   let latestToolCallBatchSplitCount = 0;
+  let trustedHistoryPrefix: ModelMessage[] = [];
+  const hasPlatformAnnotationContext = () =>
+    ctx.platformAuthorized || state.hasCompletedAbliterationStep;
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1141,16 +1291,25 @@ export async function createAgentStream(
       repairedMessages = repair.messages as ModelMessage[];
     }
 
-    const messagesWithAuthorization = preparePlatformAuthorizationForModel(
-      repairedMessages,
-      ctx.platformAuthorized,
-      effectiveModelName,
-    );
+    const messagesWithAuthorization = historyEnabled
+      ? prepareReplayAuthorization(
+          repairedMessages,
+          trustedHistoryPrefix,
+          hasPlatformAnnotationContext(),
+          effectiveModelName,
+        )
+      : preparePlatformAuthorizationForModel(
+          repairedMessages,
+          hasPlatformAnnotationContext(),
+          effectiveModelName,
+        );
 
-    return addOpenRouterFileAnnotationsToLastAssistantMessage(
+    const prepared = addOpenRouterFileAnnotationsToLastAssistantMessage(
       messagesWithAuthorization,
       openRouterFileAnnotations,
     );
+    if (historyEnabled) trustedHistoryPrefix = structuredClone(prepared);
+    return prepared;
   };
   let latestProviderRequestDiagnostics: ProviderRequestDiagnostics | undefined;
   const recordProviderRequestDiagnostics = (args: {
@@ -1212,6 +1371,172 @@ export async function createAgentStream(
     );
   }
   const initialModelInfo = getEffectiveModelInfo();
+  const historyRoute = initialModelInfo.languageModel.modelId ?? "";
+  const historyEligible =
+    historyRoute.startsWith("deepseek/deepseek-v4") &&
+    isReplayableTextHistory(initialSerializedMessages);
+  const historyDecision = historyEligible
+    ? await getPostHogBooleanFlagDecisionForUser(MODEL_HISTORY_FLAG, ctx.userId)
+    : null;
+  let historyEnabled = historyEligible && historyDecision === true;
+  const firstAttempt = !state.cacheHistoryTelemetry;
+  const telemetryRunId =
+    state.cacheHistoryTelemetry?.runId ??
+    ctx.usageTracker.usageSettlementId ??
+    randomUUID();
+  const historyTelemetry = (state.cacheHistoryTelemetry ??= {
+    runId: telemetryRunId,
+    eligible: historyEligible,
+    assignment: !historyEligible
+      ? "ineligible"
+      : historyDecision === null
+        ? "unavailable"
+        : historyDecision
+          ? "treatment"
+          : "control",
+    model: historyRoute,
+    startedAt: Date.now(),
+    sampled: historyEligible && sampleCacheHistoryStart(telemetryRunId),
+    attempts: 0,
+    exposures: 0,
+    restores: 0,
+    load: "not_attempted",
+    save: "not_attempted",
+  });
+  historyTelemetry.attempts++;
+  // One sampled start per eligible request, independent of treatment assignment.
+  // Retries and tool steps never emit another start. Terminal events remain unsampled.
+  if (firstAttempt && historyTelemetry.sampled)
+    phLogger.event("cache_history_run_started", {
+      userId: ctx.userId,
+      chat_id: ctx.chatId,
+      trigger_run_id: ctx.triggerRunId,
+      mode: ctx.mode,
+      ...cacheHistoryProperties(historyTelemetry),
+    });
+  const historyReplay = new ModelHistoryReplay();
+  let historyRevision: number | undefined;
+  let sourceModelMessages: ModelMessage[] = [];
+  let frozenSystemPrompt = ctx.currentSystemPrompt;
+  // All non-date prompt changes (including authorization/customization) invalidate replay.
+  let historyIdentity = "";
+  let sourceResponseCursor = 0;
+  let historyRestored = false;
+  let loadingHistory = false;
+  if (historyEnabled) {
+    try {
+      const schemas = await Promise.all(
+        Object.entries(ctx.tools).map(async ([name, tool]) => ({
+          name,
+          description: tool.description,
+          schema: await asSchema(tool.inputSchema).jsonSchema,
+          type: tool.type,
+          strict: tool.strict,
+          inputExamples: tool.inputExamples,
+          providerOptions: tool.providerOptions,
+        })),
+      );
+      historyIdentity = historyDigest({
+        version: 1,
+        model: historyRoute,
+        mode: ctx.mode,
+        subscription: ctx.subscription,
+        authorization: hasPlatformAnnotationContext(),
+        notesEnabled: ctx.noteInjectionOpts.shouldIncludeNotes,
+        system: ctx.currentSystemPrompt.replace(
+          /^The current date is .+$/m,
+          "The current date is <session-date>.",
+        ),
+        tools: schemas,
+      });
+      sourceModelMessages = await convertToModelMessages(
+        state.sourceUiMessages ?? state.finalMessages,
+        { tools: promptSerializationTools },
+      );
+      loadingHistory = true;
+      const stored = await loadModelHistory(ctx.chatId, ctx.userId);
+      loadingHistory = false;
+      historyRevision = stored?.revision;
+      const snapshot = parseModelHistory(stored?.payload ?? null);
+      const restored = restoreModelHistory(
+        snapshot,
+        historyIdentity,
+        sourceModelMessages,
+        initialSerializedMessages,
+      );
+      historyTelemetry.load = !stored?.payload
+        ? "missing"
+        : !snapshot
+          ? "invalid"
+          : restored
+            ? "restored"
+            : "invalidated";
+      if (restored && snapshot) {
+        historyTelemetry.restores++;
+        historyRestored = true;
+        initialSerializedMessages = restored;
+        frozenSystemPrompt = snapshot.system;
+        trustedHistoryPrefix = structuredClone(snapshot.messages);
+        if (snapshot.system !== ctx.currentSystemPrompt) {
+          const date = ctx.currentSystemPrompt.match(
+            /^The current date is .+$/m,
+          )?.[0];
+          initialSerializedMessages = historyReplay.append(
+            initialSerializedMessages,
+            "date",
+            date,
+          );
+        }
+      }
+      if (restored) {
+        // A resumed prefix may contain stale notes, including notes since deleted.
+        // Fresh histories already receive notes from their caller.
+        initialSerializedMessages = historyReplay.append(
+          initialSerializedMessages,
+          "notes",
+          await getAppendedNotesUpdate([], ctx.noteInjectionOpts, true),
+        );
+      }
+    } catch (error) {
+      // Missing deployment/schema/storage is a control fallback, not a chat failure.
+      if (loadingHistory)
+        historyTelemetry.load =
+          error instanceof ModelHistoryTimeoutError ? "timeout" : "error";
+      historyTelemetry.fallback = "initialization";
+      historyEnabled = false;
+    }
+  }
+  let lastHistoryRequest: ModelMessage[] | undefined;
+  const cacheAlignedSummaryEnabled =
+    historyEnabled &&
+    (await getPostHogFeatureFlagForUser(
+      CACHE_ALIGNED_SUMMARY_FLAG,
+      ctx.userId,
+    ));
+  let lastHistoryResponseCursor = 0;
+  let lastHistoryTools: ToolSet = ctx.tools;
+  let historyToSave: ModelHistorySnapshot | undefined;
+  let historyExposed = false;
+  const exposeHistory = () => {
+    if (historyExposed || !historyEnabled) return;
+    historyExposed = true;
+    historyTelemetry.exposures++;
+    phLogger.event("cache_stable_history_exposed", {
+      userId: ctx.userId,
+      chat_id: ctx.chatId,
+      mode: ctx.mode,
+      model: historyRoute,
+      variant: "v1",
+      replay_restored: historyRestored,
+      trigger_run_id: ctx.triggerRunId,
+      ...cacheHistoryProperties(historyTelemetry),
+    });
+  };
+  const requestSystemPrompt = (name: string) =>
+    buildSystemPrompt(
+      historyEnabled ? frozenSystemPrompt : ctx.currentSystemPrompt,
+      name,
+    );
   const initialProviderOptions = getStepProviderOptions(
     initialModelInfo.modelName,
   );
@@ -1243,22 +1568,39 @@ export async function createAgentStream(
       generationStepOffset,
     ),
     maxOutputTokens,
-    system: buildSystemPrompt(
-      ctx.currentSystemPrompt,
-      initialModelInfo.modelName,
-    ),
+    system: requestSystemPrompt(initialModelInfo.modelName),
     messages: initialModelMessages,
-    tools: ctx.objectiveCheckpoint?.wrap(ctx.tools) ?? ctx.tools,
+    tools: ctx.tools,
     activeTools: initialActiveTools,
     abortSignal,
     providerOptions: initialProviderOptions,
     experimental_onStepStart: ({ model }) => {
+      if (!abortSignal.aborted && preparedToolCycleRecovery) {
+        const recovery = preparedToolCycleRecovery;
+        preparedToolCycleRecovery = undefined;
+        state.pendingToolCycleRecovery = undefined;
+        state.toolCycleRecoveryCount++;
+        reportGuardrail(
+          {
+            reason: "repeated_tool_result_cycle",
+            action: "nudge",
+            tool_names: recovery.toolNames,
+            repeat_count: recovery.repeatCount,
+            cycle_length: recovery.cycleLength,
+          },
+          // These actual exposures are already bounded to two per run.
+          { deduplicate: false },
+        );
+      }
+      if (!abortSignal.aborted) ctx.usageTracker.recordModelCall?.();
+      exposeHistory();
       ctx.onModelStreamStart?.();
       if (!abortSignal.aborted) ctx.onProviderRequestStart?.(model.modelId);
     },
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
           ? stepNumber
@@ -1266,49 +1608,28 @@ export async function createAgentStream(
       const generationStepIndex =
         generationStepOffset + localGenerationStepIndex;
       const rawModelMessages = messages as ModelMessage[];
-      let rollingModelMessages = buildRollingModelMessages(
-        rawModelMessages,
-        rollingContextCheckpoint,
-      );
-      rollingModelMessages = limitModelImageToolResults(
-        rollingModelMessages as Array<Record<string, unknown>>,
-      ).messages as ModelMessage[];
+      if (
+        historyEnabled &&
+        (getEffectiveModelInfo(generationStepIndex).languageModel.modelId !==
+          historyRoute ||
+          !isReplayableTextHistory(rawModelMessages))
+      ) {
+        historyTelemetry.fallback = "route_or_content";
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      let rollingModelMessages = historyEnabled
+        ? historyReplay.project(rawModelMessages)
+        : buildRollingModelMessages(rawModelMessages, rollingContextCheckpoint);
+      if (!historyEnabled)
+        rollingModelMessages = limitModelImageToolResults(
+          rollingModelMessages as Array<Record<string, unknown>>,
+        ).messages as ModelMessage[];
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
         [];
       const parentGate = await resolveParentGate(toolResults);
-      const checkpointRestriction = ctx.objectiveCheckpoint?.restriction(
-        ctx.tools,
-      );
-      if (checkpointRestriction) {
-        abortSignal.throwIfAborted();
-        return {
-          activeTools: parentGate.blocked
-            ? [
-                ...new Set([
-                  ...checkpointRestriction.activeTools,
-                  "wait_for_agents",
-                ]),
-              ]
-            : checkpointRestriction.activeTools,
-          ...(parentGate.toolChoice
-            ? { toolChoice: parentGate.toolChoice }
-            : {}),
-          ...(!parentGate.blocked &&
-          checkpointRestriction.activeTools.length === 0
-            ? { toolChoice: "none" as const }
-            : {}),
-          messages: [
-            ...rollingModelMessages,
-            {
-              role: "user" as const,
-              content: checkpointRestriction.instruction,
-            },
-          ],
-        };
-      }
-
       const enforceParentGateTool = (
         activeTools: Array<keyof typeof ctx.tools> | undefined,
       ): Array<keyof typeof ctx.tools> | undefined => {
@@ -1318,7 +1639,9 @@ export async function createAgentStream(
           : [...activeTools, "wait_for_agents"];
       };
       try {
-        const pruneResult = pruneToolOutputs(state.finalMessages);
+        const pruneResult = historyEnabled
+          ? { prunedCount: 0, messages: state.finalMessages }
+          : pruneToolOutputs(state.finalMessages);
         if (pruneResult.prunedCount > 0) {
           state.transcriptSourceMessages ??= state.finalMessages;
           state.finalMessages = pruneResult.messages;
@@ -1376,7 +1699,6 @@ export async function createAgentStream(
               ...(generationStepIndex === 0 &&
                 ctx.mode === "agent" && {
                   startupCompaction: {
-                    userId: ctx.userId,
                     onAttempt: ctx.onStartupCompactionAttempt,
                   },
                 }),
@@ -1398,6 +1720,8 @@ export async function createAgentStream(
                 state.ctxUsage = result.contextUsage;
               }
               state.finalMessages = result.summarizedMessages;
+              // Durable summary changed the source projection: restart replay from its checkpoint.
+              historyReplay.reset();
               state.transcriptSourceMessages = undefined;
               streamHasImageViewResults =
                 !ctx.auxiliaryVisionEnabled &&
@@ -1448,10 +1772,30 @@ export async function createAgentStream(
                 baseMessages: summarizedModelMessages,
                 rawMessageCursor: rawModelMessages.length,
               };
+              if (historyEnabled) {
+                sourceModelMessages = await convertToModelMessages(
+                  result.summarizedMessages,
+                  { tools: promptSerializationTools },
+                );
+                sourceResponseCursor =
+                  rawModelMessages.length - initialModelMessages.length;
+                lastHistoryResponseCursor = sourceResponseCursor;
+                lastHistoryTools = activeTools
+                  ? Object.fromEntries(
+                      Object.entries(ctx.tools).filter(([name]) =>
+                        activeTools.includes(name),
+                      ),
+                    )
+                  : ctx.tools;
+              }
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
               );
+              if (historyEnabled) {
+                historyReplay.commit(preparedMessages, rawModelMessages.length);
+                lastHistoryRequest = structuredClone(preparedMessages);
+              }
               recordProviderRequestDiagnostics({
                 modelName: continuationModelInfo.modelName,
                 requestedSlug: continuationModelInfo.requestedSlug,
@@ -1463,6 +1807,7 @@ export async function createAgentStream(
                 providerOptions,
                 activeTools,
               });
+              markToolCycleRecoveryPrepared(loopRecovery);
               return {
                 model: getNamespacedLanguageModel(
                   continuationModelInfo.languageModel,
@@ -1471,10 +1816,7 @@ export async function createAgentStream(
                 activeTools,
                 providerOptions,
                 messages: preparedMessages,
-                system: buildSystemPrompt(
-                  ctx.currentSystemPrompt,
-                  continuationModelInfo.modelName,
-                ),
+                system: requestSystemPrompt(continuationModelInfo.modelName),
                 ...(parentGate.toolChoice
                   ? { toolChoice: parentGate.toolChoice }
                   : {}),
@@ -1520,6 +1862,31 @@ export async function createAgentStream(
                   ),
                 ),
               registerBackgroundWork: ctx.registerBackgroundWork,
+              ...(historyEnabled &&
+                cacheAlignedSummaryEnabled &&
+                lastHistoryRequest && {
+                  cacheAlignedSummary: {
+                    languageModel: effectiveModelInfo.languageModel,
+                    tools: lastHistoryTools,
+                    system: frozenSystemPrompt,
+                    providerOptions: getStepProviderOptions(
+                      effectiveModelInfo.modelName,
+                    ),
+                    onUsed: () =>
+                      phLogger.event("cache_aligned_summary_exposed", {
+                        userId: ctx.userId,
+                        chat_id: ctx.chatId,
+                        mode: ctx.mode,
+                        model: historyRoute,
+                        variant: "v1",
+                      }),
+                    onDiscardedUsage: (usage) =>
+                      ctx.summarizationTracker.recordSummarizationUsage(
+                        usage,
+                        ctx.usageTracker,
+                      ),
+                  },
+                }),
             });
 
             if (!inRunResult) {
@@ -1609,6 +1976,10 @@ export async function createAgentStream(
                   baseMessages: nextBaseMessages,
                   rawMessageCursor: rawModelMessages.length,
                 };
+                if (historyEnabled) {
+                  lastHistoryResponseCursor =
+                    rawModelMessages.length - initialModelMessages.length;
+                }
                 rollingModelMessages = nextBaseMessages;
                 streamHasImageViewResults =
                   !ctx.auxiliaryVisionEnabled &&
@@ -1632,10 +2003,25 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
+                if (historyEnabled)
+                  lastHistoryTools = activeTools
+                    ? Object.fromEntries(
+                        Object.entries(ctx.tools).filter(([name]) =>
+                          activeTools.includes(name),
+                        ),
+                      )
+                    : ctx.tools;
                 const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
                 );
+                if (historyEnabled) {
+                  historyReplay.commit(
+                    preparedMessages,
+                    rawModelMessages.length,
+                  );
+                  lastHistoryRequest = structuredClone(preparedMessages);
+                }
                 recordProviderRequestDiagnostics({
                   modelName: continuationModelInfo.modelName,
                   requestedSlug: continuationModelInfo.requestedSlug,
@@ -1647,6 +2033,7 @@ export async function createAgentStream(
                   providerOptions,
                   activeTools,
                 });
+                markToolCycleRecoveryPrepared(loopRecovery);
                 return {
                   model: getNamespacedLanguageModel(
                     continuationModelInfo.languageModel,
@@ -1655,10 +2042,7 @@ export async function createAgentStream(
                   activeTools,
                   providerOptions,
                   messages: preparedMessages,
-                  system: buildSystemPrompt(
-                    ctx.currentSystemPrompt,
-                    continuationModelInfo.modelName,
-                  ),
+                  system: requestSystemPrompt(continuationModelInfo.modelName),
                   ...(parentGate.toolChoice
                     ? { toolChoice: parentGate.toolChoice }
                     : {}),
@@ -1671,27 +2055,60 @@ export async function createAgentStream(
         let currentMessages = rollingModelMessages as Array<
           Record<string, unknown>
         >;
-        const modelPrune = pruneModelMessages(currentMessages);
+        const modelPrune =
+          historyEnabled && !shouldCompactInRun
+            ? { prunedCount: 0, messages: currentMessages }
+            : pruneModelMessages(currentMessages);
         if (modelPrune.prunedCount > 0) {
           currentMessages = modelPrune.messages;
         }
 
-        let updatedMessages = await applyPrepareStepReminders(currentMessages, {
-          toolResults,
-          noteInjectionOpts: ctx.noteInjectionOpts,
-        });
+        let updatedMessages = historyEnabled
+          ? historyReplay.append(
+              currentMessages as ModelMessage[],
+              "notes",
+              await getAppendedNotesUpdate(toolResults, ctx.noteInjectionOpts),
+            )
+          : await applyPrepareStepReminders(currentMessages, {
+              toolResults,
+              noteInjectionOpts: ctx.noteInjectionOpts,
+            });
 
         if (loopRecovery.nudge) {
-          updatedMessages = [
-            ...updatedMessages,
-            { role: "user", content: loopRecovery.nudge },
-          ] as typeof updatedMessages;
+          updatedMessages = historyEnabled
+            ? historyReplay.append(
+                updatedMessages as ModelMessage[],
+                "recovery",
+                loopRecovery.nudge,
+              )
+            : ([
+                ...updatedMessages,
+                { role: "user", content: loopRecovery.nudge },
+              ] as typeof updatedMessages);
+        } else if (historyEnabled && historyReplay.hasEvent("recovery")) {
+          updatedMessages = historyReplay.append(
+            updatedMessages as ModelMessage[],
+            "recovery",
+            "The earlier loop-recovery intervention is complete. Continue the current task under the current tool permissions.",
+          );
         }
         if (parentGate.reminder) {
-          updatedMessages = [
-            ...updatedMessages,
-            { role: "user", content: parentGate.reminder },
-          ] as typeof updatedMessages;
+          updatedMessages = historyEnabled
+            ? historyReplay.append(
+                updatedMessages as ModelMessage[],
+                "parent",
+                parentGate.reminder,
+              )
+            : ([
+                ...updatedMessages,
+                { role: "user", content: parentGate.reminder },
+              ] as typeof updatedMessages);
+        } else if (historyEnabled && historyReplay.hasEvent("parent")) {
+          updatedMessages = historyReplay.append(
+            updatedMessages as ModelMessage[],
+            "parent",
+            "The earlier delegated-result waiting requirement is now satisfied. Continue the current task under the current tool permissions.",
+          );
         }
 
         const activeTools = enforceParentGateTool(
@@ -1707,6 +2124,24 @@ export async function createAgentStream(
           ) as ModelMessage[],
           effectiveModelInfo.modelName,
         )) as typeof messages;
+        if (historyEnabled) {
+          historyReplay.commit(
+            preparedMessages as ModelMessage[],
+            rawModelMessages.length,
+          );
+          lastHistoryRequest = structuredClone(
+            preparedMessages,
+          ) as ModelMessage[];
+          lastHistoryResponseCursor =
+            rawModelMessages.length - initialModelMessages.length;
+          lastHistoryTools = activeTools
+            ? Object.fromEntries(
+                Object.entries(ctx.tools).filter(([name]) =>
+                  activeTools.includes(name),
+                ),
+              )
+            : ctx.tools;
+        }
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
           requestedSlug: effectiveModelInfo.requestedSlug,
@@ -1718,6 +2153,7 @@ export async function createAgentStream(
           providerOptions,
           activeTools,
         });
+        markToolCycleRecoveryPrepared(loopRecovery);
         return {
           model: getNamespacedLanguageModel(
             effectiveModelInfo.languageModel,
@@ -1726,15 +2162,16 @@ export async function createAgentStream(
           activeTools,
           providerOptions,
           messages: preparedMessages,
-          system: buildSystemPrompt(
-            ctx.currentSystemPrompt,
-            effectiveModelInfo.modelName,
-          ),
+          system: requestSystemPrompt(effectiveModelInfo.modelName),
           ...(parentGate.toolChoice
             ? { toolChoice: parentGate.toolChoice }
             : {}),
         };
       } catch (error) {
+        // Do not persist a request assembled through the recovery path as an exact replay.
+        historyTelemetry.fallback = "prepare_error";
+        historyEnabled = false;
+        historyReplay.reset();
         if (error instanceof AbliterationVisionError || abortSignal.aborted)
           throw error;
         if (error instanceof DOMException && error.name === "AbortError") {
@@ -1815,6 +2252,12 @@ export async function createAgentStream(
           }
         }
         state.stoppedDueToStepLimit = true;
+        reportGuardrail({
+          reason: "step_limit",
+          action: "halt",
+          tool_names: [],
+          repeat_count: 1,
+        });
         return true;
       },
       tokenExhaustedAfterSummarization({
@@ -1837,8 +2280,14 @@ export async function createAgentStream(
         },
       }),
       doomLoopDetected({
-        onFired: () => {
+        onFired: (result) => {
           state.stoppedDueToDoomLoop = true;
+          reportGuardrail({
+            reason: result.reason ?? "repeated_tool_call",
+            action: "halt",
+            tool_names: result.toolNames,
+            repeat_count: result.consecutiveCount,
+          });
         },
       }),
     ],
@@ -1888,7 +2337,70 @@ export async function createAgentStream(
       }
     },
 
-    onStepFinish: async ({ usage, response, providerMetadata }) => {
+    onStepFinish: async ({
+      usage,
+      response,
+      providerMetadata,
+      toolCalls,
+      toolResults,
+      text,
+      finishReason,
+    }) => {
+      // An assignment, failed attempt, reasoning-only output or vision baseline
+      // cannot activate this context. State survives retries within this run only.
+      if (
+        ctx.abliteratedStepRouting &&
+        isAbliterationModel(activeStepModelName) &&
+        isAbliterationModel(response.modelId) &&
+        ["stop", "tool-calls", "length"].includes(finishReason) &&
+        (Boolean(text?.trim()) ||
+          toolCalls?.some(
+            (call) =>
+              Object.hasOwn(ctx.tools, call.toolName) &&
+              !("invalid" in call && call.invalid),
+          ))
+      ) {
+        state.hasCompletedAbliterationStep = true;
+      }
+      // Never persist an earlier partial candidate after an unsupported final step.
+      historyToSave = undefined;
+      if (
+        historyEnabled &&
+        response.modelId &&
+        response.modelId !== historyRoute
+      ) {
+        historyTelemetry.fallback = "response_model";
+        historyEnabled = false;
+        historyReplay.reset();
+      }
+      if (
+        historyEnabled &&
+        lastHistoryRequest &&
+        historyRevision !== undefined &&
+        !abortSignal.aborted
+      ) {
+        const source = [
+          ...sourceModelMessages,
+          ...response.messages.slice(sourceResponseCursor),
+        ];
+        const digests = sourceMessageDigests(source);
+        const replay = [
+          ...lastHistoryRequest,
+          ...response.messages.slice(lastHistoryResponseCursor),
+        ];
+        if (
+          digests.length === source.length &&
+          isReplayableTextHistory(replay)
+        ) {
+          historyToSave = {
+            version: 1,
+            identity: historyIdentity,
+            source: digests,
+            messages: replay,
+            system: frozenSystemPrompt,
+          };
+        }
+      }
       ctx.onModelStreamFinish?.();
       state.agentStepCount += 1;
       const responsePdfParserEngine = getResponseHeader(
@@ -1975,6 +2487,33 @@ export async function createAgentStream(
         ctx.usageTracker.computeCostDollars(activeStepModelName) +
         sandboxCostDollars +
         triggerRunCostDollars;
+      if (isAgentMode(ctx.mode)) {
+        try {
+          const observation = state.toolLoopObserver.observe(
+            toolCalls ?? [],
+            toolResults ?? [],
+            new Set(Object.keys(ctx.tools)),
+          );
+          if (observation) {
+            if (
+              state.toolCycleRecoveryCount < 2 &&
+              !state.pendingToolCycleRecovery
+            ) {
+              state.pendingToolCycleRecovery = observation;
+            }
+            reportGuardrail({
+              reason: "repeated_tool_result_cycle",
+              action: "observe",
+              tool_names: observation.toolNames,
+              repeat_count: observation.repeatCount,
+              cycle_length: observation.cycleLength,
+              run_cost_dollars: currentCostDollars,
+            });
+          }
+        } catch {
+          // Diagnostic inspection must not prevent settlement of completed work.
+        }
+      }
       const budgetDecision =
         ctx.budgetMonitor?.checkAfterStep(currentCostDollars);
       await ctx.settleUsageAfterStep?.({
@@ -2002,7 +2541,6 @@ export async function createAgentStream(
           console.error("[agent-stream] onBudgetAbort failed:", error);
         }
       }
-      await ctx.objectiveCheckpoint?.recordSpend(currentCostDollars);
     },
 
     onFinish: async (finishResult) => {
@@ -2034,6 +2572,8 @@ export async function createAgentStream(
         state.streamFinishReason = hardReason;
       } else if (state.stoppedDueToElapsedTimeout) {
         state.streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
+      } else if (state.stoppedDueToStepLimit) {
+        state.streamFinishReason = STEP_LIMIT_FINISH_REASON;
       } else if (state.stoppedDueToTokenExhaustion) {
         state.streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
       } else if (state.stoppedDueToDoomLoop) {
@@ -2130,11 +2670,39 @@ export async function createAgentStream(
         .catch((err) =>
           console.error("[agent-stream] PTY closeAll (onFinish) failed:", err),
         );
+      if (
+        historyEnabled &&
+        historyToSave &&
+        historyRevision !== undefined &&
+        !abortSignal.aborted &&
+        state.streamFinishReason === "stop"
+      ) {
+        // Accounting/cleanup above must never wait on optional replay storage.
+        // The database wrapper also bounds the work if no registrar is available.
+        historyTelemetry.save = "pending";
+        const save = saveModelHistory(
+          ctx.chatId,
+          ctx.userId,
+          historyRevision,
+          ctx.streamStartTime,
+          historyToSave,
+        )
+          .then((result) => {
+            historyTelemetry.save = result;
+          })
+          .catch((error) => {
+            historyTelemetry.save =
+              error instanceof ModelHistoryTimeoutError ? "timeout" : "error";
+          });
+        if (ctx.registerBackgroundWork) ctx.registerBackgroundWork(save);
+        else await save;
+      }
     },
 
     onError: async ({ error }) => {
       state.providerError = error;
       const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
+      state.providerErrorMetadata = errorOpenRouterMetadata;
       state.openRouterMetadata = mergeOpenRouterMetadata(
         errorOpenRouterMetadata,
         state.openRouterMetadata,
@@ -2184,6 +2752,10 @@ export async function createAgentStream(
       ) {
         const generationMetadata = await fetchOpenRouterGenerationMetadata(
           errorOpenRouterMetadata.openrouter_generation_id,
+        );
+        state.providerErrorMetadata = mergeOpenRouterMetadata(
+          errorOpenRouterMetadata,
+          generationMetadata,
         );
         state.openRouterMetadata = mergeOpenRouterMetadata(
           errorOpenRouterMetadata,

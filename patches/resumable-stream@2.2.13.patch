@@ -1,0 +1,40 @@
+diff --git a/dist/runtime.js b/dist/runtime.js
+index 4eaa74c7d7252b97f8bf626ce064280f10f95bd2..5e701294820cf3e9603de91fecf1fafd8e447906 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -14,6 +14,13 @@ function createResumableStreamContextFactory(defaults) {
+             doneWatchdogIntervalMs: options.doneWatchdogIntervalMs,
+         };
+         let initPromises = [];
++        const connect = (client) => {
++            const promise = Promise.resolve().then(() => client.connect());
++            // Contexts may be used after other async work, or never used at all.
++            // Observe failure immediately, but preserve rejection for stream callers.
++            promise.catch(() => {});
++            initPromises.push(promise);
++        };
+         // Check if user has passed a raw ioredis instance
+         if (options.subscriber && options.subscriber.defineCommand) {
+             ctx.subscriber = (0, ioredis_adapters_1.createSubscriberAdapter)(options.subscriber);
+@@ -24,11 +31,11 @@ function createResumableStreamContextFactory(defaults) {
+         // If user has passed undefined, initialize with defaults
+         if (!ctx.subscriber) {
+             ctx.subscriber = defaults.subscriber();
+-            initPromises.push(ctx.subscriber.connect());
++            connect(ctx.subscriber);
+         }
+         if (!ctx.publisher) {
+             ctx.publisher = defaults.publisher();
+-            initPromises.push(ctx.publisher.connect());
++            connect(ctx.publisher);
+         }
+         return {
+             resumeExistingStream: async (streamId, skipCharacters) => {
+@@ -41,6 +48,7 @@ function createResumableStreamContextFactory(defaults) {
+                 return createResumableStream(Promise.all(initPromises), ctx, streamId, makeStream, skipCharacters);
+             },
+             hasExistingStream: async (streamId) => {
++                await Promise.all(initPromises);
+                 const state = await ctx.publisher.get(`${ctx.keyPrefix}:sentinel:${streamId}`);
+                 if (state === null) {
+                     return null;

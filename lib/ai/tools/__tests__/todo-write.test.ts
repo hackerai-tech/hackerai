@@ -184,12 +184,12 @@ describe("todo_write", () => {
     });
   });
 
-  it("tracks assistant todos removed by a replacement plan", async () => {
+  it("tracks finished assistant todos removed by a replacement plan", async () => {
     const context = makeContext([
       {
         id: "old",
         content: "Old plan",
-        status: "pending",
+        status: "completed",
         sourceMessageId: "assistant-old",
       },
     ]);
@@ -201,7 +201,7 @@ describe("todo_write", () => {
 
     expect(context.todoManager.getRunMetrics()).toEqual({
       initialTodoCount: 1,
-      initialUnfinishedTodoCount: 1,
+      initialUnfinishedTodoCount: 0,
       finalTodoCount: 1,
       finalUnfinishedTodoCount: 1,
       todoWriteCount: 1,
@@ -258,6 +258,8 @@ describe("todo_write", () => {
     expect(result).toEqual({
       error:
         'Failed to manage todos: Todo "1" is missing required content field',
+      currentTodos: [{ id: "1", content: "Plan test", status: "pending" }],
+      counts: { completed: 0, total: 1 },
     });
   });
 
@@ -270,6 +272,8 @@ describe("todo_write", () => {
     expect(result).toEqual({
       error:
         'Failed to manage todos: Content and status are required for new todo "missing-content"',
+      currentTodos: [],
+      counts: { completed: 0, total: 0 },
     });
   });
 });

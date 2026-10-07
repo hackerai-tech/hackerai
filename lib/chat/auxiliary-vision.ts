@@ -9,9 +9,23 @@ import {
   myProvider,
 } from "@/lib/ai/providers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
+import {
+  extractErrorDetails,
+  getProviderErrorCategory,
+  isRetriableProviderStreamDisconnectError,
+} from "@/lib/utils/error-utils";
 
 export const AUXILIARY_VISION_MODEL = "auxiliary-vision-model" as const;
 export const AUXILIARY_VISION_TIMEOUT_MS = 20_000;
+export const AUXILIARY_VISION_RETRY_TIMEOUT_MS = 35_000;
+
+export class AuxiliaryVisionTimeoutError extends Error {
+  readonly origin = "auxiliary_vision";
+  constructor(timeoutMs: number, cause?: unknown) {
+    super(`Image analysis timed out after ${timeoutMs}ms`, { cause });
+    this.name = "AuxiliaryVisionTimeoutError";
+  }
+}
 export const AUXILIARY_VISION_MAX_OUTPUT_TOKENS = 1_200;
 export const AUXILIARY_VISION_MAX_CONCURRENCY = 3;
 // Bound the entire recovery queue, rather than rejecting a long image history.
@@ -108,6 +122,13 @@ export function createVisionSummaryRecoveryController({
   };
 }
 
+export type AuxiliaryVisionDescriptionCacheWriter = (args: {
+  userId: string;
+  fileId: string;
+  description: string;
+  model: string;
+}) => Promise<void>;
+
 export type AuxiliaryVisionResult = {
   description: string;
   costDollars?: number;
@@ -175,7 +196,8 @@ const defaultModelRunner: AuxiliaryVisionModelRunner = async ({
     },
     temperature: 0,
     maxOutputTokens: AUXILIARY_VISION_MAX_OUTPUT_TOKENS,
-    maxRetries: 1,
+    // The descriptor owns the two-attempt budget, including local timeouts.
+    maxRetries: 0,
     abortSignal,
   });
 
@@ -206,6 +228,7 @@ export async function describeImageWithAuxiliaryVision({
   abortSignal,
   onCost,
   modelRunner = defaultModelRunner,
+  canRetry = () => true,
 }: {
   image: string;
   mediaType: string;
@@ -218,101 +241,144 @@ export async function describeImageWithAuxiliaryVision({
   abortSignal?: AbortSignal;
   onCost?: (costDollars: number) => void;
   modelRunner?: AuxiliaryVisionModelRunner;
+  canRetry?: () => boolean;
 }): Promise<AuxiliaryVisionResult> {
   const startedAt = Date.now();
-  const timeoutController = new AbortController();
-  const timeoutId = setTimeout(
-    () => timeoutController.abort(),
-    AUXILIARY_VISION_TIMEOUT_MS,
-  );
-  const combinedSignal = abortSignal
-    ? AbortSignal.any([abortSignal, timeoutController.signal])
-    : timeoutController.signal;
+  for (let attempt = 0; ; attempt++) {
+    abortSignal?.throwIfAborted();
+    const timeoutMs =
+      attempt === 0
+        ? AUXILIARY_VISION_TIMEOUT_MS
+        : AUXILIARY_VISION_RETRY_TIMEOUT_MS;
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(
+      () => timeoutController.abort(new AuxiliaryVisionTimeoutError(timeoutMs)),
+      timeoutMs,
+    );
+    const combinedSignal = abortSignal
+      ? AbortSignal.any([abortSignal, timeoutController.signal])
+      : timeoutController.signal;
+    try {
+      combinedSignal.throwIfAborted();
+      const result = await modelRunner({
+        image: withDataUrlPrefix(image, mediaType),
+        mediaType,
+        filename,
+        abortSignal: combinedSignal,
+        userId,
+      });
+      const costDollars = getProviderUsageRawModelCost(result.usage?.raw);
+      if (
+        typeof costDollars === "number" &&
+        Number.isFinite(costDollars) &&
+        costDollars > 0
+      ) {
+        onCost?.(costDollars);
+      }
+      // A returned provider charge remains real even if the answer is unusable
+      // or cancellation arrived while the provider was finishing.
+      combinedSignal.throwIfAborted();
+      const description = result.text.trim();
+      if (!description) {
+        throw new Error("Auxiliary vision model returned an empty description");
+      }
+      const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
+      const durationMs = Date.now() - startedAt;
+      console.info(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "info",
+          event: "auxiliary_vision_description_completed",
+          service: triggerRunId ? "agent-long" : "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          request_id: requestId ?? "unavailable",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: triggerRunId,
+          source,
+          model,
+          fallback_served: model !== AUXILIARY_VISION_SLUG,
+          media_type: mediaType,
+          duration_ms: durationMs,
+          attempt: attempt + 1,
+          input_tokens: result.usage?.inputTokens ?? 0,
+          output_tokens: result.usage?.outputTokens ?? 0,
+          cost_dollars: costDollars,
+        }),
+      );
 
-  try {
-    combinedSignal.throwIfAborted();
-    const result = await modelRunner({
-      image: withDataUrlPrefix(image, mediaType),
-      mediaType,
-      filename,
-      abortSignal: combinedSignal,
-      userId,
-    });
-    const costDollars = getProviderUsageRawModelCost(result.usage?.raw);
-    if (
-      typeof costDollars === "number" &&
-      Number.isFinite(costDollars) &&
-      costDollars > 0
-    ) {
-      onCost?.(costDollars);
-    }
-    // A returned provider charge remains real even if the answer is unusable
-    // or cancellation arrived while the provider was finishing.
-    combinedSignal.throwIfAborted();
-    const description = result.text.trim();
-    if (!description) {
-      throw new Error("Auxiliary vision model returned an empty description");
-    }
-    const model = result.model?.trim() || AUXILIARY_VISION_SLUG;
-    const durationMs = Date.now() - startedAt;
-    console.info(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "info",
-        event: "auxiliary_vision_description_completed",
-        service: triggerRunId ? "agent-long" : "chat-handler",
-        environment:
-          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-        request_id: requestId ?? "unavailable",
-        user_id: userId,
-        chat_id: chatId,
-        trigger_run_id: triggerRunId,
-        source,
+      return {
+        description,
+        ...(typeof costDollars === "number" && costDollars > 0
+          ? { costDollars }
+          : {}),
+        inputTokens: result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        durationMs,
         model,
-        fallback_served: model !== AUXILIARY_VISION_SLUG,
-        media_type: mediaType,
-        duration_ms: durationMs,
-        input_tokens: result.usage?.inputTokens ?? 0,
-        output_tokens: result.usage?.outputTokens ?? 0,
-        cost_dollars: costDollars,
-      }),
-    );
-
-    return {
-      description,
-      ...(typeof costDollars === "number" && costDollars > 0
-        ? { costDollars }
-        : {}),
-      inputTokens: result.usage?.inputTokens ?? 0,
-      outputTokens: result.usage?.outputTokens ?? 0,
-      durationMs,
-      model,
-    };
-  } catch (error) {
-    console.warn(
-      JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: "warn",
-        event: "auxiliary_vision_description_failed",
-        service: triggerRunId ? "agent-long" : "chat-handler",
-        environment:
-          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
-        request_id: requestId ?? "unavailable",
-        user_id: userId,
-        chat_id: chatId,
-        trigger_run_id: triggerRunId,
-        source,
-        model: AUXILIARY_VISION_SLUG,
-        media_type: mediaType,
-        duration_ms: Date.now() - startedAt,
-        error_name: error instanceof Error ? error.name : "UnknownError",
-      }),
-    );
-    throw error;
-  } finally {
-    clearTimeout(timeoutId);
+      };
+    } catch (error) {
+      // The caller owns cancellation and the whole-batch deadline. Only a local
+      // per-image timeout or a known transient provider failure can retry.
+      const failure = abortSignal?.aborted
+        ? abortSignal.reason
+        : timeoutController.signal.aborted
+          ? new AuxiliaryVisionTimeoutError(timeoutMs, error)
+          : error;
+      const category = getProviderErrorCategory(extractErrorDetails(failure));
+      const willRetry =
+        attempt === 0 &&
+        !abortSignal?.aborted &&
+        canRetry() &&
+        (isRetriableProviderStreamDisconnectError(failure) ||
+          category === "rate_limited");
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "auxiliary_vision_description_failed",
+          service: triggerRunId ? "agent-long" : "chat-handler",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          request_id: requestId ?? "unavailable",
+          user_id: userId,
+          chat_id: chatId,
+          trigger_run_id: triggerRunId,
+          source,
+          model: AUXILIARY_VISION_SLUG,
+          media_type: mediaType,
+          duration_ms: Date.now() - startedAt,
+          attempt: attempt + 1,
+          will_retry: willRetry,
+          failure_reason: abortSignal?.aborted
+            ? "caller_aborted"
+            : category === "timeout"
+              ? "timeout"
+              : "provider_error",
+          error_name: failure instanceof Error ? failure.name : "UnknownError",
+        }),
+      );
+      if (!willRetry) throw failure;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 }
+
+/** Call only on attachment metadata reloaded through the owner-checked file lookup. */
+export const getCachedAuxiliaryVisionDescription = (
+  part: Record<string, unknown>,
+): string | undefined =>
+  typeof part.fileId === "string" &&
+  typeof part.auxiliaryVisionDescription === "string" &&
+  part.auxiliaryVisionDescription.trim() &&
+  (part.auxiliaryVisionModel === AUXILIARY_VISION_SLUG ||
+    LEGACY_AUXILIARY_VISION_SLUGS.includes(
+      part.auxiliaryVisionModel as (typeof LEGACY_AUXILIARY_VISION_SLUGS)[number],
+    ))
+    ? part.auxiliaryVisionDescription
+    : undefined;
 
 const escapeTagText = (value: string): string =>
   value
@@ -387,15 +453,7 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
           : typeof partRecord.name === "string"
             ? partRecord.name
             : undefined;
-      const cachedDescription =
-        fileId &&
-        typeof partRecord.auxiliaryVisionDescription === "string" &&
-        (partRecord.auxiliaryVisionModel === AUXILIARY_VISION_SLUG ||
-          LEGACY_AUXILIARY_VISION_SLUGS.includes(
-            partRecord.auxiliaryVisionModel as (typeof LEGACY_AUXILIARY_VISION_SLUGS)[number],
-          ))
-          ? partRecord.auxiliaryVisionDescription
-          : undefined;
+      const cachedDescription = getCachedAuxiliaryVisionDescription(partRecord);
       const filename = partFilename
         ? ` filename="${escapeTagAttribute(partFilename)}"`
         : "";
@@ -468,6 +526,9 @@ export async function describeImageAttachmentsWithAuxiliaryVision({
                 pendingCostDollars += costDollars;
               },
               modelRunner,
+              canRetry: () =>
+                pendingCostDollars <
+                AUXILIARY_VISION_RECOVERY_COST_BUDGET_DOLLARS,
             });
             if (cacheDescription && userId && task.fileId) {
               await cacheDescription({

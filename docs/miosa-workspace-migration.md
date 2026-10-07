@@ -1,0 +1,161 @@
+# Existing E2B workspace migration
+
+Owner and rollout: [HAC-113](https://linear.app/hackerai/issue/HAC-113).
+
+Migration is currently paused in code in all environments. Scheduling and worker
+flag rechecks return disabled regardless of PostHog targeting. Keep the migration
+flag inactive in both projects. Users blocked by a migration receive a fresh,
+isolated E2B workspace so Agent execution can continue. The routing record pins
+that exact E2B sandbox and retains the complete previous fence in
+`recoveryPending`; original workspaces and staged archives are not modified.
+Previous files are not available in this fresh workspace until separately
+recovered. Do not overwrite the new workspace during recovery: it may already
+contain new user work. Reset and account-deletion fences never permit fallback.
+The procedures below apply only after reviewed resumption of the rollout.
+
+This replaces pristine-template fingerprinting. No baseline JSON is required.
+The migration copies only `/home/user`, including hidden files and metadata.
+It does not distinguish Agent-created files from other files in that directory.
+The original E2B sandbox is retained. Files outside `/home/user`, installed system
+tools and running processes are not migrated; customized runtimes may need
+reinstalling. Do not describe this as preserving an arbitrary VM unchanged.
+
+## Eligibility and storage contract
+
+The existing paid-plan and Miosa assignment gates still apply. A server request
+selected by `miosa_e2b_file_migration_v1` nominates only the E2B workspace used
+by that recent acquisition, schedules a Trigger task after 20 minutes and
+continues using E2B. There is no all-user scanner. Scheduling is deduplicated per
+user/source across all parent Agent runs using a global Trigger idempotency key
+for twelve hours. This covers the configured delay, attempts, idle waits and
+backoff; the durable fence remains authoritative if a later job is scheduled. If that recent workspace is still active or holds the
+activity fence, the same task waits 15 minutes and rechecks it up to three times;
+permanent incompatibilities complete without another attempt. The worker
+rechecks the flag, complete cross-cluster inventory, source ownership, paused
+lifecycle, region and the exclusive 15-minute activity fence. Source
+metadata must match the worker's configured E2B template alias because multiple
+environments may share an E2B account. Unknown or other-environment sources are
+deferred even if their user ID matches. Multiple
+sources, attached volumes, EU/unknown execution, existing Miosa workspaces,
+active commands, unsupported mounts, unsupported home entries and links from
+home to un-restored paths are deferred. The destination must use the native
+`hackerai-tools` template.
+
+The archive includes regular files, hidden/empty files, directories, internal
+links, numeric ownership, modes, extended attributes and tar timestamps under
+`/home/user`. Sockets, device nodes, FIFOs and links to outside-home paths defer
+migration. System files and runtime logs outside home are not scanned or copied.
+Unknown reads and detected source changes deny cutover. The original source
+remains the recovery copy for files and runtime state outside the migration scope.
+
+Initial limits: 250,000 entries, 12 GiB of regular-file data and a 4 GiB compressed
+archive. Archive bytes pass through the worker in 4 MiB chunks without local
+disk, object storage or content-bearing task payloads. The worker checks total
+size and SHA-256; the destination rechecks archive integrity and the restored
+home's content/metadata fingerprint. It verifies the source again, pauses it,
+and tests destination pause/resume persistence before committing the destination
+ID. Oversized workspaces and insufficient destination storage stay on E2B.
+Two jobs may run concurrently. Tasks have a two-hour ceiling and up to three
+attempts with backoff; transient E2B connection and command-list checks also get
+three bounded attempts with operation-specific diagnostics before the task
+fails. Individual filesystem operations and transfers have shorter limits. A
+retained checking fence records its owning Trigger run and attempt. A duplicate
+waits while that exact attempt is executing. A retry, legacy ownerless record,
+terminal owner or unavailable status requires recovery; no fence is expired or
+automatically cleared.
+
+## Cutover and recovery
+
+Keep the durable Redis fence and deploy fence-aware Ask/Agent workers before
+activation. A request blocked by a checking fence or reverse-recovery fence,
+or by a committed MIOSA workspace while MIOSA is paused, creates a fresh E2B
+workspace without discovering or connecting any recovery copy. An atomic
+compare-and-set replaces only the observed routing record, preserving it in
+`recoveryPending`. A concurrent request reconnects to the winning pin; an older
+migration job loses its ownership and cannot replace the new route. An unknown
+Redis write outcome retains the newly created sandbox for reconciliation.
+Account cleanup/deletion and unreadable Redis records still block acquisitions.
+
+Prepared destinations use private, unique migration names, not the normal
+workspace name. Failed copies destroy only that prepared destination and remove
+their own source staging directory before releasing the fence. Unconfirmed
+cleanup, process death or uncertain commit retains the fence for operator
+recovery. Never bulk-clear migration records or give them a TTL.
+
+Committed records pin an exact destination ID. Missing or broken E2B destinations
+fail safely; fallback never resumes the stale E2B copy. MIOSA acquisition failures
+with a migration record use the same fresh E2B fallback described above. Flag
+rollback stops new migrations, including in-flight copies before installation.
+Legacy committed
+empty-migration records remain readable. Cleanup atomically owns the same Redis
+key before enumerating either provider, including when no migration existed.
+An active checking claim blocks cleanup before enumeration; never revoke it to
+force deletion. Concurrent cleanup attempts must retry.
+
+Explicit workspace reset deletes both providers, then clears only its matching
+cleanup token. Failed reset restores the prior committed record so it cannot
+expose the retained E2B copy. Account deletion retains a non-expiring `deleted`
+fence even after partial provider failure, preventing delayed migration jobs
+from creating another destination. Failed deletion retains any committed pin so
+retries still require both providers; account deletion may retry cleanup under
+that fence. Never clear a deleted account's fence to retry a task.
+
+A crashed cleanup retains `cleanup` ownership and any prior committed record
+inside it. Stop the cleanup invocation and confirm it cannot resume before
+operator recovery. For reset, finish provider deletion or restore the recorded
+committed pin; clear the matching cleanup token only after complete deletion.
+For account deletion, finish provider cleanup and retain the `deleted` fence.
+
+For a stranded checking record, stop the corresponding Trigger job, confirm the
+record token/source and both provider identities, destroy the exact uncommitted
+prepared destination and remove the owned source staging directory. Verify no
+commit occurred before clearing that exact checking record. A committed or
+uncertain migration requires Miosa recovery or a separately verified reverse
+transfer. Source retention has no automatic deletion job; establish a retention
+policy separately before deleting any retained E2B workspace.
+
+## Rollout and acceptance
+
+PostHog Preview project 401167 uses the independent migration key at 100% for
+`hackerai_environment=preview|development`; Production project 144137 starts at
+25% for `hackerai_environment=production`, default 0%. Bucketing uses the stable
+user ID. Prepare both flags disabled until acceptance. Disable the superseded
+empty-migration flag; its baseline tool/configuration is removed.
+
+Before activation, independently verify Vercel, Trigger, PostHog and the proper
+Convex account/deployment for each environment. A Vercel Preview URL alone does
+not prove the Trigger worker uses Preview configuration. Deploy the new task and
+acquisition code, finish older cohort runs, then enable Preview acceptance.
+After acceptance, enable the authorized production 25%; increasing it requires
+a separate readout and rollout decision. Flag changes affect new acquisitions
+and in-flight pre-cutover checks without another deployment.
+
+On the actual Preview URL using disposable paid test accounts:
+
+1. Create an E2B workspace with binary, hidden and empty files, nested folders,
+   permissions, internal links and xattrs. Include a disposable file outside home.
+   Run a bounded Agent command, allow the idle interval, and run the migration
+   task. Verify copied home contents and that the outside-home file is not copied.
+2. Run Agent on Miosa, reload/reconnect and verify the files again. Confirm the
+   old E2B ID still exists. Check both the visible response and actual provider.
+3. Verify active work, mounted volumes, multiple sources, outside-home links,
+   unknown reads and size limits defer migration without changing the source.
+4. Nominate the same source from two separate Agent runs and confirm they share
+   one delayed migration run. For a deliberately duplicated disposable test job,
+   verify `migration_in_progress` while the owner executes and `already_claimed`
+   after it commits. A crashed owner must still require recovery.
+5. Exercise corrupted transfer, source changes, interrupted workers, failed
+   destination cleanup, lost commit acknowledgement and destination loss. Confirm
+   no partial destination or stale E2B copy becomes available.
+6. Create a Miosa-only file, disable the flag and simulate acquisition failure.
+   Verify a fresh E2B fallback is pinned, both original copies remain untouched,
+   and reconnect uses the fallback rather than either original. Verify explicit reset.
+
+`miosa_e2b_file_migration_checked` reports bounded reason/count/duration fields;
+`miosa_e2b_file_migration_exposed` records actual acquisition after cutover.
+Neither event contains paths, hashes, filenames, contents or credentials.
+Track completed Agent runs after exposure, preservation/reconnect failures,
+user interruption, transfer cost and acquisition latency. Ross reviews after
+48 hours and at least 100 completed affected runs; low traffic extends review.
+Stop new migrations on any integrity/isolation failure or material reliability
+regression. Remove the flag only after cohort completion and a stable readout.

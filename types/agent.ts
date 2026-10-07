@@ -610,6 +610,9 @@ export type AgentToolApprovalRequest = {
 export type AgentToolApprovalPendingRequest = {
   approvalId: string;
   toolCallId: string;
+  sourceRunId?: string;
+  sourceAgentId?: string;
+  sourceAgentName?: string;
   operation?: AgentToolApprovalOperation;
   target?: string;
   justification?: string;

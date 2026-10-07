@@ -59,7 +59,7 @@ jest.mock("../BranchIndicator", () => ({
 }));
 
 jest.mock("../FinishReasonNotice", () => ({
-  FinishReasonNotice: () => null,
+  FinishReasonNotice: () => <div data-testid="finish-reason-notice" />,
 }));
 
 const assistantMessage = {
@@ -134,6 +134,38 @@ const renderMessageItem = ({
   );
 
 describe("MessageItem WorkedFor rendering", () => {
+  it("hides a stopped run's recovery notice after a newer user message", () => {
+    const props = {
+      message: assistantMessage,
+      index: 1,
+      messagesLength: 3,
+      lastAssistantMessageIndex: 1,
+      lastUserMessageIndex: 0,
+      finishReason: "budget-exhausted",
+      status: "ready" as const,
+      canEdit: false,
+      isEditing: false,
+      feedbackInputMessageId: null,
+      branchBoundaryIndex: undefined,
+      onStartEdit: jest.fn(),
+      onSaveEdit: jest.fn(async () => {}),
+      onCancelEdit: jest.fn(),
+      onRegenerate: jest.fn(),
+      onFeedback: jest.fn(),
+      onFeedbackSubmit: jest.fn(async () => {}),
+      onFeedbackCancel: jest.fn(),
+      onShowAllFiles: jest.fn(),
+      getCachedUrl: jest.fn(),
+    };
+    const { rerender } = render(<MessageItem {...props} />);
+    expect(screen.getByTestId("finish-reason-notice")).toBeInTheDocument();
+
+    rerender(<MessageItem {...props} lastUserMessageIndex={2} />);
+    expect(
+      screen.queryByTestId("finish-reason-notice"),
+    ).not.toBeInTheDocument();
+  });
+
   it("re-renders message actions when positive feedback is saved", () => {
     const props = {
       index: 0,

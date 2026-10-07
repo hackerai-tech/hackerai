@@ -1,4 +1,8 @@
-import { regionalFreeCountryFromRequest } from "@/lib/experiments/regional-free-limits-request";
+import {
+  enforceRegionalSubscriptionFirst,
+  subscriptionFirstCountryFromRequest,
+} from "@/lib/experiments/regional-subscription-first.server";
+import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
@@ -36,6 +40,7 @@ import {
 } from "@/lib/api/chat-request-validation";
 import { readAnalyticsRequestContext } from "@/lib/analytics/request-context";
 import { resolveProjectExecutionContext } from "@/lib/chat/project-context";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import type {
   Todo,
   LimitRescueRequest,
@@ -462,10 +467,18 @@ export const createAgentTriggerPost =
           subscription,
         );
       await assertUserCanMakeCostIncurringRequest(userId);
+      const regionalSubscriptionCountry =
+        subscriptionFirstCountryFromRequest(req);
+      await enforceRegionalSubscriptionFirst({
+        userId,
+        subscription,
+        country: regionalSubscriptionCountry,
+        surface: "agent",
+      });
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
-      const genericDelegationEnabled = agentPermissionMode === "full_access";
+      const genericDelegationEnabled = true;
 
       assertFreeAgentGates({
         mode: "agent",
@@ -542,7 +555,7 @@ export const createAgentTriggerPost =
       let localDesktopAttachmentsPrepared = false;
 
       if (hasLocalDesktopSourcePaths(requestMessages)) {
-        if (sandboxPreference !== "desktop") {
+        if (!isDesktopPreference(sandboxPreference ?? "e2b")) {
           throw new ChatSDKError(
             "bad_request:api",
             "Desktop-local attachments can only be used with the desktop sandbox.",
@@ -558,7 +571,7 @@ export const createAgentTriggerPost =
           const sandboxManager = new HybridSandboxManager(
             userId,
             () => {},
-            "desktop",
+            sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY!,
             null,
             subscription,
@@ -685,6 +698,7 @@ export const createAgentTriggerPost =
         subscription,
         organizationId,
         freeQuotaSubject,
+        regionalSubscriptionCountry,
         regionalFreeCountry:
           subscription === "free"
             ? regionalFreeCountryFromRequest(req)

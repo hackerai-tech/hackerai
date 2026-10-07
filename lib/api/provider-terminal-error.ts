@@ -4,11 +4,27 @@ import {
   getLocalOpenRouterRequestSizeGuardDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
+  isRetriableProviderStreamDisconnectError,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
 
 const providerFromModel = (model: string | undefined): string | undefined =>
   model?.includes("/") ? model.split("/", 1)[0] : undefined;
+
+/**
+ * The observed Together disconnects can recur across different fallback models.
+ * Use the verified OpenRouter slug only on recovery requests; never infer an
+ * upstream from a model author or turn arbitrary display names into slugs.
+ */
+export const getProviderDisconnectIgnoredSlugs = (
+  error: unknown,
+  metadata: OpenRouterModelMetadata = {},
+): string[] => {
+  return isRetriableProviderStreamDisconnectError(error) &&
+    metadata.provider_name?.toLowerCase() === "together"
+    ? ["together"]
+    : [];
+};
 
 /**
  * Low-cardinality provider failure envelope used by Trigger.dev error
@@ -20,7 +36,7 @@ export class ProviderTerminalError extends Error {
   readonly model: string;
   readonly category: ProviderErrorCategory;
   readonly statusCode?: number;
-  readonly origin?: "local_request_size_guard";
+  readonly origin?: "local_request_size_guard" | "auxiliary_vision";
   readonly localRequestId?: string;
   readonly requestBytesBefore?: number;
   readonly requestBytesAfter?: number;
@@ -47,7 +63,11 @@ export class ProviderTerminalError extends Error {
         : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
     const localSizeGuard = getLocalOpenRouterRequestSizeGuardDetails(cause);
-    const origin = localSizeGuard ? "local_request_size_guard" : undefined;
+    const origin = localSizeGuard
+      ? "local_request_size_guard"
+      : details.errorOrigin === "auxiliary_vision"
+        ? "auxiliary_vision"
+        : undefined;
     const message = [
       "Provider terminal error",
       `category=${category}`,

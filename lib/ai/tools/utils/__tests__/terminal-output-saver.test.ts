@@ -27,7 +27,13 @@ const createSandbox = ({
   listedFiles?: Array<{ name: string }>;
 } = {}) => ({
   ...(sandboxKind ? { sandboxKind } : {}),
-  ...(sandboxKind ? { supportsNativeFileRelay: () => nativeFileRelay } : {}),
+  ...(sandboxKind
+    ? {
+        supportsNativeFileRelay: () => nativeFileRelay,
+        supportsCommandStdin: () => true,
+        isWindows: () => false,
+      }
+    : {}),
   commands: {
     run: jest.fn(async () => ({
       stdout: "",
@@ -192,7 +198,35 @@ describe("saveFullOutputToFile", () => {
     expect(savedPath).toMatch(
       new RegExp(`^/tmp/terminal_full_output/chat-${CHAT_KEY}/`),
     );
+    expect(sandbox.files.write).not.toHaveBeenCalled();
+    expect(
+      sandbox.commands.run.mock.calls.some(
+        ([, options]) =>
+          Buffer.isBuffer(options?.stdin) &&
+          options.stdin.toString() === "full output",
+      ),
+    ).toBe(true);
+    expect(
+      sandbox.commands.run.mock.calls.map(([command]) => command).join("\n"),
+    ).not.toContain("full output");
     jest.useRealTimers();
+  });
+
+  it("fails closed on remote clients without private stdin transport", async () => {
+    const sandbox = createSandbox({ sandboxKind: "centrifugo" });
+    sandbox.supportsCommandStdin = () => false;
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
+    try {
+      await expect(
+        saveFullOutputToFile(sandbox as any, "private output", CHAT_ID),
+      ).resolves.toBeNull();
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      eventSpy.mockRestore();
+    }
   });
 
   it("retries one transient desktop relay failure and records recovery", async () => {

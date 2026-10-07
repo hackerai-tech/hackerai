@@ -31,7 +31,13 @@ const {
 describe("Extra Usage failure capture through phLogger", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockConvexCall.mockRejectedValue(new TypeError("fetch failed"));
+    mockConvexCall.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("private connection details"), {
+          code: "ECONNRESET",
+        }),
+      }),
+    );
   });
 
   it.each([
@@ -68,6 +74,7 @@ describe("Extra Usage failure capture through phLogger", () => {
       event,
       convex_error_name: "TypeError",
       convex_error_message: "fetch failed",
+      convex_network_error_codes: ["ECONNRESET"],
     };
     expect(properties).toMatchObject(expectedCause);
     expect(log.attributes).toMatchObject(expectedCause);
@@ -75,6 +82,87 @@ describe("Extra Usage failure capture through phLogger", () => {
     expect(properties.error_message).toBe(log.body);
     expect(exception.message).toBe(log.body);
     expect(exception.message).not.toBe("fetch failed");
+  });
+
+  it("captures distinct network codes through nested aggregate causes in both sinks", async () => {
+    const connectionError = (code: string) =>
+      Object.assign(new Error("PRIVATE_HOST_AND_ADDRESS"), { code });
+    mockConvexCall.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: new AggregateError([
+          connectionError("ENETUNREACH"),
+          new Error("PRIVATE_WRAPPER", {
+            cause: connectionError("ETIMEDOUT"),
+          }),
+          connectionError("ENETUNREACH"),
+          connectionError("PRIVATE_ARBITRARY_CODE"),
+        ]),
+      }),
+    );
+
+    await expect(deductFromBalance("user_123", 100)).resolves.toMatchObject({
+      success: false,
+      insufficientFunds: false,
+    });
+    const properties = mockCaptureException.mock.calls[0][2] as Record<
+      string,
+      unknown
+    >;
+    const log = mockEmitPostHogLog.mock.calls[0][0] as {
+      attributes: Record<string, unknown>;
+    };
+    expect(properties.convex_network_error_codes).toEqual([
+      "ENETUNREACH",
+      "ETIMEDOUT",
+    ]);
+    expect(log.attributes.convex_network_error_codes).toEqual([
+      "ENETUNREACH",
+      "ETIMEDOUT",
+    ]);
+    expect(JSON.stringify([properties, log])).not.toContain("PRIVATE_");
+    expect(mockConvexCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds the whole diagnostic traversal across aggregate errors and causes", async () => {
+    const root: { cause?: unknown; errors?: unknown[] } = {};
+    const cycle = { code: "ECONNREFUSED", cause: root };
+    root.cause = cycle;
+    const outsideBudget = jest.fn(() => "PRIVATE_CODE");
+    root.errors = Array.from({ length: 100 }, () =>
+      Object.defineProperty({}, "code", { get: outsideBudget }),
+    );
+    mockConvexCall.mockRejectedValue(
+      new TypeError("fetch failed", { cause: root }),
+    );
+
+    await deductFromTeamBalance("org_123", "user_123", 100);
+
+    expect(outsideBudget.mock.calls.length).toBeLessThanOrEqual(13);
+    expect(mockCaptureException.mock.calls[0][2]).toMatchObject({
+      convex_network_error_codes: ["ECONNREFUSED"],
+    });
+    expect(JSON.stringify(mockCaptureException.mock.calls)).not.toContain(
+      "PRIVATE_CODE",
+    );
+  });
+
+  it("keeps a diagnostic getter failure from changing the billing result", async () => {
+    const cause = Object.defineProperty({}, "code", {
+      get() {
+        throw new Error("PRIVATE_GETTER_ERROR");
+      },
+    });
+    mockConvexCall.mockRejectedValue(new TypeError("fetch failed", { cause }));
+
+    await expect(deductFromBalance("user_123", 100)).resolves.toMatchObject({
+      success: false,
+      insufficientFunds: false,
+      monthlyCapExceeded: false,
+    });
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mockCaptureException.mock.calls)).not.toContain(
+      "PRIVATE_GETTER_ERROR",
+    );
   });
 
   it("redacts before bounding the cause without capturing raw Error payloads", async () => {
@@ -136,5 +224,9 @@ describe("Extra Usage failure capture through phLogger", () => {
       convex_error_name: "UnknownError",
       convex_error_message: "upstream unavailable",
     });
+    expect(mockCaptureException.mock.calls[0][2]).toHaveProperty(
+      "convex_network_error_codes",
+      undefined,
+    );
   });
 });

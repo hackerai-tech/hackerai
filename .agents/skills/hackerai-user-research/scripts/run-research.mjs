@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { EnvHttpProxyAgent, fetch as undiciFetch } from "undici";
 
@@ -10,6 +12,7 @@ const POLL_INTERVAL_MS = 5_000;
 const MAX_WAIT_MS = 35 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_PAYLOAD_BYTES = 32 * 1024;
+const MAX_KEY_BYTES = 4096;
 const MAX_REPORTED_ISSUES = 8;
 const MAX_ISSUE_PATH_SEGMENTS = 8;
 const MAX_ISSUE_PATH_SEGMENT_CHARS = 64;
@@ -40,8 +43,56 @@ const ISSUE_MESSAGES = {
 function usage() {
   console.log(`Usage: node run-research.mjs --payload /secure/path/request.json [--no-wait]
 
-Required environment:
-  HACKERAI_PM_USER_RESEARCH_KEY  Scoped PM research gateway key`);
+Scoped PM research gateway key (checked in order):
+  ~/.config/hackerai/pm-research.key  Owner-only local key file
+  HACKERAI_PM_USER_RESEARCH_KEY       Environment fallback when no file exists`);
+}
+
+function validateResearchKey(value) {
+  const key = value.trim();
+  if (!key || key.length > MAX_KEY_BYTES || !/^[\x21-\x7e]+$/.test(key)) {
+    throw new Error("Research gateway key must be a nonempty single token");
+  }
+  return key;
+}
+
+export async function loadResearchKey({
+  env = process.env,
+  homeDir = homedir(),
+} = {}) {
+  const keyPath = join(homeDir, ".config", "hackerai", "pm-research.key");
+  let keyFile;
+  try {
+    keyFile = await open(keyPath, "r");
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw new Error("Cannot read the local PM research key file");
+    }
+  }
+
+  if (keyFile) {
+    try {
+      const metadata = await keyFile.stat();
+      if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) {
+        throw new Error(
+          "Local PM research key must be an owner-only regular file (mode 600)",
+        );
+      }
+      if (metadata.size > MAX_KEY_BYTES) {
+        throw new Error("Local PM research key file is larger than 4 KiB");
+      }
+      return validateResearchKey(await keyFile.readFile("utf8"));
+    } finally {
+      await keyFile.close();
+    }
+  }
+
+  if (env.HACKERAI_PM_USER_RESEARCH_KEY?.trim()) {
+    return validateResearchKey(env.HACKERAI_PM_USER_RESEARCH_KEY);
+  }
+  throw new Error(
+    "Research gateway key not found: checked ~/.config/hackerai/pm-research.key and HACKERAI_PM_USER_RESEARCH_KEY",
+  );
 }
 
 export function parseArgs(argv) {
@@ -142,8 +193,7 @@ export async function main() {
     return;
   }
 
-  const key = process.env.HACKERAI_PM_USER_RESEARCH_KEY?.trim();
-  if (!key) throw new Error("HACKERAI_PM_USER_RESEARCH_KEY is required");
+  const key = await loadResearchKey();
 
   const payloadStats = await stat(args.payloadPath);
   if (!payloadStats.isFile())

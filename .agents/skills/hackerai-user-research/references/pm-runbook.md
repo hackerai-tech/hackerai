@@ -44,8 +44,21 @@ Ask Codex:
 
 Codex should proceed from the authorized PM's request without checking for
 another approval. It should use the skill's `scripts/run-research.mjs` gateway
-runner and wait for completion. The PM's Codex environment must contain the scoped
-`HACKERAI_PM_USER_RESEARCH_KEY`; it must not contain Trigger or Convex service
+runner and wait for completion. The runner reads the scoped PM key directly from
+`~/.config/hackerai/pm-research.key` first. The opened target must be a regular
+file with no group or other permission bits (mode 600 recommended), containing
+the key alone; a trailing newline is allowed. The
+runner keeps it in memory, without exporting it into Codex or copying it into
+a checkout. If the file is absent, it falls back to
+`HACKERAI_PM_USER_RESEARCH_KEY` for environments such as Slack. An unreadable,
+overly permissive, empty, or malformed local file is an error, not a reason to
+silently use another credential.
+
+Do not conclude that research access is missing from an unset environment
+variable alone. Let the runner check the stored file. If both sources are absent,
+ask for the existing key's storage location or secure provisioning; do not search
+chat history, print secret contents, or request a key pasted into chat. Report
+only the source path and availability. Never substitute Trigger or Convex service
 keys. The runner always calls the production gateway at
 `https://hackerai.co/api/internal/user-research`; no Preview URL or Preview PM
 gateway key is required. The gateway can start and read only
@@ -82,9 +95,9 @@ flattening the users into one unlabeled cohort.
 Do not send a Slack request that merely says to analyze churn, refers to a cohort
 "above," or expects Slack Codex to discover the IDs. Do not ask Slack Codex to
 read messages directly. The request must tell it to use this skill and run the
-bounded gateway workflow. If the Slack Codex environment lacks the scoped PM
-gateway key, it must report that configuration blocker rather than browse
-customer messages manually.
+bounded gateway workflow. If neither the local key file nor the environment
+fallback supplies the scoped PM gateway key, report that configuration blocker
+rather than browse customer messages manually.
 
 A minimal event-based handoff has this shape:
 

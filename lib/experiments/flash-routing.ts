@@ -13,7 +13,7 @@ export type FlashRoutingAssignment = {
   configuredModel: string;
 };
 
-/** Only paid Agent standard routes participate; free Ask uses a fixed model. */
+/** Enroll only the authenticated tier's existing eligible baseline route. */
 export async function evaluateFlashRouting({
   posthog,
   userId,

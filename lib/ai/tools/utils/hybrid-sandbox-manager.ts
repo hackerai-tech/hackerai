@@ -1,4 +1,9 @@
-import { Centrifuge, type Subscription } from "centrifuge";
+import {
+  Centrifuge,
+  type Subscription,
+  type SubscriptionErrorContext,
+} from "centrifuge";
+import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
 import type {
   AnySandbox,
   SandboxBootInfo,
@@ -16,9 +21,16 @@ import {
   getCloudSandboxProviderForInstance,
   isCentrifugoSandbox,
   isE2BSandbox,
+  isMiosaSandbox,
   type ConnectionInfo,
 } from "./sandbox-types";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
+import {
+  assertCloudWorkspaceAvailable,
+  registerE2BMigrationLease,
+  CloudMigrationUnavailableError,
+} from "./cloud-migration-state";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -36,6 +48,14 @@ import {
 } from "./cloud-sandbox";
 import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
+import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
+import {
+  connectionMatchesPreference,
+  environmentPreference,
+  isEnvironmentPreference,
+  isDesktopPreference,
+  resolveEnvironmentConnection,
+} from "@/lib/sandbox/environment";
 
 type SandboxInstance = AnySandbox;
 
@@ -86,6 +106,13 @@ export function isSameLocalMachine(
   current: ConnectionInfo,
   candidate: ConnectionInfo,
 ): boolean {
+  if (current.environmentId || candidate.environmentId) {
+    return Boolean(
+      current.environmentId &&
+      current.environmentId === candidate.environmentId &&
+      current.isDesktop === candidate.isDesktop,
+    );
+  }
   if (!current.osInfo || !candidate.osInfo) return false;
 
   return (
@@ -150,6 +177,7 @@ export function filterConnectionsByPresence(
 async function queryLiveSandboxConnectionIds(
   userId: string,
   connectionIds: string[],
+  chatId?: string,
 ): Promise<PresenceProbeResult> {
   if (connectionIds.length === 0) {
     return {
@@ -170,12 +198,15 @@ async function queryLiveSandboxConnectionIds(
   }
 
   const start = Date.now();
+  let presenceReliable = false;
   let client: Centrifuge | null = null;
   const subscriptions: Subscription[] = [];
+  const finishTraffic: Array<() => void> = [];
+  const cleanups: Array<() => void> = [];
 
   try {
     const token = await generateCentrifugoToken(userId, 30);
-    client = new Centrifuge(wsUrl, { token });
+    client = new Centrifuge(wsUrl, { token, name: "hackerai-sandbox-manager" });
     const onlineConnectionIds = new Set<string>();
 
     const probes = connectionIds.map(
@@ -185,6 +216,7 @@ async function queryLiveSandboxConnectionIds(
             sandboxConnectionChannel(userId, connectionId),
           );
           subscriptions.push(sub);
+          finishTraffic.push(trackPresenceTraffic(sub, "sandbox-manager"));
 
           const timeout = setTimeout(() => {
             cleanup();
@@ -197,10 +229,12 @@ async function queryLiveSandboxConnectionIds(
 
           const cleanup = () => {
             clearTimeout(timeout);
-            sub.removeAllListeners();
+            sub.removeListener("subscribed", onSubscribed);
+            sub.removeListener("error", onError);
           };
+          cleanups.push(cleanup);
 
-          sub.on("subscribed", async () => {
+          const onSubscribed = async () => {
             try {
               const result = await sub.presence();
               cleanup();
@@ -212,21 +246,24 @@ async function queryLiveSandboxConnectionIds(
               cleanup();
               reject(error);
             }
-          });
+          };
 
-          sub.on("error", (ctx) => {
+          const onError = (ctx: SubscriptionErrorContext) => {
             cleanup();
             reject(
               new Error(ctx.error?.message ?? "Centrifugo subscription error"),
             );
-          });
+          };
 
+          sub.on("subscribed", onSubscribed);
+          sub.on("error", onError);
           sub.subscribe();
         }),
     );
 
     client.connect();
     await Promise.all(probes);
+    presenceReliable = true;
 
     return {
       reliable: true,
@@ -241,6 +278,8 @@ async function queryLiveSandboxConnectionIds(
       error,
     };
   } finally {
+    cleanups.forEach((cleanup) => cleanup());
+    finishTraffic.forEach((finish) => finish());
     try {
       for (const sub of subscriptions) {
         sub.removeAllListeners();
@@ -267,6 +306,7 @@ export class HybridSandboxManager implements SandboxManager {
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private cloudAcquisition: Promise<{ sandbox: AnySandbox }> | null = null;
+  private readonly acquisitionBudget = new CloudAcquisitionBudget();
 
   constructor(
     private userID: string,
@@ -282,6 +322,8 @@ export class HybridSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    if (this.sandbox && isE2BSandbox(this.sandbox))
+      registerE2BMigrationLease(this.sandbox, userID);
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(this.sandbox) ??
       cloudSandboxContext?.provider ??
@@ -422,7 +464,7 @@ export class HybridSandboxManager implements SandboxManager {
     await this.useCentrifugoConnection(replacement);
     this.requiredConnectionIdAfterQuarantine = null;
     if (this.sandboxPreference !== "desktop") {
-      this.sandboxPreference = replacement.connectionId;
+      this.sandboxPreference = environmentPreference(replacement);
     }
     this.resetHealthFailures();
 
@@ -440,11 +482,15 @@ export class HybridSandboxManager implements SandboxManager {
 
   /**
    * Get the effective sandbox preference after any fallbacks.
-   * Returns the actual sandbox in use: "e2b" or a connectionId.
+   * Returns the logical environment in use, retaining legacy IDs for old clients.
    * Use this instead of the original sandboxPreference to persist accurate state.
    */
   getEffectivePreference(): SandboxPreference {
     if (this.isLocal && this.currentConnectionId) {
+      if (this.sandbox && isCentrifugoSandbox(this.sandbox)) {
+        const connection = this.sandbox.getConnectionInfo();
+        if (connection.environmentId) return environmentPreference(connection);
+      }
       return this.sandboxPreference === "desktop"
         ? "desktop"
         : this.currentConnectionId;
@@ -485,12 +531,22 @@ export class HybridSandboxManager implements SandboxManager {
 
   /**
    * Set the sandbox preference for this chat
-   * @param preference - "e2b" or a specific connectionId
+   * @param preference - Cloud, a logical environment, or a legacy connection ID.
    */
   async setSandboxPreference(preference: SandboxPreference): Promise<void> {
     this.sandboxPreference = preference;
     // Force re-evaluation on next getSandbox call
-    if (preference !== "e2b" && this.currentConnectionId !== preference) {
+    if (
+      preference !== "e2b" &&
+      !(
+        this.sandbox &&
+        isCentrifugoSandbox(this.sandbox) &&
+        connectionMatchesPreference(
+          this.sandbox.getConnectionInfo(),
+          preference,
+        )
+      )
+    ) {
       await this.closeCurrentSandbox();
       this.sandbox = null;
     }
@@ -544,8 +600,9 @@ export class HybridSandboxManager implements SandboxManager {
         provider: this.activeCloudProvider,
       };
     }
-    const type: SandboxType =
-      this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
+    const type: SandboxType = isDesktopPreference(this.sandboxPreference)
+      ? "desktop"
+      : "remote-connection";
     return { type, name: this.currentConnectionName ?? undefined };
   }
 
@@ -556,7 +613,7 @@ export class HybridSandboxManager implements SandboxManager {
     if (!this.isLocal) {
       return "cloud";
     }
-    return this.sandboxPreference === "desktop"
+    return isDesktopPreference(this.sandboxPreference)
       ? "desktop"
       : "remote-connection";
   }
@@ -579,6 +636,18 @@ export class HybridSandboxManager implements SandboxManager {
    */
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
+      // Old saved UUIDs can be upgraded only through their authenticated,
+      // user-owned session record. Never infer identity from host metadata.
+      if (/^[0-9a-f-]{36}$/i.test(this.sandboxPreference)) {
+        this.sandboxPreference = await getConvexClient().query(
+          api.localSandbox.resolveEnvironmentPreferenceForBackend,
+          {
+            serviceKey: this.serviceKey,
+            userId: this.userID,
+            preference: this.sandboxPreference,
+          },
+        );
+      }
       const storedConnections = await getConvexClient().query(
         api.localSandbox.listConnectionsForBackend,
         {
@@ -597,6 +666,7 @@ export class HybridSandboxManager implements SandboxManager {
       const presence = await queryLiveSandboxConnectionIds(
         this.userID,
         connections.map((connection) => connection.connectionId),
+        this.chatId,
       );
       if (!presence.reliable) {
         logStructured("warn", "local_sandbox_presence_unavailable", {
@@ -691,12 +761,11 @@ export class HybridSandboxManager implements SandboxManager {
     const connections = await this.listConnections();
 
     // Find the preferred connection
-    const preferredConnection =
-      this.sandboxPreference === "desktop"
-        ? connections.find((conn) => conn.isDesktop)
-        : connections.find(
-            (conn) => conn.connectionId === this.sandboxPreference,
-          );
+    const preferredConnection = resolveEnvironmentConnection(
+      connections,
+      this.sandboxPreference,
+      this.currentConnectionId,
+    );
 
     if (preferredConnection) {
       // Use the preferred local connection
@@ -708,6 +777,12 @@ export class HybridSandboxManager implements SandboxManager {
       }
 
       return { sandbox: this.sandbox! };
+    }
+
+    if (isEnvironmentPreference(this.sandboxPreference)) {
+      throw new Error(
+        "The selected computer is disconnected. Reconnect that computer to continue this task.",
+      );
     }
 
     // If preferred connection not available, check if any connection is available
@@ -747,14 +822,18 @@ export class HybridSandboxManager implements SandboxManager {
 
   private async getPreferredOrFallbackConnection(): Promise<ConnectionInfo | null> {
     const connections = await this.listConnections();
-    const preferredConnection =
-      this.sandboxPreference === "desktop"
-        ? connections.find((conn) => conn.isDesktop)
-        : connections.find(
-            (conn) => conn.connectionId === this.sandboxPreference,
-          );
-
-    return preferredConnection ?? connections[0] ?? null;
+    const preferredConnection = resolveEnvironmentConnection(
+      connections,
+      this.sandboxPreference,
+      this.currentConnectionId,
+    );
+    return (
+      preferredConnection ??
+      (isEnvironmentPreference(this.sandboxPreference)
+        ? null
+        : connections[0]) ??
+      null
+    );
   }
 
   /**
@@ -790,17 +869,37 @@ export class HybridSandboxManager implements SandboxManager {
   private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     if (this.cloudAcquisition) return this.cloudAcquisition;
     if (!this.isLocal && this.sandbox) {
+      let reacquire =
+        isMiosaSandbox(this.sandbox) && isMiosaCloudSandboxPaused();
       if (isE2BSandbox(this.sandbox)) {
-        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-          source: "hybrid_manager_cache",
-        });
+        try {
+          await assertCloudWorkspaceAvailable(
+            this.userID,
+            "e2b",
+            this.sandbox.sandboxId,
+          );
+          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+            source: "hybrid_manager_cache",
+          });
+        } catch (error) {
+          if (!(error instanceof CloudMigrationUnavailableError)) throw error;
+          reacquire = true;
+        }
       }
-      return { sandbox: this.sandbox };
+      if (!reacquire) return { sandbox: this.sandbox };
+      this.sandbox = null;
     }
 
-    this.cloudAcquisition = this.acquireCloudSandbox().finally(() => {
-      this.cloudAcquisition = null;
-    });
+    if (this.cloudAcquisition) return this.cloudAcquisition;
+    this.cloudAcquisition = this.acquisitionBudget
+      .run(() => this.acquireCloudSandbox(), {
+        userId: this.userID,
+        chatId: this.chatId,
+        ...this.cloudSandboxContext,
+      })
+      .finally(() => {
+        this.cloudAcquisition = null;
+      });
     return this.cloudAcquisition;
   }
 
@@ -828,6 +927,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: SandboxInstance): void {
+    if (isE2BSandbox(sandbox)) registerE2BMigrationLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
@@ -879,17 +979,22 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     const connections = await this.listConnections();
-    const preferredConnection =
-      this.sandboxPreference === "desktop"
-        ? connections.find((conn) => conn.isDesktop)
-        : connections.find(
-            (conn) => conn.connectionId === this.sandboxPreference,
-          );
+    const preferredConnection = resolveEnvironmentConnection(
+      connections,
+      this.sandboxPreference,
+      this.currentConnectionId,
+    );
 
     if (preferredConnection) {
       // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
       this.currentConnectionName = preferredConnection.name;
       return this.buildSandboxContext(preferredConnection);
+    }
+
+    if (isEnvironmentPreference(this.sandboxPreference)) {
+      throw new Error(
+        "The selected computer is disconnected. Reconnect that computer to continue this task.",
+      );
     }
 
     if (connections.length > 0) {

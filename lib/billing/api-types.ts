@@ -18,11 +18,28 @@ export type SubscriptionPauseStatusSummary = {
 };
 
 export type SubscriptionCancellationStatus = {
+  /** Present for former subscribers too; billing management must remain available. */
+  billingAccountAvailable?: boolean;
+  /** New checkout is blocked by the existing canceled-renewal safety guard. */
+  checkoutRequiresReview?: boolean;
+  /** Payment-history lookup failed; review is required without asserting an unpaid invoice. */
+  billingReviewUnavailable?: boolean;
   hasActiveSubscription: boolean;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;
   subscriptionStatus?: "active" | "trialing" | "past_due" | "unpaid";
   latestInvoiceId?: string;
+  /** Current automatic renewal is still open and unpaid. Never grants access. */
+  renewalPaymentRequired?: boolean;
+  renewalInvoicePayable?: boolean;
+  /** Actual invoice balance, in Stripe's currency minor units, not the plan price. */
+  renewalInvoiceAmountRemaining?: number;
+  renewalInvoiceCurrency?: string;
+  /** Stripe reports the latest renewal invoice paid. */
+  renewalInvoicePaid?: boolean;
+  /** Safe summary of the latest attempt on the open renewal invoice. */
+  renewalPaymentFailure?:
+    "insufficient_funds" | "authentication_required" | "declined";
   stripePriceId?: string;
   stripePriceLookupKey?: string;
   renewalAmountDollars?: number;
@@ -36,6 +53,12 @@ export type SubscriptionCancellationStatus = {
 };
 
 export type BillingPortalFlow = "payment_method";
+export type BillingRecoverySurface =
+  "account_settings" | "blocked_chat" | "pricing_dialog";
+export type BillingPortalOptions = {
+  surface?: BillingRecoverySurface;
+  returnPath?: string;
+};
 
 export type KeepSubscriptionResult = {
   kept: true;

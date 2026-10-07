@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -8,6 +9,7 @@ import {
   useComposerInput,
 } from "@/app/contexts/ComposerState";
 import { TodoPanel } from "../TodoPanel";
+import { getTodoPanelViewState } from "@/lib/utils/todo-utils";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "../FileUploadPreview";
 import { QueuedMessagesPanel } from "../QueuedMessagesPanel";
@@ -49,9 +51,14 @@ import {
   reconnectOnlineStatus,
   useOnlineStatus,
 } from "@/app/hooks/useOnlineStatus";
+import { requestRemoteConnectionSelection } from "@/app/hooks/useAutoSelectNewRemoteConnection";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { isFreeDesktopSandboxAvailable } from "@/lib/activation/free-desktop-sandbox";
+import { useSelectedComputerConnection } from "@/app/hooks/useSelectedComputerConnection";
+import { DisconnectedComputerNotice } from "./DisconnectedComputerNotice";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void | boolean | Promise<void | boolean>;
@@ -224,7 +231,23 @@ const uploadedFileToDraftAttachment = (
   };
 };
 
-export const ChatInput = ({
+export const ChatInput = (props: ChatInputProps) => {
+  const { activeToolApprovalRequest } = useAgentApproval();
+  return (
+    <RegionalSubscriptionGate
+      running={
+        props.status === "submitted" ||
+        props.status === "streaming" ||
+        !!activeToolApprovalRequest ||
+        !!props.storedApprovalRequest
+      }
+    >
+      <ChatInputContent {...props} />
+    </RegionalSubscriptionGate>
+  );
+};
+
+const ChatInputContent = ({
   onSubmit,
   onStop,
   onReconnect,
@@ -270,7 +293,10 @@ export const ChatInput = ({
     localConnections,
     freeDesktopAgentOnlyActive,
     desktopBridgeStatus,
+    retryDesktopBridge,
     defaultLocalSandboxPreference,
+    todos,
+    sidebarOpen,
   } = useGlobalState();
   const { user } = useAuth();
   const input = useComposerInput();
@@ -281,6 +307,7 @@ export const ChatInput = ({
     fileInputRef,
     handleFileUploadEvent,
     handleRemoveFile,
+    handleRetryFile,
     handleUpdateGeneratedTextFile,
     handleAttachClick,
   } = useFileUpload(chatMode);
@@ -288,6 +315,8 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const isAgent = isAgentMode(chatMode);
+  const todoPanelVisible =
+    !sidebarOpen && getTodoPanelViewState(todos, status).hasActiveTodos;
   const approvalRequest = useMemo(
     () =>
       activeToolApprovalRequest &&
@@ -309,7 +338,8 @@ export const ChatInput = ({
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
-  const showAgentApprovalPrompt = !!approvalRequest && !isStoppingAgent;
+  const showAgentApprovalPrompt =
+    !!user && !!approvalRequest && !isStoppingAgent;
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -638,6 +668,7 @@ export const ChatInput = ({
   // 2. Force local sandbox preference (not e2b)
   // 3. Force auto model selection
   const isFreeAgent =
+    !!user &&
     !isCheckingProPlan &&
     subscription === "free" &&
     isAgentMode(chatMode) &&
@@ -650,18 +681,30 @@ export const ChatInput = ({
       })
     : hasLocalSandbox;
 
-  const prevFreeAgentSandboxAvailableRef = useRef(freeAgentSandboxAvailable);
+  const prevFreeAgentSandboxRef = useRef({
+    sandboxPreference,
+    available: freeAgentSandboxAvailable,
+    isFreeAgent,
+  });
   useEffect(() => {
-    const wasConnected = prevFreeAgentSandboxAvailableRef.current;
-    prevFreeAgentSandboxAvailableRef.current = freeAgentSandboxAvailable;
+    const previous = prevFreeAgentSandboxRef.current;
+    const wasConnected =
+      previous.isFreeAgent &&
+      previous.sandboxPreference === sandboxPreference &&
+      previous.available;
+    prevFreeAgentSandboxRef.current = {
+      sandboxPreference,
+      available: freeAgentSandboxAvailable,
+      isFreeAgent,
+    };
 
     if (!isFreeAgent) return;
-    // Only show toast on actual disconnect (true → false), not on
-    // initial mount or logout where sandbox availability starts as false.
+    // Only warn when the same selected sandbox loses availability. Restoring a
+    // different task or resolving plan access is not a connection lifecycle event.
     if (!freeAgentSandboxAvailable) {
-      if (freeDesktopAgentOnlyActive) {
+      if (freeDesktopAgentOnlyActive || sandboxPreference !== "e2b") {
         if (wasConnected) {
-          const selectedDesktop = sandboxPreference === "desktop";
+          const selectedDesktop = isDesktopPreference(sandboxPreference);
           toast.info(
             selectedDesktop
               ? "Desktop sandbox disconnected."
@@ -699,7 +742,7 @@ export const ChatInput = ({
       (!sandboxPreference || sandboxPreference === "e2b") &&
       defaultLocalSandboxPreference
     ) {
-      setSandboxPreference(defaultLocalSandboxPreference);
+      setSandboxPreference(defaultLocalSandboxPreference, { remember: false });
     }
     if (selectedModel !== "auto") {
       setSelectedModel("auto");
@@ -709,7 +752,7 @@ export const ChatInput = ({
 
   const freeDesktopSandboxUnavailableReason =
     freeDesktopAgentOnlyActive && !freeAgentSandboxAvailable
-      ? sandboxPreference === "desktop"
+      ? isDesktopPreference(sandboxPreference)
         ? desktopBridgeStatus === "connecting"
           ? "Desktop sandbox is reconnecting"
           : "Reconnect the Desktop sandbox to use Agent"
@@ -717,8 +760,17 @@ export const ChatInput = ({
           ? "Select a local sandbox to use Agent"
           : "Reconnect the selected local sandbox to use Agent"
       : undefined;
+  const {
+    selectedNativeDesktop,
+    computerConnectionPending,
+    selectedComputerUnavailable,
+    sendDisabledReason: computerSendDisabledReason,
+  } = useSelectedComputerConnection();
   const effectiveSendDisabledReason =
-    sendDisabledReason ?? freeDesktopSandboxUnavailableReason;
+    sendDisabledReason ??
+    (user
+      ? (freeDesktopSandboxUnavailableReason ?? computerSendDisabledReason)
+      : undefined);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -831,34 +883,61 @@ export const ChatInput = ({
           </div>
         )}
 
-        {rateLimitWarning && onDismissRateLimitWarning && (
-          <RateLimitWarning
-            data={rateLimitWarning}
-            onDismiss={onDismissRateLimitWarning}
+        {user && selectedComputerUnavailable && !computerConnectionPending && (
+          <DisconnectedComputerNotice
+            isNewChat={isNewChat}
+            sandboxPreference={sandboxPreference}
+            onSelect={setSandboxPreference}
+            reconnectInstructions={
+              isDesktopPreference(sandboxPreference) && !selectedNativeDesktop
+                ? "Open HackerAI Desktop on your selected computer and sign in with the same account. Keep the app open while it reconnects."
+                : undefined
+            }
+            reconnecting={
+              selectedNativeDesktop && desktopBridgeStatus === "connecting"
+            }
+            onReconnect={() => {
+              if (selectedNativeDesktop) retryDesktopBridge();
+              else {
+                requestRemoteConnectionSelection(sandboxPreference);
+                openSettingsDialog("Remote Control");
+              }
+            }}
           />
         )}
 
-        <div className="flex flex-col [&>*+*]:rounded-t-none">
-          <TodoPanel status={status} />
+        {user && rateLimitWarning && onDismissRateLimitWarning && (
+          <RateLimitWarning
+            data={rateLimitWarning}
+            onDismiss={onDismissRateLimitWarning}
+            compact={todoPanelVisible}
+          />
+        )}
 
-          {messageQueue.length > 0 && (
-            <QueuedMessagesPanel
-              messages={messageQueue}
-              onSendNow={onSendNow}
-              onEdit={updateQueuedMessage}
-              onEditingMessageChange={setEditingQueuedMessageId}
-              onDelete={removeQueuedMessage}
-              isStreaming={status === "streaming"}
-              queueBehavior={queueBehavior}
-              onQueueBehaviorChange={setQueueBehavior}
-            />
-          )}
-        </div>
+        {user && (
+          <div className="flex flex-col [&>*+*]:rounded-t-none">
+            <TodoPanel status={status} />
+
+            {messageQueue.length > 0 && (
+              <QueuedMessagesPanel
+                messages={messageQueue}
+                onSendNow={onSendNow}
+                onEdit={updateQueuedMessage}
+                onEditingMessageChange={setEditingQueuedMessageId}
+                onDelete={removeQueuedMessage}
+                isStreaming={status === "streaming"}
+                queueBehavior={queueBehavior}
+                onQueueBehaviorChange={setQueueBehavior}
+              />
+            )}
+          </div>
+        )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
             onRemoveFile={handleRemoveFile}
+            onRetryFile={handleRetryFile}
             onUpdateGeneratedTextFile={handleUpdateGeneratedTextFile}
             onShowGeneratedTextInField={handleShowGeneratedTextInField}
             generatedTextAttachmentsAvailable={isAgent}
@@ -905,7 +984,7 @@ export const ChatInput = ({
               isUploadingFiles={isUploadingFiles}
               input={input}
               uploadedFiles={uploadedFiles}
-              chatMode={chatMode}
+              chatMode={user ? chatMode : "ask"}
               isOnline={!isOffline}
               sendDisabledReason={effectiveSendDisabledReason}
             />
@@ -916,7 +995,7 @@ export const ChatInput = ({
             this strip whenever its own width is constrained, even on desktop. */}
         {user && isAgent && !showAgentApprovalPrompt && (
           <div
-            className={`chat-input-glass-context relative z-0 order-3 mx-6 -mt-2 flex h-10 min-w-0 items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 pt-2 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
+            className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}
             data-testid="chat-input-agent-context"
           >
@@ -927,10 +1006,11 @@ export const ChatInput = ({
               <SandboxSelector
                 value={sandboxPreference}
                 onChange={setSandboxPreference}
+                compact
               />
             </div>
             <div
-              className={`ml-auto min-w-0 max-w-[56%] shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
+              className={`ml-auto min-w-0 max-w-full shrink-0 ${compactAgentControls ? "" : "md:hidden"}`}
               data-testid="chat-input-mobile-permission"
             >
               <AgentPermissionSelector analyticsSurface="chat_input" />

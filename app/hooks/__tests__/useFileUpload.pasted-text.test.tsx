@@ -289,7 +289,7 @@ describe("useFileUpload generated pasted text attachments", () => {
 
     await waitFor(() => {
       expect(updateUploadedFile).toHaveBeenLastCalledWith(
-        0,
+        expect.any(Object),
         expect.objectContaining({
           ...previousUpload,
           error: expect.stringContaining("Failed to upload file"),

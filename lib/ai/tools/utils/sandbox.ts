@@ -1,7 +1,10 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
-import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
-import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import {
+  NotFoundError,
+  classifyE2BError,
+  getUserFacingE2BErrorMessage,
+} from "./e2b-errors";
 import { retryWithBackoff } from "./retry-with-backoff";
 import {
   E2BRegionUnavailableError,
@@ -23,6 +26,37 @@ export {
 } from "./e2b-lease";
 
 type SandboxReadyPath = SandboxBootInfo["path"];
+type E2BAcquisitionPhase = "routing" | "discovery" | "connect" | "create";
+
+const SAFE_E2B_CODES = new Set([
+  "RATE_LIMIT",
+  "TIMEOUT",
+  "NOT_FOUND",
+  "AUTHENTICATION_ERROR",
+  "TEMPLATE_ERROR",
+  "INVALID_ARGUMENT",
+  "SANDBOX_ERROR",
+  "NOT_ENOUGH_SPACE",
+  "INTERNAL_SERVER_ERROR",
+  "SERVICE_UNAVAILABLE",
+  "GATEWAY_TIMEOUT",
+  "RESOURCE_EXHAUSTED",
+]);
+
+export class E2BAcquisitionError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: {
+      e2b_phase: E2BAcquisitionPhase;
+      e2b_error_category: ReturnType<typeof classifyE2BError>;
+      e2b_error_code?: string;
+      e2b_http_status?: number;
+    },
+  ) {
+    super(message);
+    this.name = "E2BAcquisitionError";
+  }
+}
 
 // Retry config for E2B 429 rate limits
 const RATE_LIMIT_COOLDOWN_MS = 1_000;
@@ -30,30 +64,7 @@ const MAX_CREATE_RETRIES = 3;
 const MAX_DISCOVERY_RETRIES = 3;
 const MAX_CONNECT_RETRIES = 3;
 
-const logSandboxKillFailure = (
-  userID: string,
-  message: string,
-  error: unknown,
-): void => {
-  if (isExpectedAlreadyGoneCleanupError(error)) {
-    console.debug(`[${userID}] ${message}:`, error);
-  } else {
-    console.warn(`[${userID}] ${message}:`, error);
-  }
-};
-
-/**
- * Current sandbox version identifier.
- * Used to track sandbox compatibility and trigger automatic migration when Docker templates are updated.
- * Increment this version when making breaking changes to sandbox configuration or dependencies.
- * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
- * and recreated on next connection attempt.
- */
-// v8: upgraded sandbox CPU (4 cores) and memory (2GB)
-// v9: added temporary HTTP interception support
-// v10: added whois, Chromium, and agent-browser browser automation
-// v11: removed preinstalled interception CLI from the sandbox image
-// v12: increased sandbox memory from 2GB to 4GB
+// Used to prefer a compatible workspace; version changes never authorize deletion.
 const SANDBOX_VERSION = "v12";
 
 /**
@@ -67,7 +78,7 @@ const SANDBOX_VERSION = "v12";
  * Flow:
  * 1. Returns existing sandbox if already initialized
  * 2. Lists existing sandboxes for the user
- * 3. Replaces old sandbox versions only after they have auto-paused
+ * 3. Preserves old templates and versions, including paused user files
  * 4. If found: connect to existing sandbox (works for both running and paused states)
  * 5. If not found: creates a new sandbox with auto-pause enabled
  * 6. Auto-pause automatically pauses sandbox after the configured lease expires
@@ -78,16 +89,21 @@ export const ensureSandboxConnection = async (
   options: {
     initialSandbox?: Sandbox | null;
     triggerRegion?: TriggerRunRegion;
+    acquisitionId?: string;
+    triggerRunId?: string;
+    destinationId?: string;
+    createOnly?: boolean;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
   const { initialSandbox, triggerRegion } = options;
 
   // Return existing sandbox if already connected
-  if (initialSandbox) {
+  if (initialSandbox && !options.destinationId && !options.createOnly) {
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
+  let phase: E2BAcquisitionPhase = "routing";
   let createPath: SandboxReadyPath = "create_fresh";
   const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
     onBoot?.({
@@ -99,6 +115,39 @@ export const ensureSandboxConnection = async (
   try {
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
+    if (options.destinationId) {
+      // A recovered workspace is pinned to one verified sandbox. Never let
+      // discovery choose an older copy or create an empty replacement.
+      phase = "connect";
+      const info = await Sandbox.getInfo(options.destinationId, {
+        ...createCluster.connectionOptions,
+        requestTimeoutMs: 10000,
+      });
+      if (
+        !["running", "paused"].includes(info.state) ||
+        info.metadata?.userID !== userID ||
+        info.metadata?.template !== createCluster.template ||
+        info.metadata?.e2bCluster !== createCluster.cluster ||
+        info.metadata?.sandboxVersion !== SANDBOX_VERSION
+      )
+        throw new Error("Pinned E2B workspace identity mismatch");
+      const sandbox = await retryWithBackoff(
+        () =>
+          Sandbox.connect(options.destinationId!, {
+            ...createCluster.connectionOptions,
+            timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+          }),
+        {
+          maxRetries: MAX_CONNECT_RETRIES,
+          baseDelayMs: 400,
+          jitterMs: 40,
+        },
+      );
+      setSandbox(sandbox);
+      reportBoot("reuse_existing", 0);
+      return { sandbox };
+    }
+    phase = "discovery";
 
     // Step 1: Look only in the cluster selected for this request. Crossing
     // clusters here would defeat the regional execution policy.
@@ -109,27 +158,27 @@ export const ensureSandboxConnection = async (
       cluster: E2BClusterConfig;
     };
     const discoveredSandboxes: DiscoveredSandbox[] = [];
-    for (const cluster of discoveryClusters) {
+    for (const cluster of options.createOnly ? [] : discoveryClusters) {
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
         query: {
           metadata: {
             userID,
-            template: cluster.template,
           },
+          state: ["running", "paused"],
         },
       });
-      const listedSandboxes = await retryWithBackoff(
-        () => paginator.nextItems(),
-        {
-          maxRetries: MAX_DISCOVERY_RETRIES,
-          baseDelayMs: 400,
-          jitterMs: 40,
-        },
-      );
-      discoveredSandboxes.push(
-        ...listedSandboxes.map((info) => ({ info, cluster })),
-      );
+      let pages = 0;
+      do {
+        if (++pages > 100) throw new Error("E2B inventory pagination limit");
+        const listedSandboxes = await retryWithBackoff(
+          () => paginator.nextItems(),
+          { maxRetries: MAX_DISCOVERY_RETRIES, baseDelayMs: 400, jitterMs: 40 },
+        );
+        discoveredSandboxes.push(
+          ...listedSandboxes.map((info) => ({ info, cluster })),
+        );
+      } while (paginator.hasNext);
     }
 
     // Rank across both clusters so a compatible running sandbox always wins.
@@ -153,30 +202,9 @@ export const ensureSandboxConnection = async (
     const hasVersionMismatch =
       existingSandboxInfo &&
       existingSandboxInfo.metadata?.sandboxVersion !== SANDBOX_VERSION;
-    const canReplaceExistingSandbox =
-      hasVersionMismatch && existingSandboxInfo.state === "paused";
-
-    // Step 2: Migrate only an idle, paused sandbox. A running sandbox may
-    // contain commands owned by another Agent run for the same user.
-    if (canReplaceExistingSandbox && existingCluster) {
-      console.log(
-        `[${userID}] Sandbox version mismatch (expected ${SANDBOX_VERSION}), deleting old sandbox`,
-      );
-      try {
-        if (existingCluster.connectionOptions) {
-          await Sandbox.kill(
-            existingSandboxInfo.sandboxId,
-            existingCluster.connectionOptions,
-          );
-        } else {
-          await Sandbox.kill(existingSandboxInfo.sandboxId);
-        }
-      } catch (killError) {
-        logSandboxKillFailure(userID, "Failed to kill old sandbox", killError);
-      }
-      createPath = "create_after_version_mismatch";
-      // Skip to creating new sandbox
-    } else if (existingSandboxInfo?.sandboxId && existingCluster) {
+    // An old version can still contain files. Reconnect without destructive
+    // replacement, including after a denied Miosa migration check.
+    if (existingSandboxInfo?.sandboxId && existingCluster) {
       if (hasVersionMismatch) {
         console.warn(
           JSON.stringify({
@@ -201,6 +229,7 @@ export const ensureSandboxConnection = async (
       // With auto-pause, we don't need to manually pause before resuming
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
+        phase = "connect";
         const sandbox = await retryWithBackoff(
           () =>
             Sandbox.connect(existingSandboxInfo.sandboxId, {
@@ -227,10 +256,6 @@ export const ensureSandboxConnection = async (
           );
           createPath = "create_after_expired";
         } else {
-          console.error(
-            `[${userID}] Unexpected error resuming sandbox ${existingSandboxInfo.sandboxId}:`,
-            e,
-          );
           // The listed state can become stale while connect is pending. Never
           // destroy a shared user sandbox here: another run may have resumed
           // it by the time this failure is observed. The attachment path owns
@@ -243,6 +268,7 @@ export const ensureSandboxConnection = async (
 
     // Step 5: Create new sandbox with retry on E2B 429 rate limits
     let lastError: unknown;
+    phase = "create";
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
       if (attempt > 0) {
         console.warn(
@@ -263,6 +289,9 @@ export const ensureSandboxConnection = async (
             secure: "true",
             sandboxVersion: SANDBOX_VERSION,
             e2bCluster: createCluster.cluster,
+            ...(options.createOnly && {
+              workspacePurpose: "migration-fallback",
+            }),
           },
         });
 
@@ -280,18 +309,53 @@ export const ensureSandboxConnection = async (
     }
     throw lastError;
   } catch (error) {
-    console.error("Error creating persistent sandbox:", error);
+    const candidate =
+      error && typeof error === "object"
+        ? (error as { code?: unknown; status?: unknown; statusCode?: unknown })
+        : {};
+    const status = candidate.status ?? candidate.statusCode;
+    const diagnostics = {
+      e2b_phase: phase,
+      e2b_error_category: classifyE2BError(error),
+      ...(typeof candidate.code === "string" &&
+      SAFE_E2B_CODES.has(candidate.code)
+        ? { e2b_error_code: candidate.code }
+        : {}),
+      ...(typeof status === "number" &&
+      Number.isInteger(status) &&
+      status >= 400 &&
+      status <= 599
+        ? { e2b_http_status: status }
+        : {}),
+    };
+    console.error(
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: "error",
+        event: "e2b_sandbox_acquisition_failed",
+        service: "agent-worker",
+        environment:
+          process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+        request_id: process.env.VERCEL_REQUEST_ID ?? null,
+        acquisition_id: options.acquisitionId ?? null,
+        trigger_run_id: options.triggerRunId ?? null,
+        user_id: userID,
+        ...diagnostics,
+        duration_ms: Math.round(performance.now() - startedAt),
+      }),
+    );
 
     if (error instanceof E2BRegionUnavailableError) throw error;
 
     // Surface specific error messages for known E2B errors
     const userMessage = getUserFacingE2BErrorMessage(error);
     if (userMessage) {
-      throw new Error(userMessage);
+      throw new E2BAcquisitionError(userMessage, diagnostics);
     }
 
-    throw new Error(
-      `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
+    throw new E2BAcquisitionError(
+      "Cloud sandbox is temporarily unavailable. Please retry shortly.",
+      diagnostics,
     );
   }
 };

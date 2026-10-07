@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { captureQueuedAuthenticatedEvent } from "@/lib/analytics/client";
 import { taskOutcomeProperties } from "@/lib/analytics/task-outcome";
 import {
-  TASK_OUTCOME_ANSWERS,
+  PAID_TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_REASONS,
   reasonsForAnswer,
   type TaskOutcomeAnswer,
@@ -20,7 +20,10 @@ type Survey = Doc<"task_outcome_surveys">;
 function captureSurvey(event: string, row: Survey) {
   captureQueuedAuthenticatedEvent({
     event: `task_outcome_survey_${event}`,
-    properties: { ...taskOutcomeProperties(row), survey_ui_version: 3 },
+    properties: {
+      ...taskOutcomeProperties(row),
+      survey_ui_version: 4,
+    },
     dedupeKey: `${row._id}:${event}`,
   });
 }
@@ -57,7 +60,7 @@ export function TaskOutcomeFeedbackPrompt({
   survey: Survey | null | undefined;
   record: (args: {
     id: Survey["_id"];
-    action: "shown" | "dismissed" | "answered" | "reason";
+    action: "shown" | "viewed" | "dismissed" | "answered" | "reason";
     answer?: TaskOutcomeAnswer;
     reason?: TaskOutcomeReason;
   }) => Promise<Survey | null>;
@@ -132,9 +135,16 @@ export function TaskOutcomeFeedbackPrompt({
     // the cross-device claim. Hidden tabs never count as actual question views.
     const element = question.current;
     let visible = false;
+    let recorded = false;
     const capture = () => {
-      if (visible && document.visibilityState === "visible")
-        captureSurvey("shown", visibleSurvey);
+      if (!visible || document.visibilityState !== "visible") return;
+      captureSurvey("shown", visibleSurvey);
+      if (!recorded) {
+        recorded = true;
+        void record({ id: visibleSurvey._id, action: "viewed" }).catch(() => {
+          recorded = false;
+        });
+      }
     };
     const observer = new IntersectionObserver(
       (entries) => {
@@ -151,7 +161,7 @@ export function TaskOutcomeFeedbackPrompt({
       observer.disconnect();
       document.removeEventListener("visibilitychange", capture);
     };
-  }, [visibleSurvey, hidden]);
+  }, [visibleSurvey, hidden, record]);
 
   if (hidden) return null;
   if (!visibleSurvey)
@@ -174,6 +184,7 @@ export function TaskOutcomeFeedbackPrompt({
       }
       captureSurvey("answered", row);
       setAnswer(value);
+      if (value === "solved" || value === "not_checked") setDone(true);
     } catch {
       setError(true);
     } finally {
@@ -214,7 +225,7 @@ export function TaskOutcomeFeedbackPrompt({
   return (
     <div
       ref={question}
-      className={`relative mb-3 mt-2 flex w-[17rem] max-w-full flex-wrap items-center gap-x-4 gap-y-2 pr-11 text-sm sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}
+      className={`relative mb-3 mt-2 flex w-full max-w-full flex-wrap items-center gap-x-4 gap-y-2 pr-11 text-sm sm:pr-9 ${answer ? "sm:max-w-sm" : "sm:w-fit"}`}
       role="group"
       aria-label="Task feedback"
     >
@@ -226,7 +237,7 @@ export function TaskOutcomeFeedbackPrompt({
           {done
             ? "Thanks for your feedback"
             : answer
-              ? answer === "yes"
+              ? answer === "helpful"
                 ? "What helped?"
                 : "What could be better?"
               : "Did this help?"}
@@ -272,28 +283,34 @@ export function TaskOutcomeFeedbackPrompt({
               </Button>
             </div>
           ) : (
-            <div className="flex items-center gap-2">
-              {(["yes", "partly", "no"] as const).map((value) => {
-                const Icon =
-                  value === "yes" ? Check : value === "partly" ? Minus : X;
-                return (
-                  <Button
-                    type="button"
-                    key={value}
-                    variant="outline"
-                    size="sm"
-                    className="h-[44px] gap-1.5 rounded-full border-border/70 bg-transparent px-3 text-xs font-normal shadow-none hover:border-foreground/30 hover:bg-muted/60 sm:h-8"
-                    disabled={busy}
-                    onClick={() => void saveAnswer(value)}
-                  >
-                    <Icon
-                      className="size-3.5 text-muted-foreground"
-                      aria-hidden="true"
-                    />
-                    {TASK_OUTCOME_ANSWERS[value]}
-                  </Button>
-                );
-              })}
+            <div className="flex flex-wrap items-center gap-2">
+              {(["solved", "helpful", "no", "not_checked"] as const).map(
+                (value) => {
+                  const Icon =
+                    value === "solved"
+                      ? Check
+                      : value === "helpful" || value === "not_checked"
+                        ? Minus
+                        : X;
+                  return (
+                    <Button
+                      type="button"
+                      key={value}
+                      variant="outline"
+                      size="sm"
+                      className="h-[44px] gap-1.5 rounded-full border-border/70 bg-transparent px-3 text-xs font-normal shadow-none hover:border-foreground/30 hover:bg-muted/60 sm:h-8"
+                      disabled={busy}
+                      onClick={() => void saveAnswer(value)}
+                    >
+                      <Icon
+                        className="size-3.5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                      {PAID_TASK_OUTCOME_ANSWERS[value]}
+                    </Button>
+                  );
+                },
+              )}
             </div>
           )}
           {error && (

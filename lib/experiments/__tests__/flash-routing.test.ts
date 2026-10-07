@@ -6,15 +6,20 @@ import {
   FLASH_ROUTING_EXPOSURE_EVENT,
 } from "@/lib/experiments/flash-routing";
 
-const free = {
+const freeAsk = {
   userId: "test-user",
   subscription: "free" as const,
   mode: "ask" as const,
   selectedModel: "ask-model-free-glm",
   hasImages: false,
 };
+const freeAgent = {
+  ...freeAsk,
+  mode: "agent" as const,
+  selectedModel: "agent-model-free",
+};
 const paid = {
-  ...free,
+  ...freeAsk,
   subscription: "pro" as const,
   mode: "agent" as const,
   selectedModel: "model-deepseek-v4-flash-0731",
@@ -56,17 +61,28 @@ describe("Flash routing experiments", () => {
   );
 
   it.each([
-    free,
-    { ...free, selectedModel: "ask-model-free" },
+    freeAgent,
+    freeAsk,
+    { ...freeAsk, mode: "agent" as const },
+    { ...freeAsk, subscription: "pro" as const },
+    { ...freeAsk, selectedModel: "ask-model-free" },
+    { ...freeAgent, mode: "ask" as const },
+    { ...freeAgent, subscription: "pro" as const },
+    { ...freeAgent, selectedModel: "model-deepseek-v4-flash-vision" },
+    { ...freeAgent, selectedModel: "model-glm-5.3-flash-agent" },
+    { ...freeAgent, hasImages: true },
+    { ...freeAgent, userId: "" },
     { ...paid, mode: "ask" as const },
     { ...paid, subscription: "free" as const },
     { ...paid, selectedModel: "model-deepseek-v4-pro-0813" },
+    { ...paid, selectedModel: "model-glm-5.3-flash-agent" },
+    { ...paid, mode: "ask" as const, selectedModel: "model-glm-5.3-flash" },
     { ...paid, selectedModel: "model-opus-4.6" },
     { ...paid, selectedModel: "model-deepseek-v4-flash-vision" },
     { ...paid, hasImages: true },
-    { ...free, hasImages: true },
-    { ...free, userId: "" },
-    { ...free, selectedModel: "model-glm-5.3-flash" },
+    { ...freeAsk, hasImages: true },
+    { ...freeAsk, userId: "" },
+    { ...freeAsk, selectedModel: "model-glm-5.3-flash" },
   ])("does not evaluate excluded requests: %j", async (scope) => {
     const posthog = flags("test");
     expect(
@@ -78,12 +94,14 @@ describe("Flash routing experiments", () => {
   it.each([true, false, undefined, "unknown"])(
     "retains current behavior for %s",
     async (variant) => {
-      expect(
-        await evaluateFlashRouting({
-          ...paid,
-          posthog: flags(variant) as never,
-        }),
-      ).toBeUndefined();
+      for (const scope of [freeAgent, paid]) {
+        expect(
+          await evaluateFlashRouting({
+            ...scope,
+            posthog: flags(variant) as never,
+          }),
+        ).toBeUndefined();
+      }
     },
   );
 

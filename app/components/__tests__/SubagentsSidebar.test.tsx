@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 
@@ -212,16 +213,69 @@ describe("SubagentsSidebar", () => {
       closeSidebar: jest.fn(),
     };
     const first = render(<SubagentsSidebar {...props} />);
-    expect(screen.getByText(/^Evidence verification warning:/)).toBeVisible();
-    expect(
-      screen.getByText(/^Evidence verification warning:/),
-    ).toHaveTextContent("/tmp/control.http");
+    const notice = screen.getByRole("note", {
+      name: "Evidence verification warning",
+    });
+    expect(notice).toBeVisible();
+    expect(notice).toHaveTextContent("/tmp/control.http");
+    expect(within(notice).queryByRole("button")).not.toBeInTheDocument();
     first.unmount();
     render(<SubagentsSidebar {...props} />);
-    expect(screen.getByText(/^Evidence verification warning:/)).toBeVisible();
     expect(
-      screen.getByText(/^Evidence verification warning:/),
+      screen.getByRole("note", { name: "Evidence verification warning" }),
     ).toHaveTextContent("/tmp/control.http");
+    expect(
+      screen.queryByRole("button", { name: "Good response" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Poor response" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps only the latest worker response actions visible across continuations and notices", () => {
+    mockUseQuery.mockImplementation((query, args) => {
+      if (query === "listForParentMessage") return [doneChild];
+      if (query === "getOwned") return args === "skip" ? undefined : doneChild;
+      return [
+        [1, "First attempt"],
+        [9999, "Evidence verification warning: First reference unavailable."],
+        [10001, "Corrected attempt"],
+        [
+          19999,
+          "Evidence verification warning: Corrected reference unavailable.",
+        ],
+      ].map(([sequence, text]) => ({
+        message_id: `message-${sequence}`,
+        sequence,
+        role: "assistant",
+        parts: [{ type: "text", text }],
+        created_at: persistedAssistantCreatedAt,
+      }));
+    });
+    render(
+      <SubagentsSidebar
+        content={{
+          kind: "subagents",
+          parentMessageId: "parent-message",
+          toolCallId: "tool-1",
+          selectedSubagentId: doneChild.subagent_id,
+        }}
+        closeSidebar={jest.fn()}
+      />,
+    );
+    expect(screen.getAllByRole("note")).toHaveLength(2);
+    const first = screen.getByText("First attempt").closest("section")!;
+    const corrected = screen.getByText("Corrected attempt").closest("section")!;
+    const actions = (section: HTMLElement) =>
+      within(section)
+        .getByRole("button", { name: "Copy message" })
+        .closest(".group\\/message-actions");
+    expect(actions(first)).toHaveClass("opacity-0");
+    expect(actions(corrected)).toHaveClass("opacity-100");
+    fireEvent.mouseEnter(first);
+    expect(actions(first)).toHaveClass("opacity-100");
+    fireEvent.mouseLeave(first);
+    expect(actions(first)).toHaveClass("opacity-0");
   });
 
   it("groups active and done children, then opens a live child detail", () => {

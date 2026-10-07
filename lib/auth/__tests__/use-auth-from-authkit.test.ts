@@ -503,6 +503,127 @@ describe("useAuthFromAuthKit", () => {
   });
 
   describe("fetchAccessToken error handling", () => {
+    it.each([false, true])(
+      "reconciles an ended session before returning a missing token (cross-tab=%s)",
+      async (crossTabEnabled) => {
+        let signedIn = true;
+        let finishRecovery!: () => void;
+        mockDeps.isCrossTabEnabled = () => crossTabEnabled;
+        mockDeps.useAuth = () => ({
+          user: signedIn ? { id: "user-123" } : null,
+          loading: false,
+          refreshAuth: mockRefreshAuth,
+        });
+        mockRefresh.mockResolvedValue(undefined);
+        mockGetAccessToken.mockResolvedValue(undefined);
+        mockRefreshAuth.mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finishRecovery = () => {
+                signedIn = false;
+                resolve();
+              };
+            }),
+        );
+        const { result, rerender } = renderHook(() =>
+          useAuthFromAuthKit(mockDeps),
+        );
+        let returned = false;
+        const pending = result.current
+          .fetchAccessToken({ forceRefreshToken: true })
+          .then((token) => {
+            returned = true;
+            return token;
+          });
+        await act(async () => {});
+        expect(mockRefreshAuth).toHaveBeenCalledWith();
+        expect(returned).toBe(false);
+        await act(async () => {
+          finishRecovery();
+          expect(await pending).toBeNull();
+        });
+        rerender();
+        expect(result.current.isAuthenticated).toBe(false);
+      },
+    );
+
+    it("bounds missing-token recovery and allows retry after a failed check", async () => {
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockGetAccessToken.mockResolvedValue(undefined);
+      mockRefreshAuth.mockResolvedValue({ error: "Network error" });
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      const tokens = await Promise.all([
+        result.current.fetchAccessToken(),
+        result.current.fetchAccessToken(),
+      ]);
+      expect(tokens).toEqual(["current-token", "current-token"]);
+      expect(mockRefreshAuth).toHaveBeenCalledTimes(1);
+      expect(result.current.isAuthenticated).toBe(true);
+
+      await result.current.fetchAccessToken();
+      expect(mockRefreshAuth).toHaveBeenCalledTimes(1);
+      act(() => jest.advanceTimersByTime(10_000));
+      await result.current.fetchAccessToken();
+      expect(mockRefreshAuth).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves a cached token when session recovery throws", async () => {
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockGetAccessToken.mockResolvedValue(undefined);
+      mockRefreshAuth.mockRejectedValue(new Error("Network error"));
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      expect(await result.current.fetchAccessToken()).toBe("current-token");
+      expect(result.current.isAuthenticated).toBe(true);
+    });
+
+    it("returns null when session recovery fails without a cached token", async () => {
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockDeps.useAccessToken = () => ({
+        getAccessToken: mockGetAccessToken,
+        accessToken: undefined,
+        refresh: mockRefresh,
+      });
+      mockGetAccessToken.mockResolvedValue(undefined);
+      mockRefreshAuth.mockResolvedValue({ error: "Network error" });
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      expect(await result.current.fetchAccessToken()).toBeNull();
+    });
+
+    it.each([false, true])(
+      "preserves cached auth on refresh network failure (cross-tab=%s)",
+      async (crossTabEnabled) => {
+        mockDeps.isCrossTabEnabled = () => crossTabEnabled;
+        mockDeps.useAuth = () => ({
+          user: { id: "user-123" },
+          loading: false,
+          refreshAuth: mockRefreshAuth,
+        });
+        mockRefresh.mockRejectedValue(new Error("Network error"));
+        const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+        expect(
+          await result.current.fetchAccessToken({ forceRefreshToken: true }),
+        ).toBe("current-token");
+        expect(mockRefreshAuth).not.toHaveBeenCalled();
+        expect(result.current.isAuthenticated).toBe(true);
+      },
+    );
+
     it("should return cached token on network error", async () => {
       mockDeps.useAccessToken = () => ({
         getAccessToken: mockGetAccessToken,

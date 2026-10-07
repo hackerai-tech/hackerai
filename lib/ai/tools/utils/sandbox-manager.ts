@@ -6,6 +6,12 @@ import type {
   SandboxType,
 } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
+import {
+  assertCloudWorkspaceAvailable,
+  registerE2BMigrationLease,
+  CloudMigrationUnavailableError,
+} from "./cloud-migration-state";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import {
@@ -17,8 +23,10 @@ import {
   getCloudSandboxProviderForInstance,
   isCentrifugoSandbox,
   isE2BSandbox,
+  isMiosaSandbox,
 } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
+import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
 
 // One failed initial readiness check plus one failed reconnect is enough to
 // stop terminal retries in this Agent run. The manager only forgets its local
@@ -31,6 +39,7 @@ export class DefaultSandboxManager implements SandboxManager {
   private sandboxUnavailable = false;
   private activeCloudProvider: CloudSandboxProvider;
   private acquisition: Promise<{ sandbox: AnySandbox }> | null = null;
+  private readonly acquisitionBudget = new CloudAcquisitionBudget();
 
   constructor(
     private userID: string,
@@ -40,6 +49,8 @@ export class DefaultSandboxManager implements SandboxManager {
     private cloudSandboxContext?: CloudSandboxAcquisitionContext,
   ) {
     this.sandbox = initialSandbox || null;
+    if (this.sandbox && isE2BSandbox(this.sandbox))
+      registerE2BMigrationLease(this.sandbox, userID);
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(this.sandbox) ??
       cloudSandboxContext?.provider ??
@@ -86,17 +97,36 @@ export class DefaultSandboxManager implements SandboxManager {
   }> {
     if (this.acquisition) return this.acquisition;
     if (this.sandbox) {
+      let reacquire =
+        isMiosaSandbox(this.sandbox) && isMiosaCloudSandboxPaused();
       if (isE2BSandbox(this.sandbox)) {
-        await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
-          source: "default_manager_cache",
-        });
+        try {
+          await assertCloudWorkspaceAvailable(
+            this.userID,
+            "e2b",
+            this.sandbox.sandboxId,
+          );
+          await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
+            source: "default_manager_cache",
+          });
+        } catch (error) {
+          if (!(error instanceof CloudMigrationUnavailableError)) throw error;
+          reacquire = true;
+        }
       }
-      return { sandbox: this.sandbox };
+      if (!reacquire) return { sandbox: this.sandbox };
+      this.sandbox = null;
     }
 
-    this.acquisition = this.acquireSandbox().finally(() => {
-      this.acquisition = null;
-    });
+    if (this.acquisition) return this.acquisition;
+    this.acquisition = this.acquisitionBudget
+      .run(() => this.acquireSandbox(), {
+        userId: this.userID,
+        ...this.cloudSandboxContext,
+      })
+      .finally(() => {
+        this.acquisition = null;
+      });
     return this.acquisition;
   }
 
@@ -123,6 +153,7 @@ export class DefaultSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: AnySandbox): void {
+    if (isE2BSandbox(sandbox)) registerE2BMigrationLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;

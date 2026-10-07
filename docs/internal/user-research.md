@@ -88,8 +88,11 @@ direct Stripe access. If the available PostHog data has accounting or mapping
 limitations, label them in the aggregate output instead of blocking the run. Do
 not add PMs to the Trigger organization or give them Trigger/Convex credentials.
 
-`HACKERAI_PM_USER_RESEARCH_KEY` authenticates the scoped runner; it is not a
-per-run approval mechanism and is unrelated to Linear.
+The scoped runner reads `~/.config/hackerai/pm-research.key` first, with
+`HACKERAI_PM_USER_RESEARCH_KEY` as a fallback when the file is absent. See the
+[PM runbook](../../.agents/skills/hackerai-user-research/references/pm-runbook.md)
+for storage requirements. The key authenticates access; it is not a per-run
+approval mechanism and is unrelated to Linear.
 
 For event-based questions such as churn, pass `samplingMode: "pre_event"`, a
 bounded `evidenceWindowDays`, and exactly one `{ userId, anchorAt }` entry in

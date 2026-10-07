@@ -263,3 +263,30 @@ it("shows and exports saved verification gaps without calling them checked", () 
   expect(renderFindingMarkdown(saved)).toContain(warning);
   expect(renderFindingMarkdown(saved)).toContain("/tmp/exploit.http");
 });
+
+it("shows assessment limits and includes them in the downloaded report", () => {
+  const saved = {
+    ...finding,
+    confidence: "medium" as const,
+    counterevidence: "Control requests were denied.",
+    severity_change_conditions: "Broader access would increase the impact.",
+  };
+  render(<FindingDetail finding={saved} />);
+  expect(screen.getByText(saved.counterevidence)).toBeVisible();
+  expect(screen.getByText(saved.severity_change_conditions)).toBeVisible();
+  expect(screen.getByText("medium", { exact: true })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Download report" }));
+  expect(downloadFile).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      content: expect.stringContaining(saved.counterevidence),
+    }),
+  );
+});
+
+it("does not infer confidence for an older saved report", () => {
+  render(<FindingDetail finding={finding} />);
+  expect(screen.getByText("Not recorded")).toBeVisible();
+  expect(renderFindingMarkdown(finding)).toContain(
+    "Assessment confidence: Not recorded",
+  );
+});

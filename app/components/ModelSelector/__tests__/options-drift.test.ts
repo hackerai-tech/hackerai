@@ -31,12 +31,12 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect([...askIds].sort()).toEqual([...agentIds].sort());
   });
 
-  it("HackerAI Standard resolves to DeepSeek V4 Flash in both modes", () => {
+  it("HackerAI Standard resolves to GLM 5.3 Flash in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-standard", "ask")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-glm-5.3-flash",
     );
     expect(resolveTierToProviderKey("hackerai-standard", "agent")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-glm-5.3-flash-agent",
     );
   });
 
@@ -51,10 +51,10 @@ describe("ModelSelector tier ↔ provider drift", () => {
 
   it("HackerAI Max resolves to the same provider in both modes", () => {
     expect(resolveTierToProviderKey("hackerai-max", "ask")).toBe(
-      "model-grok-4.6",
+      "model-glm-5.3",
     );
     expect(resolveTierToProviderKey("hackerai-max", "agent")).toBe(
-      "model-grok-4.6",
+      "model-glm-5.3",
     );
   });
 
@@ -72,11 +72,11 @@ describe("ModelSelector tier ↔ provider drift", () => {
     }
   });
 
-  it("discloses DeepSeek V4 Flash for Agent Standard", () => {
+  it("discloses GLM 5.3 Flash for Agent Standard", () => {
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
         ?.poweredBy,
-    ).toBe("DeepSeek V4 Flash 0731");
+    ).toBe("Z.ai GLM 5.3 Flash");
   });
 
   it("discloses each mode's provider for HackerAI Pro", () => {
@@ -90,14 +90,14 @@ describe("ModelSelector tier ↔ provider drift", () => {
     ).toBe("DeepSeek V4.1 Flash");
   });
 
-  it("discloses Grok 4.6 for HackerAI Max", () => {
+  it("discloses GLM 5.3 for HackerAI Max", () => {
     expect(
       ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.6");
+    ).toBe("Z.ai GLM 5.3");
     expect(
       AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
         ?.poweredBy,
-    ).toBe("xAI Grok 4.6");
+    ).toBe("Z.ai GLM 5.3");
   });
 });

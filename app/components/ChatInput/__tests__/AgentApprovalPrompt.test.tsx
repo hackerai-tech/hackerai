@@ -76,6 +76,20 @@ describe("AgentApprovalPrompt", () => {
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
+  it("identifies the subagent requesting an action", () => {
+    render(
+      <AgentApprovalPrompt
+        request={{ ...request, sourceAgentName: "Recon worker" }}
+        onRetryConnection={mockOnRetryConnection}
+        onStop={mockOnStop}
+      />,
+    );
+
+    expect(
+      screen.getByText("Recon worker · Terminal command"),
+    ).toBeInTheDocument();
+  });
+
   it("shows the exact action in a readable code block", () => {
     renderPrompt();
 

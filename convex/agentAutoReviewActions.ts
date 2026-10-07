@@ -68,7 +68,10 @@ const entitlementClients: AgentEntitlementClients = {
             status: subscription.status,
             items: {
               data: subscription.items.data.map((item) => ({
-                price: { lookup_key: item.price.lookup_key },
+                price: {
+                  id: item.price.id,
+                  lookup_key: item.price.lookup_key,
+                },
               })),
             },
           })),

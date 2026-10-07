@@ -8,6 +8,8 @@ export function getProviderToolCallDiagnostics(messages: ModelMessage[]) {
   let unmatchedResults = 0;
   let unmatchedCalls = 0;
   let duplicateCalls = 0;
+  let invalidCallNames = 0;
+  let invalidResultNames = 0;
   const pending = new Set<string>();
   for (const message of messages) {
     if (message.role !== "tool") {
@@ -19,9 +21,15 @@ export function getProviderToolCallDiagnostics(messages: ModelMessage[]) {
     for (const part of message.content) {
       if (part.type === "tool-call") {
         count++;
+        if (typeof part.toolName !== "string" || !part.toolName.trim()) {
+          invalidCallNames++;
+        }
         if (pending.has(part.toolCallId)) duplicateCalls++;
         pending.add(part.toolCallId);
       } else if (part.type === "tool-result") {
+        if (typeof part.toolName !== "string" || !part.toolName.trim()) {
+          invalidResultNames++;
+        }
         if (!pending.delete(part.toolCallId)) unmatchedResults++;
       }
     }
@@ -32,6 +40,8 @@ export function getProviderToolCallDiagnostics(messages: ModelMessage[]) {
     unmatched_tool_call_count: unmatchedCalls + pending.size,
     unmatched_tool_result_count: unmatchedResults,
     duplicate_tool_call_count: duplicateCalls,
+    invalid_tool_call_name_count: invalidCallNames,
+    invalid_tool_result_name_count: invalidResultNames,
   };
 }
 

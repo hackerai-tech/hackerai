@@ -33,12 +33,35 @@ describe("security validation subagent runtime contracts", () => {
     expect(source).not.toMatch(/allowedToolNames:[\s\S]{0,500}"delegate_task"/);
   });
 
+  it("accepts every Agent permission mode and approval-gates child actions", () => {
+    const source = read("trigger/subagent.ts");
+    const tools = read("lib/ai/tools/subagent-tools.ts");
+    expect(source).toContain("isAgentPermissionMode(persistedPermissionMode)");
+    expect(source).toContain(
+      "resolveSubagentAllowedToolNamesForPermissionMode",
+    );
+    expect(source).toContain("buildAgentToolApprovalRequester");
+    expect(source).toContain("requestToolApproval");
+    expect(source).toContain("sourceAgentId");
+    expect(source).toContain("activeRuntimeBudget");
+    expect(tools).not.toContain('config.permissionMode !== "full_access"');
+    expect(tools).not.toContain(
+      "delegate_task requires Full access for the shared sandbox",
+    );
+  });
+
   it("loads only validated server-reviewed skills into focused task children", () => {
     const tools = read("lib/ai/tools/subagent-tools.ts");
     const profiles = read("lib/ai/subagents/profiles.ts");
-    expect(tools).toContain("resolveSubagentSkills");
+    expect(tools).toContain("resolveDelegatedSubagentSkills");
     expect(tools).toContain("skills = resolvedSkills.skills.map");
     expect(tools).toContain("Skills are optional methodology");
+    expect(tools).toContain(
+      "For clean-slate validation, set inherit_context=false",
+    );
+    expect(tools).toContain(
+      "describe the result as a separately executed reproduction",
+    );
     expect(tools).not.toContain("1-3 normally");
     expect(tools).not.toContain(
       "security_task uses fixed server tools and does not accept skills",

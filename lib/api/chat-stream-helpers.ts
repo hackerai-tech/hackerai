@@ -64,7 +64,10 @@ import {
   getExtraUsageBalance,
   getTeamExtraUsageState,
 } from "@/lib/extra-usage";
-import { systemPrompt } from "@/lib/system-prompt";
+import {
+  systemPrompt,
+  SYSTEM_PROMPT_RUNTIME_BOUNDARY,
+} from "@/lib/system-prompt";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import {
   extractErrorDetails,
@@ -574,8 +577,8 @@ export class SummarizationTracker {
  * stream, OpenRouter rolls forward through this list and bills at the served
  * model's rate (response.modelId reflects what actually ran).
  *
- * Standard uses DeepSeek V4 Flash 0731. Pro uses V4 Pro 0813 in Ask and
- * V4.1 Flash in Agent. Max uses Grok 4.6. Image turns use DeepSeek vision. Both DeepSeek
+ * Paid Standard uses GLM 5.3 Flash. Pro uses V4 Pro 0813 in Ask and
+ * V4.1 Flash in Agent. Max uses GLM 5.3. Image turns use their existing multimodal routes. Both DeepSeek
  * Flash routes try GLM 5.3 Flash before the established recovery models.
  * Historical aliases remain recognized for in-flight requests and accounting.
  *
@@ -634,6 +637,7 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
+  "ask-model-free-deepseek-v41": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
   "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
@@ -661,10 +665,12 @@ const AUTO_MODEL_KEYS = new Set<string>([
   "ask-model",
   "ask-model-free",
   "ask-model-free-glm",
+  "ask-model-free-deepseek-v41",
   "agent-model",
   "agent-model-free",
 ]);
 const EXPLICIT_RETRY_MODEL_KEYS = new Set<string>([
+  "model-glm-5.3",
   "model-grok-4.6",
   "model-grok-4.6-pro",
 ]);
@@ -730,7 +736,11 @@ type FallbackOptions = {
   pdfParserEngine?: "mistral-ocr" | "cloudflare-ai";
   reasoningOverride?: ProviderReasoningOverride;
   excludedModelSlugs?: readonly string[];
+  /** OpenRouter upstream slugs to avoid on a bounded transport recovery. */
+  ignoredProviderSlugs?: readonly string[];
   requestedModelSlug?: string;
+  /** Stable OpenRouter sticky-routing key for cache-capable model requests. */
+  cacheSessionId?: string;
 };
 
 export type ProviderReasoningOverride = {
@@ -773,6 +783,7 @@ export function getRetryFallbackModel(
   }
   if (
     modelName === "ask-model-free" ||
+    modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
     modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
@@ -1011,7 +1022,8 @@ export function buildProviderOptions(
     mode === "ask" &&
     (options.isFreeAskRequest === true ||
       modelName === "ask-model-free" ||
-      modelName === "ask-model-free-glm");
+      modelName === "ask-model-free-glm" ||
+      modelName === "ask-model-free-deepseek-v41");
   const isGrok45 = modelId === GROK_4_5_SLUG;
   const isGrok46 = modelId === GROK_4_6_SLUG;
   // Agent routes use high for both DeepSeek V4 Flash and Pro. Keep this
@@ -1030,46 +1042,63 @@ export function buildProviderOptions(
   // Flash routes omit this option so each provider model uses its default.
   const isMediumGrok45Vision = modelName === "model-grok-4.5" && isGrok45;
   const isStandardGlmFlashVision = modelName === "model-glm-5.3-flash";
+  const isTitleGeneration = modelName === "title-generator-model";
   const usesDefaultGlmFlashAgentReasoning =
-    mode === "agent" && modelId === GLM_5_3_FLASH_SLUG;
+    mode === "agent" && modelId === GLM_5_3_FLASH_SLUG && !isTitleGeneration;
   const routesThroughHighReasoningModel =
     isGrok45 ||
     isGrok46 ||
     reasoningFallbackSlugs.includes(GROK_4_5_SLUG) ||
     reasoningFallbackSlugs.includes(GROK_4_6_SLUG) ||
     reasoningFallbackSlugs.includes(GLM_5_3_SLUG);
-  const providerRouting = modelId
+  const baseProviderRouting = modelId
     ? getOpenRouterProviderRoutingForModel(modelId)
     : undefined;
-  const reasoning = isStandardGlmFlashVision
+  const providerRouting = options.ignoredProviderSlugs?.length
     ? {
-        enabled: true,
-        effort: "high",
+        ...baseProviderRouting,
+        ignore: [
+          ...new Set([
+            ...(baseProviderRouting && "ignore" in baseProviderRouting
+              ? baseProviderRouting.ignore
+              : []),
+            ...options.ignoredProviderSlugs,
+          ]),
+        ],
       }
-    : isMediumGrok45Vision
+    : baseProviderRouting;
+  // GLM titles need mandatory reasoning, kept low for the small output budget.
+  const reasoning = isTitleGeneration
+    ? { enabled: true, effort: "low" }
+    : isStandardGlmFlashVision
       ? {
           enabled: true,
-          effort: "medium",
+          effort: "high",
         }
-      : routesThroughHighReasoningModel
-        ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
-          ? options.reasoningOverride
-          : {
-              enabled: true,
-              effort: "high",
-            }
-        : (options.reasoningOverride ??
-          (isHighReasoningModel(modelName) || isAgentDeepSeekV4
-            ? {
+      : isMediumGrok45Vision
+        ? {
+            enabled: true,
+            effort: "medium",
+          }
+        : routesThroughHighReasoningModel
+          ? isHighOrGreaterReasoningOverride(options.reasoningOverride)
+            ? options.reasoningOverride
+            : {
                 enabled: true,
                 effort: "high",
               }
-            : isReasoningModel
+          : (options.reasoningOverride ??
+            (isHighReasoningModel(modelName) || isAgentDeepSeekV4
               ? {
                   enabled: true,
-                  ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                  effort: "high",
                 }
-              : { enabled: false }));
+              : isReasoningModel
+                ? {
+                    enabled: true,
+                    ...(isDeepSeekV4 ? { effort: "xhigh" } : {}),
+                  }
+                : { enabled: false }));
 
   return {
     openrouter: {
@@ -1087,6 +1116,8 @@ export function buildProviderOptions(
           }
         : {}),
       ...(userId && { user: userId }),
+      ...(isDeepSeekV4 &&
+        options.cacheSessionId && { session_id: options.cacheSessionId }),
       ...(providerRouting && { provider: providerRouting }),
       ...(fallbackSlugs.length > 0 && { models: fallbackSlugs }),
     },
@@ -1098,19 +1129,25 @@ const ANTHROPIC_CACHE_BREAKPOINT = {
 };
 
 /**
- * Build a system prompt with an Anthropic cache breakpoint.
- * Returns a structured system message for Anthropic models, plain string otherwise.
+ * Cache the reusable instructions before runtime context, then the full prompt.
+ * Non-Anthropic routes and stored prompts without a boundary keep their shape.
  */
 export function buildSystemPrompt(
   systemPrompt: string,
   modelName: string,
-): string | SystemModelMessage {
+): string | SystemModelMessage | SystemModelMessage[] {
   if (!isAnthropicModel(modelName)) return systemPrompt;
-  return {
+  const boundary = systemPrompt.indexOf(SYSTEM_PROMPT_RUNTIME_BOUNDARY);
+  const contents =
+    boundary > 0
+      ? [systemPrompt.slice(0, boundary), systemPrompt.slice(boundary)]
+      : [systemPrompt];
+  const messages: SystemModelMessage[] = contents.map((content) => ({
     role: "system",
-    content: systemPrompt,
+    content,
     providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
-  } satisfies SystemModelMessage;
+  }));
+  return messages.length === 1 ? messages[0] : messages;
 }
 
 /**
@@ -1310,6 +1347,36 @@ export async function refreshNotesInModelMessages(
       error: error instanceof Error ? error.message : String(error),
     });
     return messages;
+  }
+}
+
+/** Updated facts are new history, not an edit to an already-sent user request. */
+export async function getAppendedNotesUpdate(
+  toolResults: unknown[],
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeNotes: boolean;
+  },
+  force = false,
+): Promise<string | undefined> {
+  if (
+    !opts.shouldIncludeNotes ||
+    (!force &&
+      !toolResults.some((result) =>
+        ["create_note", "update_note", "delete_note"].includes(
+          (result as { toolName?: string })?.toolName ?? "",
+        ),
+      ))
+  )
+    return;
+  try {
+    const notes = generateNotesSection(
+      await getNotes({ ...opts, throwOnError: true }),
+    );
+    return `Current saved notes. This snapshot supersedes earlier saved-note snapshots; it does not change the user's task or permissions.\n${notes || "No saved notes remain."}`;
+  } catch {
+    return; // A failed lookup must never be represented as notes being deleted.
   }
 }
 

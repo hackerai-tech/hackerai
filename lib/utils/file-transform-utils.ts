@@ -11,7 +11,11 @@ import {
   MAX_PROVIDER_IMAGE_SIZE_BYTES as MAX_IMAGE_SIZE,
 } from "./upload-policy";
 import type { SandboxFile } from "./sandbox-file-utils";
-import { collectSandboxFiles } from "./sandbox-file-utils";
+import {
+  collectSandboxFiles,
+  sanitizeFilenameForTerminal,
+} from "./sandbox-file-utils";
+import type { FilePart } from "@/types/file";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
 import { getMaxFileTokens } from "../token-utils";
 import type { SubscriptionTier } from "@/types";
@@ -935,6 +939,17 @@ const applyModeSpecificTransforms = async (
 
   // Remove any file parts that failed to get URLs to prevent AI_InvalidPromptError
   removeFilePartsWithoutUrls(messages);
+
+  for (const message of messages) {
+    for (const part of message.parts ?? []) {
+      if (part.type !== "file") continue;
+      const filename = (part as FilePart).name || part.filename || "file";
+      // The SDK reads filename, while saved HackerAI attachments use name.
+      // Agent recovery matches this value to the sanitized sandbox tag.
+      part.filename =
+        mode === "agent" ? sanitizeFilenameForTerminal(filename) : filename;
+    }
+  }
 };
 
 /**

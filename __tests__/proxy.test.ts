@@ -113,9 +113,11 @@ describe("proxy", () => {
     "/api/health/connectivity",
     "/api/health/core",
     "/api/health/trigger-agent-mode",
+    "/api/health/trigger-reports",
     "/api/cron/platform-costs/convex",
     "/api/cron/platform-costs/vercel",
     "/api/cron/subscription-pauses",
+    "/api/cron/trigger-health",
   ])(
     "bypasses AuthKit for the public or independently authenticated endpoint %s",
     async (pathname) => {
@@ -136,22 +138,28 @@ describe("proxy", () => {
     },
   );
 
-  it("bypasses AuthKit for the independently authenticated user-research gateway", async () => {
-    const { default: proxy } = await import("../proxy");
+  it.each([
+    "/api/internal/user-research",
+    "/api/internal/influencers/partners",
+  ])(
+    "bypasses AuthKit for independently authenticated gateway %s",
+    async (pathname) => {
+      const { default: proxy } = await import("../proxy");
 
-    const response = await proxy(
-      createRequest({
-        pathname: "/api/internal/user-research",
-        method: "POST",
-      }),
-    );
+      const response = await proxy(
+        createRequest({
+          pathname,
+          method: "POST",
+        }),
+      );
 
-    expect(response).toMatchObject({ kind: "next" });
-    expect(mockAuthkit).not.toHaveBeenCalled();
-    expect(mockNextResponseNext).toHaveBeenCalledWith();
-    expect(mockNextResponseJson).not.toHaveBeenCalled();
-    expect(mockNextResponseRedirect).not.toHaveBeenCalled();
-  });
+      expect(response).toMatchObject({ kind: "next" });
+      expect(mockAuthkit).not.toHaveBeenCalled();
+      expect(mockNextResponseNext).toHaveBeenCalledWith();
+      expect(mockNextResponseJson).not.toHaveBeenCalled();
+      expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not bypass AuthKit for sibling internal API paths", async () => {
     mockAuthkit.mockResolvedValue({
@@ -761,6 +769,72 @@ describe("proxy", () => {
     expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
     expect(mockNextResponseJson).not.toHaveBeenCalled();
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it.each(["throw", "callback"])(
+    "returns signed-out 401 for terminal invalid refresh token through %s",
+    async (mode) => {
+      const error = {
+        name: "TokenRefreshError",
+        isTransient: false,
+        cause: {
+          status: 400,
+          error: "invalid_grant",
+          errorDescription: "Invalid refresh token.",
+        },
+      };
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          if (mode === "throw") return Promise.reject(error);
+          options.onSessionRefreshError({ error: error.cause });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers(),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/",
+            method: "POST",
+            hasSession: true,
+            headers: { "next-action": "auth-action" },
+          }),
+        );
+        expect(response).toMatchObject({ kind: "json", init: { status: 401 } });
+        expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+        expect(warn).toHaveBeenCalledWith(
+          JSON.stringify({
+            event: "auth.invalid_refresh_token",
+            boundary: "proxy",
+          }),
+        );
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("does not convert transient refresh failures into signed-out recovery", async () => {
+    const error = {
+      name: "TokenRefreshError",
+      isTransient: true,
+      cause: {
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Invalid refresh token.",
+      },
+    };
+    mockAuthkit.mockRejectedValue(error);
+    const { default: proxy } = await import("../proxy");
+    await expect(
+      proxy(createRequest({ pathname: "/", hasSession: true })),
+    ).rejects.toBe(error);
+    expect(mockNextResponseNext).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
   });
 
   it("stops root Server Actions when session refresh has ended", async () => {

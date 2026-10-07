@@ -1,10 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const taskSource = fs.readFileSync(
+const parentTaskSource = fs.readFileSync(
   path.resolve(__dirname, "../agent-long.ts"),
   "utf8",
 );
+const approvalRequesterSource = fs.readFileSync(
+  path.resolve(__dirname, "../../lib/chat/agent-tool-approval-requester.ts"),
+  "utf8",
+);
+const taskSource = `${parentTaskSource}\n${approvalRequesterSource}`;
 
 const findRequiredSource = (needle: string, fromIndex = 0): number => {
   const index = taskSource.indexOf(needle, fromIndex);
@@ -148,7 +153,7 @@ describe("agent-long post-wait authorization contract", () => {
       'type: "data-agent-auto-review-lifecycle"',
     );
     const lifecycleWriterEnd = taskSource.indexOf(
-      "} as AgentLongUiStreamPart",
+      "} as ApprovalUiStreamPart",
       lifecycleWriterStart,
     );
     const lifecycleWriterSource = taskSource.slice(
@@ -269,7 +274,7 @@ describe("agent-long post-wait authorization contract", () => {
       postCatchApproveCheck,
     );
     const markPending = findRequiredSource(
-      "await setApprovalPending(",
+      "approvalPendingMarked = await claimApprovalSlot(",
       approvalSessionCheck,
     );
     const waitForApproval = findRequiredSource(

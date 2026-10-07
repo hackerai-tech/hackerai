@@ -111,6 +111,16 @@ describe("agent tool schema descriptions", () => {
     const validReport = validFindingReport();
     const parityCases = [
       validReport,
+      {
+        ...validReport,
+        confidence: "medium",
+        counterevidence: "Control was denied.",
+        severity_change_conditions:
+          "Tenant enforcement would disprove the result.",
+      },
+      { ...validReport, confidence: "certain" },
+      { ...validReport, counterevidence: " " },
+      { ...validReport, severity_change_conditions: "x".repeat(4001) },
       {},
       { ...validReport, endpoint: null, method: "   " },
       { ...validReport, cve: "" },
@@ -365,7 +375,7 @@ describe("agent tool schema descriptions", () => {
     );
     expect(getDescription(todoWriteTool)).toContain("### When NOT to Use");
     expect(getDescription(todoWriteTool)).toContain(
-      "Before finishing your turn, complete every todo or cancel it if it is no longer relevant",
+      "Keep unfinished work pending or in_progress across turns, pauses, limits, and summarization.",
     );
   });
 

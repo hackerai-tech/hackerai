@@ -52,6 +52,16 @@ describe("free quota subject", () => {
     );
   });
 
+  it("preserves separate historical quota identities for Gmail aliases", async () => {
+    const { createFreeQuotaSubject } = await import("../free-quota-subject");
+    expect(createFreeQuotaSubject("f.irst+one@gmail.com")).not.toBe(
+      createFreeQuotaSubject("first@gmail.com"),
+    );
+    expect(createFreeQuotaSubject("first@googlemail.com")).not.toBe(
+      createFreeQuotaSubject("first@gmail.com"),
+    );
+  });
+
   it("does not expose the raw email in the subject or redacted log value", async () => {
     const { createFreeQuotaSubject, redactFreeQuotaSubjectForLog } =
       await import("../free-quota-subject");

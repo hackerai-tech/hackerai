@@ -1,4 +1,5 @@
 import type { Sandbox } from "@e2b/code-interpreter";
+import { refreshE2BMigrationLease } from "./cloud-migration-state";
 
 export const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000;
 export const E2B_SANDBOX_IDLE_RELEASE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -37,6 +38,9 @@ const logLeaseFailure = (
 export const refreshE2BSandboxLease = async (
   sandbox: Sandbox,
 ): Promise<number> => {
+  // Renew the shared activity fence before extending the provider lease. A
+  // worker with a stale SDK object must not revive a source after cutover.
+  await refreshE2BMigrationLease(sandbox);
   await sandbox.setTimeout(BASH_SANDBOX_AUTOPAUSE_TIMEOUT, {
     requestTimeoutMs: E2B_SANDBOX_LEASE_REQUEST_TIMEOUT_MS,
   });

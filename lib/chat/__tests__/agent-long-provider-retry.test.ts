@@ -13,6 +13,32 @@ import {
 import type { UIMessage } from "ai";
 
 describe("prepareProviderDisconnectContinuation", () => {
+  it("leaves provider-executed pending calls under provider ownership", () => {
+    const pending = {
+      type: "tool-search",
+      toolCallId: "provider-owned",
+      providerExecuted: true,
+      state: "input-available",
+      input: {},
+    };
+    const recovery = prepareProviderDisconnectContinuation([
+      {
+        id: "assistant",
+        role: "assistant",
+        parts: [
+          { type: "step-start" },
+          pending,
+          { type: "step-start" },
+          { type: "text", text: "Completed text", state: "done" },
+          { type: "step-start" },
+          { type: "text", text: "partial", state: "streaming" },
+        ],
+      } as UIMessage,
+    ]);
+    expect(recovery?.messages[0].parts).toContain(pending);
+    expect(pending.state).toBe("input-available");
+  });
+
   it("preserves completed text and tool output while removing only the failed step", () => {
     const messages = [
       { id: "user-1", role: "user", parts: [{ type: "text", text: "fix it" }] },

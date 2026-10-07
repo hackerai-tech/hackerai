@@ -12,6 +12,14 @@
     {
       "path": "/api/cron/subscription-pauses",
       "schedule": "23 * * * *"
+    },
+    {
+      "path": "/api/cron/trigger-health",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/influencer-analytics",
+      "schedule": "* * * * *"
     }
   ]
 }

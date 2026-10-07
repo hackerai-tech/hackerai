@@ -1,4 +1,42 @@
 import { createWideEventBuilder, logger } from "../logger";
+import type { ProviderModelHistoryEntry } from "@/lib/ai/provider-model-history";
+
+it("retains chronological provider history and live outcomes across stream restarts", () => {
+  const builder = createWideEventBuilder("chat", "/api/agent").setModel(
+    "model-abliterated",
+  );
+  const entry: ProviderModelHistoryEntry = {
+    timestamp: "2026-09-16T16:57:49.280Z",
+    generation_step: 1,
+    configured: "model-abliterated",
+    requested: "abliterated-model",
+    provider: "abliteration.chat",
+    outcome: "pending",
+  };
+  builder.recordProviderModelCall(entry);
+  entry.outcome = "error";
+  builder.setModel("baseline");
+  builder.recordProviderModelCall({
+    ...entry,
+    configured: "baseline",
+    requested: "served",
+    outcome: "completed",
+  });
+  builder.setActualModel("served");
+  builder.setOpenRouterMetadata({ provider_name: "DeepInfra" });
+  const model = builder.build().model;
+  expect(
+    model?.history?.map(({ call_index, outcome }) => ({ call_index, outcome })),
+  ).toEqual([
+    { call_index: 1, outcome: "error" },
+    { call_index: 2, outcome: "completed" },
+  ]);
+  expect(model).toMatchObject({
+    configured: "baseline",
+    actual: "served",
+    provider_name: "DeepInfra",
+  });
+});
 
 describe("sandbox logging", () => {
   it("records Miosa as a cloud sandbox without labeling its type as E2B", () => {

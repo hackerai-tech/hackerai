@@ -4,6 +4,8 @@
  * them without pulling in the route runtime.
  */
 export const BILLING_ERRORS = {
+  accountSuspended:
+    "Billing is disabled while this account has an active payment dispute or fraud hold. Contact support before making another payment.",
   retentionOfferUnavailable:
     "This offer is not available for your subscription",
   invalidPauseDuration: "Please choose how long to pause your plan",

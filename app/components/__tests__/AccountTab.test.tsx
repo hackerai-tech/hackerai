@@ -197,15 +197,17 @@ describe("AccountTab", () => {
       cancelAtPeriodEnd: false,
       subscriptionStatus: "past_due",
       latestInvoiceId: "in_past_due",
+      renewalPaymentRequired: true,
+      renewalPaymentFailure: "insufficient_funds",
     } as never);
     mockRedirectToBillingPortal.mockResolvedValue("#payment-method" as never);
 
     render(<AccountTab />);
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(
-      "Your renewal payment failed—update your payment method to keep your plan.",
-    );
+    const alert = await screen.findByRole("region", {
+      name: "Subscription payment recovery",
+    });
+    expect(alert).toHaveTextContent("Your renewal payment didn’t go through");
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "recovery_prompt_impressed",
       expect.objectContaining({
@@ -218,12 +220,13 @@ describe("AccountTab", () => {
 
     const user = userEvent.setup();
     await user.click(
-      within(alert).getByRole("button", { name: "Update payment" }),
+      within(alert).getByRole("button", { name: "Update card" }),
     );
 
     await waitFor(() => {
       expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
         "payment_method",
+        { surface: "account_settings", returnPath: "/" },
       );
     });
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
@@ -262,6 +265,39 @@ describe("AccountTab", () => {
       "billing_past_due_banner_impressed",
       expect.anything(),
     );
+  });
+
+  it("offers access refresh after a status recheck confirms the renewal is paid", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "past_due",
+      latestInvoiceId: "in_renewal",
+      renewalPaymentRequired: true,
+    } as never);
+    render(<AccountTab />);
+    const check = await screen.findByRole("button", {
+      name: "Check payment status",
+    });
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "active",
+      latestInvoiceId: "in_renewal",
+      renewalInvoicePaid: true,
+    } as never);
+    await userEvent.click(check);
+    await waitFor(() =>
+      expect(mockToastSuccess).toHaveBeenCalledWith(
+        "Your renewal invoice is paid. Refresh to update your access.",
+        expect.objectContaining({
+          action: expect.objectContaining({ label: "Refresh" }),
+        }),
+      ),
+    );
+    expect(
+      screen.queryByRole("region", { name: "Subscription payment recovery" }),
+    ).not.toBeInTheDocument();
   });
 
   it("updates the tab when cancellation is scheduled from the dialog", async () => {
@@ -484,4 +520,24 @@ describe("AccountTab", () => {
       expect(screen.queryByText("Pause scheduled.")).not.toBeInTheDocument();
     });
   });
+});
+
+it("shows billing review instead of choosing a subscription when status is ambiguous", async () => {
+  jest.clearAllMocks();
+  mockGetSubscriptionCancellationStatus.mockRejectedValue(
+    new Error("Unable to determine a single current subscription") as never,
+  );
+  render(<AccountTab />);
+  expect(
+    await screen.findByText(/We couldn't determine your current subscription/),
+  ).toBeVisible();
+  const user = userEvent.setup();
+  await user.click(screen.getAllByRole("button", { name: /manage/i })[0]);
+  expect(screen.getByText("Subscription status unavailable")).toBeVisible();
+  expect(screen.queryByText("Upgrade plan")).not.toBeInTheDocument();
+  expect(screen.queryByText("No active subscription")).not.toBeInTheDocument();
+  expect(screen.queryByText("Cancel subscription")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Update payment" }),
+  ).not.toBeInTheDocument();
 });

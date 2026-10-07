@@ -1,4 +1,5 @@
 import "server-only";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
 
 import { getProjectById } from "@/lib/db/actions";
 import { ChatSDKError } from "@/lib/errors";
@@ -45,7 +46,11 @@ export async function resolveProjectExecutionContext({
   }
 
   const folderPath = project.folder_path;
-  if (folderPath && isAgentMode(mode) && sandboxPreference !== "desktop") {
+  if (
+    folderPath &&
+    isAgentMode(mode) &&
+    !isDesktopPreference(sandboxPreference ?? "e2b")
+  ) {
     throw new ChatSDKError(
       "bad_request:api",
       "This project is linked to a Desktop folder. Connect HackerAI Desktop and select Desktop before running Agent.",
@@ -55,6 +60,8 @@ export async function resolveProjectExecutionContext({
   return {
     projectId,
     workingDirectory:
-      folderPath && sandboxPreference === "desktop" ? folderPath : undefined,
+      folderPath && isDesktopPreference(sandboxPreference ?? "e2b")
+        ? folderPath
+        : undefined,
   };
 }

@@ -1,4 +1,11 @@
+import { analyticsFields } from "./lib/influencerAnalytics";
 import { defineSchema, defineTable } from "convex/server";
+import {
+  partnerFields,
+  attributionFields,
+  invoiceFields,
+  payoutFields,
+} from "./influencerValidators";
 import { v } from "convex/values";
 import { taskOutcomeFields } from "./taskOutcomeValidators";
 import { retainedTailValidator } from "./lib/retainedTail";
@@ -23,6 +30,9 @@ const usageDeductionFailureReasonValidator = v.union(
 const activeAgentApprovalRequestValidator = v.object({
   approvalId: v.string(),
   toolCallId: v.string(),
+  sourceRunId: v.optional(v.string()),
+  sourceAgentId: v.optional(v.string()),
+  sourceAgentName: v.optional(v.string()),
   operation: v.optional(
     v.union(
       v.literal("terminal_execute"),
@@ -159,7 +169,40 @@ const validationConfidenceValidator = v.union(
   v.literal("high"),
 );
 
+const agentAutoReviewAuthorizationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedUserMessageCount: v.optional(v.number()),
+  truncatedUserMessageCount: v.optional(v.number()),
+});
+
+const agentAutoReviewConversationContextValidator = v.object({
+  text: v.string(),
+  complete: v.boolean(),
+  omittedEntryCount: v.optional(v.number()),
+  truncatedEntryCount: v.optional(v.number()),
+});
+
 export default defineSchema({
+  influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
+    "by_visitor",
+    ["visitor_id"],
+  ),
+  influencer_analytics: defineTable(analyticsFields)
+    .index("by_key", ["key"])
+    .index("by_delivered", ["delivered"]),
+  influencer_partners: defineTable(partnerFields).index("by_code", ["code"]),
+  influencer_attributions: defineTable(attributionFields)
+    .index("by_identity", ["identity"])
+    .index("by_customer_id", ["customer_id"])
+    .index("by_partner_id", ["partner_id"]),
+  influencer_invoices: defineTable(invoiceFields)
+    .index("by_invoice_id", ["invoice_id"])
+    .index("by_partner_id", ["partner_id"]),
+  influencer_payouts: defineTable(payoutFields)
+    .index("by_key", ["key"])
+    .index("by_reference", ["reference"])
+    .index("by_partner_id_and_status", ["partner_id", "status"]),
   pendingFileDeletions: defineTable({
     s3_region: v.optional(v.string()),
     s3_bucket: v.optional(v.string()),
@@ -194,6 +237,7 @@ export default defineSchema({
     last_run_finished_at: v.optional(v.number()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    // Legacy checkpoint data remains readable until existing rows are migrated.
     objective_checkpoint: v.optional(v.string()),
     active_agent_approval_session_id: v.optional(v.string()),
     active_agent_approval_pending: v.optional(v.boolean()),
@@ -260,6 +304,14 @@ export default defineSchema({
       searchField: "title",
       filterFields: ["user_id"],
     }),
+
+  // Backend-only bounded replay state. Never copied into shared/branched chats.
+  model_history: defineTable({
+    chat_id: v.string(),
+    revision: v.number(),
+    started_at: v.number(),
+    payload: v.optional(v.string()),
+  }).index("by_chat_id", ["chat_id"]),
 
   chat_summaries: defineTable({
     chat_id: v.string(),
@@ -351,6 +403,11 @@ export default defineSchema({
       }),
     ),
     assumptions: v.string(),
+    confidence: v.optional(
+      v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
+    ),
+    counterevidence: v.optional(v.string()),
+    severity_change_conditions: v.optional(v.string()),
     fix_effort: v.union(
       v.literal("trivial"),
       v.literal("low"),
@@ -506,6 +563,16 @@ export default defineSchema({
 
   task_outcome_surveys: defineTable(taskOutcomeFields)
     .index("by_user_id", ["user_id"])
+    .index("by_user_id_and_last_interaction_at", [
+      "user_id",
+      "last_interaction_at",
+    ])
+    .index("by_user_id_and_experiment_key_and_feedback_phase", [
+      "user_id",
+      "experiment_key",
+      "feedback_phase",
+    ])
+    .index("by_user_id_and_survey_kind", ["user_id", "survey_kind"])
     .index("by_request_id", ["request_id"]),
 
   feedback: defineTable({
@@ -1025,11 +1092,12 @@ export default defineSchema({
       v.literal("dispute_fraudulent"),
       v.literal("dispute_billing_hold"),
       v.literal("support_confirmed_fraud"),
+      v.literal("security_abuse"),
     ),
     source: v.union(v.literal("stripe"), v.literal("support")),
     source_id: v.string(),
     source_reason: v.optional(v.string()),
-    stripe_customer_id: v.string(),
+    stripe_customer_id: v.optional(v.string()),
     stripe_charge_id: v.optional(v.string()),
     workos_organization_id: v.optional(v.string()),
     created_at: v.number(),
@@ -1096,6 +1164,9 @@ export default defineSchema({
   local_sandbox_connections: defineTable({
     user_id: v.string(),
     connection_id: v.string(),
+    environment_id: v.optional(v.string()),
+    // New clients publish readiness after subscribing to the command relay.
+    ready: v.optional(v.boolean()),
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
@@ -1119,6 +1190,8 @@ export default defineSchema({
         commands: v.boolean(),
         pty: v.boolean(),
         files: v.optional(v.boolean()),
+        commandStdin: v.optional(v.boolean()),
+        operationChannels: v.optional(v.boolean()),
       }),
     ),
     last_heartbeat: v.number(),
@@ -1290,9 +1363,15 @@ export default defineSchema({
     stripe_subscription_id: v.optional(v.string()),
     stripe_invoice_id: v.optional(v.string()),
     stripe_price_id: v.optional(v.string()),
+    billing_period_end: v.optional(v.number()),
     created_at: v.number(),
   })
     .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_entity_type_and_entity_id_and_occurred_at", [
+      "entity_type",
+      "entity_id",
+      "occurred_at",
+    ])
     .index("by_entity_day", ["entity_type", "entity_id", "day"])
     .index("by_day", ["day"])
     .index("by_user_day", ["user_id", "day"])
@@ -1514,6 +1593,16 @@ export default defineSchema({
     sandbox_preference: v.optional(v.string()),
     sandbox_identity: v.optional(v.string()),
     permission_mode: v.optional(v.string()),
+    approval_session_id: v.optional(v.string()),
+    auto_review_rollout_phase: v.optional(
+      v.union(v.literal("shadow"), v.literal("enforce")),
+    ),
+    auto_review_authorization_context: v.optional(
+      agentAutoReviewAuthorizationContextValidator,
+    ),
+    auto_review_conversation_context: v.optional(
+      agentAutoReviewConversationContextValidator,
+    ),
     selected_model: v.optional(v.string()),
     subscription: v.union(
       v.literal("free"),
@@ -1658,6 +1747,7 @@ export default defineSchema({
     ]),
 
   subagent_work_items: defineTable({
+    // Legacy checkpoint data remains readable until existing rows are migrated.
     objective_checkpoint: v.optional(v.string()),
     subagent_id: v.string(),
     user_id: v.string(),

@@ -1,7 +1,7 @@
 import {
   regionalFreeLimitsProperties,
-  type RegionalFreeLimitsAssignment,
-} from "@/lib/experiments/regional-free-limits";
+  type RegionalFreeLimitsPolicy,
+} from "@/lib/rate-limit/regional-free-limits";
 /**
  * Chat Handler Wide Event Logger
  *
@@ -40,7 +40,12 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
-import { isAbliterationExperimentKey } from "@/lib/experiments/abliteration-keys";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+} from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -52,6 +57,7 @@ import {
   POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit/usage-pricing";
 import type { UsageCostRecord } from "@/lib/usage-tracker";
+import { cacheHistoryProperties } from "@/lib/analytics/cache-history";
 import type { SandboxSessionUsage } from "@/lib/ai/tools";
 import type { TriggerRunCostBreakdown } from "@/lib/billing/trigger-run-cost";
 import type { UsageDeductionResult } from "@/lib/rate-limit";
@@ -252,6 +258,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "providerErrorRetriable",
   "paidDailyFreeAllowance",
   "upload_failure_kind",
+  "upload_failure_phase",
   "upload_failure_reason",
   "upload_failure_cause",
   "upload_failure_transient_sandbox_command",
@@ -264,7 +271,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "upload_failure_error_retryable",
   "upload_failure_protocol",
   "upload_failure_url_length",
-  "upload_retried_with_fresh_sandbox",
+  "upload_retried_after_reconnect",
   "localSandboxFallbackBlocked",
   "sandboxFallbackReason",
   "requestedPreference",
@@ -699,6 +706,12 @@ export function createChatLogger(config: ChatLoggerConfig) {
      * whole stream finishes, so abort and timeout logs can still identify it.
      */
     setModelResponse,
+
+    recordProviderModelCall: (
+      entry: Parameters<typeof builder.recordProviderModelCall>[0],
+    ) => {
+      builder.recordProviderModelCall(entry);
+    },
 
     /**
      * Record Anthropic prompt repair before provider call.
@@ -1301,6 +1314,10 @@ export function resolveAgentAbortSource({
 }
 
 type AgentCompletionAnalyticsArgs = {
+  cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
   // Every completion path must explicitly forward its request telemetry.
   abliteratedProviderSummary:
     ReturnType<AbliteratedModelTelemetry["getSummary"]> | undefined;
@@ -1312,6 +1329,7 @@ type AgentCompletionAnalyticsArgs = {
   subscription: string;
   sandboxInfo: SandboxInfo | null;
   outcome: AgentRunOutcome;
+  hasResponseContent: boolean;
   abortSource?: AgentAbortSource;
   chatLogger: ChatLogger | undefined;
   selectedModel: string;
@@ -1362,6 +1380,8 @@ type AgentCompletionAnalyticsArgs = {
 };
 
 export function captureAgentRun({
+  cacheHistoryTelemetry,
+  usageMeasurement,
   abliteratedProviderSummary,
   posthog,
   userId,
@@ -1418,7 +1438,10 @@ export function captureAgentRun({
   providerRecoverySucceeded,
 }: Omit<
   AgentCompletionAnalyticsArgs,
-  "endpoint" | "chatLogger" | "abliteratedProviderSummary"
+  | "endpoint"
+  | "chatLogger"
+  | "abliteratedProviderSummary"
+  | "hasResponseContent"
 > &
   Partial<Pick<AgentCompletionAnalyticsArgs, "abliteratedProviderSummary">>) {
   if (mode !== "agent") return;
@@ -1563,6 +1586,8 @@ export function captureAgentRun({
     distinctId: userId,
     event: "hackerai-agent_run",
     properties: {
+      ...cacheHistoryProperties(cacheHistoryTelemetry),
+      ...usageMeasurement,
       ...(handledToolFailureCount !== undefined && {
         handled_tool_failure_count: handledToolFailureCount,
       }),
@@ -1725,7 +1750,36 @@ export function captureAgentCompletionAnalytics(
   args: AgentCompletionAnalyticsArgs,
 ) {
   const { posthog, userId, mode, subscription, sandboxInfo, outcome } = args;
-  if (isAbliterationExperimentKey(args.experiment?.key)) {
+  // A successful free response is activation evidence; metered cost alone also
+  // occurs on failed requests. Keep this separate from task-completion claims.
+  if (
+    subscription === "free" &&
+    outcome === "success" &&
+    args.hasResponseContent &&
+    !args.isAutoContinue
+  ) {
+    try {
+      posthog?.capture({
+        distinctId: userId,
+        event: "free_response_completed",
+        properties: {
+          activation_definition_version: 1,
+          mode,
+          subscription_tier: subscription,
+          $process_person_profile: false,
+        },
+      });
+    } catch {
+      // Analytics must never interrupt response persistence.
+    }
+  }
+
+  if (
+    args.experiment?.key === ABLITERATED_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_MAX_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY
+  ) {
     try {
       posthog?.capture({
         distinctId: userId,
@@ -1737,6 +1791,9 @@ export function captureAgentCompletionAnalytics(
           mode,
           subscription_tier: subscription,
           outcome,
+          has_response_content: args.hasResponseContent,
+          step_limit_reached:
+            args.stepLimitTelemetry?.stepLimitReached ?? false,
           abort_source: args.abortSource,
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,
@@ -1761,6 +1818,8 @@ export function captureAgentCompletionAnalytics(
     }
   }
   captureAgentRun({
+    cacheHistoryTelemetry: args.cacheHistoryTelemetry,
+    usageMeasurement: args.usageMeasurement,
     abliteratedProviderSummary: args.abliteratedProviderSummary,
     posthog,
     userId,
@@ -1828,6 +1887,8 @@ export function captureAgentCompletionAnalytics(
  * separately.
  */
 export function captureUsageCost({
+  cacheHistoryTelemetry,
+  usageMeasurement,
   posthog,
   userId,
   subscription,
@@ -1848,6 +1909,10 @@ export function captureUsageCost({
   regionalFreeLimits,
   triggerRunId,
 }: {
+  cacheHistoryTelemetry?: import("@/lib/analytics/cache-history").CacheHistoryTelemetry;
+  usageMeasurement?: ReturnType<
+    import("@/lib/usage-tracker").UsageTracker["measurementProperties"]
+  >;
   posthog: PostHog | null;
   userId: string;
   subscription: string;
@@ -1874,7 +1939,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
-  regionalFreeLimits?: RegionalFreeLimitsAssignment;
+  regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
 }) {
   if (!posthog) return;
@@ -1893,6 +1958,8 @@ export function captureUsageCost({
     distinctId: userId,
     event: "hackerai-usage_cost",
     properties: {
+      ...cacheHistoryProperties(cacheHistoryTelemetry),
+      ...usageMeasurement,
       user_id: userId,
       ...(triggerRunId && { trigger_run_id: triggerRunId }),
       subscription,

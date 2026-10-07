@@ -20,6 +20,8 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
     ["Reproduction steps", finding.poc_description],
     ["Proof of concept", codeBlock(finding.poc_script_code)],
     ["Assumptions and prerequisites", finding.assumptions],
+    ["Counterevidence", finding.counterevidence],
+    ["What would change severity", finding.severity_change_conditions],
     ["Remediation", finding.remediation_steps],
   ];
   const lines = [
@@ -28,6 +30,7 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
     `Severity: ${finding.severity} (${finding.cvss_score})`,
     `CVSS: ${finding.cvss_vector}`,
     `Status: ${finding.status}`,
+    `Assessment confidence: ${finding.confidence ?? "Not recorded"}`,
     `Target: ${finding.target}`,
     ...(finding.endpoint ? [`Endpoint: ${finding.endpoint}`] : []),
     ...(finding.method ? [`Method: ${finding.method}`] : []),

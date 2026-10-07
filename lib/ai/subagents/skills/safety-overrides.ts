@@ -27,6 +27,18 @@ const overrides: Record<string, SkillSafetyOverride> = {
   "technologies/grafana_prometheus": {
     instructions: `Do not treat Grafana image rendering as arbitrary-URL full-read SSRF without verifying the deployed vulnerable renderer/version, endpoint behavior, authentication boundary, and observable access to a scoped internal resource. Preserve the exact exploit preconditions and do not generalize one renderer issue to every /api/render deployment.`,
   },
+  "protocols/oauth": {
+    instructions: `Missing state alone does not establish OAuth login CSRF. RFC 9700 permits transaction-bound PKCE (when the authorization server supports it) or OIDC nonce to supply CSRF protection. Verify binding to the initiating client and user-agent session, including cross-session callback and PKCE downgrade behavior. Where neither protects the flow, require a one-time state value securely bound to the user agent. Public-client refresh tokens must be sender-constrained or rotated; absence of rotation alone is not a finding when sender constraint prevents replay.`,
+  },
+  "technologies/supabase": {
+    instructions: `Identify both legacy anon/service_role JWT keys and opaque sb_publishable_/sb_secret_ keys; opaque keys cannot be classified by JWT decoding. Publishable keys are intended for public clients, while secret keys use service_role and bypass RLS. A browser 401 does not establish that a leaked secret key is revoked: the browser restriction uses User-Agent and does not prevent server-side use. Verify effective privileges only within the assigned scope. Creating replacement keys does not itself revoke legacy keys; verify the old credential's status separately without exposing its value.`,
+  },
+  "vulnerabilities/insecure_deserialization": {
+    instructions: `Do not treat a phar:// file operation as automatic PHP metadata deserialization. PHP 8 no longer automatically unserializes Phar metadata when opening an archive. Resolve the installed runtime and trace explicit Phar::getMetadata() or PharFileInfo::getMetadata() calls, their allowed_classes options, and the reachable object-instantiation path. Require the actual deserialization sink and observable impact before claiming execution.`,
+  },
+  "vulnerabilities/weak_password_detection": {
+    instructions: `Assess password policy against the target's stated baseline; missing character-class rules or password history alone is not a vulnerability. Where NIST SP 800-63B-4 is that baseline, require at least 15 characters for single-factor passwords or eight when used only as part of MFA, permit a maximum of at least 64 characters, check the entire password without truncation, and screen common or compromised values. That standard prohibits mandatory composition rules and periodic resets without compromise evidence. Prefer length appropriate to the authentication mode, breach screening, and resistance to online guessing over blanket complexity/history recommendations.`,
+  },
   "vulnerabilities/nosql_injection": {
     instructions: `Gate $where and related server-side JavaScript probes on the effective security.javascriptEnabled setting, not the MongoDB version. Never use unbounded loops, catastrophic regexes, huge arrays, or heavy aggregations against a non-disposable service. Prefer a short bounded timing differential under a hard query/client timeout; destructive or availability testing requires an explicitly isolated disposable database and a defined hard stop. Redis client calls such as execute_command("SET", userKey, value) preserve argument boundaries; claim command injection only when user input reaches raw RESP, a shell, or another boundary that actually reparses commands.`,
   },

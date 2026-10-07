@@ -417,6 +417,8 @@ export interface SidebarSubagents {
 export interface SidebarSubagentOrigin {
   kind: "subagent";
   subagentId: string;
+  /** Latest sidebar-compatible child tool when the transcript was clicked. */
+  liveToolCallId?: string;
   returnContent: SidebarSubagents;
 }
 
@@ -571,6 +573,8 @@ export interface ExtraUsageConfig {
 }
 
 export interface QueuedMessage {
+  deliveryStatus?: "sending" | "failed" | "active";
+  firstAttemptAt?: number;
   id: string;
   text: string;
   files?: import("@/types/file").FileMessagePart[];
@@ -581,7 +585,9 @@ export type QueueBehavior = "queue" | "stop-and-send";
 
 /**
  * Persisted sandbox selection: legacy `e2b` means any managed cloud sandbox,
- * `desktop` means the Tauri app, and other strings are connection IDs. Runtime
+ * `desktop` is the legacy Desktop alias; `environment:<uuid>` and
+ * `desktop-environment:<uuid>` identify persistent installations.
+ * Other strings are legacy connection IDs. Runtime
  * telemetry identifies the concrete cloud provider separately.
  */
 export type SandboxPreference = "e2b" | "desktop" | (string & {});

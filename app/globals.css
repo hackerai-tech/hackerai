@@ -1,60 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "@radix-ui/themes/styles.css";
-@import "@workos-inc/widgets/styles.css";
 @source "../node_modules/streamdown/dist/index.js";
-
-/* Keep WorkOS widget dialogs above HackerAI's z-50 dialog portals. */
-.woswidgets-dialog-overlay {
-  z-index: 60;
-}
-
-/* Keep the embedded WorkOS security card visually aligned with HackerAI. */
-.hackerai-security-widget {
-  container-type: inline-size;
-  --color-panel-solid: var(--card);
-  --color-panel: var(--card);
-  --base-card-surface-box-shadow: 0 0 0 1px var(--border);
-  --gray-2: color-mix(in srgb, var(--muted) 50%, var(--card));
-  --gray-4: var(--border);
-  --gray-11: var(--muted-foreground);
-  --gray-12: var(--foreground);
-}
-
-.hackerai-security-widget .woswidgets-card-list-item:not(:first-child) {
-  border-color: var(--border);
-}
-
-.hackerai-security-widget .woswidgets-button.button--secondary {
-  color: var(--foreground);
-  background-color: transparent;
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-
-@media (hover: hover) {
-  .hackerai-security-widget .woswidgets-button.button--secondary:hover {
-    background-color: var(--muted);
-  }
-}
-
-@container (max-width: 26rem) {
-  .hackerai-security-widget .woswidgets-card-list-item .rt-Grid {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .hackerai-security-widget .woswidgets-card-list-item .woswidgets-button {
-    grid-column: 2;
-    justify-self: start;
-    width: fit-content;
-    max-width: 100%;
-    height: auto;
-    min-height: var(--space-6);
-    margin-top: var(--space-1);
-    padding-block: var(--space-1);
-    white-space: normal;
-    text-wrap: balance;
-  }
-}
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant desktop (@media (min-width: 950px));
@@ -257,6 +203,11 @@
   background: color-mix(in srgb, var(--fill-input-chat) 82%, transparent);
 }
 
+.computer-reconnection-warning {
+  background: var(--background);
+  background: color-mix(in srgb, var(--background) 90%, #f59e0b);
+}
+
 @supports not (
   (-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))
 ) {
@@ -330,6 +281,49 @@
   animation: worked-for-content-close 360ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/*
+ * Tool run rows live from the first tool call, so their details are already
+ * on screen when the run settles. Only the fold (and any later reopen) is
+ * animated; the summary header slides in above the details as they fold.
+ */
+@keyframes agent-tool-group-header-in {
+  from {
+    height: 0;
+    margin-bottom: 0;
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+  to {
+    height: 1.25rem;
+    margin-bottom: 0.5rem;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.agent-tool-group-header {
+  margin-bottom: 0.5rem;
+}
+
+.agent-tool-group-header[data-entering="true"] {
+  animation: agent-tool-group-header-in 240ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.agent-tool-group-content {
+  overflow: hidden;
+  transform-origin: top;
+}
+
+.agent-tool-group-content[data-state="open"][data-animate-open="true"] {
+  animation: worked-for-content-open 260ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: height, opacity, transform;
+}
+
+.agent-tool-group-content[data-state="closed"] {
+  animation: worked-for-content-close 360ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: height, opacity, transform;
+}
+
 .message-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 180px;
@@ -367,7 +361,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .worked-for-content[data-state="open"],
-  .worked-for-content[data-state="closed"] {
+  .worked-for-content[data-state="closed"],
+  .agent-tool-group-header[data-entering="true"],
+  .agent-tool-group-content[data-state="open"][data-animate-open="true"],
+  .agent-tool-group-content[data-state="closed"] {
     animation-duration: 1ms;
     transform: none;
   }

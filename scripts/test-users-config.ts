@@ -2,7 +2,7 @@
  * Single source of truth for E2E test user credentials.
  *
  * All scripts and e2e tests should import from here. Env vars (e.g. from .env.e2e)
- * override the defaults. Callers must load dotenv before importing if they need env.
+ * supply passwords. Callers must load dotenv before calling these functions.
  */
 
 export type TestUserTier = "free" | "pro" | "ultra";
@@ -16,36 +16,54 @@ export interface TestUser {
 const DEFAULTS = {
   free: {
     email: "free@hackerai.com",
-    password: "hackerai123@",
   },
   pro: {
     email: "pro@hackerai.com",
-    password: "hackerai123@",
   },
   ultra: {
     email: "ultra@hackerai.com",
-    password: "hackerai123@",
   },
 } as const;
+
+function testPassword(tier: TestUserTier): string {
+  const key = `TEST_${tier.toUpperCase()}_TIER_PASSWORD`;
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(
+      `Set ${key} in the protected Preview .env.e2e configuration`,
+    );
+  }
+  return value;
+}
+
+/** Email-only maintenance does not require authentication credentials. */
+export function getTestUserEmails(): Record<TestUserTier, string> {
+  return {
+    free: process.env.TEST_FREE_TIER_USER ?? DEFAULTS.free.email,
+    pro: process.env.TEST_PRO_TIER_USER ?? DEFAULTS.pro.email,
+    ultra: process.env.TEST_ULTRA_TIER_USER ?? DEFAULTS.ultra.email,
+  };
+}
 
 /**
  * Returns test users as an array (for scripts that iterate over all users).
  */
 export function getTestUsers(): TestUser[] {
+  const emails = getTestUserEmails();
   return [
     {
-      email: process.env.TEST_FREE_TIER_USER ?? DEFAULTS.free.email,
-      password: process.env.TEST_FREE_TIER_PASSWORD ?? DEFAULTS.free.password,
+      email: emails.free,
+      password: testPassword("free"),
       tier: "free",
     },
     {
-      email: process.env.TEST_PRO_TIER_USER ?? DEFAULTS.pro.email,
-      password: process.env.TEST_PRO_TIER_PASSWORD ?? DEFAULTS.pro.password,
+      email: emails.pro,
+      password: testPassword("pro"),
       tier: "pro",
     },
     {
-      email: process.env.TEST_ULTRA_TIER_USER ?? DEFAULTS.ultra.email,
-      password: process.env.TEST_ULTRA_TIER_PASSWORD ?? DEFAULTS.ultra.password,
+      email: emails.ultra,
+      password: testPassword("ultra"),
       tier: "ultra",
     },
   ];

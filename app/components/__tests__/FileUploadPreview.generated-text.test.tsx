@@ -27,6 +27,71 @@ describe("FileUploadPreview generated pasted text attachments", () => {
     jest.useRealTimers();
   });
 
+  it("offers retry for recoverable ordinary uploads and disables it during removal", async () => {
+    const onRetryFile = jest.fn();
+    let finish!: () => void;
+    const failed: UploadedFileState = {
+      file: new File(["attachment"], "report.txt", { type: "text/plain" }),
+      uploading: false,
+      uploaded: false,
+      error: "Connection interrupted",
+      retryable: true,
+    };
+    const { rerender } = render(
+      <FileUploadPreview
+        uploadedFiles={[failed]}
+        onRemoveFile={() =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+        }
+        onRetryFile={onRetryFile}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry upload of report.txt" }),
+    );
+    expect(onRetryFile).toHaveBeenCalledWith(0);
+    fireEvent.click(screen.getByRole("button", { name: "Remove file" }));
+    expect(
+      screen.getByRole("button", { name: "Retry upload of report.txt" }),
+    ).toBeDisabled();
+    await act(async () => finish());
+    rerender(
+      <FileUploadPreview
+        uploadedFiles={[
+          { ...failed, error: undefined, retryable: false, uploading: true },
+        ]}
+        onRemoveFile={jest.fn()}
+        onRetryFile={onRetryFile}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry upload of report.txt" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer retry for denied or restored unavailable files", () => {
+    render(
+      <FileUploadPreview
+        uploadedFiles={[
+          {
+            file: new File(["x"], "report.txt"),
+            uploading: false,
+            uploaded: false,
+            error: "Denied",
+            retryable: false,
+          },
+        ]}
+        onRemoveFile={jest.fn()}
+        onRetryFile={jest.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /Retry upload/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("shows file removal progress and blocks duplicate requests", async () => {
     let finish!: () => void;
     const onRemoveFile = jest.fn(

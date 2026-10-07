@@ -19,6 +19,8 @@ import {
   releaseSubscriptionSchedule,
   subscriptionScheduleId,
 } from "@/lib/billing/subscription-schedule";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
+import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 
 const MAX_TEAM_SEATS = 999;
 
@@ -97,6 +99,12 @@ export const POST = async (req: NextRequest) => {
         : "pro-monthly-plan";
 
     const { userId, organizationId } = await getUserIDAndPro(req);
+    if (await hasActiveSuspensionForUser(userId)) {
+      return NextResponse.json(
+        { error: BILLING_ERRORS.accountSuspended },
+        { status: 403 },
+      );
+    }
     if (!organizationId) {
       return NextResponse.json(
         { error: "No active organization" },

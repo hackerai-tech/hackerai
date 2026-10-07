@@ -99,13 +99,17 @@ To use the agent locally:
    Vercel): `NEXT_PUBLIC_CONVEX_URL`, `CONVEX_SERVICE_ROLE_KEY`,
    `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `AWS_S3_ACCESS_KEY_ID`,
    `AWS_S3_SECRET_ACCESS_KEY`, `AWS_S3_REGION`, `AWS_S3_BUCKET_NAME`, and
-   `E2B_API_KEY`. Add
-   `MIOSA_API_KEY` for the MIOSA rollout or explicit MIOSA testing. New Miosa
+   `E2B_API_KEY`. Cloud Agent execution currently uses E2B. MIOSA execution and
+   migration are paused in code, including explicit provider overrides. Retain
+   `MIOSA_API_KEY` when cleanup or recovery of existing MIOSA files is needed.
+   Before resuming the rollout, follow [the MIOSA runbook](docs/miosa-pro-pilot.md).
+   New Miosa
    workspaces default to the native `hackerai-tools` template; optionally set
    `MIOSA_TEMPLATE_ID` to override it. An existing `miosa-sandbox-docker`
    override still selects the Docker template, so remove or update that value
    in each intended runtime to use the native default. Existing workspaces
-   retain their original runtime and files; E2B remains the cloud fallback.
+   retain their original runtime and files. Migrated workspaces require verified
+   recovery before they can use E2B; their retained E2B source may be stale.
    Add any optional keys you use
    (`ABLITERATION_API_KEY`, `PERPLEXITY_API_KEY`, `JINA_API_KEY`, etc.).
 3. Start the worker in a third terminal:

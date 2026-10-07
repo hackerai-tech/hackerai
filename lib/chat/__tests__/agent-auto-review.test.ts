@@ -1,5 +1,7 @@
 import type { UIMessage } from "ai";
 
+import { getFallbackSlugs } from "@/lib/api/chat-stream-helpers";
+import { resolveTierToProviderKey } from "@/lib/ai/providers";
 import {
   AGENT_AUTO_REVIEW_MODEL,
   AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
@@ -71,12 +73,17 @@ const authorizationContext = {
 };
 
 describe("Agent Auto review", () => {
-  it("uses DeepSeek with a no-reasoning Grok 4.5 fallback", () => {
-    expect(AGENT_AUTO_REVIEW_MODEL).toBe("agent-auto-review-model");
+  it("uses the shared Standard route with reasoning disabled", () => {
+    const standardModel = resolveTierToProviderKey(
+      "hackerai-standard",
+      "agent",
+    );
+
+    expect(AGENT_AUTO_REVIEW_MODEL).toBe(standardModel);
     expect(AGENT_AUTO_REVIEW_PROVIDER_OPTIONS).toEqual({
       openrouter: {
         reasoning: { enabled: false },
-        models: ["x-ai/grok-4.5"],
+        models: getFallbackSlugs(standardModel, "agent"),
         usage: { include: true },
       },
     });

@@ -136,6 +136,12 @@ export const createVulnerabilityReportInputSchema = z
     evidence: requiredText("Evidence", 16_000),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: requiredText("Assumptions", 4_000),
+    confidence: z.enum(["low", "medium", "high"]).optional(),
+    counterevidence: requiredText("Counterevidence", 4_000).optional(),
+    severity_change_conditions: requiredText(
+      "Severity change conditions",
+      4_000,
+    ).optional(),
     fix_effort: z.enum(["trivial", "low", "medium", "high"]),
     cvss_breakdown: cvss31BreakdownSchema,
     endpoint: optionalText("Endpoint", 1_000),

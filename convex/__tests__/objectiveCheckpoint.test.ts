@@ -1,4 +1,4 @@
-import { newObjectiveCheckpoint } from "../../lib/chat/objective-checkpoint";
+import { newObjectiveCheckpoint } from "../../lib/chat/legacy-objective-checkpoint";
 
 jest.mock("../_generated/server", () => ({
   internalMutation: (config: unknown) => config,

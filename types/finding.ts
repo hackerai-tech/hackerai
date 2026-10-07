@@ -40,6 +40,9 @@ export interface FindingDetailRecord extends FindingSummary {
   evidence_refs?: string[];
   evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
   assumptions: string;
+  confidence?: "low" | "medium" | "high";
+  counterevidence?: string;
+  severity_change_conditions?: string;
   fix_effort: "trivial" | "low" | "medium" | "high";
   cvss_breakdown: Cvss31Breakdown;
   cvss_vector: string;

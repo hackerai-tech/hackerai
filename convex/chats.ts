@@ -1,4 +1,5 @@
 import { scheduleFileDeletion } from "./lib/fileDeletion";
+import { deleteModelHistory } from "./modelHistory";
 import { query, mutation, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -49,6 +50,9 @@ const CHAT_SUMMARY_TELEMETRY_FIELDS = [
 const activeAgentApprovalRequestValidator = v.object({
   approvalId: v.string(),
   toolCallId: v.string(),
+  sourceRunId: v.optional(v.string()),
+  sourceAgentId: v.optional(v.string()),
+  sourceAgentName: v.optional(v.string()),
   operation: v.optional(
     v.union(
       v.literal("terminal_execute"),
@@ -220,6 +224,7 @@ async function publishDeletionCancellation(ctx: MutationCtx, chatId: string) {
 }
 
 async function prepareChatForDeletion(ctx: MutationCtx, chat: Doc<"chats">) {
+  await deleteModelHistory(ctx, chat.id);
   if (
     chat.active_stream_id === undefined &&
     chat.active_trigger_run_id === undefined &&
@@ -1768,32 +1773,60 @@ export const setActiveAgentApprovalPending = mutation({
     request: v.optional(activeAgentApprovalRequestValidator),
     expectedRunId: v.optional(v.string()),
     expectedApprovalSessionId: v.optional(v.string()),
+    expectedApprovalId: v.optional(v.string()),
   },
-  returns: v.null(),
+  returns: v.union(
+    v.literal("acquired"),
+    v.literal("released"),
+    v.literal("busy"),
+    v.literal("stale"),
+    v.literal("not_found"),
+  ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
     const chat = await ctx.db
       .query("chats")
       .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
       .first();
-    if (!chat) return null;
+    if (!chat) return "not_found" as const;
     if (
       args.expectedRunId !== undefined &&
       chat.active_trigger_run_id !== args.expectedRunId
     ) {
-      return null;
+      return "stale" as const;
     }
     if (
       args.expectedApprovalSessionId !== undefined &&
       chat.active_agent_approval_session_id !== args.expectedApprovalSessionId
     ) {
-      return null;
+      return "stale" as const;
+    }
+    if (args.pending) {
+      if (!args.request) return "stale" as const;
+      const activeApprovalId = chat.active_agent_approval_request?.approvalId;
+      if (
+        chat.active_agent_approval_pending === true &&
+        activeApprovalId !== args.request.approvalId
+      ) {
+        return "busy" as const;
+      }
+      await ctx.db.patch(chat._id, {
+        active_agent_approval_pending: true,
+        active_agent_approval_request: args.request,
+      });
+      return "acquired" as const;
+    }
+    if (
+      args.expectedApprovalId !== undefined &&
+      chat.active_agent_approval_request?.approvalId !== args.expectedApprovalId
+    ) {
+      return "stale" as const;
     }
     await ctx.db.patch(chat._id, {
-      active_agent_approval_pending: args.pending ? true : undefined,
-      active_agent_approval_request: args.pending ? args.request : undefined,
+      active_agent_approval_pending: undefined,
+      active_agent_approval_request: undefined,
     });
-    return null;
+    return "released" as const;
   },
 });
 

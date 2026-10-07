@@ -12,11 +12,13 @@
  *   npx @hackerai/local --token TOKEN
  */
 
+import { OperationChannelRouter } from "./operation-channels";
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket from "ws";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
+import { getEnvironmentId } from "./environment-identity";
 import {
   truncateOutput,
   MAX_OUTPUT_SIZE,
@@ -33,8 +35,12 @@ import {
   confirmProcessTermination,
   isProcessTreeTerminationConfirmed,
 } from "./command-cancellation";
-import { CentrifugoPublishQueue } from "./centrifugo-transport";
+import {
+  CentrifugoMessageReassembler,
+  CentrifugoPublishQueue,
+} from "./centrifugo-transport";
 import { buildCentrifugoTransportConfig } from "./centrifugo-endpoints";
+import { hardenExistingTerminalArtifacts } from "./private-artifact-hardening";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -51,6 +57,7 @@ const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
 const api = {
   localSandbox: {
     connect: "localSandbox:connect" as const,
+    ready: "localSandbox:ready" as const,
     disconnect: "localSandbox:disconnect" as const,
     refreshCentrifugoToken: "localSandbox:refreshCentrifugoToken" as const,
   },
@@ -83,12 +90,16 @@ interface OsInfo {
 interface ClientCapabilities {
   commands: boolean;
   pty: boolean;
+  commandStdin: boolean;
+  operationChannels: boolean;
 }
 
 interface CentrifugoCommandMessage {
   type: "command";
   commandId: string;
   command: string;
+  stdin?: string;
+  stdinEncoding?: "utf8" | "base64";
   env?: Record<string, string>;
   cwd?: string;
   timeout?: number;
@@ -293,9 +304,12 @@ export class LocalSandboxClient {
   private processRunner: ProcessRunner;
   private activeStreamCommands: Map<string, ChildProcess> = new Map();
   private publishQueue?: CentrifugoPublishQueue;
+  private operationRouter?: OperationChannelRouter<Subscription>;
+  private incomingReassembler = new CentrifugoMessageReassembler();
   private cleanupPromise?: Promise<void>;
   private exitRequested = false;
   private relayTransport: string | null = null;
+  private privateArtifactStorageReady = false;
 
   constructor(
     private config: Config,
@@ -389,6 +403,7 @@ export class LocalSandboxClient {
         "⚠️  Commands run directly on your OS without any isolation.",
       ),
     );
+    this.privateArtifactStorageReady = await hardenExistingTerminalArtifacts();
     await this.connect();
   }
 
@@ -405,6 +420,8 @@ export class LocalSandboxClient {
     return {
       commands: true,
       pty: isPtyAvailable(),
+      commandStdin: this.privateArtifactStorageReady,
+      operationChannels: true,
     };
   }
 
@@ -416,6 +433,7 @@ export class LocalSandboxClient {
         api.localSandbox.connect as never,
         {
           token: this.config.token,
+          environmentId: await getEnvironmentId(),
           connectionName: this.config.name,
           clientVersion: "1.0.0",
           osInfo: this.getOsInfo(),
@@ -440,6 +458,13 @@ export class LocalSandboxClient {
       await this.setupCentrifugo(
         result.centrifugoWsUrl,
         result.centrifugoToken,
+      );
+      await this.convexHttp.mutation(
+        api.localSandbox.ready as never,
+        {
+          token: this.config.token,
+          connectionId: this.connectionId,
+        } as never,
       );
       console.log(
         chalk.green(
@@ -562,10 +587,8 @@ export class LocalSandboxClient {
       await this.subscription.publish(message);
     });
 
-    this.subscription.on("publication", (ctx: PublicationContext) => {
+    const handleIncoming = (message: unknown) => {
       if (this.isShuttingDown) return;
-
-      const message = ctx.data;
 
       if (!isTargetedIncomingMessage(message)) {
         return;
@@ -627,6 +650,21 @@ export class LocalSandboxClient {
         default:
           break;
       }
+    };
+    const operationRouter = new OperationChannelRouter<Subscription>(
+      this.centrifuge,
+      this.userId!,
+      this.connectionId!,
+    );
+    this.operationRouter = operationRouter;
+    this.subscription.on("publication", (ctx: PublicationContext) => {
+      const message = this.incomingReassembler.accept(ctx.data);
+      if (!message || this.isShuttingDown) return;
+      void operationRouter
+        .dispatch(message, handleIncoming)
+        .catch((error: unknown) => {
+          console.error("Operation subscription failed:", error);
+        });
     });
 
     this.centrifuge.on("disconnected", (ctx) => {
@@ -687,9 +725,15 @@ export class LocalSandboxClient {
       return;
     }
     try {
-      await this.publishQueue.publish(
-        data as unknown as Record<string, unknown>,
-      );
+      const queue = this.publishQueue;
+      const payload = data as unknown as Record<string, unknown>;
+      if (this.operationRouter) {
+        await this.operationRouter.publish(payload, (value) =>
+          queue.publish(value),
+        );
+      } else {
+        await queue.publish(payload);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : JSON.stringify(err);
       console.error(chalk.red(`Publish failed: ${msg}`));
@@ -698,8 +742,17 @@ export class LocalSandboxClient {
   }
 
   private async handleCommand(msg: CentrifugoCommandMessage): Promise<void> {
-    const { commandId, command, env, cwd, timeout, background, displayName } =
-      msg;
+    const {
+      commandId,
+      command,
+      stdin,
+      stdinEncoding,
+      env,
+      cwd,
+      timeout,
+      background,
+      displayName,
+    } = msg;
 
     // Determine what to show in console:
     // - displayName === "" (empty string): hide command entirely
@@ -752,6 +805,9 @@ export class LocalSandboxClient {
       }
 
       if (background) {
+        if (stdin !== undefined) {
+          throw new Error("Background commands do not accept stdin");
+        }
         const pid = await this.spawnBackground(fullCommand);
         await this.publishToChannel({
           type: "exit",
@@ -771,6 +827,11 @@ export class LocalSandboxClient {
         timeout,
         shouldShow,
         displayText,
+        stdin === undefined
+          ? undefined
+          : stdinEncoding === "base64"
+            ? Buffer.from(stdin, "base64")
+            : stdin,
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -866,6 +927,7 @@ export class LocalSandboxClient {
     timeout: number | undefined,
     shouldShow: boolean,
     displayText: string,
+    stdin?: string | Buffer,
   ): Promise<void> {
     const startTime = Date.now();
     const commandTimeout = timeout ?? 30000;
@@ -880,11 +942,19 @@ export class LocalSandboxClient {
         fullCommand,
       );
       const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
         detached: os.platform() !== "win32",
         ...spawnSpec.options,
       });
       this.activeStreamCommands.set(commandId, proc);
+
+      if (stdin !== undefined) {
+        proc.stdin?.on("error", () => {
+          // The child exit path reports the command result. EPIPE here only
+          // means it stopped reading before the complete private payload.
+        });
+        proc.stdin?.end(stdin);
+      }
 
       if (commandTimeout > 0) {
         timeoutId = setTimeout(() => {
@@ -1150,6 +1220,8 @@ export class LocalSandboxClient {
       this.subscription = undefined;
     }
     this.publishQueue = undefined;
+    this.operationRouter?.stop();
+    this.operationRouter = undefined;
     if (this.centrifuge) {
       this.centrifuge.disconnect();
       this.centrifuge = undefined;

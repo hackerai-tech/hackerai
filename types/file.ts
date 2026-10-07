@@ -31,6 +31,7 @@ export interface UploadedFileState {
   uploading: boolean;
   uploaded: boolean;
   error?: string;
+  retryable?: boolean;
   storage?: "s3" | "local-desktop";
   generatedSource?: "pasted-text";
   generatedTextAttachmentId?: string;
@@ -72,6 +73,7 @@ export interface FilePartRendererProps {
 export interface FileUploadPreviewProps {
   uploadedFiles: UploadedFileState[];
   onRemoveFile: (index: number) => void | Promise<void>;
+  onRetryFile?: (index: number) => void;
   onUpdateGeneratedTextFile?: (index: number, content: string) => void;
   onShowGeneratedTextInField?: (index: number, content: string) => void;
   generatedTextAttachmentsAvailable?: boolean;

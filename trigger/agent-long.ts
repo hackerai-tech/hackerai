@@ -1,11 +1,10 @@
-import { loadObjectiveCheckpoint } from "@/lib/db/objective-checkpoint";
-import { OBJECTIVE_CHECKPOINT_FLAG } from "@/lib/chat/objective-checkpoint";
-import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
+import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
+import { isDesktopPreference } from "@/lib/sandbox/environment";
+import { hasCompletedAssistantText } from "@/lib/analytics/free-activation";
 import { isProviderResponseTimeout } from "@/lib/ai/provider-stream-timeout";
-import {
-  evaluateRegionalFreeLimits,
-  captureRegionalFreeLimitsExposure,
-} from "@/lib/experiments/regional-free-limits";
+import { getRegionalFreeLimits } from "@/lib/rate-limit/regional-free-limits";
 import { createRecoverableProviderErrorFilter } from "@/lib/chat/provider-error-stream";
 import { selectTaskOutcomeSurvey } from "@/lib/feedback/select-task-outcome";
 import { evaluateAbliteratedModel } from "@/lib/experiments/abliterated-model";
@@ -116,7 +115,6 @@ import {
   updateChatTitle,
   getUserCustomization,
   setActiveTriggerRun,
-  setActiveAgentApprovalPending,
   persistAgentApprovalGrant,
   getMessagesByChatId,
   getChatById,
@@ -166,7 +164,7 @@ import {
   LEGACY_AGENT_API_ENDPOINT,
   type AgentApiEndpoint,
 } from "@/lib/api/agent-endpoints";
-import { phLogger, getPostHogFeatureFlagForUser } from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import {
   captureDeepSeekV4Pro0813ExperimentExposure,
   evaluateDeepSeekV4Pro0813Experiment,
@@ -209,12 +207,7 @@ import type {
   SelectedModel,
   AgentPermissionMode,
   AgentApprovalSandboxIdentity,
-  AgentAutoReviewSummary,
-  AgentAutoReviewLifecycleStatus,
   AgentToolApprovalInputRecord,
-  AgentToolApprovalPendingRequest,
-  AgentToolApprovalRequest,
-  AgentToolApprovalRequester,
   RateLimitInfo,
   SandboxManager,
   LimitRescueRequest,
@@ -223,8 +216,6 @@ import type {
 import {
   AGENT_TOOL_APPROVAL_PROTOCOL_VERSION,
   canUseExtraUsage,
-  getAgentToolApprovalPromptKind,
-  getAgentApprovalTargetPrefixForSandbox,
   normalizeMaxModelForSubscription,
   serializeSandboxScopedAgentApprovalTargetPrefix,
   withExtraUsageBillingForModel,
@@ -249,12 +240,7 @@ import {
   AGENT_LONG_HEARTBEAT_PART_TYPE,
   stripAgentLongHeartbeatParts,
 } from "@/lib/chat/agent-long-heartbeat";
-import {
-  deriveApprovedAgentTargetGrant,
-  matchesAgentApprovalTargetGrant as matchesApprovalTargetGrant,
-  type AgentApprovalTargetGrant,
-  type PersistedAgentApprovalTargetGrant,
-} from "@/lib/chat/agent-approval-grants";
+import type { PersistedAgentApprovalTargetGrant } from "@/lib/chat/agent-approval-grants";
 import {
   sanitizeAgentLongRealtimeChunk,
   type AgentLongStreamChunk,
@@ -288,6 +274,7 @@ import {
 } from "@/lib/chat/agent-long-provider-retry";
 import {
   ProviderTerminalError,
+  getProviderDisconnectIgnoredSlugs,
   wrapProviderTerminalError,
 } from "@/lib/api/provider-terminal-error";
 import {
@@ -340,13 +327,13 @@ import type {
   SubagentParentCompletionGate,
 } from "@/lib/ai/subagents/parent-delivery";
 import {
-  AgentAutoReviewDenialTracker,
   extractAgentAutoReviewAuthorizationContext,
   extractAgentAutoReviewConversationContext,
-  reviewAgentToolAction,
-  shouldAutoReviewAgentToolAction,
-  type AgentAutoReviewDecision,
 } from "@/lib/chat/agent-auto-review";
+import {
+  AgentAutoReviewEntitlementRevalidationUnavailableError,
+  buildAgentToolApprovalRequester,
+} from "@/lib/chat/agent-tool-approval-requester";
 
 const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 4 * 60 * 60;
 const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 4 * 60 * 60;
@@ -400,180 +387,6 @@ const writeAgentLongFastStart = (
   writer.write(createAgentLongHeartbeatPart(phase));
 };
 
-const isAgentToolApprovalInputRecord = (
-  value: unknown,
-): value is AgentToolApprovalInputRecord => {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Partial<AgentToolApprovalInputRecord>;
-  return (
-    record.type === "agent-tool-approval" &&
-    record.protocolVersion === AGENT_TOOL_APPROVAL_PROTOCOL_VERSION &&
-    typeof record.approvalId === "string" &&
-    typeof record.toolCallId === "string" &&
-    (record.decision === "approve" || record.decision === "deny") &&
-    (record.grant === "full_access" || record.grant === "target_prefix") &&
-    (record.targetPrefix === undefined ||
-      typeof record.targetPrefix === "string") &&
-    (record.targetKind === undefined ||
-      record.targetKind === "terminal_command" ||
-      record.targetKind === "terminal_interaction" ||
-      record.targetKind === "file_change") &&
-    (record.message === undefined || typeof record.message === "string") &&
-    typeof record.authorization === "object" &&
-    record.authorization !== null
-  );
-};
-
-const isApprovalInputForRequest = (
-  value: unknown,
-  approvalId: string,
-  toolCallId: string,
-): boolean => {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return (
-    record.type === "agent-tool-approval" &&
-    record.approvalId === approvalId &&
-    record.toolCallId === toolCallId
-  );
-};
-
-const APPROVAL_PROTOCOL_DENIED_REASON =
-  "This approval response is incompatible with the current Agent worker. The operation was not run. Refresh HackerAI and start a new Agent request.";
-const APPROVAL_AUTHORIZATION_DENIED_REASON =
-  "Your authorization or billing access changed while this approval was pending. The operation was not run. Start a new Agent request and try again.";
-
-class AgentAutoReviewEntitlementRevalidationUnavailableError extends Error {
-  constructor() {
-    super("The current entitlement context could not be verified.");
-    this.name = "AgentAutoReviewEntitlementRevalidationUnavailableError";
-  }
-}
-
-const buildDeniedApprovalReason = (message: string | undefined): string => {
-  const trimmed = message?.trim();
-  if (!trimmed) return "The user denied approval for this operation.";
-  return `The user denied approval for this operation and said: ${trimmed}`;
-};
-
-type AgentAutoReviewDecisionWithPhase = AgentAutoReviewDecision & {
-  rolloutPhase: "shadow" | "enforce";
-};
-
-const buildAgentAutoReviewSummary = (
-  autoReview: AgentAutoReviewDecisionWithPhase,
-): AgentAutoReviewSummary => ({
-  verdict: autoReview.verdict,
-  riskCategory: autoReview.riskCategory,
-  rationale: autoReview.rationale,
-  rolloutPhase: autoReview.rolloutPhase,
-  ...(autoReview.failureClass ? { failureClass: autoReview.failureClass } : {}),
-});
-
-const writeAgentAutoReviewLifecycle = ({
-  writer,
-  approvalId,
-  toolCallId,
-  status,
-  startedAt,
-}: {
-  writer: UIMessageStreamWriter;
-  approvalId: string;
-  toolCallId: string;
-  status: AgentAutoReviewLifecycleStatus;
-  startedAt: number;
-}): void => {
-  writer.write({
-    type: "data-agent-auto-review-lifecycle",
-    data: {
-      approvalId,
-      toolCallId,
-      status,
-      startedAt,
-      ...(status === "reviewing" ? {} : { completedAt: Date.now() }),
-    },
-  } as AgentLongUiStreamPart);
-};
-
-const buildPendingApprovalRequest = ({
-  approvalId,
-  request,
-  autoReview,
-}: {
-  approvalId: string;
-  request: AgentToolApprovalRequest;
-  autoReview?: AgentAutoReviewDecisionWithPhase;
-}): AgentToolApprovalPendingRequest => {
-  const autoReviewSummary: AgentAutoReviewSummary | undefined =
-    autoReview?.rolloutPhase === "enforce"
-      ? buildAgentAutoReviewSummary(autoReview)
-      : undefined;
-
-  return {
-    approvalId,
-    toolCallId: request.toolCallId,
-    operation: request.operation,
-    target: request.target,
-    ...(request.justification ? { justification: request.justification } : {}),
-    ...(request.prefixRule ? { prefixRule: request.prefixRule } : {}),
-    ...(autoReviewSummary ? { autoReview: autoReviewSummary } : {}),
-    createdAt: Date.now(),
-  };
-};
-
-type TriggerSessionInputWaitOutcome =
-  | {
-      status: "input";
-      result: TriggerSessionWaitResult<AgentToolApprovalInputRecord>;
-    }
-  | { status: "aborted" };
-
-const waitForApprovalInput = async (
-  session: ReturnType<TriggerSessionsApi["open"]>,
-  signal: AbortSignal,
-): Promise<TriggerSessionInputWaitOutcome> => {
-  if (signal.aborted) return { status: "aborted" };
-
-  let removeAbortListener = () => {};
-  const abortPromise = new Promise<TriggerSessionInputWaitOutcome>(
-    (resolve) => {
-      const abort = () => resolve({ status: "aborted" });
-      signal.addEventListener("abort", abort, { once: true });
-      removeAbortListener = () => signal.removeEventListener("abort", abort);
-    },
-  );
-
-  try {
-    return await Promise.race([
-      session.in
-        .wait<AgentToolApprovalInputRecord>()
-        .then((result) => ({ status: "input", result }) as const),
-      abortPromise,
-    ]);
-  } finally {
-    removeAbortListener();
-  }
-};
-
-type SandboxScopedAgentApprovalTargetGrant = {
-  sandboxIdentity: AgentApprovalSandboxIdentity;
-  workingDirectory?: string;
-  grant: AgentApprovalTargetGrant;
-};
-
-const restoreSandboxScopedAgentApprovalTargetGrant = (
-  grant: PersistedAgentApprovalTargetGrant,
-  sandboxIdentity: AgentApprovalSandboxIdentity,
-  workingDirectory?: string,
-): AgentApprovalTargetGrant | null => {
-  const targetPrefix = getAgentApprovalTargetPrefixForSandbox({
-    persistedTargetPrefix: grant.targetPrefix,
-    sandboxIdentity,
-    workingDirectory,
-  });
-  return targetPrefix === null ? null : { ...grant, targetPrefix };
-};
-
 const scopePersistedAgentApprovalTargetGrant = (
   grant: PersistedAgentApprovalTargetGrant,
   sandboxIdentity: AgentApprovalSandboxIdentity,
@@ -586,674 +399,6 @@ const scopePersistedAgentApprovalTargetGrant = (
     targetPrefix: grant.targetPrefix,
   }),
 });
-
-const buildAgentToolApprovalRequester = ({
-  agentPermissionMode,
-  approvalSessionId,
-  writer,
-  chatId,
-  userId,
-  runId,
-  signal,
-  activeRuntimeBudget,
-  initialTargetGrants = [],
-  persistTargetGrant,
-  resolveSandboxIdentity,
-  workingDirectory,
-  beforeSuspend,
-  revalidateAfterSuspend,
-  revalidateAfterAutoReview,
-  autoReviewAssignment,
-  autoReviewAuthorizationContext,
-  autoReviewConversationContext,
-  onAutoReviewCost,
-  onAutoReviewCircuitBreaker,
-  onPostWaitAuthorizationDenied,
-  onApprovalWait,
-}: {
-  agentPermissionMode: AgentPermissionMode;
-  approvalSessionId?: string;
-  writer: UIMessageStreamWriter;
-  chatId: string;
-  userId: string;
-  runId: string;
-  signal: AbortSignal;
-  activeRuntimeBudget: Pick<ActiveRuntimeBudget, "pause" | "resume">;
-  initialTargetGrants?: PersistedAgentApprovalTargetGrant[];
-  persistTargetGrant?: (
-    grant: PersistedAgentApprovalTargetGrant,
-    sandboxIdentity: AgentApprovalSandboxIdentity,
-  ) => Promise<void>;
-  resolveSandboxIdentity: () => Promise<AgentApprovalSandboxIdentity>;
-  workingDirectory?: string;
-  beforeSuspend?: () => Promise<void>;
-  revalidateAfterSuspend: (
-    input: AgentToolApprovalInputRecord,
-  ) => Promise<void>;
-  revalidateAfterAutoReview: (input: {
-    approvalId: string;
-    toolCallId: string;
-  }) => Promise<void>;
-  autoReviewAssignment?: AgentAutoReviewAssignment;
-  autoReviewAuthorizationContext: { text: string; complete: boolean };
-  autoReviewConversationContext: { text: string; complete: boolean };
-  onAutoReviewCost?: (costDollars: number) => void;
-  onAutoReviewCircuitBreaker: () => void;
-  onPostWaitAuthorizationDenied: () => void;
-  onApprovalWait?: (durationMs: number, incrementCount: boolean) => void;
-}): AgentToolApprovalRequester | undefined => {
-  if (
-    agentPermissionMode !== "ask_approval" &&
-    agentPermissionMode !== "auto_review"
-  ) {
-    return undefined;
-  }
-  let approvalQueue: Promise<void> = Promise.resolve();
-  const denialTracker = new AgentAutoReviewDenialTracker();
-  const approvedTargetGrants: SandboxScopedAgentApprovalTargetGrant[] = [];
-  const setApprovalPending = async (
-    pending: boolean,
-    request?: AgentToolApprovalPendingRequest,
-  ) => {
-    if (!approvalSessionId) return;
-    try {
-      await setActiveAgentApprovalPending({
-        chatId,
-        pending,
-        request,
-        expectedRunId: runId,
-        expectedApprovalSessionId: approvalSessionId,
-      });
-    } catch (error) {
-      console.error("[agent-long] failed to update approval pending state:", {
-        pending,
-        error,
-      });
-    }
-  };
-
-  return async (request: AgentToolApprovalRequest) => {
-    const previousApproval = approvalQueue.catch(() => {});
-    let releaseApproval!: () => void;
-    approvalQueue = previousApproval.then(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseApproval = resolve;
-        }),
-    );
-
-    await previousApproval;
-    let approvalPendingMarked = false;
-    let shouldClearApprovalPending = false;
-    let autoReviewDecision:
-      | (AgentAutoReviewDecision & { rolloutPhase: "shadow" | "enforce" })
-      | undefined;
-    const approvalId = generateId();
-    let autoReviewStartedAt: number | undefined;
-    let autoReviewLifecycleCompleted = false;
-    const completeAutoReviewLifecycle = (
-      status: Exclude<AgentAutoReviewLifecycleStatus, "reviewing">,
-    ) => {
-      if (autoReviewStartedAt === undefined || autoReviewLifecycleCompleted) {
-        return;
-      }
-      autoReviewLifecycleCompleted = true;
-      writeAgentAutoReviewLifecycle({
-        writer,
-        approvalId,
-        toolCallId: request.toolCallId,
-        status,
-        startedAt: autoReviewStartedAt,
-      });
-    };
-    try {
-      const sandboxIdentity = await resolveSandboxIdentity();
-      const existingGrant =
-        approvedTargetGrants.find(
-          (scopedGrant) =>
-            scopedGrant.sandboxIdentity === sandboxIdentity &&
-            scopedGrant.workingDirectory === workingDirectory &&
-            matchesApprovalTargetGrant(request, scopedGrant.grant),
-        )?.grant ??
-        initialTargetGrants
-          .map((grant) =>
-            restoreSandboxScopedAgentApprovalTargetGrant(
-              grant,
-              sandboxIdentity,
-              workingDirectory,
-            ),
-          )
-          .find(
-            (grant): grant is AgentApprovalTargetGrant =>
-              grant !== null && matchesApprovalTargetGrant(request, grant),
-          );
-      if (existingGrant) {
-        metadata
-          .set("approvalStatus", "auto_approved")
-          .set("approvalToolName", request.toolName)
-          .set("approvalOperation", request.operation);
-        triggerLogger.info("[agent-long] tool approval reused", {
-          event: "agent_tool_approval_reused",
-          service: "agent-long",
-          runId,
-          approvalId,
-          tool_call_id: request.toolCallId,
-          tool_name: request.toolName,
-          operation: request.operation,
-          target_kind: existingGrant.kind,
-        });
-        return { approved: true, approvalId, sandboxIdentity };
-      }
-
-      const autoReviewRolloutPhase = autoReviewAssignment?.phase;
-      if (
-        autoReviewRolloutPhase &&
-        shouldAutoReviewAgentToolAction({
-          permissionMode: agentPermissionMode,
-          rolloutPhase: autoReviewRolloutPhase,
-          operation: request.operation,
-        })
-      ) {
-        autoReviewStartedAt = Date.now();
-        writeAgentAutoReviewLifecycle({
-          writer,
-          approvalId,
-          toolCallId: request.toolCallId,
-          status: "reviewing",
-          startedAt: autoReviewStartedAt,
-        });
-        activeRuntimeBudget.pause();
-        let decision: AgentAutoReviewDecision;
-        try {
-          decision = await reviewAgentToolAction({
-            request,
-            authorizationContext: autoReviewAuthorizationContext,
-            conversationContext: autoReviewConversationContext,
-            signal,
-          });
-        } finally {
-          activeRuntimeBudget.resume();
-        }
-        autoReviewDecision = {
-          ...decision,
-          rolloutPhase: autoReviewRolloutPhase,
-        };
-        if (decision.modelCostDollars) {
-          onAutoReviewCost?.(decision.modelCostDollars);
-        }
-        const reviewSurface =
-          getAgentToolApprovalPromptKind(request.operation) ?? "file";
-        phLogger.event("agent_auto_review_decision", {
-          userId,
-          rollout_phase: autoReviewRolloutPhase,
-          verdict: decision.verdict,
-          risk_category: decision.riskCategory,
-          latency_ms: decision.latencyMs,
-          failure_class: decision.failureClass ?? "none",
-          outcome:
-            autoReviewRolloutPhase === "shadow"
-              ? "human_authoritative"
-              : decision.verdict,
-          surface: reviewSurface,
-        });
-
-        if (autoReviewRolloutPhase === "enforce") {
-          if (decision.verdict === "approve") {
-            try {
-              await revalidateAfterAutoReview({
-                approvalId,
-                toolCallId: request.toolCallId,
-              });
-            } catch (error) {
-              if (
-                error instanceof
-                AgentAutoReviewEntitlementRevalidationUnavailableError
-              ) {
-                autoReviewDecision = {
-                  ...decision,
-                  verdict: "ask_user",
-                  riskCategory: "unknown",
-                  rationale:
-                    "HackerAI could not verify the current authorization context automatically.",
-                  source: "failure",
-                  failureClass: "provider_error",
-                  rolloutPhase: autoReviewRolloutPhase,
-                };
-                metadata.set(
-                  "approvalStatus",
-                  "auto_review_revalidation_unavailable",
-                );
-                phLogger.event("agent_auto_review_revalidation", {
-                  userId,
-                  rollout_phase: autoReviewRolloutPhase,
-                  verdict: "ask_user",
-                  risk_category: "unknown",
-                  failure_class: "provider_error",
-                  outcome: "require_user",
-                  surface: reviewSurface,
-                });
-                triggerLogger.warn(
-                  "[agent-long] Auto review authorization revalidation unavailable; requesting human approval",
-                  {
-                    event: "agent_auto_review_revalidation_unavailable",
-                    service: "agent-long",
-                    chat_id: chatId,
-                    user_id: userId,
-                    run_id: runId,
-                    approval_id: approvalId,
-                    error_name:
-                      error instanceof Error ? error.name : "UnknownError",
-                  },
-                );
-              } else {
-                const authorizationError =
-                  error instanceof AgentApprovalAuthorizationError
-                    ? error
-                    : null;
-                metadata
-                  .set("approvalStatus", "authorization_denied")
-                  .set(
-                    "approvalAuthorizationFailure",
-                    authorizationError?.code ?? "revalidation_failed",
-                  );
-                triggerLogger.warn(
-                  "[agent-long] post-review approval authorization denied",
-                  {
-                    chatId,
-                    userId,
-                    runId,
-                    approvalId,
-                    failure: authorizationError?.code ?? "revalidation_failed",
-                    error_name:
-                      error instanceof Error ? error.name : "UnknownError",
-                  },
-                );
-                return {
-                  approved: false,
-                  approvalId,
-                  reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
-                };
-              }
-            }
-            if (autoReviewDecision?.verdict === "approve") {
-              const currentSandboxIdentity = await resolveSandboxIdentity();
-              if (currentSandboxIdentity !== sandboxIdentity) {
-                metadata.set("approvalStatus", "sandbox_changed");
-                return {
-                  approved: false,
-                  approvalId,
-                  reason:
-                    "The selected sandbox changed during automatic review. The operation was not run. Retry it in the current sandbox.",
-                };
-              }
-              metadata
-                .set("approvalStatus", "auto_review_approved")
-                .set("approvalToolName", request.toolName)
-                .set("approvalOperation", request.operation);
-              denialTracker.record("approve");
-              completeAutoReviewLifecycle("approved");
-              return {
-                approved: true,
-                approvalId,
-                sandboxIdentity,
-                approvalSource: "auto_review",
-              };
-            }
-          }
-          // A reviewer denial means the action is not safe to approve
-          // automatically. It never substitutes for the user's decision;
-          // continue into the durable human approval flow below.
-        }
-      }
-
-      if (!approvalSessionId) {
-        completeAutoReviewLifecycle("dismissed");
-        return {
-          approved: false,
-          approvalId,
-          reason:
-            "Approval session is unavailable. Please retry the Agent run.",
-        };
-      }
-
-      if (signal.aborted) {
-        completeAutoReviewLifecycle("dismissed");
-        metadata.set("approvalStatus", "aborted");
-        return {
-          approved: false,
-          approvalId,
-          reason: "The Agent run was stopped before approval was requested.",
-        };
-      }
-
-      if (!triggerSessions) {
-        completeAutoReviewLifecycle("dismissed");
-        metadata.set("approvalStatus", "sessions_unavailable");
-        return {
-          approved: false,
-          approvalId,
-          reason:
-            "Approval sessions are unavailable. Please retry the Agent run.",
-        };
-      }
-
-      await setApprovalPending(
-        true,
-        buildPendingApprovalRequest({
-          approvalId,
-          request,
-          autoReview: autoReviewDecision,
-        }),
-      );
-      approvalPendingMarked = true;
-
-      metadata
-        .set("approvalStatus", "pending")
-        .set("approvalId", approvalId)
-        .set("approvalToolCallId", request.toolCallId)
-        .set("approvalToolName", request.toolName)
-        .set("approvalOperation", request.operation);
-      await metadata.flush();
-
-      completeAutoReviewLifecycle("needs_approval");
-
-      if (autoReviewDecision?.rolloutPhase === "enforce") {
-        const autoReview = buildAgentAutoReviewSummary(autoReviewDecision);
-        writer.write({
-          type: "data-agent-auto-review",
-          data: {
-            approvalId,
-            toolCallId: request.toolCallId,
-            autoReview,
-          },
-        } as AgentLongUiStreamPart);
-      }
-
-      writer.write({
-        type: "tool-approval-request",
-        toolCallId: request.toolCallId,
-        approvalId,
-      } as AgentLongUiStreamPart);
-
-      triggerLogger.info("[agent-long] waiting for tool approval", {
-        event: "agent_tool_approval_waiting",
-        service: "agent-long",
-        runId,
-        approvalId,
-        tool_call_id: request.toolCallId,
-        tool_name: request.toolName,
-        operation: request.operation,
-      });
-
-      const session = triggerSessions.open(approvalSessionId);
-      if (beforeSuspend) {
-        try {
-          await beforeSuspend();
-        } catch (error) {
-          metadata.set("approvalStatus", "pre_suspend_check_failed");
-          shouldClearApprovalPending = true;
-          triggerLogger.warn(
-            "[agent-long] approval suspension preparation failed",
-            {
-              chatId,
-              userId,
-              runId,
-              approvalId,
-              error_name: error instanceof Error ? error.name : "UnknownError",
-            },
-          );
-          onPostWaitAuthorizationDenied();
-          return {
-            approved: false,
-            approvalId,
-            reason: APPROVAL_AUTHORIZATION_DENIED_REASON,
-          };
-        }
-      }
-      let approvalWaitCounted = false;
-      while (!signal.aborted) {
-        const approvalWaitStartedAt = Date.now();
-        activeRuntimeBudget.pause();
-        let waitOutcome: TriggerSessionInputWaitOutcome;
-        try {
-          waitOutcome = await waitForApprovalInput(session, signal);
-        } finally {
-          activeRuntimeBudget.resume();
-          onApprovalWait?.(
-            Date.now() - approvalWaitStartedAt,
-            !approvalWaitCounted,
-          );
-          approvalWaitCounted = true;
-        }
-        if (waitOutcome.status === "aborted") break;
-
-        const next = waitOutcome.result;
-        if (!next.ok) {
-          metadata.set("approvalStatus", "session_closed");
-          shouldClearApprovalPending = true;
-          return {
-            approved: false,
-            approvalId,
-            reason: "The approval session closed before the tool could run.",
-          };
-        }
-
-        if (!isAgentToolApprovalInputRecord(next.output)) {
-          if (
-            isApprovalInputForRequest(
-              next.output,
-              approvalId,
-              request.toolCallId,
-            )
-          ) {
-            metadata.set("approvalStatus", "unsupported_protocol");
-            shouldClearApprovalPending = true;
-            onPostWaitAuthorizationDenied();
-            return {
-              approved: false,
-              approvalId,
-              reason: APPROVAL_PROTOCOL_DENIED_REASON,
-            };
-          }
-          continue;
-        }
-        if (
-          next.output.approvalId !== approvalId ||
-          next.output.toolCallId !== request.toolCallId
-        ) {
-          continue;
-        }
-
-        metadata
-          .set("approvalStatus", next.output.decision)
-          .set("approvalResolvedAt", Date.now());
-        shouldClearApprovalPending = true;
-
-        if (next.output.decision === "approve") {
-          try {
-            await revalidateAfterSuspend(next.output);
-          } catch (error) {
-            const authorizationError =
-              error instanceof AgentApprovalAuthorizationError ? error : null;
-            metadata
-              .set("approvalStatus", "authorization_denied")
-              .set(
-                "approvalAuthorizationFailure",
-                authorizationError?.code ?? "revalidation_failed",
-              );
-            triggerLogger.warn(
-              "[agent-long] post-wait approval authorization denied",
-              {
-                chatId,
-                userId,
-                runId,
-                approvalId,
-                failure: authorizationError?.code ?? "revalidation_failed",
-                error_name:
-                  error instanceof Error ? error.name : "UnknownError",
-              },
-            );
-            onPostWaitAuthorizationDenied();
-            return {
-              approved: false,
-              approvalId,
-              reason:
-                authorizationError?.code === "unsupported_protocol"
-                  ? APPROVAL_PROTOCOL_DENIED_REASON
-                  : APPROVAL_AUTHORIZATION_DENIED_REASON,
-            };
-          }
-
-          const currentSandboxIdentity = await resolveSandboxIdentity();
-          if (currentSandboxIdentity !== sandboxIdentity) {
-            metadata.set("approvalStatus", "sandbox_changed");
-            triggerLogger.warn(
-              "[agent-long] sandbox changed while approval was pending",
-              {
-                chatId,
-                userId,
-                runId,
-                approvalId,
-                requested_sandbox_identity: sandboxIdentity,
-                current_sandbox_identity: currentSandboxIdentity,
-              },
-            );
-            return {
-              approved: false,
-              approvalId,
-              reason:
-                "The selected sandbox changed while this approval was pending. The operation was not run. Retry it to approve in the current sandbox.",
-            };
-          }
-
-          const approvedTargetGrant =
-            next.output.grant === "target_prefix"
-              ? deriveApprovedAgentTargetGrant(request, next.output)
-              : null;
-          if (approvedTargetGrant) {
-            approvedTargetGrants.push({
-              sandboxIdentity,
-              workingDirectory,
-              grant: approvedTargetGrant,
-            });
-            if (
-              persistTargetGrant &&
-              approvedTargetGrant.kind !== "terminal_interaction"
-            ) {
-              try {
-                await persistTargetGrant(approvedTargetGrant, sandboxIdentity);
-              } catch (error) {
-                triggerLogger.warn(
-                  "[agent-long] failed to persist approval grant",
-                  {
-                    chatId,
-                    userId,
-                    runId,
-                    approvalId,
-                    target_kind: approvedTargetGrant.kind,
-                    error_name:
-                      error instanceof Error ? error.name : "UnknownError",
-                  },
-                );
-              }
-            }
-            metadata
-              .set("approvalGrant", "target_prefix")
-              .set("approvalTargetKind", approvedTargetGrant.kind);
-          }
-          triggerLogger.info("[agent-long] tool approval granted", {
-            event: "agent_tool_approval_granted",
-            service: "agent-long",
-            runId,
-            approvalId,
-            tool_call_id: request.toolCallId,
-            tool_name: request.toolName,
-            operation: request.operation,
-            requested_grant: next.output.grant,
-            grant: approvedTargetGrant ? "target_prefix" : "full_access",
-            target_kind: approvedTargetGrant?.kind,
-          });
-          if (autoReviewDecision) {
-            phLogger.event("agent_auto_review_human_outcome", {
-              userId,
-              rollout_phase: autoReviewDecision.rolloutPhase,
-              verdict: autoReviewDecision.verdict,
-              risk_category: autoReviewDecision.riskCategory,
-              failure_class: autoReviewDecision.failureClass ?? "none",
-              outcome: "approve",
-              override: autoReviewDecision.verdict === "deny",
-              surface:
-                getAgentToolApprovalPromptKind(request.operation) ?? "file",
-            });
-          }
-          if (autoReviewDecision?.rolloutPhase === "enforce") {
-            denialTracker.record("approve");
-          }
-          return { approved: true, approvalId, sandboxIdentity };
-        }
-
-        triggerLogger.info("[agent-long] tool approval denied", {
-          event: "agent_tool_approval_denied",
-          service: "agent-long",
-          runId,
-          approvalId,
-          tool_call_id: request.toolCallId,
-          tool_name: request.toolName,
-          operation: request.operation,
-        });
-        if (autoReviewDecision) {
-          phLogger.event("agent_auto_review_human_outcome", {
-            userId,
-            rollout_phase: autoReviewDecision.rolloutPhase,
-            verdict: autoReviewDecision.verdict,
-            risk_category: autoReviewDecision.riskCategory,
-            failure_class: autoReviewDecision.failureClass ?? "none",
-            outcome: "deny",
-            override: autoReviewDecision.verdict === "approve",
-            surface:
-              getAgentToolApprovalPromptKind(request.operation) ?? "file",
-          });
-        }
-        const humanDenialTrippedCircuitBreaker =
-          autoReviewDecision?.rolloutPhase === "enforce" &&
-          denialTracker.record("deny").tripped;
-        if (humanDenialTrippedCircuitBreaker && autoReviewDecision) {
-          metadata.set("approvalStatus", "auto_review_circuit_breaker");
-          phLogger.event("agent_auto_review_circuit_breaker", {
-            userId,
-            rollout_phase: autoReviewDecision.rolloutPhase,
-            verdict: autoReviewDecision.verdict,
-            risk_category: autoReviewDecision.riskCategory,
-            outcome: "require_user",
-            surface:
-              getAgentToolApprovalPromptKind(request.operation) ?? "file",
-          });
-          onAutoReviewCircuitBreaker();
-        }
-        return {
-          approved: false,
-          approvalId,
-          reason: humanDenialTrippedCircuitBreaker
-            ? `${buildDeniedApprovalReason(next.output.message)} The denial circuit breaker stopped further approval attempts in this run.`
-            : buildDeniedApprovalReason(next.output.message),
-        };
-      }
-
-      metadata.set("approvalStatus", "aborted");
-      return {
-        approved: false,
-        approvalId,
-        reason: "The Agent run was stopped before approval was received.",
-      };
-    } finally {
-      completeAutoReviewLifecycle("dismissed");
-      if (approvalPendingMarked && shouldClearApprovalPending) {
-        await setApprovalPending(false);
-      }
-      releaseApproval();
-    }
-  };
-};
 
 const MAX_TRIGGER_ERROR_MESSAGE_LENGTH = 500;
 const TRIGGER_TAG_MAX_LENGTH = 64;
@@ -1403,7 +548,7 @@ type AgentLongErrorSummary = {
   cause?: string;
   loginRequired: boolean;
   statusCode?: number;
-  providerErrorOrigin?: "local_request_size_guard";
+  providerErrorOrigin?: ProviderTerminalError["origin"];
   localRequestId?: string;
   requestBytesBefore?: number;
   requestBytesAfter?: number;
@@ -1434,6 +579,7 @@ type AgentLongErrorSummary = {
   requestedPreference?: string;
   actualSandbox?: string;
   uploadFailureKind?: string;
+  uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -1446,7 +592,7 @@ type AgentLongErrorSummary = {
   uploadFailureErrorRetryable?: boolean;
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
-  uploadRetriedWithFreshSandbox?: boolean;
+  uploadRetriedAfterReconnect?: boolean;
 };
 
 const isChatNotFoundError = (error: ChatSDKError): boolean => {
@@ -1462,6 +608,7 @@ const isSandboxUploadError = (error: ChatSDKError): boolean =>
   !!error.metadata?.upload_failure_kind;
 
 const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
+  "subscription_required",
   "chat_not_found",
   "login_required",
   "empty_prompt",
@@ -1548,23 +695,26 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         ? truncateForTriggerMetadata(error.cause)
         : undefined;
     const errorMetadata = error.metadata;
+    const uploadFailurePhase = errorMetadata?.upload_failure_phase;
     return {
       category:
         error.type === "unauthorized"
           ? "login_required"
           : isChatNotFoundError(error)
             ? "chat_not_found"
-            : errorMetadata?.empty_prompt === true
-              ? "empty_prompt"
-              : errorMetadata?.truncation_dropped_all_messages === true
-                ? "input_too_large"
-                : errorMetadata?.empty_after_processing === true
-                  ? "empty_after_processing"
-                  : errorMetadata?.localSandboxFallbackBlocked === true
-                    ? "local_sandbox_fallback_blocked"
-                    : errorMetadata?.upload_failure_kind
-                      ? "sandbox_upload_failure"
-                      : "chat_error",
+            : errorMetadata?.subscription_required === true
+              ? "subscription_required"
+              : errorMetadata?.empty_prompt === true
+                ? "empty_prompt"
+                : errorMetadata?.truncation_dropped_all_messages === true
+                  ? "input_too_large"
+                  : errorMetadata?.empty_after_processing === true
+                    ? "empty_after_processing"
+                    : errorMetadata?.localSandboxFallbackBlocked === true
+                      ? "local_sandbox_fallback_blocked"
+                      : errorMetadata?.upload_failure_kind
+                        ? "sandbox_upload_failure"
+                        : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,
@@ -1619,6 +769,12 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_kind",
       ),
+      uploadFailurePhase:
+        uploadFailurePhase === "acquisition" ||
+        uploadFailurePhase === "readiness" ||
+        uploadFailurePhase === "transfer"
+          ? uploadFailurePhase
+          : undefined,
       uploadFailureReason: getStringMetadata(
         errorMetadata,
         "upload_failure_reason",
@@ -1667,9 +823,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_url_length",
       ),
-      uploadRetriedWithFreshSandbox: getBooleanMetadata(
+      uploadRetriedAfterReconnect: getBooleanMetadata(
         errorMetadata,
-        "upload_retried_with_fresh_sandbox",
+        "upload_retried_after_reconnect",
       ),
     };
   }
@@ -1766,6 +922,7 @@ const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
   state.stoppedDueToStepLimit = false;
   state.streamFinishReason = undefined;
   state.providerError = undefined;
+  state.providerErrorMetadata = undefined;
   state.providerRejectedMultimodalToolResults = false;
   state.stoppedDueToTokenExhaustion = false;
   state.stoppedDueToElapsedTimeout = false;
@@ -1890,6 +1047,8 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("actualSandbox", summary.actualSandbox);
   if (summary.uploadFailureKind)
     metadata.set("uploadFailureKind", summary.uploadFailureKind);
+  if (summary.uploadFailurePhase)
+    metadata.set("uploadFailurePhase", summary.uploadFailurePhase);
   if (summary.uploadFailureReason)
     metadata.set("uploadFailureReason", summary.uploadFailureReason);
   if (summary.uploadFailureCause)
@@ -1934,10 +1093,10 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureProtocol", summary.uploadFailureProtocol);
   if (summary.uploadFailureUrlLength != null)
     metadata.set("uploadFailureUrlLength", summary.uploadFailureUrlLength);
-  if (summary.uploadRetriedWithFreshSandbox != null) {
+  if (summary.uploadRetriedAfterReconnect != null) {
     metadata.set(
-      "uploadRetriedWithFreshSandbox",
-      summary.uploadRetriedWithFreshSandbox,
+      "uploadRetriedAfterReconnect",
+      summary.uploadRetriedAfterReconnect,
     );
   }
 
@@ -2344,6 +1503,7 @@ export type AgentLongPayload = {
   organizationId?: string;
   freeQuotaSubject?: string;
   regionalFreeCountry?: string;
+  regionalSubscriptionCountry?: string;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -2711,6 +1871,12 @@ export const agentLongTask = task({
 
     try {
       userStopSignal.signal.throwIfAborted();
+      await enforceRegionalSubscriptionFirst({
+        userId,
+        subscription,
+        country: payload.regionalSubscriptionCountry,
+        surface: "agent_worker",
+      });
       // Re-fetch from DB so we have fileTokens for summarization.
       // The route already saved the user message; newMessages:[] avoids duplicates.
       const [userCustomization, fetched] = await Promise.all([
@@ -2780,20 +1946,14 @@ export const agentLongTask = task({
               reason: "miosa_rollout_control",
             } as const);
       const cloudSandboxProvider = cloudSandboxSelection.provider;
-      const regionalFreeLimits = await evaluateRegionalFreeLimits({
-        posthog,
+      const regionalFreeLimits = getRegionalFreeLimits({
         userId,
         subscription,
         country: payload.regionalFreeCountry,
       });
+      const freeLimits = regionalFreeLimits;
       // Check capacity before moderation/model work, then consume the daily
       // request atomically under the free-run lock when execution starts.
-      await captureRegionalFreeLimitsExposure(
-        posthog,
-        regionalFreeLimits,
-        userId,
-        mode,
-      );
       if (subscription === "free") {
         await checkRateLimitCapacity(
           userId,
@@ -2803,9 +1963,9 @@ export const agentLongTask = task({
           undefined,
           organizationId,
           freeQuotaSubject,
-          regionalFreeLimits,
+          freeLimits,
         );
-        await checkFreeMonthlyCostLimit(freeUsageSubject, regionalFreeLimits);
+        await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
       }
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -2820,8 +1980,11 @@ export const agentLongTask = task({
         selectedModel,
         sandboxFiles,
         platformAuthorized,
-        allowsAbliterationContinuation,
+        paidFirstStepVariant,
+        moderationChecked,
       } = await processChatMessages({
+        abliterationPosthog: posthog,
+        limitRescue: Boolean(limitRescue),
         messages: messagesForProcessing,
         mode,
         userId,
@@ -2829,7 +1992,7 @@ export const agentLongTask = task({
         uploadBasePath,
         modelOverride: selectedModelOverride,
         extraUsageAvailable,
-        allowLocalDesktopFiles: sandboxPreference === "desktop",
+        allowLocalDesktopFiles: isDesktopPreference(sandboxPreference ?? "e2b"),
         directGlmVisionEnabled,
         chatId,
         triggerRunId: ctx.run.id,
@@ -2856,11 +2019,13 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
-        allowsAbliterationContinuation,
-        independentAbliterationResponses:
-          fetched.independentAbliterationResponses,
-        messages: processedMessages,
+        paidFirstStepVariant,
+        moderationChecked,
+        messages: messagesForProcessing,
         limitRescue: Boolean(limitRescue),
+        ...(ctx.environment.type === "PREVIEW" && {
+          previewDiagnosticContext: { chatId, requestId: ctx.run.id },
+        }),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
@@ -2876,9 +2041,10 @@ export const agentLongTask = task({
         : undefined;
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
+        assignment: abliteratedExperiment,
+        selectedModelOverride,
         release: ctx.deployment?.version,
         posthog,
-        assignment: abliteratedExperiment,
         userId,
         chatId,
         messageId: assistantMessageId,
@@ -2896,15 +2062,16 @@ export const agentLongTask = task({
       if (deepSeekV4Pro0813Experiment) {
         selectedModel = deepSeekV4Pro0813Experiment.modelKey;
       }
+      const requestHasImages =
+        countFileAttachments(messagesForProcessing).imageCount > 0 ||
+        uiMessagesContainImageViewResult(processedMessages);
       const flashRoutingAssignment = await evaluateFlashRouting({
         posthog,
         userId,
         mode,
         subscription,
         selectedModel,
-        hasImages:
-          countFileAttachments(messagesForProcessing).imageCount > 0 ||
-          uiMessagesContainImageViewResult(processedMessages),
+        hasImages: requestHasImages,
       });
       if (flashRoutingAssignment)
         selectedModel = flashRoutingAssignment.modelKey;
@@ -3029,6 +2196,7 @@ export const agentLongTask = task({
       let rateLimitInfo: RateLimitInfo;
 
       let streamError: unknown;
+      let preparationCanceled = false;
       const visionSummaryRecovery = createVisionSummaryRecoveryController({
         available: directGlmVisionEnabled,
         service: "agent-long",
@@ -3088,10 +2256,7 @@ export const agentLongTask = task({
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
-                ? await checkFreeMonthlyCostLimit(
-                    freeUsageSubject,
-                    regionalFreeLimits,
-                  )
+                ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
                 : null;
 
             try {
@@ -3104,7 +2269,7 @@ export const agentLongTask = task({
                 selectedModel,
                 organizationId,
                 freeQuotaSubject,
-                regionalFreeLimits,
+                freeLimits,
               );
             } catch (error) {
               if (!(error instanceof ChatSDKError)) throw error;
@@ -3211,6 +2376,15 @@ export const agentLongTask = task({
               abliteratedExperiment?.modelKey === selectedModel
                 ? abliteratedExperiment
                 : undefined;
+            const recordFlashRoutingExposure =
+              createFlashRoutingExposureRecorder({
+                posthog,
+                assignment: activeFlashRoutingAssignment,
+                userId,
+                mode,
+                subscription,
+                requestId: assistantMessageId,
+              });
             const routingExperimentContext = activeAbliteratedExperiment
               ? {
                   key: activeAbliteratedExperiment.key,
@@ -3354,13 +2528,10 @@ export const agentLongTask = task({
                 selectedModel,
                 authorization.organizationId,
                 freeQuotaSubject,
-                regionalFreeLimits,
+                freeLimits,
               );
               if (authorization.subscription === "free") {
-                await checkFreeMonthlyCostLimit(
-                  freeUsageSubject,
-                  regionalFreeLimits,
-                );
+                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
                 const lock = await acquireFreeRunConcurrencyLock(
                   freeUsageSubject,
                   FREE_AGENT_LONG_RUN_LOCK_TTL_SECONDS,
@@ -3445,13 +2616,10 @@ export const agentLongTask = task({
                 selectedModel,
                 currentEntitlement.organizationId,
                 freeQuotaSubject,
-                regionalFreeLimits,
+                freeLimits,
               );
               if (currentEntitlement.subscription === "free") {
-                await checkFreeMonthlyCostLimit(
-                  freeUsageSubject,
-                  regionalFreeLimits,
-                );
+                await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits);
               }
             };
             let approvalSandboxManager: SandboxManager | undefined;
@@ -3554,6 +2722,7 @@ export const agentLongTask = task({
                 cloudSandboxProvider,
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
+                environment: ctx.environment.type,
                 keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
                   ? {
@@ -3564,8 +2733,18 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
-                          regionalFreeLimits,
+                          regionalFreeLimits: freeLimits,
                           triggerRegion,
+                          approvalSessionId,
+                          autoReviewAssignment,
+                          autoReviewAuthorizationContext:
+                            extractAgentAutoReviewAuthorizationContext(
+                              messagesForProcessing,
+                            ),
+                          autoReviewConversationContext:
+                            extractAgentAutoReviewConversationContext(
+                              messagesForProcessing,
+                            ),
                         }),
                         continue_agent: createContinueAgentTool(toolContext, {
                           organizationId,
@@ -3573,7 +2752,7 @@ export const agentLongTask = task({
                           permissionMode: agentPermissionMode,
                           subscription,
                           freeQuotaSubject,
-                          regionalFreeLimits,
+                          regionalFreeLimits: freeLimits,
                           triggerRegion,
                         }),
                         list_agents: createListAgentsTool(toolContext),
@@ -3588,23 +2767,6 @@ export const agentLongTask = task({
                   : {}),
               },
             );
-            const objectiveCheckpointEnabled =
-              await getPostHogFeatureFlagForUser(
-                OBJECTIVE_CHECKPOINT_FLAG,
-                userId,
-              );
-            const objectiveCheckpoint = objectiveCheckpointEnabled
-              ? await loadObjectiveCheckpoint({
-                  userId,
-                  chatId,
-                  triggerRunId: ctx.run.id,
-                  signal: userStopSignal.signal,
-                  environment: async () =>
-                    getSubagentSandboxIdentity(await ensureSandbox()),
-                  allowFollowUp:
-                    !isAutomaticContinuation && !isAutoContinue && !regenerate,
-                })
-              : undefined;
             finishE2BIdleLeaseRelease = async () => {
               await stopE2BSandboxRunLeaseHeartbeat();
               await releaseE2BSandboxIdleLease();
@@ -3695,12 +2857,15 @@ export const agentLongTask = task({
                   sandboxFiles,
                   ensureSandbox,
                   {
-                    retryWithFreshSandboxOnTransientFailure: true,
+                    signal: userStopSignal.signal,
+                    retryAfterReconnectOnTransientFailure: true,
                     logContext: {
                       service: "agent-long",
                       requestId: ctx.run.id,
                       userId,
                       chatId,
+                      environment: ctx.environment.type,
+                      release: ctx.deployment?.version,
                     },
                   },
                 );
@@ -3865,7 +3030,8 @@ export const agentLongTask = task({
             const providerRecoveryModels: string[] = [];
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
             const retrySelectionModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -3873,7 +3039,8 @@ export const agentLongTask = task({
               selectedModelOverride,
             });
             const fallbackModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
@@ -4090,6 +3257,9 @@ export const agentLongTask = task({
                   });
                 }
                 captureUsageCost({
+                  cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                  usageMeasurement:
+                    usageTracker.measurementProperties(selectedModel),
                   triggerRunId: ctx.run.id,
                   regionalFreeLimits,
                   posthog,
@@ -4409,7 +3579,20 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
-              objectiveCheckpoint,
+              cacheVisionDescription: cacheAuxiliaryVisionDescription,
+              onAgentGuardrail: (observation) =>
+                phLogger.warn("Agent guardrail observed", {
+                  event: "agent_guardrail_observed",
+                  configured_model: selectedModel,
+                  userId,
+                  user_id: userId,
+                  request_id: ctx.run.id,
+                  trigger_run_id: ctx.run.id,
+                  chat_id: chatId,
+                  endpoint,
+                  mode,
+                  ...observation,
+                }),
               providerStreamTimeout: {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
                 onTimeout: ({ phase, timeoutMs, modelId }) => {
@@ -4430,19 +3613,15 @@ export const agentLongTask = task({
                 },
               },
               abliteratedTelemetry,
-              ...(activeAbliteratedExperiment?.variant === "test" && {
-                abliteratedStepRouting: {
-                  baselineModel: activeAbliteratedExperiment.baselineModel,
-                },
-              }),
-              onProviderRequestStart: createFlashRoutingExposureRecorder({
-                posthog,
-                assignment: activeFlashRoutingAssignment,
-                userId,
-                mode,
-                subscription,
-                requestId: assistantMessageId,
-              }),
+              ...(activeAbliteratedExperiment &&
+                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                  abliteratedStepRouting: {
+                    baselineModel: activeAbliteratedExperiment.baselineModel,
+                  },
+                }),
+              onProviderRequestStart: (configuredModel) => {
+                recordFlashRoutingExposure(configuredModel);
+              },
               trackedProvider,
               currentSystemPrompt,
               tools,
@@ -4458,6 +3637,7 @@ export const agentLongTask = task({
               ctxSystemTokens,
               ctxMaxTokens,
               streamStartTime,
+              triggerRunId: ctx.run.id,
               contextUsageOn,
               isReasoningModel: true, // long mode is always agent mode
               platformAuthorized,
@@ -4681,6 +3861,13 @@ export const agentLongTask = task({
                   ? "error"
                   : "success";
               captureAgentCompletionAnalytics({
+                cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                usageMeasurement:
+                  usageTracker.measurementProperties(selectedModel),
+                hasResponseContent: hasCompletedAssistantText(
+                  retryMessages,
+                  retryMessageId,
+                ),
                 handledToolFailureCount,
                 abliteratedProviderSummary: abliteratedTelemetry?.getSummary(),
                 posthog,
@@ -4786,6 +3973,8 @@ export const agentLongTask = task({
                   generationStartedAt: retryStartTime,
                   generationTimeMs: fallbackGenerationTimeMs,
                   finishReason: state.streamFinishReason,
+                  // Trigger cancellation has no user-stop provenance. Keep
+                  // unknown interruptions neutral; the client labels explicit Stop.
                   abliterationRouting: abliteratedTelemetry?.getRoutingMarker(
                     !retryAborted && state.streamFinishReason === "stop",
                   ),
@@ -4963,6 +4152,7 @@ export const agentLongTask = task({
             mergePrimaryStream(
               withAgentLongStreamHeartbeat(
                 result.toUIMessageStream({
+                  onError: formatToolStreamError,
                   generateMessageId: () => assistantMessageId,
                   sendReasoning: true,
                   messageMetadata: ({ part }) => {
@@ -5305,6 +4495,13 @@ export const agentLongTask = task({
                                 : fallbackModel;
                         const retryModelSlug =
                           trackedProvider.languageModel(retryModel).modelId;
+                        streamCtx.ignoredProviderSlugs =
+                          hasTerminalProviderStreamError
+                            ? getProviderDisconnectIgnoredSlugs(
+                                state.providerError,
+                                state.providerErrorMetadata,
+                              )
+                            : [];
                         phLogger.warn(
                           "[agent-long] Provider output triggered fallback retry",
                           {
@@ -5315,6 +4512,8 @@ export const agentLongTask = task({
                             blockedProviderModel,
                             fallbackModel: retryModel,
                             fallbackModelSlug: retryModelSlug,
+                            ignoredProviderSlugs:
+                              streamCtx.ignoredProviderSlugs,
                             userId,
                             subscription,
                             retryReason,
@@ -5426,6 +4625,7 @@ export const agentLongTask = task({
                         writer.merge(
                           withAgentLongStreamHeartbeat(
                             retryResult.toUIMessageStream({
+                              onError: formatToolStreamError,
                               generateMessageId: () => retryMessageId,
                               sendReasoning: true,
                               messageMetadata: ({ part }) => {
@@ -5490,6 +4690,16 @@ export const agentLongTask = task({
                                     : undefined;
 
                                   if (nextContinuation && finalRetryModel) {
+                                    streamCtx.ignoredProviderSlugs = [
+                                      ...new Set([
+                                        ...(streamCtx.ignoredProviderSlugs ??
+                                          []),
+                                        ...getProviderDisconnectIgnoredSlugs(
+                                          state.providerError,
+                                          state.providerErrorMetadata,
+                                        ),
+                                      ]),
+                                    ];
                                     recordProviderDisconnectRecoveryAttempt({
                                       failedModel: retryModel,
                                       retryModel: finalRetryModel,
@@ -5561,6 +4771,7 @@ export const agentLongTask = task({
                                     writer.merge(
                                       withAgentLongStreamHeartbeat(
                                         finalRetryResult.toUIMessageStream({
+                                          onError: formatToolStreamError,
                                           generateMessageId: () =>
                                             finalRetryMessageId,
                                           sendReasoning: true,
@@ -5667,6 +4878,13 @@ export const agentLongTask = task({
                           ? "error"
                           : "success";
                       captureAgentCompletionAnalytics({
+                        cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                        usageMeasurement:
+                          usageTracker.measurementProperties(selectedModel),
+                        hasResponseContent: hasCompletedAssistantText(
+                          finishedMessages,
+                          assistantMessageId,
+                        ),
                         handledToolFailureCount,
                         abliteratedProviderSummary:
                           abliteratedTelemetry?.getSummary(),
@@ -5892,6 +5110,7 @@ export const agentLongTask = task({
                                 !isAborted &&
                                   state.streamFinishReason === "stop",
                               ),
+                            // A Trigger abort alone does not establish a user stop.
                             updateOnly: shouldUseUpdateOnlyForAbortedSave({
                               isAborted,
                               isUserInitiatedAbort,
@@ -5928,6 +5147,7 @@ export const agentLongTask = task({
                       // explicitly decide whether to continue.
                       const autoContinueStopSource =
                         getAgentAutoContinueStopSource({
+                          stoppedDueToStepLimit: state.stoppedDueToStepLimit,
                           finishReason: state.streamFinishReason,
                           stoppedDueToTokenExhaustion:
                             state.stoppedDueToTokenExhaustion,
@@ -5974,6 +5194,15 @@ export const agentLongTask = task({
               await releasePaidDailyFreeAllowanceReservation();
             }
             await releaseFreeRunLockOnce();
+            if (
+              userStopSignal.signal.aborted &&
+              error === userStopSignal.signal.reason
+            ) {
+              preparationCanceled = true;
+              await usageRefundTracker.refund().catch(() => {});
+              writer.write({ type: "abort" });
+              return;
+            }
             throw error;
           }
         },
@@ -6060,7 +5289,7 @@ export const agentLongTask = task({
         });
       }
 
-      metadata.set("status", "done");
+      metadata.set("status", preparationCanceled ? "canceled" : "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
       if (!hasObservedUsage()) {

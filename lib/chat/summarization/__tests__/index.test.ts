@@ -24,11 +24,6 @@ import {
 } from "../constants";
 import { MAX_TOKENS_PAID, safeCountTokens } from "@/lib/token-utils";
 
-const mockStartupVariant = jest.fn<() => Promise<string | undefined>>();
-jest.doMock("@/lib/posthog/server", () => ({
-  getPostHogFeatureFlagVariantForUser: mockStartupVariant,
-}));
-
 const mockGenerateText = jest.fn<() => Promise<any>>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
 const mockAttachChatSummaryTranscript = jest.fn<() => Promise<boolean>>();
@@ -63,6 +58,7 @@ const {
   compactModelMessagesForSummarization,
   estimateSummaryInputTokens,
   getRecentCompleteModelTail,
+  generateSummaryText,
 } = require("../helpers") as typeof import("../helpers");
 const { AGENT_SUMMARIZATION_PROMPT, AGENT_RESUME_PREAMBLE } =
   require("../prompts") as typeof import("../prompts");
@@ -118,6 +114,39 @@ const createMockWriter = (): UIMessageStreamWriter =>
   ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
 
 const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
+
+describe("summary usage coverage", () => {
+  it.each([true, false])(
+    "preserves zero versus absent usage (reported=%s)",
+    async (reported) => {
+      mockGenerateText.mockReset();
+      mockGenerateText.mockResolvedValueOnce({
+        text: "Synthetic summary",
+        finishReason: "stop",
+        usage: reported
+          ? {
+              inputTokens: 0,
+              outputTokens: 0,
+              inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 0 },
+              raw: { cost: 0 },
+            }
+          : {},
+      });
+      const result = await generateSummaryText(
+        [],
+        mockLanguageModel,
+        "ask",
+        "system",
+        false,
+      );
+      expect(result.usage.inputTokens).toBe(0);
+      expect(result.usage.inputTokensReported).toBe(reported);
+      expect(result.usage.cacheReadTokens).toBe(reported ? 0 : undefined);
+      expect(result.usage.cacheWriteTokens).toBe(reported ? 0 : undefined);
+      expect(result.usage.cost).toBe(reported ? 0 : undefined);
+    },
+  );
+});
 
 describe("agent compaction state preservation", () => {
   it("requires runtime and resumable process state in the checkpoint", () => {
@@ -292,6 +321,127 @@ describe("checkAndSummarizeIfNeeded", () => {
   afterEach(() => {
     jest.restoreAllMocks();
   });
+
+  it.each([true, false])(
+    "uses the warm prefix only when its full request fits (fits=%s)",
+    async (fits) => {
+      const { jsonSchema } = jest.requireActual<typeof import("ai")>("ai");
+      const warmModel = {
+        modelId: "deepseek/deepseek-v4.1-flash",
+      } as LanguageModel;
+      const onUsed = jest.fn();
+      const messages: ModelMessage[] = [
+        { role: "user", content: "Original evidence" },
+      ];
+      const tools = {
+        lookup: {
+          description: "stable",
+          inputSchema: jsonSchema({ type: "object", properties: {} }),
+        },
+      };
+      mockGenerateText.mockResolvedValue({
+        text: "Complete checkpoint",
+        finishReason: "stop",
+      });
+      const result = await compactModelMessagesInRun({
+        modelMessages: messages,
+        subscription: "pro",
+        mode: "agent",
+        writer: mockWriter,
+        chatId: null,
+        maxTokens: fits ? 128_000 : 1000,
+        compactionIndex: 1,
+        hasExistingSummary: false,
+        cacheAlignedSummary: {
+          languageModel: warmModel,
+          system: "Frozen prompt",
+          tools,
+          providerOptions: { openrouter: { session_id: "test-session" } },
+          onUsed,
+        },
+      });
+      expect(result?.summaryText).toContain("Complete checkpoint");
+      const call = mockGenerateText.mock.calls[0][0] as any;
+      if (fits) {
+        expect(call.model).toBe(warmModel);
+        expect(call.messages.slice(0, messages.length)).toEqual(messages);
+        expect(call.system).toBe("Frozen prompt");
+        expect(call.tools.lookup.inputSchema).toBe(tools.lookup.inputSchema);
+        expect(call.maxOutputTokens).toBe(8192);
+        expect(onUsed).toHaveBeenCalledTimes(1);
+      } else {
+        expect(call.model).not.toBe(warmModel);
+        expect(onUsed).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(["provider", "truncated", "cancelled"])(
+    "recovers warm summary %s failures unless cancelled",
+    async (failure) => {
+      const controller = new AbortController();
+      const onDiscardedUsage = jest.fn();
+      const warmModel = {
+        modelId: "deepseek/deepseek-v4.1-flash",
+      } as LanguageModel;
+      mockGenerateText
+        .mockImplementationOnce(async () => {
+          if (failure === "truncated")
+            return {
+              text: "Partial",
+              finishReason: "length",
+              usage: { inputTokens: 100, outputTokens: 10 },
+            };
+          if (failure === "cancelled") controller.abort(new Error("stopped"));
+          throw new Error(failure);
+        })
+        .mockResolvedValue({
+          text: "Bounded checkpoint",
+          finishReason: "stop",
+        });
+      const result = compactModelMessagesInRun({
+        modelMessages: [{ role: "user", content: "History" }],
+        subscription: "pro",
+        mode: "agent",
+        writer: mockWriter,
+        chatId: null,
+        maxTokens: 128_000,
+        compactionIndex: 1,
+        hasExistingSummary: false,
+        abortSignal: controller.signal,
+        cacheAlignedSummary: {
+          languageModel: warmModel,
+          system: "Frozen prompt",
+          tools: {},
+          providerOptions: {},
+          onDiscardedUsage,
+        },
+      });
+      if (failure === "cancelled") {
+        await expect(result).rejects.toThrow("cancelled");
+        expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      } else {
+        expect((await result)?.summaryText).toContain("Bounded checkpoint");
+        expect(mockGenerateText).toHaveBeenCalledTimes(2);
+        expect((mockGenerateText.mock.calls[0][0] as any).model).toBe(
+          warmModel,
+        );
+        expect((mockGenerateText.mock.calls[1][0] as any).model).not.toBe(
+          warmModel,
+        );
+        if (failure === "truncated") {
+          expect(onDiscardedUsage).toHaveBeenCalledTimes(1);
+          expect(onDiscardedUsage).toHaveBeenCalledWith(
+            expect.objectContaining({
+              inputTokens: 100,
+              outputTokens: 10,
+              model: "deepseek/deepseek-v4.1-flash",
+            }),
+          );
+        } else expect(onDiscardedUsage).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("persists source runtime records and shares the retained-tail budget", async () => {
     const source: UIMessage[] = [
@@ -844,7 +994,9 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summarizedMessages).toHaveLength(2);
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
-      text: `<context_summary>\n${result.summaryText}\n</context_summary>`,
+      text: expect.stringContaining(
+        `<context_summary>\n${result.summaryText}\n</context_summary>`,
+      ),
     });
     expect(result.summarizedMessages[1].id).toBe("msg-4");
 
@@ -1197,7 +1349,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(persistedMetadata?.estimatedCompactedInputTokens).toBeUndefined();
   });
 
-  describe("bounded startup compaction", () => {
+  describe("permanent compaction fallback chain", () => {
     const start = (extra: Record<string, unknown> = {}) =>
       checkAndSummarizeIfNeeded({
         uiMessages: fourMessagesAboveThreshold,
@@ -1207,13 +1359,9 @@ describe("checkAndSummarizeIfNeeded", () => {
         writer: mockWriter,
         chatId: "chat-startup-compaction",
         providerOptions: { openrouter: { user: "user-test" } },
-        startupCompaction: { userId: "user-test" },
+        startupCompaction: {},
         ...extra,
       });
-
-    beforeEach(() => {
-      mockStartupVariant.mockResolvedValue("bounded_glm_v1");
-    });
 
     it("recovers a timed-out primary with the same source and records real exposure", async () => {
       mockGenerateText
@@ -1226,7 +1374,7 @@ describe("checkAndSummarizeIfNeeded", () => {
         });
       const onAttempt = jest.fn();
       const result = await start({
-        startupCompaction: { userId: "user-test", onAttempt },
+        startupCompaction: { onAttempt },
       });
       expect(result.needsSummarization).toBe(true);
       expect(mockGenerateText).toHaveBeenCalledTimes(2);
@@ -1234,31 +1382,42 @@ describe("checkAndSummarizeIfNeeded", () => {
         (call) => call[0] as any,
       );
       expect(primary).toMatchObject({
-        timeout: 30_000,
         maxRetries: 0,
         model: { modelId: "model-glm-5.3-flash" },
       });
+      expect(primary.timeout).toBeUndefined();
       expect(fallback).toMatchObject({
-        model: { modelId: "model-deepseek-v4-flash-0731" },
+        model: { modelId: "model-deepseek-v4-flash-vision-pro" },
+        maxRetries: 0,
         providerOptions: {
           openrouter: {
             user: "user-test",
             reasoning: { enabled: true, effort: "low" },
-            provider: { sort: "latency", data_collection: "deny" },
+            provider: { sort: "throughput", data_collection: "deny" },
           },
         },
       });
-      expect(fallback.messages).toEqual(primary.messages);
       expect(fallback.timeout).toBeUndefined();
+      expect(fallback.messages).toEqual(primary.messages);
       expect(onAttempt.mock.calls).toEqual([
-        [{ variant: "bounded_glm_v1", fallbackUsed: false }],
-        [{ variant: "bounded_glm_v1", fallbackUsed: true }],
+        [
+          {
+            variant: "glm53_flash_deepseek_v41_glm53_v1",
+            fallbackUsed: false,
+          },
+        ],
+        [
+          {
+            variant: "glm53_flash_deepseek_v41_glm53_v1",
+            fallbackUsed: true,
+          },
+        ],
       ]);
       expect(mockSaveChatSummary).toHaveBeenCalledWith(
         expect.objectContaining({
           summaryText: expect.stringContaining("Complete recovered summary"),
           metadata: expect.objectContaining({
-            model: "model-deepseek-v4-flash-0731",
+            model: "model-deepseek-v4-flash-vision-pro",
           }),
         }),
       );
@@ -1276,6 +1435,33 @@ describe("checkAndSummarizeIfNeeded", () => {
         expect(mockGenerateText).toHaveBeenCalledTimes(2);
       },
     );
+
+    it("uses GLM 5.3 after recoverable failures from both faster models", async () => {
+      mockGenerateText
+        .mockRejectedValueOnce(
+          Object.assign(new Error("primary unavailable"), { statusCode: 503 }),
+        )
+        .mockRejectedValueOnce(
+          Object.assign(new Error("secondary unavailable"), {
+            statusCode: 429,
+          }),
+        )
+        .mockResolvedValueOnce({
+          text: "GLM 5.3 summary",
+          finishReason: "stop",
+        });
+
+      expect((await start()).needsSummarization).toBe(true);
+      expect(
+        mockGenerateText.mock.calls.map(
+          (call) => (call[0] as any).model.modelId,
+        ),
+      ).toEqual([
+        "model-glm-5.3-flash",
+        "model-deepseek-v4-flash-vision-pro",
+        "model-glm-5.3",
+      ]);
+    });
 
     it.each([
       { text: "", finishReason: "stop" },
@@ -1295,7 +1481,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       );
     });
 
-    it("leaves original messages intact if both summaries are unusable", async () => {
+    it("leaves original messages intact if all summaries are unusable", async () => {
       mockGenerateText.mockResolvedValue({
         text: "Partial",
         finishReason: "length",
@@ -1303,7 +1489,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       const result = await start();
       expect(result.needsSummarization).toBe(false);
       expect(result.summarizedMessages).toEqual(fourMessagesAboveThreshold);
-      expect(mockGenerateText).toHaveBeenCalledTimes(2);
+      expect(mockGenerateText).toHaveBeenCalledTimes(3);
       expect(mockSaveChatSummary).not.toHaveBeenCalled();
     });
 
@@ -1320,6 +1506,35 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect(mockSaveChatSummary).not.toHaveBeenCalled();
     });
 
+    it.each(["primary", "fallback"])(
+      "does not persist a late %s result after Stop",
+      async (attempt) => {
+        const controller = new AbortController();
+        if (attempt === "fallback") {
+          mockGenerateText.mockRejectedValueOnce(
+            Object.assign(new Error("upstream"), { statusCode: 429 }),
+          );
+        }
+        mockGenerateText.mockImplementationOnce(async () => {
+          controller.abort();
+          return { text: "Late complete summary", finishReason: "stop" };
+        });
+        await expect(
+          start({ abortSignal: controller.signal }),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        expect(mockGenerateText).toHaveBeenCalledTimes(
+          attempt === "primary" ? 1 : 2,
+        );
+        expect(mockSaveChatSummary).not.toHaveBeenCalled();
+        expect(mockWriter.write).not.toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "data-summarization",
+            data: expect.objectContaining({ status: "completed" }),
+          }),
+        );
+      },
+    );
+
     it("does not retry permanent authorization errors", async () => {
       mockGenerateText.mockRejectedValueOnce(
         Object.assign(new Error("unauthorized"), { statusCode: 401 }),
@@ -1328,39 +1543,27 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect(mockGenerateText).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps control requests unchanged", async () => {
-      mockStartupVariant.mockResolvedValue(undefined);
-      mockGenerateText.mockResolvedValue({
-        finishReason: "stop",
-        text: "Control summary",
-      });
-      await start();
-      const primary = mockGenerateText.mock.calls[0][0] as any;
-      expect(primary.timeout).toBeUndefined();
-      expect(primary.maxRetries).toBeUndefined();
-      expect(primary.model.modelId).toBe("model-glm-5.3-flash");
-    });
-
-    it("does not assign or expose requests that do not need compaction", async () => {
+    it("does not record attempts for requests that do not need compaction", async () => {
       const onAttempt = jest.fn();
       await start({
         uiMessages: fourMessages,
-        startupCompaction: { userId: "user-test", onAttempt },
+        startupCompaction: { onAttempt },
       });
-      expect(mockStartupVariant).not.toHaveBeenCalled();
       expect(onAttempt).not.toHaveBeenCalled();
       expect(mockGenerateText).not.toHaveBeenCalled();
     });
 
-    it("keeps Ask outside the startup pilot", async () => {
+    it("keeps Ask outside the startup route", async () => {
       mockGenerateText.mockResolvedValue({
         finishReason: "stop",
         text: "Ask summary",
       });
       await start({ mode: "ask" });
-      expect(mockStartupVariant).not.toHaveBeenCalled();
       expect(
         (mockGenerateText.mock.calls[0][0] as any).timeout,
+      ).toBeUndefined();
+      expect(
+        (mockGenerateText.mock.calls[0][0] as any).maxRetries,
       ).toBeUndefined();
     });
   });
@@ -1849,15 +2052,21 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(summaryMessageText).toEqual({
       type: "text",
-      text: expect.stringContaining("[in_progress] Run nmap scan on target"),
+      text: expect.stringContaining(
+        '"id":"1","status":"in_progress","content":"Run nmap scan on target"',
+      ),
     });
     expect(summaryMessageText).toEqual({
       type: "text",
-      text: expect.stringContaining("[pending] Test for SQL injection"),
+      text: expect.stringContaining(
+        '"id":"2","status":"pending","content":"Test for SQL injection"',
+      ),
     });
     expect(summaryMessageText).toEqual({
       type: "text",
-      text: expect.stringContaining("[completed] Enumerate subdomains"),
+      text: expect.stringContaining(
+        '"id":"3","status":"completed","content":"Enumerate subdomains"',
+      ),
     });
   });
 
@@ -1880,7 +2089,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(summaryText).toEqual({
       type: "text",
-      text: expect.stringContaining("[... current_todos truncated ...]"),
+      text: expect.stringContaining('"omitted":'),
     });
 
     if (summaryText.type !== "text") {
@@ -1997,7 +2206,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       result.summarizedMessages[0].parts[0] as { type: string; text: string }
     ).text;
     expect(summaryMessageText).toContain("<context_summary>");
-    expect(summaryMessageText).not.toContain("<current_todos>");
+    expect(summaryMessageText).toContain('"total":0,"omitted":0');
   });
 
   it("should use real message ID as cutoff when input starts with summary message", async () => {

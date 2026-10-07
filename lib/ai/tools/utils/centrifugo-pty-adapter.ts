@@ -16,9 +16,15 @@
  *   Server  →  pty_kill     →  Local runner
  */
 
+import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
+import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import { Centrifuge, type Subscription } from "centrifuge";
 
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
+import {
+  estimateRelayPayloadBytes,
+  recordRelayReceivedBytes,
+} from "@/lib/centrifugo/traffic";
 import {
   CentrifugoMessageReassembler,
   fragmentMatchesCorrelation,
@@ -165,7 +171,10 @@ export async function createCentrifugoPtyHandle(
   const sessionId = crypto.randomUUID();
   const userId = sandbox.getUserId();
   const connectionId = sandbox.getConnectionId();
-  const channel = sandboxConnectionChannel(userId, connectionId);
+  const isolated = sandbox.supportsOperationChannels();
+  const channel = isolated
+    ? sandboxOperationChannel(userId, connectionId, "pty", sessionId)
+    : sandboxConnectionChannel(userId, connectionId);
 
   // Long-lived token: PTY sessions can last minutes.
   const tokenExpSeconds = 600;
@@ -181,13 +190,32 @@ export async function createCentrifugoPtyHandle(
   let subscription: Subscription | undefined;
   let settled = false;
   let cleanedUp = false;
+  let createDispatchStarted = false;
+  let receivedPayloadBytesEstimate = 0;
+  let unmatchedPayloadBytesEstimate = 0;
+  let nextTrafficCheckpointBytes = 1024 * 1024;
+  let recordedPayloadBytesEstimate = 0;
+  let recordedUnmatchedPayloadBytesEstimate = 0;
   const reassembler = new CentrifugoMessageReassembler();
 
   const { exited, resolveOnce: resolveExitedOnce } = createResolvableExited();
 
+  const recordTraffic = () => {
+    recordRelayReceivedBytes(
+      "pty",
+      sandbox.getRelayTrafficSource(),
+      receivedPayloadBytesEstimate - recordedPayloadBytesEstimate,
+      unmatchedPayloadBytesEstimate - recordedUnmatchedPayloadBytesEstimate,
+      isolated ? "operation" : "connection",
+    );
+    recordedPayloadBytesEstimate = receivedPayloadBytesEstimate;
+    recordedUnmatchedPayloadBytesEstimate = unmatchedPayloadBytesEstimate;
+  };
+
   const cleanup = () => {
     if (cleanedUp) return;
     cleanedUp = true;
+    recordTraffic();
     if (subscription) {
       try {
         subscription.unsubscribe();
@@ -318,56 +346,75 @@ export async function createCentrifugoPtyHandle(
     subscription = client.newSubscription(channel);
 
     subscription.on("publication", (ctx) => {
-      if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
-        return;
-      }
-      const reassembled = reassembler.accept(ctx.data);
-      if (!reassembled) return;
-      const msg = parsePtyMessage(reassembled);
-      if (!msg || msg.sessionId !== sessionId) return;
-
-      switch (msg.type) {
-        case "pty_ready":
-          pid = msg.pid;
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeoutId);
-            resolve(handle);
-          }
-          break;
-
-        case "pty_data": {
-          const bytes = encoder.encode(msg.data);
-          const snapshot = Array.from(listeners);
-          for (const listener of snapshot) {
-            try {
-              listener(bytes);
-            } catch (err) {
-              console.error(`${LOG_PREFIX} listener threw:`, err);
-            }
-          }
-          break;
+      if (ctx.data?.type === "operation_ready") return;
+      const payloadBytes = estimateRelayPayloadBytes(ctx.data);
+      receivedPayloadBytesEstimate += payloadBytes;
+      try {
+        if (!fragmentMatchesCorrelation(ctx.data, "sessionId", sessionId)) {
+          unmatchedPayloadBytesEstimate += payloadBytes;
+          return;
+        }
+        const reassembled = reassembler.accept(ctx.data);
+        if (!reassembled) return;
+        const msg = parsePtyMessage(reassembled);
+        if (!msg || msg.sessionId !== sessionId) {
+          unmatchedPayloadBytesEstimate += payloadBytes;
+          return;
         }
 
-        case "pty_exit":
-          resolveExitedOnce({ exitCode: msg.exitCode });
-          cleanup();
-          break;
+        switch (msg.type) {
+          case "pty_ready":
+            pid = msg.pid;
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeoutId);
+              resolve(handle);
+            }
+            break;
 
-        case "pty_error":
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeoutId);
-            cleanup();
-            reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
-          } else {
-            console.error(
-              `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
-            );
-            resolveExitedOnce({ exitCode: null });
-            cleanup();
+          case "pty_data": {
+            const bytes = encoder.encode(msg.data);
+            const snapshot = Array.from(listeners);
+            for (const listener of snapshot) {
+              try {
+                listener(bytes);
+              } catch (err) {
+                console.error(`${LOG_PREFIX} listener threw:`, err);
+              }
+            }
+            break;
           }
-          break;
+
+          case "pty_exit":
+            resolveExitedOnce({ exitCode: msg.exitCode });
+            cleanup();
+            break;
+
+          case "pty_error":
+            if (!settled) {
+              settled = true;
+              clearTimeout(timeoutId);
+              cleanup();
+              reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
+            } else {
+              console.error(
+                `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
+              );
+              resolveExitedOnce({ exitCode: null });
+              cleanup();
+            }
+            break;
+        }
+      } finally {
+        if (
+          !cleanedUp &&
+          receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes
+        ) {
+          recordTraffic();
+          while (receivedPayloadBytesEstimate >= nextTrafficCheckpointBytes) {
+            nextTrafficCheckpointBytes *= 2;
+          }
+        }
       }
     });
 
@@ -376,6 +423,8 @@ export async function createCentrifugoPtyHandle(
     });
 
     subscription.on("subscribed", () => {
+      if (createDispatchStarted || cleanedUp) return;
+      createDispatchStarted = true;
       // Now that we are subscribed, publish pty_create
       const createPayload: PtyCreatePayload = {
         type: "pty_create",
@@ -388,7 +437,17 @@ export async function createCentrifugoPtyHandle(
         targetConnectionId: connectionId,
       };
 
-      subscription!.publish(createPayload).catch((err: unknown) => {
+      const dispatch = isolated
+        ? dispatchIsolatedOperation(
+            client,
+            userId,
+            connectionId,
+            createPayload as unknown as Record<string, unknown>,
+            () => !cleanedUp,
+            subscription!,
+          )
+        : subscription!.publish(createPayload);
+      dispatch.catch((err: unknown) => {
         failTransport(
           `failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,
         );

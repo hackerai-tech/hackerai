@@ -25,7 +25,14 @@ async function main() {
     ? "abliterated-model-large-v2"
     : "abliterated-model";
   const assignment = await evaluateAbliteratedModel({
-    posthog: { getFeatureFlag: async () => "test" },
+    posthog: {
+      getFeatureFlagResult: async (key) => ({
+        key,
+        enabled: true,
+        variant: "test",
+        payload: undefined,
+      }),
+    },
     userId: "local-provider-smoke",
     selectedModel: useLargeV2
       ? "model-deepseek-v4-pro-0813"

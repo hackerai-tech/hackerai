@@ -22,14 +22,15 @@ export const abliteration = createOpenAICompatible({
   includeUsage: true,
 });
 
-// USD per million tokens; https://docs.abliteration.ai/pricing (2026-09-06).
+// USD per million tokens; https://docs.abliteration.ai/pricing (2026-10-01).
 export const ABLITERATION_BASE_PRICING = {
-  input: 3,
+  input: 1,
   output: 3,
-  cacheRead: 0.3,
-  cacheWrite: 3,
+  cacheRead: 0.1,
+  cacheWrite: 1,
 };
 
+// Historical Large v2 accounting; the Max trial uses only the base model above.
 export const ABLITERATION_LARGE_V2_PRICING = {
   input: 5,
   output: 5,

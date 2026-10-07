@@ -6,10 +6,12 @@ import {
   clearSelectedModelFromStorage,
   clearSidebarTaskLastVisitedAt,
 } from "@/lib/utils/client-storage";
+import { shutdownIntercomSession } from "@/lib/intercom/client";
 
 export const clientLogout = (redirectPath: string = "/logout"): void => {
   if (typeof window === "undefined") return;
   try {
+    shutdownIntercomSession();
     clearAllDrafts();
     clearSelectedModelFromStorage();
     clearSidebarTaskLastVisitedAt();

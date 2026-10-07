@@ -1,12 +1,13 @@
 /**
- * Build a user-facing suspension message from a Stripe customer's
- * `blocked_reason` metadata (set by the fraud webhook).
+ * Build a user-facing suspension message from an account suspension category
+ * or Stripe customer `blocked_reason` metadata.
  *
  * The raw reason categories come from app/api/fraud/webhook/route.ts:
  *   - early_fraud_warning:<fraud_type>
  *   - dispute_fraudulent:<dispute_id>
  *   - dispute_billing_hold:<dispute_id>
  *   - support_confirmed_fraud:support_case:<case_id>
+ *   - security_abuse:<case_id>
  *
  * Specific fraud signals are intentionally not exposed to avoid tipping
  * off bad actors about how detection works.
@@ -28,6 +29,8 @@ function mapBlockedReasonToLabel(blockedReason?: string | null): string {
       return "a fraudulent payment dispute (chargeback)";
     case "dispute_billing_hold":
       return "a payment dispute under review";
+    case "security_abuse":
+      return "security misuse that violates our acceptable use policy";
     case "support_confirmed_fraud":
       return "confirmed fraudulent payment activity";
     default:

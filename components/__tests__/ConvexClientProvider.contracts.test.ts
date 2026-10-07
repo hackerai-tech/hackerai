@@ -12,7 +12,7 @@ const rootLayoutSource = fs.readFileSync(
 const authkitPatchSource = fs.readFileSync(
   path.resolve(
     __dirname,
-    "../../patches/@workos-inc__authkit-nextjs@4.3.1.patch",
+    "../../patches/@workos-inc__authkit-nextjs@4.3.2.patch",
   ),
   "utf8",
 );

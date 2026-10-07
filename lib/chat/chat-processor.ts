@@ -1,4 +1,6 @@
 import { getModerationResult } from "@/lib/moderation";
+import { evaluatePaidFirstStepVariant } from "@/lib/experiments/abliterated-model";
+import type { PostHog } from "posthog-node";
 import {
   normalizeMaxModelForSubscription,
   type ChatMode,
@@ -18,7 +20,7 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import {
-  ABORTED_TOOL_ERROR_TEXT,
+  INTERRUPTED_TOOL_ERROR_TEXT,
   getIncompleteToolErrorText,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
@@ -38,11 +40,11 @@ export const getMaxStepsForUser = (mode: ChatMode): number => {
  * @param mode - Chat mode (ask or agent)
  * @param hasImageAttachment - Whether any message has an image attachment.
  * @param hasPdfAttachment - Whether any message has a PDF attachment.
- *   Paid Agent Auto and Standard use DeepSeek V4 Flash 0731. Ask Ultra Auto
- *   and Ask Pro use DeepSeek V4 Pro 0813. Agent Pro uses DeepSeek V4.1
- *   Flash with native vision, while Max uses Grok 4.6.
- *   Pro/Pro+ Standard and Auto image turns use GLM 5.3 Flash; other eligible
- *   image turns use DeepSeek V4 Flash Vision before fallbacks.
+ *   Every paid Auto route (Pro, Pro Plus, Ultra, Team) and Agent Pro use
+ *   DeepSeek V4.1 Flash. Paid Standard uses GLM 5.3 Flash, including images.
+ *   Ask Pro uses DeepSeek V4 Pro 0813, while Max uses GLM 5.3.
+ *   Pro/Pro+ Auto image turns also use GLM 5.3 Flash; other eligible
+ *   image turns use DeepSeek V4.1 Flash vision before fallbacks.
  * @returns Model name to use
  */
 export function selectModel(
@@ -63,7 +65,12 @@ export function selectModel(
     subscription,
     options,
   );
-  // Pro/Pro+ Standard and Auto use GLM Flash for lower-cost direct vision.
+  // Paid Standard uses native GLM vision as well as text/PDF parsing. Resolve
+  // it before the legacy media promotions so every paid plan keeps this route.
+  if (subscription !== "free" && allowedSelectedModel === "hackerai-standard") {
+    return resolveTierToProviderKey(allowedSelectedModel, mode);
+  }
+  // Pro/Pro+ Auto uses GLM Flash for lower-cost direct vision.
   // Other paid image routes retain DeepSeek Vision. The auxiliary treatment
   // is reserved for MiniMax summary recovery after direct routes fail.
   // PDFs remain on DeepSeek via OpenRouter's file parser in both routes.
@@ -72,13 +79,10 @@ export function selectModel(
     !isAgent && !!hasImageAttachment && !options.auxiliaryVisionEnabled;
   const hasProviderImage =
     !!hasImageAttachment && !options.auxiliaryVisionEnabled;
-  const paidStandardTextModel: ModelName = "model-deepseek-v4-flash-0731";
-  const paidAutoTextModel: ModelName =
-    !isAgent && subscription === "ultra"
-      ? "model-deepseek-v4-pro-0813"
-      : paidStandardTextModel;
+  // Paid Auto text and PDF turns use DeepSeek V4.1 Flash on every plan.
+  const paidAutoTextModel: ModelName = "model-deepseek-v4-flash-vision-pro";
   // Paid Agent Pro accepts original images without a separate vision route.
-  // Ask and paid Agent Auto/Standard retain their existing model selection.
+  // Ask Pro and paid Auto retain their existing model selection.
   if (
     isAgent &&
     subscription !== "free" &&
@@ -86,10 +90,13 @@ export function selectModel(
   ) {
     return "model-deepseek-v4-flash-vision-pro";
   }
+  // Direct image routes are unchanged by the Auto text routing: explicit Pro
+  // and Ask Ultra Auto keep Pro vision reasoning, other routes use Standard.
+  const isAutoSelection =
+    !allowedSelectedModel || allowedSelectedModel === "auto";
   const directVisionModel: ModelName =
     allowedSelectedModel === "hackerai-pro" ||
-    ((!allowedSelectedModel || allowedSelectedModel === "auto") &&
-      paidAutoTextModel === "model-deepseek-v4-pro-0813")
+    (isAutoSelection && !isAgent && subscription === "ultra")
       ? "model-deepseek-v4-flash-vision-pro"
       : "model-deepseek-v4-flash-vision";
   if (
@@ -108,7 +115,7 @@ export function selectModel(
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
-      ? "agent-model-free"
+      ? "model-glm-5.3-flash-agent"
       : hasProviderImage
         ? "model-grok-4.5"
         : paidAutoTextModel
@@ -118,24 +125,21 @@ export function selectModel(
 
   // Free users always route through the auto router; paid users may pick an
   // entitled tier explicitly. The tier id is mode-aware via resolveTierToProviderKey.
-  if (
-    !allowedSelectedModel ||
-    allowedSelectedModel === "auto" ||
-    subscription === "free"
-  ) {
+  if (isAutoSelection || subscription === "free") {
     return autoModel;
-  }
-
-  // Explicit Standard remains on Flash even when Ultra Auto uses Pro.
-  // Keep an explicit key so model display surfaces show the selected tier.
-  if (allowedSelectedModel === "hackerai-standard") {
-    return hasProviderImage ? "model-grok-4.5" : paidStandardTextModel;
   }
 
   if (allowedSelectedModel === "hackerai-pro") {
     return hasProviderImage
       ? "model-grok-4.5-pro"
       : "model-deepseek-v4-pro-0813";
+  }
+
+  // GLM 5.3 is the Max text model. Keep image requests on the existing
+  // multimodal route because the retired experiment intentionally excluded
+  // image inputs.
+  if (allowedSelectedModel === "hackerai-max" && hasProviderImage) {
+    return "model-grok-4.6";
   }
 
   const providerKey = resolveTierToProviderKey(allowedSelectedModel, mode);
@@ -246,7 +250,7 @@ function logIncompleteToolPartHandled({
 
 function createAbortedToolPart(
   part: any,
-  errorText = ABORTED_TOOL_ERROR_TEXT,
+  errorText = INTERRUPTED_TOOL_ERROR_TEXT,
 ): any | null {
   if (
     !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
@@ -278,7 +282,10 @@ function createAbortedToolPart(
  */
 export function fixIncompleteMessageParts(
   parts: any[],
-  options?: { logContext?: IncompleteMessagePartsLogContext },
+  options?: {
+    logContext?: IncompleteMessagePartsLogContext;
+    userInitiatedAbort?: boolean;
+  },
 ): any[] {
   // First pass: fix incomplete tool invocations
   const partsWithFixedTools = parts.map((part: any) => {
@@ -301,7 +308,10 @@ export function fixIncompleteMessageParts(
       if (isIncomplete && part.output == null && part.result == null) {
         const abortedPart = createAbortedToolPart(
           part,
-          getIncompleteToolErrorText(options?.logContext?.finishReason),
+          getIncompleteToolErrorText(
+            options?.logContext?.finishReason,
+            options?.userInitiatedAbort,
+          ),
         );
         if (abortedPart) {
           logIncompleteToolPartHandled({
@@ -684,6 +694,8 @@ export async function processChatMessages({
   chatId,
   triggerRunId,
   requestId,
+  abliterationPosthog = null,
+  limitRescue = false,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
@@ -698,6 +710,8 @@ export async function processChatMessages({
   chatId?: string;
   triggerRunId?: string;
   requestId?: string;
+  abliterationPosthog?: Pick<PostHog, "getFeatureFlagResult"> | null;
+  limitRescue?: boolean;
 }) {
   const messagesWithoutOpenRouterReasoningMetadata =
     stripOpenRouterReasoningMetadataFromMessages(messages);
@@ -794,16 +808,28 @@ export async function processChatMessages({
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
-  // Check moderation for the last user message
-  const moderationResult = await getModerationResult(
-    cleanedMessages,
-    subscription !== "free",
-  );
+  const paidFirstStepVariant = await evaluatePaidFirstStepVariant({
+    posthog: abliterationPosthog,
+    userId,
+    subscription,
+    // File resolution can drop unavailable attachments. Eligibility must still
+    // see the original unsupported inputs before deciding to skip moderation.
+    messages: messagesWithLimitedFiles,
+    limitRescue,
+  });
+  // Only explicit paid treatment skips the API. Controls, unavailable flags,
+  // rescue and Free requests keep their existing moderation processing.
+  const moderationChecked = paidFirstStepVariant !== "test";
+  const moderationResult = moderationChecked
+    ? await getModerationResult(cleanedMessages, subscription !== "free")
+    : { shouldUncensorResponse: false, allowsAbliterationContinuation: false };
 
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    paidFirstStepVariant,
+    moderationChecked,
     platformAuthorized: moderationResult.shouldUncensorResponse,
     allowsAbliterationContinuation:
       moderationResult.allowsAbliterationContinuation,

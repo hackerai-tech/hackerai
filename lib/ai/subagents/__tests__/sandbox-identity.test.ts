@@ -28,4 +28,31 @@ describe("subagent sandbox identity", () => {
       "The validation sandbox changed before the child started.",
     );
   });
+
+  it("survives relay replacement only for the same persistent environment", () => {
+    const local = (connectionId: string, environmentId: string) =>
+      ({
+        sandboxKind: "centrifugo",
+        getConnectionId: () => connectionId,
+        getConnectionInfo: () => ({
+          connectionId,
+          environmentId,
+          isDesktop: false,
+        }),
+      }) as never;
+
+    const first = local("session-1", "machine-a");
+    const replacement = local("session-2", "machine-a");
+    const other = local("session-3", "machine-b");
+
+    expect(getSubagentSandboxIdentity(first)).toBe(
+      "connection:environment:machine-a",
+    );
+    expect(getSubagentSandboxIdentity(replacement)).toBe(
+      getSubagentSandboxIdentity(first),
+    );
+    expect(getSubagentSandboxIdentity(other)).not.toBe(
+      getSubagentSandboxIdentity(first),
+    );
+  });
 });

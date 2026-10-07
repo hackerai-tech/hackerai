@@ -9,6 +9,10 @@ import {
   type ProMonthlyPricingExperimentAssignment,
 } from "@/lib/experiments/pro-monthly-pricing";
 import type { SubscriptionTier } from "@/types";
+import {
+  GRANDFATHERED_PRO_MONTHLY_PRICE_ID,
+  PRO_MONTHLY_PRICE_LOOKUP_KEY,
+} from "@/lib/pricing/pro-monthly";
 
 export const NO_ACTIVE_SUBSCRIPTION_ERROR = "No active subscription found";
 
@@ -70,6 +74,21 @@ export function subscriptionTierFromLookupKey(
   return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
 }
 
+export function subscriptionTierFromPrice(
+  price: Stripe.Price | undefined,
+): SubscriptionTier | undefined {
+  if (price?.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID) return "pro";
+  return subscriptionTierFromLookupKey(price?.lookup_key);
+}
+
+export function subscriptionPlanFromPrice(
+  price: Stripe.Price | undefined,
+): string | undefined {
+  return price?.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID
+    ? PRO_MONTHLY_PRICE_LOOKUP_KEY
+    : (price?.lookup_key ?? undefined);
+}
+
 export function toCurrentSubscriptionContext(
   subscription: Stripe.Subscription,
 ): CurrentSubscriptionContext {
@@ -87,8 +106,8 @@ export function toCurrentSubscriptionContext(
     itemId: item?.id,
     scheduleId: stripeObjectId(subscription.schedule ?? undefined) ?? undefined,
     priceId: price?.id,
-    plan: price?.lookup_key ?? undefined,
-    tier: subscriptionTierFromLookupKey(price?.lookup_key),
+    plan: subscriptionPlanFromPrice(price),
+    tier: subscriptionTierFromPrice(price),
     billingInterval: priceBillingInterval(price),
     billingIntervalCount: price?.recurring?.interval_count ?? undefined,
     unitAmountDollars,

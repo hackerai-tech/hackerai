@@ -1,6 +1,9 @@
 import { tool } from "ai";
-import type { ToolContext } from "@/types";
+import type { SandboxType, ToolContext } from "@/types";
+import { phLogger } from "@/lib/posthog/server";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
+import { isCentrifugoSandbox } from "./utils/sandbox-types";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -19,12 +22,76 @@ export const createGetTerminalFiles = (context: ToolContext) => {
       modelName: context.getCurrentModelName?.() ?? context.modelName,
     }).inputSchema,
     execute: async ({ files }: { files: string[] }) => {
+      let relayRecoveryAttempted = false;
+      let relayRecoverySucceeded = false;
+      const recordOutcome = (delivered: number, failed: number) => {
+        phLogger.event("agent_file_delivery_completed", {
+          userId: context.userID,
+          requested_file_count: files.length,
+          delivered_file_count: delivered,
+          failed_file_count: failed,
+          relay_recovery_attempted: relayRecoveryAttempted,
+          relay_recovery_succeeded: relayRecoverySucceeded,
+          sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
+        });
+      };
       try {
-        const { sandbox } = await getSandboxWithFallbackGuard({
+        let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
 
+        const uploadWithRelayRecovery = async (filePath: string) => {
+          try {
+            return await uploadSandboxFileToConvex({
+              sandbox,
+              userId: context.userID,
+              fullPath: filePath,
+              storageRegion: context.triggerRegion,
+            });
+          } catch (error) {
+            if (
+              !isCentrifugoSandbox(sandbox) ||
+              !isLocalCommandRelayUnsubscribedError(error) ||
+              !sandboxManager.recoverLocalConnection
+            ) {
+              throw error;
+            }
+
+            relayRecoveryAttempted = true;
+            await sandboxManager.recoverLocalConnection(
+              sandbox.getConnectionId(),
+              "command_relay_unsubscribed",
+            );
+            const { sandbox: recoveredSandbox } =
+              await getSandboxWithFallbackGuard({ sandboxManager });
+            if (!isCentrifugoSandbox(recoveredSandbox)) {
+              throw new Error(
+                "The selected local sandbox changed during file recovery. Reconnect it and try again.",
+              );
+            }
+            sandbox = recoveredSandbox;
+            relayRecoverySucceeded = true;
+            // Relay presence rejected the first command before publication.
+            // The manager only selects a live successor on the same machine.
+            return uploadSandboxFileToConvex({
+              sandbox,
+              userId: context.userID,
+              fullPath: filePath,
+              storageRegion: context.triggerRegion,
+            });
+          }
+        };
+
         const providedFiles: Array<{ path: string }> = [];
+        const deliveryReceipts: Array<{
+          fileId: string;
+          sourcePath: string;
+          name: string;
+          sizeBytes: number;
+          sourceEnvironment: SandboxType | "unknown";
+          storageStatus: "stored";
+          validation: "not_performed_by_delivery_tool";
+        }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
@@ -32,12 +99,19 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           const pathsToTry: string[] = [];
 
           // Build list of paths to try
-          if (originalPath.startsWith("/")) {
+          if (
+            originalPath.startsWith("/") ||
+            /^[A-Za-z]:[\\/]/.test(originalPath) ||
+            originalPath.startsWith("\\\\")
+          ) {
             // Already absolute, try as-is
             pathsToTry.push(originalPath);
           } else {
-            // Relative path: try both /home/user/ and as-is
-            pathsToTry.push(`/home/user/${originalPath}`);
+            // Only Cloud has the conventional /home/user fallback. A connected
+            // computer resolves relative paths using its own execution context.
+            if (sandboxManager.getSandboxInfo()?.type === "cloud") {
+              pathsToTry.push(`/home/user/${originalPath}`);
+            }
             pathsToTry.push(originalPath);
           }
 
@@ -70,12 +144,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             }
 
             try {
-              const saved = await uploadSandboxFileToConvex({
-                sandbox,
-                userId: context.userID,
-                fullPath: filePath,
-                storageRegion: context.triggerRegion,
-              });
+              const saved = await uploadWithRelayRecovery(filePath);
 
               context.fileAccumulator.add({
                 fileId: saved.fileId,
@@ -106,6 +175,16 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               }
 
               providedFiles.push({ path: originalPath });
+              deliveryReceipts.push({
+                fileId: saved.fileId,
+                sourcePath: filePath,
+                name: saved.name,
+                sizeBytes: saved.sizeBytes,
+                sourceEnvironment:
+                  sandboxManager.getSandboxInfo()?.type ?? "unknown",
+                storageStatus: "stored",
+                validation: "not_performed_by_delivery_tool",
+              });
               fileProcessed = true;
               break; // Success! No need to try other paths
             } catch (e) {
@@ -137,16 +216,20 @@ export const createGetTerminalFiles = (context: ToolContext) => {
           result = `Successfully provided ${providedFiles.length} file(s) to the user`;
         }
 
+        recordOutcome(providedFiles.length, blockedFiles.length);
         return {
           result: result || "No files were retrieved",
           files: providedFiles,
+          deliveryReceipts,
           failedFiles: blockedFiles,
         };
       } catch (error) {
         const errorMsg = resolveToolErrorMessage(error);
+        recordOutcome(0, files.length);
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
           files: [],
+          deliveryReceipts: [],
           failedFiles: files.map((path) => ({
             path,
             reason: errorMsg,

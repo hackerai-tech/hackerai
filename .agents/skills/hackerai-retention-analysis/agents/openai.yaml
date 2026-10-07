@@ -1,0 +1,4 @@
+interface:
+  display_name: "HackerAI Retention Analysis"
+  short_description: "Compare subscriber churn and renewal outcomes"
+  default_prompt: "Use $hackerai-retention-analysis to assess whether a HackerAI change increased subscriber churn, separating early warnings from mature renewal outcomes."

@@ -28,6 +28,48 @@ scan is bounded to 1,000 events and skips collection if history is incomplete or
 the customer event is older than Stripe's 30-day retention. API lookup failures
 retry webhook delivery. Restricted Stripe keys need Events read permission.
 
+## Pricing and Account recovery
+
+A failed payment-history lookup keeps recovery controls and the checkout block
+available, but the copy states that billing status could not be verified rather
+than asserting an unpaid invoice. Explicit status checks fetch fresh data before
+updating the pricing cache or clearing a checkout review warning.
+
+Pricing checks authenticated billing status before enabling paid plan changes.
+Delinquent renewals display a persistent recovery panel with the actual invoice
+balance, card update, and a payment-status recheck. Pay invoice is offered only
+when the invoice belongs to the current customer's uncanceled automatic renewal;
+the server repeats those checks and retrieves a fresh hosted payment URL at click
+time. Opening that URL does not charge an invoice or restore access.
+
+Former subscribers retain payment management in Account settings after dropping
+to Free. An unresolved canceled renewal uses the existing checkout safety guard
+and shows billing help instead of invoice payment: paying an old invoice does not
+restart a canceled subscription. Card management remains independent of that
+review. Status lookup failures stay unknown and offer retry instead of enabling a
+new checkout. Card-update returns request an entitlement refresh; payment status
+and access still require successful payment and the ordinary admission checks.
+
+## Blocked-chat recovery
+
+Blocked Ask/Agent errors, saved budget stops, and exhausted composer warnings
+check the authenticated billing status before rendering usage-purchase actions.
+Normal chat traffic and near-limit warnings do not make this Stripe lookup.
+Concurrent notices deduplicate by user and organization; focus and reconnect
+revalidate without interval polling. Billing failures remain unknown rather than
+being interpreted as exhausted usage. Multiple current subscriptions or a truncated
+subscription list require billing review; neither surface chooses the first
+subscription as a recovery target. Non-admins are directed to their billing
+administrator; portal creation keeps the existing server authorization checks.
+
+Only a current delinquent subscription with an open automatic renewal invoice
+qualifies for the direct Update payment action. Scheduled cancellations and
+paused collection remain outside automatic recovery. The portal returns to the
+same chat with an entitlement refresh request. Neither opening the portal nor
+returning from it starts a chat or grants access; users refresh after payment and
+retry through the normal server admission checks. A declined or
+authentication-required replacement remains pending until payment succeeds.
+
 ## Payments received after cancellation
 
 Paying an old invoice cannot reactivate a canceled Stripe subscription. A renewal
@@ -38,6 +80,37 @@ The handler checks current Stripe state before refunding. A replacement
 subscription, credit note, support resolution, partial payment, or unrelated
 refund requires manual reconciliation. Payments made before cancellation and
 voluntary cancellations are outside this policy.
+
+On `customer.subscription.deleted` with reason `payment_failed`, the handler
+voids the latest wholly unpaid automatic renewal for a single recognized,
+licensed individual plan, with exactly one invoice line matching that subscription
+item and a quantity of one. Both `open` and `uncollectible` invoices can still be
+paid, so both are eligible. This deliberately retires that failed renewal debt
+instead of collecting money for a subscription that cannot be restarted. It
+does not grant access or usage; the customer starts a new subscription normally.
+Team, metered, unfamiliar, partial-payment, prior-debt, proration, mixed-item, credit-note,
+and support-adjusted cases remain for review. Pending payment processing or
+authentication also prevents cleanup. Cleanup failures retry the deletion
+webhook before it is marked processed. Cleanup runs even if customer-user lookup
+fails or finds no users. A concurrent paid invoice stays under
+the existing late-payment reconciliation policy.
+
+This prevents future eligible canceled renewals from leaving a payable old
+invoice link or blocking a fresh checkout. It does not backfill already processed
+cancellations or change how an existing ambiguous paid invoice is resolved.
+
+An in-app cancellation of a `past_due` or `unpaid` subscription ends service
+immediately. The cancellation path voids its latest open automatic renewal
+invoice only when nothing has been paid and every line is a non-prorated
+subscription item. Stripe can settle an invoice while cancellation is running;
+the subscribe route checks recent canceled renewals before creating another
+Checkout session. An open invoice or a payment around cancellation returns a
+409 for support reconciliation instead of risking a second charge. A voided
+invoice allows a new checkout. For paid invoices, a fully settled refund or a
+documented support resolution also allows checkout. Open or uncollectible
+invoices remain blocked until voided, even if they have a support note, because
+they can still be paid. Pending or partial refunds still require review. This
+guard does not itself refund a settled payment.
 
 Refund creation uses an invoice/charge idempotency key and durable refund metadata
 for retries after Stripe's idempotency cache expires. API failures retry webhook
@@ -78,7 +151,9 @@ chat after the customer refreshes their entitlement session.
    WorkOS, and access state; they are not a substitute for this journey.
 5. The late-payment refund path needs Invoice Payments read and Refunds read/write
    access. Verify successful `refund.created` and `refund.updated` deliveries,
-   including when the Charge object has no legacy `invoice` field.
+   including when the Charge object has no legacy `invoice` field. Cancellation
+   cleanup additionally requires Invoices write and PaymentIntents read access;
+   verify the restricted webhook key supports `invoices.voidInvoice`.
 
 ## Manual sandbox journey (required)
 
@@ -112,12 +187,20 @@ detaches existing methods and has no sandbox guard).
 8. Check an attachment-only event, a stale default-card event, and a canceled
    subscription: none initiates collection. Remove disposable test artifacts only
    after recording sanitized outcomes and confirming their exact IDs.
-9. In a separate sandbox case, let renewal failures cancel the subscription, then
-   pay its latest renewal invoice. Confirm exactly one full refund, no paid access
-   or usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
-   deliveries: no additional refund or accounting entry. Repeat with a credited
-   replacement subscription and with an existing partial refund: both require
-   manual review and must not create another refund.
+9. In a separate sandbox case, let renewal failures cancel an individual licensed
+   subscription. Confirm deletion delivery voids its latest unpaid renewal
+   (`open` and `uncollectible` cases), the old hosted invoice cannot accept payment,
+   and a fresh checkout is allowed. Replay deletion: no additional write, access,
+   usage, or charge. Make the void API fail once: delivery must retry and complete
+   cleanup, rather than acknowledge and strand the invoice. Repeat with a partial
+   payment, credit note, mixed item, team plan, and processing/authentication
+   payment: none is voided automatically.
+10. For the late-payment race, hold deletion delivery until its latest renewal is
+    paid after cancellation. Confirm exactly one full refund, no paid access or
+    usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
+    deliveries: no additional refund or accounting entry. Repeat with a credited
+    replacement subscription and with an existing partial refund: both require
+    manual review and must not create another refund.
 
 Measure recovered users/invoices within a fixed window after the first renewal
 failure, joining by subscription and invoice. Separate card selection, actual

@@ -1,4 +1,5 @@
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
+import { HACKERAI_PRO_20_MONTHLY_PRICE_ID } from "@/lib/billing/included-usage";
 import type { SubscriptionTier } from "@/types";
 
 const ELIGIBLE_SUBSCRIPTION_STATUSES = new Set([
@@ -44,7 +45,7 @@ export type AgentEntitlementClients = {
           status: string;
           items: {
             data: Array<{
-              price?: { lookup_key?: string | null } | null;
+              price?: { id?: string; lookup_key?: string | null } | null;
             }>;
           };
         }>;
@@ -97,7 +98,9 @@ export async function resolveCurrentAgentEntitlementContext(
     for (const candidate of page.data) {
       if (!ELIGIBLE_SUBSCRIPTION_STATUSES.has(candidate.status)) continue;
       for (const item of candidate.items.data) {
-        const tier = planLookupKeyToTier(item.price?.lookup_key ?? undefined);
+        const tier =
+          planLookupKeyToTier(item.price?.lookup_key ?? undefined) ??
+          (item.price?.id === HACKERAI_PRO_20_MONTHLY_PRICE_ID ? "pro" : null);
         if (tier && TIER_RANK[tier] > TIER_RANK[subscription]) {
           subscription = tier;
         }

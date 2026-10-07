@@ -267,6 +267,13 @@ const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
     ? { evidence_verification: finding.evidence_verification }
     : {}),
   assumptions: finding.assumptions,
+  ...(finding.confidence ? { confidence: finding.confidence } : {}),
+  ...(finding.counterevidence
+    ? { counterevidence: finding.counterevidence }
+    : {}),
+  ...(finding.severity_change_conditions
+    ? { severity_change_conditions: finding.severity_change_conditions }
+    : {}),
   fix_effort: finding.fix_effort,
   cvss_breakdown: finding.cvss_breakdown,
   cvss_vector: finding.cvss_vector,
@@ -378,6 +385,13 @@ export const createFindingForBackend = mutation({
         ? { evidence_verification: evidenceVerification }
         : {}),
       assumptions: input.assumptions,
+      ...(input.confidence ? { confidence: input.confidence } : {}),
+      ...(input.counterevidence
+        ? { counterevidence: input.counterevidence }
+        : {}),
+      ...(input.severity_change_conditions
+        ? { severity_change_conditions: input.severity_change_conditions }
+        : {}),
       fix_effort: input.fix_effort,
       cvss_breakdown: input.cvss_breakdown,
       cvss_score: cvss.score,

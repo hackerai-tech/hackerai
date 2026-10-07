@@ -1,3 +1,4 @@
+import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useQuery } from "convex/react";
@@ -72,6 +73,7 @@ export type RateLimitWarningData =
 interface RateLimitWarningProps {
   data: RateLimitWarningData;
   onDismiss: () => void;
+  compact?: boolean;
 }
 
 const formatTimeUntil = (resetTime: Date): string => {
@@ -174,9 +176,23 @@ const getUpgradeCtaText = (
 
 const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 
-export const RateLimitWarning = ({
+export const RateLimitWarning = (props: RateLimitWarningProps) => {
+  const isBlocked =
+    props.data.warningType === "token-bucket" &&
+    props.data.remainingPercent === 0;
+  return isBlocked ? (
+    <BlockedChatBillingRecovery>
+      <RateLimitWarningContent {...props} />
+    </BlockedChatBillingRecovery>
+  ) : (
+    <RateLimitWarningContent {...props} />
+  );
+};
+
+const RateLimitWarningContent = ({
   data,
   onDismiss,
+  compact = false,
 }: RateLimitWarningProps) => {
   const isPersonalMonthlyWarning =
     data.warningType === "token-bucket" &&
@@ -238,6 +254,7 @@ export const RateLimitWarning = ({
       ? "hit"
       : "warning";
   const upgradeCtaText = getUpgradeCtaText(data, limitType);
+  const ctaClassName = `h-7 text-xs font-medium border-black/8 dark:border-border ${compact ? "px-2.5" : "px-3"}`;
 
   useEffect(() => {
     if (!showUpgrade || capturedUpgradeImpressionRef.current) return;
@@ -279,10 +296,14 @@ export const RateLimitWarning = ({
   return (
     <div
       data-testid="rate-limit-warning"
-      className={`mb-2 px-3 py-2.5 border rounded-[22px] flex items-center justify-between gap-2 ${WARNING_STYLES}`}
+      className={`mb-2 flex items-center justify-between gap-2 rounded-[22px] border px-3 ${compact ? "mx-4 min-w-0 py-1.5" : "py-2.5"} ${WARNING_STYLES}`}
     >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
-        <span className="text-foreground text-sm">{message}</span>
+        <span
+          className={`text-foreground text-sm ${compact ? "leading-5" : ""}`}
+        >
+          {message}
+        </span>
         {extraUsageCta && (
           <Button
             onClick={() => {
@@ -303,7 +324,7 @@ export const RateLimitWarning = ({
                 ? "default"
                 : "outline"
             }
-            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+            className={ctaClassName}
           >
             {extraUsageCta.label}
           </Button>
@@ -313,7 +334,7 @@ export const RateLimitWarning = ({
             onClick={() => openSettingsDialog("Usage")}
             size="sm"
             variant="outline"
-            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+            className={ctaClassName}
           >
             View Usage
           </Button>
@@ -332,7 +353,7 @@ export const RateLimitWarning = ({
             }
             size="sm"
             variant="outline"
-            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+            className={ctaClassName}
           >
             {upgradeCtaText}
           </Button>
@@ -340,10 +361,14 @@ export const RateLimitWarning = ({
       </div>
       <button
         onClick={onDismiss}
-        className="flex-shrink-0 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+        className={
+          compact
+            ? "flex h-7 w-7 flex-shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            : "flex-shrink-0 text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+        }
         aria-label="Dismiss warning"
       >
-        <X className="h-5 w-5" />
+        <X className={compact ? "h-4 w-4" : "h-5 w-5"} />
       </button>
     </div>
   );

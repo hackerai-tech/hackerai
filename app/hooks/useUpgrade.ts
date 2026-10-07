@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { createCheckoutNavigationDiagnostics } from "@/lib/billing/checkout-navigation-diagnostics";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import {
   captureAuthenticatedEvent,
   getPostHogRequestHeaders,
@@ -27,8 +29,13 @@ import {
 let upgradeInFlight = false;
 
 export const useUpgrade = () => {
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [billingReviewScope, setBillingReviewScope] = useState<string | null>(
+    null,
+  );
+  const billingScope = `${user?.id ?? ""}:${organizationId ?? ""}`;
+  const billingReviewRequired = billingReviewScope === billingScope;
 
   const handleUpgrade = async (
     planKey?: PaidFunnelPlan,
@@ -91,6 +98,10 @@ export const useUpgrade = () => {
     setUpgradeLoading(true);
 
     let navigationStarted = false;
+    let diagnostics:
+      ReturnType<typeof createCheckoutNavigationDiagnostics> | undefined;
+    let failureStage: "request_failed" | "navigation_exception" =
+      "request_failed";
 
     try {
       const checkoutAttemptId = newCheckoutAttemptId();
@@ -122,6 +133,12 @@ export const useUpgrade = () => {
 
       // Use regular checkout for new subscriptions (free users)
       if (!currentSubscription || currentSubscription === "free") {
+        diagnostics = createCheckoutNavigationDiagnostics({
+          attemptId: checkoutAttemptId,
+          plan: selectedPlan,
+          source: analyticsContext.source,
+          surface: analyticsContext.surface,
+        });
         captureAuthenticatedEvent("checkout_intent_clicked", {
           checkout_attempt_id: checkoutAttemptId,
           plan: selectedPlan,
@@ -148,18 +165,45 @@ export const useUpgrade = () => {
           body: JSON.stringify(requestBody),
         });
 
-        const data = await res.json().catch(() => ({}));
+        diagnostics.responseReceived(res.status);
+        let invalidJson = false;
+        const data = await res.json().catch(() => {
+          invalidJson = true;
+          return {};
+        });
 
         if (!res.ok) {
+          diagnostics.failed("http_error", res.status);
+          if (data?.code === "recent_renewal_payment_needs_review") {
+            setBillingReviewScope(billingScope);
+            toast.error("Your previous subscription payment needs review", {
+              description:
+                "Open Account settings to update your card or get billing help.",
+              duration: Infinity,
+              action: {
+                label: "Review billing",
+                onClick: () => openSettingsDialog("Account"),
+              },
+            });
+            return;
+          }
           toast.error(
-            data.error || `Something went wrong (HTTP ${res.status})`,
+            data?.error || `Something went wrong (HTTP ${res.status})`,
           );
           return;
         }
 
-        const { error, url, pricingExperiment } = data;
+        if (invalidJson) {
+          diagnostics.failed("invalid_json", res.status);
+          toast.error("Unknown error creating checkout session");
+          return;
+        }
 
-        if (url) {
+        const { error, url, pricingExperiment } = data ?? {};
+
+        if (typeof url === "string" && url) {
+          failureStage = "navigation_exception";
+          diagnostics.navigationRequested();
           window.location.href = url;
           rememberCheckoutNavigation({
             attemptId: checkoutAttemptId,
@@ -186,6 +230,7 @@ export const useUpgrade = () => {
           return;
         }
 
+        diagnostics.failed("missing_checkout_url", res.status);
         if (error) {
           toast.error(`Error: ${error}`);
         } else {
@@ -254,6 +299,7 @@ export const useUpgrade = () => {
         }
       }
     } catch (err) {
+      diagnostics?.failed(failureStage);
       // Surface real error messages when err is an Error
       if (err instanceof Error) {
         toast.error(err.message);
@@ -271,5 +317,7 @@ export const useUpgrade = () => {
   return {
     upgradeLoading,
     handleUpgrade,
+    billingReviewRequired,
+    clearBillingReview: () => setBillingReviewScope(null),
   };
 };

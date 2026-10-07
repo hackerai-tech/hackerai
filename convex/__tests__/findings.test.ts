@@ -252,6 +252,70 @@ const createArgs = (overrides: Record<string, unknown> = {}) => ({
 describe("findings Convex lifecycle", () => {
   beforeEach(() => jest.clearAllMocks());
 
+  it("retains assessment limits through save, reopen, export, close, and delete", async () => {
+    const { createFindingForBackend, getFinding, closeFinding, deleteFinding } =
+      await import("../findings");
+    const { renderFindingMarkdown } =
+      await import("../../lib/findings/markdown");
+    const { sanitizeFindingPartsForShare } =
+      await import("../../lib/findings/share-sanitizer");
+    const assessment = {
+      confidence: "medium" as const,
+      counterevidence:
+        "The control account was denied; only the cross-tenant request returned the synthetic invoice.",
+      severity_change_conditions:
+        "An enforced tenant boundary would rule out this finding; broader exposed records would raise impact.",
+    };
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    const input = report(assessment);
+    const result = await createFindingForBackend.handler(
+      ctx,
+      createArgs({ report: input }),
+    );
+    if (!result.success) throw new Error("Expected saved finding");
+    const reopened = await getFinding.handler(createMockCtx(tables).ctx, {
+      findingId: result.finding_id,
+    });
+    expect(reopened).toMatchObject(assessment);
+    expect(
+      await getFinding.handler(createMockCtx(tables, "other-user").ctx, {
+        findingId: result.finding_id,
+      }),
+    ).toBeNull();
+    const markdown = renderFindingMarkdown(reopened!);
+    expect(markdown).toContain("Assessment confidence: medium");
+    expect(markdown).toContain(assessment.counterevidence);
+    expect(markdown).toContain(assessment.severity_change_conditions);
+    const shared = sanitizeFindingPartsForShare([
+      {
+        type: "tool-create_vulnerability_report",
+        state: "output-available",
+        input,
+        output: result,
+      },
+    ]);
+    expect(JSON.stringify(shared)).not.toMatch(
+      /confidence|counterevidence|severity_change_conditions/,
+    );
+    await closeFinding.handler(ctx, {
+      findingId: result.finding_id,
+      reason: "already_fixed",
+      context: "Synthetic retest passed.",
+    });
+    const closed = await getFinding.handler(ctx, {
+      findingId: result.finding_id,
+    });
+    expect(renderFindingMarkdown(closed!)).toContain(
+      "Synthetic retest passed.",
+    );
+    expect(closed).toMatchObject(assessment);
+    await deleteFinding.handler(ctx, { findingId: result.finding_id });
+    expect(
+      await getFinding.handler(ctx, { findingId: result.finding_id }),
+    ).toBeNull();
+  });
+
   it("persists server-derived provenance, score, severity, search, and dedupe", async () => {
     const { createFindingForBackend } = await import("../findings");
     const tables = seedTables();

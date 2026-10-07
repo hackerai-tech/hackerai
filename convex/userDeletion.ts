@@ -1,6 +1,6 @@
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { mutation, type MutationCtx } from "./_generated/server";
-import { v } from "convex/values";
+import { getDocumentSize, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
 import { validateServiceKey } from "./lib/utils";
@@ -74,12 +74,27 @@ type OrphanSubagentTable = "subagent_events" | "subagent_work_items";
 // Share one document budget across the entire cleanup pass; the account
 // deletion route already repeats the mutation while `hasMore` is true.
 const MAX_CLEANUP_DOCS_PER_MUTATION = 100;
+// Leave headroom for delete/patch reads, file receipts, and aggregate updates.
+const MAX_CLEANUP_READ_BYTES = 4 * 1024 * 1024;
+const MAX_DOCUMENT_BYTES = 1024 * 1024;
+// Orphan pages also read each parent and may delete each scanned document.
+const MAX_ORPHAN_DOCS_PER_MUTATION = 4;
 const MAX_RESIDUE_USER_IDS_PER_MUTATION = 1;
 const MAX_RESUME_CLAIMS_PER_DELETION_START = 20;
 
 type ReadBudget = {
   remaining: number;
+  remainingBytes: number;
 };
+
+function chargeRead(budget: ReadBudget, doc: AnyDoc | null) {
+  budget.remaining -= 1;
+  if (doc) budget.remainingBytes -= getDocumentSize(doc);
+}
+
+function canReadDocument(budget: ReadBudget) {
+  return budget.remaining > 0 && budget.remainingBytes >= MAX_DOCUMENT_BYTES;
+}
 
 type CleanupStats = {
   deleted: Record<string, number>;
@@ -188,21 +203,30 @@ async function collectByIndexBatch<T extends AnyDoc>(
   build: (q: any) => any,
   requestedLimit = MAX_CLEANUP_DOCS_PER_MUTATION,
 ): Promise<IndexedBatch<T>> {
-  // Reserve one read for the lookahead row used to determine `hasMore`.
+  // Keep one worst-case document available for dependent lookups. Chats need
+  // an indexed summary plus a possible legacy latest-summary lookup.
+  const reservedBytes =
+    table === "chats" ? 2 * MAX_DOCUMENT_BYTES : MAX_DOCUMENT_BYTES;
   const limit = Math.min(requestedLimit, budget.remaining - 1);
-  if (limit <= 0) {
+  if (
+    limit <= 0 ||
+    budget.remainingBytes < MAX_DOCUMENT_BYTES + reservedBytes
+  ) {
     return { docs: [], hasMore: true };
   }
 
-  const rows = await (ctx.db.query(table as any) as any)
-    .withIndex(indexName, build)
-    .take(limit + 1);
-  budget.remaining -= rows.length;
-
-  const hasMore = rows.length > limit;
-  const docs = hasMore ? rows.slice(0, limit) : rows;
-
-  return { docs, hasMore };
+  const docs: T[] = [];
+  const query = (ctx.db.query(table as any) as any).withIndex(indexName, build);
+  for await (const row of query) {
+    chargeRead(budget, row);
+    // Charge the lookahead as well, even though this pass does not delete it.
+    if (docs.length === limit) return { docs, hasMore: true };
+    docs.push(row);
+    if (budget.remainingBytes < MAX_DOCUMENT_BYTES + reservedBytes) {
+      return { docs, hasMore: true };
+    }
+  }
+  return { docs, hasMore: false };
 }
 
 async function firstByIndex<T extends AnyDoc>(
@@ -291,14 +315,14 @@ async function collectChatSummariesForChats(
       continue;
     }
 
-    if (budget.remaining <= 0) {
+    if (!canReadDocument(budget)) {
       stats.hasMore = true;
       incompleteChatIds.add(chat.id);
       continue;
     }
 
     const latestSummary = await ctx.db.get(chat.latest_summary_id);
-    budget.remaining -= 1;
+    chargeRead(budget, latestSummary);
     if (latestSummary) {
       summaries.push(latestSummary);
     }
@@ -351,6 +375,7 @@ async function cleanupUserDataForUser(
   const now = Date.now();
   const budget: ReadBudget = {
     remaining: MAX_CLEANUP_DOCS_PER_MUTATION,
+    remainingBytes: MAX_CLEANUP_READ_BYTES,
   };
 
   // A message may point to one feedback document that must be deleted first,
@@ -364,18 +389,20 @@ async function cleanupUserDataForUser(
     (q) => q.eq("user_id", userId),
     messageLimit,
   );
-  const messages = messagesBatch.docs;
-  const feedbackIds = uniqueDocs(messages)
-    .map((message) => message.feedback_id)
-    .filter((id): id is Id<"feedback"> => !!id);
+  const messages: Doc<"messages">[] = [];
   const feedback: Array<Doc<"feedback"> | null> = [];
-  for (const feedbackId of feedbackIds) {
-    if (budget.remaining <= 0) {
-      stats.hasMore = true;
-      break;
+  for (const message of messagesBatch.docs) {
+    if (message.feedback_id) {
+      if (!canReadDocument(budget)) {
+        // Keep the message's pointer until its feedback can be deleted too.
+        messagesBatch.hasMore = true;
+        continue;
+      }
+      const doc = await ctx.db.get(message.feedback_id);
+      chargeRead(budget, doc);
+      feedback.push(doc);
     }
-    feedback.push(await ctx.db.get(feedbackId));
-    budget.remaining -= 1;
+    messages.push(message);
   }
 
   // Chat cleanup can require both an indexed summary read and a legacy latest
@@ -944,7 +971,7 @@ async function cleanupOrphanChatSummaries(
   const stats = createStats();
   const page = await (ctx.db.query("chat_summaries") as any).paginate({
     cursor: opts.cursor ?? null,
-    numItems: opts.numItems,
+    numItems: Math.min(opts.numItems, MAX_ORPHAN_DOCS_PER_MUTATION),
   });
 
   stats.orphanChatSummariesScanned = page.page.length;
@@ -979,7 +1006,7 @@ async function cleanupOrphanSubagentRows(
   const stats = createStats();
   const page = await (ctx.db.query(table) as any).paginate({
     cursor: opts.cursor ?? null,
-    numItems: opts.numItems,
+    numItems: Math.min(opts.numItems, MAX_ORPHAN_DOCS_PER_MUTATION),
   });
 
   stats.orphanSubagentRowsTable = table;

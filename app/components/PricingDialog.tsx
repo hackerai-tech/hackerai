@@ -9,6 +9,9 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
+import { useBillingRecoveryStatus } from "../hooks/useBillingRecoveryStatus";
+import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
+import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
@@ -20,17 +23,12 @@ import {
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
-import {
-  captureAuthenticatedEvent,
-  captureUpgradeCtaImpression,
-} from "@/lib/analytics/client";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import type { PricingDialogContext } from "../hooks/usePricingDialog";
 import {
-  PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-  proMonthlyPricingAssignmentForVariant,
-  proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentPresentation,
-} from "@/lib/experiments/pro-monthly-pricing";
+  PRO_MONTHLY_PRICE_LOOKUP_KEY,
+  type ProMonthlyPricePresentation,
+} from "@/lib/pricing/pro-monthly";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -70,9 +68,6 @@ type PricingIntentCopy = {
   ultraButtonText: string;
 };
 
-const PRICING_EXPOSURE_RETRY_MS = 500;
-const PRICING_EXPOSURE_MAX_ATTEMPTS = 10;
-
 export function getPricingIntentCopy(
   context: PricingDialogContext | undefined,
   subscription: string,
@@ -82,6 +77,20 @@ export function getPricingIntentCopy(
   const source = context?.source;
   const limitType = context?.limitType;
   const reason = context?.reason;
+
+  if (source === "regional_subscription_first") {
+    return {
+      title: "Choose a subscription to start",
+      description:
+        "A subscription is required to send Ask requests or start Agent tasks. Choose the plan that fits your work.",
+      proDescription: "Security questions and Agent tasks",
+      proPlusDescription: "More usage for repeated Agent runs",
+      ultraDescription: "Maximum room for intensive work",
+      proButtonText: "Subscribe to Pro",
+      proPlusButtonText: "Subscribe to Pro+",
+      ultraButtonText: "Subscribe to Ultra",
+    };
+  }
 
   if (source === "agent_mode_gate") {
     return {
@@ -224,19 +233,39 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   onClose,
   context,
 }) => {
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
-  const { upgradeLoading, handleUpgrade } = useUpgrade();
+  const {
+    upgradeLoading,
+    handleUpgrade,
+    billingReviewRequired,
+    clearBillingReview,
+  } = useUpgrade();
+  const billing = useBillingRecoveryStatus(isOpen);
+  const billingBlocked = Boolean(
+    user &&
+    (billing.isLoading ||
+      billing.error ||
+      billingReviewRequired ||
+      billing.data?.checkoutRequiresReview ||
+      billing.data?.subscriptionStatus === "past_due" ||
+      billing.data?.subscriptionStatus === "unpaid"),
+  );
+  const checkBilling = async () => {
+    const status = await getSubscriptionCancellationStatus();
+    await billing.mutate(status, { revalidate: false });
+    if (status && !status.checkoutRequiresReview) clearBillingReview?.();
+    return status;
+  };
   const [isYearly, setIsYearly] = React.useState(false);
   const capturedPricingCtaImpressionRef = React.useRef(false);
-  const capturedPricingExperimentExposureRef = React.useRef(false);
-  const [pricingExperiment, setPricingExperiment] = React.useState<
-    ProMonthlyPricingExperimentPresentation | undefined
+  const [proMonthlyPrice, setProMonthlyPrice] = React.useState<
+    ProMonthlyPricePresentation | undefined
   >();
-  const [pricingExperimentResolved, setPricingExperimentResolved] =
+  const [proMonthlyPriceResolved, setProMonthlyPriceResolved] =
     React.useState(false);
-  const [pricingExperimentUnavailable, setPricingExperimentUnavailable] =
+  const [proMonthlyPriceUnavailable, setProMonthlyPriceUnavailable] =
     React.useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
@@ -246,67 +275,66 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   } | null>(null);
   const pricingIntentCopy = getPricingIntentCopy(context, subscription);
   const monthlyProPrice =
-    subscription === "free" && pricingExperiment
-      ? pricingExperiment.displayedAmountDollars
+    subscription === "free" && proMonthlyPrice
+      ? proMonthlyPrice.displayedAmountDollars
       : PRICING.pro.monthly;
   const displayedMonthlyProPrice =
-    subscription === "free" && pricingExperimentUnavailable
+    subscription === "free" && proMonthlyPriceUnavailable
       ? "—"
-      : subscription === "free" && !pricingExperimentResolved
+      : subscription === "free" && !proMonthlyPriceResolved
         ? "…"
         : monthlyProPrice;
-  const activePricingExperiment =
-    subscription === "free" && !isYearly ? pricingExperiment : undefined;
 
   React.useEffect(() => {
-    if (!isOpen || pricingExperimentResolved) return;
+    if (!isOpen || proMonthlyPriceResolved) return;
     if (subscription !== "free") return;
 
     const controller = new AbortController();
-    setPricingExperimentUnavailable(false);
+    setProMonthlyPriceUnavailable(false);
     void fetch("/api/pricing/pro-monthly-experiment", {
       cache: "no-store",
       signal: controller.signal,
     })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Pricing assignment unavailable");
+        if (!response.ok) throw new Error("Pro monthly price unavailable");
         const value = (await response.json()) as {
-          key?: unknown;
-          variant?: unknown;
           priceLookupKey?: unknown;
           displayedAmountDollars?: unknown;
+          currency?: unknown;
+          billingInterval?: unknown;
           stripePriceId?: unknown;
         };
         if (controller.signal.aborted) return;
-        const expected = proMonthlyPricingAssignmentForVariant(
-          value.variant === "test" ? "test" : "control",
-        );
         const stripePriceId =
           typeof value.stripePriceId === "string" &&
           value.stripePriceId.length > 0
             ? value.stripePriceId
             : undefined;
         const isValid =
-          value.key === expected.key &&
-          value.priceLookupKey === expected.priceLookupKey &&
-          value.displayedAmountDollars === expected.displayedAmountDollars &&
+          value.priceLookupKey === PRO_MONTHLY_PRICE_LOOKUP_KEY &&
+          value.displayedAmountDollars === PRICING.pro.monthly &&
+          value.currency === "usd" &&
+          value.billingInterval === "month" &&
           stripePriceId;
-        if (!isValid) throw new Error("Invalid pricing assignment");
-        setPricingExperiment({
-          ...expected,
+        if (!isValid) throw new Error("Invalid Pro monthly price");
+        setProMonthlyPrice({
+          priceLookupKey: PRO_MONTHLY_PRICE_LOOKUP_KEY,
+          displayedAmountDollars: PRICING.pro.monthly,
+          currency: "usd",
+          billingInterval: "month",
           stripePriceId,
         });
-        setPricingExperimentResolved(true);
+        setProMonthlyPriceResolved(true);
       })
       .catch((error: unknown) => {
         if ((error as { name?: unknown })?.name === "AbortError") return;
-        setPricingExperiment(undefined);
-        setPricingExperimentUnavailable(true);
-        setPricingExperimentResolved(false);
+        setProMonthlyPrice(undefined);
+        setProMonthlyPriceUnavailable(true);
+        setProMonthlyPriceResolved(false);
       });
 
     return () => controller.abort();
-  }, [isOpen, pricingExperimentResolved, subscription]);
+  }, [isOpen, proMonthlyPriceResolved, subscription]);
 
   // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
   React.useEffect(() => {
@@ -317,52 +345,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
   React.useEffect(() => {
     if (!isOpen) {
-      capturedPricingExperimentExposureRef.current = false;
-      return;
-    }
-    if (
-      !activePricingExperiment ||
-      capturedPricingExperimentExposureRef.current
-    ) {
-      return;
-    }
-
-    let exposureCaptureAttempts = 0;
-    let exposureRetryTimeout: ReturnType<typeof setTimeout> | undefined;
-    const captureExperimentExposure = () => {
-      exposureCaptureAttempts += 1;
-      if (
-        captureAuthenticatedEvent(
-          PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-          proMonthlyPricingExperimentProperties(activePricingExperiment),
-        )
-      ) {
-        capturedPricingExperimentExposureRef.current = true;
-        return;
-      }
-      if (exposureCaptureAttempts < PRICING_EXPOSURE_MAX_ATTEMPTS) {
-        exposureRetryTimeout = setTimeout(
-          captureExperimentExposure,
-          PRICING_EXPOSURE_RETRY_MS,
-        );
-      }
-    };
-    captureExperimentExposure();
-
-    return () => {
-      if (exposureRetryTimeout) clearTimeout(exposureRetryTimeout);
-    };
-  }, [activePricingExperiment, isOpen]);
-
-  React.useEffect(() => {
-    if (!isOpen) {
       capturedPricingCtaImpressionRef.current = false;
       return;
     }
 
     if (
       capturedPricingCtaImpressionRef.current ||
-      (subscription === "free" && !pricingExperimentResolved)
+      (subscription === "free" && !proMonthlyPriceResolved)
     ) {
       return;
     }
@@ -374,15 +363,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       cta_text: "plan_card_buttons",
       ...(context?.reason && { reason: context.reason }),
       ...(context?.limitType && { limit_type: context.limitType }),
-      ...proMonthlyPricingExperimentProperties(activePricingExperiment),
     });
   }, [
     context?.limitType,
     context?.reason,
     context?.source,
     isOpen,
-    activePricingExperiment,
-    pricingExperimentResolved,
+    proMonthlyPriceResolved,
     subscription,
   ]);
 
@@ -401,6 +388,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     planName: string,
     price: number,
   ) => {
+    if (billingBlocked) return;
     // If user is free, upgrade directly using checkout
     if (subscription === "free") {
       try {
@@ -409,8 +397,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           surface: "pricing_dialog",
           reason: context?.reason,
           limit_type: context?.limitType,
-          pricing_experiment:
-            plan === "pro-monthly-plan" ? activePricingExperiment : undefined,
         });
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
@@ -436,13 +422,16 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       return;
     }
 
+    // Close pricing while its hash is still active so its URL cleanup runs.
+    onClose();
+
     // Update URL with billing period before opening team dialog
     const url = new URL(window.location.href);
     url.searchParams.set("selectedPlan", isYearly ? "yearly" : "monthly");
     url.hash = "team-pricing-seat-selection";
     window.history.replaceState({}, "", url.toString());
+    window.dispatchEvent(new Event("hashchange"));
 
-    onClose(); // Close the pricing dialog
     setTeamPricingDialogOpen(true);
   };
 
@@ -496,12 +485,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     } else if (user) {
       return {
         text:
-          subscription === "free" && !isYearly && pricingExperimentUnavailable
+          subscription === "free" && !isYearly && proMonthlyPriceUnavailable
             ? "Pricing unavailable"
             : (pricingIntentCopy?.proButtonText ?? "Get Pro"),
         disabled:
           upgradeLoading ||
-          (subscription === "free" && !isYearly && !pricingExperimentResolved),
+          billingBlocked ||
+          (subscription === "free" && !isYearly && !proMonthlyPriceResolved),
         className: "",
         variant: "default" as const,
         onClick: () =>
@@ -542,7 +532,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           : (pricingIntentCopy?.proPlusButtonText ?? "Get Pro+");
       return {
         text: buttonText,
-        disabled: upgradeLoading,
+        disabled: upgradeLoading || billingBlocked,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
@@ -582,7 +572,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           subscription === "pro" || subscription === "pro-plus"
             ? "Upgrade to Ultra"
             : (pricingIntentCopy?.ultraButtonText ?? "Get Ultra"),
-        disabled: upgradeLoading,
+        disabled: upgradeLoading || billingBlocked,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
@@ -613,6 +603,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   const ultraButtonConfig = getUltraButtonConfig();
 
   const hasSubscription = subscription !== "free";
+  const showFreePlan =
+    !hasSubscription && context?.source !== "regional_subscription_first";
 
   return (
     <>
@@ -637,7 +629,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           <div className="relative grid grid-cols-[1fr_auto_1fr] px-6 py-4 md:pt-[4.5rem] md:pb-6">
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
-              <DialogTitle className="text-3xl font-semibold">
+              <DialogTitle className="text-center text-2xl font-semibold sm:text-3xl">
                 {pricingIntentCopy?.title ?? "Upgrade your plan"}
               </DialogTitle>
               {pricingIntentCopy && (
@@ -663,13 +655,65 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           </div>
 
           <div className="px-6 pb-8">
+            {user && (
+              <div className="mx-auto mb-6 w-full max-w-[88rem]">
+                {billing.isLoading && (
+                  <p
+                    role="status"
+                    className="text-center text-sm text-muted-foreground"
+                  >
+                    Checking your billing status…
+                  </p>
+                )}
+                {billing.error && !billingReviewRequired && (
+                  <div role="status" className="rounded-xl border p-4 text-sm">
+                    <p>
+                      We couldn’t check your billing status. Try again, or ask
+                      your billing administrator for help.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      disabled={billing.isValidating}
+                      onClick={() => void checkBilling().catch(() => {})}
+                    >
+                      Check again
+                    </Button>
+                  </div>
+                )}
+                {(billing.data || billingReviewRequired) && (
+                  <BillingRecoveryPanel
+                    key={`${user.id}:${organizationId ?? ""}:${billing.data?.latestInvoiceId ?? "review"}`}
+                    status={
+                      billingReviewRequired
+                        ? {
+                            ...billing.data,
+                            hasActiveSubscription: false,
+                            cancelAtPeriodEnd: false,
+                            checkoutRequiresReview: true,
+                          }
+                        : billing.data!
+                    }
+                    subscription={subscription}
+                    surface="pricing_dialog"
+                    onCheck={checkBilling}
+                  />
+                )}
+                {billingBlocked && !billing.isLoading && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Resolve your billing issue before changing plans.
+                  </p>
+                )}
+              </div>
+            )}
             <div
               className={cn(
                 "mx-auto grid w-full max-w-[88rem] grid-cols-1 gap-6 md:grid-cols-2",
-                hasSubscription ? "xl:grid-cols-3" : "xl:grid-cols-4",
+                showFreePlan ? "xl:grid-cols-4" : "xl:grid-cols-3",
               )}
             >
-              {!hasSubscription && (
+              {showFreePlan && (
                 <PlanCard
                   planName="Free"
                   price={0}

@@ -1,28 +1,33 @@
-import {
-  EUROPE_TRIGGER_RUN_REGION,
-  type RequestRegionClass,
-  type TriggerRunRegion,
+import type {
+  RequestRegionClass,
+  TriggerRunRegion,
 } from "@/lib/api/trigger-region";
 import type { SubscriptionTier } from "@/types";
+import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
 
 export type CloudSandboxProvider = "miosa" | "e2b";
 export type CloudSandboxSelectionReason =
   | "configured"
+  | "miosa_rollout_paused"
   | "miosa_rollout"
   | "miosa_rollout_control"
+  | "miosa_empty_workspace_migration"
+  | "miosa_file_workspace_migration"
+  | "miosa_e2b_recovered"
+  | "migration_e2b_fallback"
   | "miosa_configuration_unavailable"
-  | "miosa_region_unavailable"
-  | "miosa_europe_region";
+  | "miosa_region_unavailable";
 
 export const MIOSA_CLOUD_SANDBOX_ROLLOUT_FLAG =
   "miosa_cloud_sandbox_rollout_v1";
 export const MIOSA_CLOUD_SANDBOX_ENVIRONMENT_PROPERTY = "hackerai_environment";
 
 /**
- * Resolve an explicit provider override. Without one, production request
- * routing is decided by {@link selectCloudSandboxProvider}.
+ * Resolve an explicit provider override when MIOSA execution is not paused.
+ * Otherwise use E2B regardless of environment configuration.
  */
 export function getCloudSandboxProvider(): CloudSandboxProvider {
+  if (isMiosaCloudSandboxPaused()) return "e2b";
   const configured = process.env.CLOUD_SANDBOX_PROVIDER?.trim();
   if (configured === "e2b" || configured === "miosa") {
     return configured;
@@ -68,13 +73,9 @@ export async function selectCloudSandboxProvider(options: {
   provider: CloudSandboxProvider;
   reason: CloudSandboxSelectionReason;
 }> {
-  if (
-    options.triggerRegion === EUROPE_TRIGGER_RUN_REGION ||
-    options.requestRegionClass === "europe"
-  ) {
-    return { provider: "e2b", reason: "miosa_europe_region" };
+  if (isMiosaCloudSandboxPaused()) {
+    return { provider: "e2b", reason: "miosa_rollout_paused" };
   }
-
   if (
     options.requestRegionClass === "unknown" ||
     (!options.requestRegionClass && !options.triggerRegion)

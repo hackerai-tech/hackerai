@@ -46,6 +46,7 @@ const loadSaveMessageWithMocks = async () => {
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getMessagesByChatId,
+    getNotes,
     saveChat,
     saveMessage,
     setActiveTriggerRun,
@@ -58,6 +59,7 @@ const loadSaveMessageWithMocks = async () => {
     fenceAndGetActiveAgentResourcesForUser,
     getChatById,
     getMessagesByChatId,
+    getNotes,
     mockCompactMessageForStorage,
     mockMutation,
     mockPhEvent,
@@ -71,6 +73,19 @@ const loadSaveMessageWithMocks = async () => {
 };
 
 describe("fenceAndGetActiveAgentResourcesForUser", () => {
+  it("distinguishes unavailable notes from a successful empty snapshot for strict callers", async () => {
+    const { getNotes, mockQuery } = await loadSaveMessageWithMocks();
+    const opts = { userId: "user", subscription: "pro" as const };
+    mockQuery.mockRejectedValue(new Error("database unavailable"));
+    await expect(getNotes(opts)).resolves.toEqual([]);
+    await expect(getNotes({ ...opts, throwOnError: true })).rejects.toThrow(
+      "database unavailable",
+    );
+    mockQuery.mockResolvedValue([]);
+    await expect(getNotes({ ...opts, throwOnError: true })).resolves.toEqual(
+      [],
+    );
+  });
   it("collects active resources while advancing through fence cursors", async () => {
     const { fenceAndGetActiveAgentResourcesForUser, mockMutation, mockQuery } =
       await loadSaveMessageWithMocks();

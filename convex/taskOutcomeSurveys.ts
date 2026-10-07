@@ -1,18 +1,101 @@
 import { v, ConvexError } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { type MutationCtx, mutation, query } from "./_generated/server";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {
+  experimentTaskOutcomeContext,
   taskOutcomeAnswer,
   taskOutcomeContext,
   taskOutcomeDocument,
   taskOutcomeReason,
 } from "./taskOutcomeValidators";
 import {
+  NEW_PAID_SURVEY_WINDOW_MS,
+  PAID_TASK_OUTCOME_ANSWERS,
   TASK_OUTCOME_COOLDOWN_MS,
   TASK_OUTCOME_EXPIRY_MS,
   reasonsForAnswer,
+  experimentTaskOutcomePhase,
 } from "../lib/feedback/task-outcome";
+import {
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+} from "../lib/experiments/abliteration-keys";
+
+// One transaction owns request deduplication and the cooldown across cohorts.
+async function canReserve(
+  ctx: MutationCtx,
+  args: { user_id: string; chat_id: string; request_id: string },
+  now: number,
+) {
+  if (await isUserDeletionFenced(ctx.db, args.user_id)) return false;
+  const chat = await ctx.db
+    .query("chats")
+    .withIndex("by_chat_id", (q) => q.eq("id", args.chat_id))
+    .unique();
+  if (!chat || chat.user_id !== args.user_id) return false;
+  const existing = await ctx.db
+    .query("task_outcome_surveys")
+    .withIndex("by_request_id", (q) => q.eq("request_id", args.request_id))
+    .unique();
+  if (existing) return false;
+  const previous = await ctx.db
+    .query("task_outcome_surveys")
+    .withIndex("by_user_id_and_last_interaction_at", (q) =>
+      q.eq("user_id", args.user_id),
+    )
+    .order("desc")
+    .first();
+  if (previous && now - previous.last_interaction_at < TASK_OUTCOME_COOLDOWN_MS)
+    return false;
+  return true;
+}
+
+export const reserveExperiment = mutation({
+  args: {
+    serviceKey: v.string(),
+    user_id: v.string(),
+    ...experimentTaskOutcomeContext,
+  },
+  returns: v.union(taskOutcomeDocument, v.null()),
+  handler: async (ctx, { serviceKey, ...args }) => {
+    validateServiceKey(serviceKey);
+    // Trusted callers already enforce model entitlement, moderation, and input
+    // gates. Team participation is per authenticated member, never per payer.
+    if (
+      !["pro", "pro-plus", "ultra", "team"].includes(args.subscription_tier) ||
+      experimentTaskOutcomePhase(args.experiment_key) !== args.feedback_phase ||
+      (args.experiment_key === ABLITERATED_MAX_EXPERIMENT_KEY &&
+        !["hackerai-pro", "hackerai-max"].includes(
+          args.selected_model_override,
+        )) ||
+      (args.experiment_key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY &&
+        args.experiment_variant !== "test") ||
+      args.experiment_request_id !== args.request_id ||
+      args.message_id !== args.request_id
+    )
+      return null;
+    const now = Date.now();
+    if (!(await canReserve(ctx, args, now))) return null;
+    const enrolled = await ctx.db
+      .query("task_outcome_surveys")
+      .withIndex("by_user_id_and_experiment_key_and_feedback_phase", (q) =>
+        q
+          .eq("user_id", args.user_id)
+          .eq("experiment_key", args.experiment_key)
+          .eq("feedback_phase", args.feedback_phase),
+      )
+      .first();
+    if (enrolled) return null;
+    const id = await ctx.db.insert("task_outcome_surveys", {
+      ...args,
+      selected_at: now,
+      last_interaction_at: now,
+      expires_at: now + TASK_OUTCOME_EXPIRY_MS,
+    });
+    return await ctx.db.get(id);
+  },
+});
 
 // Service-only reservation occurs before model-priced checks or generation. The
 // indexed read + insert is atomic, including simultaneous runs on other devices.
@@ -21,30 +104,72 @@ export const reserve = mutation({
   returns: v.union(taskOutcomeDocument, v.null()),
   handler: async (ctx, { serviceKey, ...args }) => {
     validateServiceKey(serviceKey);
-    if (await isUserDeletionFenced(ctx.db, args.user_id)) return null;
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.chat_id))
-      .unique();
-    if (!chat || chat.user_id !== args.user_id) return null;
-    const existing = await ctx.db
-      .query("task_outcome_surveys")
-      .withIndex("by_request_id", (q) => q.eq("request_id", args.request_id))
-      .unique();
-    if (existing) return null;
-    const previous = await ctx.db
-      .query("task_outcome_surveys")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.user_id))
-      .order("desc")
-      .first();
     const now = Date.now();
+    if (!(await canReserve(ctx, args, now))) return null;
+    // Paid cohort enrollment is derived from durable billing evidence inside
+    // this transaction, not from browser properties or model assignment.
+    if (!["pro", "pro-plus", "ultra"].includes(args.subscription_tier))
+      return null;
+    const paidStarts = () =>
+      ctx.db
+        .query("paid_start_events")
+        .withIndex("by_entity_type_and_entity_id_and_occurred_at", (q) =>
+          q.eq("entity_type", "user").eq("entity_id", args.user_id),
+        );
+    const first = await paidStarts().order("asc").first();
     if (
-      previous &&
-      now - previous.last_interaction_at < TASK_OUTCOME_COOLDOWN_MS
+      !first ||
+      first.organization_id ||
+      !["pro", "pro-plus", "ultra"].includes(first.tier) ||
+      !first.stripe_subscription_id ||
+      !first.stripe_invoice_id ||
+      first.occurred_at > now ||
+      now - first.occurred_at >= NEW_PAID_SURVEY_WINDOW_MS
     )
       return null;
+    const latest = await paidStarts().order("desc").first();
+    if (latest?._id !== first._id) return null;
+    const payment = await ctx.db
+      .query("revenue_events")
+      .withIndex("by_idempotency_key", (q) =>
+        q.eq(
+          "idempotency_key",
+          `subscription:${first.stripe_invoice_id}:user:${args.user_id}`,
+        ),
+      )
+      .unique();
+    if (
+      !payment ||
+      payment.source !== "subscription" ||
+      payment.gross_revenue_dollars <= 0 ||
+      payment.stripe_subscription_id !== first.stripe_subscription_id ||
+      payment.entity_type !== "user" ||
+      payment.entity_id !== args.user_id ||
+      payment.stripe_invoice_id !== first.stripe_invoice_id
+    )
+      return null;
+    const enrolled = await ctx.db
+      .query("task_outcome_surveys")
+      .withIndex("by_user_id_and_survey_kind", (q) =>
+        q.eq("user_id", args.user_id).eq("survey_kind", "new_paid"),
+      )
+      .first();
+    if (enrolled) return null;
+    const paidContext = {
+      paid_start_event_id: first._id,
+      paid_started_at: first.occurred_at,
+      stripe_subscription_id: first.stripe_subscription_id,
+      paid_start_invoice_id: first.stripe_invoice_id,
+      ...(first.billing_period_end !== undefined && {
+        baseline_renewal_at: first.billing_period_end,
+      }),
+      ...(first.billing_interval && {
+        billing_interval: first.billing_interval,
+      }),
+    };
     const id = await ctx.db.insert("task_outcome_surveys", {
       ...args,
+      ...paidContext,
       selected_at: now,
       last_interaction_at: now,
       expires_at: now + TASK_OUTCOME_EXPIRY_MS,
@@ -107,6 +232,7 @@ export const record = mutation({
     id: v.id("task_outcome_surveys"),
     action: v.union(
       v.literal("shown"),
+      v.literal("viewed"),
       v.literal("dismissed"),
       v.literal("answered"),
       v.literal("reason"),
@@ -136,6 +262,10 @@ export const record = mutation({
       // Return null on another tab/device's claim, so only one surface asks.
       if (row.shown_at || row.answered_at) return null;
       await ctx.db.patch(row._id, { shown_at: now, last_interaction_at: now });
+    } else if (args.action === "viewed") {
+      if (!row.shown_at) return null;
+      if (row.viewed_at) return row;
+      await ctx.db.patch(row._id, { viewed_at: now });
     } else if (args.action === "dismissed") {
       if (!row.shown_at || row.answered_at) return null;
       await ctx.db.patch(row._id, {
@@ -144,6 +274,7 @@ export const record = mutation({
       });
     } else if (args.action === "answered") {
       if (!row.shown_at || !args.answer) return null;
+      if (!(args.answer in PAID_TASK_OUTCOME_ANSWERS)) return null;
       if (row.answer) return row.answer === args.answer ? row : null;
       await ctx.db.patch(row._id, {
         answer: args.answer,

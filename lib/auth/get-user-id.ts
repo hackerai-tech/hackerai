@@ -60,6 +60,7 @@ export const getUserIDAndPro = async (
 ): Promise<{
   userId: string;
   subscription: SubscriptionTier;
+  emailVerified: boolean;
   organizationId?: string;
   freeQuotaSubject?: string;
 }> => {
@@ -77,6 +78,7 @@ export const getUserIDAndPro = async (
     return {
       userId: session.user.id,
       subscription,
+      emailVerified: session.user.emailVerified === true,
       organizationId: (session as any).organizationId as string | undefined,
       freeQuotaSubject: createFreeQuotaSubject(getSessionUserEmail(session)),
     };

@@ -21,6 +21,9 @@ jest.mock("posthog-js", () => ({
 }));
 
 const {
+  getIdentifiedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
+  captureComputerActivationImpression,
   captureMessageFeedback,
   captureUpgradeCtaImpression,
   confirmAuthenticatedAnalyticsUserId,
@@ -46,6 +49,22 @@ describe("client analytics", () => {
     mockPostHog.get_distinct_id.mockClear();
     mockPostHog.get_distinct_id.mockReturnValue("user_123");
     jest.useFakeTimers().setSystemTime(new Date("2026-07-14T12:00:00Z"));
+  });
+
+  it("notifies survey consumers only of the consented, identified account", () => {
+    const listener = jest.fn();
+    const unsubscribe = subscribeAuthenticatedAnalytics(listener);
+    expect(getIdentifiedAnalyticsUserId()).toBe("user_123");
+    setAuthenticatedAnalyticsUserId("new-user");
+    expect(getIdentifiedAnalyticsUserId()).toBeNull();
+    confirmAuthenticatedAnalyticsUserId("user_123");
+    expect(getIdentifiedAnalyticsUserId()).toBeNull();
+    confirmAuthenticatedAnalyticsUserId("new-user");
+    expect(getIdentifiedAnalyticsUserId()).toBe("new-user");
+    setAuthenticatedAnalyticsUserId(null);
+    expect(getIdentifiedAnalyticsUserId()).toBeNull();
+    expect(listener).toHaveBeenCalledTimes(3);
+    unsubscribe();
   });
 
   it("captures each upgrade impression surface and source once per UTC day", () => {
@@ -113,6 +132,50 @@ describe("client analytics", () => {
       "x-posthog-session-id": "session_123",
     });
     expect(mockPostHog.get_distinct_id).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates computer impressions across mounts without suppressing upgrade impressions", () => {
+    const properties = {
+      surface: "chat_input_computer_activation",
+      source: "free_ask_computer_activation",
+    };
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    const uuid = mockCapture.mock.calls[0]?.[2]?.uuid;
+    expect(captureUpgradeCtaImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[1]?.[2]?.uuid).not.toBe(uuid);
+    window.localStorage.clear();
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[2]?.[2]?.uuid).toBe(uuid);
+    mockPostHog.get_distinct_id.mockReturnValue("another-user");
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[3]?.[2]?.uuid).not.toBe(uuid);
+    jest.setSystemTime(new Date("2026-07-15T00:00:01Z"));
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture.mock.calls[4]?.[2]?.uuid).not.toBe(
+      mockCapture.mock.calls[3]?.[2]?.uuid,
+    );
+  });
+
+  it("can retry a computer impression after capture fails", () => {
+    const properties = { surface: "chat_input_computer_activation" };
+    mockCapture.mockImplementationOnce(() => {
+      throw new Error("unavailable");
+    });
+    expect(captureComputerActivationImpression(properties)).toBe(false);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+  });
+
+  it("waits for SDK initialization before handling a computer impression", () => {
+    mockPostHog.__loaded = false;
+    const properties = { surface: "chat_input_computer_activation" };
+    expect(captureComputerActivationImpression(properties)).toBe(false);
+    expect(mockCapture).not.toHaveBeenCalled();
+    mockPostHog.__loaded = true;
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(captureComputerActivationImpression(properties)).toBe(true);
+    expect(mockCapture).toHaveBeenCalledTimes(1);
   });
 
   it("captures content-free initial message feedback with a stable UUID", () => {

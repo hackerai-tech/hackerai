@@ -1,3 +1,4 @@
+import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useAction, useQuery } from "convex/react";
 import { Button } from "@/components/ui/button";
@@ -71,7 +72,22 @@ const getCurrentReturnPath = (): string => {
     : "/";
 };
 
-export const MessageErrorState = ({
+export const MessageErrorState = (props: MessageErrorStateProps) => {
+  const error = deserializeChatSDKErrorFromStream(props.error) ?? props.error;
+  const isUsageBlock =
+    error instanceof ChatSDKError &&
+    error.type === "rate_limit" &&
+    error.metadata?.capReason !== "free_concurrency";
+  return isUsageBlock ? (
+    <BlockedChatBillingRecovery onRetry={() => props.onRetry()}>
+      <MessageErrorContent {...props} />
+    </BlockedChatBillingRecovery>
+  ) : (
+    <MessageErrorContent {...props} />
+  );
+};
+
+const MessageErrorContent = ({
   error,
   onRetry,
   onReconnect,

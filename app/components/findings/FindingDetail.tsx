@@ -804,7 +804,8 @@ export function FindingDetail({
                   Assessment Details
                 </h3>
                 <p className="text-sm leading-6 text-muted-foreground">
-                  Assumptions and the server-calculated CVSS 3.1 score.
+                  Confidence, assessment limits, and the server-calculated CVSS
+                  3.1 score.
                 </p>
               </div>
 
@@ -812,6 +813,25 @@ export function FindingDetail({
                 title="Assumptions"
                 value={finding.assumptions}
               />
+
+              <div className="rounded-xl border border-border bg-muted/10 p-4">
+                <h4 className="text-sm font-semibold">Assessment confidence</h4>
+                <p className="mt-2 text-sm capitalize">
+                  {finding.confidence ?? "Not recorded"}
+                </p>
+              </div>
+              {finding.counterevidence && (
+                <MarkdownSection
+                  title="Counterevidence"
+                  value={finding.counterevidence}
+                />
+              )}
+              {finding.severity_change_conditions && (
+                <MarkdownSection
+                  title="What would change severity"
+                  value={finding.severity_change_conditions}
+                />
+              )}
 
               <Collapsible className="group overflow-hidden rounded-xl border border-border bg-muted/10">
                 <CollapsibleTrigger className="flex w-full items-center justify-between gap-4 px-4 py-3.5 text-left transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">

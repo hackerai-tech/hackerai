@@ -156,6 +156,10 @@ describe("open_url", () => {
     expect(mockPhLoggerError).toHaveBeenCalledWith(
       "Open URL tool error",
       expect.objectContaining({
+        error: expect.objectContaining({
+          message: "unexpected boom",
+          name: "Error",
+        }),
         tool_error_message: "unexpected boom",
         tool_error_name: "Error",
         event: "open_url_tool_failed",

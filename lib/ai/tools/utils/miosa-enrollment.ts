@@ -6,6 +6,13 @@ import {
   getConfiguredE2BClustersForCleanup,
   type E2BCluster,
 } from "./e2b-cluster";
+import type { SandboxInfo } from "e2b";
+import type { E2BClusterConfig } from "./e2b-cluster";
+
+export type ExistingE2BWorkspace = {
+  info: SandboxInfo;
+  cluster: E2BClusterConfig;
+};
 
 export type MiosaDiscoveryFailure = {
   cluster: E2BCluster;
@@ -77,6 +84,7 @@ export class MiosaEnrollmentError extends Error {
 export async function assertFreshMiosaEnrollment(options: {
   userId: string;
   subscription?: SubscriptionTier;
+  onExisting?: (workspaces: ExistingE2BWorkspace[]) => Promise<boolean>;
 }): Promise<void> {
   if (
     !options.subscription ||
@@ -97,6 +105,7 @@ export async function assertFreshMiosaEnrollment(options: {
   const startedAt = Date.now();
   const deadline = startedAt + 5000;
   let clusterName: E2BCluster = "us";
+  const existing: ExistingE2BWorkspace[] = [];
   const deny = (kind: MiosaDiscoveryFailure["kind"]) =>
     new MiosaEnrollmentError("workspace_discovery_unavailable", {
       cluster: clusterName,
@@ -122,14 +131,13 @@ export async function assertFreshMiosaEnrollment(options: {
         if (++pages > 10) throw deny("pagination_limit");
         const pageRemainingMs = deadline - Date.now();
         if (pageRemainingMs <= 0) throw deny("deadline");
-        if (
-          (
-            await paginator.nextItems({
-              requestTimeoutMs: Math.min(pageRemainingMs, 2500),
-            })
-          ).length > 0
-        ) {
-          throw new MiosaEnrollmentError("existing_e2b_workspace");
+        const page = await paginator.nextItems({
+          requestTimeoutMs: Math.min(pageRemainingMs, 2500),
+        });
+        if (page.length > 0) {
+          if (!options.onExisting)
+            throw new MiosaEnrollmentError("existing_e2b_workspace");
+          existing.push(...page.map((info) => ({ info, cluster })));
         }
         if (Date.now() >= deadline) throw deny("deadline");
       } while (paginator.hasNext);
@@ -142,5 +150,8 @@ export async function assertFreshMiosaEnrollment(options: {
       ...classifyDiscoveryError(error),
       elapsedMs: Date.now() - startedAt,
     });
+  }
+  if (existing.length && !(await options.onExisting?.(existing))) {
+    throw new MiosaEnrollmentError("existing_e2b_workspace");
   }
 }

@@ -48,6 +48,12 @@ export type AgentWorkTimelineItem =
       kind: "tool-group";
       id: string;
       activities: AgentWorkActivity[];
+      /**
+       * True once every tool in the run is terminal and the run is closed by a
+       * later step boundary or the settled message. A settled multi-tool run
+       * collapses into its summary; an unsettled run stays expanded in place.
+       */
+      settled: boolean;
       summary: string;
     };
 
@@ -84,6 +90,79 @@ const getToolCallId = (part: MessagePart) => {
   return typeof toolCallId === "string" && toolCallId.length > 0
     ? toolCallId
     : null;
+};
+
+const getSubagentWaitKey = (part: MessagePart): string | null => {
+  const candidate = part as {
+    type?: string;
+    state?: string;
+    errorText?: string;
+    input?: { target_agent_ids?: unknown };
+    output?: { success?: boolean; wait_outcome?: string };
+  };
+  if (
+    candidate.type !== "tool-wait_for_agents" ||
+    candidate.errorText ||
+    !(
+      candidate.state === "input-available" ||
+      (candidate.state === "output-available" &&
+        candidate.output?.success === true &&
+        candidate.output.wait_outcome === "timeout")
+    )
+  ) {
+    return null;
+  }
+  const targets = candidate.input?.target_agent_ids;
+  if (targets == null) return "all";
+  if (
+    !Array.isArray(targets) ||
+    !targets.every((id) => typeof id === "string")
+  ) {
+    return null;
+  }
+  return JSON.stringify([...new Set(targets)].sort());
+};
+
+/** Keep repeated waits in one stable row, retaining intervening reasoning. */
+const groupRepeatedSubagentWaits = (
+  activities: AgentWorkActivity[],
+): AgentWorkActivity[] => {
+  const grouped: AgentWorkActivity[] = [];
+  for (let index = 0; index < activities.length; index += 1) {
+    const first = activities[index];
+    const key = getSubagentWaitKey(first.part);
+    if (key === null) {
+      grouped.push(first);
+      continue;
+    }
+
+    let lastWaitIndex = index;
+    for (let cursor = index + 1; cursor < activities.length; cursor += 1) {
+      // Only a completed timeout can be followed by another wait. Concurrent
+      // in-flight calls must keep their own status rows.
+      if (
+        (activities[lastWaitIndex].part as { state?: string }).state !==
+        "output-available"
+      )
+        break;
+      const next = activities[cursor];
+      if (next.part.type === "reasoning") continue;
+      if (getSubagentWaitKey(next.part) !== key) break;
+      lastWaitIndex = cursor;
+    }
+
+    grouped.push({
+      ...first,
+      // Even the first wait uses a group so streaming retries keep the same
+      // component and row identity. Trailing reasoning remains outside until
+      // another matching wait confirms it belongs to this waiting sequence.
+      groupedParts: activities
+        .slice(index, lastWaitIndex + 1)
+        .map(({ part, partIndex }) => ({ part, partIndex })),
+    });
+    index = lastWaitIndex;
+  }
+  return grouped;
 };
 
 const getSubagentLifecycleGroupKey = (part: MessagePart) => {
@@ -406,9 +485,12 @@ function firstSeenExplicitStepByActivityId(
 }
 
 /**
- * Collapses closed multi-tool runs once every tool is terminal. Failed,
- * denied, and stopped details remain available inside the expandable group;
- * in-flight tools remain independent rows. `step-start` is the preferred
+ * Projects each run of consecutive tool calls in a step into one stable
+ * `tool-group` item from the first tool call onward. The item id derives from
+ * the step and the first tool, so the same timeline row survives while more
+ * tools stream into the run and when the run later settles; the collapse is an
+ * in-place transition instead of a row swap. Failed, denied, and stopped
+ * details remain available inside the group. `step-start` is the preferred
  * boundary; consecutive tools are the compatibility fallback for older
  * messages without step markers.
  */
@@ -458,23 +540,17 @@ export function projectAgentWorkTimelineItems({
     const hasLaterBoundary =
       cursor < activities.length ||
       (explicitStep !== undefined && explicitStep < highestStep);
-    const canCollapse =
-      run.length > 1 &&
+    const settled =
       (messageSettled || hasLaterBoundary) &&
       run.every(({ part }) => isTerminalToolPart(part));
 
-    if (canCollapse) {
-      items.push({
-        kind: "tool-group",
-        id: `tool-group:${explicitStep ?? "legacy"}:${run[0]?.id}`,
-        activities: run,
-        summary: summarizeCompletedToolActivities(run),
-      });
-    } else {
-      items.push(
-        ...run.map((activity) => ({ kind: "activity" as const, ...activity })),
-      );
-    }
+    items.push({
+      kind: "tool-group",
+      id: `tool-group:${explicitStep ?? "legacy"}:${first.id}`,
+      activities: run,
+      settled,
+      summary: summarizeCompletedToolActivities(run),
+    });
 
     index = cursor - 1;
   }
@@ -558,7 +634,9 @@ export function projectAgentWorkParts(
     previousProjectedType = type;
   }
 
-  const groupedActivities = groupAdjacentSubagentActivities(activities);
+  const groupedActivities = groupAdjacentSubagentActivities(
+    groupRepeatedSubagentWaits(activities),
+  );
 
   return {
     activities: groupedActivities,

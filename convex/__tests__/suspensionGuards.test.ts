@@ -19,7 +19,8 @@ type SuspensionRow = {
     | "early_fraud_warning"
     | "dispute_fraudulent"
     | "dispute_billing_hold"
-    | "support_confirmed_fraud";
+    | "support_confirmed_fraud"
+    | "security_abuse";
   source: "stripe" | "support";
   source_id: string;
   stripe_customer_id: string;
@@ -163,6 +164,33 @@ describe("suspensionGuards", () => {
         suspensionSource: "support",
       }),
     });
+  });
+
+  it("blocks a security-banned user's history and shared chats with a clear reason", async () => {
+    const { assertUserCanAccessChatHistory, isUserBlockedFromChatHistory } =
+      await import("../lib/suspensionGuards");
+    const { ctx } = makeMockCtx([
+      makeSuspension({
+        category: "security_abuse",
+        source: "support",
+        source_id: "abuse_case_123",
+      }),
+    ]);
+    await expect(
+      assertUserCanAccessChatHistory(ctx, "user_123"),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "CHAT_ACCESS_SUSPENDED",
+        message: expect.stringContaining("security misuse"),
+        suspensionCategory: "security_abuse",
+      }),
+    });
+    await expect(isUserBlockedFromChatHistory(ctx, "user_123")).resolves.toBe(
+      true,
+    );
+    await expect(isUserBlockedFromChatHistory(ctx, "other_user")).resolves.toBe(
+      false,
+    );
   });
 
   it("reports whether public shared chat reads should be blocked", async () => {

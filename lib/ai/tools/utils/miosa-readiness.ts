@@ -8,6 +8,8 @@ class MiosaReadinessError extends Error {
     message: string,
     readonly code: string,
     readonly status: number,
+    readonly sandboxId: string,
+    readonly sandboxState: unknown,
   ) {
     super(message);
     this.name = "MiosaReadinessError";
@@ -25,11 +27,14 @@ export async function waitForMiosaReadiness(
 ): Promise<void> {
   const startedAt = performance.now();
   const deadline = startedAt + READINESS_TIMEOUT_MS;
+  let lastState: unknown = sandbox.state;
   const timeoutError = () =>
     new MiosaReadinessError(
       `MIOSA sandbox ${sandbox.id} did not become ready within 180 seconds`,
       "SANDBOX_READY_TIMEOUT",
       504,
+      sandbox.id,
+      lastState,
     );
   const assertNotTerminal = (state: unknown) => {
     if (state === "error" || state === "destroyed" || state === "destroying") {
@@ -37,6 +42,8 @@ export async function waitForMiosaReadiness(
         `MIOSA sandbox ${sandbox.id} entered terminal state: ${state}`,
         "SANDBOX_BOOT_FAILED",
         502,
+        sandbox.id,
+        state,
       );
     }
   };
@@ -53,6 +60,7 @@ export async function waitForMiosaReadiness(
     while (!expired && performance.now() < deadline) {
       const readiness = await sandbox.readiness();
       if (expired || performance.now() >= deadline) throw timeoutError();
+      lastState = readiness.state;
       assertNotTerminal(readiness.state);
       if (readiness.ready === true) {
         await sandbox.refresh();

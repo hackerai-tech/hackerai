@@ -11,6 +11,10 @@ import {
   clearOrgRemovedUsage,
 } from "@/lib/rate-limit";
 import { phLogger } from "@/lib/posthog/server";
+import {
+  captureCheckoutPaymentAnalytics,
+  isCheckoutPaymentAnalyticsEvent,
+} from "@/lib/billing/checkout-payment-analytics";
 import { resolveUserIdsFromCustomer as resolveStripeCustomerUsers } from "@/lib/billing/resolve-customer-users";
 import { getInvoicePaidBucketResetMode } from "@/lib/billing/subscription-invoice-reset";
 import {
@@ -39,7 +43,9 @@ import {
   type BillingFailureProperties,
 } from "@/lib/billing/subscription-payment-failure";
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
+import { subscriptionTierFromPrice } from "@/lib/billing/current-subscription";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
+import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import {
   LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON,
   reconcileLateSubscriptionPayment,
@@ -52,6 +58,7 @@ import {
   proMonthlyPricingAssignmentFromMetadata,
   proMonthlyPricingExperimentProperties,
 } from "@/lib/experiments/pro-monthly-pricing";
+import { hasActiveSuspensionForUser } from "@/lib/suspensions";
 
 const WEBHOOK_LOG_PREFIX = "[Subscription Webhook]";
 const WEBHOOK_LOG_CONTEXT = {
@@ -158,7 +165,15 @@ function invoiceLineIsProration(line: Stripe.InvoiceLineItem): boolean {
 async function invoiceSubscriptionBillingDetails(
   invoice: Stripe.Invoice,
   subscriptionId: string,
-): Promise<{ priceId: string; quantity?: number } | undefined> {
+): Promise<
+  | {
+      priceId: string;
+      quantity?: number;
+      periodStart?: number;
+      periodEnd?: number;
+    }
+  | undefined
+> {
   const lines = await invoiceLineItems(invoice);
   const candidates = lines.filter(
     (line) => invoiceLineSubscriptionId(line) === subscriptionId,
@@ -176,6 +191,10 @@ async function invoiceSubscriptionBillingDetails(
   return priceId
     ? {
         priceId,
+        ...(recurringLine?.period && {
+          periodStart: recurringLine.period.start * 1000,
+          periodEnd: recurringLine.period.end * 1000,
+        }),
         ...(typeof selectedLine?.quantity === "number" && {
           quantity: selectedLine.quantity,
         }),
@@ -761,6 +780,8 @@ function emitInvoicePaidRevenueAnalytics({
   tier,
   subscription,
   invoiceQuantity,
+  periodStart,
+  periodEnd,
 }: {
   invoice: Stripe.Invoice;
   invoicePrice: Stripe.Price;
@@ -771,6 +792,8 @@ function emitInvoicePaidRevenueAnalytics({
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
   invoiceQuantity?: number;
+  periodStart?: number;
+  periodEnd?: number;
 }) {
   const amountPaidDollars = centsToDollars(invoice.amount_paid);
   if (amountPaidDollars <= 0 || userIds.length === 0) return;
@@ -802,6 +825,9 @@ function emitInvoicePaidRevenueAnalytics({
         billing_interval: priceBillingInterval(invoicePrice),
         billing_interval_count: invoicePrice.recurring?.interval_count,
         billing_reason: invoice.billing_reason,
+        invoice_paid_at: invoicePaidAtMs(invoice),
+        billing_period_start: periodStart,
+        billing_period_end: periodEnd,
         attempt_count: invoice.attempt_count ?? undefined,
         ...(typeof invoice.attempt_count === "number" &&
           invoice.attempt_count > 1 && { recovery_result: "recovered" }),
@@ -837,6 +863,7 @@ async function recordPaidStartMix({
   orgId,
   tier,
   subscription,
+  periodEnd,
 }: {
   invoice: Stripe.Invoice;
   invoicePrice: Stripe.Price;
@@ -845,6 +872,7 @@ async function recordPaidStartMix({
   orgId?: string;
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
+  periodEnd?: number;
 }) {
   const paidStartTier = toPaidStartTier(tier);
   if (!paidStartTier || userIds.length === 0) return;
@@ -870,6 +898,7 @@ async function recordPaidStartMix({
     paidAccountStartCount: 1,
     paidUserStartCount: userIds.length,
     paidSeatCount,
+    billingPeriodEnd: periodEnd,
     billingInterval: priceBillingInterval(invoicePrice),
     billingIntervalCount: invoicePrice.recurring?.interval_count,
     quantity: item?.quantity,
@@ -1246,6 +1275,8 @@ async function handleInvoicePaid(
     tier,
     subscription,
     invoiceQuantity,
+    periodStart: invoiceBillingDetails.periodStart,
+    periodEnd: invoiceBillingDetails.periodEnd,
   });
 
   if (resetMode.mode === "skip") {
@@ -1431,6 +1462,7 @@ async function handleInvoicePaid(
     if (!resumedFromPause) {
       try {
         await recordPaidStartMix({
+          periodEnd: invoiceBillingDetails.periodEnd,
           invoice,
           invoicePrice,
           customerId,
@@ -1716,6 +1748,16 @@ async function handlePaymentMethodUpdated(args: {
     customerResult.reason === "legacy_user_metadata" ||
     userIds.length === 0
   ) {
+    return;
+  }
+
+  const activeSuspensions = await Promise.all(
+    userIds.map((userId) => hasActiveSuspensionForUser(userId)),
+  );
+  // Recovery can charge the shared Stripe customer. A hold on any resolved
+  // member therefore blocks the customer-level operation, not just that
+  // member's analytics or entitlement updates.
+  if (activeSuspensions.some(Boolean)) {
     return;
   }
 
@@ -2190,7 +2232,7 @@ async function handleSubscriptionUpdated(
     if (customerId) {
       const currentPrice = subscription.items?.data[0]?.price;
       const lookupKey = currentPrice?.lookup_key ?? null;
-      const tier = lookupKey ? planLookupKeyToTier(lookupKey) : null;
+      const tier = subscriptionTierFromPrice(currentPrice) ?? null;
       const { userIds, orgId } = await resolveUserIdsFromCustomer(customerId);
 
       if (userIds.length === 0) {
@@ -2217,9 +2259,7 @@ async function handleSubscriptionUpdated(
 
   const currentPrice = subscription.items?.data[0]?.price;
   const currentLookupKey = currentPrice?.lookup_key ?? null;
-  let currentTier = currentLookupKey
-    ? planLookupKeyToTier(currentLookupKey)
-    : null;
+  let currentTier = subscriptionTierFromPrice(currentPrice) ?? null;
 
   // Fallback: infer current tier from product when lookup_key is missing
   if (!currentTier && currentPrice?.product) {
@@ -2234,11 +2274,11 @@ async function handleSubscriptionUpdated(
       null;
   }
 
-  const prevLookupKey = previousItems?.data?.[0]?.price?.lookup_key ?? null;
   const previousPriceId = previousItems?.data?.[0]?.price?.id;
-  const previousTier = prevLookupKey
-    ? planLookupKeyToTier(prevLookupKey)
-    : null;
+  const previousTier =
+    subscriptionTierFromPrice(
+      previousItems?.data?.[0]?.price as Stripe.Price | undefined,
+    ) ?? null;
 
   // If tiers are the same, invoice.paid will handle the reset
   if (currentTier === previousTier) return;
@@ -2488,6 +2528,21 @@ async function handleSubscriptionDeleted(
       : subscription.customer?.id;
   if (!customerId) return;
 
+  // Cleanup is Stripe-only and validates its own plan/invoice eligibility. Run
+  // it before plan or user hydration can return early and acknowledge deletion.
+  if (subscription.cancellation_details?.reason === "payment_failed") {
+    const renewalResult = await voidUnpaidCanceledRenewalInvoice(
+      stripe,
+      subscription,
+    );
+    phLogger.info("billing_canceled_renewal_cleanup", {
+      stripe_event_id: stripeEventId,
+      stripe_subscription_id: subscription.id,
+      stripe_invoice_id: stripeObjectId(subscription.latest_invoice),
+      result: renewalResult,
+    });
+  }
+
   let price = subscription.items?.data[0]?.price;
   const lookupKey = price?.lookup_key ?? null;
   let tier: SubscriptionTier | null = null;
@@ -2644,7 +2699,9 @@ async function handleSubscriptionDeleted(
  * - Events: checkout.session.completed, invoice.paid,
  *   invoice.payment_failed, customer.subscription.updated,
  *   customer.subscription.deleted, customer.updated,
- *   refund.created, refund.updated
+ *   refund.created, refund.updated, checkout.session.expired,
+ *   payment_intent.payment_failed, payment_intent.requires_action,
+ *   payment_intent.canceled, payment_intent.succeeded
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -2692,6 +2749,27 @@ export async function POST(req: NextRequest) {
       { error: "Webhook signature verification failed" },
       { status: 400 },
     );
+  }
+
+  // Analytics-only events must not consume the shared fulfillment idempotency
+  // record: other webhook endpoints may handle the same PaymentIntent event.
+  if (isCheckoutPaymentAnalyticsEvent(event.type)) {
+    try {
+      await captureCheckoutPaymentAnalytics(stripe, event);
+      after(() => phLogger.flush());
+      return NextResponse.json({ received: true });
+    } catch {
+      // Avoid logging Stripe objects or raw errors containing payment details.
+      phLogger.warn("checkout_payment_analytics_lookup_failed", {
+        stripe_event_id: event.id,
+        stripe_event_type: event.type,
+      });
+      after(() => phLogger.flush());
+      return NextResponse.json(
+        { error: "Checkout analytics lookup failed" },
+        { status: 500 },
+      );
+    }
   }
 
   // Payment-mode Checkout Sessions are fulfilled by their own webhook routes.

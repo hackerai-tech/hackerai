@@ -1103,8 +1103,15 @@ export const createOpenRouterPatchFetch =
       return attachOpenRouterStreamErrorMetadata(initialResponse);
     }
 
-    if (parserFailure === "generic_parse") {
-      const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody, true);
+    if (
+      parserFailure === "generic_parse" ||
+      (!requestUsesPdfParserEngine(parsedRequestBody, "mistral-ocr") &&
+        !requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai"))
+    ) {
+      const sandboxBody = createSandboxPdfRecoveryBody(
+        parsedRequestBody,
+        parserFailure === "generic_parse",
+      );
       if (!sandboxBody.changed) {
         return attachOpenRouterStreamErrorMetadata(initialResponse);
       }
@@ -1214,7 +1221,6 @@ export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
 export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
-const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
@@ -1236,12 +1242,13 @@ const buildProviderMap = (
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
   freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
-  freeAgentModelSlug = DEEPSEEK_V4_FLASH_SLUG,
+  freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
 ) =>
   ({
     "ask-model": or(GROK_4_6_SLUG),
     "ask-model-free": or(freeAskModelSlug),
     "ask-model-free-glm": or(GLM_5_3_FLASH_SLUG),
+    "ask-model-free-deepseek-v41": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "agent-model": or(GROK_4_6_SLUG),
     "agent-model-free": or(freeAgentModelSlug),
     "model-grok-4.6": or(GROK_4_6_SLUG),
@@ -1266,11 +1273,8 @@ const buildProviderMap = (
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
-    // Titles are a short structured-output task and should never use reasoning.
-    "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
-    // Separate text-only, tool-less call used to review one approval-gated
-    // action. The reviewer receives serialized evidence rather than images.
-    "agent-auto-review-model": or(DEEPSEEK_V4_FLASH_SLUG),
+    // GLM supports the title schema and requires reasoning to stay enabled.
+    "title-generator-model": or(GLM_5_3_FLASH_SLUG),
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
@@ -1304,8 +1308,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-deepseek-v4-flash-vision-pro": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
-  "title-generator-model": "May 2025",
-  "agent-auto-review-model": "July 2026",
+  "title-generator-model": "August 2026",
   "auxiliary-vision-model": "July 2026",
 };
 
@@ -1316,6 +1319,8 @@ export const modelDisplayNames: Record<ModelName, string> &
   "ask-model": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free": "Auto, an intelligent model router built by HackerAI",
   "ask-model-free-glm": "Auto, an intelligent model router built by HackerAI",
+  "ask-model-free-deepseek-v41":
+    "Auto, an intelligent model router built by HackerAI",
   "agent-model": "Auto, an intelligent model router built by HackerAI",
   "agent-model-free": "Auto, an intelligent model router built by HackerAI",
   "model-grok-4.6": "xAI Grok 4.6",
@@ -1336,8 +1341,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "DeepSeek V4 Flash",
-  "agent-auto-review-model": "DeepSeek V4 Flash 0731",
+  "title-generator-model": "GLM 5.3 Flash",
   "auxiliary-vision-model": "Auxiliary vision model",
 };
 
@@ -1360,8 +1364,8 @@ export function isAnthropicModel(modelName: string): boolean {
 export function isDeepSeekModel(modelName: string): boolean {
   return (
     modelName === "ask-model-free" ||
+    modelName === "ask-model-free-deepseek-v41" ||
     modelName === "agent-model-free" ||
-    modelName === "agent-auto-review-model" ||
     modelName === "model-deepseek-v4-flash-0731" ||
     modelName === "model-deepseek-v4-flash-vision" ||
     modelName === "model-deepseek-v4-flash-vision-pro" ||
@@ -1404,6 +1408,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   return (
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
+    normalized === "ask-model-free-deepseek-v41" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||
     normalized === "model-deepseek-v4-flash-vision" ||
@@ -1429,9 +1434,18 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
  * key instead). Standard maps to DeepSeek V4 Flash 0731. Pro uses DeepSeek
- * V4 Pro 0813 in Ask and V4.1 Flash in Agent. Max uses Grok 4.6 in both
- * modes; media-aware promotion happens in `selectModel`.
+ * V4 Pro 0813 in Ask and V4.1 Flash in Agent. Max uses GLM 5.3 in both
+ * modes; media-aware routing happens in `selectModel`.
  */
+export function resolveTierToProviderKey(
+  tier: Exclude<SelectedModel, "auto">,
+  mode: ChatMode,
+): ModelName;
+export function resolveTierToProviderKey(tier: "auto", mode: ChatMode): null;
+export function resolveTierToProviderKey(
+  tier: SelectedModel,
+  mode: ChatMode,
+): ModelName | null;
 export function resolveTierToProviderKey(
   tier: SelectedModel,
   mode: ChatMode,
@@ -1439,13 +1453,15 @@ export function resolveTierToProviderKey(
   if (tier === "auto") return null;
   switch (tier) {
     case "hackerai-standard":
-      return "model-deepseek-v4-flash-0731";
+      return mode === "agent"
+        ? "model-glm-5.3-flash-agent"
+        : "model-glm-5.3-flash";
     case "hackerai-pro":
       return mode === "agent"
         ? "model-deepseek-v4-flash-vision-pro"
         : "model-deepseek-v4-pro-0813";
     case "hackerai-max":
-      return "model-grok-4.6";
+      return "model-glm-5.3";
   }
 }
 
