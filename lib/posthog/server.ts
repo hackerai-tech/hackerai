@@ -103,7 +103,10 @@ export async function getPostHogFeatureFlagRawValueForUser(
 export async function getPostHogFeatureFlagVariantForUser(
   flagKey: string,
   userId: string,
-  options?: { sendFeatureFlagEvents?: boolean },
+  options?: {
+    sendFeatureFlagEvents?: boolean;
+    personProperties?: Record<string, string>;
+  },
 ): Promise<string | undefined> {
   const client = getClient();
   if (!client) return undefined;

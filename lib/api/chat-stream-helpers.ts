@@ -412,6 +412,7 @@ export interface SummarizationStepResult {
 }
 
 export async function runSummarizationStep(options: {
+  compactionExperiment?: import("@/lib/experiments/compaction-model").CompactionModelExperiment;
   messages: UIMessage[];
   subscription: SubscriptionTier;
   languageModel: LanguageModel;
@@ -465,6 +466,7 @@ export async function runSummarizationStep(options: {
     providerPromptPressure: options.providerPromptPressure,
     onPhaseDuration: options.onPhaseDuration,
     startupCompaction: options.startupCompaction,
+    compactionExperiment: options.compactionExperiment,
     registerBackgroundWork: options.registerBackgroundWork,
   });
 

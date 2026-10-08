@@ -1,6 +1,13 @@
 import "server-only";
 
 import {
+  CompactionModelExperiment,
+  COMPACTION_CONTROL_MODEL,
+  COMPACTION_TEST_MODEL,
+  hasStructuredCompactionSummary,
+} from "@/lib/experiments/compaction-model";
+
+import {
   UIMessage,
   UIMessageStreamWriter,
   LanguageModel,
@@ -24,6 +31,7 @@ import {
   isRecoverableStartupCompactionError,
   STARTUP_COMPACTION_FALLBACK_MODELS,
   STARTUP_COMPACTION_VARIANT,
+  InvalidCompactionSummaryError,
   type StartupCompactionContext,
 } from "./startup-compaction";
 import type { ProviderPromptPressure } from "./provider-pressure";
@@ -344,6 +352,7 @@ const logContextCompactionFailed = ({
 };
 
 export interface CheckAndSummarizeOptions {
+  compactionExperiment?: CompactionModelExperiment;
   uiMessages: UIMessage[];
   /** History before injected notes/reminders; falls back to uiMessages for direct callers. */
   sourceUiMessages?: UIMessage[];
@@ -508,6 +517,8 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration,
   startupCompaction,
   onRetry,
+  compactionExperiment,
+  persistence = "durable",
 }: {
   messagesToSummarize: UIMessage[];
   modelMessages?: ModelMessage[];
@@ -524,6 +535,8 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration?: ContextCompactionPhaseReporter;
   startupCompaction?: StartupCompactionContext;
   onRetry?: () => void;
+  compactionExperiment?: CompactionModelExperiment;
+  persistence?: "durable" | "run_scoped";
 }): Promise<
   Awaited<ReturnType<typeof generateSummaryText>> & {
     languageModel: LanguageModel;
@@ -533,6 +546,105 @@ const generateSummaryTextWithRetry = async ({
   const startedAt = Date.now();
   abortSignal?.throwIfAborted();
   try {
+    const assignment = await compactionExperiment?.resolve();
+    abortSignal?.throwIfAborted();
+    if (assignment && compactionExperiment) {
+      const telemetry = compactionExperiment.start(assignment, persistence);
+      const models = [
+        assignment.model,
+        ...(assignment.variant === "test" ? [COMPACTION_CONTROL_MODEL] : []),
+        ...STARTUP_COMPACTION_FALLBACK_MODELS,
+      ];
+      let servedModel: string | undefined;
+      try {
+        for (const [index, modelName] of models.entries()) {
+          abortSignal?.throwIfAborted();
+          const languageModel = myProvider.languageModel(modelName);
+          const attemptStartedAt = Date.now();
+          let discardedUsage: SummarizationUsage | undefined;
+          startupCompaction?.onAttempt?.({
+            variant: "glm53_flash_abliterated_compaction_v1",
+            fallbackUsed: index > 0,
+          });
+          try {
+            const result = await generateSummaryText(
+              messagesToSummarize,
+              languageModel,
+              mode,
+              chatSystemPrompt,
+              hasExistingSummary,
+              undefined,
+              modelName === COMPACTION_TEST_MODEL
+                ? {
+                    abliteration: {
+                      reasoningEffort: "low",
+                    },
+                  }
+                : buildStartupCompactionProviderOptions(providerOptions),
+              abortSignal,
+              modelMessages,
+              summaryInputMaxTokens,
+              {
+                maxRetries: 0,
+                timeout: 60_000,
+                maxOutputTokens: 8192,
+                validateText: (text) =>
+                  hasStructuredCompactionSummary(text, mode),
+                onDiscardedUsage: (usage) => {
+                  discardedUsage = usage;
+                  telemetry.onDiscardedUsage(usage);
+                },
+              },
+            );
+            servedModel = modelName;
+            telemetry.attempt(
+              modelName,
+              "completed",
+              Date.now() - attemptStartedAt,
+              result.usage,
+            );
+            telemetry.finish("completed", modelName);
+            return {
+              ...result,
+              languageModel,
+              attempt:
+                index === 0 ? ("primary" as const) : ("fallback" as const),
+            };
+          } catch (error) {
+            telemetry.attempt(
+              modelName,
+              abortSignal?.aborted ? "aborted" : "error",
+              Date.now() - attemptStartedAt,
+              discardedUsage,
+            );
+            markSummarizationAttemptError(
+              error,
+              index === 0 ? "primary" : "fallback",
+              modelName,
+            );
+            if (
+              abortSignal?.aborted ||
+              index === models.length - 1 ||
+              !(
+                modelName === COMPACTION_TEST_MODEL ||
+                error instanceof InvalidCompactionSummaryError ||
+                isMalformedProviderJsonError(error) ||
+                isRecoverableStartupCompactionError(error)
+              )
+            )
+              throw error;
+            onRetry?.();
+          }
+        }
+        throw new Error("Compaction experiment model chain was empty");
+      } catch (error) {
+        telemetry.finish(
+          abortSignal?.aborted ? "aborted" : "error",
+          servedModel,
+        );
+        throw error;
+      }
+    }
     if (!startupCompaction || mode !== "agent") {
       const languageModel = myProvider.languageModel(
         CONTEXT_COMPACTION_MODEL_NAME,
@@ -717,6 +829,7 @@ const startTranscriptSave = ({
 };
 
 export interface CompactModelMessagesInRunOptions {
+  compactionExperiment?: CompactionModelExperiment;
   modelMessages: ModelMessage[];
   /** UI history excludes synthetic SDK continuation/approval messages. */
   sourceUiMessages?: UIMessage[];
@@ -790,6 +903,7 @@ export const compactModelMessagesInRun = async ({
   cacheAlignedSummary,
   onPhaseDuration,
   registerBackgroundWork,
+  compactionExperiment,
 }: CompactModelMessagesInRunOptions): Promise<InRunModelCompactionResult | null> => {
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   const compactionReason = getCompactionLogReason({
@@ -881,6 +995,8 @@ export const compactModelMessagesInRun = async ({
         subscription,
         reason: compactionReason,
         onPhaseDuration,
+        compactionExperiment,
+        persistence: "run_scoped",
       });
     if (useWarmPrefix) cacheAlignedSummary.onUsed?.();
     const summaryPromise = useWarmPrefix
@@ -1079,6 +1195,7 @@ export const checkAndSummarizeIfNeeded = async ({
   onPhaseDuration,
   registerBackgroundWork,
   startupCompaction,
+  compactionExperiment,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -1206,6 +1323,7 @@ export const checkAndSummarizeIfNeeded = async ({
       reason: compactionReason,
       onPhaseDuration,
       startupCompaction,
+      compactionExperiment,
     });
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
