@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-const mockFlag = jest.fn<(...args: any[]) => Promise<string | undefined>>();
 const mockConfigured = jest.fn(() => true);
 const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
@@ -8,14 +7,13 @@ jest.mock("@/lib/ai/abliteration", () => ({
   isAbliterationConfigured: mockConfigured,
 }));
 jest.mock("@/lib/posthog/server", () => ({
-  getPostHogFeatureFlagVariantForUser: mockFlag,
   phLogger: { event: mockEvent },
 }));
 const {
-  CompactionModelExperiment,
-  COMPACTION_MODEL_FLAG,
+  CompactionModelPolicy,
+  COMPACTION_POLICY_VERSION,
   hasStructuredCompactionSummary,
-} = require("../compaction-model") as typeof import("../compaction-model");
+} = require("../compaction-policy") as typeof import("../compaction-policy");
 const context = {
   userId: "test-user",
   runId: "run-test",
@@ -27,23 +25,19 @@ const context = {
 };
 describe("compaction model assignment and telemetry", () => {
   beforeEach(() => {
-    mockFlag.mockReset();
     mockConfigured.mockReturnValue(true);
     mockEvent.mockClear();
   });
-  it.each(["control", "test"] as const)(
-    "freezes %s per run and defers exposure until a real compaction",
-    async (variant) => {
-      mockFlag.mockResolvedValueOnce(variant);
-      const experiment = new CompactionModelExperiment(context);
+  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    "uses Abliteration for %s and emits policy telemetry only at compaction",
+    async (subscription) => {
+      const experiment = new CompactionModelPolicy({
+        ...context,
+        subscription,
+      });
       const assignment = await experiment.resolve();
       expect(await experiment.resolve()).toBe(assignment);
-      expect(mockFlag).toHaveBeenCalledTimes(1);
-      expect(mockFlag).toHaveBeenCalledWith(
-        COMPACTION_MODEL_FLAG,
-        "test-user",
-        expect.objectContaining({ sendFeatureFlagEvents: false }),
-      );
+      expect(assignment).toEqual({ model: "model-abliterated" });
       expect(mockEvent).not.toHaveBeenCalled();
       const first = experiment.start(assignment!, "durable");
       first.attempt(assignment!.model, "error", 3);
@@ -61,12 +55,13 @@ describe("compaction model assignment and telemetry", () => {
         mockEvent.mock.calls.filter(
           ([event]) => event === "$feature_flag_called",
         ),
-      ).toHaveLength(1);
+      ).toHaveLength(0);
       const outcomes = mockEvent.mock.calls.filter(
         ([event]) => event === "compaction_model_finished",
       );
       expect(outcomes[0][1]).toMatchObject({
-        experiment_variant: variant,
+        compaction_policy: COMPACTION_POLICY_VERSION,
+        subscription_tier: subscription,
         primary_success: false,
         fallback_used: true,
         attempt_count: 2,
@@ -91,29 +86,17 @@ describe("compaction model assignment and telemetry", () => {
         usage_reported: true,
         input_tokens: 0,
       });
-      expect(JSON.stringify(mockEvent.mock.calls)).not.toContain(
-        "error_message",
-      );
+      const serializedEvents = JSON.stringify(mockEvent.mock.calls);
+      expect(serializedEvents).not.toContain("experiment_key");
+      expect(serializedEvents).not.toContain("experiment_variant");
+      expect(serializedEvents).not.toContain("error_message");
     },
   );
-  it("does not enroll free users or an unconfigured provider", async () => {
-    expect(
-      await new CompactionModelExperiment({
-        ...context,
-        subscription: "free",
-      }).resolve(),
-    ).toBeUndefined();
+  it("starts with GLM when Abliteration credentials are missing", async () => {
     mockConfigured.mockReturnValue(false);
-    expect(
-      await new CompactionModelExperiment(context).resolve(),
-    ).toBeUndefined();
-    expect(mockFlag).not.toHaveBeenCalled();
-  });
-  it("keeps unavailable or out-of-rollout assignment outside the experiment", async () => {
-    mockFlag.mockResolvedValue(undefined);
-    expect(
-      await new CompactionModelExperiment(context).resolve(),
-    ).toBeUndefined();
+    expect(await new CompactionModelPolicy(context).resolve()).toEqual({
+      model: "model-glm-5.3-flash",
+    });
     expect(mockEvent).not.toHaveBeenCalled();
   });
   it("rejects refusal prose and incomplete structured output", () => {

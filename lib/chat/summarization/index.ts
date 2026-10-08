@@ -1,11 +1,11 @@
 import "server-only";
 
 import {
-  CompactionModelExperiment,
-  COMPACTION_CONTROL_MODEL,
-  COMPACTION_TEST_MODEL,
+  CompactionModelPolicy,
+  COMPACTION_FALLBACK_MODEL,
+  COMPACTION_PRIMARY_MODEL,
   hasStructuredCompactionSummary,
-} from "@/lib/experiments/compaction-model";
+} from "@/lib/chat/summarization/compaction-policy";
 
 import {
   UIMessage,
@@ -352,7 +352,7 @@ const logContextCompactionFailed = ({
 };
 
 export interface CheckAndSummarizeOptions {
-  compactionExperiment?: CompactionModelExperiment;
+  compactionPolicy?: CompactionModelPolicy;
   uiMessages: UIMessage[];
   /** History before injected notes/reminders; falls back to uiMessages for direct callers. */
   sourceUiMessages?: UIMessage[];
@@ -517,7 +517,7 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration,
   startupCompaction,
   onRetry,
-  compactionExperiment,
+  compactionPolicy,
   persistence = "durable",
 }: {
   messagesToSummarize: UIMessage[];
@@ -535,7 +535,7 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration?: ContextCompactionPhaseReporter;
   startupCompaction?: StartupCompactionContext;
   onRetry?: () => void;
-  compactionExperiment?: CompactionModelExperiment;
+  compactionPolicy?: CompactionModelPolicy;
   persistence?: "durable" | "run_scoped";
 }): Promise<
   Awaited<ReturnType<typeof generateSummaryText>> & {
@@ -546,13 +546,15 @@ const generateSummaryTextWithRetry = async ({
   const startedAt = Date.now();
   abortSignal?.throwIfAborted();
   try {
-    const assignment = await compactionExperiment?.resolve();
+    const assignment = await compactionPolicy?.resolve();
     abortSignal?.throwIfAborted();
-    if (assignment && compactionExperiment) {
-      const telemetry = compactionExperiment.start(assignment, persistence);
+    if (assignment && compactionPolicy) {
+      const telemetry = compactionPolicy.start(assignment, persistence);
       const models = [
         assignment.model,
-        ...(assignment.variant === "test" ? [COMPACTION_CONTROL_MODEL] : []),
+        ...(assignment.model === COMPACTION_PRIMARY_MODEL
+          ? [COMPACTION_FALLBACK_MODEL]
+          : []),
         ...STARTUP_COMPACTION_FALLBACK_MODELS,
       ];
       let servedModel: string | undefined;
@@ -563,7 +565,7 @@ const generateSummaryTextWithRetry = async ({
           const attemptStartedAt = Date.now();
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
-            variant: "glm53_flash_abliterated_compaction_v1",
+            variant: "abliteration_glm53_fallback_v1",
             fallbackUsed: index > 0,
           });
           try {
@@ -574,7 +576,7 @@ const generateSummaryTextWithRetry = async ({
               chatSystemPrompt,
               hasExistingSummary,
               undefined,
-              modelName === COMPACTION_TEST_MODEL
+              modelName === COMPACTION_PRIMARY_MODEL
                 ? {
                     abliteration: {
                       reasoningEffort: "low",
@@ -626,7 +628,7 @@ const generateSummaryTextWithRetry = async ({
               abortSignal?.aborted ||
               index === models.length - 1 ||
               !(
-                modelName === COMPACTION_TEST_MODEL ||
+                modelName === COMPACTION_PRIMARY_MODEL ||
                 error instanceof InvalidCompactionSummaryError ||
                 isMalformedProviderJsonError(error) ||
                 isRecoverableStartupCompactionError(error)
@@ -636,7 +638,7 @@ const generateSummaryTextWithRetry = async ({
             onRetry?.();
           }
         }
-        throw new Error("Compaction experiment model chain was empty");
+        throw new Error("Compaction model chain was empty");
       } catch (error) {
         telemetry.finish(
           abortSignal?.aborted ? "aborted" : "error",
@@ -829,7 +831,7 @@ const startTranscriptSave = ({
 };
 
 export interface CompactModelMessagesInRunOptions {
-  compactionExperiment?: CompactionModelExperiment;
+  compactionPolicy?: CompactionModelPolicy;
   modelMessages: ModelMessage[];
   /** UI history excludes synthetic SDK continuation/approval messages. */
   sourceUiMessages?: UIMessage[];
@@ -903,7 +905,7 @@ export const compactModelMessagesInRun = async ({
   cacheAlignedSummary,
   onPhaseDuration,
   registerBackgroundWork,
-  compactionExperiment,
+  compactionPolicy,
 }: CompactModelMessagesInRunOptions): Promise<InRunModelCompactionResult | null> => {
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   const compactionReason = getCompactionLogReason({
@@ -975,6 +977,7 @@ export const compactModelMessagesInRun = async ({
       }
     }
     const useWarmPrefix =
+      !compactionPolicy &&
       cacheAlignedSummary &&
       prefixBudget > 0 &&
       estimateSummaryInputTokens(modelMessages) <= prefixBudget;
@@ -995,7 +998,7 @@ export const compactModelMessagesInRun = async ({
         subscription,
         reason: compactionReason,
         onPhaseDuration,
-        compactionExperiment,
+        compactionPolicy,
         persistence: "run_scoped",
       });
     if (useWarmPrefix) cacheAlignedSummary.onUsed?.();
@@ -1195,7 +1198,7 @@ export const checkAndSummarizeIfNeeded = async ({
   onPhaseDuration,
   registerBackgroundWork,
   startupCompaction,
-  compactionExperiment,
+  compactionPolicy,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -1323,7 +1326,7 @@ export const checkAndSummarizeIfNeeded = async ({
       reason: compactionReason,
       onPhaseDuration,
       startupCompaction,
-      compactionExperiment,
+      compactionPolicy,
     });
 
     // In agent modes, save the full transcript of summarized messages to the sandbox

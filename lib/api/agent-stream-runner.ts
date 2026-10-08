@@ -5,7 +5,7 @@ import type {
 } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
-import { CompactionModelExperiment } from "@/lib/experiments/compaction-model";
+import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
@@ -46,7 +46,6 @@ import { randomUUID } from "crypto";
 import {
   ModelHistoryReplay,
   MODEL_HISTORY_FLAG,
-  CACHE_ALIGNED_SUMMARY_FLAG,
   historyDigest,
   sourceMessageDigests,
   parseModelHistory,
@@ -383,7 +382,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
-  compactionExperiment?: CompactionModelExperiment;
+  compactionPolicy?: CompactionModelPolicy;
   cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
@@ -1509,29 +1508,21 @@ export async function createAgentStream(
     }
   }
   let lastHistoryRequest: ModelMessage[] | undefined;
-  const cacheAlignedSummaryEnabled =
-    historyEnabled &&
-    (await getPostHogFeatureFlagForUser(
-      CACHE_ALIGNED_SUMMARY_FLAG,
-      ctx.userId,
-    ));
-  const compactionExperiment = cacheAlignedSummaryEnabled
-    ? undefined
-    : (state.compactionExperiment ??= new CompactionModelExperiment({
-        userId: ctx.userId,
-        runId: telemetryRunId,
-        chatId: ctx.chatId,
-        mode: ctx.mode,
-        subscription: ctx.subscription,
-        baselineModel: modelName,
-        onDiscardedUsage: (usage) =>
-          ctx.summarizationTracker.recordSummarizationUsage(
-            usage,
-            ctx.usageTracker,
-          ),
-      }));
+  const compactionPolicy = (state.compactionPolicy ??=
+    new CompactionModelPolicy({
+      userId: ctx.userId,
+      runId: telemetryRunId,
+      chatId: ctx.chatId,
+      mode: ctx.mode,
+      subscription: ctx.subscription,
+      baselineModel: modelName,
+      onDiscardedUsage: (usage) =>
+        ctx.summarizationTracker.recordSummarizationUsage(
+          usage,
+          ctx.usageTracker,
+        ),
+    }));
   let lastHistoryResponseCursor = 0;
-  let lastHistoryTools: ToolSet = ctx.tools;
   let historyToSave: ModelHistorySnapshot | undefined;
   let historyExposed = false;
   const exposeHistory = () => {
@@ -1692,7 +1683,7 @@ export async function createAgentStream(
         ) {
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
-              compactionExperiment,
+              compactionPolicy,
               messages: state.finalMessages,
               sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
@@ -1801,13 +1792,6 @@ export async function createAgentStream(
                 sourceResponseCursor =
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
-                lastHistoryTools = activeTools
-                  ? Object.fromEntries(
-                      Object.entries(ctx.tools).filter(([name]) =>
-                        activeTools.includes(name),
-                      ),
-                    )
-                  : ctx.tools;
               }
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
@@ -1852,7 +1836,7 @@ export async function createAgentStream(
             compactionAttemptCount++;
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
-              compactionExperiment,
+              compactionPolicy,
               modelMessages: rollingModelMessages,
               sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
@@ -1884,31 +1868,6 @@ export async function createAgentStream(
                   ),
                 ),
               registerBackgroundWork: ctx.registerBackgroundWork,
-              ...(historyEnabled &&
-                cacheAlignedSummaryEnabled &&
-                lastHistoryRequest && {
-                  cacheAlignedSummary: {
-                    languageModel: effectiveModelInfo.languageModel,
-                    tools: lastHistoryTools,
-                    system: frozenSystemPrompt,
-                    providerOptions: getStepProviderOptions(
-                      effectiveModelInfo.modelName,
-                    ),
-                    onUsed: () =>
-                      phLogger.event("cache_aligned_summary_exposed", {
-                        userId: ctx.userId,
-                        chat_id: ctx.chatId,
-                        mode: ctx.mode,
-                        model: historyRoute,
-                        variant: "v1",
-                      }),
-                    onDiscardedUsage: (usage) =>
-                      ctx.summarizationTracker.recordSummarizationUsage(
-                        usage,
-                        ctx.usageTracker,
-                      ),
-                  },
-                }),
             });
 
             if (!inRunResult) {
@@ -2025,14 +1984,6 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
-                if (historyEnabled)
-                  lastHistoryTools = activeTools
-                    ? Object.fromEntries(
-                        Object.entries(ctx.tools).filter(([name]) =>
-                          activeTools.includes(name),
-                        ),
-                      )
-                    : ctx.tools;
                 const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
@@ -2156,13 +2107,6 @@ export async function createAgentStream(
           ) as ModelMessage[];
           lastHistoryResponseCursor =
             rawModelMessages.length - initialModelMessages.length;
-          lastHistoryTools = activeTools
-            ? Object.fromEntries(
-                Object.entries(ctx.tools).filter(([name]) =>
-                  activeTools.includes(name),
-                ),
-              )
-            : ctx.tools;
         }
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
