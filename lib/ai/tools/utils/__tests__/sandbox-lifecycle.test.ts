@@ -91,6 +91,35 @@ describe("E2B sandbox lease lifecycle", () => {
     process.env = originalEnv;
   });
 
+  it("passes cancellation to E2B and neither publishes nor replaces a late reconnect", async () => {
+    listSandbox();
+    let complete!: (sandbox: Sandbox) => void;
+    sandboxApi.connect.mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const publish = jest.fn();
+    const result = ensureSandboxConnection(
+      { userID: "user-1", setSandbox: publish },
+      { signal: controller.signal },
+    ).catch((error) => error);
+    // Let discovery settle and connect begin.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(sandboxApi.connect).toHaveBeenCalledWith(
+      "sandbox-1",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    const reason = new Error("deadline expired");
+    controller.abort(reason);
+    complete({ sandboxId: "sandbox-1" } as Sandbox);
+    expect(await result).toBe(reason);
+    expect(publish).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
+  });
+
   it("always refreshes the same fixed cloud lease", async () => {
     const setTimeout = jest.fn(async () => undefined);
     const sandbox = { setTimeout } as unknown as Sandbox;

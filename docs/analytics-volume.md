@@ -4,6 +4,50 @@ Keep payment, usage-cost, request outcome and actual experiment exposure events
 unsampled. Apply reductions at the producer so the events never reach ingestion.
 Deleting reports or historical data does not replace stopping unnecessary capture.
 
+## Customer-visible performance
+
+`chat_visible_response_performance` records one best-effort summary per new
+Ask/Agent POST for an already identified, consent-eligible browser user. GET
+reconnects and loaded history do not start samples. Correlate by `sample_id`,
+`chat_id`, and `trigger_run_id` when available. Retain errors, aborts, navigation,
+superseded requests, and null first-text timings; null is not a fast response.
+Use `visible_text_observed=true` and `backgrounded=false` for foreground latency
+percentiles, and report the excluded/missing share alongside them.
+
+`first_visible_text_ms` starts at transport dispatch and ends after a DOM text
+commit and two animation-frame callbacks, when a rendered text element intersects
+the chat viewport. It is a paint-opportunity proxy, not proof of display pixels.
+It excludes reasoning-only data and older assistant messages. Text update gaps
+can include tool work, reasoning, approvals, or network delays; they are not
+automatically provider stalls. Partially visible text elements may include
+updates below the viewport. Backgrounding breaks the gap interval. Navigation or
+process termination can truncate/lose a sample; the telemetry is not a ledger.
+
+`chat_browser_responsiveness` uses stable 10% sampling of identified users.
+It aggregates textarea input-to-frame delay, frame gaps during scrolling,
+Long Tasks, and Event Timing entry counts/durations for at most one minute, flushing on
+visibility change, page hide, and cleanup. Idle windows emit nothing. API support
+booleans distinguish unsupported metrics from observed zeroes. Frame delays are
+main-thread proxies, not compositor frame rates. The maximum Event Timing entry
+duration is not the standardized INP statistic. Compare per-user distributions;
+do not multiply sampled-user counts into exact totals.
+
+Both events contain only bounded metadata, timings, counts, and correlation IDs.
+They do not capture message text, keys, DOM content, selectors, or raw browser
+performance entries. The final PostHog before-send hook allowlists properties
+for these two events, excluding SDK-added URLs, referrers, attribution, and
+unrelated registered properties. Consent withdrawal/account changes discard pending samples.
+The owning performance work is HAC-151; evaluate browser overhead and acquisition
+success after rollout before changing sampling or deadline policy.
+
+Cloud acquisition uses one 30-second active-wait budget across provider retries
+and consecutive failed attempts in a manager. E2B receives the shared abort
+signal for discovery, lookup, connect and create; the signal cancels supported
+SDK requests. The outer deadline also bounds adapters that cannot abort. Late
+results are fenced before publishing/caching a connection. A timeout does not
+authorize deleting a workspace, replacing a migration destination, or retrying
+an uncertain create. A provider may complete remote work after local cancellation.
+
 `computer_activation_cta_impressed` records one identified user/surface/source
 per UTC day, matching upgrade-impression granularity. Browser storage prevents
 repeat sends across mounts and reloads; a stable ingestion UUID deduplicates

@@ -115,6 +115,9 @@ import {
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
+import { ChatPerformanceTracker } from "@/lib/analytics/chat-performance";
+import { useChatPerformance } from "@/app/hooks/useChatPerformance";
+import { useBrowserResponsiveness } from "@/app/hooks/useBrowserResponsiveness";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
@@ -906,11 +909,22 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
+  const [performanceTracker] = useState(() => new ChatPerformanceTracker());
+  useBrowserResponsiveness();
   const transportRef = useRef(
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
+        if (init?.method === "POST") {
+          performanceTracker.start(
+            activeChatIdRef.current,
+            mode,
+            messagesRef.current
+              .filter((message) => message.role === "assistant")
+              .map((message) => message.id),
+          );
+        }
         const isTauri = isTauriEnvironment();
         if (isLegacyDesktopAgentClient({ mode, isTauri })) {
           throw new ChatSDKError(
@@ -1111,6 +1125,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       agentLongHasVisibleProgressRef.current = true;
       appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
+        case "data-cloud-connection-error": {
+          const data = dataPart.data as { code?: unknown };
+          if (data?.code === "timeout") {
+            toast.error(
+              "Cloud connection timed out. Your workspace is preserved. Try sending your message again shortly.",
+              { duration: 10_000 },
+            );
+          }
+          break;
+        }
         case "data-agent-approval-session": {
           const approvalData = dataPart.data as {
             chatId?: unknown;
@@ -1226,6 +1250,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: ({ isAbort }) => {
+      performanceTracker.setOutcome(isAbort ? "aborted" : "completed");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1248,6 +1273,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      performanceTracker.setOutcome("error");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1273,6 +1299,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         );
       }
     },
+  });
+
+  useChatPerformance({
+    tracker: performanceTracker,
+    chatId,
+    messages,
+    status,
+    runId: agentLongRunId,
   });
 
   // Guard the shared dispatch boundary as well as the UI. Forks, retries,

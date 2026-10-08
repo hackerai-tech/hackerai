@@ -66,6 +66,7 @@ import {
 export { isE2BSandbox };
 
 export type CreateToolsRuntimePolicy = {
+  signal?: AbortSignal;
   allowedToolNames?: readonly string[];
   additionalTools?: (context: ToolContext) => ToolSet;
   ptyScopeId?: string;
@@ -134,6 +135,12 @@ export const createTools = (
   };
 
   const cloudSandboxContext: CloudSandboxAcquisitionContext = {
+    signal: runtimePolicy.signal,
+    onTimeout: () =>
+      writer.write({
+        type: "data-cloud-connection-error",
+        data: { code: "timeout", workspacePreserved: true },
+      }),
     provider: runtimePolicy.cloudSandboxProvider,
     selectionReason: runtimePolicy.cloudSandboxSelectionReason,
     subscription,

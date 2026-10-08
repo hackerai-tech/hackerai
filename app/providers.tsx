@@ -24,6 +24,8 @@ import {
   type FirstTouchAttribution,
 } from "@/lib/analytics/acquisition";
 
+import { sanitizeChatPerformanceEvent } from "@/lib/analytics/chat-performance-privacy";
+
 let lastIdentifiedSignature: string | null = null;
 
 function isEnglishLocale(locale: string | null | undefined) {
@@ -102,8 +104,9 @@ export function PostHogProvider({
               return null;
             }
 
-            const sanitizedEvent =
-              sanitizeFrontendExceptionUrlProperties(event);
+            const sanitizedEvent = sanitizeChatPerformanceEvent(
+              sanitizeFrontendExceptionUrlProperties(event),
+            );
             if (shouldDropExpectedFrontendException(sanitizedEvent)) {
               return null;
             }

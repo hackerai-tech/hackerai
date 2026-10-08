@@ -120,7 +120,7 @@ export class DefaultSandboxManager implements SandboxManager {
 
     if (this.acquisition) return this.acquisition;
     this.acquisition = this.acquisitionBudget
-      .run(() => this.acquireSandbox(), {
+      .run((signal) => this.acquireSandbox(signal), {
         userId: this.userID,
         ...this.cloudSandboxContext,
       })
@@ -130,11 +130,21 @@ export class DefaultSandboxManager implements SandboxManager {
     return this.acquisition;
   }
 
-  private async acquireSandbox(): Promise<{ sandbox: AnySandbox }> {
+  private async acquireSandbox(
+    signal: AbortSignal,
+  ): Promise<{ sandbox: AnySandbox }> {
+    signal.throwIfAborted();
     const result = await ensureCloudSandboxConnection({
+      signal,
       userId: this.userID,
-      setSandbox: this.setSandboxCallback,
-      onBoot: this.onBoot,
+      setSandbox: (sandbox) => {
+        signal.throwIfAborted();
+        this.setSandboxCallback(sandbox);
+      },
+      onBoot: (info) => {
+        signal.throwIfAborted();
+        this.onBoot?.(info);
+      },
       initialSandbox: this.sandbox,
       // Reconnect to the provider that actually supplied this run's files.
       context: {
@@ -142,6 +152,7 @@ export class DefaultSandboxManager implements SandboxManager {
         provider: this.activeCloudProvider,
       },
     });
+    signal.throwIfAborted();
     this.sandbox = result.sandbox;
     this.activeCloudProvider = result.provider;
 
