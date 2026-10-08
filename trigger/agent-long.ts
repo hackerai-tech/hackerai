@@ -2723,6 +2723,7 @@ export const agentLongTask = task({
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
                 environment: ctx.environment.type,
+                signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
                   ? {

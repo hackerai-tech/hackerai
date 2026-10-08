@@ -87,6 +87,7 @@ const SANDBOX_VERSION = "v12";
 export const ensureSandboxConnection = async (
   context: SandboxContext,
   options: {
+    signal?: AbortSignal;
     initialSandbox?: Sandbox | null;
     triggerRegion?: TriggerRunRegion;
     acquisitionId?: string;
@@ -96,7 +97,11 @@ export const ensureSandboxConnection = async (
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
-  const { initialSandbox, triggerRegion } = options;
+  const { initialSandbox, triggerRegion, signal } = options;
+  signal?.throwIfAborted();
+  // The SDK aborts fetch with this shared deadline signal. Do not shorten the
+  // returned client's default timeout for subsequent commands/file operations.
+  const requestOptions = { signal };
 
   // Return existing sandbox if already connected
   if (initialSandbox && !options.destinationId && !options.createOnly) {
@@ -121,7 +126,8 @@ export const ensureSandboxConnection = async (
       phase = "connect";
       const info = await Sandbox.getInfo(options.destinationId, {
         ...createCluster.connectionOptions,
-        requestTimeoutMs: 10000,
+        ...requestOptions,
+        requestTimeoutMs: 10_000,
       });
       if (
         !["running", "paused"].includes(info.state) ||
@@ -135,14 +141,17 @@ export const ensureSandboxConnection = async (
         () =>
           Sandbox.connect(options.destinationId!, {
             ...createCluster.connectionOptions,
+            ...requestOptions,
             timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
           }),
         {
+          signal,
           maxRetries: MAX_CONNECT_RETRIES,
           baseDelayMs: 400,
           jitterMs: 40,
         },
       );
+      signal?.throwIfAborted();
       setSandbox(sandbox);
       reportBoot("reuse_existing", 0);
       return { sandbox };
@@ -161,6 +170,7 @@ export const ensureSandboxConnection = async (
     for (const cluster of options.createOnly ? [] : discoveryClusters) {
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
+        ...requestOptions,
         query: {
           metadata: {
             userID,
@@ -173,7 +183,12 @@ export const ensureSandboxConnection = async (
         if (++pages > 100) throw new Error("E2B inventory pagination limit");
         const listedSandboxes = await retryWithBackoff(
           () => paginator.nextItems(),
-          { maxRetries: MAX_DISCOVERY_RETRIES, baseDelayMs: 400, jitterMs: 40 },
+          {
+            signal,
+            maxRetries: MAX_DISCOVERY_RETRIES,
+            baseDelayMs: 400,
+            jitterMs: 40,
+          },
         );
         discoveredSandboxes.push(
           ...listedSandboxes.map((info) => ({ info, cluster })),
@@ -234,18 +249,22 @@ export const ensureSandboxConnection = async (
           () =>
             Sandbox.connect(existingSandboxInfo.sandboxId, {
               ...existingCluster.connectionOptions,
+              ...requestOptions,
               timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
             }),
           {
+            signal,
             maxRetries: MAX_CONNECT_RETRIES,
             baseDelayMs: 400,
             jitterMs: 40,
           },
         );
+        signal?.throwIfAborted();
         setSandbox(sandbox);
         reportBoot("reuse_existing", 0);
         return { sandbox };
       } catch (e) {
+        signal?.throwIfAborted();
         // Handle specific error cases
         if (
           e instanceof NotFoundError ||
@@ -270,6 +289,7 @@ export const ensureSandboxConnection = async (
     let lastError: unknown;
     phase = "create";
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
+      signal?.throwIfAborted();
       if (attempt > 0) {
         console.warn(
           `[${userID}] E2B rate limit — retrying sandbox creation (${attempt + 1}/${MAX_CREATE_RETRIES}) after ${RATE_LIMIT_COOLDOWN_MS}ms`,
@@ -277,9 +297,11 @@ export const ensureSandboxConnection = async (
         await new Promise((r) => setTimeout(r, RATE_LIMIT_COOLDOWN_MS));
       }
 
+      signal?.throwIfAborted();
       try {
         const sandbox = await Sandbox.create(createCluster.template, {
           ...createCluster.connectionOptions,
+          ...requestOptions,
           timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
           lifecycle: { onTimeout: "pause", autoResume: true },
           secure: true,
@@ -295,6 +317,7 @@ export const ensureSandboxConnection = async (
           },
         });
 
+        signal?.throwIfAborted();
         setSandbox(sandbox);
         reportBoot(createPath, attempt + 1);
         return { sandbox };
@@ -309,6 +332,7 @@ export const ensureSandboxConnection = async (
     }
     throw lastError;
   } catch (error) {
+    signal?.throwIfAborted();
     const candidate =
       error && typeof error === "object"
         ? (error as { code?: unknown; status?: unknown; statusCode?: unknown })

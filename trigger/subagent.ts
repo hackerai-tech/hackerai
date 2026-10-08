@@ -1064,6 +1064,7 @@ export const subagentTask = task({
                   ...allowedToolNames,
                   profile.finalResultTool.name,
                 ],
+                signal: activeAbort.signal,
                 additionalTools: () => ({
                   search_skills: createSearchSkillsTool(),
                   load_skill: createLoadSkillTool(),

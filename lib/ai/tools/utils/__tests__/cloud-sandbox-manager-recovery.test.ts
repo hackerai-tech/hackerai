@@ -150,6 +150,34 @@ describe.each(["default", "hybrid"] as const)(
       );
     });
 
+    it("never publishes or caches a late connection after the deadline", async () => {
+      jest.useFakeTimers();
+      const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+      let complete!: (result: { sandbox: AnySandbox; provider: "e2b" }) => void;
+      acquire.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const manager = createManager();
+      const result = manager.getSandbox().catch((error) => error);
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect((await result).name).toBe("CloudAcquisitionTimeoutError");
+      const options = acquire.mock.calls[0][0];
+      expect(options.signal?.aborted).toBe(true);
+      expect(() => options.setSandbox(e2b)).toThrow(
+        "Cloud connection timed out",
+      );
+      complete({ sandbox: e2b, provider: "e2b" });
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(manager.getSandbox()).rejects.toThrow(
+        "rest of this request",
+      );
+      expect(acquire).toHaveBeenCalledTimes(1);
+      warning.mockRestore();
+      jest.useRealTimers();
+    });
+
     it("reconnects to E2B after fallback without trying Miosa again", async () => {
       acquire.mockResolvedValue({ sandbox: e2b, provider: "e2b" });
       const manager = createManager();

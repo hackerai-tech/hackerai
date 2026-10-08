@@ -44,6 +44,8 @@ import {
 } from "./cloud-migration-state";
 
 export type CloudSandboxAcquisitionContext = {
+  signal?: AbortSignal;
+  onTimeout?: () => void;
   acquisitionId?: string;
   provider?: CloudSandboxProvider;
   selectionReason?: CloudSandboxSelectionReason;
@@ -59,6 +61,7 @@ const ensureE2BCloudSandboxConnection = (options: {
   userId: string;
   destinationId?: string;
   createOnly?: boolean;
+  signal?: AbortSignal;
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
@@ -71,6 +74,7 @@ const ensureE2BCloudSandboxConnection = (options: {
       onBoot: options.onBoot,
     },
     {
+      signal: options.signal,
       initialSandbox:
         options.initialSandbox && isE2BSandbox(options.initialSandbox)
           ? options.initialSandbox
@@ -102,6 +106,7 @@ async function ensureFreshMigrationFallback(
   let pinned = false;
   let pinAcknowledged = false;
   try {
+    options.signal?.throwIfAborted();
     pinned = await pinFreshE2BFallback({
       userId: options.userId,
       observed,
@@ -152,6 +157,7 @@ async function ensureFreshMigrationFallback(
     result.sandbox.sandboxId,
   );
   registerE2BMigrationLease(result.sandbox, options.userId);
+  options.signal?.throwIfAborted();
   options.setSandbox(result.sandbox);
   phLogger.event("cloud_sandbox_provider_fallback", {
     userId: options.userId,
@@ -169,6 +175,7 @@ async function ensureFreshMigrationFallback(
 
 const ensureMiosaCloudSandboxConnection = (options: {
   userId: string;
+  signal?: AbortSignal;
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
@@ -176,6 +183,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
   onWorkspaceStatus?: (status: "existing" | "absent") => void;
 }) =>
   readCloudMigrationState(options.userId).then((migration) => {
+    options.signal?.throwIfAborted();
     if (migration && migration.phase !== "miosa")
       throw new CloudMigrationUnavailableError();
     return ensureMiosaSandboxConnection(
@@ -192,6 +200,7 @@ const ensureMiosaCloudSandboxConnection = (options: {
             ? options.initialSandbox
             : null,
         beforeCreate: async () => {
+          options.signal?.throwIfAborted();
           const migration = await readCloudMigrationState(options.userId);
           if (migration) {
             if (
@@ -324,6 +333,7 @@ const recordRolloutExposure = (options: {
 
 export async function ensureCloudSandboxConnection(options: {
   userId: string;
+  signal?: AbortSignal;
   initialSandbox?: AnySandbox | null;
   setSandbox: (sandbox: AnySandbox) => void;
   onBoot?: (info: SandboxBootInfo) => void;
@@ -334,7 +344,9 @@ export async function ensureCloudSandboxConnection(options: {
     ...options,
     context: { ...options.context, acquisitionId: randomUUID() },
   };
+  options.signal?.throwIfAborted();
   const migrationState = await readCloudMigrationState(options.userId);
+  options.signal?.throwIfAborted();
   if (
     migrationState &&
     canUseFreshE2BFallback(migrationState) &&
@@ -477,6 +489,7 @@ export async function ensureCloudSandboxConnection(options: {
       const migrated = await readCloudMigrationState(options.userId);
       if (migrated && migrated.phase !== "miosa")
         throw new CloudMigrationUnavailableError();
+      options.signal?.throwIfAborted();
       options.setSandbox(result.sandbox);
       if (migrated?.phase === "miosa") {
         phLogger.event(
@@ -500,7 +513,9 @@ export async function ensureCloudSandboxConnection(options: {
     } catch (error) {
       // A migration committed during acquisition keeps its durable Miosa pin.
       // This read does not acquire an E2B use lease when fallback is unsafe.
+      options.signal?.throwIfAborted();
       const failedMigration = await readCloudMigrationState(options.userId);
+      options.signal?.throwIfAborted();
       if (failedMigration && canUseFreshE2BFallback(failedMigration)) {
         return ensureFreshMigrationFallback(options, failedMigration);
       }
@@ -584,6 +599,7 @@ export async function ensureCloudSandboxConnection(options: {
         : undefined,
     );
     // Do not publish a connection until a racing migration has been excluded.
+    options.signal?.throwIfAborted();
     const result = await ensureE2BCloudSandboxConnection({
       ...options,
       destinationId:
@@ -598,6 +614,7 @@ export async function ensureCloudSandboxConnection(options: {
       result.sandbox.sandboxId,
     );
     registerE2BMigrationLease(result.sandbox, options.userId);
+    options.signal?.throwIfAborted();
     options.setSandbox(result.sandbox);
     recordOutcome("e2b", "success");
     return { ...result, provider: "e2b" };

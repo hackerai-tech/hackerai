@@ -268,6 +268,11 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
     const files = new Map<string, string>();
     const children: ReturnType<typeof spawn>[] = [];
+    let finishPartialOutput!: (error?: Error) => void;
+    // Store early child failures until the test reaches the output wait.
+    const partialOutputReady = new Promise<Error | undefined>((resolve) => {
+      finishPartialOutput = resolve;
+    });
     let closed: Promise<void> = Promise.resolve();
     const sandbox = {
       sandboxKind: "centrifugo" as const,
@@ -295,6 +300,13 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         run: jest.fn(async (command: string, opts: any) => {
           if (command.startsWith("mkdir -p"))
             return { stdout: "", stderr: "", exitCode: 0 };
+          if (command.startsWith("if command -v node")) {
+            // Metadata probes use the mocked file API fallback, not a live child.
+            return { stdout: '{"unavailable":true}', stderr: "", exitCode: 0 };
+          }
+          const isCancellationFixture = command.includes(
+            "until-cancelled-fixture",
+          );
           const child = spawn(
             process.execPath,
             [
@@ -317,9 +329,14 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
             await closed;
             return true;
           });
-          child.stdout.on("data", (chunk: Buffer) =>
-            opts.onStdout?.(chunk.toString()),
-          );
+          let stdout = "";
+          child.stdout.on("data", (chunk: Buffer) => {
+            const text = chunk.toString();
+            stdout += text;
+            opts.onStdout?.(text);
+            if (isCancellationFixture && stdout.includes("PARTIAL_EVIDENCE"))
+              finishPartialOutput();
+          });
           child.stderr.on("data", (chunk: Buffer) =>
             opts.onStderr?.(chunk.toString()),
           );
@@ -329,8 +346,18 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
             exitCode: number;
             pid?: number;
           }>((resolve, reject) => {
-            child.once("error", reject);
+            child.once("error", (error) => {
+              if (isCancellationFixture) finishPartialOutput(error);
+              reject(error);
+            });
             child.once("close", (code) => {
+              if (isCancellationFixture) {
+                finishPartialOutput(
+                  new Error(
+                    "Cancellation fixture closed before partial output",
+                  ),
+                );
+              }
               finishClosed();
               resolve({
                 stdout: "",
@@ -388,6 +415,22 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         },
         abort.signal,
       )) as any;
+      // Process startup can exceed the short tool wait on a busy test host.
+      let outputWaitTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const outputError = await Promise.race([
+          partialOutputReady,
+          new Promise<never>((_, reject) => {
+            outputWaitTimer = setTimeout(
+              () => reject(new Error("Timed out waiting for fixture output")),
+              3_000,
+            );
+          }),
+        ]);
+        if (outputError) throw outputError;
+      } finally {
+        clearTimeout(outputWaitTimer);
+      }
       abort.abort();
       await closed;
       await context.ptySessionManager.closeAll("chat-1");

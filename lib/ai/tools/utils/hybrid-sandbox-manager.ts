@@ -892,7 +892,7 @@ export class HybridSandboxManager implements SandboxManager {
 
     if (this.cloudAcquisition) return this.cloudAcquisition;
     this.cloudAcquisition = this.acquisitionBudget
-      .run(() => this.acquireCloudSandbox(), {
+      .run((signal) => this.acquireCloudSandbox(signal), {
         userId: this.userID,
         chatId: this.chatId,
         ...this.cloudSandboxContext,
@@ -903,12 +903,22 @@ export class HybridSandboxManager implements SandboxManager {
     return this.cloudAcquisition;
   }
 
-  private async acquireCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
+  private async acquireCloudSandbox(
+    signal: AbortSignal,
+  ): Promise<{ sandbox: AnySandbox }> {
     await this.closeCurrentSandbox();
+    signal.throwIfAborted();
     const result = await ensureCloudSandboxConnection({
+      signal,
       userId: this.userID,
-      setSandbox: this.setSandboxCallback,
-      onBoot: this.onBoot,
+      setSandbox: (sandbox) => {
+        signal.throwIfAborted();
+        this.setSandboxCallback(sandbox);
+      },
+      onBoot: (info) => {
+        signal.throwIfAborted();
+        this.onBoot?.(info);
+      },
       initialSandbox: this.isLocal ? null : this.sandbox,
       // A reconnect must retain the provider that supplied this run's files.
       context: {
@@ -917,6 +927,7 @@ export class HybridSandboxManager implements SandboxManager {
       },
     });
 
+    signal.throwIfAborted();
     this.sandbox = result.sandbox;
     this.activeCloudProvider = result.provider;
     this.isLocal = false;
