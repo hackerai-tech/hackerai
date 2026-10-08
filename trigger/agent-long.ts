@@ -46,7 +46,10 @@ import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-p
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { AGENT_PROVIDER_IDLE_TIMEOUT_MS } from "@/lib/ai/provider-stream-timeout";
+import {
+  AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+  AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+} from "@/lib/ai/provider-stream-timeout";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
@@ -3596,9 +3599,13 @@ export const agentLongTask = task({
                 }),
               providerStreamTimeout: {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                totalTimeoutMs: AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
                 onTimeout: ({ phase, timeoutMs, modelId }) => {
                   triggerLogger.warn("[agent-long] provider stalled", {
-                    event: "agent_long_provider_idle_timeout",
+                    event:
+                      phase === "total"
+                        ? "agent_long_provider_total_timeout"
+                        : "agent_long_provider_idle_timeout",
                     run_id: ctx.run.id,
                     chat_id: chatId,
                     phase,
