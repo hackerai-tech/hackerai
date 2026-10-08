@@ -113,10 +113,20 @@ export async function getPostHogFeatureFlagVariantForUser(
   try {
     const value =
       options?.sendFeatureFlagEvents === false
-        ? await getPostHogFlagWithoutExposure(client, flagKey, userId)
-        : (await client.evaluateFlags(userId, { flagKeys: [flagKey] })).getFlag(
+        ? await getPostHogFlagWithoutExposure(
+            client,
             flagKey,
-          );
+            userId,
+            options.personProperties,
+          )
+        : (
+            await client.evaluateFlags(userId, {
+              flagKeys: [flagKey],
+              ...(options?.personProperties && {
+                personProperties: options.personProperties,
+              }),
+            })
+          ).getFlag(flagKey);
     return typeof value === "string" ? value : undefined;
   } catch {
     return undefined;
