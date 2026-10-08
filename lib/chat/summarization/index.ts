@@ -444,7 +444,9 @@ const logContextCompactionStarted = ({
   fileTokens,
   cutoffMessageId,
   retainedTail,
+  compactionModel,
 }: {
+  compactionModel: string;
   chatId: string | null;
   mode: ChatMode;
   subscription: SubscriptionTier;
@@ -477,7 +479,7 @@ const logContextCompactionStarted = ({
       mode,
       subscription,
       reason,
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      compaction_model: compactionModel,
       total_estimated_tokens: totalEstimatedTokens,
       system_prompt_tokens: systemPromptTokens,
       provider_input_tokens: providerInputTokens,
@@ -926,7 +928,9 @@ export const compactModelMessagesInRun = async ({
       reason: compactionReason,
       compaction_index: compactionIndex,
       persistence: "run_scoped",
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      compaction_model:
+        (await compactionPolicy?.resolve())?.model ??
+        CONTEXT_COMPACTION_MODEL_NAME,
       model_message_count: modelMessages.length,
       provider_input_tokens: providerInputTokens,
       max_tokens: maxTokens,
@@ -1291,6 +1295,9 @@ export const checkAndSummarizeIfNeeded = async ({
     summarizationThreshold,
   });
   logContextCompactionStarted({
+    compactionModel:
+      (await compactionPolicy?.resolve())?.model ??
+      CONTEXT_COMPACTION_MODEL_NAME,
     chatId,
     mode,
     subscription,
