@@ -268,11 +268,11 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
   test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
     const files = new Map<string, string>();
     const children: ReturnType<typeof spawn>[] = [];
-    let closed: Promise<void> = Promise.resolve();
-    let markPartialOutput!: () => void;
-    const partialOutput = new Promise<void>((resolve) => {
-      markPartialOutput = resolve;
+    let markPartialOutputReady!: () => void;
+    const partialOutputReady = new Promise<void>((resolve) => {
+      markPartialOutputReady = resolve;
     });
+    let closed: Promise<void> = Promise.resolve();
     const sandbox = {
       sandboxKind: "centrifugo" as const,
       getConnectionId: () => "local-fixture",
@@ -299,6 +299,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         run: jest.fn(async (command: string, opts: any) => {
           if (command.startsWith("mkdir -p"))
             return { stdout: "", stderr: "", exitCode: 0 };
+          if (command.startsWith("if command -v node")) {
+            // Metadata probes use the mocked file API fallback, not a live child.
+            return { stdout: '{"unavailable":true}', stderr: "", exitCode: 0 };
+          }
           const child = spawn(
             process.execPath,
             [
@@ -321,10 +325,12 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
             await closed;
             return true;
           });
+          let stdout = "";
           child.stdout.on("data", (chunk: Buffer) => {
-            opts.onStdout?.(chunk.toString());
-            if (command.includes("until-cancelled-fixture"))
-              markPartialOutput();
+            const text = chunk.toString();
+            stdout += text;
+            opts.onStdout?.(text);
+            if (stdout.includes("PARTIAL_EVIDENCE")) markPartialOutputReady();
           });
           child.stderr.on("data", (chunk: Buffer) =>
             opts.onStderr?.(chunk.toString()),
@@ -394,9 +400,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         },
         abort.signal,
       )) as any;
-      // Process startup can exceed the tool's short wait on a busy host.
-      // Exercise cancellation after output exists, not before the fixture runs.
-      await partialOutput;
+      // Process startup can exceed the short tool wait on a busy test host.
+      await partialOutputReady;
       abort.abort();
       await closed;
       await context.ptySessionManager.closeAll("chat-1");
