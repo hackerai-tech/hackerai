@@ -36,7 +36,7 @@ async function main() {
     userId: "local-provider-smoke",
     selectedModel: useLargeV2
       ? "model-deepseek-v4-pro-0813"
-      : "model-deepseek-v4-flash-0731",
+      : "model-deepseek-v4-flash-vision",
     subscription: "pro",
     mode: "agent",
     selectedModelOverride: useLargeV2 ? "hackerai-pro" : "hackerai-standard",

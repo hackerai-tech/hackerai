@@ -1,3 +1,4 @@
+import { myProvider } from "@/lib/ai/providers";
 import {
   evaluateFlashRouting,
   getActiveFlashRoutingAssignment,
@@ -29,6 +30,23 @@ const flags = (variant: unknown) => ({
 });
 
 describe("Flash routing experiments", () => {
+  beforeEach(() => {
+    // Preserve coverage of historical assignments without enrolling the retired baseline.
+    jest.spyOn(myProvider, "languageModel").mockReturnValue({
+      modelId: "deepseek/deepseek-v4-flash-0731",
+    } as never);
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it("does not enroll redirected legacy selections in the historical 0731 experiment", async () => {
+    jest.restoreAllMocks();
+    const posthog = flags("test");
+    expect(
+      await evaluateFlashRouting({ ...paid, posthog: posthog as never }),
+    ).toBeUndefined();
+    expect(posthog.evaluateFlags).not.toHaveBeenCalled();
+  });
   it.each([
     [
       paid,
