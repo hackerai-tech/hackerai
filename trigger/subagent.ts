@@ -552,6 +552,7 @@ export const subagentTask = task({
     let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
+    if (triggerSignal.aborted) abortFromParent();
     const activeRuntimeBudget: ActiveRuntimeBudget = createActiveRuntimeBudget({
       maxDurationMs: SUBAGENT_MAX_ACTIVE_SECONDS * 1_000,
       onExceeded: () => {

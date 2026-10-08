@@ -77,6 +77,23 @@ describe("cloud acquisition deadline", () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
+  it("never starts acquisition when its caller is already canceled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const acquire = jest.fn();
+    const onTimeout = jest.fn();
+    await expect(
+      new CloudAcquisitionBudget().run(acquire, {
+        userId: "test",
+        signal: controller.signal,
+        onTimeout,
+      }),
+    ).rejects.toBe(controller.signal.reason);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(onTimeout).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it("does not abort a successfully returned client later", async () => {
     let signal!: AbortSignal;
     await new CloudAcquisitionBudget().run(
