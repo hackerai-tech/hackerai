@@ -178,7 +178,7 @@ describe("security validation subagent runtime contracts", () => {
 
   it("bounds and namespaces every child provider response and retries content filtering on another model", () => {
     const child = read("trigger/subagent.ts");
-    expect(child).toContain("guardLanguageModelProviderResponse(languageModel");
+    expect(child).toContain("guardLanguageModelProviderResponse(boundedModel");
     expect(child).toContain("MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE");
     expect(child).toContain("[profile.finalResultTool.name]: 1");
     expect(child).toContain("namespaceLanguageModelToolCalls(");

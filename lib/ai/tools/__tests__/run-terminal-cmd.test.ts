@@ -269,6 +269,10 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const files = new Map<string, string>();
     const children: ReturnType<typeof spawn>[] = [];
     let closed: Promise<void> = Promise.resolve();
+    let markPartialOutput!: () => void;
+    const partialOutput = new Promise<void>((resolve) => {
+      markPartialOutput = resolve;
+    });
     const sandbox = {
       sandboxKind: "centrifugo" as const,
       getConnectionId: () => "local-fixture",
@@ -317,9 +321,11 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
             await closed;
             return true;
           });
-          child.stdout.on("data", (chunk: Buffer) =>
-            opts.onStdout?.(chunk.toString()),
-          );
+          child.stdout.on("data", (chunk: Buffer) => {
+            opts.onStdout?.(chunk.toString());
+            if (command.includes("until-cancelled-fixture"))
+              markPartialOutput();
+          });
           child.stderr.on("data", (chunk: Buffer) =>
             opts.onStderr?.(chunk.toString()),
           );
@@ -388,6 +394,9 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         },
         abort.signal,
       )) as any;
+      // Process startup can exceed the tool's short wait on a busy host.
+      // Exercise cancellation after output exists, not before the fixture runs.
+      await partialOutput;
       abort.abort();
       await closed;
       await context.ptySessionManager.closeAll("chat-1");
