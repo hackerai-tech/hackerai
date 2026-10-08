@@ -5,7 +5,8 @@ export const STARTUP_COMPACTION_FALLBACK_MODELS = [
   "model-glm-5.3",
 ] as const;
 
-export type StartupCompactionVariant = typeof STARTUP_COMPACTION_VARIANT;
+export type StartupCompactionVariant =
+  typeof STARTUP_COMPACTION_VARIANT | "glm53_flash_abliterated_compaction_v1";
 export type StartupCompactionAttempt = {
   variant: StartupCompactionVariant;
   fallbackUsed: boolean;

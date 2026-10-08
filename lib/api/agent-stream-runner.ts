@@ -5,6 +5,7 @@ import type {
 } from "@/lib/analytics/abliterated-model";
 import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { CompactionModelExperiment } from "@/lib/experiments/compaction-model";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
@@ -382,6 +383,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
+  compactionExperiment?: CompactionModelExperiment;
   cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
@@ -1513,6 +1515,21 @@ export async function createAgentStream(
       CACHE_ALIGNED_SUMMARY_FLAG,
       ctx.userId,
     ));
+  const compactionExperiment = cacheAlignedSummaryEnabled
+    ? undefined
+    : (state.compactionExperiment ??= new CompactionModelExperiment({
+        userId: ctx.userId,
+        runId: telemetryRunId,
+        chatId: ctx.chatId,
+        mode: ctx.mode,
+        subscription: ctx.subscription,
+        baselineModel: modelName,
+        onDiscardedUsage: (usage) =>
+          ctx.summarizationTracker.recordSummarizationUsage(
+            usage,
+            ctx.usageTracker,
+          ),
+      }));
   let lastHistoryResponseCursor = 0;
   let lastHistoryTools: ToolSet = ctx.tools;
   let historyToSave: ModelHistorySnapshot | undefined;
@@ -1675,6 +1692,7 @@ export async function createAgentStream(
         ) {
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
+              compactionExperiment,
               messages: state.finalMessages,
               sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
@@ -1834,6 +1852,7 @@ export async function createAgentStream(
             compactionAttemptCount++;
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
+              compactionExperiment,
               modelMessages: rollingModelMessages,
               sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,

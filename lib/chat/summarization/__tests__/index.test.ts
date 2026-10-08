@@ -115,6 +115,138 @@ const createMockWriter = (): UIMessageStreamWriter =>
 
 const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
 
+describe("compaction model experiment pipeline", () => {
+  const summary =
+    AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join("\n(none)\n");
+  const onDiscardedUsage = jest.fn();
+  const attempt = jest.fn();
+  const finish = jest.fn();
+  const start = jest.fn(() => ({ attempt, finish, onDiscardedUsage }));
+  const resolve = jest.fn<() => Promise<any>>();
+  const experiment = {
+    resolve,
+    start,
+  } as unknown as import("@/lib/experiments/compaction-model").CompactionModelExperiment;
+  const compact = (abortSignal?: AbortSignal) =>
+    checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "experiment-chat",
+      startupCompaction: {},
+      compactionExperiment: experiment,
+      abortSignal,
+    });
+  beforeEach(() => {
+    mockGenerateText.mockReset();
+    mockSaveChatSummary.mockReset();
+    mockProviderLanguageModel.mockClear();
+    resolve.mockReset();
+    start.mockClear();
+    attempt.mockClear();
+    finish.mockClear();
+    onDiscardedUsage.mockClear();
+    resolve.mockResolvedValue({ variant: "test", model: "model-abliterated" });
+  });
+  it("uses treatment only for compaction and retains the source user scope", async () => {
+    mockGenerateText.mockResolvedValueOnce({
+      text: summary,
+      finishReason: "stop",
+      usage: { inputTokens: 50, outputTokens: 20 },
+    });
+    const result = await compact();
+    expect(result.needsSummarization).toBe(true);
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(mockGenerateText.mock.calls[0][0]).toMatchObject({
+      model: { modelId: "model-abliterated" },
+      maxRetries: 0,
+      timeout: 60000,
+      maxOutputTokens: 8192,
+      providerOptions: { abliteration: { reasoningEffort: "low" } },
+    });
+    expect(result.summaryText).toContain("<preserved_user_message>");
+    expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
+  });
+  it("rejects refusal output, accounts for discarded usage, and falls back to GLM", async () => {
+    mockGenerateText
+      .mockResolvedValueOnce({
+        text: "I cannot summarize this pentest",
+        finishReason: "stop",
+        usage: { inputTokens: 100, outputTokens: 10 },
+      })
+      .mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      });
+    const result = await compact();
+    expect(result.needsSummarization).toBe(true);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated", "model-glm-5.3-flash"]);
+    expect(onDiscardedUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ inputTokens: 100, outputTokens: 10 }),
+    );
+    expect(attempt.mock.calls.map((call) => call[1])).toEqual([
+      "error",
+      "completed",
+    ]);
+  });
+  it("does not retry a canceled treatment", async () => {
+    const controller = new AbortController();
+    mockGenerateText.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error("canceled");
+    });
+    await expect(compact(controller.signal)).rejects.toThrow();
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith("aborted", undefined);
+  });
+  it("uses the same frozen assignment for rolling compaction", async () => {
+    mockGenerateText.mockResolvedValueOnce({
+      text: summary,
+      finishReason: "stop",
+      usage: { inputTokens: 50, outputTokens: 20 },
+    });
+    const result = await compactModelMessagesInRun({
+      modelMessages: [
+        { role: "user", content: "Authorized test of example.test only" },
+      ],
+      transcriptModelMessages: [],
+      sourceUiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "experiment-chat",
+      maxTokens: 100000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+      compactionExperiment: experiment,
+    });
+    expect(result).not.toBeNull();
+    expect(start).toHaveBeenCalledWith(
+      { variant: "test", model: "model-abliterated" },
+      "run_scoped",
+    );
+  });
+  it("never evaluates assignment when compaction is unnecessary", async () => {
+    await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "small-chat",
+      compactionExperiment: experiment,
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
 describe("summary usage coverage", () => {
   it.each([true, false])(
     "preserves zero versus absent usage (reported=%s)",

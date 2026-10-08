@@ -103,17 +103,30 @@ export async function getPostHogFeatureFlagRawValueForUser(
 export async function getPostHogFeatureFlagVariantForUser(
   flagKey: string,
   userId: string,
-  options?: { sendFeatureFlagEvents?: boolean },
+  options?: {
+    sendFeatureFlagEvents?: boolean;
+    personProperties?: Record<string, string>;
+  },
 ): Promise<string | undefined> {
   const client = getClient();
   if (!client) return undefined;
   try {
     const value =
       options?.sendFeatureFlagEvents === false
-        ? await getPostHogFlagWithoutExposure(client, flagKey, userId)
-        : (await client.evaluateFlags(userId, { flagKeys: [flagKey] })).getFlag(
+        ? await getPostHogFlagWithoutExposure(
+            client,
             flagKey,
-          );
+            userId,
+            options.personProperties,
+          )
+        : (
+            await client.evaluateFlags(userId, {
+              flagKeys: [flagKey],
+              ...(options?.personProperties && {
+                personProperties: options.personProperties,
+              }),
+            })
+          ).getFlag(flagKey);
     return typeof value === "string" ? value : undefined;
   } catch {
     return undefined;
