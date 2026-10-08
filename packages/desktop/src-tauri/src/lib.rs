@@ -1,6 +1,8 @@
 mod platform;
 mod environment_identity;
 mod pty;
+#[cfg(test)]
+mod updater_tests;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -16,6 +18,8 @@ use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 const DESKTOP_AUTH_STATE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_PENDING_DESKTOP_AUTH_STATES: usize = 16;
@@ -1714,28 +1718,31 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     }
 }
 
+async fn check_update(
+    builder: tauri_plugin_updater::UpdaterBuilder,
+    check_timeout: Duration,
+    download_timeout: Duration,
+) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
+    let updater = builder.timeout(check_timeout).build()?;
+    let mut update = updater.check().await?;
+    if let Some(update) = update.as_mut() {
+        // The updater does not propagate the check timeout to the returned download.
+        // Bound HTTP activity without timing out user approval or native installation.
+        update.timeout = Some(download_timeout);
+    }
+    Ok(update)
+}
+
 async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(e) => {
-            if silent {
-                log::warn!("Auto-update check failed to get updater: {}", e);
-            } else {
-                log::error!("Failed to get updater: {}", e);
-                let _ = app
-                    .dialog()
-                    .message(format!("Failed to check for updates: {}", e))
-                    .kind(MessageDialogKind::Error)
-                    .title("Update Error")
-                    .blocking_show();
-            }
-            return;
-        }
-    };
-
-    match updater.check().await {
+    match check_update(
+        app.updater_builder(),
+        UPDATE_CHECK_TIMEOUT,
+        UPDATE_DOWNLOAD_TIMEOUT,
+    )
+    .await
+    {
         Ok(Some(update)) => {
             let version = update.version.clone();
             log::info!("Update available: {}", version);
