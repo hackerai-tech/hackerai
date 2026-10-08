@@ -3,19 +3,15 @@ import {
   ABLITERATION_MODEL_KEY,
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
-import {
-  getPostHogFeatureFlagVariantForUser,
-  phLogger,
-} from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
-export const COMPACTION_MODEL_FLAG = "compaction-model-abliterated-v1";
-export const COMPACTION_CONTROL_MODEL = "model-glm-5.3-flash";
-export const COMPACTION_TEST_MODEL = ABLITERATION_MODEL_KEY;
-export type CompactionAssignment = {
-  variant: "control" | "test";
-  model: typeof COMPACTION_CONTROL_MODEL | typeof COMPACTION_TEST_MODEL;
+export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
+export const COMPACTION_FALLBACK_MODEL = "model-glm-5.3-flash";
+export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
+export type CompactionSelection = {
+  model: typeof COMPACTION_PRIMARY_MODEL | typeof COMPACTION_FALLBACK_MODEL;
 };
 
 // Structural acceptance catches conversational refusals, not semantic loss.
@@ -49,9 +45,8 @@ export function hasStructuredCompactionSummary(text: string, mode: ChatMode) {
 }
 
 /** Kept in AgentStreamState so provider retries and repeated compactions share assignment. */
-export class CompactionModelExperiment {
-  private assignment?: Promise<CompactionAssignment | undefined>;
-  private exposed = false;
+export class CompactionModelPolicy {
+  private assignment?: Promise<CompactionSelection>;
 
   constructor(
     private readonly context: {
@@ -65,38 +60,22 @@ export class CompactionModelExperiment {
     },
   ) {}
 
-  resolve(): Promise<CompactionAssignment | undefined> {
+  resolve(): Promise<CompactionSelection> {
     return (this.assignment ??= this.evaluate());
   }
 
-  private async evaluate(): Promise<CompactionAssignment | undefined> {
-    if (this.context.subscription === "free" || !isAbliterationConfigured())
-      return;
-    const variant = await getPostHogFeatureFlagVariantForUser(
-      COMPACTION_MODEL_FLAG,
-      this.context.userId,
-      {
-        sendFeatureFlagEvents: false,
-        personProperties: {
-          subscription: this.context.subscription,
-          subscription_tier: this.context.subscription,
-        },
-      },
-    );
-    if (variant !== "control" && variant !== "test") return;
+  private async evaluate(): Promise<CompactionSelection> {
     return {
-      variant,
-      model:
-        variant === "test" ? COMPACTION_TEST_MODEL : COMPACTION_CONTROL_MODEL,
+      model: isAbliterationConfigured()
+        ? COMPACTION_PRIMARY_MODEL
+        : COMPACTION_FALLBACK_MODEL,
     };
   }
 
-  start(assignment: CompactionAssignment, scope: "durable" | "run_scoped") {
+  start(assignment: CompactionSelection, scope: "durable" | "run_scoped") {
     const properties = {
       userId: this.context.userId,
-      experiment_key: COMPACTION_MODEL_FLAG,
-      experiment_variant: assignment.variant,
-      [`$feature/${COMPACTION_MODEL_FLAG}`]: assignment.variant,
+      compaction_policy: COMPACTION_POLICY_VERSION,
       compaction_run_id: this.context.runId,
       compaction_id: randomUUID(),
       chat_id: this.context.chatId,
@@ -105,17 +84,9 @@ export class CompactionModelExperiment {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
-      telemetry_version: 1,
+      telemetry_version: 2,
       $process_person_profile: false,
     };
-    if (!this.exposed) {
-      this.exposed = true;
-      phLogger.event("$feature_flag_called", {
-        ...properties,
-        $feature_flag: COMPACTION_MODEL_FLAG,
-        $feature_flag_response: assignment.variant,
-      });
-    }
     phLogger.event("compaction_model_started", properties);
     let attempts = 0;
     const startedAt = Date.now();

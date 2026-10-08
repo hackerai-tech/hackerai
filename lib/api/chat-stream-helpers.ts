@@ -412,7 +412,7 @@ export interface SummarizationStepResult {
 }
 
 export async function runSummarizationStep(options: {
-  compactionExperiment?: import("@/lib/experiments/compaction-model").CompactionModelExperiment;
+  compactionPolicy?: import("@/lib/chat/summarization/compaction-policy").CompactionModelPolicy;
   messages: UIMessage[];
   subscription: SubscriptionTier;
   languageModel: LanguageModel;
@@ -466,7 +466,7 @@ export async function runSummarizationStep(options: {
     providerPromptPressure: options.providerPromptPressure,
     onPhaseDuration: options.onPhaseDuration,
     startupCompaction: options.startupCompaction,
-    compactionExperiment: options.compactionExperiment,
+    compactionPolicy: options.compactionPolicy,
     registerBackgroundWork: options.registerBackgroundWork,
   });
 
