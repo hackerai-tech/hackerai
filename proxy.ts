@@ -418,6 +418,44 @@ export default async function proxy(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (
+      hadSessionCookie &&
+      error instanceof Error &&
+      error.message === "Wrong mac prefix"
+    ) {
+      // iron-session rethrows this malformed-seal error before AuthKit's
+      // refresh handler runs. Discard only this invalid session, never retry
+      // the original cookie or reinterpret an unknown authentication error.
+      console.warn(
+        JSON.stringify({
+          event: "auth.invalid_session_cookie",
+          boundary: "proxy",
+          reason: "wrong_mac_prefix",
+        }),
+      );
+      if (isNextActionRequest(request) || !isUnauthenticatedPath(pathname)) {
+        return buildEndedSessionResponse(request, pathname);
+      }
+
+      request.cookies.delete("wos-session");
+      request.headers.delete(SESSION_HEADER);
+      // Public routes still need real anonymous AuthKit context. A response
+      // cookie deletion alone leaves the invalid cookie on this request.
+      // An error from this second call propagates, so recovery cannot loop.
+      const { headers } = await authkit(request, {
+        redirectUri: getRedirectUri(),
+        eagerAuth: true,
+      });
+      return withSessionCookieCleared(
+        withAttributionCookies(
+          request,
+          NextResponse.next({
+            request: { headers: buildRequestHeaders(request, headers) },
+            headers: buildResponseHeaders(headers),
+          }),
+        ),
+      );
+    }
     if (isInvalidRefreshTokenError(error)) {
       console.warn(
         JSON.stringify({
