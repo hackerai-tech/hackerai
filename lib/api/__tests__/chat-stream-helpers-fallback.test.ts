@@ -214,10 +214,10 @@ describe("buildProviderOptions fallback chain", () => {
       }),
     ).toEqual({});
     expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
     );
     expect(getRetryFallbackModel("model-abliterated", "agent")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
     );
     expect(
       resolveServedModelForCostAccounting({
@@ -1304,7 +1304,7 @@ describe("resolveServedModelForCostAccounting", () => {
         responseModel: DEEPSEEK_FLASH_CANONICAL_SLUG,
         mode: "agent",
       }),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe(DEEPSEEK_FLASH_SLUG);
   });
 
   it("maps a Grok slug served from free Agent fallback back to the local cost key", () => {

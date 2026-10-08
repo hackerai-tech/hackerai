@@ -493,7 +493,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
     ).toBe("model-deepseek-v4-flash-vision-pro");
@@ -503,7 +503,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
     expect(
       resolveAgentModelAfterSummarization(
         "model-deepseek-v4-flash-vision-pro",
@@ -2513,8 +2513,8 @@ describe("createAgentStream repeated compaction", () => {
 
   it.each([
     ["model-glm-5.3-flash-agent", "model-glm-5.3-flash-agent"],
-    ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
-    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
+    ["model-glm-5.3-flash", "model-deepseek-v4-flash-vision"],
+    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-vision"],
     [
       "model-deepseek-v4-flash-vision-pro",
       "model-deepseek-v4-flash-vision-pro",

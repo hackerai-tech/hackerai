@@ -1,5 +1,5 @@
 import type { PostHog } from "posthog-node";
-import type { ModelName } from "@/lib/ai/providers";
+import { myProvider, type ModelName } from "@/lib/ai/providers";
 import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-context";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
@@ -37,6 +37,14 @@ export async function evaluateFlashRouting({
       ? PAID_AGENT_FLASH_RETURN_KEY
       : undefined;
   if (!key) return undefined;
+  // This legacy experiment compares 0731 with GLM. Redirected saved selections
+  // must not enroll a different baseline under its historical experiment key.
+  if (
+    myProvider.languageModel(selectedModel).modelId !==
+    "deepseek/deepseek-v4-flash-0731"
+  ) {
+    return undefined;
+  }
 
   try {
     const flags = await posthog.evaluateFlags(userId, { flagKeys: [key] });

@@ -205,7 +205,7 @@ const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
 const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
-const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const STANDARD_AGENT_TEXT_MODEL = STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
 const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
