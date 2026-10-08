@@ -90,4 +90,34 @@ describe("cloud acquisition deadline", () => {
     expect(signal.aborted).toBe(false);
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  it("does not count caller cancellation as a provider failure", async () => {
+    const budget = new CloudAcquisitionBudget();
+    const controller = new AbortController();
+    const cancelled = budget
+      .run(() => new Promise(() => {}), {
+        userId: "test",
+        signal: controller.signal,
+      })
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(20_000);
+    controller.abort();
+    await cancelled;
+    await expect(
+      budget.run(
+        async () => {
+          throw new Error("504");
+        },
+        {
+          userId: "test",
+        },
+      ),
+    ).rejects.toThrow("504");
+    expect(console.warn).not.toHaveBeenCalled();
+    const result = budget
+      .run(() => new Promise(() => {}), { userId: "test" })
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(await result).toBeInstanceOf(CloudAcquisitionTimeoutError);
+  });
 });

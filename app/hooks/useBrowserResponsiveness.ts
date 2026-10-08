@@ -24,8 +24,8 @@ export function observeBrowserResponsiveness(owner: string) {
     long_task_count: 0,
     long_task_total_ms: 0,
     long_task_max_ms: 0,
-    interaction_count: 0,
-    interaction_duration_max_ms: 0,
+    event_timing_entry_count: 0,
+    event_timing_duration_max_ms: 0,
   });
   let metrics = empty();
   let started = performance.now();
@@ -112,9 +112,9 @@ export function observeBrowserResponsiveness(owner: string) {
               entry.duration,
             );
           } else {
-            metrics.interaction_count++;
-            metrics.interaction_duration_max_ms = Math.max(
-              metrics.interaction_duration_max_ms,
+            metrics.event_timing_entry_count++;
+            metrics.event_timing_duration_max_ms = Math.max(
+              metrics.event_timing_duration_max_ms,
               entry.duration,
             );
           }

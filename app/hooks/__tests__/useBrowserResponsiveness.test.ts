@@ -63,6 +63,43 @@ describe("browser responsiveness summaries", () => {
     expect(captureAuthenticatedEvent).not.toHaveBeenCalled();
   });
 
+  it("labels Event Timing entries accurately when an interaction emits multiple entries", () => {
+    const original = global.PerformanceObserver;
+    let callback!: PerformanceObserverCallback;
+    const disconnect = jest.fn();
+    global.PerformanceObserver = class {
+      static supportedEntryTypes = ["event"];
+      constructor(onEntries: PerformanceObserverCallback) {
+        callback = onEntries;
+      }
+      observe() {}
+      disconnect = disconnect;
+    } as unknown as typeof PerformanceObserver;
+    try {
+      const stop = observeBrowserResponsiveness("user");
+      callback(
+        {
+          getEntries: () => [
+            { startTime: performance.now(), duration: 32, interactionId: 7 },
+            { startTime: performance.now(), duration: 48, interactionId: 7 },
+          ],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+      stop();
+      expect(captureAuthenticatedEvent).toHaveBeenCalledWith(
+        "chat_browser_responsiveness",
+        expect.objectContaining({
+          event_timing_entry_count: 2,
+          event_timing_duration_max_ms: 48,
+        }),
+      );
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    } finally {
+      global.PerformanceObserver = original;
+    }
+  });
+
   it("uses stable user sampling", () => {
     const selected = Array.from({ length: 1000 }, (_, i) => `user-${i}`).filter(
       sampleBrowserPerformance,

@@ -25,7 +25,7 @@ process termination can truncate/lose a sample; the telemetry is not a ledger.
 
 `chat_browser_responsiveness` uses stable 10% sampling of identified users.
 It aggregates textarea input-to-frame delay, frame gaps during scrolling,
-Long Tasks, and Event Timing durations for at most one minute, flushing on
+Long Tasks, and Event Timing entry counts/durations for at most one minute, flushing on
 visibility change, page hide, and cleanup. Idle windows emit nothing. API support
 booleans distinguish unsupported metrics from observed zeroes. Frame delays are
 main-thread proxies, not compositor frame rates. The maximum Event Timing entry
@@ -34,7 +34,9 @@ do not multiply sampled-user counts into exact totals.
 
 Both events contain only bounded metadata, timings, counts, and correlation IDs.
 They do not capture message text, keys, DOM content, selectors, or raw browser
-performance entries. Consent withdrawal/account changes discard pending samples.
+performance entries. The final PostHog before-send hook allowlists properties
+for these two events, excluding SDK-added URLs, referrers, attribution, and
+unrelated registered properties. Consent withdrawal/account changes discard pending samples.
 The owning performance work is HAC-151; evaluate browser overhead and acquisition
 success after rollout before changing sampling or deadline policy.
 

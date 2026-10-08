@@ -909,7 +909,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
     () => {},
   );
-  const performanceTrackerRef = useRef(new ChatPerformanceTracker());
+  const [performanceTracker] = useState(() => new ChatPerformanceTracker());
   useBrowserResponsiveness();
   const transportRef = useRef(
     new DefaultChatTransport({
@@ -917,7 +917,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
         if (init?.method === "POST") {
-          performanceTrackerRef.current.start(
+          performanceTracker.start(
             activeChatIdRef.current,
             mode,
             messagesRef.current
@@ -1250,9 +1250,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: ({ isAbort }) => {
-      performanceTrackerRef.current.setOutcome(
-        isAbort ? "aborted" : "completed",
-      );
+      performanceTracker.setOutcome(isAbort ? "aborted" : "completed");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1275,7 +1273,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
-      performanceTrackerRef.current.setOutcome("error");
+      performanceTracker.setOutcome("error");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1304,7 +1302,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   });
 
   useChatPerformance({
-    tracker: performanceTrackerRef.current,
+    tracker: performanceTracker,
     chatId,
     messages,
     status,

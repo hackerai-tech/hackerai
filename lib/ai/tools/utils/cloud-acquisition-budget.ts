@@ -63,6 +63,8 @@ export class CloudAcquisitionBudget {
       this.failedWaitMs = 0;
       return result;
     } catch (error) {
+      if (context.signal?.aborted && controller.signal.reason !== timeoutError)
+        throw error;
       this.failures++;
       this.failedWaitMs += Math.max(0, Date.now() - startedAt);
       if (controller.signal.reason === timeoutError) {
