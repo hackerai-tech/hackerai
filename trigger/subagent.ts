@@ -41,6 +41,11 @@ import {
 } from "@/lib/ai/provider-response-guard";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import {
+  AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+  AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+  withProviderStreamTimeout,
+} from "@/lib/ai/provider-stream-timeout";
 import { createSubagentProviderHistory } from "@/lib/ai/subagents/provider-history";
 import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
@@ -1104,8 +1109,26 @@ export const subagentTask = task({
                     providerHistory.record(entry, generationAttempt),
                 },
               );
+              const boundedModel = withProviderStreamTimeout(languageModel, {
+                timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                totalTimeoutMs: AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+                onTimeout: ({ phase, timeoutMs, modelId }) => {
+                  triggerLogger.warn("[subagent] provider timed out", {
+                    event: "subagent_provider_timeout",
+                    service: "hackerai-subagent",
+                    subagent_id: row.subagent_id,
+                    parent_trigger_run_id: row.parent_trigger_run_id,
+                    trigger_run_id: ctx.run.id,
+                    generation_attempt: generationAttempt,
+                    step: stepIndex + 1,
+                    phase,
+                    timeout_ms: timeoutMs,
+                    model: modelId,
+                  });
+                },
+              });
               return namespaceLanguageModelToolCalls(
-                guardLanguageModelProviderResponse(languageModel, {
+                guardLanguageModelProviderResponse(boundedModel, {
                   maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
                   perToolCallLimits: {
                     [profile.finalResultTool.name]: 1,
