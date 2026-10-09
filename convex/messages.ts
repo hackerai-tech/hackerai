@@ -1,3 +1,4 @@
+import { extractPreviewFileIdsFromParts } from "../lib/utils/file-preview-ids";
 import {
   getAbliterationHistoryEntry,
   stripClientAbliterationRouting,
@@ -535,6 +536,7 @@ export const saveMessage = mutation({
     ),
     parts: v.array(v.any()),
     fileIds: v.optional(v.array(v.id("files"))),
+    previewFileIds: v.optional(v.array(v.string())),
     model: v.optional(v.string()),
     mode: v.optional(v.union(v.literal("agent"), v.literal("ask"))),
     generationStartedAt: v.optional(v.number()),
@@ -593,7 +595,33 @@ export const saveMessage = mutation({
         failureStage = "verify_file_part_ownership";
         await ensureOwnedFiles(partOnlyFileIds);
       }
-      const fileIdsForSave = args.fileIds;
+      // Older tool outputs can point to previews already removed by unattached
+      // cleanup. Keep those messages saveable, but retain every surviving owned
+      // preview with the same attachment lifecycle as ordinary message files.
+      failureStage = "verify_preview_file_ownership";
+      const previewFiles: Doc<"files">[] = [];
+      for (const previewId of new Set([
+        ...(args.previewFileIds ?? []),
+        ...extractPreviewFileIdsFromParts(args.parts),
+      ])) {
+        const fileId = ctx.db.normalizeId("files", previewId);
+        if (!fileId) continue;
+        const file = await ctx.db.get(fileId);
+        if (!file) continue;
+        if (file.user_id !== args.userId) {
+          throw new Error("File does not belong to user");
+        }
+        previewFiles.push(file);
+      }
+      const fileIdsForSave =
+        previewFiles.length > 0
+          ? Array.from(
+              new Set([
+                ...(args.fileIds ?? []),
+                ...previewFiles.map((file) => file._id),
+              ]),
+            )
+          : args.fileIds;
       const partsForSave = args.parts;
 
       failureStage = "find_existing_message";
@@ -616,6 +644,18 @@ export const saveMessage = mutation({
 
         // Build patch for fields that need updating
         const patch: Record<string, unknown> = {};
+
+        // Repair an older preview that is already referenced but still marked
+        // unattached. The mutation commits this together with message changes.
+        for (const file of previewFiles) {
+          if (
+            existingMessage.file_ids?.includes(file._id) &&
+            !file.is_attached
+          ) {
+            failureStage = "patch_existing_message_file_attachment";
+            await ctx.db.patch(file._id, { is_attached: true });
+          }
+        }
 
         // Add new fileIds if provided
         if (fileIdsForSave && fileIdsForSave.length > 0) {
