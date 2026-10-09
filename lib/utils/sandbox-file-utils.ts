@@ -79,6 +79,7 @@ type SandboxUploadFailureDetail = {
   reason: SandboxUploadFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
+  readinessProbeReason?: SandboxReadinessFailureReason;
   sandboxProvider?: "e2b";
   errorName?: string;
   errorCode?: string;
@@ -1170,6 +1171,11 @@ const summarizeSandboxUploadFailure = (
     ),
     transientSandboxCommand: isTransientSandboxCommandError(error),
     sandboxReadinessReason,
+    // Probe attribution is diagnostic only; acquisition and retry policy keep
+    // their existing classification and budget.
+    ...(phase === "readiness" && {
+      readinessProbeReason: classifySandboxUploadReadinessFailure(error),
+    }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
@@ -1336,6 +1342,7 @@ const uploadSandboxFilesOnce = async (
         failure_phase: readinessFailed ? "readiness" : "transfer",
         failure_reason: primaryFailure.reason,
         failure_exit_code: primaryFailure.exitCode,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1373,6 +1380,7 @@ const uploadSandboxFilesOnce = async (
         failure_exit_code: primaryFailure.exitCode,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
@@ -1409,6 +1417,7 @@ const uploadSandboxFilesOnce = async (
         failure_exit_code: primaryFailure.exitCode,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         error_name: primaryFailure.errorName ?? null,
@@ -1454,6 +1463,9 @@ export const getSandboxUploadFailureMetadata = (
   return {
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
+    ...(failure?.readinessProbeReason
+      ? { upload_failure_readiness_probe_reason: failure.readinessProbeReason }
+      : {}),
     ...(failure?.reason ? { upload_failure_reason: failure.reason } : {}),
     ...(cause ? { upload_failure_cause: cause } : {}),
     ...(failure?.transientSandboxCommand !== undefined
