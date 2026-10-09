@@ -157,8 +157,25 @@ export async function claimCloudWorkspaceCleanup(
   };
   const serialized = JSON.stringify(state);
   try {
+    // Compare the complete record by value: formatting is not ownership, and
+    // a concurrent recovery-field update must also invalidate this snapshot.
     const claimed = await redis.eval(
-      `if (redis.call('GET', KEYS[1]) or '') ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+      `local function equal(a, b)
+        if type(a) ~= type(b) then return false end
+        if type(a) ~= 'table' then return a == b end
+        for k, v in pairs(a) do if not equal(v, b[k]) then return false end end
+        for k in pairs(b) do if a[k] == nil then return false end end
+        return true
+      end
+      local raw = redis.call('GET', KEYS[1])
+      if ARGV[1] == '' then
+        if raw then return 0 end
+      else
+        local currentOk, current = pcall(cjson.decode, raw or '')
+        local observedOk, observed = pcall(cjson.decode, ARGV[1])
+        if not currentOk or not observedOk or type(current) ~= 'table' or not equal(current, observed) then return 0 end
+      end
+      redis.call('SET', KEYS[1], ARGV[2]); return 1`,
       [keyFor(userId)],
       [observed ? JSON.stringify(observed) : "", serialized],
     );

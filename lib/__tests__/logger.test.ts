@@ -38,8 +38,6 @@ it("retains chronological provider history and live outcomes across stream resta
   });
 });
 
-describe("sandbox logging", () => {});
-
 describe("diagnostic logging context", () => {
   it("reuses an upstream request id and exposes model/provider attribution", () => {
     const builder = createWideEventBuilder(
