@@ -1,7 +1,5 @@
 import {
   evaluateAbliteratedModel,
-  evaluatePaidFirstStepVariant,
-  ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
@@ -40,7 +38,7 @@ describe("Abliteration model identity", () => {
   });
 });
 
-describe("paid Abliteration default and first-step trial", () => {
+describe("paid moderation-gated Abliteration after trial rollback", () => {
   const originalKey = process.env.ABLITERATION_API_KEY;
   beforeEach(() => {
     jest.clearAllMocks();
@@ -118,136 +116,6 @@ describe("paid Abliteration default and first-step trial", () => {
     moderationEligible: true,
     messages,
   };
-  describe("independent paid first-step enrollment", () => {
-    it.each(["ask", "agent"] as const)(
-      "assigns unmoderated %s requests to base Abliteration without historical lookup",
-      async (mode) => {
-        const getFeatureFlagResult = jest.fn();
-        await expect(
-          evaluateAbliteratedModel({
-            ...defaults,
-            mode,
-            selectedModel: "model-grok-4.6",
-            moderationEligible: false,
-            moderationChecked: false,
-            paidFirstStepVariant: "test",
-            posthog: { getFeatureFlagResult },
-          }),
-        ).resolves.toMatchObject({
-          key: ABLITERATED_PAID_FIRST_STEP_KEY,
-          modelKey: ABLITERATION_MODEL_KEY,
-          baselineModel: "model-grok-4.6",
-          selectionSource: "paid_first_step",
-          moderationEligible: false,
-          moderationChecked: false,
-        });
-        expect(getFeatureFlagResult).not.toHaveBeenCalled();
-      },
-    );
-    it("keeps unmoderated controls on the baseline despite historical treatment", async () => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockResolvedValue(flagResult("test"));
-      await expect(
-        evaluateAbliteratedModel({
-          ...defaults,
-          paidFirstStepVariant: "control",
-          moderationEligible: false,
-          posthog: { getFeatureFlagResult },
-        }),
-      ).resolves.toMatchObject({
-        key: ABLITERATED_PAID_FIRST_STEP_KEY,
-        variant: "control",
-        modelKey: defaults.selectedModel,
-        baselineModel: defaults.selectedModel,
-      });
-      expect(getFeatureFlagResult).not.toHaveBeenCalled();
-    });
-    it.each([true, false, "unexpected", undefined])(
-      "ignores invalid enrollment %s",
-      async (value) => {
-        const getFeatureFlagResult = jest
-          .fn()
-          .mockResolvedValue(flagResult(value));
-        await expect(
-          evaluatePaidFirstStepVariant({
-            ...defaults,
-            posthog: { getFeatureFlagResult },
-          }),
-        ).resolves.toBeUndefined();
-      },
-    );
-    it("evaluates a stable authenticated user without recording exposure", async () => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockResolvedValue(flagResult("test"));
-      await expect(
-        evaluatePaidFirstStepVariant({
-          ...defaults,
-          posthog: { getFeatureFlagResult },
-        }),
-      ).resolves.toBe("test");
-      expect(getFeatureFlagResult).toHaveBeenCalledWith(
-        ABLITERATED_PAID_FIRST_STEP_KEY,
-        defaults.userId,
-        {
-          sendFeatureFlagEvents: false,
-          personProperties: { subscription: "pro", subscription_tier: "pro" },
-        },
-      );
-    });
-    it.each([
-      { subscription: "free" as const },
-      { limitRescue: true },
-      { messages: [] },
-      {
-        messages: [
-          {
-            id: "pdf",
-            role: "user" as const,
-            parts: [
-              {
-                type: "file" as const,
-                mediaType: "application/pdf",
-                url: "https://example.test/doc.pdf",
-              },
-            ],
-          },
-        ],
-      },
-    ])("preserves exclusions before any flag lookup: %j", async (overrides) => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockResolvedValue(flagResult("test"));
-      await expect(
-        evaluatePaidFirstStepVariant({
-          ...defaults,
-          ...overrides,
-          posthog: { getFeatureFlagResult },
-        }),
-      ).resolves.toBeUndefined();
-      expect(getFeatureFlagResult).not.toHaveBeenCalled();
-      await expect(
-        evaluateAbliteratedModel({
-          ...defaults,
-          ...overrides,
-          paidFirstStepVariant: "test",
-          posthog: { getFeatureFlagResult },
-        }),
-      ).resolves.toBeUndefined();
-    });
-    it("preserves current routing when the new lookup fails", async () => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockRejectedValue(new Error("flag unavailable"));
-      await expect(
-        evaluatePaidFirstStepVariant({
-          ...defaults,
-          posthog: { getFeatureFlagResult },
-        }),
-      ).resolves.toBeUndefined();
-    });
-  });
   describe.each(["ask", "agent"] as const)("shipped %s default", (mode) => {
     it.each(["pro", "pro-plus", "ultra", "team"] as const)(
       "routes every eligible %s selector without a historical flag lookup",
@@ -327,43 +195,32 @@ describe("paid Abliteration default and first-step trial", () => {
       ).resolves.toBeUndefined();
     });
     it.each([false, true])(
-      "new control uses the moderated default only when moderation eligible=%s",
+      "ignores stale universal assignments when moderation eligible=%s",
       async (moderationEligible) => {
-        const baseline = "model-grok-4.6";
-        await expect(
-          evaluateAbliteratedModel({
+        for (const variant of ["test", "control"] as const) {
+          const getFeatureFlagResult = jest
+            .fn()
+            .mockResolvedValue(flagResult(variant));
+          // Old callers or a stale flag must not restore the retired route.
+          const legacyInput = { paidFirstStepVariant: variant };
+          const assignment = await evaluateAbliteratedModel({
             ...defaults,
+            ...legacyInput,
             mode,
-            selectedModel: baseline,
             moderationEligible,
-            paidFirstStepVariant: "control",
-            posthog: null,
-          }),
-        ).resolves.toMatchObject({
-          key: ABLITERATED_PAID_FIRST_STEP_KEY,
-          variant: "control",
-          modelKey: moderationEligible ? ABLITERATION_MODEL_KEY : baseline,
-          baselineModel: baseline,
-          moderationChecked: true,
-        });
-      },
-    );
-    it.each(["test", "control"] as const)(
-      "never routes excluded requests even with a supplied %s assignment",
-      async (paidFirstStepVariant) => {
-        for (const overrides of [
-          { subscription: "free" as const },
-          { limitRescue: true },
-        ]) {
-          await expect(
-            evaluateAbliteratedModel({
-              ...defaults,
-              mode,
-              ...overrides,
-              paidFirstStepVariant,
-              posthog: null,
-            }),
-          ).resolves.toBeUndefined();
+            posthog: { getFeatureFlagResult },
+          });
+          if (moderationEligible) {
+            expect(assignment).toMatchObject({
+              key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+              modelKey: ABLITERATION_MODEL_KEY,
+              baselineModel: defaults.selectedModel,
+              selectionSource: "moderation",
+            });
+          } else {
+            expect(assignment).toBeUndefined();
+          }
+          expect(getFeatureFlagResult).not.toHaveBeenCalled();
         }
       },
     );
