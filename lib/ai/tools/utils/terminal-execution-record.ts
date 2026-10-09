@@ -3,11 +3,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnySandbox } from "@/types";
 import { localEnvironmentIdentity } from "@/lib/sandbox/environment";
-import {
-  asCommonSandbox,
-  isCentrifugoSandbox,
-  isMiosaSandbox,
-} from "./sandbox-types";
+import { asCommonSandbox, isCentrifugoSandbox } from "./sandbox-types";
 import {
   listOwnerOnlyPosixFiles,
   readOwnerOnlyPosixFile,
@@ -48,7 +44,7 @@ export function terminalSandboxInstance(sandbox: AnySandbox): string {
         : { connectionId: sandbox.getConnectionId() };
     return `connection:${localEnvironmentIdentity(connection)}`;
   }
-  return `${isMiosaSandbox(sandbox) ? "miosa" : "e2b"}:${sandbox.sandboxId}`;
+  return `e2b:${sandbox.sandboxId}`;
 }
 
 export function createTerminalRecordStore(
@@ -56,7 +52,6 @@ export function createTerminalRecordStore(
   userId: string,
   scopeId: string,
 ) {
-  const lifecycleOnly = isMiosaSandbox(sandbox);
   const scope = createHash("sha256")
     .update(JSON.stringify([userId, scopeId, terminalSandboxInstance(sandbox)]))
     .digest("hex");
@@ -111,16 +106,9 @@ export function createTerminalRecordStore(
   };
 
   return {
-    // MIOSA implements a logical file operation with staged uploads/downloads
-    // plus guest exec calls. Startup checkpoints, ten-second output
-    // checkpoints, and a directory-wide prune on every terminal command
-    // multiplied ordinary Agent activity into thousands of provider requests.
-    // Explicit lifecycle checkpoints still retain evidence when the command
-    // yields, exits, or is cancelled; only the continuous maintenance is
-    // deferred for this high-overhead transport.
-    checkpointOnStart: !lifecycleOnly,
-    checkpointOnOutput: !lifecycleOnly,
-    pruneOnStart: !lifecycleOnly,
+    checkpointOnStart: true,
+    checkpointOnOutput: true,
+    pruneOnStart: true,
     pathFor,
     async save(record: TerminalExecutionRecord): Promise<string | null> {
       let payloadBytes = 0;

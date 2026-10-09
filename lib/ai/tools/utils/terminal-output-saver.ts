@@ -3,12 +3,10 @@ import type { AnySandbox } from "@/types";
 import type { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { phLogger } from "@/lib/posthog/server";
 import { FULL_OUTPUT_SAVED_MESSAGE } from "@/lib/token-utils";
-import { miosaFileErrorDiagnostics } from "./miosa-file-diagnostics";
 import {
   asCommonSandbox,
   isCloudSandbox,
   isCentrifugoSandbox,
-  isMiosaSandbox,
 } from "./sandbox-types";
 import {
   listOwnerOnlyPosixFiles,
@@ -22,8 +20,7 @@ const PERSISTENCE_RETRY_DELAY_MS = 250;
 export const FULL_OUTPUT_SAVE_FAILED_MESSAGE =
   "\n[Full terminal output could not be saved. The output below is truncated. Do not rerun the original command unchanged. If the omitted content is necessary, use a safe, read-only follow-up with narrower output, filters, or line ranges. Otherwise, explain the limitation and continue.]";
 
-type TerminalOutputPersistenceProvider =
-  "miosa" | "e2b" | "desktop" | "centrifugo";
+type TerminalOutputPersistenceProvider = "e2b" | "desktop" | "centrifugo";
 type TerminalOutputPersistenceFailureCategory =
   | "timeout"
   | "transport"
@@ -53,7 +50,6 @@ const getPersistenceProvider = (
     }
     return "centrifugo";
   }
-  if (isMiosaSandbox(sandbox)) return "miosa";
   return "e2b";
 };
 
@@ -106,43 +102,19 @@ export const classifyTerminalOutputPersistenceFailure = (
 const canRetryPersistenceFailure = (
   provider: TerminalOutputPersistenceProvider,
   category: TerminalOutputPersistenceFailureCategory,
-  error: unknown,
-): boolean => {
-  if (provider === "miosa") {
-    const details = miosaFileErrorDiagnostics(error);
-    // Never replay a policy/validation rejection, a non-retryable provider
-    // failure, or an ambiguous timeout. Only this fixed-path output save is
-    // retried, never the user's original terminal command.
-    if (
-      details.error_retryable === false ||
-      category === "timeout" ||
-      (details.error_http_status !== undefined &&
-        details.error_http_status >= 400 &&
-        details.error_http_status < 500)
-    )
-      return false;
-    if (details.error_http_status !== undefined)
-      return (
-        details.error_retryable === true &&
-        [502, 503].includes(details.error_http_status)
-      );
-    return category === "transport";
-  }
-  return (
-    provider === "desktop" &&
-    (category === "transport" ||
-      category === "relay_unavailable" ||
-      category === "unknown")
-  );
-};
+): boolean =>
+  provider === "desktop" &&
+  (category === "transport" ||
+    category === "relay_unavailable" ||
+    category === "unknown");
 
 const getPersistenceSandboxFields = (
   provider: TerminalOutputPersistenceProvider,
 ): {
   sandbox_type: "cloud" | "desktop" | "remote-connection";
-  sandbox_provider?: "miosa" | "e2b";
+  sandbox_provider?: "e2b";
 } => {
-  if (provider === "miosa" || provider === "e2b") {
+  if (provider === "e2b") {
     return { sandbox_type: "cloud", sandbox_provider: provider };
   }
   return {
@@ -168,6 +140,7 @@ const emitPersistenceFailure = (args: {
     attempt_count: args.attemptCount,
     result: args.result,
     failure_category: args.failureCategory,
+    failure_stage: args.failureStage,
     retry_decision: args.retryDecision,
     service: args.telemetry?.service ?? "unknown",
     environment: args.telemetry?.environment ?? "unknown",
@@ -176,10 +149,6 @@ const emitPersistenceFailure = (args: {
     trigger_run_id: args.telemetry?.triggerRunId ?? null,
     chat_id: args.telemetry?.chatId ?? null,
     user_id: args.telemetry?.userId ?? null,
-    ...(args.provider === "miosa" && {
-      failure_stage: args.failureStage,
-      ...miosaFileErrorDiagnostics(args.error),
-    }),
   };
 
   const payload = JSON.stringify({
@@ -344,7 +313,7 @@ export async function saveFullOutputToFile(
         return null;
       }
     }
-    if (!canRetryPersistenceFailure(provider, firstCategory, firstError)) {
+    if (!canRetryPersistenceFailure(provider, firstCategory)) {
       emitPersistenceFailure({
         provider,
         attemptCount,

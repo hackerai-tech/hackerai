@@ -26,8 +26,7 @@ const LOCAL_COMMAND_NO_RESPONSE_MESSAGE =
 
 it.each([
   "E2BAcquisitionError",
-  "MiosaWorkspaceUnavailableError",
-  "CloudMigrationUnavailableError",
+  "CloudWorkspaceUnavailableError",
   "private-error-name",
 ])(
   "retains bounded acquisition diagnostics for %s without retrying",
@@ -73,68 +72,6 @@ it.each([
     }
   },
 );
-
-it("records safe validation fields for a Miosa attachment rejection without retrying it", async () => {
-  const error = Object.assign(new Error("Provider rejected the request"), {
-    name: "ValidationError",
-    status: 422,
-    code: "UNKNOWN_ERROR",
-    requestId: "request-attachment",
-    retryable: false,
-    details: {
-      errors: [
-        {
-          loc: ["body", "command"],
-          input: "private command",
-          msg: "private message",
-        },
-      ],
-    },
-  });
-  const run = jest.fn().mockRejectedValue(error);
-  const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-  try {
-    const result = await uploadSandboxFiles(
-      [
-        {
-          kind: "url",
-          url: "https://example.com/file?token=private-token",
-          localPath: "/home/user/upload/private-file",
-        },
-      ],
-      async () => ({ sandboxKind: "miosa", commands: { run } }),
-      {
-        logContext: {
-          service: "agent-long",
-          requestId: "run-test",
-          userId: "user-test",
-        },
-      },
-    );
-    expect(result.failedCount).toBe(1);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(eventSpy).toHaveBeenCalledWith(
-      "sandbox_attachment_staging_failed",
-      expect.objectContaining({
-        error_request_id: "request-attachment",
-        validation_fields: ["command"],
-        failure_stage: "transfer",
-        transfer_operation: "download_url",
-      }),
-    );
-    expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
-      upload_failure_phase: "transfer",
-      upload_failure_validation_fields: ["command"],
-    });
-    expect(JSON.stringify(eventSpy.mock.calls)).not.toMatch(
-      /private-token|private-file|private command|private message/,
-    );
-  } finally {
-    eventSpy.mockRestore();
-    errorSpy.mockRestore();
-  }
-});
 
 const makeLocalMessage = (): UIMessage =>
   ({
@@ -1161,80 +1098,6 @@ describe("desktop-local sandbox file helpers", () => {
     },
   );
 
-  it("records safe Miosa diagnostics for attachment staging failures", async () => {
-    const consoleErrorSpy = jest
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-    const providerError = Object.assign(
-      new Error("Sandbox transport failed for private attachment content"),
-      {
-        name: "MiosaError",
-        code: "FILE_TRANSPORT_UNAVAILABLE",
-        status: 503,
-        requestId: "request-safe-123",
-        retryable: true,
-      },
-    );
-
-    try {
-      const result = await uploadSandboxFiles(
-        [
-          {
-            kind: "url",
-            url: "https://example.com/private-report.pdf?signature=secret",
-            localPath: "/home/user/upload/private-report.pdf",
-          },
-        ],
-        async () => ({
-          sandboxKind: "miosa",
-          commands: { run: jest.fn().mockRejectedValue(providerError) },
-        }),
-        {
-          logContext: {
-            service: "agent-long",
-            requestId: "run-safe-123",
-            userId: "user-safe-123",
-            chatId: "chat-safe-123",
-          },
-        },
-      );
-
-      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
-        upload_failure_sandbox_provider: "miosa",
-        upload_failure_error_name: "MiosaError",
-        upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
-        upload_failure_error_http_status: 503,
-        upload_failure_error_request_id: "request-safe-123",
-        upload_failure_error_retryable: true,
-      });
-      const structuredLog = JSON.parse(
-        String(consoleErrorSpy.mock.calls[0]?.[0]),
-      );
-      expect(structuredLog).toMatchObject({
-        event: "sandbox_attachment_staging_failed",
-        sandbox_provider: "miosa",
-        error_code: "FILE_TRANSPORT_UNAVAILABLE",
-        error_http_status: 503,
-        error_request_id: "request-safe-123",
-        error_retryable: true,
-      });
-      expect(JSON.stringify(structuredLog)).not.toContain("private-report");
-      expect(JSON.stringify(structuredLog)).not.toContain("signature=secret");
-      expect(eventSpy).toHaveBeenCalledWith(
-        "sandbox_attachment_staging_failed",
-        expect.objectContaining({
-          sandbox_provider: "miosa",
-          error_code: "FILE_TRANSPORT_UNAVAILABLE",
-          error_request_id: "request-safe-123",
-        }),
-      );
-    } finally {
-      consoleErrorSpy.mockRestore();
-      eventSpy.mockRestore();
-    }
-  });
-
   it("does not refresh non-retryable sandbox acquisition failures", async () => {
     const consoleErrorSpy = jest
       .spyOn(console, "error")
@@ -2081,26 +1944,6 @@ describe("attachment write fallback observability", () => {
         total_count: 1,
         recovered_count: 0,
         direct_success_count: 1,
-      }),
-    );
-  });
-
-  it("skips E2B filesystem diagnostics on the MIOSA adapter", async () => {
-    const sandbox = { ...makeSandbox(), sandboxKind: "miosa" };
-    await uploadSandboxFiles([file], async () => sandbox, {
-      logContext: context,
-    });
-    expect(
-      sandbox.commands.run.mock.calls.some(([command]) =>
-        command.startsWith("timeout --kill-after=1s 3s python3"),
-      ),
-    ).toBe(false);
-    expect(eventSpy).toHaveBeenCalledWith(
-      "sandbox_attachment_staging_fallback",
-      expect.objectContaining({
-        sandbox_provider: "miosa",
-        diagnostics_probe_status: "not_e2b",
-        fallback_outcome: "recovered",
       }),
     );
   });

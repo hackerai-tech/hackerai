@@ -69,10 +69,6 @@ An abrupt process exit can lose a pending summary, so this remains best-effort
 diagnostic telemetry. Full local console diagnostics and transport behavior are
 independent of this aggregation.
 
-Miosa step sampling is defined in [Miosa measurement](miosa-measurement.md).
-Use the unsampled acquisition summary for rates and latency; sampled step events
-are for diagnosis, not a substitute denominator.
-
 Survey selection batches the independent-paid and legacy flags when both are
 eligible. Each request evaluates fresh values with the same person properties;
 there is no cross-user or cross-request cache. The pinned SDK's `getAllFlags`

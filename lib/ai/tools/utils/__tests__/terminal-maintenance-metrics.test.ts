@@ -32,7 +32,7 @@ afterEach(() => {
 function fixture(windows = false, cloud = false) {
   const files = new Map<string, string>();
   const sandbox = {
-    sandboxKind: cloud ? "miosa" : "centrifugo",
+    ...(!cloud && { sandboxKind: "centrifugo" }),
     sandboxId: "cloud-id",
     isWindows: () => windows,
     supportsNativeFileRelay: () => true,

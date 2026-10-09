@@ -2002,8 +2002,6 @@ export function captureUsageCost({
         sandbox_cost_accounting_version: 2,
         sandbox_cost_source: "request_runtime_rate",
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
-        sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
-        sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,
         sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
         sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
       }),

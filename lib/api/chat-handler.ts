@@ -80,7 +80,6 @@ import {
 } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
-import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   captureAgentBudgetAbort,
@@ -646,20 +645,10 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
-      const cloudSandboxSelection =
-        isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
-          ? await selectCloudSandboxProvider({
-              userId,
-              subscription,
-              environment: process.env.VERCEL_ENV ?? "development",
-              triggerRegion: executionRegion,
-              requestRegionClass,
-              featureFlagClient: posthog,
-            })
-          : ({
-              provider: "e2b",
-              reason: "miosa_rollout_control",
-            } as const);
+      const cloudSandboxSelection = {
+        provider: "e2b",
+        reason: "e2b_only",
+      } as const;
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {

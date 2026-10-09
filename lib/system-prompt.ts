@@ -12,7 +12,6 @@ import {
   isDeepSeekModel,
   type ModelName,
 } from "@/lib/ai/providers";
-import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 
 // Keep the boundary before any user or host text; provider serialization splits only once.
@@ -193,23 +192,13 @@ Local Agent access is available on every plan, including Free. Paid plans also p
 Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
 </local_machine_access>`;
 
-const getDefaultSandboxEnvironmentSection = (
-  provider: CloudSandboxProvider = getCloudSandboxProvider(),
-): string => {
-  const portScanningSection =
-    provider === "miosa"
-      ? ""
-      : `Port-scanning limitation:
+const getDefaultSandboxEnvironmentSection = (): string => {
+  const portScanningSection = `Port-scanning limitation:
 - Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful even when no traffic reached the destination.
 - Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent. Never treat a successful low-level connection or implausible scan output as confirmation that a port is open.
 - Explain this environment limitation instead of retrying the scan or changing command options. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack.
 - Narrow application-level checks remain appropriate when they verify expected protocol behavior, such as an HTTP response, completed TLS handshake, or expected service banner.`;
-  const systemEnvironment =
-    provider === "miosa"
-      ? `- OS: isolated Linux sandbox (with internet access)
-- Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
-- User: privileged sandbox user`
-      : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+  const systemEnvironment = `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;
   const installedTools = `${PREINSTALLED_PENTESTING_TOOLS}
@@ -217,11 +206,7 @@ const getDefaultSandboxEnvironmentSection = (
 ${SANDBOX_TOOL_RECIPES_SECTION}
 
 ${AGENT_BROWSER_SECTION}`;
-  const developmentEnvironment =
-    provider === "miosa"
-      ? `Development Environment:
-- Probe runtime and package versions before relying on them; the configured MIOSA template can vary.`
-      : `Development Environment:
+  const developmentEnvironment = `Development Environment:
 - Python 3.12.11 (commands: python3, pip3)
 - Node.js 20.19.4 (commands: node, npm)
 - Golang 1.24.2 (commands: go)`;
@@ -254,7 +239,6 @@ const getAgentModeSection = (
   subscription: SubscriptionTier,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
-  cloudSandboxProvider?: CloudSandboxProvider,
 ): string => {
   return `<current_mode>
 You are in AGENT MODE. Use the available tools to read files, edit code, run terminal commands, and execute code when useful. Do not tell the user to switch to Agent mode.
@@ -331,7 +315,7 @@ If impact cannot be reproduced, label it as a hypothesis or needs-validation ite
 Close each vulnerability candidate as confirmed, ruled out by specific counterevidence, or needing validation. Missing information, unavailable execution, and failed setup are proof gaps—not evidence of safety. Use the least disruptive proof necessary to demonstrate impact.
 </finding_quality>
 
-${sandboxContext ? "" : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
+${sandboxContext ? "" : getDefaultSandboxEnvironmentSection()}
 
 ${getProductQuestionsSection(subscription)}`;
 };
@@ -436,7 +420,7 @@ export const systemPrompt = async (
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
   genericDelegationEnabled: boolean = false,
-  cloudSandboxProvider?: CloudSandboxProvider,
+  _cloudSandboxProvider?: CloudSandboxProvider,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -470,12 +454,7 @@ Your main goal is to follow the USER's instructions at each message.`;
     sections.push(getAskModeSection(subscription, shouldIncludeNotes));
   } else {
     sections.push(
-      getAgentModeSection(
-        subscription,
-        sandboxContext,
-        agentPermissionMode,
-        cloudSandboxProvider,
-      ),
+      getAgentModeSection(subscription, sandboxContext, agentPermissionMode),
     );
     sections.push(AGENT_DELIVERABLE_SECTION);
     if (genericDelegationEnabled) {

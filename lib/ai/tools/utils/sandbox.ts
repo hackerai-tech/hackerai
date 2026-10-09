@@ -93,7 +93,6 @@ export const ensureSandboxConnection = async (
     acquisitionId?: string;
     triggerRunId?: string;
     destinationId?: string;
-    createOnly?: boolean;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox, onBoot } = context;
@@ -104,7 +103,7 @@ export const ensureSandboxConnection = async (
   const requestOptions = { signal };
 
   // Return existing sandbox if already connected
-  if (initialSandbox && !options.destinationId && !options.createOnly) {
+  if (initialSandbox && !options.destinationId) {
     return { sandbox: initialSandbox };
   }
   const startedAt = performance.now();
@@ -167,7 +166,7 @@ export const ensureSandboxConnection = async (
       cluster: E2BClusterConfig;
     };
     const discoveredSandboxes: DiscoveredSandbox[] = [];
-    for (const cluster of options.createOnly ? [] : discoveryClusters) {
+    for (const cluster of discoveryClusters) {
       const paginator = Sandbox.list({
         ...cluster.connectionOptions,
         ...requestOptions,
@@ -218,7 +217,7 @@ export const ensureSandboxConnection = async (
       existingSandboxInfo &&
       existingSandboxInfo.metadata?.sandboxVersion !== SANDBOX_VERSION;
     // An old version can still contain files. Reconnect without destructive
-    // replacement, including after a denied Miosa migration check.
+    // replacement.
     if (existingSandboxInfo?.sandboxId && existingCluster) {
       if (hasVersionMismatch) {
         console.warn(
@@ -311,9 +310,6 @@ export const ensureSandboxConnection = async (
             secure: "true",
             sandboxVersion: SANDBOX_VERSION,
             e2bCluster: createCluster.cluster,
-            ...(options.createOnly && {
-              workspacePurpose: "migration-fallback",
-            }),
           },
         });
 
