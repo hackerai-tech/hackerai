@@ -172,8 +172,18 @@ export async function evaluateAbliteratedModel({
         moderationChecked,
       };
     }
-  } catch {
+  } catch (error) {
     // Analytics availability must not interrupt the shipped default.
+    try {
+      phLogger.warn("Abliteration three-step flag lookup failed", {
+        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        mode,
+        subscription_tier: subscription,
+        error_type: error instanceof Error ? "Error" : typeof error,
+      });
+    } catch {
+      // Logging must never change assignment.
+    }
   }
   reportDecision("moderated_default", "test");
   return {

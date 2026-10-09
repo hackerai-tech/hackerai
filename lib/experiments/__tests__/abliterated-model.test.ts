@@ -9,7 +9,7 @@ import type { SubscriptionTier } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
 
 jest.mock("@/lib/posthog/server", () => ({
-  phLogger: { info: jest.fn() },
+  phLogger: { info: jest.fn(), warn: jest.fn() },
 }));
 import {
   ABLITERATION_MODEL_ID,
@@ -300,5 +300,31 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
         previewDiagnosticContext,
       }),
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+  });
+  it("reports lookup failure without error content and retains fallback if logging fails", async () => {
+    const posthog = {
+      getFeatureFlagResult: jest
+        .fn()
+        .mockRejectedValue(new Error("private error content")),
+    };
+    await expect(
+      evaluateAbliteratedModel({ ...defaults, posthog }),
+    ).resolves.toMatchObject({ key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY });
+    expect(phLogger.warn).toHaveBeenCalledWith(
+      "Abliteration three-step flag lookup failed",
+      expect.objectContaining({
+        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        error_type: "Error",
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.warn).mock.calls)).not.toContain(
+      "private error content",
+    );
+    jest.mocked(phLogger.warn).mockImplementationOnce(() => {
+      throw new Error("logger unavailable");
+    });
+    await expect(
+      evaluateAbliteratedModel({ ...defaults, posthog }),
+    ).resolves.toMatchObject({ key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY });
   });
 });
