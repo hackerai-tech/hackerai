@@ -1170,11 +1170,13 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
-    ["agent", "pro", "model-deepseek-v4-flash-0731"],
-    ["ask", "free", "ask-model-free-glm"],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "free", "ask-model-free-glm", 1],
   ] as const)(
-    "routes only the first generation step through Abliteration for %s %s",
-    async (mode, subscription, baselineModel) => {
+    "routes %s %s through Abliteration then %s after %i steps",
+    async (mode, subscription, baselineModel, generationStepLimit) => {
       const onModelStepSelected = jest.fn();
       const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
@@ -1193,6 +1195,7 @@ describe("createAgentStream repeated compaction", () => {
           abliteratedTelemetry: { wrap },
           abliteratedStepRouting: {
             baselineModel,
+            generationStepLimit,
           },
           onModelStepSelected,
           summarizationTracker: {
@@ -1227,11 +1230,18 @@ describe("createAgentStream repeated compaction", () => {
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
 
-      const secondStep = await prepare(1);
+      for (let index = 1; index < generationStepLimit; index++) {
+        const treatmentStep = await prepare(index);
+        expect(treatmentStep.model.modelId).toBe("model-abliterated");
+        expect(JSON.stringify(treatmentStep.messages)).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+      }
+      const secondStep = await prepare(generationStepLimit);
       expect(secondStep.model.modelId).toBe(baselineModel);
       expect(wrap).toHaveBeenLastCalledWith(
         expect.objectContaining({ modelId: baselineModel }),
-        1,
+        generationStepLimit,
         expect.objectContaining({
           plannedBaselineContinuation: true,
           visionRoute: false,
@@ -1332,113 +1342,124 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
-  it("sends an unannotated Abliteration call followed by an annotated baseline call in a real SDK tool loop", async () => {
-    const sdk = jest.requireActual("ai");
-    const { WritableStream } = await import("node:stream/web");
-    const originalWritable = globalThis.WritableStream;
-    Object.defineProperty(globalThis, "WritableStream", {
-      configurable: true,
-      value: WritableStream,
-    });
-    try {
-      mockStreamText.mockImplementationOnce(sdk.streamText);
-      const makeModel = (modelId: string, parts: unknown[]) => ({
-        specificationVersion: "v3",
-        provider: "test",
-        modelId,
-        supportedUrls: {},
-        doGenerate: jest.fn(),
-        doStream: jest.fn(async () => ({
-          stream: new ReadableStream({
-            start(controller) {
-              for (const part of parts) controller.enqueue(part);
-              controller.close();
-            },
-          }),
-        })),
-      });
-      const finish = (reason: string) => ({
-        type: "finish",
-        finishReason: { unified: reason, raw: reason },
-        usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
-      });
-      const first = makeModel("abliterated-model", [
-        {
-          type: "tool-call",
-          toolCallId: "one",
-          toolName: "lookup",
-          input: "{}",
-        },
-        finish("tool-calls"),
-      ]);
-      const baseline = makeModel("deepseek/baseline", [
-        { type: "text-start", id: "answer" },
-        { type: "text-delta", id: "answer", delta: "Finished" },
-        { type: "text-end", id: "answer" },
-        finish("stop"),
-      ]);
-      const inputSchema = (await import("zod")).z.object({});
-      const state = initAgentStreamState(
-        [uiMessage("initial", "Inspect my lab")],
-        { usedTokens: 1_000, maxTokens: 128_000 },
-      );
-      const diagnostics = jest.fn();
-      const stream = await createAgentStream(
-        "model-abliterated",
-        createTestStreamContext({
-          platformAuthorized: false,
-          trackedProvider: {
-            languageModel: (name: string) =>
-              name === "model-abliterated" ? first : baseline,
-          },
-          abliteratedStepRouting: {
-            baselineModel: "model-deepseek-v4-flash-0731",
-          },
-          tools: {
-            lookup: sdk.tool({
-              inputSchema,
-              execute: async () => ({ ok: true }),
-            }),
-          },
-          onProviderRequestDiagnostics: diagnostics,
-          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
-          usageTracker: {
-            accumulateStep: () => 0,
-            setAuthoritativeModelCostForStep: jest.fn(),
-            computeCostDollars: () => 0,
-          },
-        }) as any,
-        state,
-      );
-      await stream.consumeStream({
-        onError: (error: unknown) => {
-          throw error;
-        },
-      });
-      expect(await stream.text).toBe("Finished");
-      expect(first.doStream).toHaveBeenCalledTimes(1);
-      expect(baseline.doStream).toHaveBeenCalledTimes(1);
-      expect(JSON.stringify(first.doStream.mock.calls[0])).not.toContain(
-        PLATFORM_AUTHORIZATION_ANNOTATION,
-      );
-      expect(JSON.stringify(baseline.doStream.mock.calls[0])).toContain(
-        PLATFORM_AUTHORIZATION_ANNOTATION,
-      );
-      expect(
-        diagnostics.mock.calls.map(
-          ([request]) => request.platform_authorization_annotation_appended,
-        ),
-      ).toEqual([false, false, true]);
-      expect(JSON.stringify(state.finalMessages)).not.toContain(
-        PLATFORM_AUTHORIZATION_ANNOTATION,
-      );
-    } finally {
+  it.each([1, 3] as const)(
+    "sends %i unannotated Abliteration steps then annotated baseline in a real SDK tool loop",
+    async (generationStepLimit) => {
+      const sdk = jest.requireActual("ai");
+      const { WritableStream } = await import("node:stream/web");
+      const originalWritable = globalThis.WritableStream;
       Object.defineProperty(globalThis, "WritableStream", {
         configurable: true,
-        value: originalWritable,
+        value: WritableStream,
       });
-    }
-  });
+      try {
+        mockStreamText.mockImplementationOnce(sdk.streamText);
+        const makeModel = (modelId: string, parts: unknown[]) => ({
+          specificationVersion: "v3",
+          provider: "test",
+          modelId,
+          supportedUrls: {},
+          doGenerate: jest.fn(),
+          doStream: jest.fn(async () => ({
+            stream: new ReadableStream({
+              start(controller) {
+                for (const part of parts) controller.enqueue(part);
+                controller.close();
+              },
+            }),
+          })),
+        });
+        const finish = (reason: string) => ({
+          type: "finish",
+          finishReason: { unified: reason, raw: reason },
+          usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+        });
+        const first = makeModel("abliterated-model", [
+          {
+            type: "tool-call",
+            toolCallId: "one",
+            toolName: "lookup",
+            input: "{}",
+          },
+          finish("tool-calls"),
+        ]);
+        const baseline = makeModel("deepseek/baseline", [
+          { type: "text-start", id: "answer" },
+          { type: "text-delta", id: "answer", delta: "Finished" },
+          { type: "text-end", id: "answer" },
+          finish("stop"),
+        ]);
+        const inputSchema = (await import("zod")).z.object({});
+        const state = initAgentStreamState(
+          [uiMessage("initial", "Inspect my lab")],
+          { usedTokens: 1_000, maxTokens: 128_000 },
+        );
+        const diagnostics = jest.fn();
+        const stream = await createAgentStream(
+          "model-abliterated",
+          createTestStreamContext({
+            platformAuthorized: false,
+            trackedProvider: {
+              languageModel: (name: string) =>
+                name === "model-abliterated" ? first : baseline,
+            },
+            abliteratedStepRouting: {
+              baselineModel: "model-deepseek-v4-flash-0731",
+              generationStepLimit,
+            },
+            tools: {
+              lookup: sdk.tool({
+                inputSchema,
+                execute: async () => ({ ok: true }),
+              }),
+            },
+            onProviderRequestDiagnostics: diagnostics,
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+            usageTracker: {
+              accumulateStep: () => 0,
+              setAuthoritativeModelCostForStep: jest.fn(),
+              computeCostDollars: () => 0,
+            },
+          }) as any,
+          state,
+        );
+        await stream.consumeStream({
+          onError: (error: unknown) => {
+            throw error;
+          },
+        });
+        expect(await stream.text).toBe("Finished");
+        expect(first.doStream).toHaveBeenCalledTimes(generationStepLimit);
+        expect(baseline.doStream).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(first.doStream.mock.calls[0])).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+        expect(JSON.stringify(baseline.doStream.mock.calls[0])).toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+        expect(
+          diagnostics.mock.calls.map(
+            ([request]) => request.platform_authorization_annotation_appended,
+          ),
+        ).toEqual([
+          false,
+          ...Array.from({ length: generationStepLimit }, () => false),
+          true,
+        ]);
+        expect(JSON.stringify(state.finalMessages)).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+      } finally {
+        Object.defineProperty(globalThis, "WritableStream", {
+          configurable: true,
+          value: originalWritable,
+        });
+      }
+    },
+  );
 
   it.each([
     {

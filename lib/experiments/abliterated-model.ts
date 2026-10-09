@@ -1,16 +1,20 @@
 import { phLogger } from "@/lib/posthog/server";
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
 import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
 } from "./abliteration-keys";
+import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -26,7 +30,8 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_EXPERIMENT_KEY
     | typeof ABLITERATED_MAX_EXPERIMENT_KEY
     | typeof ABLITERATED_PAID_FIRST_STEP_KEY
-    | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY;
+    | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
+    | typeof ABLITERATED_PAID_THREE_STEPS_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -34,6 +39,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
   moderationEligible?: boolean;
   moderationChecked?: boolean;
   independentHistoryCount?: number;
+  generationStepLimit?: AbliterationGenerationStepLimit;
 };
 
 const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
@@ -103,7 +109,10 @@ export async function evaluateAbliteratedModel({
         userId,
         chatId: previewDiagnosticContext.chatId,
         requestId: previewDiagnosticContext.requestId,
-        experiment_key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+        experiment_key:
+          reason === "three_step_experiment"
+            ? ABLITERATED_PAID_THREE_STEPS_KEY
+            : ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
@@ -139,8 +148,33 @@ export async function evaluateAbliteratedModel({
     return undefined;
   }
 
-  // A shipped paid default must not depend on analytics availability or retired
-  // experiment/continuity assignments. Unmoderated requests keep their baseline.
+  // Both experiment arms retain the shipped moderation-selected base model.
+  // Lookup failures and disabled flags preserve its one-step policy.
+  try {
+    const variant =
+      posthog &&
+      (await getPostHogFlagWithoutExposure(
+        posthog,
+        ABLITERATED_PAID_THREE_STEPS_KEY,
+        userId,
+        { subscription, subscription_tier: subscription },
+      ));
+    if (variant === "control" || variant === "test") {
+      reportDecision("three_step_experiment", variant);
+      return {
+        key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        variant,
+        modelKey: ABLITERATION_MODEL_KEY,
+        baselineModel: selectedModel,
+        generationStepLimit: variant === "test" ? 3 : 1,
+        selectionSource: "moderation",
+        moderationEligible,
+        moderationChecked,
+      };
+    }
+  } catch {
+    // Analytics availability must not interrupt the shipped default.
+  }
   reportDecision("moderated_default", "test");
   return {
     key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,

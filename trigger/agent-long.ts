@@ -3610,6 +3610,8 @@ export const agentLongTask = task({
                 isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
                     baselineModel: activeAbliteratedExperiment.baselineModel,
+                    generationStepLimit:
+                      activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
               onProviderRequestStart: (configuredModel) => {

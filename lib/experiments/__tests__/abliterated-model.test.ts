@@ -1,6 +1,7 @@
 import {
   evaluateAbliteratedModel,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
@@ -145,7 +146,7 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
             selectionSource: "moderation",
             moderationChecked: true,
           });
-          expect(getFeatureFlagResult).not.toHaveBeenCalled();
+          expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
         }
       },
     );
@@ -194,34 +195,54 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
         evaluateAbliteratedModel({ ...defaults, mode, posthog: null }),
       ).resolves.toBeUndefined();
     });
-    it.each([false, true])(
-      "ignores stale universal assignments when moderation eligible=%s",
-      async (moderationEligible) => {
-        for (const variant of ["test", "control"] as const) {
-          const getFeatureFlagResult = jest
-            .fn()
-            .mockResolvedValue(flagResult(variant));
-          // Old callers or a stale flag must not restore the retired route.
-          const legacyInput = { paidFirstStepVariant: variant };
-          const assignment = await evaluateAbliteratedModel({
-            ...defaults,
-            ...legacyInput,
-            mode,
-            moderationEligible,
-            posthog: { getFeatureFlagResult },
-          });
-          if (moderationEligible) {
-            expect(assignment).toMatchObject({
-              key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
-              modelKey: ABLITERATION_MODEL_KEY,
-              baselineModel: defaults.selectedModel,
-              selectionSource: "moderation",
-            });
-          } else {
-            expect(assignment).toBeUndefined();
-          }
-          expect(getFeatureFlagResult).not.toHaveBeenCalled();
-        }
+    it.each(["control", "test"] as const)(
+      "assigns %s using the authenticated ID without emitting exposure",
+      async (variant) => {
+        const getFeatureFlagResult = jest
+          .fn()
+          .mockResolvedValue(flagResult(variant));
+        const assignment = await evaluateAbliteratedModel({
+          ...defaults,
+          mode,
+          posthog: { getFeatureFlagResult },
+        });
+        expect(assignment).toMatchObject({
+          key: ABLITERATED_PAID_THREE_STEPS_KEY,
+          variant,
+          modelKey: ABLITERATION_MODEL_KEY,
+          baselineModel: defaults.selectedModel,
+          generationStepLimit: variant === "test" ? 3 : 1,
+        });
+        expect(getFeatureFlagResult).toHaveBeenCalledWith(
+          ABLITERATED_PAID_THREE_STEPS_KEY,
+          defaults.userId,
+          expect.objectContaining({
+            sendFeatureFlagEvents: false,
+            personProperties: {
+              subscription: "pro",
+              subscription_tier: "pro",
+            },
+          }),
+        );
+      },
+    );
+    it.each([false, true, undefined, "unexpected"])(
+      "keeps the shipped one-step default for flag value %s",
+      async (value) => {
+        const assignment = await evaluateAbliteratedModel({
+          ...defaults,
+          mode,
+          posthog: {
+            getFeatureFlagResult: jest
+              .fn()
+              .mockResolvedValue(flagResult(value)),
+          },
+        });
+        expect(assignment).toMatchObject({
+          key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+          modelKey: ABLITERATION_MODEL_KEY,
+        });
+        expect(assignment?.generationStepLimit).toBeUndefined();
       },
     );
   });
