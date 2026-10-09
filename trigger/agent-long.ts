@@ -42,7 +42,6 @@ import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
-import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -1934,20 +1933,10 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       const posthog = PostHogClient();
-      const cloudSandboxSelection =
-        !sandboxPreference || sandboxPreference === "e2b"
-          ? await selectCloudSandboxProvider({
-              userId,
-              subscription,
-              environment: ctx.environment.type,
-              triggerRegion,
-              requestRegionClass,
-              featureFlagClient: posthog,
-            })
-          : ({
-              provider: "e2b",
-              reason: "miosa_rollout_control",
-            } as const);
+      const cloudSandboxSelection = {
+        provider: "e2b",
+        reason: "e2b_only",
+      } as const;
       const cloudSandboxProvider = cloudSandboxSelection.provider;
       const regionalFreeLimits = getRegionalFreeLimits({
         userId,

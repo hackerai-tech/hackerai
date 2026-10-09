@@ -182,7 +182,7 @@ export interface ChatWideEvent {
   sandbox?: {
     type: "cloud" | "desktop" | "remote-connection";
     name?: string;
-    provider?: "miosa" | "e2b";
+    provider?: "e2b";
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done

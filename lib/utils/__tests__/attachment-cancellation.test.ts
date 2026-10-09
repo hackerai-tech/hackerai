@@ -51,7 +51,7 @@ it.each(["success", "failure"])(
     });
     controller.abort();
     if (outcome === "success")
-      acquisition.resolve({ sandboxKind: "miosa", commands: { run } });
+      acquisition.resolve({ sandboxKind: "centrifugo", commands: { run } });
     else
       acquisition.reject(
         new Error("[deadline_exceeded] the operation timed out"),
@@ -79,7 +79,7 @@ it("cancels an active transfer and waits for its cleanup without touching anothe
     );
   });
   const sharedSandbox = {
-    sandboxKind: "miosa",
+    sandboxKind: "centrifugo",
     commands: { run },
     kill: jest.fn(),
   };
@@ -120,7 +120,7 @@ it.each(["channel", "curl"])(
             )
         : jest.fn().mockResolvedValue({ ...ok, exitCode: 7 });
     const acquire = jest.fn(async () => ({
-      sandboxKind: "miosa",
+      sandboxKind: "centrifugo",
       commands: { run },
     }));
     const pending = uploadSandboxFiles([file], acquire, {
@@ -153,7 +153,7 @@ it("does not turn mixed success and cancellation into an upload failure", async 
   });
   const pending = uploadSandboxFiles(
     [file, { ...file, localPath: "/home/user/upload/second.txt" }],
-    async () => ({ sandboxKind: "miosa", commands: { run } }),
+    async () => ({ sandboxKind: "centrifugo", commands: { run } }),
     { signal: controller.signal },
   );
   await expect(pending).rejects.toMatchObject({ name: "AbortError" });
@@ -168,7 +168,7 @@ it("does not try a writable-path fallback after Stop", async () => {
   });
   await uploadSandboxFiles(
     [file],
-    async () => ({ sandboxKind: "miosa", commands: { run } }),
+    async () => ({ sandboxKind: "centrifugo", commands: { run } }),
     { signal: controller.signal },
   ).catch((error) => expect(error).toBe(controller.signal.reason));
   expect(run).toHaveBeenCalledTimes(1);

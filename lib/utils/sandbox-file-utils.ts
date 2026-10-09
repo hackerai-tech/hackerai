@@ -16,7 +16,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
-import { miosaErrorDiagnostics } from "@/lib/ai/tools/utils/miosa-acquisition-diagnostics";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
 import { getSandboxLogFields } from "@/lib/ai/tools/utils/sandbox-types";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
@@ -80,7 +79,7 @@ type SandboxUploadFailureDetail = {
   reason: SandboxUploadFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
-  sandboxProvider?: "miosa" | "e2b";
+  sandboxProvider?: "e2b";
   errorName?: string;
   errorCode?: string;
   errorHttpStatus?: number;
@@ -129,8 +128,7 @@ type CollectSandboxFilesOptions = {
 const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
 const ACQUISITION_ERROR_NAMES = new Set([
   "E2BAcquisitionError",
-  "MiosaWorkspaceUnavailableError",
-  "CloudMigrationUnavailableError",
+  "CloudWorkspaceUnavailableError",
 ]);
 
 const logLocalAttachmentDebug = (
@@ -1152,10 +1150,6 @@ const summarizeSandboxUploadFailure = (
       ? classifySandboxUploadReadinessFailure(error)
       : "unknown";
   const sandboxFields = sandbox ? getSandboxLogFields(sandbox) : undefined;
-  const providerDiagnostics =
-    sandboxFields?.sandbox_provider === "miosa"
-      ? miosaErrorDiagnostics(error)
-      : undefined;
   // Acquisition has no sandbox instance yet. Preserve only known wrapper names
   // for terminal diagnostics, independently of the retry-driving classifier.
   const errorName =
@@ -1163,7 +1157,7 @@ const summarizeSandboxUploadFailure = (
     error instanceof Error &&
     ACQUISITION_ERROR_NAMES.has(error.name)
       ? error.name
-      : providerDiagnostics?.error_name;
+      : undefined;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1181,21 +1175,6 @@ const summarizeSandboxUploadFailure = (
     }),
     ...(errorName && {
       errorName,
-    }),
-    ...(providerDiagnostics?.error_code && {
-      errorCode: providerDiagnostics.error_code,
-    }),
-    ...(providerDiagnostics?.error_http_status && {
-      errorHttpStatus: providerDiagnostics.error_http_status,
-    }),
-    ...(providerDiagnostics?.error_request_id && {
-      errorRequestId: providerDiagnostics.error_request_id,
-    }),
-    ...(providerDiagnostics?.error_retryable !== undefined && {
-      errorRetryable: providerDiagnostics.error_retryable,
-    }),
-    ...(providerDiagnostics?.validation_fields && {
-      validationFields: providerDiagnostics.validation_fields,
     }),
   };
 

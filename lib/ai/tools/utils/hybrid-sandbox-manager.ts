@@ -21,16 +21,14 @@ import {
   getCloudSandboxProviderForInstance,
   isCentrifugoSandbox,
   isE2BSandbox,
-  isMiosaSandbox,
   type ConnectionInfo,
 } from "./sandbox-types";
 import { refreshE2BSandboxLeaseBestEffort } from "./sandbox";
 import {
   assertCloudWorkspaceAvailable,
-  registerE2BMigrationLease,
-  CloudMigrationUnavailableError,
-} from "./cloud-migration-state";
-import { isMiosaCloudSandboxPaused } from "./miosa-rollout";
+  registerE2BWorkspaceLease,
+  CloudWorkspaceUnavailableError,
+} from "./cloud-workspace-guard";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
@@ -46,7 +44,6 @@ import {
   ensureCloudSandboxConnection,
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
-import { getCloudSandboxProvider } from "./cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
 import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
 import {
@@ -323,11 +320,11 @@ export class HybridSandboxManager implements SandboxManager {
   ) {
     this.sandbox = initialSandbox || null;
     if (this.sandbox && isE2BSandbox(this.sandbox))
-      registerE2BMigrationLease(this.sandbox, userID);
+      registerE2BWorkspaceLease(this.sandbox, userID);
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(this.sandbox) ??
       cloudSandboxContext?.provider ??
-      getCloudSandboxProvider();
+      "e2b";
   }
 
   recordHealthFailure(): boolean {
@@ -869,20 +866,18 @@ export class HybridSandboxManager implements SandboxManager {
   private async getCloudSandbox(): Promise<{ sandbox: AnySandbox }> {
     if (this.cloudAcquisition) return this.cloudAcquisition;
     if (!this.isLocal && this.sandbox) {
-      let reacquire =
-        isMiosaSandbox(this.sandbox) && isMiosaCloudSandboxPaused();
+      let reacquire = false;
       if (isE2BSandbox(this.sandbox)) {
         try {
           await assertCloudWorkspaceAvailable(
             this.userID,
-            "e2b",
             this.sandbox.sandboxId,
           );
           await refreshE2BSandboxLeaseBestEffort(this.sandbox, {
             source: "hybrid_manager_cache",
           });
         } catch (error) {
-          if (!(error instanceof CloudMigrationUnavailableError)) throw error;
+          if (!(error instanceof CloudWorkspaceUnavailableError)) throw error;
           reacquire = true;
         }
       }
@@ -938,7 +933,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   setSandbox(sandbox: SandboxInstance): void {
-    if (isE2BSandbox(sandbox)) registerE2BMigrationLease(sandbox, this.userID);
+    if (isE2BSandbox(sandbox)) registerE2BWorkspaceLease(sandbox, this.userID);
     this.sandbox = sandbox;
     this.activeCloudProvider =
       getCloudSandboxProviderForInstance(sandbox) ?? this.activeCloudProvider;
