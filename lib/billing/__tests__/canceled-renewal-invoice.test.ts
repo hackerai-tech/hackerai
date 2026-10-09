@@ -98,6 +98,75 @@ function stripeMock(currentInvoice: Stripe.Invoice) {
 }
 
 describe("canceled renewal invoice", () => {
+  const requestedSubscription = {
+    ...automaticSubscription,
+    cancellation_details: { reason: "cancellation_requested" },
+  } as Stripe.Subscription;
+
+  it("voids a safely unpaid requested cancellation delivered by webhook", async () => {
+    const { stripe, voidInvoice } = stripeMock(invoice());
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, requestedSubscription, {
+        requireIndividualPlan: true,
+      }),
+    ).resolves.toBe("voided");
+    expect(voidInvoice).toHaveBeenCalledWith("in_old");
+  });
+
+  it.each([
+    { status: "uncollectible" },
+    { amount_paid: 1000 },
+    { starting_balance: 1000 },
+    { metadata: { hackeraiLatePaymentResolution: "replacement_month" } },
+    { post_payment_credit_notes_amount: 1000 },
+  ])(
+    "preserves requested-cancellation debt or adjustments: %j",
+    async (override) => {
+      const { stripe, voidInvoice } = stripeMock(invoice(override));
+      await expect(
+        voidUnpaidCanceledRenewalInvoice(stripe, requestedSubscription, {
+          requireIndividualPlan: true,
+        }),
+      ).resolves.toBe("not_applicable");
+      expect(voidInvoice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not broaden webhook cleanup to unrecognized requested plans", async () => {
+    const { stripe, voidInvoice, retrieveInvoice } = stripeMock(invoice());
+    await expect(
+      voidUnpaidCanceledRenewalInvoice(stripe, subscription, {
+        requireIndividualPlan: true,
+      }),
+    ).resolves.toBe("not_applicable");
+    expect(retrieveInvoice).not.toHaveBeenCalled();
+    expect(voidInvoice).not.toHaveBeenCalled();
+  });
+
+  it.each(["requires_action", "processing"])(
+    "preserves a requested-cancellation renewal with a %s payment",
+    async (status) => {
+      const { stripe, voidInvoice, listInvoicePayments, retrieveIntent } =
+        stripeMock(invoice());
+      listInvoicePayments.mockResolvedValue({
+        data: [
+          {
+            status: "open",
+            payment: { type: "payment_intent", payment_intent: "pi_old" },
+          },
+        ],
+        has_more: false,
+      } as never);
+      retrieveIntent.mockResolvedValue({ status } as never);
+      await expect(
+        voidUnpaidCanceledRenewalInvoice(stripe, requestedSubscription, {
+          requireIndividualPlan: true,
+        }),
+      ).resolves.toBe("not_applicable");
+      expect(voidInvoice).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not void a renewal that also contains a separate invoice item", async () => {
     const mixedInvoice = invoice({
       lines: {

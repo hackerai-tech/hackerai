@@ -46,13 +46,16 @@ export async function getCanceledRenewalInvoice(
 export async function voidUnpaidCanceledRenewalInvoice(
   stripe: Stripe,
   subscription: Stripe.Subscription,
+  options: { requireIndividualPlan?: boolean } = {},
 ): Promise<"voided" | "paid" | "not_applicable"> {
   const automaticCancellation =
     subscription.cancellation_details?.reason === "payment_failed";
+  const requireIndividualPlan =
+    automaticCancellation || options.requireIndividualPlan === true;
   const item = subscription.items?.data[0];
   // Automatic cleanup is only for one fixed-price individual plan. Team,
   // metered, legacy and unfamiliar subscriptions still need reconciliation.
-  if (automaticCancellation) {
+  if (requireIndividualPlan) {
     const tier = subscriptionTierFromPrice(item?.price);
     if (
       subscription.items?.has_more ||
@@ -74,20 +77,20 @@ export async function voidUnpaidCanceledRenewalInvoice(
       !(automaticCancellation && invoice.status === "uncollectible")) ||
     invoice.amount_remaining <= 0 ||
     invoice.amount_paid !== 0 ||
-    (automaticCancellation && invoice.starting_balance > 0) ||
+    (requireIndividualPlan && invoice.starting_balance > 0) ||
     invoice.metadata?.hackeraiLatePaymentResolution ||
     (invoice.pre_payment_credit_notes_amount ?? 0) > 0 ||
     (invoice.post_payment_credit_notes_amount ?? 0) > 0 ||
     invoice.lines?.has_more ||
     !invoice.lines?.data.length ||
-    (automaticCancellation && invoice.lines.data.length !== 1) ||
+    (requireIndividualPlan && invoice.lines.data.length !== 1) ||
     invoice.lines.data.some(
       (line) =>
         line.parent?.type !== "subscription_item_details" ||
         line.parent.subscription_item_details?.subscription !==
           subscription.id ||
         line.parent.subscription_item_details?.proration !== false ||
-        (automaticCancellation &&
+        (requireIndividualPlan &&
           (line.quantity !== 1 ||
             stripeObjectId(
               line.parent.subscription_item_details?.subscription_item,
