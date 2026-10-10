@@ -7,3 +7,7 @@ export const ABLITERATED_PAID_THREE_STEPS_KEY =
 // Routing attribution for the shipped default; this is not a feature flag.
 export const ABLITERATED_PAID_MODERATED_DEFAULT_KEY =
   "abliterated_paid_moderated_default_v1";
+
+// Paid three-step policy, separate from the retired paid trial/default.
+export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
+  "abliterated_paid_moderated_three_steps_default_v1";

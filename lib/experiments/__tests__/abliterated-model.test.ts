@@ -1,11 +1,15 @@
 import {
   evaluateAbliteratedModel,
-  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
-  ABLITERATED_PAID_THREE_STEPS_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
 import type { SubscriptionTier } from "@/types";
+import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
+
+jest.mock("@/lib/posthog/flag-assignment", () => ({
+  getPostHogFlagWithoutExposure: jest.fn(),
+}));
 import { phLogger } from "@/lib/posthog/server";
 
 jest.mock("@/lib/posthog/server", () => ({
@@ -19,16 +23,6 @@ import {
   isAbliterationModel,
 } from "@/lib/ai/abliteration";
 
-const flagResult = (value: boolean | string | undefined) =>
-  value === undefined
-    ? undefined
-    : {
-        key: "test-flag",
-        enabled: value !== false,
-        variant: typeof value === "string" ? value : undefined,
-        payload: undefined,
-      };
-
 describe("Abliteration model identity", () => {
   it("recognizes the internal route and provider model IDs", () => {
     expect(isAbliterationModel(ABLITERATION_MODEL_KEY)).toBe(true);
@@ -39,7 +33,7 @@ describe("Abliteration model identity", () => {
   });
 });
 
-describe("paid moderation-gated Abliteration after trial rollback", () => {
+describe("paid moderation-gated three-step Abliteration", () => {
   const originalKey = process.env.ABLITERATION_API_KEY;
   beforeEach(() => {
     jest.clearAllMocks();
@@ -119,7 +113,7 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
   };
   describe.each(["ask", "agent"] as const)("shipped %s default", (mode) => {
     it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-      "routes every eligible %s selector without a historical flag lookup",
+      "routes every eligible %s selector without any flag lookup",
       async (subscription) => {
         for (const selectedModelOverride of [
           undefined,
@@ -128,35 +122,56 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
           "hackerai-pro",
           "hackerai-max",
         ] as const) {
-          const getFeatureFlagResult = jest
-            .fn()
-            .mockRejectedValue(new Error("PostHog unavailable"));
           const assignment = await evaluateAbliteratedModel({
             ...defaults,
             mode,
             subscription,
             selectedModelOverride,
-            posthog: { getFeatureFlagResult },
           });
           expect(assignment).toMatchObject({
-            key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+            key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
             variant: "test",
             modelKey: ABLITERATION_MODEL_KEY,
             baselineModel: defaults.selectedModel,
+            generationStepLimit: 3,
             selectionSource: "moderation",
             moderationChecked: true,
           });
-          expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+          expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
         }
       },
     );
-    it("does not depend on a configured analytics client", async () => {
-      await expect(
-        evaluateAbliteratedModel({ ...defaults, mode, posthog: null }),
-      ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    it("excludes Free users for every selector even when moderation is eligible", async () => {
+      for (const selectedModelOverride of [
+        undefined,
+        "auto",
+        "hackerai-standard",
+        "hackerai-pro",
+        "hackerai-max",
+      ] as const) {
+        await expect(
+          evaluateAbliteratedModel({
+            ...defaults,
+            mode,
+            subscription: "free",
+            selectedModelOverride,
+            previewDiagnosticContext: {
+              chatId: "free-chat",
+              requestId: "free-run",
+            },
+          }),
+        ).resolves.toBeUndefined();
+      }
+      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+      expect(phLogger.info).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          reason: "free_user",
+          subscription_tier: "free",
+        }),
+      );
     });
     it.each([
-      { subscription: "free" as const },
       { limitRescue: true },
       { moderationEligible: false },
       { messages: [] },
@@ -176,75 +191,21 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
         ],
       },
     ])("preserves baseline for excluded input %j", async (overrides) => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockResolvedValue(flagResult("test"));
       await expect(
         evaluateAbliteratedModel({
           ...defaults,
           mode,
           ...overrides,
-          posthog: { getFeatureFlagResult },
         }),
       ).resolves.toBeUndefined();
-      expect(getFeatureFlagResult).not.toHaveBeenCalled();
+      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
     });
     it("keeps the baseline when the provider credential is absent", async () => {
       delete process.env.ABLITERATION_API_KEY;
       await expect(
-        evaluateAbliteratedModel({ ...defaults, mode, posthog: null }),
+        evaluateAbliteratedModel({ ...defaults, mode }),
       ).resolves.toBeUndefined();
     });
-    it.each(["control", "test"] as const)(
-      "assigns %s using the authenticated ID without emitting exposure",
-      async (variant) => {
-        const getFeatureFlagResult = jest
-          .fn()
-          .mockResolvedValue(flagResult(variant));
-        const assignment = await evaluateAbliteratedModel({
-          ...defaults,
-          mode,
-          posthog: { getFeatureFlagResult },
-        });
-        expect(assignment).toMatchObject({
-          key: ABLITERATED_PAID_THREE_STEPS_KEY,
-          variant,
-          modelKey: ABLITERATION_MODEL_KEY,
-          baselineModel: defaults.selectedModel,
-          generationStepLimit: variant === "test" ? 3 : 1,
-        });
-        expect(getFeatureFlagResult).toHaveBeenCalledWith(
-          ABLITERATED_PAID_THREE_STEPS_KEY,
-          defaults.userId,
-          expect.objectContaining({
-            sendFeatureFlagEvents: false,
-            personProperties: {
-              subscription: "pro",
-              subscription_tier: "pro",
-            },
-          }),
-        );
-      },
-    );
-    it.each([false, true, undefined, "unexpected"])(
-      "keeps the shipped one-step default for flag value %s",
-      async (value) => {
-        const assignment = await evaluateAbliteratedModel({
-          ...defaults,
-          mode,
-          posthog: {
-            getFeatureFlagResult: jest
-              .fn()
-              .mockResolvedValue(flagResult(value)),
-          },
-        });
-        expect(assignment).toMatchObject({
-          key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
-          modelKey: ABLITERATION_MODEL_KEY,
-        });
-        expect(assignment?.generationStepLimit).toBeUndefined();
-      },
-    );
   });
   it.each(
     [
@@ -261,7 +222,6 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
           ...defaults,
           messages,
           selectedModel: "model-grok-4.6",
-          posthog: null,
         }),
       ).resolves.toMatchObject({
         modelKey: ABLITERATION_MODEL_KEY,
@@ -276,14 +236,15 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
     };
     const result = await evaluateAbliteratedModel({
       ...defaults,
-      posthog: null,
       previewDiagnosticContext,
     });
-    expect(result?.key).toBe(ABLITERATED_PAID_MODERATED_DEFAULT_KEY);
+    expect(result?.key).toBe(
+      ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+    );
     expect(phLogger.info).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
-        reason: "moderated_default",
+        reason: "moderated_three_step_default",
         moderation_checked: true,
       }),
     );
@@ -296,35 +257,8 @@ describe("paid moderation-gated Abliteration after trial rollback", () => {
     await expect(
       evaluateAbliteratedModel({
         ...defaults,
-        posthog: null,
         previewDiagnosticContext,
       }),
     ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
-  });
-  it("reports lookup failure without error content and retains fallback if logging fails", async () => {
-    const posthog = {
-      getFeatureFlagResult: jest
-        .fn()
-        .mockRejectedValue(new Error("private error content")),
-    };
-    await expect(
-      evaluateAbliteratedModel({ ...defaults, posthog }),
-    ).resolves.toMatchObject({ key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY });
-    expect(phLogger.warn).toHaveBeenCalledWith(
-      "Abliteration three-step flag lookup failed",
-      expect.objectContaining({
-        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
-        error_type: "Error",
-      }),
-    );
-    expect(JSON.stringify(jest.mocked(phLogger.warn).mock.calls)).not.toContain(
-      "private error content",
-    );
-    jest.mocked(phLogger.warn).mockImplementationOnce(() => {
-      throw new Error("logger unavailable");
-    });
-    await expect(
-      evaluateAbliteratedModel({ ...defaults, posthog }),
-    ).resolves.toMatchObject({ key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY });
   });
 });
