@@ -219,6 +219,29 @@ Create a separate visual QA thread only for broad or high-risk UI changes where
 independent review is worth the handoff cost, such as multi-page flows, many
 responsive states, login/session setup, or visual polish passes.
 
+## Local Desktop Acceptance
+
+For changes affecting Desktop behavior, native commands, or the Desktop sandbox
+transport, follow [Local Desktop acceptance](docs/desktop-local-acceptance.md).
+Build and launch the actual native app from the task's source and exercise the
+affected journey through Computer Use before claiming Desktop verification.
+PR creation, CI, unit tests, and website testing alone do not establish native
+acceptance. Rebuild and retest after native-code changes.
+
+Use an isolated checkout with its own dependencies, environment files, local
+Convex state, and services. Verify the frontend, backend, worker, relay, account
+environment, and actual command transport independently. Prefer local services;
+verify designated Development/Preview targets before using external services.
+Never use Production as a local-test fallback or copy credentials/state between
+checkouts. Preserve the installed app and unrelated services.
+
+Test completion and relevant failure/recovery paths, including reload/reconnect,
+normal/narrow windows, and native file dialogs when affected. Report PASS, FAIL,
+or BLOCKED with screenshots and recorded commit/build/runtime identities. If
+login or graphical access needs human action, explain the exact blocker and
+preserve partial evidence. Keep researcher-feedback and human release gates;
+testing does not authorize merging or releasing.
+
 ## Manual Verification Notes
 
 After checks and CodeRabbit are complete, include short manual verification
