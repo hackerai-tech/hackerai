@@ -1,3 +1,4 @@
+import { sanitizeFindingPartsForShare } from "../../lib/findings/share-sanitizer";
 import type { GenericDatabaseReader } from "convex/server";
 import { v } from "convex/values";
 
@@ -93,17 +94,17 @@ export const listVisibleSharedMessages = async (
       role: message.role,
       content: message.content,
       update_time: message.update_time,
-      parts: stripOpenRouterReasoningMetadataFromParts(message.parts).map(
-        (part: any) => {
-          if (part.type === "file") {
-            return {
-              type: part.mediaType?.startsWith("image/") ? "image" : "file",
-              placeholder: true,
-            };
-          }
+      parts: sanitizeFindingPartsForShare(
+        stripOpenRouterReasoningMetadataFromParts(message.parts),
+      ).map((part: any) => {
+        if (part.type === "file") {
+          return {
+            type: part.mediaType?.startsWith("image/") ? "image" : "file",
+            placeholder: true,
+          };
+        }
 
-          return part;
-        },
-      ),
+        return part;
+      }),
     }));
 };

@@ -318,6 +318,10 @@ export type CompletedToolSummaryCategory =
   | "delete"
   | "download"
   | "edit"
+  | "finding-create"
+  | "finding-update"
+  | "report-list"
+  | "report-read"
   | "notes"
   | "proxy"
   | "read"
@@ -338,6 +342,14 @@ const toolSummaryCategory = (
     case "tool-run_terminal_cmd":
     case "tool-interact_terminal_session":
       return "command";
+    case "tool-create_vulnerability_report":
+      return "finding-create";
+    case "tool-update_vulnerability_report":
+      return "finding-update";
+    case "tool-list_reports":
+      return "report-list";
+    case "tool-get_report":
+      return "report-read";
     case "tool-read_file":
       return "read";
     case "tool-file": {
@@ -383,12 +395,69 @@ const toolSummaryCategory = (
   }
 };
 
+const isReportCategory = (category: CompletedToolSummaryCategory) =>
+  category === "finding-create" ||
+  category === "finding-update" ||
+  category === "report-list" ||
+  category === "report-read";
+
+const reportToolSucceeded = (part: MessagePart) => {
+  const candidate = part as { state?: unknown; output?: unknown };
+  if (candidate.state !== "output-available" || toolPartHasKnownFailure(part))
+    return false;
+  if (!candidate.output || typeof candidate.output !== "object") return false;
+  const output = candidate.output as Record<string, unknown>;
+  const result =
+    output.result && typeof output.result === "object"
+      ? (output.result as Record<string, unknown>)
+      : output;
+  if (result.success !== true) return false;
+  if (getPartType(part) === "tool-list_reports")
+    return Array.isArray(result.reports);
+  const report =
+    getPartType(part) === "tool-get_report" ? result.report : result;
+  if (!report || typeof report !== "object") return false;
+  const receipt = report as Record<string, unknown>;
+  return (
+    ["finding_id", "title", "target", "severity"].every(
+      (key) => typeof receipt[key] === "string" && Boolean(receipt[key]),
+    ) && typeof receipt.cvss_score === "number"
+  );
+};
+
 const toolSummaryPhrase = (
   category: CompletedToolSummaryCategory,
   count: number,
+  succeeded = true,
 ) => {
   const plural = count > 1;
   switch (category) {
+    case "finding-create":
+      return succeeded
+        ? plural
+          ? "created findings"
+          : "created a finding"
+        : plural
+          ? "attempted to create findings"
+          : "attempted to create a finding";
+    case "finding-update":
+      return succeeded
+        ? plural
+          ? "updated findings"
+          : "updated a finding"
+        : plural
+          ? "attempted to update findings"
+          : "attempted to update a finding";
+    case "report-list":
+      return succeeded ? "listed reports" : "attempted to list reports";
+    case "report-read":
+      return succeeded
+        ? plural
+          ? "read reports"
+          : "read a report"
+        : plural
+          ? "attempted to read reports"
+          : "attempted to read a report";
     case "browse":
       return plural ? "opened pages" : "opened a page";
     case "command":
@@ -443,14 +512,28 @@ export function getCompletedToolSummaryIconCategory(
 export function summarizeCompletedToolActivities(
   activities: readonly AgentWorkActivity[],
 ): string {
-  const counts = new Map<CompletedToolSummaryCategory, number>();
+  const counts = new Map<
+    CompletedToolSummaryCategory,
+    { completed: number; attempted: number }
+  >();
   for (const activity of activities) {
     const category = toolSummaryCategory(activity.part);
-    counts.set(category, (counts.get(category) ?? 0) + 1);
+    const count = counts.get(category) ?? { completed: 0, attempted: 0 };
+    if (isReportCategory(category) && !reportToolSucceeded(activity.part))
+      count.attempted += 1;
+    else count.completed += 1;
+    counts.set(category, count);
   }
 
   const summary = joinSummaryPhrases(
-    [...counts].map(([category, count]) => toolSummaryPhrase(category, count)),
+    [...counts].flatMap(([category, count]) => [
+      ...(count.completed
+        ? [toolSummaryPhrase(category, count.completed)]
+        : []),
+      ...(count.attempted
+        ? [toolSummaryPhrase(category, count.attempted, false)]
+        : []),
+    ]),
   );
   return summary.charAt(0).toUpperCase() + summary.slice(1);
 }

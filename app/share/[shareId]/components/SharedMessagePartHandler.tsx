@@ -43,6 +43,12 @@ import {
 } from "@/app/components/tools/shell-tool-utils";
 import { PROXY_COMPLETED_LABELS } from "@/app/components/tools/ProxyToolHandler";
 import { isUserStoppedToolError } from "@/lib/chat/tool-abort-utils";
+import { FindingCard } from "@/app/components/findings/FindingCard";
+import { ToolErrorBlock } from "@/app/components/tools/ToolErrorHandler";
+import {
+  createToolInputErrorContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 import { formatSubagentCountSummary } from "@/lib/ai/subagents/status-summary";
 
 interface MessagePart {
@@ -53,7 +59,9 @@ interface MessagePart {
   input?: any;
   output?: any;
   toolCallId?: string;
+  toolName?: string;
   errorText?: string;
+  data?: any;
 }
 
 interface SharedMessagePartHandlerProps {
@@ -107,6 +115,37 @@ export const SharedMessagePartHandler = ({
           <span>{isImage ? "Uploaded an image" : "Uploaded a file"}</span>
         </div>
       </div>
+    );
+  }
+
+  if (part.type === "data-shared-finding" && part.data) {
+    return (
+      <FindingCard
+        title={part.data.title}
+        target={part.data.target}
+        severity={part.data.severity}
+        cvssScore={part.data.cvss_score}
+      />
+    );
+  }
+
+  const validationToolType = part.type.startsWith("tool-")
+    ? part.type
+    : part.type === "dynamic-tool" && typeof part.toolName === "string"
+      ? `tool-${part.toolName}`
+      : null;
+  if (
+    validationToolType &&
+    part.state === "output-error" &&
+    isToolInputValidationError(part.errorText)
+  ) {
+    const content = createToolInputErrorContent({
+      toolType: validationToolType,
+      toolCallId: part.toolCallId || "",
+      errorText: part.errorText,
+    });
+    return (
+      <ToolErrorBlock content={content} onOpen={() => openSidebar(content)} />
     );
   }
 

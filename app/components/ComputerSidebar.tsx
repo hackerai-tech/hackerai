@@ -14,6 +14,7 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  X,
   PanelRight,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
@@ -34,6 +35,8 @@ import {
   isSidebarProxy,
   isSidebarWebSearch,
   isSidebarNotes,
+  isSidebarFinding,
+  isSidebarToolError,
   isSidebarSharedFiles,
   isSidebarSubagents,
   type SidebarContent,
@@ -41,6 +44,8 @@ import {
   type ChatStatus,
   type NoteCategory,
 } from "@/types/chat";
+import { FindingDetail } from "./findings/FindingDetail";
+import { ToolErrorDetail } from "./tools/ToolErrorDetail";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { FilePart } from "@/types/file";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -516,6 +521,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isProxy = isSidebarProxy(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
+  const isFinding = isSidebarFinding(sidebarContent);
+  const isToolError = isSidebarToolError(sidebarContent);
   const isSharedFiles = isSidebarSharedFiles(sidebarContent);
 
   // Use resolved versions for display metadata so streaming updates are reflected
@@ -529,9 +536,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
-  const headerTitle = isProxy
-    ? "HackerAI\u2019s Proxy"
-    : "HackerAI\u2019s Computer";
+  const headerTitle = isFinding
+    ? "Finding"
+    : isToolError
+      ? "Tool details"
+      : isProxy
+        ? "HackerAI\u2019s Proxy"
+        : "HackerAI\u2019s Computer";
 
   const handleClose = () => {
     setIsExpanded(false);
@@ -568,6 +579,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const handleToggleWrap = () => {
     setIsWrapped(!isWrapped);
   };
+
+  const usesCloseAction = isFinding || isToolError;
 
   return (
     <div
@@ -642,20 +655,33 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     type="button"
                     onClick={handleClose}
                     className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
-                    aria-label="Minimize sidebar"
+                    aria-label={
+                      usesCloseAction ? "Close details" : "Minimize sidebar"
+                    }
                     tabIndex={0}
                     onKeyDown={(e) => {
                       if (e.key === "Escape" && !isFullscreen) handleClose();
                     }}
                   >
-                    <Minimize2 className="w-5 h-5 text-muted-foreground desktop:hidden" />
-                    <PanelRight
-                      className="hidden desktop:block w-5 h-5 text-muted-foreground"
-                      aria-hidden
-                    />
+                    {usesCloseAction ? (
+                      <X
+                        className="w-5 h-5 text-muted-foreground"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <>
+                        <Minimize2 className="w-5 h-5 text-muted-foreground desktop:hidden" />
+                        <PanelRight
+                          className="hidden desktop:block w-5 h-5 text-muted-foreground"
+                          aria-hidden
+                        />
+                      </>
+                    )}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent>Minimize</TooltipContent>
+                <TooltipContent>
+                  {usesCloseAction ? "Close" : "Minimize"}
+                </TooltipContent>
               </Tooltip>
             </div>
 
@@ -666,8 +692,17 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
               </div>
               <div className="flex-1 flex flex-col gap-1 min-w-0">
                 <div className="text-[12px] text-muted-foreground">
-                  HackerAI is using{" "}
-                  <span className="text-foreground">{toolName}</span>
+                  {isToolError ? (
+                    <>
+                      <span className="text-foreground">{toolName}</span> needs
+                      attention
+                    </>
+                  ) : (
+                    <>
+                      HackerAI is using{" "}
+                      <span className="text-foreground">{toolName}</span>
+                    </>
+                  )}
                 </div>
                 <div
                   title={`${actionText} ${displayTarget}`}
@@ -720,6 +755,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Notes
                     </div>
+                  ) : isFinding ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Vulnerability report
+                    </div>
+                  ) : isToolError ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Error details
+                    </div>
                   ) : isSharedFiles ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Shared Files
@@ -736,49 +779,53 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch && !isNotes && !isSharedFiles && (
-                  <CodeActionButtons
-                    content={
-                      isFile && resolvedFile
-                        ? resolvedFile.content
-                        : isTerminal && resolvedTerminal
-                          ? resolvedTerminal.output
-                            ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
-                            : `$ ${resolvedTerminal.command}`
-                          : isProxy && resolvedProxy
-                            ? resolvedProxy.output
-                              ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
-                              : `$ ${resolvedProxy.command}`
-                            : ""
-                    }
-                    filename={
-                      isFile
-                        ? sidebarContent.action === "searching"
-                          ? "search-results.txt"
-                          : sidebarContent.path.split("/").pop() || "code.txt"
-                        : "terminal-output.txt"
-                    }
-                    language={
-                      isFile
-                        ? sidebarContent.action === "searching"
-                          ? "text"
-                          : sidebarContent.language ||
-                            getLanguageFromPath(sidebarContent.path)
-                        : "ansi"
-                    }
-                    isWrapped={isWrapped}
-                    onToggleWrap={handleToggleWrap}
-                    variant="sidebar"
-                    // xterm manages its own wrapping; the toggle is a no-op
-                    // for interactive PTY output.
-                    showWrap={
-                      !(
-                        (isTerminal && resolvedTerminal?.rawBytes) ||
-                        (isFile && resolvedFile?.action === "viewing")
-                      )
-                    }
-                  />
-                )}
+                {!isWebSearch &&
+                  !isNotes &&
+                  !isFinding &&
+                  !isToolError &&
+                  !isSharedFiles && (
+                    <CodeActionButtons
+                      content={
+                        isFile && resolvedFile
+                          ? resolvedFile.content
+                          : isTerminal && resolvedTerminal
+                            ? resolvedTerminal.output
+                              ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                              : `$ ${resolvedTerminal.command}`
+                            : isProxy && resolvedProxy
+                              ? resolvedProxy.output
+                                ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
+                                : `$ ${resolvedProxy.command}`
+                              : ""
+                      }
+                      filename={
+                        isFile
+                          ? sidebarContent.action === "searching"
+                            ? "search-results.txt"
+                            : sidebarContent.path.split("/").pop() || "code.txt"
+                          : "terminal-output.txt"
+                      }
+                      language={
+                        isFile
+                          ? sidebarContent.action === "searching"
+                            ? "text"
+                            : sidebarContent.language ||
+                              getLanguageFromPath(sidebarContent.path)
+                          : "ansi"
+                      }
+                      isWrapped={isWrapped}
+                      onToggleWrap={handleToggleWrap}
+                      variant="sidebar"
+                      // xterm manages its own wrapping; the toggle is a no-op
+                      // for interactive PTY output.
+                      showWrap={
+                        !(
+                          (isTerminal && resolvedTerminal?.rawBytes) ||
+                          (isFile && resolvedFile?.action === "viewing")
+                        )
+                      }
+                    />
+                  )}
               </div>
 
               {/* Content */}
@@ -943,6 +990,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                             )}
                           </div>
                         </div>
+                      )}
+                      {isFinding && (
+                        <FindingDetail
+                          findingId={sidebarContent.findingId}
+                          surface="computer_sidebar"
+                          className="font-sans"
+                        />
+                      )}
+                      {isToolError && (
+                        <ToolErrorDetail content={sidebarContent} />
                       )}
                       {isNotes && (
                         <div className="flex-1 min-h-0 h-full overflow-y-auto">
