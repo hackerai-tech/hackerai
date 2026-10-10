@@ -12,7 +12,9 @@ select their established alternate routes.
 
 This explicit product decision supersedes the historical paid Standard baseline
 below; it does not reopen the Flash experiment or establish a statistical win.
-The old experiment only accepts the DeepSeek 0731 registry key, so the new
+The old experiment only accepts a route that still executes DeepSeek 0731.
+That registry alias now redirects to V4.1, so new requests do not enroll in
+this historical experiment. The new
 Standard routes do not receive assignments or emit its exposure event. Existing
 provider telemetry records configured and served models. Rollback requires a
 code change and deployment of both Vercel and Trigger; flag changes do not

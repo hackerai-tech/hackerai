@@ -256,10 +256,15 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
       // For assistant messages, use memoized markdown rendering
       return (
-        <MemoizedMarkdown
-          content={text}
-          isAnimating={status === "streaming" && isLastMessage === true}
-        />
+        <div
+          data-performance-message-id={message.id}
+          data-performance-text-length={text.length}
+        >
+          <MemoizedMarkdown
+            content={text}
+            isAnimating={status === "streaming" && isLastMessage === true}
+          />
+        </div>
       );
     }
 

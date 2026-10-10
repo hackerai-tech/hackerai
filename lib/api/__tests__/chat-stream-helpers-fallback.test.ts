@@ -167,7 +167,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter.reasoning).toEqual({ enabled: true, effort: "low" });
     expect(opts.openrouter.models).toEqual([
-      DEEPSEEK_FLASH_SLUG,
+      DEEPSEEK_VISION_SLUG,
       DEEPSEEK_V4_PRO_0813_SLUG,
       GLM_SLUG,
     ]);
@@ -176,7 +176,7 @@ describe("buildProviderOptions fallback chain", () => {
       data_collection: "deny",
     });
     expect(getRetryFallbackModel("ask-model-free-glm", "ask")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
     );
     expect(
       isAutoModelSelectionForRetry({
@@ -187,10 +187,25 @@ describe("buildProviderOptions fallback chain", () => {
     expect(
       resolveServedModelForCostAccounting({
         modelName: "ask-model-free-glm",
-        responseModel: DEEPSEEK_FLASH_SLUG,
+        responseModel: DEEPSEEK_VISION_SLUG,
       }),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
   });
+
+  it.each(["ask-model-free-glm", "model-glm-5.3-flash-agent"] as const)(
+    "advances %s past V4.1 after a content-filter response and accounts for its canonical ID",
+    (modelName) => {
+      expect(
+        getContentFilterRetryModel(modelName, "agent", DEEPSEEK_VISION_SLUG),
+      ).toBe("model-deepseek-v4-pro-0813");
+      expect(
+        resolveServedModelForCostAccounting({
+          modelName,
+          responseModel: "deepseek/deepseek-v4.1-flash-20260910",
+        }),
+      ).toBe("model-deepseek-v4-flash-vision");
+    },
+  );
 
   it("isolates Abliteration from OpenRouter and retries through the standard route", () => {
     expect(
@@ -199,10 +214,10 @@ describe("buildProviderOptions fallback chain", () => {
       }),
     ).toEqual({});
     expect(getRetryFallbackModel("model-abliterated", "ask")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
     );
     expect(getRetryFallbackModel("model-abliterated", "agent")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
     );
     expect(
       resolveServedModelForCostAccounting({
@@ -478,7 +493,7 @@ describe("buildProviderOptions fallback chain", () => {
     );
     expect(opts.openrouter).toMatchObject({
       provider: { sort: "latency", data_collection: "deny" },
-      models: [DEEPSEEK_FLASH_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
+      models: [DEEPSEEK_VISION_SLUG, DEEPSEEK_V4_PRO_0813_SLUG, GLM_SLUG],
       user: "user-1",
     });
     expect(opts.openrouter).not.toHaveProperty("reasoning");
@@ -1063,9 +1078,9 @@ describe("getRetryFallbackModel", () => {
     );
   });
 
-  it("retries the paid GLM Agent treatment with DeepSeek Flash 0731", () => {
+  it("retries the GLM Agent route with DeepSeek V4.1 Flash", () => {
     expect(getRetryFallbackModel("model-glm-5.3-flash-agent", "agent")).toBe(
-      "model-deepseek-v4-flash-0731",
+      "model-deepseek-v4-flash-vision",
     );
   });
 
@@ -1289,7 +1304,7 @@ describe("resolveServedModelForCostAccounting", () => {
         responseModel: DEEPSEEK_FLASH_CANONICAL_SLUG,
         mode: "agent",
       }),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe(DEEPSEEK_FLASH_SLUG);
   });
 
   it("maps a Grok slug served from free Agent fallback back to the local cost key", () => {

@@ -150,7 +150,7 @@ async function getSandboxFileSize(
   let statResult: SandboxCommandResult;
   try {
     statResult = await sandbox.commands.run(
-      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then printf 'File not found: %s\\n' ${quotedPath} >&2; exit 66; fi; stat -c%s ${quotedPath} 2>/dev/null || stat -f%z ${quotedPath}`,
+      `if [ ! -e ${quotedPath} ] && [ ! -L ${quotedPath} ]; then printf 'File not found: %s\\n' ${quotedPath} >&2; exit 66; fi; stat -Lc%s ${quotedPath} 2>/dev/null || stat -Lf%z ${quotedPath}`,
       { ...commandOptions, displayName: "" } as typeof commandOptions & {
         displayName?: string;
       },

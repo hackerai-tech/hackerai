@@ -1,3 +1,4 @@
+import { recordTerminalMaintenance } from "@/lib/centrifugo/terminal-maintenance-metrics";
 import type { AnySandbox } from "@/types";
 import { isCentrifugoSandbox } from "./sandbox-types";
 
@@ -130,29 +131,53 @@ export async function pruneLocalTerminalRecords(
 ): Promise<boolean> {
   // Windows file APIs and command shells can resolve /tmp on different drives.
   // Keep their established file path semantics until that mapping is explicit.
-  if (!isCentrifugoSandbox(sandbox) || sandbox.isWindows()) return false;
-  const script = Buffer.from(RETENTION_SCRIPT).toString("base64");
-  const payload = Buffer.from(JSON.stringify(input)).toString("base64");
-  const result = await sandbox.commands.run(
-    `if command -v node >/dev/null 2>&1; then node -e "if (Number(process.versions.node.split('.')[0]) < 18) process.stdout.write(JSON.stringify({unavailable:true})); else eval(Buffer.from('${script}','base64').toString())" '${payload}'; else printf '%s' '{"unavailable":true}'; fi`,
-    { displayName: "", timeoutMs: 30_000 },
-  );
-  if (result.exitCode !== 0 || result.stdout.length > 1024)
-    throw new Error("Terminal retention scan unavailable");
-  const summary: unknown = JSON.parse(result.stdout);
-  if (
-    summary &&
-    typeof summary === "object" &&
-    "unavailable" in summary &&
-    summary.unavailable === true
-  )
+  if (!isCentrifugoSandbox(sandbox)) return false;
+  if (sandbox.isWindows()) {
+    recordTerminalMaintenance(sandbox, {
+      operation: "prune_route",
+      outcome: "fallback",
+      reason: "windows",
+      transport: "native_file",
+    });
     return false;
-  if (
-    !summary ||
-    typeof summary !== "object" ||
-    !("complete" in summary) ||
-    typeof summary.complete !== "boolean"
-  )
-    throw new Error("Invalid terminal retention scan result");
-  return true;
+  }
+  let outcome: "success" | "failure" | "fallback" | "incomplete" = "failure";
+  try {
+    const script = Buffer.from(RETENTION_SCRIPT).toString("base64");
+    const payload = Buffer.from(JSON.stringify(input)).toString("base64");
+    const result = await sandbox.commands.run(
+      `if command -v node >/dev/null 2>&1; then node -e "if (Number(process.versions.node.split('.')[0]) < 18) process.stdout.write(JSON.stringify({unavailable:true})); else eval(Buffer.from('${script}','base64').toString())" '${payload}'; else printf '%s' '{"unavailable":true}'; fi`,
+      { displayName: "", timeoutMs: 30_000 },
+    );
+    if (result.exitCode !== 0 || result.stdout.length > 1024)
+      throw new Error("Terminal retention scan unavailable");
+    const summary: unknown = JSON.parse(result.stdout);
+    if (
+      summary &&
+      typeof summary === "object" &&
+      "unavailable" in summary &&
+      summary.unavailable === true
+    ) {
+      outcome = "fallback";
+      return false;
+    }
+    if (
+      !summary ||
+      typeof summary !== "object" ||
+      !("complete" in summary) ||
+      typeof summary.complete !== "boolean"
+    )
+      throw new Error("Invalid terminal retention scan result");
+    outcome = summary.complete ? "success" : "incomplete";
+    return true;
+  } finally {
+    recordTerminalMaintenance(sandbox, {
+      operation: "prune_route",
+      outcome,
+      transport: "posix_command",
+      ...(outcome === "fallback"
+        ? { reason: "node_unavailable" as const }
+        : {}),
+    });
+  }
 }

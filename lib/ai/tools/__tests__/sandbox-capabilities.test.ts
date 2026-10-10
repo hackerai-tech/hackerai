@@ -19,12 +19,11 @@ import {
 import {
   isCloudSandbox,
   isE2BSandbox,
-  isMiosaSandbox,
   getSandboxInfoForInstance,
   getSandboxLogFields,
 } from "../utils/sandbox-types";
 
-// Mock E2B sandbox (the fallback cloud shape after MIOSA/Centrifugo checks).
+// Mock E2B sandbox (the fallback cloud shape after Centrifugo checks).
 const createMockE2BSandbox = () => ({
   jupyterUrl: "http://localhost:8888",
   commands: { run: jest.fn() },
@@ -33,11 +32,6 @@ const createMockE2BSandbox = () => ({
 // Mock CentrifugoSandbox (no jupyterUrl property)
 const createMockCentrifugoSandbox = () => ({
   sandboxKind: "centrifugo" as const,
-  commands: { run: jest.fn() },
-});
-
-const createMockMiosaSandbox = () => ({
-  sandboxKind: "miosa" as const,
   commands: { run: jest.fn() },
 });
 
@@ -79,36 +73,25 @@ describe("Sandbox Capabilities for Network Tools", () => {
   });
 
   describe("Sandbox Type Detection", () => {
-    it("should distinguish E2B, MIOSA, and Centrifugo sandboxes", () => {
-      const e2bSandbox = createMockE2BSandbox();
-      const miosaSandbox = createMockMiosaSandbox();
-      const centrifugoSandbox = createMockCentrifugoSandbox();
-
-      expect(isE2BSandbox(e2bSandbox as any)).toBe(true);
-      expect(isE2BSandbox(miosaSandbox as any)).toBe(false);
-      expect(isE2BSandbox(centrifugoSandbox as any)).toBe(false);
-      expect(isMiosaSandbox(miosaSandbox as any)).toBe(true);
-      expect(isCloudSandbox(e2bSandbox as any)).toBe(true);
-      expect(isCloudSandbox(miosaSandbox as any)).toBe(true);
-      expect(isCloudSandbox(centrifugoSandbox as any)).toBe(false);
+    it("distinguishes E2B from relay sandboxes", () => {
+      const cloud = createMockE2BSandbox();
+      const relay = createMockCentrifugoSandbox();
+      expect(isE2BSandbox(cloud as any)).toBe(true);
+      expect(isE2BSandbox(relay as any)).toBe(false);
+      expect(isCloudSandbox(relay as any)).toBe(false);
       expect(isE2BSandbox(null)).toBe(false);
     });
 
     it("separates the cloud environment type from its concrete provider", () => {
       const e2bSandbox = createMockE2BSandbox();
-      const miosaSandbox = createMockMiosaSandbox();
 
       expect(getSandboxInfoForInstance(e2bSandbox as any)).toEqual({
         type: "cloud",
         provider: "e2b",
       });
-      expect(getSandboxInfoForInstance(miosaSandbox as any)).toEqual({
-        type: "cloud",
-        provider: "miosa",
-      });
-      expect(getSandboxLogFields(miosaSandbox as any)).toEqual({
+      expect(getSandboxLogFields(e2bSandbox as any)).toEqual({
         sandbox_type: "cloud",
-        sandbox_provider: "miosa",
+        sandbox_provider: "e2b",
       });
     });
 

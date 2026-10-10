@@ -23,6 +23,7 @@ const mockListStripeEvents = jest.fn();
 const mockRetrieveInvoice = jest.fn();
 const mockPayInvoice = jest.fn();
 const mockVoidInvoice = jest.fn();
+const mockUpdateInvoice = jest.fn();
 const mockListInvoiceLineItems = jest.fn();
 const mockRetrievePaymentIntent = jest.fn();
 const mockRetrieveCharge = jest.fn();
@@ -74,6 +75,7 @@ jest.mock("@/app/api/stripe", () => ({
       retrieve: mockRetrieveInvoice,
       pay: mockPayInvoice,
       voidInvoice: mockVoidInvoice,
+      update: mockUpdateInvoice,
       listLineItems: mockListInvoiceLineItems,
     },
     paymentIntents: {
@@ -510,6 +512,7 @@ describe("POST /api/subscription/webhook", () => {
     });
     mockPayInvoice.mockResolvedValue({ status: "paid" } as never);
     mockVoidInvoice.mockResolvedValue({ status: "void" } as never);
+    mockUpdateInvoice.mockResolvedValue({} as never);
     mockUpdateSubscription.mockResolvedValue({} as never);
     mockListStripeEvents.mockResolvedValue({
       data: [],
@@ -792,6 +795,91 @@ describe("POST /api/subscription/webhook", () => {
       );
     },
   );
+
+  it("flags a renewal paid after requested cancellation without refunding or restoring credits", async () => {
+    const { subscription } = mockLateRenewal();
+    subscription.cancellation_details.reason = "cancellation_requested";
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+    expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+    expect(mockPostHogError).toHaveBeenCalledWith(
+      "billing_late_payment_requires_manual_reconciliation",
+      expect.objectContaining({
+        reconciliation_reason: "payment_after_non_payment_failure_cancellation",
+      }),
+    );
+    expect(mockPostHogEvent).not.toHaveBeenCalledWith(
+      PAID_FUNNEL_EVENTS.billingPaymentRecovered,
+      expect.anything(),
+    );
+  });
+
+  it("persists requested-cancellation review and retries a failed queue write", async () => {
+    const { subscription, invoice } = mockLateRenewal();
+    subscription.cancellation_details.reason = "cancellation_requested";
+    mockUpdateInvoice.mockRejectedValueOnce(
+      new Error("Stripe unavailable") as never,
+    );
+    const { POST } = await import("../route");
+    await expect(POST(makeWebhookRequest())).rejects.toThrow(
+      "Stripe unavailable",
+    );
+    expect(mockConvexMutation).not.toHaveBeenCalledWith(
+      "extraUsage.checkAndMarkWebhook",
+      expect.not.objectContaining({ checkOnly: true }),
+    );
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockUpdateInvoice).toHaveBeenLastCalledWith(invoice.id, {
+      metadata: {
+        hackeraiLatePaymentReview: "required",
+        hackeraiLatePaymentReviewReason:
+          "payment_after_non_payment_failure_cancellation",
+        hackeraiLatePaymentReviewOwner: "billing-support",
+      },
+    });
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+    expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it("retains an unresolved paid invoice even when its user membership is missing", async () => {
+    const { invoice } = mockLateRenewal();
+    mockListMemberships.mockResolvedValue({
+      autoPagination: jest.fn().mockResolvedValue([]),
+    } as never);
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockUpdateInvoice).toHaveBeenCalledWith(invoice.id, {
+      metadata: expect.objectContaining({
+        hackeraiLatePaymentReview: "required",
+        hackeraiLatePaymentReviewReason: "paid_invoice_without_resolved_user",
+      }),
+    });
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+    expect(mockResetRateLimitBucketAfterPayment).not.toHaveBeenCalled();
+  });
+
+  it("does not queue a delayed delivery of a payment made before cancellation", async () => {
+    const { invoice, subscription } = mockLateRenewal();
+    invoice.status_transitions.paid_at = subscription.ended_at - 1;
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockUpdateInvoice).not.toHaveBeenCalled();
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+  });
+
+  it("queues a post-cancellation payment on an older invoice without refunding it", async () => {
+    const { invoice, subscription } = mockLateRenewal();
+    subscription.latest_invoice = "in_newer";
+    const { POST } = await import("../route");
+    expect((await POST(makeWebhookRequest())).status).toBe(200);
+    expect(mockUpdateInvoice).toHaveBeenCalledWith(invoice.id, {
+      metadata: expect.objectContaining({
+        hackeraiLatePaymentReview: "required",
+      }),
+    });
+    expect(mockCreateRefund).not.toHaveBeenCalled();
+  });
 
   it("leaves compensated late payments for manual review", async () => {
     const { subscription } = mockLateRenewal();
@@ -3372,6 +3460,7 @@ describe("POST /api/subscription/webhook", () => {
     ["open", "empty"],
     ["uncollectible", "empty"],
     ["uncollectible", "failed"],
+    ["open", "requested"],
   ])(
     "retires an unpaid %s renewal with %s user resolution",
     async (status, userResolution) => {
@@ -3387,6 +3476,9 @@ describe("POST /api/subscription/webhook", () => {
       }
       const canceled = {
         ...subscription,
+        ...(userResolution === "requested" && {
+          cancellation_details: { reason: "cancellation_requested" },
+        }),
         items: {
           data: [
             {

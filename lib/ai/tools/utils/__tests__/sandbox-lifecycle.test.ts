@@ -21,11 +21,11 @@ jest.mock("@e2b/code-interpreter", () => {
 });
 
 // This suite tests E2B's provider lease timing. Registration/fencing and the
-// refusal to extend unregistered clients are exercised in cloud-migration-state.
-jest.mock("../cloud-migration-state", () => ({
-  ...jest.requireActual("../cloud-migration-state"),
+// refusal to extend unregistered clients are exercised in cloud-workspace-guard.
+jest.mock("../cloud-workspace-guard", () => ({
+  ...jest.requireActual("../cloud-workspace-guard"),
   assertCloudWorkspaceAvailable: jest.fn(async () => {}),
-  refreshE2BMigrationLease: jest.fn(async () => {}),
+  refreshE2BWorkspaceLease: jest.fn(async () => {}),
 }));
 
 import { Sandbox } from "@e2b/code-interpreter";
@@ -89,6 +89,35 @@ describe("E2B sandbox lease lifecycle", () => {
 
   afterAll(() => {
     process.env = originalEnv;
+  });
+
+  it("passes cancellation to E2B and neither publishes nor replaces a late reconnect", async () => {
+    listSandbox();
+    let complete!: (sandbox: Sandbox) => void;
+    sandboxApi.connect.mockReturnValueOnce(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const publish = jest.fn();
+    const result = ensureSandboxConnection(
+      { userID: "user-1", setSandbox: publish },
+      { signal: controller.signal },
+    ).catch((error) => error);
+    // Let discovery settle and connect begin.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    expect(sandboxApi.connect).toHaveBeenCalledWith(
+      "sandbox-1",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    const reason = new Error("deadline expired");
+    controller.abort(reason);
+    complete({ sandboxId: "sandbox-1" } as Sandbox);
+    expect(await result).toBe(reason);
+    expect(publish).not.toHaveBeenCalled();
+    expect(sandboxApi.create).not.toHaveBeenCalled();
+    expect(sandboxApi.kill).not.toHaveBeenCalled();
   });
 
   it("always refreshes the same fixed cloud lease", async () => {
@@ -346,32 +375,6 @@ describe("E2B sandbox lease lifecycle", () => {
     finishFirst();
     finishSecond();
     await Promise.all([firstRun, secondRun]);
-  });
-
-  it("creates isolated E2B without discovering or connecting recovery copies", async () => {
-    listSandbox();
-    const fresh = { sandboxId: "fresh-e2b" } as Sandbox;
-    sandboxApi.create.mockResolvedValue(fresh);
-    expect(
-      await ensureSandboxConnection(
-        { userID: "user-1", setSandbox: jest.fn() },
-        {
-          initialSandbox: { sandboxId: "stale-e2b" } as Sandbox,
-          createOnly: true,
-        },
-      ),
-    ).toEqual({ sandbox: fresh });
-    expect(sandboxApi.list).not.toHaveBeenCalled();
-    expect(sandboxApi.connect).not.toHaveBeenCalled();
-    expect(sandboxApi.create).toHaveBeenCalledWith(
-      "terminal-agent-sandbox",
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          userID: "user-1",
-          workspacePurpose: "migration-fallback",
-        }),
-      }),
-    );
   });
 
   it("uses the renewable cloud lease when reconnecting a paused sandbox", async () => {

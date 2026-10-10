@@ -63,6 +63,7 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
   expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
     upload_failure_phase: "readiness",
     upload_failure_reason: "command_channel_failure",
+    upload_failure_readiness_probe_reason: "operation_timeout",
     upload_retried_after_reconnect: true,
   });
   expect(phLogger.event).toHaveBeenCalledWith(
@@ -74,10 +75,133 @@ it("stops an unhealthy batch after one probe and one reconnect, preserving the w
   );
   expect(phLogger.event).toHaveBeenCalledWith(
     "sandbox_attachment_failure_diagnostics",
-    expect.objectContaining({ cpu_used_pct: 99, memory_used_bytes: 900 }),
+    expect.objectContaining({
+      cpu_used_pct: 99,
+      memory_used_bytes: 900,
+      readiness_probe_reason: "operation_timeout",
+    }),
   );
+  const diagnostics = jest
+    .mocked(phLogger.event)
+    .mock.calls.filter(
+      ([event]) => event === "sandbox_attachment_failure_diagnostics",
+    );
+  expect(diagnostics.map(([, fields]) => fields.staging_attempt)).toEqual([
+    "initial",
+    "reconnect_retry",
+  ]);
   expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
     /private-|secret|preserved-workspace/,
+  );
+});
+
+it.each(["agent-long", "chat-handler"] as const)(
+  "attributes permission-denied readiness in %s without retrying or leaking the cause",
+  async (service) => {
+    const sandbox = {
+      sandboxId: "preserved-workspace",
+      commands: {
+        run: jest
+          .fn()
+          .mockRejectedValue(
+            new Error(
+              "[invalid_argument] error starting process 'private-command': fork/exec /private/shell: permission denied",
+            ),
+          ),
+      },
+      kill: jest.fn(),
+    };
+    const ensure = jest.fn(async () => sandbox);
+    const result = await uploadSandboxFiles(files, ensure, {
+      retryAfterReconnectOnTransientFailure: true,
+      logContext: { ...context, service },
+    });
+    expect(result.failedCount).toBe(3);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    expect(sandbox.kill).not.toHaveBeenCalled();
+    expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+      upload_failure_phase: "readiness",
+      upload_failure_reason: "unknown",
+      upload_failure_sandbox_readiness_reason: "unknown",
+      upload_failure_readiness_probe_reason: "permission_denied",
+    });
+    expect(getSandboxUploadUserMessage(result)).toBe(
+      "Failed to upload 3 attachments to the computer. Please try again.",
+    );
+    for (const event of [
+      "sandbox_attachment_failure_diagnostics",
+      "sandbox_attachment_staging_failed",
+    ]) {
+      const calls = jest
+        .mocked(phLogger.event)
+        .mock.calls.filter(([name]) => name === event);
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1]).toMatchObject({
+        readiness_probe_reason: "permission_denied",
+        service,
+        request_id: context.requestId,
+      });
+    }
+    const logs = [console.warn, console.error].flatMap(
+      (logger) => jest.mocked(logger).mock.calls,
+    );
+    expect(logs.map(([payload]) => JSON.parse(payload))).toEqual([
+      expect.objectContaining({
+        event: "sandbox_attachment_failure_diagnostics",
+        readiness_probe_reason: "permission_denied",
+      }),
+      expect.objectContaining({
+        event: "sandbox_attachment_staging_failed",
+        readiness_probe_reason: "permission_denied",
+      }),
+    ]);
+    expect(
+      JSON.stringify([logs, jest.mocked(phLogger.event).mock.calls]),
+    ).not.toMatch(
+      /private-command|\/private\/shell|private-|secret|invalid_argument/,
+    );
+  },
+);
+
+it("keeps unrecognized readiness causes unknown without trusting error properties", async () => {
+  const run = jest.fn().mockRejectedValue(
+    Object.assign(new Error("private failure detail"), {
+      readinessProbeReason: "private-label",
+    }),
+  );
+  const result = await uploadSandboxFiles(
+    files,
+    async () => ({ commands: { run } }),
+    { logContext: context },
+  );
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(getSandboxUploadFailureMetadata(result)).toHaveProperty(
+    "upload_failure_readiness_probe_reason",
+    "unknown",
+  );
+  expect(JSON.stringify(jest.mocked(phLogger.event).mock.calls)).not.toMatch(
+    /private failure detail|private-label/,
+  );
+});
+
+it("does not grant an extra reconnect after acquisition consumed the batch budget", async () => {
+  const run = jest.fn().mockRejectedValue(new Error("operation timed out"));
+  const ensure = jest
+    .fn()
+    .mockRejectedValueOnce(new Error("Failed to place sandbox"))
+    .mockResolvedValue({ commands: { run } });
+  const result = await uploadSandboxFiles(files, ensure, {
+    retryAfterReconnectOnTransientFailure: true,
+    logContext: context,
+  });
+  expect(ensure).toHaveBeenCalledTimes(2);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(result.failedCount).toBe(3);
+  expect(result.retriedAfterReconnect).toBe(true);
+  expect(getSandboxUploadFailureMetadata(result)).toHaveProperty(
+    "upload_failure_readiness_probe_reason",
+    "operation_timeout",
   );
 });
 
@@ -152,6 +276,9 @@ it.each([
       upload_failure_phase: "acquisition",
       upload_failure_reason: reason,
     });
+    expect(getSandboxUploadFailureMetadata(result)).not.toHaveProperty(
+      "upload_failure_readiness_probe_reason",
+    );
     expect(getSandboxUploadUserMessage(result)).toContain(guidance);
   },
 );
@@ -189,6 +316,9 @@ it.each([
     expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
       upload_failure_reason: reason,
     });
+    expect(getSandboxUploadFailureMetadata(result)).not.toHaveProperty(
+      "upload_failure_readiness_probe_reason",
+    );
     expect(getSandboxUploadUserMessage(result)).toContain(guidance);
   },
 );

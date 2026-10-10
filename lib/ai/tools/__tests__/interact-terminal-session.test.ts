@@ -246,7 +246,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     mockWaitForOutput.mockImplementation(immediateWaitForOutput);
   });
 
-  test.each(["e2b", "miosa", "connection:private-fixture"] as const)(
+  test.each(["e2b", "connection:private-fixture"] as const)(
     "keeps %s execution context in session reads and model output",
     async (identity) => {
       const { context, ptySessionManager } = makeContext({

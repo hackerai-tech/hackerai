@@ -38,10 +38,7 @@ const commandResult = (states: string[]) => ({
   stderr: "",
   exitCode: 0,
 });
-function setup(
-  result = finding(),
-  kind: "e2b" | "miosa" | "local" | "desktop" = "e2b",
-) {
+function setup(result = finding(), kind: "e2b" | "local" | "desktop" = "e2b") {
   const run = jest
     .fn<(...args: unknown[]) => Promise<ReturnType<typeof commandResult>>>()
     .mockResolvedValue(commandResult(["exists", "exists"]));
@@ -71,7 +68,7 @@ function setup(
 afterEach(() => jest.useRealTimers());
 
 describe("saved evidence verification", () => {
-  it.each(["e2b", "miosa", "local"] as const)(
+  it.each(["e2b", "local"] as const)(
     "checks real files through the %s command environment contract",
     async (kind) => {
       const dir = mkdtempSync(join(tmpdir(), "evidence-transport-"));
@@ -79,7 +76,7 @@ describe("saved evidence verification", () => {
       const missing = join(dir, "missing.txt");
       writeFileSync(saved, "private synthetic evidence");
       const { args, run } = setup(finding([saved]), kind);
-      // E2B's CommandStartOpts consumes envs; the MIOSA/local adapters consume
+      // E2B's CommandStartOpts consumes envs; the local adapters consume
       // envVars. Execute the generated command, rather than mocking its states.
       run.mockImplementation(async (...call) => {
         const command = call[0] as string;
@@ -137,7 +134,7 @@ describe("saved evidence verification", () => {
       }
     },
   );
-  it.each(["e2b", "miosa", "local", "desktop"] as const)(
+  it.each(["e2b", "local", "desktop"] as const)(
     "accepts valid captures in the owned %s sandbox without changing verdict",
     async (kind) => {
       const { args, run, stat } = setup(finding(), kind);

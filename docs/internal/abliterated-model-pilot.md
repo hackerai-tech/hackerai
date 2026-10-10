@@ -6,55 +6,56 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## Paid first-step trial without moderation selection
+## One versus three moderation-selected steps
 
-[HAC-142](https://linear.app/hackerai/issue/HAC-142) also owns the separate
-`abliterated_paid_first_step_v2` trial. The original `v1` key belongs to a retired
-experiment and must not be reused. Assignment happens before moderation, using
-the authenticated paid user's stable identity. Explicit treatment skips the
-moderation API and uses base `abliterated-model` on generation step 1, regardless
-of selector or moderation score. Controls retain moderation and use the shipped moderated default: eligible
-requests use base Abliteration on step 1; other requests use the selected baseline.
-Unenrolled requests use that same moderated default. A missing flag, unknown variant,
-lookup failure or missing provider credential never skips moderation.
+[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns
+`abliterated_paid_three_steps_v1`. Eligible paid Ask and Agent requests evaluate
+it with the authenticated user ID after the existing moderation, provider,
+input and rescue checks. Control uses base `abliterated-model` for step 1;
+treatment uses it for steps 1–3. Both return to the exact saved baseline afterward.
+The limit is captured once per response/run, survives stream retries without
+resetting the completed-step counter, and provider failure still disables
+Abliteration immediately. Missing flags, unknown variants, lookup errors and
+missing analytics preserve the shipped one-step policy.
 
-Free requests, paid free-allowance rescue and unsupported file inputs remain
-excluded. Entitlements, quotas, concurrency, sandbox access and tool approvals
-retain their existing checks. Later steps and provider recovery use the saved
-baseline. After an actual completed Abliteration step returns nonempty text or a
-valid tool call, later baseline requests append the provider-only annotation to
-the latest user message. This context survives retries and compaction within the
-current run; it is not persisted as user authorization and never changes tool
-permissions or approvals. Empty, rejected or failed attempts and baseline-only
-vision routes do not activate it. Record the deployed continuation policy as a
-separate experiment phase. This comparison measures the
-combined model route and removal of the moderation call, not the isolated model
-effect. Image preprocessing and bounded provider recovery remain shared with the
-moderated route; auxiliary calls and subagents stay outside the trial.
+Production enrolls all eligible paid users with a stable 50/50 control/test split;
+Preview forces eligible treatment at 100%. Free and non-moderated requests do
+not evaluate this flag. These are generation steps, not a requirement to run
+three calls when a response finishes earlier. Deploy Vercel and Trigger separately
+before activation; flag changes then apply to new requests/runs without another
+release. Existing runs retain their worker and assignment.
 
-Eligibility, exposure, provider and response outcomes use the new experiment key
-and `selection_source=paid_first_step`. `moderation_checked=false` distinguishes
-unclassified treatment from a checked request that did not meet the old threshold.
-Successful new-trial responses cannot seed historical moderation continuity.
-Use eligible assignments as the intention-to-treat denominator, including
-requests that never serve output; exposure still requires actual provider output.
-Natural completion requires success, stop, nonempty content and no step limit.
-Keep absent outcomes and provider cost reports unknown rather than zero.
+Eligibility, actual streamed text/tool exposure and response outcomes carry the
+new key/variant and `generation_step_limit`. Native exposed-user results exclude
+pre-output failures; the owning issue requires a separate deduplicated eligible
+request readout with missing outcomes retained. This experiment uses operational
+telemetry, not the historical task-outcome survey cohorts. Disable the new flag
+to restore one-step routing. Keep owner, review dates, guardrails and cleanup
+choices in HAC-153.
 
-Repeated requests are clustered by authenticated user, and subscriber comparisons
-use equal follow-up windows and immutable pre-entry billing periods. Report the
-old cohort's crossover boundary when a user enters this trial; the older trial's
-later retention can no longer be treated as exclusive exposure. Team seats share
-a subscription and do not count as independent subscriber observations. The
-historical Pro/Max task-feedback sampler does not cover this trial, so completion
-alone is not evidence of usefulness. Keep sample-size planning, allocation,
-review dates, rollback and cleanup decisions in HAC-142 and PostHog.
+## Retired paid first-step trial
 
-Preview and Production flags are separate. Deploy Vercel and Trigger independently
-and verify each runtime's PostHog project before activation. Test a benign paid
-Ask and Agent request in Preview, verify step-1 exposure with moderation unchecked,
-and exercise a second generation to confirm the saved baseline. Check rendered
-completion and reload persistence. Flag changes apply only to new requests/runs.
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the historical
+`abliterated_paid_first_step_v2` trial. Its universal first-step route and
+pre-moderation enrollment have been removed. Every new request uses the existing
+moderation processing; a stale or re-enabled flag cannot skip that check or select
+Abliteration for an unmoderated request. Historical attribution keys remain for
+analytics, feedback and already-running requests. Do not reuse the retired key.
+
+Preview and Production flags are separate and must both remain disabled. Record
+flag disable, experiment end, Vercel and Trigger deployment boundaries in the
+owning issue. Flag changes affect new requests/runs after propagation; running
+requests retain their captured worker and routing context. Ending the experiment
+alone does not disable its flag.
+
+Retain the historical assignment, exposure and outcome data. Compare each
+allocation/continuation-policy phase separately, deduplicate requests, cluster by
+user and treat missing outcomes or reported cost as unknown. Subscriber follow-up
+after rollback is mixed exposure: use matched maturity and immutable pre-entry
+billing periods rather than calling it sustained exclusive treatment. Native
+stopped-experiment results end at the recorded cutoff; later cancellation/renewal
+follow-up needs a separately bounded readout. Keep decisions and readout dates in
+HAC-142 rather than treating the operational rollback as a proven churn result.
 
 ## Shipped moderation-selected paid default
 
@@ -74,7 +75,7 @@ which is not a feature flag or randomized cohort. Do not pool those observations
 with the retired trial or label an all-treatment default a causal comparison.
 Record Vercel and Trigger rollout boundaries separately, retain old assignments
 for already-running requests, and account for crossover in subscriber follow-up.
-The old Pro/Max feedback sampler does not cover this default or the new trial.
+Historical trial feedback remains separate from the shipped default.
 
 A default-route rollback needs a code revert and separate Vercel/Trigger releases;
 changing a retired flag no longer reroutes requests. Deploy and verify Preview

@@ -1,4 +1,5 @@
 import "server-only";
+import { extractPreviewFileIdsFromParts } from "@/lib/utils/file-preview-ids";
 import {
   countIndependentAbliterationResponses,
   type AbliterationHistoryEntry,
@@ -1043,6 +1044,7 @@ export async function saveMessage({
       any,
       any
     >[];
+    const previewFileIds = extractPreviewFileIdsFromParts(convexSafeParts);
     const storageSafeMessage =
       message.role === "assistant"
         ? compactMessageForStorage({ ...message, parts: convexSafeParts })
@@ -1106,6 +1108,7 @@ export async function saveMessage({
       role: message.role,
       parts: partsForSave,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
+      previewFileIds: previewFileIds.length > 0 ? previewFileIds : undefined,
       model,
       mode,
       generationStartedAt,

@@ -199,7 +199,7 @@ export type RateLimitWarningData =
   | {
       // Paid users: token bucket (remaining percentage)
       warningType: "token-bucket";
-      bucketType: "monthly";
+      bucketType: "monthly" | "daily";
       remainingPercent: number;
       resetTime: string;
       subscription: SubscriptionTier;

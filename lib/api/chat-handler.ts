@@ -1,3 +1,8 @@
+import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
+import {
+  evaluateFreeAgentBudget,
+  freeAgentBudgetPolicy,
+} from "@/lib/experiments/free-agent-budget";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
   enforceRegionalSubscriptionFirst,
@@ -50,7 +55,7 @@ import {
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   acquireFreeRunConcurrencyLock,
-  checkFreeMonthlyCostLimit,
+  checkFreeCostBudget,
   checkRateLimit,
   deductUsage,
   deductUsageDelta,
@@ -80,7 +85,6 @@ import {
 } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
-import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   captureAgentBudgetAbort,
@@ -504,10 +508,27 @@ export const createChatHandler = () => {
         subscription,
         country: regionalFreeCountryFromRequest(req),
       });
-      const freeLimits = regionalFreeLimits;
+      const freeAgentBudget = await evaluateFreeAgentBudget({
+        posthog: (posthog ??= PostHogClient()),
+        userId,
+        mode,
+        subscription,
+        requestId,
+      });
+      const freeLimits = freeAgentBudgetPolicy(
+        freeAgentBudget,
+        regionalFreeLimits,
+      );
+      const freeDailySettlement = freeLimits?.agentDailyBudget
+        ? new FreeDailyCostSettlement(
+            freeUsageSubject,
+            freeLimits,
+            crypto.randomUUID(),
+          )
+        : undefined;
       const freeMonthlyBudgetSnapshot =
         subscription === "free"
-          ? await checkFreeMonthlyCostLimit(freeUsageSubject, freeLimits)
+          ? await checkFreeCostBudget(freeUsageSubject, freeLimits)
           : null;
 
       // Free ask: pre-flight rate-limit before any token counting/model work.
@@ -535,11 +556,8 @@ export const createChatHandler = () => {
         selectedModel,
         sandboxFiles,
         platformAuthorized,
-        paidFirstStepVariant,
         moderationChecked,
       } = await processChatMessages({
-        abliterationPosthog: (posthog ??= PostHogClient()),
-        limitRescue: Boolean(limitRescue),
         messages: truncatedMessages,
         mode,
         userId,
@@ -576,7 +594,6 @@ export const createChatHandler = () => {
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
-        paidFirstStepVariant,
         moderationChecked,
         messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
@@ -646,20 +663,10 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
-      const cloudSandboxSelection =
-        isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
-          ? await selectCloudSandboxProvider({
-              userId,
-              subscription,
-              environment: process.env.VERCEL_ENV ?? "development",
-              triggerRegion: executionRegion,
-              requestRegionClass,
-              featureFlagClient: posthog,
-            })
-          : ({
-              provider: "e2b",
-              reason: "miosa_rollout_control",
-            } as const);
+      const cloudSandboxSelection = {
+        provider: "e2b",
+        reason: "e2b_only",
+      } as const;
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {
@@ -948,6 +955,7 @@ export const createChatHandler = () => {
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion: executionRegion,
                 environment: process.env.VERCEL_ENV ?? "development",
+                signal: userStopSignal.signal,
               },
             );
 
@@ -1354,10 +1362,16 @@ export const createChatHandler = () => {
                     },
                   });
                 } else if (subscription === "free") {
-                  await recordFreeMonthlyCost(
-                    freeUsageSubject,
-                    usageCostRecord.costDollars,
-                  );
+                  if (freeDailySettlement) {
+                    await freeDailySettlement.settle(
+                      usageCostRecord.costDollars,
+                    );
+                  } else {
+                    await recordFreeMonthlyCost(
+                      freeUsageSubject,
+                      usageCostRecord.costDollars,
+                    );
+                  }
                 } else {
                   const deductionResult = await deductUsage(
                     userId,
@@ -1453,6 +1467,7 @@ export const createChatHandler = () => {
                   responseModel: state.responseModel,
                   analyticsRequestContext,
                   experiment: routingExperimentContext,
+                  freeAgentBudget,
                   fallbackServed:
                     state.responseModel && retryUsedFallbackModel
                       ? true
@@ -1483,7 +1498,12 @@ export const createChatHandler = () => {
                 force,
                 model,
               }) => {
-                if (!usageSettlementState || hasRecordedUsage) return;
+                if (hasRecordedUsage) return;
+                if (freeDailySettlement) {
+                  await freeDailySettlement.settle(currentCostDollars);
+                  return;
+                }
+                if (!usageSettlementState) return;
                 if (
                   !shouldSettleUsageMidRun({
                     state: usageSettlementState,
@@ -1558,6 +1578,7 @@ export const createChatHandler = () => {
                   deduction: deductionResult,
                   forced: force,
                   experiment: routingExperimentContext,
+                  freeAgentBudget,
                 });
 
                 usageRefundTracker.addDeductions(deductionResult);
@@ -1643,6 +1664,8 @@ export const createChatHandler = () => {
                 isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
                   abliteratedStepRouting: {
                     baselineModel: activeAbliteratedExperiment.baselineModel,
+                    generationStepLimit:
+                      activeAbliteratedExperiment.generationStepLimit,
                   },
                 }),
               onProviderRequestStart: (configuredModel) => {
@@ -1689,6 +1712,11 @@ export const createChatHandler = () => {
               registerBackgroundWork: registerBackgroundStreamWork,
               getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
+              checkBudgetBeforeStep: freeDailySettlement
+                ? async () => {
+                    await checkFreeCostBudget(freeUsageSubject, freeLimits);
+                  }
+                : undefined,
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
@@ -2376,6 +2404,7 @@ export const createChatHandler = () => {
                                   budgetAbortDetails: state.budgetAbortDetails,
                                   isAutoContinue: !!isAutoContinue,
                                   experiment: routingExperimentContext,
+                                  freeAgentBudget,
                                   stepLimitTelemetry:
                                     buildAgentStepLimitTelemetry({
                                       configuredMaxSteps:
@@ -2715,6 +2744,7 @@ export const createChatHandler = () => {
                       budgetAbortDetails: state.budgetAbortDetails,
                       isAutoContinue: !!isAutoContinue,
                       experiment: routingExperimentContext,
+                      freeAgentBudget,
                       stepLimitTelemetry: buildAgentStepLimitTelemetry({
                         configuredMaxSteps: state.configuredMaxSteps,
                         stepCount: state.agentStepCount,

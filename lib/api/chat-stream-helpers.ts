@@ -146,6 +146,7 @@ export function sendRateLimitWarnings(
     subscription: SubscriptionTier;
     mode: ChatMode;
     rateLimitInfo: {
+      freeDailyCost?: boolean;
       remaining: number;
       limit: number;
       resetTime: Date;
@@ -179,6 +180,21 @@ export function sendRateLimitWarnings(
     return;
   }
 
+  if (subscription === "free" && rateLimitInfo.freeDailyCost) {
+    const usedPercent =
+      100 * (1 - rateLimitInfo.remaining / rateLimitInfo.limit);
+    if (!rateLimitInfo.rateLimitSkipped && usedPercent >= 75) {
+      emitTokenBucketThresholdWarning(writer, {
+        bucketType: "daily",
+        usedPercent,
+        projectedUsedPoints: rateLimitInfo.limit - rateLimitInfo.remaining,
+        monthlyLimitPoints: rateLimitInfo.limit,
+        resetTime: rateLimitInfo.resetTime,
+        subscription,
+      });
+    }
+    return;
+  }
   if (subscription === "free") {
     // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
     const warningThreshold = Math.max(1, Math.ceil(rateLimitInfo.limit * 0.3));
@@ -244,6 +260,7 @@ export function sendRateLimitWarnings(
  * one of these and let the helper format the dollar/severity payload.
  */
 export interface TokenBucketEmitContext {
+  bucketType?: "daily" | "monthly";
   /** Used percentage (0–100+), pre-rounding. */
   usedPercent: number;
   /** Points consumed against the monthly bucket so far. */
@@ -270,7 +287,7 @@ export function emitTokenBucketThresholdWarning(
     ctx.usedPercent >= 90 ? "warning" : "info";
   writeRateLimitWarning(writer, {
     warningType: "token-bucket",
-    bucketType: "monthly",
+    bucketType: ctx.bucketType ?? "monthly",
     remainingPercent,
     resetTime: ctx.resetTime.toISOString(),
     subscription: ctx.subscription,
@@ -412,6 +429,7 @@ export interface SummarizationStepResult {
 }
 
 export async function runSummarizationStep(options: {
+  compactionPolicy?: import("@/lib/chat/summarization/compaction-policy").CompactionModelPolicy;
   messages: UIMessage[];
   subscription: SubscriptionTier;
   languageModel: LanguageModel;
@@ -465,6 +483,7 @@ export async function runSummarizationStep(options: {
     providerPromptPressure: options.providerPromptPressure,
     onPhaseDuration: options.onPhaseDuration,
     startupCompaction: options.startupCompaction,
+    compactionPolicy: options.compactionPolicy,
     registerBackgroundWork: options.registerBackgroundWork,
   });
 
@@ -605,14 +624,14 @@ const PRO_TEXT_FALLBACK_CHAIN = [
 // three entries. Longer logical routes can still be used by app-side retries.
 const OPENROUTER_MAX_FALLBACK_MODELS = 3;
 
-const DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN = [
+const DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN = [
   "model-glm-5.3-flash",
   "model-deepseek-v4-pro-0813",
   "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
 
-const LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN = [
-  "model-deepseek-v4-flash-0731",
+const GLM_FLASH_AGENT_FALLBACK_CHAIN = [
+  "model-deepseek-v4-flash-vision",
   "model-deepseek-v4-pro-0813",
   "model-glm-5.3",
 ] as const satisfies readonly ModelName[];
@@ -635,12 +654,12 @@ const HACKERAI_PRO_FALLBACK_CHAIN = [
 ] as const satisfies readonly ModelName[];
 
 const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
-  "ask-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "ask-model-free-glm": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
-  "ask-model-free-deepseek-v41": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "agent-model-free": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "model-glm-5.3-flash-agent": LEGACY_AGENT_GLM_FLASH_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash-0731": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "ask-model-free": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
+  "ask-model-free-glm": GLM_FLASH_AGENT_FALLBACK_CHAIN,
+  "ask-model-free-deepseek-v41": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
+  "agent-model-free": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
+  "model-glm-5.3-flash-agent": GLM_FLASH_AGENT_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-0731": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "model-deepseek-v4-pro": PRO_TEXT_FALLBACK_CHAIN,
   "model-deepseek-v4-pro-0813": DEEPSEEK_V4_PRO_0813_FALLBACK_CHAIN,
   "ask-model": GROK_4_6_FALLBACK_CHAIN,
@@ -654,8 +673,8 @@ const MODEL_FALLBACK_CHAIN: Partial<Record<ModelName, readonly ModelName[]>> = {
   "model-glm-5.3": ["model-kimi-k3"],
   "model-glm-5.3-flash": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
   "model-glm-5.3-flash-pro": GLM_FLASH_RECOVERY_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
-  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_FLASH_0731_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-vision": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
+  "model-deepseek-v4-flash-vision-pro": DEEPSEEK_V4_1_FLASH_FALLBACK_CHAIN,
   "fallback-agent-model": GROK_4_6_FALLBACK_CHAIN,
   "fallback-ask-model": GROK_4_6_FALLBACK_CHAIN,
   "model-kimi-k3": ["model-grok-4.6"],
@@ -775,11 +794,13 @@ export function getRetryFallbackModel(
     return "model-deepseek-v4-pro-0813";
   }
   if (
-    modelName === ABLITERATION_MODEL_KEY ||
     modelName === "model-glm-5.3-flash-agent" ||
     modelName === "ask-model-free-glm"
   ) {
-    return "model-deepseek-v4-flash-0731";
+    return "model-deepseek-v4-flash-vision";
+  }
+  if (modelName === ABLITERATION_MODEL_KEY) {
+    return "model-deepseek-v4-flash-vision";
   }
   if (
     modelName === "ask-model-free" ||
@@ -933,8 +954,10 @@ const OPENROUTER_RESPONSE_MODEL_COST_KEYS: Record<string, string> = {
   "anthropic/claude-opus-4.6": "model-opus-4.6",
   "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash",
   "deepseek/deepseek-v4-flash-20260423": "deepseek/deepseek-v4-flash",
-  "deepseek/deepseek-v4-flash-0731": "model-deepseek-v4-flash-0731",
-  "deepseek/deepseek-v4-flash-20260731": "model-deepseek-v4-flash-0731",
+  // Historical provider responses keep their original rates even though the
+  // persisted registry alias now routes to V4.1.
+  "deepseek/deepseek-v4-flash-0731": "deepseek/deepseek-v4-flash-0731",
+  "deepseek/deepseek-v4-flash-20260731": "deepseek/deepseek-v4-flash-0731",
   "deepseek/deepseek-v4-pro-0813": "model-deepseek-v4-pro-0813",
   "deepseek/deepseek-v4-pro-20260813": "model-deepseek-v4-pro-0813",
   "x-ai/grok-4.5": "model-grok-4.5",

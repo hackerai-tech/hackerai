@@ -3,8 +3,12 @@ import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
 } from "@/lib/analytics/abliterated-model";
-import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
+import {
+  resolveAbliterationModelForGenerationStep,
+  type AbliterationGenerationStepLimit,
+} from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
@@ -45,7 +49,6 @@ import { randomUUID } from "crypto";
 import {
   ModelHistoryReplay,
   MODEL_HISTORY_FLAG,
-  CACHE_ALIGNED_SUMMARY_FLAG,
   historyDigest,
   sourceMessageDigests,
   parseModelHistory,
@@ -205,7 +208,7 @@ const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
 const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
-const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const STANDARD_AGENT_TEXT_MODEL = STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
 const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
@@ -382,6 +385,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
+  compactionPolicy?: CompactionModelPolicy;
   cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
@@ -725,6 +729,7 @@ export type AgentStreamContext = {
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
     baselineModel: string;
+    generationStepLimit?: AbliterationGenerationStepLimit;
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
@@ -801,6 +806,8 @@ export type AgentStreamContext = {
   getSandboxCostDollars?: () => number | Promise<number>;
   /** Current cumulative Trigger.dev run cost, including compute and invocation. */
   getTriggerRunCostDollars?: () => number;
+  /** Revalidate shared capacity before starting each cost-incurring model step. */
+  checkBudgetBeforeStep?: () => Promise<void>;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     sandboxCostDollars: number;
@@ -1172,6 +1179,7 @@ export async function createAgentStream(
       ? resolveAbliterationModelForGenerationStep({
           treatmentModel: routeModelName,
           baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          generationStepLimit: ctx.abliteratedStepRouting.generationStepLimit,
           stepIndex,
         })
       : routeModelName;
@@ -1507,14 +1515,21 @@ export async function createAgentStream(
     }
   }
   let lastHistoryRequest: ModelMessage[] | undefined;
-  const cacheAlignedSummaryEnabled =
-    historyEnabled &&
-    (await getPostHogFeatureFlagForUser(
-      CACHE_ALIGNED_SUMMARY_FLAG,
-      ctx.userId,
-    ));
+  const compactionPolicy = (state.compactionPolicy ??=
+    new CompactionModelPolicy({
+      userId: ctx.userId,
+      runId: telemetryRunId,
+      chatId: ctx.chatId,
+      mode: ctx.mode,
+      subscription: ctx.subscription,
+      baselineModel: modelName,
+      onDiscardedUsage: (usage) =>
+        ctx.summarizationTracker.recordSummarizationUsage(
+          usage,
+          ctx.usageTracker,
+        ),
+    }));
   let lastHistoryResponseCursor = 0;
-  let lastHistoryTools: ToolSet = ctx.tools;
   let historyToSave: ModelHistorySnapshot | undefined;
   let historyExposed = false;
   const exposeHistory = () => {
@@ -1563,6 +1578,9 @@ export async function createAgentStream(
     });
 
   return streamText({
+    // Step results outlive prompt compaction. Do not retain another serialized
+    // copy of every provider request; response messages still drive persistence.
+    experimental_include: { requestBody: false },
     model: getNamespacedLanguageModel(
       initialModelInfo.languageModel,
       generationStepOffset,
@@ -1600,6 +1618,9 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      // Keep admission outside preparation recovery: an exhausted shared ledger
+      // must never fall back to an unchecked provider request.
+      await ctx.checkBudgetBeforeStep?.();
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
@@ -1672,6 +1693,7 @@ export async function createAgentStream(
         ) {
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
+              compactionPolicy,
               messages: state.finalMessages,
               sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
@@ -1780,13 +1802,6 @@ export async function createAgentStream(
                 sourceResponseCursor =
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
-                lastHistoryTools = activeTools
-                  ? Object.fromEntries(
-                      Object.entries(ctx.tools).filter(([name]) =>
-                        activeTools.includes(name),
-                      ),
-                    )
-                  : ctx.tools;
               }
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
@@ -1831,6 +1846,7 @@ export async function createAgentStream(
             compactionAttemptCount++;
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
+              compactionPolicy,
               modelMessages: rollingModelMessages,
               sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
@@ -1862,31 +1878,6 @@ export async function createAgentStream(
                   ),
                 ),
               registerBackgroundWork: ctx.registerBackgroundWork,
-              ...(historyEnabled &&
-                cacheAlignedSummaryEnabled &&
-                lastHistoryRequest && {
-                  cacheAlignedSummary: {
-                    languageModel: effectiveModelInfo.languageModel,
-                    tools: lastHistoryTools,
-                    system: frozenSystemPrompt,
-                    providerOptions: getStepProviderOptions(
-                      effectiveModelInfo.modelName,
-                    ),
-                    onUsed: () =>
-                      phLogger.event("cache_aligned_summary_exposed", {
-                        userId: ctx.userId,
-                        chat_id: ctx.chatId,
-                        mode: ctx.mode,
-                        model: historyRoute,
-                        variant: "v1",
-                      }),
-                    onDiscardedUsage: (usage) =>
-                      ctx.summarizationTracker.recordSummarizationUsage(
-                        usage,
-                        ctx.usageTracker,
-                      ),
-                  },
-                }),
             });
 
             if (!inRunResult) {
@@ -2003,14 +1994,6 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
-                if (historyEnabled)
-                  lastHistoryTools = activeTools
-                    ? Object.fromEntries(
-                        Object.entries(ctx.tools).filter(([name]) =>
-                          activeTools.includes(name),
-                        ),
-                      )
-                    : ctx.tools;
                 const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
@@ -2134,13 +2117,6 @@ export async function createAgentStream(
           ) as ModelMessage[];
           lastHistoryResponseCursor =
             rawModelMessages.length - initialModelMessages.length;
-          lastHistoryTools = activeTools
-            ? Object.fromEntries(
-                Object.entries(ctx.tools).filter(([name]) =>
-                  activeTools.includes(name),
-                ),
-              )
-            : ctx.tools;
         }
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,

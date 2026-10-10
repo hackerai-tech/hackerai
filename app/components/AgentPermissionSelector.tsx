@@ -123,7 +123,7 @@ export function AgentPermissionSelector({
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[480px] max-w-[calc(100vw-2rem)] border-black/8 bg-input-chat p-3 dark:border-border"
+        className="w-[480px] max-w-[calc(100vw-2rem)] p-3"
         align="start"
       >
         <div className="mb-2 text-sm text-muted-foreground">
@@ -167,13 +167,7 @@ export function AgentPermissionSelector({
                   <div className="truncate text-sm font-medium">
                     {option.label}
                   </div>
-                  <div
-                    className={`mt-0.5 text-sm leading-snug ${
-                      selected
-                        ? "text-accent-foreground/70"
-                        : "text-muted-foreground"
-                    }`}
-                  >
+                  <div className="mt-0.5 text-sm leading-snug text-muted-foreground">
                     {option.description}
                   </div>
                 </div>

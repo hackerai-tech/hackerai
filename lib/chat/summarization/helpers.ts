@@ -738,6 +738,7 @@ export const generateSummaryText = async (
     preservePrefix?: boolean;
     maxOutputTokens?: number;
     onDiscardedUsage?: (usage: SummarizationUsage) => void;
+    validateText?: (text: string) => boolean;
   },
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
@@ -851,7 +852,8 @@ export const generateSummaryText = async (
   if (
     abortSignal?.aborted ||
     !result.text.trim() ||
-    result.finishReason !== "stop"
+    result.finishReason !== "stop" ||
+    generationOptions?.validateText?.(result.text) === false
   ) {
     generationOptions?.onDiscardedUsage?.(usage);
     abortSignal?.throwIfAborted();

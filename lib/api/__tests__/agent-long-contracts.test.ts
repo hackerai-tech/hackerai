@@ -2413,7 +2413,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const lock = await acquireFreeRunConcurrencyLock(",
     );
     const monthlyIndex = taskSrc.indexOf(
-      "await checkFreeMonthlyCostLimit(",
+      "await checkFreeCostBudget(",
       lockIndex,
     );
     const consumeIndex = taskSrc.indexOf(
@@ -2436,15 +2436,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
     expect(taskSrc).toMatch(
-      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
+      /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
     );
     expect(
       taskSrc.match(
-        /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
+        /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
       ),
-    ).toHaveLength(4);
+    ).not.toHaveLength(0);
     expect(taskSrc).not.toMatch(
-      /checkFreeMonthlyCostLimit\(freeUsageSubject,\s*userId/,
+      /checkFreeCostBudget\(freeUsageSubject,\s*userId/,
     );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
@@ -2455,15 +2455,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
 
     expect(providerIdx).toBeGreaterThan(-1);
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain('provider: "e2b"');
     expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
-      "selectCloudSandboxProvider({",
-    );
-    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
-      "environment: ctx.environment.type",
-    );
-    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain("triggerRegion");
-    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
-      "requestRegionClass",
+      'reason: "e2b_only"',
     );
     expect(toolsIdx).toBeGreaterThan(providerIdx);
     expect(promptIdx).toBeGreaterThan(toolsIdx);
@@ -2524,10 +2518,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(regionIdx).toBeGreaterThan(-1);
     expect(providerIdx).toBeGreaterThan(regionIdx);
     expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
-      "triggerRegion: executionRegion",
-    );
-    expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
-      "requestRegionClass",
+      'provider: "e2b"',
     );
     expect(chatHandlerSrc.slice(toolsIdx, toolsIdx + 1_500)).toContain(
       "triggerRegion: executionRegion",

@@ -178,7 +178,7 @@ describe("security validation subagent runtime contracts", () => {
 
   it("bounds and namespaces every child provider response and retries content filtering on another model", () => {
     const child = read("trigger/subagent.ts");
-    expect(child).toContain("guardLanguageModelProviderResponse(languageModel");
+    expect(child).toContain("guardLanguageModelProviderResponse(boundedModel");
     expect(child).toContain("MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE");
     expect(child).toContain("[profile.finalResultTool.name]: 1");
     expect(child).toContain("namespaceLanguageModelToolCalls(");
@@ -200,7 +200,7 @@ describe("security validation subagent runtime contracts", () => {
     expectMarkerOrder(
       acceptResult,
       "await verifyResultEvidence(",
-      "await markSubagentFinalizing(",
+      "markSubagentFinalizing(",
     );
     expect(child).not.toContain(
       "model: provider.languageModel(activeModelName)",
@@ -228,7 +228,7 @@ describe("security validation subagent runtime contracts", () => {
     const billing = read("lib/ai/subagents/billing.ts");
     expect(child).toContain("checkSubagentBillingCapacity");
     expect(billing).toContain('if (input.subscription === "free")');
-    expect(billing).toContain("checkFreeMonthlyCostLimit");
+    expect(billing).toContain("checkFreeCostBudget");
     expect(billing).toContain("return undefined");
     expect(billing).toContain("checkRateLimitCapacity");
     expect(child).toContain("isHandledUserRateLimitError");

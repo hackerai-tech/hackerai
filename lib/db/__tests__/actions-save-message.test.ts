@@ -662,6 +662,43 @@ describe("saveMessage", () => {
     expect(() => JSON.stringify(compactedMessage.parts)).not.toThrow();
   });
 
+  it("retains preview references even when storage compaction prunes the tool output", async () => {
+    const { saveMessage, mockMutation, mockCompactMessageForStorage } =
+      await loadSaveMessageWithMocks();
+    mockCompactMessageForStorage.mockImplementation((message: any) => ({
+      message: {
+        ...message,
+        parts: [{ ...message.parts[0], output: "[File: view preview.jpg]" }],
+      },
+      compacted: true,
+      beforeSizeBytes: 900_000,
+      afterSizeBytes: 100,
+      strippedUiOnlyFields: true,
+      prunedCount: 1,
+    }));
+    await saveMessage({
+      chatId: "chat-1",
+      userId: "user-1",
+      message: {
+        id: "message-1",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-file",
+            toolCallId: "tool-1",
+            state: "output-available",
+            input: { action: "view", path: "preview.jpg" },
+            output: { previewFiles: [{ fileId: "preview-1" }] },
+          },
+        ],
+      } as any,
+    });
+    expect(mockMutation.mock.calls[0]?.[1]).toMatchObject({
+      previewFileIds: ["preview-1"],
+      parts: [expect.objectContaining({ output: "[File: view preview.jpg]" })],
+    });
+  });
+
   it("removes OpenRouter reasoning metadata before storage compaction", async () => {
     const { saveMessage, mockCompactMessageForStorage } =
       await loadSaveMessageWithMocks();

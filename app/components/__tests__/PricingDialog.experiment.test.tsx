@@ -1,12 +1,20 @@
 import "@testing-library/jest-dom";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  jest,
+} from "@jest/globals";
 
 const mockHandleUpgrade = jest.fn();
 const mockFetch = jest.fn();
 const mockClearBillingReview = jest.fn();
 let mockBillingReviewRequired = false;
+let mockAuthLoading = false;
 let mockBilling = {
   data: { hasActiveSubscription: false, cancelAtPeriodEnd: false } as
     | import("@/lib/billing/api-types").SubscriptionCancellationStatus
@@ -17,7 +25,7 @@ let mockBilling = {
 };
 
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
-  useAuth: () => ({ user: { id: "user_free" } }),
+  useAuth: () => ({ user: { id: "user_free" }, loading: mockAuthLoading }),
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -55,7 +63,11 @@ jest.mock("@/components/ui/dialog", () => ({
 }));
 jest.mock("../BillingFrequencySelector", () => ({
   __esModule: true,
-  default: () => null,
+  default: ({
+    onChange,
+  }: {
+    onChange: (value: "monthly" | "yearly") => void;
+  }) => <button onClick={() => onChange("yearly")}>Yearly</button>,
 }));
 jest.mock("../UpgradeConfirmationDialog", () => ({
   __esModule: true,
@@ -65,18 +77,11 @@ jest.mock("../UpgradeConfirmationDialog", () => ({
 const PricingDialog = require("../PricingDialog")
   .default as typeof import("../PricingDialog").default;
 
-const currentPrice = {
-  priceLookupKey: "pro-monthly-plan",
-  displayedAmountDollars: 29,
-  currency: "usd",
-  billingInterval: "month",
-  stripePriceId: "price_pro_29",
-};
-
-describe("PricingDialog Pro monthly price", () => {
+describe("PricingDialog prices and billing status", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockBillingReviewRequired = false;
+    mockAuthLoading = false;
     mockBilling = {
       data: { hasActiveSubscription: false, cancelAtPeriodEnd: false },
       isLoading: false,
@@ -91,12 +96,7 @@ describe("PricingDialog Pro monthly price", () => {
 
   it("preserves review controls when a fresh status check fails despite a healthy cached status", async () => {
     mockBillingReviewRequired = true;
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => currentPrice,
-    } as never);
     render(<PricingDialog isOpen onClose={jest.fn()} />);
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
     await act(async () => {
       await Promise.resolve();
     });
@@ -119,10 +119,6 @@ describe("PricingDialog Pro monthly price", () => {
 
   it("updates cached status and clears review only after a successful fresh check", async () => {
     mockBillingReviewRequired = true;
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => currentPrice,
-    } as never);
     render(<PricingDialog isOpen onClose={jest.fn()} />);
     await act(async () => {
       await Promise.resolve();
@@ -150,16 +146,6 @@ describe("PricingDialog Pro monthly price", () => {
       billingAccountAvailable: true,
       checkoutRequiresReview: true,
     };
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        priceLookupKey: "pro-monthly-plan",
-        currency: "usd",
-        billingInterval: "month",
-        displayedAmountDollars: 29,
-        stripePriceId: "price_test",
-      }),
-    } as never);
     render(<PricingDialog isOpen onClose={jest.fn()} />);
     expect(
       screen.getByRole("region", { name: "Subscription payment recovery" }),
@@ -180,7 +166,6 @@ describe("PricingDialog Pro monthly price", () => {
   it("keeps plan purchases disabled while billing status is unknown", async () => {
     mockBilling.data = undefined;
     mockBilling.error = new Error("Billing unavailable");
-    mockFetch.mockRejectedValue(new Error("Pricing unavailable") as never);
     render(<PricingDialog isOpen onClose={jest.fn()} />);
     expect(screen.getByRole("button", { name: "Check again" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Get Pro+" })).toBeDisabled();
@@ -189,38 +174,105 @@ describe("PricingDialog Pro monthly price", () => {
     });
   });
 
-  it("keeps checkout disabled until the $29 Stripe Price resolves", async () => {
-    let resolveRequest: (value: unknown) => void = () => {};
-    mockFetch.mockReturnValue(
-      new Promise((resolve) => {
-        resolveRequest = resolve;
-      }),
-    );
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("shows $29 immediately without fetching a presentation price", async () => {
     render(<PricingDialog isOpen onClose={jest.fn()} />);
-    expect(screen.getByText("…")).toBeVisible();
+    expect(screen.getByText("29")).toBeVisible();
+    expect(screen.queryByText("…")).not.toBeInTheDocument();
+    expect(mockFetch).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Get Pro" }));
+    expect(mockHandleUpgrade).toHaveBeenCalledWith(
+      "pro-monthly-plan",
+      undefined,
+      undefined,
+      "free",
+      expect.objectContaining({ surface: "pricing_dialog" }),
+    );
+  });
+
+  it("shows the yearly price immediately and selects annual checkout", async () => {
+    render(<PricingDialog isOpen onClose={jest.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Yearly" }));
+    expect(screen.getByText("24")).toBeVisible();
+    expect(mockFetch).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Get Pro" }));
+    expect(mockHandleUpgrade).toHaveBeenCalledWith(
+      "pro-yearly-plan",
+      undefined,
+      undefined,
+      "free",
+      expect.objectContaining({ surface: "pricing_dialog" }),
+    );
+  });
+
+  it("blocks checkout during an auth refresh before the billing check is enabled", async () => {
+    mockAuthLoading = true;
+    mockBilling.data = undefined;
+    const { rerender } = render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(screen.getByText("29")).toBeVisible();
+    const proButton = screen.getByRole("button", { name: "Get Pro" });
+    expect(proButton).toBeDisabled();
+    await userEvent.click(proButton);
+    expect(mockHandleUpgrade).not.toHaveBeenCalled();
+
+    mockAuthLoading = false;
+    mockBilling.isLoading = true;
+    rerender(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(proButton).toBeDisabled();
+    mockBilling.isLoading = false;
+    mockBilling.data = {
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+    };
+    rerender(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(proButton).toBeEnabled();
+  });
+
+  it("hides a fast billing check while keeping checkout blocked until it completes", () => {
+    jest.useFakeTimers();
+    mockBilling.isLoading = true;
+    const { rerender } = render(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(screen.getByText("29")).toBeVisible();
     expect(screen.getByRole("button", { name: "Get Pro" })).toBeDisabled();
-    await act(async () => {
-      resolveRequest({ ok: true, json: async () => currentPrice });
-    });
-    expect(await screen.findByText("29")).toBeVisible();
+    act(() => jest.advanceTimersByTime(200));
+    expect(
+      screen.queryByText("Checking your billing status…"),
+    ).not.toBeInTheDocument();
+    mockBilling.isLoading = false;
+    rerender(<PricingDialog isOpen onClose={jest.fn()} />);
+    act(() => jest.advanceTimersByTime(500));
+    expect(
+      screen.queryByText("Checking your billing status…"),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get Pro" })).toBeEnabled();
   });
 
-  it("rejects $25 and retries on reopen", async () => {
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ...currentPrice, displayedAmountDollars: 25 }),
-      })
-      .mockResolvedValueOnce({ ok: true, json: async () => currentPrice });
+  it("shows slow billing checks after 300ms and restarts the delay on reopen", () => {
+    jest.useFakeTimers();
+    mockBilling.isLoading = true;
     const { rerender } = render(<PricingDialog isOpen onClose={jest.fn()} />);
+    act(() => jest.advanceTimersByTime(299));
     expect(
-      await screen.findByRole("button", { name: "Pricing unavailable" }),
-    ).toBeDisabled();
+      screen.queryByText("Checking your billing status…"),
+    ).not.toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(1));
+    expect(screen.getByText("Checking your billing status…")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Get Pro" })).toBeDisabled();
     rerender(<PricingDialog isOpen={false} onClose={jest.fn()} />);
     rerender(<PricingDialog isOpen onClose={jest.fn()} />);
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("29")).toBeVisible();
+    expect(
+      screen.queryByText("Checking your billing status…"),
+    ).not.toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(300));
+    expect(screen.getByText("Checking your billing status…")).toBeVisible();
+    mockBilling.isLoading = false;
+    rerender(<PricingDialog isOpen onClose={jest.fn()} />);
+    expect(
+      screen.queryByText("Checking your billing status…"),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Get Pro" })).toBeEnabled();
   });
 });

@@ -73,3 +73,47 @@ Desktop picks up the hosted bridge after reload/reconnect; local CLI users need
 an updated package. Rollback can stop server selection of operation channels;
 new clients still accept legacy requests. Compare complete matched windows and
 successful operations after rollout before claiming a bill reduction.
+
+## Terminal-history maintenance attribution
+
+Local/Desktop record stores also emit two counters:
+`hackerai.local_relay.terminal_record_operations` and
+`hackerai.local_relay.terminal_record_payload_bytes`. Cloud stores emit neither.
+Both use bounded labels only: `source` (Agent, chat handler, or unknown when
+unavailable), `operation`, `outcome`, `transport` (`native_file` or
+`posix_command`), and `reason` (`none`, `windows`, or `node_unavailable`). No
+commands, output, paths, user/scope/session identifiers, or error text are labels.
+
+- `checkpoint_write`: UTF-8 bytes in the complete serialized record submitted
+  to the file transport. A failure still counts the attempted payload, even if
+  no bytes or only part of it reached the host. Validation failures before
+  serialization have no payload bytes.
+- `recovery_read` and `retention_read`: UTF-8 bytes actually returned by a
+  resolved read, including malformed, oversized or foreign records labelled
+  `rejected`. A failed read has no measured payload; partial transport bytes
+  are unknown. A successful read validates record identity/schema; it does not
+  imply that a recovery caller accepted the record's age.
+- `prune_route`: one decision for each prune call: `success` for a completed
+  in-sandbox scan, `incomplete` when it declined safely, `failure` for command
+  or response errors, `fallback` for Windows or missing/older Node, or
+  `throttled` when the existing one-minute gate skipped work. Transport on a
+  throttled call is the store's file transport, not an executed scanner.
+- `prune_fallback`: completion/failure of the subsequent file-API scan. Its
+  `success` means the best-effort scan finished; inspect `retention_read`
+  failures/rejections separately. Do not add route and fallback counts to
+  estimate distinct prune calls.
+
+The byte counter measures logical record payloads at the store boundary. It
+excludes the in-sandbox scanner's local disk reads, its command/summary, directory
+listings, deletions, base64 expansion, protocol overhead, retries and fanout.
+POSIX command failures may conceal partial reads. It is not AWS billed egress
+and must not be subtracted from the received-publication counter as if the two
+measured the same boundary. Write bytes flow toward the local host; read bytes
+flow toward the server, although both pass through the relay.
+
+Use the chronological within-minute query above with the new metric name and
+partition by **machine, worker, operation, outcome, transport, reason and
+source**. Never sum cumulative snapshots. The same initial/boundary/reset
+under-counting and exporter-coverage limits apply. Compare complete UTC windows
+and the mix of fallback outcomes before changing persistence behavior. These
+metrics arrive after the server deployment; no client update is required.

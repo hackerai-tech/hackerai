@@ -1,6 +1,13 @@
 import "server-only";
 
 import {
+  CompactionModelPolicy,
+  COMPACTION_FALLBACK_MODEL,
+  COMPACTION_PRIMARY_MODEL,
+  hasStructuredCompactionSummary,
+} from "@/lib/chat/summarization/compaction-policy";
+
+import {
   UIMessage,
   UIMessageStreamWriter,
   LanguageModel,
@@ -24,6 +31,7 @@ import {
   isRecoverableStartupCompactionError,
   STARTUP_COMPACTION_FALLBACK_MODELS,
   STARTUP_COMPACTION_VARIANT,
+  InvalidCompactionSummaryError,
   type StartupCompactionContext,
 } from "./startup-compaction";
 import type { ProviderPromptPressure } from "./provider-pressure";
@@ -344,6 +352,7 @@ const logContextCompactionFailed = ({
 };
 
 export interface CheckAndSummarizeOptions {
+  compactionPolicy?: CompactionModelPolicy;
   uiMessages: UIMessage[];
   /** History before injected notes/reminders; falls back to uiMessages for direct callers. */
   sourceUiMessages?: UIMessage[];
@@ -435,7 +444,9 @@ const logContextCompactionStarted = ({
   fileTokens,
   cutoffMessageId,
   retainedTail,
+  compactionModel,
 }: {
+  compactionModel: string;
   chatId: string | null;
   mode: ChatMode;
   subscription: SubscriptionTier;
@@ -468,7 +479,7 @@ const logContextCompactionStarted = ({
       mode,
       subscription,
       reason,
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      compaction_model: compactionModel,
       total_estimated_tokens: totalEstimatedTokens,
       system_prompt_tokens: systemPromptTokens,
       provider_input_tokens: providerInputTokens,
@@ -508,6 +519,8 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration,
   startupCompaction,
   onRetry,
+  compactionPolicy,
+  persistence = "durable",
 }: {
   messagesToSummarize: UIMessage[];
   modelMessages?: ModelMessage[];
@@ -524,6 +537,8 @@ const generateSummaryTextWithRetry = async ({
   onPhaseDuration?: ContextCompactionPhaseReporter;
   startupCompaction?: StartupCompactionContext;
   onRetry?: () => void;
+  compactionPolicy?: CompactionModelPolicy;
+  persistence?: "durable" | "run_scoped";
 }): Promise<
   Awaited<ReturnType<typeof generateSummaryText>> & {
     languageModel: LanguageModel;
@@ -533,6 +548,107 @@ const generateSummaryTextWithRetry = async ({
   const startedAt = Date.now();
   abortSignal?.throwIfAborted();
   try {
+    const assignment = await compactionPolicy?.resolve();
+    abortSignal?.throwIfAborted();
+    if (assignment && compactionPolicy) {
+      const telemetry = compactionPolicy.start(assignment, persistence);
+      const models = [
+        assignment.model,
+        ...(assignment.model === COMPACTION_PRIMARY_MODEL
+          ? [COMPACTION_FALLBACK_MODEL]
+          : []),
+        ...STARTUP_COMPACTION_FALLBACK_MODELS,
+      ];
+      let servedModel: string | undefined;
+      try {
+        for (const [index, modelName] of models.entries()) {
+          abortSignal?.throwIfAborted();
+          const languageModel = myProvider.languageModel(modelName);
+          const attemptStartedAt = Date.now();
+          let discardedUsage: SummarizationUsage | undefined;
+          startupCompaction?.onAttempt?.({
+            variant: "abliteration_glm53_fallback_v1",
+            fallbackUsed: index > 0,
+          });
+          try {
+            const result = await generateSummaryText(
+              messagesToSummarize,
+              languageModel,
+              mode,
+              chatSystemPrompt,
+              hasExistingSummary,
+              undefined,
+              modelName === COMPACTION_PRIMARY_MODEL
+                ? {
+                    abliteration: {
+                      reasoningEffort: "low",
+                    },
+                  }
+                : buildStartupCompactionProviderOptions(providerOptions),
+              abortSignal,
+              modelMessages,
+              summaryInputMaxTokens,
+              {
+                maxRetries: 0,
+                timeout: 60_000,
+                maxOutputTokens: 8192,
+                validateText: (text) =>
+                  hasStructuredCompactionSummary(text, mode),
+                onDiscardedUsage: (usage) => {
+                  discardedUsage = usage;
+                  telemetry.onDiscardedUsage(usage);
+                },
+              },
+            );
+            servedModel = modelName;
+            telemetry.attempt(
+              modelName,
+              "completed",
+              Date.now() - attemptStartedAt,
+              result.usage,
+            );
+            telemetry.finish("completed", modelName);
+            return {
+              ...result,
+              languageModel,
+              attempt:
+                index === 0 ? ("primary" as const) : ("fallback" as const),
+            };
+          } catch (error) {
+            telemetry.attempt(
+              modelName,
+              abortSignal?.aborted ? "aborted" : "error",
+              Date.now() - attemptStartedAt,
+              discardedUsage,
+            );
+            markSummarizationAttemptError(
+              error,
+              index === 0 ? "primary" : "fallback",
+              modelName,
+            );
+            if (
+              abortSignal?.aborted ||
+              index === models.length - 1 ||
+              !(
+                modelName === COMPACTION_PRIMARY_MODEL ||
+                error instanceof InvalidCompactionSummaryError ||
+                isMalformedProviderJsonError(error) ||
+                isRecoverableStartupCompactionError(error)
+              )
+            )
+              throw error;
+            onRetry?.();
+          }
+        }
+        throw new Error("Compaction model chain was empty");
+      } catch (error) {
+        telemetry.finish(
+          abortSignal?.aborted ? "aborted" : "error",
+          servedModel,
+        );
+        throw error;
+      }
+    }
     if (!startupCompaction || mode !== "agent") {
       const languageModel = myProvider.languageModel(
         CONTEXT_COMPACTION_MODEL_NAME,
@@ -717,6 +833,7 @@ const startTranscriptSave = ({
 };
 
 export interface CompactModelMessagesInRunOptions {
+  compactionPolicy?: CompactionModelPolicy;
   modelMessages: ModelMessage[];
   /** UI history excludes synthetic SDK continuation/approval messages. */
   sourceUiMessages?: UIMessage[];
@@ -790,6 +907,7 @@ export const compactModelMessagesInRun = async ({
   cacheAlignedSummary,
   onPhaseDuration,
   registerBackgroundWork,
+  compactionPolicy,
 }: CompactModelMessagesInRunOptions): Promise<InRunModelCompactionResult | null> => {
   const summarizationThreshold = getSummarizationThresholdTokens(maxTokens);
   const compactionReason = getCompactionLogReason({
@@ -810,7 +928,9 @@ export const compactModelMessagesInRun = async ({
       reason: compactionReason,
       compaction_index: compactionIndex,
       persistence: "run_scoped",
-      compaction_model: CONTEXT_COMPACTION_MODEL_NAME,
+      compaction_model:
+        (await compactionPolicy?.resolve())?.model ??
+        CONTEXT_COMPACTION_MODEL_NAME,
       model_message_count: modelMessages.length,
       provider_input_tokens: providerInputTokens,
       max_tokens: maxTokens,
@@ -861,6 +981,7 @@ export const compactModelMessagesInRun = async ({
       }
     }
     const useWarmPrefix =
+      !compactionPolicy &&
       cacheAlignedSummary &&
       prefixBudget > 0 &&
       estimateSummaryInputTokens(modelMessages) <= prefixBudget;
@@ -881,6 +1002,8 @@ export const compactModelMessagesInRun = async ({
         subscription,
         reason: compactionReason,
         onPhaseDuration,
+        compactionPolicy,
+        persistence: "run_scoped",
       });
     if (useWarmPrefix) cacheAlignedSummary.onUsed?.();
     const summaryPromise = useWarmPrefix
@@ -1079,6 +1202,7 @@ export const checkAndSummarizeIfNeeded = async ({
   onPhaseDuration,
   registerBackgroundWork,
   startupCompaction,
+  compactionPolicy,
 }: CheckAndSummarizeOptions): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -1171,6 +1295,9 @@ export const checkAndSummarizeIfNeeded = async ({
     summarizationThreshold,
   });
   logContextCompactionStarted({
+    compactionModel:
+      (await compactionPolicy?.resolve())?.model ??
+      CONTEXT_COMPACTION_MODEL_NAME,
     chatId,
     mode,
     subscription,
@@ -1206,6 +1333,7 @@ export const checkAndSummarizeIfNeeded = async ({
       reason: compactionReason,
       onPhaseDuration,
       startupCompaction,
+      compactionPolicy,
     });
 
     // In agent modes, save the full transcript of summarized messages to the sandbox

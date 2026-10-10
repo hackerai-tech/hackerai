@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -19,6 +20,7 @@ import {
   USE_CASE_QUESTION,
   USE_CASE_OPTIONS,
   isNewSurveyUser,
+  getUseCaseDisplayOptions,
   useCaseSurveySchema,
   type UseCaseAnswer,
   type UseCaseSurvey,
@@ -147,6 +149,10 @@ export function AcquisitionSurveyPrompt({
   );
   const [captureFailed, setCaptureFailed] = useState(false);
   const submissionId = uuidv5(`${userId}:${survey.id}`, uuidv5.URL);
+  const displayOptions = useMemo(
+    () => getUseCaseDisplayOptions(userId, survey.id),
+    [userId, survey.id],
+  );
   const capture = useCallback(
     (
       event: "survey shown" | "survey sent" | "survey dismissed",
@@ -167,6 +173,8 @@ export function AcquisitionSurveyPrompt({
           ],
           survey_version: ACQUISITION_SURVEY_VERSION,
           activation_mode: activationMode,
+          option_order_version: 1,
+          option_order: displayOptions.map(({ value }) => value),
           ...(answer && {
             $survey_completed: true,
             [`$survey_response_${survey.questionId}`]: label,
@@ -184,7 +192,14 @@ export function AcquisitionSurveyPrompt({
         },
       });
     },
-    [activationMode, submissionId, survey.id, survey.questionId, userId],
+    [
+      activationMode,
+      displayOptions,
+      submissionId,
+      survey.id,
+      survey.questionId,
+      userId,
+    ],
   );
 
   useEffect(() => {
@@ -278,7 +293,7 @@ export function AcquisitionSurveyPrompt({
         aria-label={USE_CASE_QUESTION}
         className="mt-3 flex flex-wrap gap-2"
       >
-        {USE_CASE_OPTIONS.map(({ value, label }) => (
+        {displayOptions.map(({ value, label }) => (
           <Button
             key={value}
             type="button"

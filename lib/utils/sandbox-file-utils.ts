@@ -16,7 +16,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference, SandboxReadinessFailureReason } from "@/types";
 import { validateDownloadUrl } from "@/lib/ai/tools/utils/path-validation";
-import { miosaErrorDiagnostics } from "@/lib/ai/tools/utils/miosa-acquisition-diagnostics";
 import { classifySandboxReadinessFailureSignal } from "@/lib/ai/tools/utils/sandbox-readiness-failure";
 import { getSandboxLogFields } from "@/lib/ai/tools/utils/sandbox-types";
 import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert";
@@ -80,7 +79,8 @@ type SandboxUploadFailureDetail = {
   reason: SandboxUploadFailureReason;
   transientSandboxCommand: boolean;
   sandboxReadinessReason: SandboxReadinessFailureReason;
-  sandboxProvider?: "miosa" | "e2b";
+  readinessProbeReason?: SandboxReadinessFailureReason;
+  sandboxProvider?: "e2b";
   errorName?: string;
   errorCode?: string;
   errorHttpStatus?: number;
@@ -129,8 +129,7 @@ type CollectSandboxFilesOptions = {
 const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
 const ACQUISITION_ERROR_NAMES = new Set([
   "E2BAcquisitionError",
-  "MiosaWorkspaceUnavailableError",
-  "CloudMigrationUnavailableError",
+  "CloudWorkspaceUnavailableError",
 ]);
 
 const logLocalAttachmentDebug = (
@@ -940,6 +939,7 @@ const resolveWritableUploadFallbackPath = async (
   sandbox: any,
   originalLocalPath: string,
   signal?: AbortSignal,
+  requireFreeSpace = false,
 ): Promise<string | null> => {
   signal?.throwIfAborted();
   const fileName = originalLocalPath.split(/[/\\]/).pop();
@@ -950,6 +950,11 @@ const resolveWritableUploadFallbackPath = async (
     `filename=${shellQuote(fileName)}`,
     `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
     `  [ -n "$base" ] || continue`,
+    ...(requireFreeSpace
+      ? [
+          `  df -Pk "$base" 2>/dev/null | awk 'NR > 1 && $4 > 0 { free = 1 } END { exit !free }' || continue`,
+        ]
+      : []),
     `  root="$base/hackerai-upload"`,
     `  mkdir -p "$root" 2>/dev/null && [ -w "$root" ] || continue`,
     `  root="$(cd "$root" 2>/dev/null && pwd -P)" || continue`,
@@ -1044,23 +1049,40 @@ const stageSandboxFile = async (
         outcome === "recovered" ? "info" : "warn",
       );
     };
+    // curl's exit 23 hides ENOSPC. A one-byte probe can succeed even when
+    // no blocks remain. Allow a fallback on another filesystem, but avoid
+    // transferring again to a destination that also has no free blocks.
+    const diskFull =
+      diagnostics.probe_status === "ok" &&
+      (diagnostics.available_bytes === 0 ||
+        diagnostics.write_probe_result === "disk_full" ||
+        diagnostics.write_probe_result === "quota_exceeded");
+    const transferError = diskFull
+      ? Object.assign(
+          new Error("No space left on device while staging attachment", {
+            cause: error,
+          }),
+          { exitCode: extractCommandExitCode(error) },
+        )
+      : error;
     let fallbackPath: string | null;
     try {
       fallbackPath = await resolveWritableUploadFallbackPath(
         sandbox,
         file.localPath,
         signal,
+        diskFull,
       );
     } catch (fallbackError) {
       throwIfAttachmentAborted(signal, fallbackError);
-      recordOutcome("unavailable", fallbackError);
+      recordOutcome("unavailable", transferError);
       // E2B throws for a nonzero exit instead of returning it. A failed
       // best-effort directory probe must not replace the transfer cause.
-      throw error;
+      throw transferError;
     }
     if (!fallbackPath || fallbackPath === file.localPath) {
-      recordOutcome("unavailable");
-      throw error;
+      recordOutcome("unavailable", transferError);
+      throw transferError;
     }
 
     recordOutcome("retrying");
@@ -1086,7 +1108,9 @@ const stageSandboxFile = async (
       throwIfAttachmentAborted(signal, fallbackError);
       recordOutcome("failed", fallbackError);
       const originalMessage =
-        error instanceof Error ? error.message : String(error);
+        transferError instanceof Error
+          ? transferError.message
+          : String(transferError);
       const fallbackMessage =
         fallbackError instanceof Error
           ? fallbackError.message
@@ -1152,10 +1176,6 @@ const summarizeSandboxUploadFailure = (
       ? classifySandboxUploadReadinessFailure(error)
       : "unknown";
   const sandboxFields = sandbox ? getSandboxLogFields(sandbox) : undefined;
-  const providerDiagnostics =
-    sandboxFields?.sandbox_provider === "miosa"
-      ? miosaErrorDiagnostics(error)
-      : undefined;
   // Acquisition has no sandbox instance yet. Preserve only known wrapper names
   // for terminal diagnostics, independently of the retry-driving classifier.
   const errorName =
@@ -1163,7 +1183,7 @@ const summarizeSandboxUploadFailure = (
     error instanceof Error &&
     ACQUISITION_ERROR_NAMES.has(error.name)
       ? error.name
-      : providerDiagnostics?.error_name;
+      : undefined;
   const summary: SandboxUploadFailureDetail = {
     kind: file.kind,
     phase,
@@ -1176,26 +1196,16 @@ const summarizeSandboxUploadFailure = (
     ),
     transientSandboxCommand: isTransientSandboxCommandError(error),
     sandboxReadinessReason,
+    // Probe attribution is diagnostic only; acquisition and retry policy keep
+    // their existing classification and budget.
+    ...(phase === "readiness" && {
+      readinessProbeReason: classifySandboxUploadReadinessFailure(error),
+    }),
     ...(sandboxFields?.sandbox_provider && {
       sandboxProvider: sandboxFields.sandbox_provider,
     }),
     ...(errorName && {
       errorName,
-    }),
-    ...(providerDiagnostics?.error_code && {
-      errorCode: providerDiagnostics.error_code,
-    }),
-    ...(providerDiagnostics?.error_http_status && {
-      errorHttpStatus: providerDiagnostics.error_http_status,
-    }),
-    ...(providerDiagnostics?.error_request_id && {
-      errorRequestId: providerDiagnostics.error_request_id,
-    }),
-    ...(providerDiagnostics?.error_retryable !== undefined && {
-      errorRetryable: providerDiagnostics.error_retryable,
-    }),
-    ...(providerDiagnostics?.validation_fields && {
-      validationFields: providerDiagnostics.validation_fields,
     }),
   };
 
@@ -1357,6 +1367,7 @@ const uploadSandboxFilesOnce = async (
         failure_phase: readinessFailed ? "readiness" : "transfer",
         failure_reason: primaryFailure.reason,
         failure_exit_code: primaryFailure.exitCode,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         ...(await sampleAttachmentFailureMetrics(sandbox)),
       },
       "warn",
@@ -1394,6 +1405,7 @@ const uploadSandboxFilesOnce = async (
         failure_exit_code: primaryFailure.exitCode,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         error_name: primaryFailure.errorName ?? null,
         error_code: primaryFailure.errorCode ?? null,
@@ -1430,6 +1442,7 @@ const uploadSandboxFilesOnce = async (
         failure_exit_code: primaryFailure.exitCode,
         transient_sandbox_command: primaryFailure.transientSandboxCommand,
         sandbox_readiness_reason: primaryFailure.sandboxReadinessReason,
+        readiness_probe_reason: primaryFailure.readinessProbeReason ?? null,
         sandbox_provider: primaryFailure.sandboxProvider ?? null,
         sandbox_type: getSandboxLogFields(sandbox).sandbox_type,
         error_name: primaryFailure.errorName ?? null,
@@ -1475,6 +1488,9 @@ export const getSandboxUploadFailureMetadata = (
   return {
     ...(failure?.kind ? { upload_failure_kind: failure.kind } : {}),
     ...(failure?.phase ? { upload_failure_phase: failure.phase } : {}),
+    ...(failure?.readinessProbeReason
+      ? { upload_failure_readiness_probe_reason: failure.readinessProbeReason }
+      : {}),
     ...(failure?.reason ? { upload_failure_reason: failure.reason } : {}),
     ...(cause ? { upload_failure_cause: cause } : {}),
     ...(failure?.transientSandboxCommand !== undefined

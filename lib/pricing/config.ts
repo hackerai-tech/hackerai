@@ -2,7 +2,7 @@
 export const PRICING = {
   pro: {
     monthly: 29,
-    yearly: 21,
+    yearly: 24,
   },
   "pro-plus": {
     monthly: 60,
