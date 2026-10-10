@@ -679,6 +679,34 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
+  it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
+    const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);
+    const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+      usedTokens: 1_000,
+      maxTokens: 128_000,
+    });
+    const stream = (await createAgentStream(
+      "test-model",
+      createTestStreamContext({
+        checkBudgetBeforeStep,
+        usageTracker: {},
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+      }) as any,
+      state,
+    )) as any;
+    const step = {
+      steps: [],
+      messages: [{ role: "user", content: "Continue" }],
+    };
+    await stream.prepareStep(step);
+    const exhausted = new Error("Shared daily allowance exhausted");
+    checkBudgetBeforeStep.mockRejectedValueOnce(exhausted);
+    await expect(stream.prepareStep({ ...step, stepNumber: 1 })).rejects.toBe(
+      exhausted,
+    );
+    expect(checkBudgetBeforeStep).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["ask", "agent"])(
     "omits retained provider request bodies in %s streams",
     async (mode) => {

@@ -1347,6 +1347,12 @@ export const subagentTask = task({
                 prepareStep: async ({ messages, steps }) => {
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
+                  if (freeDailySettlement) {
+                    await checkFreeCostBudget(
+                      row.free_quota_subject ?? row.user_id,
+                      payload.regionalFreeLimits,
+                    );
+                  }
                   runtimeStage = "generation";
                   let deadlineMessage: ModelMessage | undefined;
                   if (
@@ -1511,10 +1517,6 @@ export const subagentTask = task({
                         ) +
                           resolveTriggerRunCost(triggerUsage.getCurrent())
                             .totalCostDollars,
-                      );
-                      await checkFreeCostBudget(
-                        row.free_quota_subject ?? row.user_id,
-                        payload.regionalFreeLimits,
                       );
                     } catch (error) {
                       activeAbort.abort();

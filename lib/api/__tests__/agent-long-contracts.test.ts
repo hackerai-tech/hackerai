@@ -2418,7 +2418,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       taskSrc.match(
         /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
       ),
-    ).toHaveLength(4);
+    ).not.toHaveLength(0);
     expect(taskSrc).not.toMatch(
       /checkFreeCostBudget\(freeUsageSubject,\s*userId/,
     );

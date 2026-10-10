@@ -3738,6 +3738,11 @@ export const agentLongTask = task({
                 }
               },
               settleUsageAfterStep,
+              checkBudgetBeforeStep: freeDailySettlement
+                ? async () => {
+                    await checkFreeCostBudget(freeUsageSubject, freeLimits);
+                  }
+                : undefined,
               ...(subagentCompletionGate ? { subagentCompletionGate } : {}),
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {

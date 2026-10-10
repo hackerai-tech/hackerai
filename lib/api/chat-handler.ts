@@ -1712,6 +1712,11 @@ export const createChatHandler = () => {
               registerBackgroundWork: registerBackgroundStreamWork,
               getSandboxCostDollars: getSandboxSessionCost,
               settleUsageAfterStep,
+              checkBudgetBeforeStep: freeDailySettlement
+                ? async () => {
+                    await checkFreeCostBudget(freeUsageSubject, freeLimits);
+                  }
+                : undefined,
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
                   modelName: selectedModel,
