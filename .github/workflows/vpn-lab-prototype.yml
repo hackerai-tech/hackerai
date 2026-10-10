@@ -1,0 +1,38 @@
+name: VPN lab prototype
+
+on:
+  pull_request:
+    paths:
+      - "scripts/vpn-lab-prototype/**"
+      - ".github/workflows/vpn-lab-prototype.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [udp, tcp]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build disposable local fixture
+        run: docker --context default build -t hackerai-vpn-prototype:ci scripts/vpn-lab-prototype
+      - name: Compare identical synthetic VPN profiles
+        run: >-
+          python3 scripts/vpn-lab-prototype/run.py
+          --context default
+          --image hackerai-vpn-prototype:ci
+          --protocol ${{ matrix.protocol }}
+      - name: Record sanitized local evidence
+        if: always()
+        run: |
+          if [ -f .artifacts/vpn-lab-prototype/result.json ]; then
+            cat .artifacts/vpn-lab-prototype/result.json
+          fi
