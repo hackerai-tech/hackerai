@@ -37,3 +37,39 @@ describe("paid task outcome analytics", () => {
     expect(properties).not.toHaveProperty("baseline_model");
   });
 });
+
+it("freezes experiment attribution without forwarding content or treating unchecked as failure", () => {
+  const row = {
+    request_id: "original",
+    message_id: "recovery",
+    chat_id: "chat",
+    mode: "ask",
+    subscription_tier: "team",
+    release: "sha",
+    survey_kind: "current_experiment" as const,
+    experiment_key: "abliterated_max_moderated_v1",
+    experiment_variant: "test",
+    experiment_request_id: "original",
+    feedback_phase: "abliterated_max_moderated_feedback_v1",
+    selected_model_override: "hackerai-pro",
+    assigned_model: "abliterated-model",
+    baseline_model: "baseline",
+    answer: "not_checked",
+    content: "private",
+    prompt: "private",
+    user_id: "user",
+  };
+  const properties = taskOutcomeProperties(row);
+  expect(properties).toMatchObject({
+    survey_version: 3,
+    survey_key: "abliterated_task_outcome_feedback_v1",
+    survey_request_id: "original",
+    experiment_request_id: "original",
+    message_id: "recovery",
+    task_solved: null,
+    selected_model_override: "hackerai-pro",
+  });
+  expect(properties).not.toHaveProperty("content");
+  expect(properties).not.toHaveProperty("prompt");
+  expect(properties).not.toHaveProperty("user_id");
+});

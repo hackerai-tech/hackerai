@@ -2,7 +2,7 @@ import { WorkOS } from "@workos-inc/node";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import chalk from "chalk";
-import { getTestUsers } from "./test-users-config";
+import { getTestUsers, getTestUserEmails } from "./test-users-config";
 
 // Load environment variables from .env.e2e first, then .env.local
 dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -24,13 +24,13 @@ async function deleteTestUsers() {
     process.exit(1);
   }
 
-  const testUsers = getTestUsers();
+  const testUsers = Object.values(getTestUserEmails());
   for (const testUser of testUsers) {
-    console.log(chalk.cyan(`\nDeleting ${testUser.email}...`));
+    console.log(chalk.cyan(`\nDeleting ${testUser}...`));
 
     try {
       const usersList = await workos.userManagement.listUsers({
-        email: testUser.email,
+        email: testUser,
       });
 
       if (usersList.data.length > 0) {
@@ -232,13 +232,25 @@ async function createTestUsers() {
   );
   console.log();
   console.log(chalk.cyan(`   TEST_FREE_TIER_USER=${users[0].email}`));
-  console.log(chalk.cyan(`   TEST_FREE_TIER_PASSWORD=${users[0].password}`));
+  console.log(
+    chalk.cyan(
+      `   TEST_FREE_TIER_PASSWORD=[configured separately; value hidden]`,
+    ),
+  );
   console.log();
   console.log(chalk.cyan(`   TEST_PRO_TIER_USER=${users[1].email}`));
-  console.log(chalk.cyan(`   TEST_PRO_TIER_PASSWORD=${users[1].password}`));
+  console.log(
+    chalk.cyan(
+      `   TEST_PRO_TIER_PASSWORD=[configured separately; value hidden]`,
+    ),
+  );
   console.log();
   console.log(chalk.cyan(`   TEST_ULTRA_TIER_USER=${users[2].email}`));
-  console.log(chalk.cyan(`   TEST_ULTRA_TIER_PASSWORD=${users[2].password}`));
+  console.log(
+    chalk.cyan(
+      `   TEST_ULTRA_TIER_PASSWORD=[configured separately; value hidden]`,
+    ),
+  );
   console.log();
 
   console.log("\n2. Run verification script to verify all emails:");

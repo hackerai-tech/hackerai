@@ -3,6 +3,7 @@ import {
   evaluateFreeAgentBudget,
   freeAgentBudgetPolicy,
 } from "@/lib/experiments/free-agent-budget";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { enforceRegionalSubscriptionFirst } from "@/lib/experiments/regional-subscription-first.server";
 import { formatToolStreamError } from "@/lib/chat/tool-stream-error";
 import { isDesktopPreference } from "@/lib/sandbox/environment";
@@ -46,11 +47,13 @@ import { recordGroupedSpikeAlert } from "@/lib/observability/grouped-spike-alert
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
-import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { AGENT_PROVIDER_IDLE_TIMEOUT_MS } from "@/lib/ai/provider-stream-timeout";
+import {
+  AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+  AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+} from "@/lib/ai/provider-stream-timeout";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { cacheAuxiliaryVisionDescription } from "@/lib/utils/file-transform-utils";
 import {
@@ -552,7 +555,7 @@ type AgentLongErrorSummary = {
   cause?: string;
   loginRequired: boolean;
   statusCode?: number;
-  providerErrorOrigin?: "local_request_size_guard";
+  providerErrorOrigin?: ProviderTerminalError["origin"];
   localRequestId?: string;
   requestBytesBefore?: number;
   requestBytesAfter?: number;
@@ -583,7 +586,7 @@ type AgentLongErrorSummary = {
   requestedPreference?: string;
   actualSandbox?: string;
   uploadFailureKind?: string;
-  uploadFailurePhase?: "acquisition" | "transfer";
+  uploadFailurePhase?: "acquisition" | "readiness" | "transfer";
   uploadFailureReason?: string;
   uploadFailureCause?: string;
   uploadFailureTransientSandboxCommand?: boolean;
@@ -596,7 +599,7 @@ type AgentLongErrorSummary = {
   uploadFailureErrorRetryable?: boolean;
   uploadFailureProtocol?: string;
   uploadFailureUrlLength?: number;
-  uploadRetriedWithFreshSandbox?: boolean;
+  uploadRetriedAfterReconnect?: boolean;
 };
 
 const isChatNotFoundError = (error: ChatSDKError): boolean => {
@@ -775,6 +778,7 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
       ),
       uploadFailurePhase:
         uploadFailurePhase === "acquisition" ||
+        uploadFailurePhase === "readiness" ||
         uploadFailurePhase === "transfer"
           ? uploadFailurePhase
           : undefined,
@@ -826,9 +830,9 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
         errorMetadata,
         "upload_failure_url_length",
       ),
-      uploadRetriedWithFreshSandbox: getBooleanMetadata(
+      uploadRetriedAfterReconnect: getBooleanMetadata(
         errorMetadata,
-        "upload_retried_with_fresh_sandbox",
+        "upload_retried_after_reconnect",
       ),
     };
   }
@@ -1096,10 +1100,10 @@ const recordAgentLongFailureForDashboard = async (
     metadata.set("uploadFailureProtocol", summary.uploadFailureProtocol);
   if (summary.uploadFailureUrlLength != null)
     metadata.set("uploadFailureUrlLength", summary.uploadFailureUrlLength);
-  if (summary.uploadRetriedWithFreshSandbox != null) {
+  if (summary.uploadRetriedAfterReconnect != null) {
     metadata.set(
-      "uploadRetriedWithFreshSandbox",
-      summary.uploadRetriedWithFreshSandbox,
+      "uploadRetriedAfterReconnect",
+      summary.uploadRetriedAfterReconnect,
     );
   }
 
@@ -1935,20 +1939,10 @@ export const agentLongTask = task({
         selectedModelOverride,
       });
       posthog = PostHogClient();
-      const cloudSandboxSelection =
-        !sandboxPreference || sandboxPreference === "e2b"
-          ? await selectCloudSandboxProvider({
-              userId,
-              subscription,
-              environment: ctx.environment.type,
-              triggerRegion,
-              requestRegionClass,
-              featureFlagClient: posthog,
-            })
-          : ({
-              provider: "e2b",
-              reason: "miosa_rollout_control",
-            } as const);
+      const cloudSandboxSelection = {
+        provider: "e2b",
+        reason: "e2b_only",
+      } as const;
       const cloudSandboxProvider = cloudSandboxSelection.provider;
       const regionalFreeLimits = getRegionalFreeLimits({
         userId,
@@ -2001,7 +1995,7 @@ export const agentLongTask = task({
         selectedModel,
         sandboxFiles,
         platformAuthorized,
-        allowsAbliterationContinuation,
+        moderationChecked,
       } = await processChatMessages({
         messages: messagesForProcessing,
         mode,
@@ -2037,11 +2031,12 @@ export const agentLongTask = task({
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
-        allowsAbliterationContinuation,
-        independentAbliterationResponses:
-          fetched.independentAbliterationResponses,
-        messages: processedMessages,
+        moderationChecked,
+        messages: messagesForProcessing,
         limitRescue: Boolean(limitRescue),
+        ...(ctx.environment.type === "PREVIEW" && {
+          previewDiagnosticContext: { chatId, requestId: ctx.run.id },
+        }),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
@@ -2057,6 +2052,8 @@ export const agentLongTask = task({
         : undefined;
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
+        assignment: abliteratedExperiment,
+        selectedModelOverride,
         release: ctx.deployment?.version,
         posthog,
         userId,
@@ -2758,6 +2755,7 @@ export const agentLongTask = task({
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion,
                 environment: ctx.environment.type,
+                signal: userStopSignal.signal,
                 keepE2BLeaseAliveForRun: true,
                 ...(subagentsEnabled
                   ? {
@@ -2893,7 +2891,7 @@ export const agentLongTask = task({
                   ensureSandbox,
                   {
                     signal: userStopSignal.signal,
-                    retryWithFreshSandboxOnTransientFailure: true,
+                    retryAfterReconnectOnTransientFailure: true,
                     logContext: {
                       service: "agent-long",
                       requestId: ctx.run.id,
@@ -3065,7 +3063,8 @@ export const agentLongTask = task({
             const providerRecoveryModels: string[] = [];
             let lastProviderRecoveryError: ProviderTerminalError | undefined;
             const retrySelectionModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -3073,7 +3072,8 @@ export const agentLongTask = task({
               selectedModelOverride,
             });
             const fallbackModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
@@ -3625,6 +3625,7 @@ export const agentLongTask = task({
 
             // Shared runner context — immutable deps + platform hook.
             const streamCtx: AgentStreamContext = {
+              cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
                   event: "agent_guardrail_observed",
@@ -3640,9 +3641,13 @@ export const agentLongTask = task({
                 }),
               providerStreamTimeout: {
                 timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                totalTimeoutMs: AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
                 onTimeout: ({ phase, timeoutMs, modelId }) => {
                   triggerLogger.warn("[agent-long] provider stalled", {
-                    event: "agent_long_provider_idle_timeout",
+                    event:
+                      phase === "total"
+                        ? "agent_long_provider_total_timeout"
+                        : "agent_long_provider_idle_timeout",
                     run_id: ctx.run.id,
                     chat_id: chatId,
                     phase,
@@ -3658,11 +3663,14 @@ export const agentLongTask = task({
                 },
               },
               abliteratedTelemetry,
-              ...(activeAbliteratedExperiment?.variant === "test" && {
-                abliteratedStepRouting: {
-                  baselineModel: activeAbliteratedExperiment.baselineModel,
-                },
-              }),
+              ...(activeAbliteratedExperiment &&
+                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                  abliteratedStepRouting: {
+                    baselineModel: activeAbliteratedExperiment.baselineModel,
+                    generationStepLimit:
+                      activeAbliteratedExperiment.generationStepLimit,
+                  },
+                }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
               },

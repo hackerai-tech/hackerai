@@ -39,6 +39,8 @@ export interface ProviderRequestDiagnostics {
   fallback_model_slugs?: string[];
   has_user_attribution: boolean;
   has_multimodal_tool_results: boolean;
+  /** Presence only; never log provider message content. */
+  platform_authorization_annotation_appended?: boolean;
   max_tool_calls_per_assistant?: number;
   unmatched_tool_call_count?: number;
   unmatched_tool_result_count?: number;
@@ -180,7 +182,7 @@ export interface ChatWideEvent {
   sandbox?: {
     type: "cloud" | "desktop" | "remote-connection";
     name?: string;
-    provider?: "miosa" | "e2b";
+    provider?: "e2b";
   };
 
   // Sandbox boot timing — fires once per request, only when actual work is done

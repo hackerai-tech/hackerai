@@ -627,11 +627,28 @@ describe("selectModel", () => {
     });
   });
 
+  it.each([
+    undefined,
+    "auto",
+    "hackerai-standard",
+    "hackerai-pro",
+    "hackerai-max",
+  ] as const)(
+    "routes free Agent %s directly to GLM Flash for text and PDFs",
+    (selection) => {
+      for (const hasPdf of [false, true]) {
+        expect(selectModel("agent", "free", selection, false, hasPdf)).toBe(
+          "model-glm-5.3-flash-agent",
+        );
+      }
+    },
+  );
+
   // Free user guard
   describe("free user guard", () => {
     it("should ignore tier override for free users in agent mode", () => {
       expect(selectModel("agent", "free", "hackerai-pro")).toBe(
-        "agent-model-free",
+        "model-glm-5.3-flash-agent",
       );
     });
 

@@ -38,8 +38,8 @@ describe("token-bucket", () => {
           cacheReadTokens: 500_000,
           modelName,
         }),
-      ).toBeCloseTo(4.65);
-      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
+      ).toBeCloseTo(3.55);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(10_000);
     },
   );
   it.each(["model-abliterated-large-v2", "abliterated-model-large-v2"])(
@@ -567,13 +567,13 @@ describe("token-bucket", () => {
       ).toBe(10440);
     });
 
-    it("should use DeepSeek V4 Flash 0731 pricing ($0.14/$0.28)", () => {
+    it("prices the redirected legacy registry alias as V4.1 ($0.30/$1.20)", () => {
       expect(
         calculateTokenCost(1_000_000, "input", "model-deepseek-v4-flash-0731"),
-      ).toBe(1680);
+      ).toBe(3600);
       expect(
         calculateTokenCost(1_000_000, "output", "model-deepseek-v4-flash-0731"),
-      ).toBe(3360);
+      ).toBe(14400);
     });
 
     it("should use GLM 5.2 baseline pricing ($0.76/$2.42)", () => {
@@ -609,6 +609,7 @@ describe("token-bucket", () => {
 
     it.each([
       "model-deepseek-v4-flash-vision",
+      "ask-model-free",
       "ask-model-free-deepseek-v41",
       "model-deepseek-v4-flash-vision-pro",
       "agent-model-free",
@@ -656,7 +657,6 @@ describe("token-bucket", () => {
     );
 
     it.each([
-      "ask-model-free",
       "deepseek/deepseek-v4-flash-0731",
       "deepseek/deepseek-v4-flash-20260731",
     ])(

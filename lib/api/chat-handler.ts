@@ -3,6 +3,7 @@ import {
   evaluateFreeAgentBudget,
   freeAgentBudgetPolicy,
 } from "@/lib/experiments/free-agent-budget";
+import { isAbliterationModel } from "@/lib/ai/abliteration";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -84,7 +85,6 @@ import {
 } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
-import { selectCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import { getRegionalExecutionContextForVercelRequest } from "@/lib/api/trigger-region";
 import {
   captureAgentBudgetAbort,
@@ -556,7 +556,7 @@ export const createChatHandler = () => {
         selectedModel,
         sandboxFiles,
         platformAuthorized,
-        allowsAbliterationContinuation,
+        moderationChecked,
       } = await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -594,11 +594,12 @@ export const createChatHandler = () => {
         mode,
         selectedModelOverride,
         moderationEligible: platformAuthorized,
-        allowsAbliterationContinuation,
-        independentAbliterationResponses:
-          fetched.independentAbliterationResponses,
-        messages: processedMessages,
+        moderationChecked,
+        messages: truncatedMessages,
         limitRescue: Boolean(limitRescue),
+        ...(process.env.VERCEL_ENV === "preview" && {
+          previewDiagnosticContext: { chatId, requestId },
+        }),
       });
       if (abliteratedExperiment) selectedModel = abliteratedExperiment.modelKey;
 
@@ -614,6 +615,8 @@ export const createChatHandler = () => {
         : undefined;
 
       const taskOutcomeSurvey = await selectTaskOutcomeSurvey({
+        assignment: abliteratedExperiment,
+        selectedModelOverride,
         posthog,
         userId,
         chatId,
@@ -660,20 +663,10 @@ export const createChatHandler = () => {
 
       // PostHog client for analytics.
       posthog ??= PostHogClient();
-      const cloudSandboxSelection =
-        isAgentMode(mode) && (!sandboxPreference || sandboxPreference === "e2b")
-          ? await selectCloudSandboxProvider({
-              userId,
-              subscription,
-              environment: process.env.VERCEL_ENV ?? "development",
-              triggerRegion: executionRegion,
-              requestRegionClass,
-              featureFlagClient: posthog,
-            })
-          : ({
-              provider: "e2b",
-              reason: "miosa_rollout_control",
-            } as const);
+      const cloudSandboxSelection = {
+        provider: "e2b",
+        reason: "e2b_only",
+      } as const;
 
       const fileCounts = countFileAttachments(truncatedMessages);
       const chatLogContext = {
@@ -962,6 +955,7 @@ export const createChatHandler = () => {
                 cloudSandboxSelectionReason: cloudSandboxSelection.reason,
                 triggerRegion: executionRegion,
                 environment: process.env.VERCEL_ENV ?? "development",
+                signal: userStopSignal.signal,
               },
             );
 
@@ -1047,7 +1041,7 @@ export const createChatHandler = () => {
                   ensureSandbox,
                   {
                     signal: userStopSignal.signal,
-                    retryWithFreshSandboxOnTransientFailure: true,
+                    retryAfterReconnectOnTransientFailure: true,
                     logContext: {
                       service: "chat-handler",
                       requestId,
@@ -1224,7 +1218,8 @@ export const createChatHandler = () => {
             let isRetryWithFallback = false;
             let retryUsedFallbackModel = false;
             const retrySelectionModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : selectedModel;
             const isAutoModel = isAutoModelSelectionForRetry({
@@ -1232,7 +1227,8 @@ export const createChatHandler = () => {
               selectedModelOverride,
             });
             const fallbackModel =
-              abliteratedExperiment?.variant === "test"
+              abliteratedExperiment &&
+              isAbliterationModel(abliteratedExperiment.modelKey)
                 ? abliteratedExperiment.baselineModel
                 : getRetryFallbackModel(selectedModel, mode);
             let activeModelName = selectedModel;
@@ -1650,6 +1646,7 @@ export const createChatHandler = () => {
 
             // Shared runner context.
             const streamCtx: AgentStreamContext = {
+              cacheVisionDescription: cacheAuxiliaryVisionDescription,
               onAgentGuardrail: (observation) =>
                 phLogger.warn("Agent guardrail observed", {
                   event: "agent_guardrail_observed",
@@ -1663,11 +1660,14 @@ export const createChatHandler = () => {
                   ...observation,
                 }),
               abliteratedTelemetry,
-              ...(activeAbliteratedExperiment?.variant === "test" && {
-                abliteratedStepRouting: {
-                  baselineModel: activeAbliteratedExperiment.baselineModel,
-                },
-              }),
+              ...(activeAbliteratedExperiment &&
+                isAbliterationModel(activeAbliteratedExperiment.modelKey) && {
+                  abliteratedStepRouting: {
+                    baselineModel: activeAbliteratedExperiment.baselineModel,
+                    generationStepLimit:
+                      activeAbliteratedExperiment.generationStepLimit,
+                  },
+                }),
               onProviderRequestStart: (configuredModel) => {
                 recordFlashRoutingExposure(configuredModel);
               },

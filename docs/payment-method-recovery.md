@@ -81,6 +81,28 @@ subscription, credit note, support resolution, partial payment, or unrelated
 refund requires manual reconciliation. Payments made before cancellation and
 voluntary cancellations are outside this policy.
 
+On `customer.subscription.deleted` with reason `payment_failed` or
+`cancellation_requested`, the handler
+voids the latest wholly unpaid automatic renewal for a single recognized,
+licensed individual plan, with exactly one invoice line matching that subscription
+item and a quantity of one. Requested cancellations cover Dashboard and portal
+cancellations as well as retries of the in-app cleanup. Only `open` invoices
+qualify for requested cancellations; written-off historical debt remains for
+review. For payment-failure cancellations, both `open` and `uncollectible` invoices
+qualify. This deliberately retires that failed renewal debt
+instead of collecting money for a subscription that cannot be restarted. It
+does not grant access or usage; the customer starts a new subscription normally.
+Team, metered, unfamiliar, partial-payment, prior-debt, proration, mixed-item, credit-note,
+and support-adjusted cases remain for review. Pending payment processing or
+authentication also prevents cleanup. Cleanup failures retry the deletion
+webhook before it is marked processed. Cleanup runs even if customer-user lookup
+fails or finds no users. A concurrent paid invoice stays under
+the existing late-payment reconciliation policy.
+
+This prevents future eligible canceled renewals from leaving a payable old
+invoice link or blocking a fresh checkout. It does not backfill already processed
+cancellations or change how an existing ambiguous paid invoice is resolved.
+
 An in-app cancellation of a `past_due` or `unpaid` subscription ends service
 immediately. The cancellation path voids its latest open automatic renewal
 invoice only when nothing has been paid and every line is a non-prorated
@@ -102,6 +124,33 @@ event alongside `billing_late_payment_reconciled`. A refund records offsetting c
 revenue without restored access, recovered MRR, referral eligibility, or fresh
 usage credits. This change handles new webhook deliveries; it does not backfill
 previously processed payments.
+
+### Durable support review
+
+An unresolved positive payment made after a recognized subscription ended writes
+`hackeraiLatePaymentReview=required`, a reason,
+and `hackeraiLatePaymentReviewOwner=billing-support` to the invoice before the
+webhook is acknowledged. This includes historical invoices and missing user
+memberships. A delayed webhook for a payment made before cancellation does not
+create a case. Stripe failures retry delivery. Duplicate deliveries reuse the same
+invoice case and preserve unrelated metadata. This supplements the existing
+PostHog alerts; it does not send a customer message or automatically grant service.
+
+Billing support owns this queue. With a restricted Stripe credential securely
+provided through `STRIPE_SECRET_KEY` (account read and invoice read permissions),
+run `pnpm exec tsx scripts/list-late-payment-reviews.ts <acct_id> <test|live>`.
+The command verifies the account and credential mode, searches all pages, and
+re-reads each invoice before including it. Search is eventually consistent, so
+an empty result immediately after a webhook is not proof of no outstanding cases.
+The webhook credential needs invoice write permission to persist review markers.
+
+The existing `hackeraiLatePaymentResolution` metadata closes a case. Record it only
+after the financial/access decision is coordinated and verify the corresponding
+refund or replacement and allowance readback. The queue excludes resolved
+invoices even when a stale search result or webhook arrives later. No support
+resolution field is cleared by this handler. Unmarked historical events require
+a separate reconciliation pass; failed refund-update alerts remain under the
+existing refund monitoring workflow.
 
 For a manual replacement month, first coordinate with any in-flight webhook and
 confirm no refund has been issued. Mark the original invoice's metadata
@@ -133,7 +182,9 @@ chat after the customer refreshes their entitlement session.
    WorkOS, and access state; they are not a substitute for this journey.
 5. The late-payment refund path needs Invoice Payments read and Refunds read/write
    access. Verify successful `refund.created` and `refund.updated` deliveries,
-   including when the Charge object has no legacy `invoice` field.
+   including when the Charge object has no legacy `invoice` field. Cancellation
+   cleanup additionally requires Invoices write and PaymentIntents read access;
+   verify the restricted webhook key supports `invoices.voidInvoice`.
 
 ## Manual sandbox journey (required)
 
@@ -167,12 +218,20 @@ detaches existing methods and has no sandbox guard).
 8. Check an attachment-only event, a stale default-card event, and a canceled
    subscription: none initiates collection. Remove disposable test artifacts only
    after recording sanitized outcomes and confirming their exact IDs.
-9. In a separate sandbox case, let renewal failures cancel the subscription, then
-   pay its latest renewal invoice. Confirm exactly one full refund, no paid access
-   or usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
-   deliveries: no additional refund or accounting entry. Repeat with a credited
-   replacement subscription and with an existing partial refund: both require
-   manual review and must not create another refund.
+9. In a separate sandbox case, let renewal failures cancel an individual licensed
+   subscription. Confirm deletion delivery voids its latest unpaid renewal
+   (`open` and `uncollectible` cases), the old hosted invoice cannot accept payment,
+   and a fresh checkout is allowed. Replay deletion: no additional write, access,
+   usage, or charge. Make the void API fail once: delivery must retry and complete
+   cleanup, rather than acknowledge and strand the invoice. Repeat with a partial
+   payment, credit note, mixed item, team plan, and processing/authentication
+   payment: none is voided automatically.
+10. For the late-payment race, hold deletion delivery until its latest renewal is
+    paid after cancellation. Confirm exactly one full refund, no paid access or
+    usage reset, and offsetting revenue entries. Replay `invoice.paid` and refund
+    deliveries: no additional refund or accounting entry. Repeat with a credited
+    replacement subscription and with an existing partial refund: both require
+    manual review and must not create another refund.
 
 Measure recovered users/invoices within a fixed window after the first renewal
 failure, joining by subscription and invoice. Separate card selection, actual

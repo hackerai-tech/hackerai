@@ -143,17 +143,24 @@ describe("POST /api/subscribe", () => {
               id:
                 lookup_keys[0] === "pro-monthly-plan"
                   ? "price_pro_29"
-                  : "price_other",
+                  : lookup_keys[0] === "pro-yearly-plan"
+                    ? "price_pro_288"
+                    : "price_other",
               lookup_key: lookup_keys[0],
               active: true,
               billing_scheme: "per_unit",
               type: "recurring",
               recurring: {
-                interval: "month",
+                interval: lookup_keys[0].includes("yearly") ? "year" : "month",
                 interval_count: 1,
                 usage_type: "licensed",
               },
-              unit_amount: lookup_keys[0] === "pro-monthly-plan" ? 2900 : 4900,
+              unit_amount:
+                lookup_keys[0] === "pro-monthly-plan"
+                  ? 2900
+                  : lookup_keys[0] === "pro-yearly-plan"
+                    ? 28800
+                    : 4900,
               currency: "usd",
             },
           ],
@@ -402,44 +409,50 @@ describe("POST /api/subscribe", () => {
     }
   });
 
-  it("creates a fresh $29 checkout instead of reusing an open $25 Pro session", async () => {
-    mockListOrganizationMemberships.mockResolvedValue({
-      data: [{ organizationId: "org_team", role: { slug: "admin" } }],
-    } as never);
-    mockGetOrganization.mockResolvedValue({
-      id: "org_team",
-      stripeCustomerId: "cus_existing_org",
-    } as never);
-    mockRetrieveCustomer.mockResolvedValue({
-      id: "cus_existing_org",
-      metadata: { workOSOrganizationId: "org_team" },
-    } as never);
-    mockListCheckoutSessions.mockResolvedValue({
-      data: [
-        {
-          id: "cs_old_25",
-          url: "https://stripe.example/old-checkout",
-          success_url: "https://hackerai.example/?refresh=entitlements",
-          cancel_url: "https://hackerai.example/",
-          metadata: {
-            workOSOrganizationId: "org_team",
-            requestedPlan: "pro-monthly-plan",
-            resolvedPriceLookupKey: "pro-monthly-plan",
+  it.each([
+    ["pro-monthly-plan", "price_pro_29"],
+    ["pro-yearly-plan", "price_pro_288"],
+  ])(
+    "creates a fresh %s checkout instead of reusing an old-price session",
+    async (plan, priceId) => {
+      mockListOrganizationMemberships.mockResolvedValue({
+        data: [{ organizationId: "org_team", role: { slug: "admin" } }],
+      } as never);
+      mockGetOrganization.mockResolvedValue({
+        id: "org_team",
+        stripeCustomerId: "cus_existing_org",
+      } as never);
+      mockRetrieveCustomer.mockResolvedValue({
+        id: "cus_existing_org",
+        metadata: { workOSOrganizationId: "org_team" },
+      } as never);
+      mockListCheckoutSessions.mockResolvedValue({
+        data: [
+          {
+            id: "cs_old_25",
+            url: "https://stripe.example/old-checkout",
+            success_url: "https://hackerai.example/?refresh=entitlements",
+            cancel_url: "https://hackerai.example/",
+            metadata: {
+              workOSOrganizationId: "org_team",
+              requestedPlan: plan,
+              resolvedPriceLookupKey: plan,
+            },
           },
-        },
-      ],
-      has_more: false,
-    } as never);
-    const { POST } = await import("../route");
-    const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
-    expect(response.status).toBe(200);
-    expect(mockUpdateCheckoutSession).not.toHaveBeenCalled();
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        line_items: [{ price: "price_pro_29", quantity: 1 }],
-      }),
-    );
-  });
+        ],
+        has_more: false,
+      } as never);
+      const { POST } = await import("../route");
+      const response = await POST(makeRequest({ plan }));
+      expect(response.status).toBe(200);
+      expect(mockUpdateCheckoutSession).not.toHaveBeenCalled();
+      expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          line_items: [{ price: priceId, quantity: 1 }],
+        }),
+      );
+    },
+  );
 
   it("returns Preview checkout to its branch and rejects a matching session from another branch", async () => {
     const originalEnv = {
@@ -1000,6 +1013,71 @@ describe("POST /api/subscribe", () => {
     } as never);
     const { POST } = await import("../route");
     const response = await POST(makeRequest({ plan: "pro-monthly-plan" }));
+    expect(response.status).toBe(503);
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it("charges $288 annually and records the yearly price in checkout analytics", async () => {
+    mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+    mockCreateOrganization.mockResolvedValue({ id: "org_new" } as never);
+    mockCreateCustomer.mockResolvedValue({
+      id: "cus_new",
+      metadata: {},
+    } as never);
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-yearly-plan" }));
+    expect(response.status).toBe(200);
+    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        line_items: [{ price: "price_pro_288", quantity: 1 }],
+      }),
+    );
+    expect(mockPostHogEvent).toHaveBeenCalledWith(
+      "checkout_started",
+      expect.objectContaining({
+        plan: "pro-yearly-plan",
+        billing_interval: "year",
+        charged_amount_dollars: 288,
+        stripe_price_id: "price_pro_288",
+      }),
+    );
+  });
+
+  it.each([
+    { unit_amount: 25200 },
+    { active: false },
+    { currency: "eur" },
+    {
+      recurring: {
+        interval: "month",
+        interval_count: 12,
+        usage_type: "licensed",
+      },
+    },
+  ])("rejects a misconfigured Pro annual checkout: %j", async (overrides) => {
+    mockListOrganizationMemberships.mockResolvedValue({ data: [] } as never);
+    mockCreateOrganization.mockResolvedValue({ id: "org_new" } as never);
+    mockListPrices.mockResolvedValue({
+      data: [
+        {
+          id: "price_wrong_yearly",
+          lookup_key: "pro-yearly-plan",
+          active: true,
+          billing_scheme: "per_unit",
+          type: "recurring",
+          unit_amount: 28800,
+          currency: "usd",
+          recurring: {
+            interval: "year",
+            interval_count: 1,
+            usage_type: "licensed",
+          },
+          ...overrides,
+        },
+      ],
+    } as never);
+    const { POST } = await import("../route");
+    const response = await POST(makeRequest({ plan: "pro-yearly-plan" }));
     expect(response.status).toBe(503);
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
   });

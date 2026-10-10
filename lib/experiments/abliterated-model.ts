@@ -1,7 +1,20 @@
+import { phLogger } from "@/lib/posthog/server";
 import { getPostHogFlagWithoutExposure } from "@/lib/posthog/flag-assignment";
-import { ABLITERATION_HISTORY_THRESHOLD } from "./abliteration-history";
-import { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
-export { ABLITERATED_EXPERIMENT_KEY } from "./abliteration-keys";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
+} from "./abliteration-keys";
+export {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
+} from "./abliteration-keys";
+import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { PostHog } from "posthog-node";
 import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -9,47 +22,25 @@ import type { ModelName } from "@/lib/ai/providers";
 import type { ExperimentAnalyticsContext } from "@/lib/analytics/experiment-context";
 import {
   ABLITERATION_MODEL_KEY,
-  ABLITERATION_LARGE_V2_MODEL_KEY,
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
-import { uiMessagesContainImageViewResult } from "@/lib/chat/multimodal-tool-result-recovery";
 
-export const ABLITERATION_CONTINUITY_FLAG = "abliteration_chat_continuity_v1";
 export type AbliteratedAssignment = ExperimentAnalyticsContext & {
-  key: typeof ABLITERATED_EXPERIMENT_KEY;
+  key:
+    | typeof ABLITERATED_EXPERIMENT_KEY
+    | typeof ABLITERATED_MAX_EXPERIMENT_KEY
+    | typeof ABLITERATED_PAID_FIRST_STEP_KEY
+    | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
+    | typeof ABLITERATED_PAID_THREE_STEPS_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
-  selectionSource?: "moderation" | "history";
+  selectionSource?: "moderation" | "history" | "paid_first_step";
+  moderationEligible?: boolean;
+  moderationChecked?: boolean;
   independentHistoryCount?: number;
+  generationStepLimit?: AbliterationGenerationStepLimit;
 };
-
-const LARGE_V2_BASELINE_MODELS = new Set<ModelName>([
-  "model-deepseek-v4-flash-vision-pro",
-  "model-deepseek-v4-pro",
-  "model-deepseek-v4-pro-0813",
-  "model-grok-4.6",
-  "model-grok-4.6-pro",
-]);
-
-export const getAbliterationTreatmentModel = (
-  baselineModel: ModelName,
-  requiresVision = false,
-): ModelName =>
-  !requiresVision && LARGE_V2_BASELINE_MODELS.has(baselineModel)
-    ? ABLITERATION_LARGE_V2_MODEL_KEY
-    : ABLITERATION_MODEL_KEY;
-
-const messagesRequireVision = (messages: UIMessage[]): boolean =>
-  uiMessagesContainImageViewResult(messages) ||
-  messages.some((message) =>
-    message.parts.some(
-      (part) =>
-        part.type === "file" &&
-        typeof part.mediaType === "string" &&
-        part.mediaType.startsWith("image/"),
-    ),
-  );
 
 const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
   messages.some((message) =>
@@ -93,10 +84,10 @@ export async function evaluateAbliteratedModel({
   mode,
   selectedModelOverride,
   moderationEligible,
-  allowsAbliterationContinuation = false,
-  independentAbliterationResponses = 0,
+  moderationChecked = true,
   messages,
   limitRescue = false,
+  previewDiagnosticContext,
 }: {
   posthog: Pick<PostHog, "getFeatureFlagResult"> | null;
   userId: string;
@@ -105,65 +96,103 @@ export async function evaluateAbliteratedModel({
   mode: ChatMode;
   selectedModelOverride?: SelectedModel;
   moderationEligible: boolean;
-  allowsAbliterationContinuation?: boolean;
-  independentAbliterationResponses?: number;
+  moderationChecked?: boolean;
   messages: UIMessage[];
   limitRescue?: boolean;
+  previewDiagnosticContext?: { chatId: string; requestId: string };
 }): Promise<AbliteratedAssignment | undefined> {
-  const historyEligible =
-    subscription !== "free" &&
-    allowsAbliterationContinuation &&
-    Number.isInteger(independentAbliterationResponses) &&
-    independentAbliterationResponses >= ABLITERATION_HISTORY_THRESHOLD;
+  const providerConfigured = isAbliterationConfigured();
+  const reportDecision = (reason: string, variant?: string) => {
+    if (!previewDiagnosticContext) return;
+    try {
+      phLogger.info("Preview Abliteration assignment decision", {
+        userId,
+        chatId: previewDiagnosticContext.chatId,
+        requestId: previewDiagnosticContext.requestId,
+        experiment_key:
+          reason === "three_step_experiment"
+            ? ABLITERATED_PAID_THREE_STEPS_KEY
+            : ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+        mode,
+        subscription_tier: subscription,
+        selected_model_override: selectedModelOverride,
+        moderation_eligible: moderationEligible,
+        moderation_checked: moderationChecked,
+        provider_configured: providerConfigured,
+        posthog_configured: Boolean(posthog),
+        reason,
+        ...(variant && { variant }),
+      });
+    } catch {
+      // Diagnostics must never change assignment or provider behavior.
+    }
+  };
   if (
-    !posthog ||
-    !isAbliterationConfigured() ||
+    !providerConfigured ||
     !isEligibleForAbliteratedModel({
       subscription,
       mode,
       selectedModelOverride,
-      moderationEligible: moderationEligible || historyEligible,
+      moderationEligible,
       messages,
       limitRescue,
     })
-  )
-    return undefined;
-
-  const experimentKey = ABLITERATED_EXPERIMENT_KEY;
-  try {
-    const variant = await getPostHogFlagWithoutExposure(
-      posthog,
-      experimentKey,
-      userId,
-      { subscription, subscription_tier: subscription },
-    );
-    if (variant !== "test" && variant !== "control") return undefined;
-    if (!moderationEligible) {
-      // History is a preference within parent treatment, never an authorization.
-      if (variant !== "test") return undefined;
-      const continuityEnabled = await getPostHogFlagWithoutExposure(
-        posthog,
-        ABLITERATION_CONTINUITY_FLAG,
-        userId,
-        { subscription, subscription_tier: subscription },
-      );
-      if (continuityEnabled !== true) return undefined;
-    }
-    return {
-      selectionSource: moderationEligible ? "moderation" : "history",
-      independentHistoryCount: independentAbliterationResponses,
-      key: experimentKey,
-      variant,
-      modelKey:
-        variant === "test"
-          ? getAbliterationTreatmentModel(
-              selectedModel,
-              messagesRequireVision(messages),
-            )
-          : selectedModel,
-      baselineModel: selectedModel,
-    };
-  } catch {
+  ) {
+    let reason = "moderation_not_eligible";
+    if (!providerConfigured) reason = "provider_not_configured";
+    else if (subscription === "free") reason = "free_user";
+    else if (limitRescue) reason = "limit_rescue";
+    else if (!messages.length || messagesContainUnsupportedFiles(messages))
+      reason = "unsupported_input";
+    reportDecision(reason);
     return undefined;
   }
+
+  // Both experiment arms retain the shipped moderation-selected base model.
+  // Lookup failures and disabled flags preserve its one-step policy.
+  try {
+    const variant =
+      posthog &&
+      (await getPostHogFlagWithoutExposure(
+        posthog,
+        ABLITERATED_PAID_THREE_STEPS_KEY,
+        userId,
+        { subscription, subscription_tier: subscription },
+      ));
+    if (variant === "control" || variant === "test") {
+      reportDecision("three_step_experiment", variant);
+      return {
+        key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        variant,
+        modelKey: ABLITERATION_MODEL_KEY,
+        baselineModel: selectedModel,
+        generationStepLimit: variant === "test" ? 3 : 1,
+        selectionSource: "moderation",
+        moderationEligible,
+        moderationChecked,
+      };
+    }
+  } catch (error) {
+    // Analytics availability must not interrupt the shipped default.
+    try {
+      phLogger.warn("Abliteration three-step flag lookup failed", {
+        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        mode,
+        subscription_tier: subscription,
+        error_type: error instanceof Error ? "Error" : typeof error,
+      });
+    } catch {
+      // Logging must never change assignment.
+    }
+  }
+  reportDecision("moderated_default", "test");
+  return {
+    key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+    variant: "test",
+    modelKey: ABLITERATION_MODEL_KEY,
+    baselineModel: selectedModel,
+    selectionSource: "moderation",
+    moderationEligible,
+    moderationChecked,
+  };
 }

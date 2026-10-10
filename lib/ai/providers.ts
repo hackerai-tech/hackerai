@@ -1219,9 +1219,7 @@ export const MINIMAX_M3_SLUG = "minimax/minimax-m3";
 export const AUXILIARY_VISION_SLUG = MINIMAX_M3_SLUG;
 export const DEEPSEEK_V4_PRO_SLUG = "deepseek/deepseek-v4-pro";
 export const DEEPSEEK_V4_PRO_0813_SLUG = "deepseek/deepseek-v4-pro-0813";
-export const DEEPSEEK_V4_FLASH_SLUG = "deepseek/deepseek-v4-flash-0731";
 export const DEEPSEEK_V4_FLASH_PREVIOUS_SLUG = "deepseek/deepseek-v4-flash";
-const TITLE_GENERATOR_DEEPSEEK_SLUG = "deepseek/deepseek-v4-flash";
 
 export const getOpenRouterProviderRoutingForModel = (
   modelSlug: string,
@@ -1242,7 +1240,7 @@ const buildProviderMap = (
   or: OpenRouterInstance,
   // Preserve the DeepSeek alias used by paid daily free allowance rescue.
   // Regular free Ask uses ask-model-free-glm with low reasoning per request.
-  freeAskModelSlug = DEEPSEEK_V4_FLASH_SLUG,
+  freeAskModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
   freeAgentModelSlug = DEEPSEEK_V4_FLASH_VISION_SLUG,
 ) =>
   ({
@@ -1258,7 +1256,8 @@ const buildProviderMap = (
     "model-grok-4.5": or(GROK_4_5_SLUG),
     "model-grok-4.5-pro": or(GROK_4_5_SLUG),
     "model-grok-4.6-pro": or(GROK_4_6_SLUG),
-    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_SLUG),
+    // Redirect persisted legacy selections; never send new requests to 0731.
+    "model-deepseek-v4-flash-0731": or(DEEPSEEK_V4_FLASH_VISION_SLUG),
     "model-deepseek-v4-pro": or(DEEPSEEK_V4_PRO_SLUG),
     "model-deepseek-v4-pro-0813": or(DEEPSEEK_V4_PRO_0813_SLUG),
     // Keep the persisted Max compatibility key while routing new requests to
@@ -1274,8 +1273,8 @@ const buildProviderMap = (
     "model-kimi-k3": or(KIMI_K3_SLUG),
     "fallback-agent-model": or(GROK_4_6_SLUG),
     "fallback-ask-model": or(GROK_4_6_SLUG),
-    // Titles are a short structured-output task and should never use reasoning.
-    "title-generator-model": or(TITLE_GENERATOR_DEEPSEEK_SLUG),
+    // GLM supports the title schema and requires reasoning to stay enabled.
+    "title-generator-model": or(GLM_5_3_FLASH_SLUG),
     // Image understanding for text-only routes. The resulting description is
     // injected as untrusted text; this model never becomes the active agent.
     "auxiliary-vision-model": or(AUXILIARY_VISION_SLUG),
@@ -1297,7 +1296,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "agent-model": "August 2026",
   "model-grok-4.6": "August 2026",
   "model-grok-4.6-pro": "August 2026",
-  "model-deepseek-v4-flash-0731": "July 2026",
+  "model-deepseek-v4-flash-0731": "August 2026",
   "model-deepseek-v4-pro": "May 2025",
   "model-deepseek-v4-pro-0813": "August 2026",
   "model-opus-4.6": "July 2026",
@@ -1309,7 +1308,7 @@ export const modelCutoffDates: Partial<Record<ModelName, string>> &
   "model-deepseek-v4-flash-vision-pro": "August 2026",
   "fallback-agent-model": "August 2026",
   "fallback-ask-model": "August 2026",
-  "title-generator-model": "May 2025",
+  "title-generator-model": "August 2026",
   "auxiliary-vision-model": "July 2026",
 };
 
@@ -1328,7 +1327,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-grok-4.5": "xAI Grok 4.5",
   "model-grok-4.5-pro": "xAI Grok 4.5",
   "model-grok-4.6-pro": "xAI Grok 4.6",
-  "model-deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
+  "model-deepseek-v4-flash-0731": "DeepSeek V4.1 Flash",
   "model-deepseek-v4-pro": "DeepSeek V4 Pro",
   "model-deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
   "model-opus-4.6": "Moonshot Kimi K3",
@@ -1342,7 +1341,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-kimi-k3": "Moonshot Kimi K3",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
-  "title-generator-model": "DeepSeek V4 Flash",
+  "title-generator-model": "GLM 5.3 Flash",
   "auxiliary-vision-model": "Auxiliary vision model",
 };
 
@@ -1409,6 +1408,8 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
   return (
     normalized === "model-glm-5.3-flash" ||
     normalized === "ask-model-free-glm" ||
+    normalized === "ask-model-free" ||
+    normalized === "model-deepseek-v4-flash-0731" ||
     normalized === "ask-model-free-deepseek-v41" ||
     normalized === "model-glm-5.3-flash-pro" ||
     normalized === "model-glm-5.3-flash-agent" ||
@@ -1434,7 +1435,7 @@ export function supportsMultimodalToolResults(modelName?: string): boolean {
 /**
  * Map a HackerAI tier id to the underlying provider key for a given mode.
  * Returns `null` for `"auto"` (the caller routes to the auto-router model
- * key instead). Standard maps to DeepSeek V4 Flash 0731. Pro uses DeepSeek
+ * key instead). Standard maps to GLM 5.3 Flash. Pro uses DeepSeek
  * V4 Pro 0813 in Ask and V4.1 Flash in Agent. Max uses GLM 5.3 in both
  * modes; media-aware routing happens in `selectModel`.
  */

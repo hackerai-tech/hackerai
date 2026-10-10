@@ -42,6 +42,7 @@ const mockDescribeImage = jest.fn(async () => ({
 }));
 
 jest.mock("@/lib/chat/auxiliary-vision", () => ({
+  ...jest.requireActual("@/lib/chat/auxiliary-vision"),
   describeImageWithAuxiliaryVision: (...args: unknown[]) =>
     mockDescribeImage(...args),
 }));
@@ -120,7 +121,10 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
   isProviderMultimodalToolResultRejectionError: () => false,
-  toolResultsContainImageViewResult: () => false,
+  toolResultsContainImageViewResult: (toolResults: unknown[]) =>
+    jest
+      .requireActual("@/lib/chat/multimodal-tool-result-recovery")
+      .toolResultsContainImageViewResult(toolResults),
   uiMessagesContainImageViewResult: () => false,
 }));
 jest.mock("@/lib/ai/providers", () => ({
@@ -151,6 +155,7 @@ jest.mock("@/lib/provider-usage-cost", () => ({
   getOpenRouterUpstreamInferenceCostFromUsageRaw: () => undefined,
 }));
 jest.mock("@/lib/utils/error-utils", () => ({
+  ...jest.requireActual("@/lib/utils/error-utils"),
   classifyProviderOverflowError: () => null,
   isProviderContentBlockedFinishReasonError: () => false,
   isProviderContentFilterFinishReason: () => false,
@@ -488,7 +493,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
     expect(
       resolveAgentModelAfterSummarization("model-grok-4.5-pro", "agent", false),
     ).toBe("model-deepseek-v4-flash-vision-pro");
@@ -498,7 +503,7 @@ describe("resolveAgentModelAfterSummarization", () => {
         "agent",
         false,
       ),
-    ).toBe("model-deepseek-v4-flash-0731");
+    ).toBe("model-deepseek-v4-flash-vision");
     expect(
       resolveAgentModelAfterSummarization(
         "model-deepseek-v4-flash-vision-pro",
@@ -673,6 +678,30 @@ describe("createAgentStream repeated compaction", () => {
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
   });
+
+  it.each(["ask", "agent"])(
+    "omits retained provider request bodies in %s streams",
+    async (mode) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      );
+      expect(mockStreamText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          experimental_include: { requestBody: false },
+        }),
+      );
+    },
+  );
 
   it("retains upstream exclusions on both the initial recovery request and subsequent steps", async () => {
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
@@ -1141,11 +1170,13 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
-    ["agent", "pro", "model-deepseek-v4-flash-0731"],
-    ["ask", "free", "ask-model-free-glm"],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
+    ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
+    ["ask", "free", "ask-model-free-glm", 1],
   ] as const)(
-    "routes only the first generation step through Abliteration for %s %s",
-    async (mode, subscription, baselineModel) => {
+    "routes %s %s through Abliteration then %s after %i steps",
+    async (mode, subscription, baselineModel, generationStepLimit) => {
       const onModelStepSelected = jest.fn();
       const wrap = jest.fn((model) => model);
       const state = initAgentStreamState(
@@ -1164,6 +1195,7 @@ describe("createAgentStream repeated compaction", () => {
           abliteratedTelemetry: { wrap },
           abliteratedStepRouting: {
             baselineModel,
+            generationStepLimit,
           },
           onModelStepSelected,
           summarizationTracker: {
@@ -1198,11 +1230,18 @@ describe("createAgentStream repeated compaction", () => {
         PLATFORM_AUTHORIZATION_ANNOTATION,
       );
 
-      const secondStep = await prepare(1);
+      for (let index = 1; index < generationStepLimit; index++) {
+        const treatmentStep = await prepare(index);
+        expect(treatmentStep.model.modelId).toBe("model-abliterated");
+        expect(JSON.stringify(treatmentStep.messages)).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+      }
+      const secondStep = await prepare(generationStepLimit);
       expect(secondStep.model.modelId).toBe(baselineModel);
       expect(wrap).toHaveBeenLastCalledWith(
         expect.objectContaining({ modelId: baselineModel }),
-        1,
+        generationStepLimit,
         expect.objectContaining({
           plannedBaselineContinuation: true,
           visionRoute: false,
@@ -1214,6 +1253,356 @@ describe("createAgentStream repeated compaction", () => {
       expect(onModelStepSelected).toHaveBeenLastCalledWith(baselineModel);
     },
   );
+
+  it.each(["ask", "agent"] as const)(
+    "annotates only downstream %s calls after an actual unmoderated Abliteration step",
+    async (mode) => {
+      const uiMessages = [
+        uiMessage("old", "Earlier scope"),
+        uiMessage("new", "Continue the lab"),
+      ];
+      const original = structuredClone(uiMessages);
+      const state = initAgentStreamState(uiMessages, {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const context = createTestStreamContext({
+        mode,
+        platformAuthorized: false,
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-deepseek-v4-flash-0731",
+        },
+        tools: { lookup: {} },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      });
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        context as any,
+        state,
+      )) as any;
+      const messages = [
+        { role: "user", content: "Earlier scope" },
+        { role: "assistant", content: "Earlier answer" },
+        { role: "user", content: "Continue the lab" },
+      ];
+      const first = await stream.prepareStep({
+        stepNumber: 0,
+        steps: [],
+        messages,
+      });
+      expect(JSON.stringify(first.messages)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      await stream.onStepFinish({
+        response: { modelId: "abliterated-model", messages: [] },
+        text: "",
+        finishReason: "tool-calls",
+        toolCalls: [{ toolName: "lookup", toolCallId: "one", input: {} }],
+        toolResults: [],
+      });
+      const later = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages,
+      });
+      expect(later.model.modelId).toBe("model-deepseek-v4-flash-0731");
+      expect(later.messages[0].content).toBe("Earlier scope");
+      expect(later.messages[2].content).toBe(
+        `Continue the lab ${PLATFORM_AUTHORIZATION_ANNOTATION}`,
+      );
+      expect(
+        JSON.stringify(later.messages).match(/<platform_authorization>/g),
+      ).toHaveLength(1);
+      expect(state.finalMessages).toEqual(original);
+      expect(context.platformAuthorized).toBe(false);
+
+      // A replacement provider uses the same run state; a new run never inherits it.
+      const replacement = (await createAgentStream(
+        "model-deepseek-v4-flash-0731",
+        {
+          ...context,
+          abliteratedStepRouting: undefined,
+        } as any,
+        state,
+      )) as any;
+      expect(JSON.stringify(replacement.messages)).toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      expect(
+        initAgentStreamState(uiMessages, state.ctxUsage)
+          .hasCompletedAbliterationStep,
+      ).toBe(false);
+    },
+  );
+
+  it.each([1, 3] as const)(
+    "sends %i unannotated Abliteration steps then annotated baseline in a real SDK tool loop",
+    async (generationStepLimit) => {
+      const sdk = jest.requireActual("ai");
+      const { WritableStream } = await import("node:stream/web");
+      const originalWritable = globalThis.WritableStream;
+      Object.defineProperty(globalThis, "WritableStream", {
+        configurable: true,
+        value: WritableStream,
+      });
+      try {
+        mockStreamText.mockImplementationOnce(sdk.streamText);
+        const makeModel = (modelId: string, parts: unknown[]) => ({
+          specificationVersion: "v3",
+          provider: "test",
+          modelId,
+          supportedUrls: {},
+          doGenerate: jest.fn(),
+          doStream: jest.fn(async () => ({
+            stream: new ReadableStream({
+              start(controller) {
+                for (const part of parts) controller.enqueue(part);
+                controller.close();
+              },
+            }),
+          })),
+        });
+        const finish = (reason: string) => ({
+          type: "finish",
+          finishReason: { unified: reason, raw: reason },
+          usage: { inputTokens: { total: 10 }, outputTokens: { total: 5 } },
+        });
+        const first = makeModel("abliterated-model", [
+          {
+            type: "tool-call",
+            toolCallId: "one",
+            toolName: "lookup",
+            input: "{}",
+          },
+          finish("tool-calls"),
+        ]);
+        const baseline = makeModel("deepseek/baseline", [
+          { type: "text-start", id: "answer" },
+          { type: "text-delta", id: "answer", delta: "Finished" },
+          { type: "text-end", id: "answer" },
+          finish("stop"),
+        ]);
+        const inputSchema = (await import("zod")).z.object({});
+        const state = initAgentStreamState(
+          [uiMessage("initial", "Inspect my lab")],
+          { usedTokens: 1_000, maxTokens: 128_000 },
+        );
+        const diagnostics = jest.fn();
+        const stream = await createAgentStream(
+          "model-abliterated",
+          createTestStreamContext({
+            platformAuthorized: false,
+            trackedProvider: {
+              languageModel: (name: string) =>
+                name === "model-abliterated" ? first : baseline,
+            },
+            abliteratedStepRouting: {
+              baselineModel: "model-deepseek-v4-flash-0731",
+              generationStepLimit,
+            },
+            tools: {
+              lookup: sdk.tool({
+                inputSchema,
+                execute: async () => ({ ok: true }),
+              }),
+            },
+            onProviderRequestDiagnostics: diagnostics,
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+            usageTracker: {
+              accumulateStep: () => 0,
+              setAuthoritativeModelCostForStep: jest.fn(),
+              computeCostDollars: () => 0,
+            },
+          }) as any,
+          state,
+        );
+        await stream.consumeStream({
+          onError: (error: unknown) => {
+            throw error;
+          },
+        });
+        expect(await stream.text).toBe("Finished");
+        expect(first.doStream).toHaveBeenCalledTimes(generationStepLimit);
+        expect(baseline.doStream).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(first.doStream.mock.calls[0])).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+        expect(JSON.stringify(baseline.doStream.mock.calls[0])).toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+        expect(
+          diagnostics.mock.calls.map(
+            ([request]) => request.platform_authorization_annotation_appended,
+          ),
+        ).toEqual([
+          false,
+          ...Array.from({ length: generationStepLimit }, () => false),
+          true,
+        ]);
+        expect(JSON.stringify(state.finalMessages)).not.toContain(
+          PLATFORM_AUTHORIZATION_ANNOTATION,
+        );
+      } finally {
+        Object.defineProperty(globalThis, "WritableStream", {
+          configurable: true,
+          value: originalWritable,
+        });
+      }
+    },
+  );
+
+  it.each([
+    {
+      name: "empty response",
+      responseModel: "abliterated-model",
+      text: " ",
+      finishReason: "stop",
+      toolCalls: [],
+    },
+    {
+      name: "filtered response",
+      responseModel: "abliterated-model",
+      text: "partial",
+      finishReason: "content-filter",
+      toolCalls: [],
+    },
+    {
+      name: "failed response",
+      responseModel: "abliterated-model",
+      text: "partial",
+      finishReason: "error",
+      toolCalls: [],
+    },
+    {
+      name: "different served model",
+      responseModel: "deepseek/deepseek-v4.1-flash",
+      text: "answer",
+      finishReason: "stop",
+      toolCalls: [],
+    },
+    {
+      name: "invalid tool call",
+      responseModel: "abliterated-model",
+      text: "",
+      finishReason: "tool-calls",
+      toolCalls: [{ toolName: "lookup", invalid: true }],
+    },
+    {
+      name: "unknown tool call",
+      responseModel: "abliterated-model",
+      text: "",
+      finishReason: "tool-calls",
+      toolCalls: [{ toolName: "unknown" }],
+    },
+  ])(
+    "does not annotate continuation after $name",
+    async ({ responseModel, text, finishReason, toolCalls }) => {
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "model-abliterated",
+        createTestStreamContext({
+          platformAuthorized: false,
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          tools: { lookup: {} },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {
+            setAuthoritativeModelCostForStep: jest.fn(),
+            computeCostDollars: () => 0,
+          },
+        }) as any,
+        state,
+      )) as any;
+      await stream.onStepFinish({
+        response: { modelId: responseModel, messages: [] },
+        text,
+        finishReason,
+        toolCalls,
+        toolResults: [],
+      });
+      const later = await stream.prepareStep({
+        stepNumber: 1,
+        steps: [{ toolResults: [] }],
+        messages: [{ role: "user", content: "Continue" }],
+      });
+      expect(state.hasCompletedAbliterationStep).toBe(false);
+      expect(JSON.stringify(later.messages)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+    },
+  );
+
+  it("does not activate continuation context for a baseline-only vision route", async () => {
+    const state = initAgentStreamState(
+      [uiMessage("initial", "Inspect the image")],
+      { usedTokens: 1_000, maxTokens: 128_000 },
+    );
+    const stream = (await createAgentStream(
+      "model-abliterated",
+      createTestStreamContext({
+        platformAuthorized: false,
+        trackedProvider: {
+          languageModel: (name: string) => ({ modelId: name }),
+        },
+        abliteratedStepRouting: {
+          baselineModel: "model-deepseek-v4-flash-0731",
+        },
+        summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        usageTracker: {
+          setAuthoritativeModelCostForStep: jest.fn(),
+          computeCostDollars: () => 0,
+        },
+      }) as any,
+      state,
+    )) as any;
+    const prepared = await stream.prepareStep({
+      stepNumber: 1,
+      steps: [
+        {
+          toolResults: [
+            {
+              toolName: "file",
+              output: {
+                action: "view",
+                kind: "image",
+                mediaType: "image/png",
+              },
+            },
+          ],
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "image", image: "https://example.test/image.png" }],
+        },
+      ],
+    });
+    expect(prepared.model.modelId).toBe("model-deepseek-v4-flash-vision");
+    await stream.onStepFinish({
+      response: { modelId: prepared.model.modelId, messages: [] },
+      text: "Image inspected",
+      finishReason: "stop",
+      toolCalls: [],
+      toolResults: [],
+    });
+    expect(state.hasCompletedAbliterationStep).toBe(false);
+  });
 
   it.each([
     {
@@ -2145,8 +2534,8 @@ describe("createAgentStream repeated compaction", () => {
 
   it.each([
     ["model-glm-5.3-flash-agent", "model-glm-5.3-flash-agent"],
-    ["model-glm-5.3-flash", "model-deepseek-v4-flash-0731"],
-    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-0731"],
+    ["model-glm-5.3-flash", "model-deepseek-v4-flash-vision"],
+    ["model-deepseek-v4-flash-vision", "model-deepseek-v4-flash-vision"],
     [
       "model-deepseek-v4-flash-vision-pro",
       "model-deepseek-v4-flash-vision-pro",

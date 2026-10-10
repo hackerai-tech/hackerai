@@ -6,8 +6,7 @@ export function terminalExecutionProvenance(
   workingDirectory?: string,
 ) {
   return {
-    executionEnvironment:
-      identity === "e2b" || identity === "miosa" ? "cloud" : "connected-host",
+    executionEnvironment: identity === "e2b" ? "cloud" : "connected-host",
     ...(workingDirectory ? { workingDirectory } : {}),
     ...(identity === "e2b"
       ? {

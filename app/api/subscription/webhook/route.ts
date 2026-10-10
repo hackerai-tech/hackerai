@@ -45,6 +45,8 @@ import {
 import { includedUsagePointsForStripePrice } from "@/lib/billing/included-usage";
 import { subscriptionTierFromPrice } from "@/lib/billing/current-subscription";
 import { recoverSubscriptionPayment } from "@/lib/billing/payment-method-recovery";
+import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
+import { requireLatePaymentReview } from "@/lib/billing/late-payment-review";
 import {
   LATE_SUBSCRIPTION_PAYMENT_REFUND_REASON,
   reconcileLateSubscriptionPayment,
@@ -1084,13 +1086,6 @@ async function handleInvoicePaid(
     return;
   }
 
-  if (userIds.length === 0) {
-    console.error(
-      `[Subscription Webhook] Could not resolve users (${customerResult.reason ?? "unknown"}) for invoice ${invoice.id}`,
-    );
-    return;
-  }
-
   const resolved = await resolveSubscription(subscriptionId, true);
   if (!resolved) {
     console.error(
@@ -1106,6 +1101,23 @@ async function handleInvoicePaid(
   }
 
   const { tier, subscription } = resolved;
+  const paidAfterCancellation =
+    subscription.status === "canceled" &&
+    !!subscription.ended_at &&
+    (invoice.status_transitions?.paid_at ?? 0) > subscription.ended_at;
+  if (userIds.length === 0) {
+    if (paidAfterCancellation) {
+      await requireLatePaymentReview(
+        stripe,
+        invoice,
+        "paid_invoice_without_resolved_user",
+      );
+    }
+    console.error(
+      `[Subscription Webhook] Could not resolve users (${customerResult.reason ?? "unknown"}) for invoice ${invoice.id}`,
+    );
+    return;
+  }
   const entitlementItem = subscription.items?.data[0];
   const entitlementPrice = entitlementItem?.price;
   const invoiceBillingDetails = await invoiceSubscriptionBillingDetails(
@@ -1165,6 +1177,18 @@ async function handleInvoicePaid(
       invoice,
       subscription,
     );
+    if (
+      reconciliation.status === "manual_review" ||
+      (reconciliation.status === "not_applicable" && paidAfterCancellation)
+    ) {
+      await requireLatePaymentReview(
+        stripe,
+        invoice,
+        reconciliation.status === "manual_review"
+          ? reconciliation.reason
+          : "paid_invoice_without_current_entitlement",
+      );
+    }
     if (reconciliation.status !== "not_applicable") {
       const properties = {
         stripe_event_id: stripeEventId,
@@ -2526,6 +2550,26 @@ async function handleSubscriptionDeleted(
       ? subscription.customer
       : subscription.customer?.id;
   if (!customerId) return;
+
+  // Cleanup is Stripe-only and validates its own plan/invoice eligibility. Run
+  // it before plan or user hydration can return early and acknowledge deletion.
+  if (
+    ["payment_failed", "cancellation_requested"].includes(
+      subscription.cancellation_details?.reason ?? "",
+    )
+  ) {
+    const renewalResult = await voidUnpaidCanceledRenewalInvoice(
+      stripe,
+      subscription,
+      { requireIndividualPlan: true },
+    );
+    phLogger.info("billing_canceled_renewal_cleanup", {
+      stripe_event_id: stripeEventId,
+      stripe_subscription_id: subscription.id,
+      stripe_invoice_id: stripeObjectId(subscription.latest_invoice),
+      result: renewalResult,
+    });
+  }
 
   let price = subscription.items?.data[0]?.price;
   const lookupKey = price?.lookup_key ?? null;

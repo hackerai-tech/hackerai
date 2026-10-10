@@ -113,7 +113,7 @@ export function selectModel(
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
-      ? "agent-model-free"
+      ? "model-glm-5.3-flash-agent"
       : hasProviderImage
         ? "model-grok-4.5"
         : paidAutoTextModel
@@ -800,7 +800,6 @@ export async function processChatMessages({
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
-  // Check moderation for the last user message
   const moderationResult = await getModerationResult(
     cleanedMessages,
     subscription !== "free",
@@ -810,6 +809,7 @@ export async function processChatMessages({
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    moderationChecked: true,
     platformAuthorized: moderationResult.shouldUncensorResponse,
     allowsAbliterationContinuation:
       moderationResult.allowsAbliterationContinuation,

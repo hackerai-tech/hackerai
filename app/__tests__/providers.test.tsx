@@ -155,6 +155,38 @@ describe("PostHogProvider", () => {
       $current_url: "https://hackerai.co/auth-error",
       $referrer: "https://idp.example/callback",
     });
+    for (const event of [
+      "chat_visible_response_performance",
+      "chat_browser_responsiveness",
+    ]) {
+      const sdkEvent = {
+        event,
+        properties: {
+          token: "test-ingestion-token",
+          distinct_id: "user-123",
+          $browser: "Chrome",
+          first_visible_text_ms: 250,
+          event_timing_entry_count: 3,
+          $current_url: "https://preview.test/c/chat?secret=private",
+          $referrer: "https://target.test/private",
+          $initial_current_url: "https://target.test/private",
+          $pathname: "/private",
+          registered_content: "private",
+          $set: { url: "https://target.test/private" },
+        },
+        $set_once: { $initial_current_url: "https://target.test/private" },
+        $set: { private_content: "private" },
+      };
+      const sanitized = config.before_send(sdkEvent);
+      expect(sanitized?.properties).toEqual({
+        token: "test-ingestion-token",
+        distinct_id: "user-123",
+        $browser: "Chrome",
+        first_visible_text_ms: 250,
+        event_timing_entry_count: 3,
+      });
+      expect(JSON.stringify(sanitized)).not.toContain("private");
+    }
     expect(posthog.startSessionRecording).toHaveBeenCalledTimes(1);
     expect(posthog.stopSessionRecording).not.toHaveBeenCalled();
   });

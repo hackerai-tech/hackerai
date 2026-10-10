@@ -1,7 +1,10 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextResponse, type NextRequest } from "next/server";
 import { isRateLimitError } from "@/lib/api/response";
-import { isEndedSessionRefreshError } from "@/lib/auth/expected-auth-errors";
+import {
+  isEndedSessionRefreshError,
+  isInvalidRefreshTokenError,
+} from "@/lib/auth/expected-auth-errors";
 import {
   REFERRAL_COOKIE_CREATED_AT_NAME,
   REFERRAL_COOKIE_NAME,
@@ -358,6 +361,16 @@ export default async function proxy(request: NextRequest) {
       redirectUri: getRedirectUri(),
       eagerAuth: true,
       onSessionRefreshError: ({ error }) => {
+        if (isInvalidRefreshTokenError(error)) {
+          refreshEndedSession = true;
+          console.warn(
+            JSON.stringify({
+              event: "auth.invalid_refresh_token",
+              boundary: "proxy",
+            }),
+          );
+          return;
+        }
         if (isEndedSessionRefreshError(error)) {
           refreshEndedSession = true;
           console.info(
@@ -405,6 +418,53 @@ export default async function proxy(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (
+      hadSessionCookie &&
+      error instanceof Error &&
+      error.message === "Wrong mac prefix"
+    ) {
+      // iron-session rethrows this malformed-seal error before AuthKit's
+      // refresh handler runs. Discard only this invalid session, never retry
+      // the original cookie or reinterpret an unknown authentication error.
+      console.warn(
+        JSON.stringify({
+          event: "auth.invalid_session_cookie",
+          boundary: "proxy",
+          reason: "wrong_mac_prefix",
+        }),
+      );
+      if (isNextActionRequest(request) || !isUnauthenticatedPath(pathname)) {
+        return buildEndedSessionResponse(request, pathname);
+      }
+
+      request.cookies.delete("wos-session");
+      request.headers.delete(SESSION_HEADER);
+      // Public routes still need real anonymous AuthKit context. A response
+      // cookie deletion alone leaves the invalid cookie on this request.
+      // An error from this second call propagates, so recovery cannot loop.
+      const { headers } = await authkit(request, {
+        redirectUri: getRedirectUri(),
+        eagerAuth: true,
+      });
+      return withSessionCookieCleared(
+        withAttributionCookies(
+          request,
+          NextResponse.next({
+            request: { headers: buildRequestHeaders(request, headers) },
+            headers: buildResponseHeaders(headers),
+          }),
+        ),
+      );
+    }
+    if (isInvalidRefreshTokenError(error)) {
+      console.warn(
+        JSON.stringify({
+          event: "auth.invalid_refresh_token",
+          boundary: "proxy",
+        }),
+      );
+      return buildEndedSessionResponse(request, pathname);
+    }
     if (isEndedSessionRefreshError(error)) {
       return buildEndedSessionResponse(request, pathname);
     }

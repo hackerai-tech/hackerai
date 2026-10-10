@@ -26,7 +26,6 @@ export async function reconcileLateSubscriptionPayment(
   const paidAt = snapshot.status_transitions?.paid_at;
   if (
     subscription.status !== "canceled" ||
-    subscription.cancellation_details?.reason !== "payment_failed" ||
     !endedAt ||
     !paidAt ||
     paidAt <= endedAt ||
@@ -38,6 +37,17 @@ export async function reconcileLateSubscriptionPayment(
     stripeObjectId(subscription.latest_invoice) !== snapshot.id
   ) {
     return { status: "not_applicable" };
+  }
+
+  // Paying an outstanding renewal after a requested cancellation does not
+  // restore access either. Surface it for reconciliation instead of silently
+  // keeping the payment without benefits. It may cover earlier usage, so only
+  // payment-failure cancellations remain eligible for an automatic refund.
+  if (subscription.cancellation_details?.reason !== "payment_failed") {
+    return {
+      status: "manual_review",
+      reason: "payment_after_non_payment_failure_cancellation",
+    };
   }
 
   // Webhooks are snapshots. Honor subsequent support adjustments before money

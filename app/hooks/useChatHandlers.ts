@@ -54,6 +54,10 @@ interface UseChatHandlersProps {
     message?: any,
     options?: { body?: any },
   ) => void | Promise<void>;
+  sendQueuedMessage?: (
+    id: string,
+    body: Record<string, unknown>,
+  ) => Promise<void>;
   stop: () => void;
   regenerate: (options?: { body?: any }) => void | Promise<void>;
   setMessages: (
@@ -99,6 +103,7 @@ export const useChatHandlers = ({
   chatId,
   messages,
   sendMessage,
+  sendQueuedMessage,
   stop,
   regenerate,
   setMessages,
@@ -690,8 +695,10 @@ export const useChatHandlers = ({
     const requestGeneration = getAgentRunRequestGeneration?.();
     captureAuthenticatedEvent("chat_response_stop_requested", {
       chat_id: chatId,
-      message_id: messages.findLast((message) => message.role === "assistant")
-        ?.id,
+      message_id: messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "assistant")?.id,
       mode: chatModeRef.current,
       selected_model: requestSelectedModelRef.current ?? "auto",
     });
@@ -746,8 +753,10 @@ export const useChatHandlers = ({
     const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
     captureAuthenticatedEvent("chat_response_regeneration_requested", {
       chat_id: chatId,
-      message_id: messages.findLast((message) => message.role === "assistant")
-        ?.id,
+      message_id: messages
+        .slice()
+        .reverse()
+        .find((message) => message.role === "assistant")?.id,
       mode: chatModeRef.current,
       selected_model: requestSelectedModelRef.current ?? "auto",
     });
@@ -813,6 +822,17 @@ export const useChatHandlers = ({
 
   const handleRetry = async (options: RetryOptions = {}) => {
     if (sendDisabledReasonRef.current) return;
+    const lastUserId = messages
+      .slice()
+      .reverse()
+      .find((message) => message.role === "user")?.id;
+    const queuedAttempt = messageQueue.find(
+      (message) => message.id === lastUserId && message.deliveryStatus,
+    );
+    if (queuedAttempt && sendQueuedMessage) {
+      await handleSendNow(queuedAttempt.id, options);
+      return;
+    }
     if (
       isAgentMode(chatModeRef.current) &&
       getAutoContinueChainAssistantIds(messages).length > 0
@@ -1069,10 +1089,18 @@ export const useChatHandlers = ({
   const handleContinue = (selectedModelOverride?: SelectedModel) =>
     continueSavedTask({ selectedModel: selectedModelOverride });
 
-  const handleSendNow = async (messageId: string) => {
+  const handleSendNow = async (
+    messageId: string,
+    options: RetryOptions = {},
+  ) => {
     if (sendDisabledReasonRef.current) return;
     const message = messageQueue.find((m) => m.id === messageId);
-    if (!message) return;
+    if (
+      !message ||
+      message.deliveryStatus === "sending" ||
+      isSendingNowRef.current
+    )
+      return;
     resetAutoContinueCount?.();
 
     // Set flag to prevent auto-processing from interfering
@@ -1083,11 +1111,26 @@ export const useChatHandlers = ({
 
     try {
       setIsAutoResuming(false);
-      if (hasActiveRunToReplace()) {
+      if (!message.deliveryStatus && hasActiveRunToReplace()) {
         if (!(await stopActiveRunForSteer())) return;
       }
 
       if (sendDisabledReasonRef.current) return;
+      if (
+        sendQueuedMessage &&
+        (chatModeRef.current === "agent" || message.deliveryStatus)
+      ) {
+        await sendQueuedMessage(messageId, {
+          mode: chatModeRef.current,
+          todos,
+          sandboxPreference,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel:
+            options.selectedModel ?? requestSelectedModelRef.current,
+          ...(options.limitRescue && { limitRescue: options.limitRescue }),
+        });
+        return;
+      }
 
       // Keep the queued message available if stopping fails.
       removeQueuedMessage(messageId);

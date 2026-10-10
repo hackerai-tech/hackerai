@@ -1,3 +1,4 @@
+import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
 import {
   CentrifugoMessageReassembler,
@@ -2080,4 +2081,123 @@ describe("pty_data publish ordering", () => {
     const receivedContent = publishOrder.join("");
     expect(receivedContent).toEqual(chunks.join(""));
   });
+});
+
+describe("desktop lifecycle recovery", () => {
+  it("finishes local shutdown while the remote disconnect stays offline", async () => {
+    let resolveDisconnect!: (value: { success: boolean }) => void;
+    const pending = new Promise<{ success: boolean }>((resolve) => {
+      resolveDisconnect = resolve;
+    });
+    const config = buildConfig({ disconnectDesktop: jest.fn(() => pending) });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    await bridge.stop();
+    expect(bridge.getConnectionId()).toBeNull();
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    await bridge.stop();
+    expect(config.disconnectDesktop).toHaveBeenCalledTimes(1);
+    resolveDisconnect({ success: true });
+    await pending;
+  });
+
+  it.each(["token", "heartbeat"])(
+    "keeps session replacement terminal when detected by %s",
+    async (source) => {
+      const onTerminated = jest.fn();
+      const config = buildConfig({
+        onTerminated,
+        heartbeatDesktop: jest
+          .fn()
+          .mockResolvedValue({ success: source !== "heartbeat" }),
+        refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
+          ok: false,
+          reason: "connection_inactive",
+          disconnectReason: "desktop_kicked_by_new_session",
+        }),
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      await bridge.start();
+      if (source === "token") {
+        await expect(mockClientOptions?.getToken?.()).rejects.toThrow();
+      }
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(onTerminated).toHaveBeenCalledWith("session_replaced");
+      expect(bridge.getConnectionId()).toBeNull();
+      await bridge.stop();
+    },
+  );
+
+  it("still recovers a heartbeat rejected after presence expiry", async () => {
+    const onTerminated = jest.fn();
+    const bridge = new DesktopSandboxBridge(
+      buildConfig({
+        onTerminated,
+        heartbeatDesktop: jest.fn().mockResolvedValue({ success: false }),
+        refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
+          ok: false,
+          reason: "connection_inactive",
+          disconnectReason: "presence_sweep",
+        }),
+      }),
+    );
+    await bridge.start();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(onTerminated).toHaveBeenCalledWith("connection_inactive");
+    await bridge.stop();
+  });
+
+  it.each([false, true])(
+    "publishes readiness before native output and an immediate PTY exit (isolated=%s)",
+    async (operationChannel) => {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "execute_pty_create") {
+          capturedChannel?.onmessage?.("early output");
+          capturedChannel?.onmessage?.(
+            JSON.stringify({
+              type: "exit",
+              exitCode: 7,
+              sessionId: "fast-pty",
+            }),
+          );
+          return { pid: 123, session_id: "fast-pty" };
+        }
+        return original(cmd, args);
+      };
+      getPublicationHandler()({
+        data: {
+          type: "pty_create",
+          operationChannel,
+          sessionId: "fast-pty",
+          command: "exit 7",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await waitFor(() => {
+        expect(
+          mockSubscription.publish.mock.calls.map(([message]) => message.type),
+        ).toEqual([
+          ...(operationChannel ? ["operation_ready"] : []),
+          "pty_ready",
+          "pty_data",
+          "pty_exit",
+        ]);
+      });
+      const messages = mockSubscription.publish.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type !== "operation_ready");
+      expect(messages.map((message) => message.type)).toEqual([
+        "pty_ready",
+        "pty_data",
+        "pty_exit",
+      ]);
+      expect(messages[1].data).toBe("early output");
+      expect(messages[2].exitCode).toBe(7);
+      await bridge.stop();
+    },
+  );
 });

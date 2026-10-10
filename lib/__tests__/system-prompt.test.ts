@@ -22,6 +22,7 @@ describe("systemPrompt security instructions", () => {
         sandboxContext,
       );
       expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain("<agent_deliverables>");
       expect(agent).toContain(
         "coding, research, configuration, files, and pentesting",
       );
@@ -43,6 +44,7 @@ describe("systemPrompt security instructions", () => {
       expect(agent).toContain("disclose changes that could not be restored");
       expect(agent).toContain("<finding_quality>");
       expect(ask).not.toContain("<agent_lifecycle>");
+      expect(ask).not.toContain("<agent_deliverables>");
       expect(ask).not.toContain("requested outcome is sufficiently supported");
     },
   );
@@ -373,24 +375,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("Python 3.12.11");
     expect(prompt).not.toContain("Node.js 20.19.4");
     expect(prompt).not.toContain("Golang 1.24.2");
-  });
-
-  it("describes the HackerAI tools container for MIOSA sandboxes", async () => {
-    const prompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-      "full_access",
-      false,
-      "miosa",
-    );
-
-    expect(prompt).toContain("4 vCPU");
-    expect(prompt).toContain("Pre-installed Pentesting Tools:");
-    expect(prompt).toContain("agent-browser is installed in the cloud sandbox");
   });
 
   it("keeps all three Agent approval mode contracts distinct", async () => {
@@ -810,17 +794,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       false,
       "e2b",
     );
-    const miosaPrompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-      "full_access",
-      false,
-      "miosa",
-    );
     const localPrompt = await systemPrompt(
       "user_123",
       "agent",
@@ -852,10 +825,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(portScanningPolicy).toBeDefined();
     expect(portScanningPolicy).not.toMatch(
       /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
-    );
-    expect(miosaPrompt).not.toContain("Port-scanning limitation:");
-    expect(miosaPrompt).not.toContain(
-      "Cloud Agent networking can produce false-positive port results",
     );
     expect(localPrompt).not.toContain("Port-scanning limitation:");
     expect(localPrompt).not.toContain(

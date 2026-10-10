@@ -1,7 +1,13 @@
 import type { LanguageModel } from "ai";
 import { AbliteratedModelTelemetry } from "../abliterated-model";
 import { guardLanguageModelProviderResponse } from "@/lib/ai/provider-response-guard";
-import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliterated-model";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
+} from "@/lib/experiments/abliterated-model";
 
 const finishPart = {
   type: "finish",
@@ -35,9 +41,21 @@ function model(
     }),
   } as unknown as LanguageModel;
 }
-async function consumeModel(source: LanguageModel) {
+async function consumeModel(source: LanguageModel, annotated = false) {
   if (typeof source === "string") throw new Error("unexpected model ID");
-  const result = await source.doStream({ prompt: [], maxOutputTokens: 100 });
+  const result = await source.doStream({
+    prompt: annotated
+      ? [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: PLATFORM_AUTHORIZATION_ANNOTATION },
+            ],
+          },
+        ]
+      : [],
+    maxOutputTokens: 100,
+  });
   const reader = result.stream.getReader();
   const output = [];
   while (true) {
@@ -73,6 +91,29 @@ describe("Abliteration stream telemetry", () => {
   const events = (name: string) =>
     capture.mock.calls.map(([event]) => event).filter((e) => e.event === name);
   const answer = [{ type: "text-delta", id: "t", delta: "answer" }, finishPart];
+
+  it.each([false, true])(
+    "reports actual baseline annotation presence=%s rather than inferring it from the model",
+    async (annotated) => {
+      const telemetry = create();
+      await consumeModel(
+        telemetry.wrap(model(answer, false, "deepseek/baseline"), 0),
+        annotated,
+      );
+      expect(
+        events("abliterated_model_provider_outcome")[0].properties
+          .platform_authorization_context,
+      ).toBe(annotated ? "standard" : "not_appended");
+      expect(JSON.stringify(capture.mock.calls)).not.toContain(
+        PLATFORM_AUTHORIZATION_ANNOTATION,
+      );
+      expect(telemetry.getSummary()).toMatchObject({
+        provider_annotation_telemetry_version: 1,
+        provider_annotated_attempt_count: annotated ? 1 : 0,
+        provider_annotated_served_count: annotated ? 1 : 0,
+      });
+    },
+  );
 
   it("separates a successful Abliteration step and planned baseline continuation from fallback", async () => {
     const telemetry = create();
@@ -599,6 +640,110 @@ describe("Abliteration stream telemetry", () => {
       selection_source: "history",
       moderation_eligible: false,
       independent_history_count: 2,
+    });
+  });
+  it.each(["control", "test"] as const)(
+    "records %s step policy only on actual stream exposure",
+    async (variant) => {
+      const generationStepLimit = variant === "test" ? 3 : 1;
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+        assignment: {
+          key: ABLITERATED_PAID_THREE_STEPS_KEY,
+          variant,
+          generationStepLimit,
+          modelKey: "model-abliterated",
+          baselineModel: "model-grok-4.6",
+          selectionSource: "moderation",
+        },
+        messageId: "m",
+        chatId: "c",
+        mode: "agent",
+        subscription: "pro",
+      });
+      expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
+        generation_step_limit: generationStepLimit,
+      });
+      expect(events("abliterated_model_exposed")).toHaveLength(0);
+      await consume(
+        telemetry,
+        model([{ type: "text-delta", id: "t", delta: "ok" }, finishPart]),
+        2,
+      );
+      expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        [`$feature/${ABLITERATED_PAID_THREE_STEPS_KEY}`]: variant,
+        generation_step_limit: generationStepLimit,
+        generation_step: 3,
+        within_abliteration_step_limit: variant === "test",
+      });
+      expect(telemetry.getSummary()).toMatchObject({
+        generation_step_limit: generationStepLimit,
+      });
+    },
+  );
+  it("attributes actual shipped-default output separately from the retired experiment", async () => {
+    const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+      assignment: {
+        key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+        variant: "test",
+        modelKey: "model-abliterated",
+        baselineModel: "model-grok-4.6",
+        selectionSource: "moderation",
+        moderationEligible: true,
+        moderationChecked: true,
+      },
+      messageId: "m",
+      chatId: "c",
+      mode: "agent",
+      subscription: "pro",
+    });
+    expect(events("abliterated_model_exposed")).toHaveLength(0);
+    await consume(
+      telemetry,
+      model([{ type: "text-delta", id: "t", delta: "ok" }, finishPart]),
+    );
+    expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+      experiment_key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+      moderation_checked: true,
+      moderation_eligible: true,
+      generation_step: 1,
+      requested_model: "abliterated-model",
+    });
+  });
+  it("keeps paid first-step exposure distinct from moderation and history", async () => {
+    const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+      assignment: {
+        key: ABLITERATED_PAID_FIRST_STEP_KEY,
+        variant: "test",
+        modelKey: "model-abliterated",
+        baselineModel: "model-deepseek-v4-flash-0731",
+        selectionSource: "paid_first_step",
+        moderationEligible: false,
+        moderationChecked: false,
+      },
+      messageId: "m",
+      chatId: "c",
+      mode: "agent",
+      subscription: "pro",
+    });
+    expect(events("abliterated_model_exposed")).toHaveLength(0);
+    await consume(
+      telemetry,
+      model([{ type: "text-delta", id: "t", delta: "ok" }, finishPart]),
+    );
+    expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+      experiment_key: ABLITERATED_PAID_FIRST_STEP_KEY,
+      selection_source: "paid_first_step",
+      moderation_eligible: false,
+      moderation_checked: false,
+      generation_step: 1,
+      requested_model: "abliterated-model",
+      response_model: "abliterated-model",
+    });
+    expect(telemetry.getRoutingMarker(true)).toEqual({
+      version: 1,
+      source: "paid_first_step",
+      completed: true,
     });
   });
 });

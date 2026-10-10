@@ -1,15 +1,13 @@
 import type { PostHog } from "posthog-node";
-import type { ModelName } from "@/lib/ai/providers";
+import { myProvider, type ModelName } from "@/lib/ai/providers";
 import { getExperimentAnalyticsProperties } from "@/lib/analytics/experiment-context";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const PAID_AGENT_FLASH_RETURN_KEY = "paid_agent_glm_flash_return_v1";
-export const FREE_AGENT_GLM_FLASH_KEY =
-  "free_agent_glm_5_3_flash_conversion_v1";
 export const FLASH_ROUTING_EXPOSURE_EVENT = "flash_routing_experiment_exposed";
 
 export type FlashRoutingAssignment = {
-  key: typeof PAID_AGENT_FLASH_RETURN_KEY | typeof FREE_AGENT_GLM_FLASH_KEY;
+  key: typeof PAID_AGENT_FLASH_RETURN_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   configuredModel: string;
@@ -32,35 +30,26 @@ export async function evaluateFlashRouting({
   hasImages: boolean;
 }): Promise<FlashRoutingAssignment | undefined> {
   if (!posthog || !userId || hasImages) return undefined;
-  const isFreeAgent =
+  const key =
     mode === "agent" &&
-    subscription === "free" &&
-    selectedModel === "agent-model-free";
-  const key = isFreeAgent
-    ? FREE_AGENT_GLM_FLASH_KEY
-    : mode === "agent" &&
-        subscription !== "free" &&
-        selectedModel === "model-deepseek-v4-flash-0731"
+    subscription !== "free" &&
+    selectedModel === "model-deepseek-v4-flash-0731"
       ? PAID_AGENT_FLASH_RETURN_KEY
       : undefined;
   if (!key) return undefined;
+  // This legacy experiment compares 0731 with GLM. Redirected saved selections
+  // must not enroll a different baseline under its historical experiment key.
+  if (
+    myProvider.languageModel(selectedModel).modelId !==
+    "deepseek/deepseek-v4-flash-0731"
+  ) {
+    return undefined;
+  }
 
   try {
     const flags = await posthog.evaluateFlags(userId, { flagKeys: [key] });
     const variant = flags.getFlag(key);
     if (variant !== "control" && variant !== "test") return undefined;
-    if (isFreeAgent) {
-      return {
-        key,
-        variant,
-        modelKey:
-          variant === "control" ? selectedModel : "model-glm-5.3-flash-agent",
-        configuredModel:
-          variant === "control"
-            ? "deepseek/deepseek-v4.1-flash"
-            : "z-ai/glm-5.3-flash",
-      };
-    }
     return {
       key,
       variant,

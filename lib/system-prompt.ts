@@ -12,8 +12,10 @@ import {
   isDeepSeekModel,
   type ModelName,
 } from "@/lib/ai/providers";
-import { getCloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
 import type { CloudSandboxProvider } from "@/lib/ai/tools/utils/cloud-sandbox-provider";
+
+// Keep the boundary before any user or host text; provider serialization splits only once.
+export const SYSTEM_PROMPT_RUNTIME_BOUNDARY = "\n\n<runtime_context>\n";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -22,9 +24,6 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   month: "long",
   day: "numeric",
 } as const;
-
-// Cache the current date to avoid repeated Date creation
-export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
 
 const LANGUAGE_SECTION = `<language>
 Use the language of the user's first message as the working language.
@@ -124,6 +123,15 @@ Screenshots:
 - For pages with responsive layouts, run \`agent-browser set viewport 1920 1080\` once before navigating.
 </agent_browser>`;
 
+const AGENT_DELIVERABLE_SECTION = `<agent_deliverables>
+- For a build or repair request, use the accessible project files to produce the requested result. Reproduce a reported failure, make a focused repair, and exercise the affected behavior. A new package or generic setup advice is not a substitute for the requested repair.
+- Before sharing a runnable archive, extract that exact archive into a new task-owned temporary directory and verify installation and the promised entry route or command there. Use its included dependency manifest and lockfile. Keep secrets, credentials, and installed dependency directories out of the archive. Report blockers and missing prerequisites directly; never invent live API results.
+- For visual reconstruction, compare a rendered screenshot with the supplied reference and check the requested pages and interactions. State requirements that remain incomplete.
+- Say where an artifact was created: Cloud, Desktop, or the selected remote computer. Cloud output reaches the user's computer only when they download it. Use instructions for the user's target OS; a Linux check does not verify Windows startup.
+- Use get_terminal_files to deliver requested completed reports and packages while they are available. After a repair, deliver the updated artifact. A delivery receipt proves storage only; cite actual tool results separately for any claim that the artifact runs or meets requirements.
+- Historical attachment paths with staging="not_requested_this_run" are location hints, not proof the files still exist. Check the primary path before using it, then the labeled legacy fallback if needed. If both are absent, explain the missing file and request the source again; do not claim it was restored or silently recreate evidence. Do not overwrite existing work to restage an older attachment.
+</agent_deliverables>`;
+
 const AGENT_ARTIFACT_HYGIENE_SECTION = `<agent_artifact_hygiene>
 - Bound reconnaissance by the target and declared scope, crawl depth, duration, concurrency, and output size. Start narrow and expand only when the evidence justifies it.
 - For Katana, prefer bounded crawl duration and depth, scoped URL filtering, and URL-only output when raw request or response bodies are not needed. Reserve JavaScript-heavy and deep-crawl modes for narrowed targets.
@@ -184,23 +192,13 @@ Local Agent access is available on every plan, including Free. Paid plans also p
 Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
 </local_machine_access>`;
 
-const getDefaultSandboxEnvironmentSection = (
-  provider: CloudSandboxProvider = getCloudSandboxProvider(),
-): string => {
-  const portScanningSection =
-    provider === "miosa"
-      ? ""
-      : `Port-scanning limitation:
+const getDefaultSandboxEnvironmentSection = (): string => {
+  const portScanningSection = `Port-scanning limitation:
 - Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful even when no traffic reached the destination.
 - Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent. Never treat a successful low-level connection or implausible scan output as confirmation that a port is open.
 - Explain this environment limitation instead of retrying the scan or changing command options. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack.
 - Narrow application-level checks remain appropriate when they verify expected protocol behavior, such as an HTTP response, completed TLS handshake, or expected service banner.`;
-  const systemEnvironment =
-    provider === "miosa"
-      ? `- OS: isolated Linux sandbox (with internet access)
-- Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
-- User: privileged sandbox user`
-      : `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+  const systemEnvironment = `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;
   const installedTools = `${PREINSTALLED_PENTESTING_TOOLS}
@@ -208,11 +206,7 @@ const getDefaultSandboxEnvironmentSection = (
 ${SANDBOX_TOOL_RECIPES_SECTION}
 
 ${AGENT_BROWSER_SECTION}`;
-  const developmentEnvironment =
-    provider === "miosa"
-      ? `Development Environment:
-- Probe runtime and package versions before relying on them; the configured MIOSA template can vary.`
-      : `Development Environment:
+  const developmentEnvironment = `Development Environment:
 - Python 3.12.11 (commands: python3, pip3)
 - Node.js 20.19.4 (commands: node, npm)
 - Golang 1.24.2 (commands: go)`;
@@ -245,7 +239,6 @@ const getAgentModeSection = (
   subscription: SubscriptionTier,
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
-  cloudSandboxProvider?: CloudSandboxProvider,
 ): string => {
   return `<current_mode>
 You are in AGENT MODE. Use the available tools to read files, edit code, run terminal commands, and execute code when useful. Do not tell the user to switch to Agent mode.
@@ -322,7 +315,7 @@ If impact cannot be reproduced, label it as a hypothesis or needs-validation ite
 Close each vulnerability candidate as confirmed, ruled out by specific counterevidence, or needing validation. Missing information, unavailable execution, and failed setup are proof gaps—not evidence of safety. Use the least disruptive proof necessary to demonstrate impact.
 </finding_quality>
 
-${sandboxContext ? sandboxContext : getDefaultSandboxEnvironmentSection(cloudSandboxProvider)}
+${sandboxContext ? "" : getDefaultSandboxEnvironmentSection()}
 
 ${getProductQuestionsSection(subscription)}`;
 };
@@ -427,7 +420,7 @@ export const systemPrompt = async (
   sandboxContext?: string | null,
   agentPermissionMode: AgentPermissionMode = "full_access",
   genericDelegationEnabled: boolean = false,
-  cloudSandboxProvider?: CloudSandboxProvider,
+  _cloudSandboxProvider?: CloudSandboxProvider,
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -441,9 +434,7 @@ export const systemPrompt = async (
 HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
 You are currently powered by ${modelDisplayName}.
 ${agentInstructions}
-Your main goal is to follow the USER's instructions at each message.\
-
-The current date is ${currentDateTime}.`;
+Your main goal is to follow the USER's instructions at each message.`;
 
   // Build sections conditionally for better performance
   const sections: string[] = [
@@ -463,13 +454,9 @@ The current date is ${currentDateTime}.`;
     sections.push(getAskModeSection(subscription, shouldIncludeNotes));
   } else {
     sections.push(
-      getAgentModeSection(
-        subscription,
-        sandboxContext,
-        agentPermissionMode,
-        cloudSandboxProvider,
-      ),
+      getAgentModeSection(subscription, sandboxContext, agentPermissionMode),
     );
+    sections.push(AGENT_DELIVERABLE_SECTION);
     if (genericDelegationEnabled) {
       sections.push(getGenericDelegationSection(agentPermissionMode));
     }
@@ -483,8 +470,6 @@ The current date is ${currentDateTime}.`;
     mode === "ask" ? "ask" : sandboxContext ? "local-host" : "cloud";
   sections.push(getSecurityInstructions(securityExecutionEnvironment));
 
-  sections.push(generateUserBio(userCustomization || null));
-
   // Notes are injected via <system-reminder> in messages to keep the system prompt
   // stable for prompt caching. Only include the static "disabled" message here.
   if (!shouldIncludeNotes) {
@@ -493,7 +478,19 @@ The current date is ${currentDateTime}.`;
     );
   }
 
-  return sections.filter(Boolean).join("\n\n");
+  const currentDateTime = new Date().toLocaleDateString(
+    "en-US",
+    DATE_FORMAT_OPTIONS,
+  );
+  const runtimeContext = [
+    `The current date is ${currentDateTime}.`,
+    mode === "agent" ? sandboxContext : null,
+    generateUserBio(userCustomization || null),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  return `${sections.filter(Boolean).join("\n\n")}${SYSTEM_PROMPT_RUNTIME_BOUNDARY}${runtimeContext}\n</runtime_context>`;
 };
 
 /**

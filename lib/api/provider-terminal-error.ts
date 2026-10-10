@@ -36,7 +36,7 @@ export class ProviderTerminalError extends Error {
   readonly model: string;
   readonly category: ProviderErrorCategory;
   readonly statusCode?: number;
-  readonly origin?: "local_request_size_guard";
+  readonly origin?: "local_request_size_guard" | "auxiliary_vision";
   readonly localRequestId?: string;
   readonly requestBytesBefore?: number;
   readonly requestBytesAfter?: number;
@@ -63,7 +63,11 @@ export class ProviderTerminalError extends Error {
         : providerFromModel(model));
     const statusCode = getProviderStatusCode(details);
     const localSizeGuard = getLocalOpenRouterRequestSizeGuardDetails(cause);
-    const origin = localSizeGuard ? "local_request_size_guard" : undefined;
+    const origin = localSizeGuard
+      ? "local_request_size_guard"
+      : details.errorOrigin === "auxiliary_vision"
+        ? "auxiliary_vision"
+        : undefined;
     const message = [
       "Provider terminal error",
       `category=${category}`,

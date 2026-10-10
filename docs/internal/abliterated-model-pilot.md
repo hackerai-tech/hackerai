@@ -6,6 +6,85 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
+## One versus three moderation-selected steps
+
+[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns
+`abliterated_paid_three_steps_v1`. Eligible paid Ask and Agent requests evaluate
+it with the authenticated user ID after the existing moderation, provider,
+input and rescue checks. Control uses base `abliterated-model` for step 1;
+treatment uses it for steps 1–3. Both return to the exact saved baseline afterward.
+The limit is captured once per response/run, survives stream retries without
+resetting the completed-step counter, and provider failure still disables
+Abliteration immediately. Missing flags, unknown variants, lookup errors and
+missing analytics preserve the shipped one-step policy.
+
+Production enrolls all eligible paid users with a stable 50/50 control/test split;
+Preview forces eligible treatment at 100%. Free and non-moderated requests do
+not evaluate this flag. These are generation steps, not a requirement to run
+three calls when a response finishes earlier. Deploy Vercel and Trigger separately
+before activation; flag changes then apply to new requests/runs without another
+release. Existing runs retain their worker and assignment.
+
+Eligibility, actual streamed text/tool exposure and response outcomes carry the
+new key/variant and `generation_step_limit`. Native exposed-user results exclude
+pre-output failures; the owning issue requires a separate deduplicated eligible
+request readout with missing outcomes retained. This experiment uses operational
+telemetry, not the historical task-outcome survey cohorts. Disable the new flag
+to restore one-step routing. Keep owner, review dates, guardrails and cleanup
+choices in HAC-153.
+
+## Retired paid first-step trial
+
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the historical
+`abliterated_paid_first_step_v2` trial. Its universal first-step route and
+pre-moderation enrollment have been removed. Every new request uses the existing
+moderation processing; a stale or re-enabled flag cannot skip that check or select
+Abliteration for an unmoderated request. Historical attribution keys remain for
+analytics, feedback and already-running requests. Do not reuse the retired key.
+
+Preview and Production flags are separate and must both remain disabled. Record
+flag disable, experiment end, Vercel and Trigger deployment boundaries in the
+owning issue. Flag changes affect new requests/runs after propagation; running
+requests retain their captured worker and routing context. Ending the experiment
+alone does not disable its flag.
+
+Retain the historical assignment, exposure and outcome data. Compare each
+allocation/continuation-policy phase separately, deduplicate requests, cluster by
+user and treat missing outcomes or reported cost as unknown. Subscriber follow-up
+after rollback is mixed exposure: use matched maturity and immutable pre-entry
+billing periods rather than calling it sustained exclusive treatment. Native
+stopped-experiment results end at the recorded cutoff; later cancellation/renewal
+follow-up needs a separately bounded readout. Keep decisions and readout dates in
+HAC-142 rather than treating the operational rollback as a proven churn result.
+
+## Shipped moderation-selected paid default
+
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the shipped default.
+All authorized paid Auto, Standard, Pro and Max requests in Ask and Agent that
+qualify under the existing moderation decision use base `abliterated-model` on
+generation step 1. Later steps and provider recovery retain the exact selected
+baseline. Free users, allowance rescue, unsupported original attachments, missing
+provider configuration and requests below the moderation routing threshold retain
+the baseline. Analytics availability does not control this default.
+
+The application no longer evaluates the retired `abliterated_max_moderated_v1`,
+`abliterated_paid_moderated_v1` or continuity flags. Existing PostHog records remain
+historical; their status and percentages do not describe new runtime routing.
+New default routing uses attribution key `abliterated_paid_moderated_default_v1`,
+which is not a feature flag or randomized cohort. Do not pool those observations
+with the retired trial or label an all-treatment default a causal comparison.
+Record Vercel and Trigger rollout boundaries separately, retain old assignments
+for already-running requests, and account for crossover in subscriber follow-up.
+Historical trial feedback remains separate from the shipped default.
+
+A default-route rollback needs a code revert and separate Vercel/Trigger releases;
+changing a retired flag no longer reroutes requests. Deploy and verify Preview
+and Production independently. Use deterministic moderation fixtures for gates,
+and a disposable paid moderated Agent request to verify actual served step-1
+output, saved baseline continuation, completion and reload persistence. Never
+use customer content as a test fixture. Historical contracts below describe
+retired pilots, not this shipped default.
+
 ## Free-user exclusion
 
 Free-user Abliteration pilots are stopped. The shared assignment eligibility
@@ -82,8 +161,10 @@ Feature-flag evaluation does not emit an exposure event.
 For the Abliteration treatment, provider-bound preparation does not append the
 trusted platform-authorization annotation. Forged authorization tags are still
 removed. Sandbox/resume reminders, saved notes, the normal system prompt, tools,
-and later agent-loop messages retain their existing behavior. Control and fallback
-providers retain their existing platform-authorization preparation.
+and the first Abliteration call retain their existing behavior. Later providers
+receive the latest-message annotation after a completed Abliteration step, or
+through the existing moderation decision. Recovery before any completed
+Abliteration step retains the existing moderation-based preparation.
 
 The provider uses the OpenAI-compatible AI SDK adapter, streaming usage, and native
 default reasoning. OpenRouter options, routing lists, user attribution, and PDF

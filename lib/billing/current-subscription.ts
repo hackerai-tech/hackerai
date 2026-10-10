@@ -13,6 +13,10 @@ import {
   GRANDFATHERED_PRO_MONTHLY_PRICE_ID,
   PRO_MONTHLY_PRICE_LOOKUP_KEY,
 } from "@/lib/pricing/pro-monthly";
+import {
+  GRANDFATHERED_PRO_YEARLY_PRICE_ID,
+  PRO_YEARLY_PRICE_LOOKUP_KEY,
+} from "@/lib/pricing/pro-yearly";
 
 export const NO_ACTIVE_SUBSCRIPTION_ERROR = "No active subscription found";
 
@@ -78,15 +82,18 @@ export function subscriptionTierFromPrice(
   price: Stripe.Price | undefined,
 ): SubscriptionTier | undefined {
   if (price?.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID) return "pro";
+  if (price?.id === GRANDFATHERED_PRO_YEARLY_PRICE_ID) return "pro";
   return subscriptionTierFromLookupKey(price?.lookup_key);
 }
 
 export function subscriptionPlanFromPrice(
   price: Stripe.Price | undefined,
 ): string | undefined {
-  return price?.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID
-    ? PRO_MONTHLY_PRICE_LOOKUP_KEY
-    : (price?.lookup_key ?? undefined);
+  if (price?.id === GRANDFATHERED_PRO_MONTHLY_PRICE_ID)
+    return PRO_MONTHLY_PRICE_LOOKUP_KEY;
+  if (price?.id === GRANDFATHERED_PRO_YEARLY_PRICE_ID)
+    return PRO_YEARLY_PRICE_LOOKUP_KEY;
+  return price?.lookup_key ?? undefined;
 }
 
 export function toCurrentSubscriptionContext(

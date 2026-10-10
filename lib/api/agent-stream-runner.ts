@@ -1,9 +1,14 @@
+import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
 } from "@/lib/analytics/abliterated-model";
-import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
+import {
+  resolveAbliterationModelForGenerationStep,
+  type AbliterationGenerationStepLimit,
+} from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
 import { usesGlmFlashForStandardVision } from "@/lib/chat/auxiliary-vision-eligibility";
 import {
@@ -44,7 +49,6 @@ import { randomUUID } from "crypto";
 import {
   ModelHistoryReplay,
   MODEL_HISTORY_FLAG,
-  CACHE_ALIGNED_SUMMARY_FLAG,
   historyDigest,
   sourceMessageDigests,
   parseModelHistory,
@@ -147,7 +151,10 @@ import {
   isIncompletePostSummarizationStop,
   POST_SUMMARIZATION_CONTINUATION_PROMPT,
 } from "@/lib/chat/post-summarization-continuation";
-import { preparePlatformAuthorizationForModel } from "@/lib/chat/platform-authorization";
+import {
+  PLATFORM_AUTHORIZATION_ANNOTATION,
+  preparePlatformAuthorizationForModel,
+} from "@/lib/chat/platform-authorization";
 import { createPromptSerializationTools } from "@/lib/ai/tools/prompt-serialization";
 import {
   writeSummarizationCleared,
@@ -201,7 +208,7 @@ const STANDARD_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash";
 const PRO_AGENT_GLM_VISION_MODEL = "model-glm-5.3-flash-pro";
 const STANDARD_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision";
 const PRO_AGENT_DEEPSEEK_VISION_MODEL = "model-deepseek-v4-flash-vision-pro";
-const STANDARD_AGENT_TEXT_MODEL = "model-deepseek-v4-flash-0731";
+const STANDARD_AGENT_TEXT_MODEL = STANDARD_AGENT_DEEPSEEK_VISION_MODEL;
 const PRO_AGENT_TEXT_MODEL = PRO_AGENT_DEEPSEEK_VISION_MODEL;
 
 const uiMessagesContainImageAttachment = (messages: UIMessage[]): boolean =>
@@ -378,6 +385,7 @@ export const isRollingCompactionEffective = (
 // ---------------------------------------------------------------------------
 
 export type AgentStreamState = {
+  compactionPolicy?: CompactionModelPolicy;
   cacheHistoryTelemetry?: CacheHistoryTelemetry;
   /** Current UI messages fed into the model; updated each prepareStep. */
   finalMessages: UIMessage[];
@@ -406,6 +414,8 @@ export type AgentStreamState = {
   configuredMaxSteps: number;
   /** Total completed model steps across provider attempts in this request. */
   agentStepCount: number;
+  /** Provider-only continuation context; never a tool permission or persisted user claim. */
+  hasCompletedAbliterationStep: boolean;
   /** Observation history survives provider retries, but never retains tool content. */
   toolLoopObserver: ToolLoopObserver;
   /** Aggregate-only recovery state survives provider replacements. */
@@ -449,6 +459,7 @@ export function initAgentStreamState(
     providerRejectedMultimodalToolResults: false,
     configuredMaxSteps: 0,
     agentStepCount: 0,
+    hasCompletedAbliterationStep: false,
     toolLoopObserver: new ToolLoopObserver(),
     toolCycleRecoveryCount: 0,
     stoppedDueToStepLimit: false,
@@ -691,6 +702,17 @@ const buildProviderRequestDiagnostics = (args: {
     active_tools_mode: args.activeTools ? "subset" : "all",
     ...summarizeProviderOptions(args.providerOptions),
     has_multimodal_tool_results: args.hasMultimodalToolResults,
+    platform_authorization_annotation_appended: args.messages.some(
+      (message) =>
+        message.role === "user" &&
+        (typeof message.content === "string"
+          ? message.content.includes(PLATFORM_AUTHORIZATION_ANNOTATION)
+          : message.content.some(
+              (part) =>
+                part.type === "text" &&
+                part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+            )),
+    ),
     ...getProviderToolCallDiagnostics(args.messages),
   };
 };
@@ -700,12 +722,14 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
   providerStreamTimeout?: ProviderStreamTimeoutOptions;
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
     baselineModel: string;
+    generationStepLimit?: AbliterationGenerationStepLimit;
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
@@ -1153,6 +1177,7 @@ export async function createAgentStream(
       ? resolveAbliterationModelForGenerationStep({
           treatmentModel: routeModelName,
           baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          generationStepLimit: ctx.abliteratedStepRouting.generationStepLimit,
           stepIndex,
         })
       : routeModelName;
@@ -1220,8 +1245,12 @@ export async function createAgentStream(
     );
   };
   const preprocessAbliterationImages = createAbliterationVisionPreprocessor({
+    getAttachmentMessages: () => state.finalMessages,
+    cacheDescription: ctx.cacheVisionDescription,
     userId: ctx.userId,
     chatId: ctx.chatId,
+    requestId: ctx.chatLogger?.getRequestId?.(),
+    triggerRunId: ctx.triggerRunId,
     abortSignal,
     onCost: (cost) => {
       ctx.usageTracker.providerCost += cost;
@@ -1235,6 +1264,8 @@ export async function createAgentStream(
   );
   let latestToolCallBatchSplitCount = 0;
   let trustedHistoryPrefix: ModelMessage[] = [];
+  const hasPlatformAnnotationContext = () =>
+    ctx.platformAuthorized || state.hasCompletedAbliterationStep;
   const prepareProviderMessages = async (
     messages: ModelMessage[],
     effectiveModelName = getEffectiveModelName(),
@@ -1270,12 +1301,12 @@ export async function createAgentStream(
       ? prepareReplayAuthorization(
           repairedMessages,
           trustedHistoryPrefix,
-          ctx.platformAuthorized,
+          hasPlatformAnnotationContext(),
           effectiveModelName,
         )
       : preparePlatformAuthorizationForModel(
           repairedMessages,
-          ctx.platformAuthorized,
+          hasPlatformAnnotationContext(),
           effectiveModelName,
         );
 
@@ -1416,7 +1447,7 @@ export async function createAgentStream(
         model: historyRoute,
         mode: ctx.mode,
         subscription: ctx.subscription,
-        authorization: ctx.platformAuthorized,
+        authorization: hasPlatformAnnotationContext(),
         notesEnabled: ctx.noteInjectionOpts.shouldIncludeNotes,
         system: ctx.currentSystemPrompt.replace(
           /^The current date is .+$/m,
@@ -1482,14 +1513,21 @@ export async function createAgentStream(
     }
   }
   let lastHistoryRequest: ModelMessage[] | undefined;
-  const cacheAlignedSummaryEnabled =
-    historyEnabled &&
-    (await getPostHogFeatureFlagForUser(
-      CACHE_ALIGNED_SUMMARY_FLAG,
-      ctx.userId,
-    ));
+  const compactionPolicy = (state.compactionPolicy ??=
+    new CompactionModelPolicy({
+      userId: ctx.userId,
+      runId: telemetryRunId,
+      chatId: ctx.chatId,
+      mode: ctx.mode,
+      subscription: ctx.subscription,
+      baselineModel: modelName,
+      onDiscardedUsage: (usage) =>
+        ctx.summarizationTracker.recordSummarizationUsage(
+          usage,
+          ctx.usageTracker,
+        ),
+    }));
   let lastHistoryResponseCursor = 0;
-  let lastHistoryTools: ToolSet = ctx.tools;
   let historyToSave: ModelHistorySnapshot | undefined;
   let historyExposed = false;
   const exposeHistory = () => {
@@ -1538,6 +1576,9 @@ export async function createAgentStream(
     });
 
   return streamText({
+    // Step results outlive prompt compaction. Do not retain another serialized
+    // copy of every provider request; response messages still drive persistence.
+    experimental_include: { requestBody: false },
     model: getNamespacedLanguageModel(
       initialModelInfo.languageModel,
       generationStepOffset,
@@ -1647,6 +1688,7 @@ export async function createAgentStream(
         ) {
           if (shouldCheckDurableSummary) {
             const result = await runSummarizationStep({
+              compactionPolicy,
               messages: state.finalMessages,
               sourceUiMessages: state.sourceUiMessages,
               modelMessages: rawModelMessages,
@@ -1755,13 +1797,6 @@ export async function createAgentStream(
                 sourceResponseCursor =
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
-                lastHistoryTools = activeTools
-                  ? Object.fromEntries(
-                      Object.entries(ctx.tools).filter(([name]) =>
-                        activeTools.includes(name),
-                      ),
-                    )
-                  : ctx.tools;
               }
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
@@ -1806,6 +1841,7 @@ export async function createAgentStream(
             compactionAttemptCount++;
             lastCompactionRawMessageCount = rawModelMessages.length;
             const inRunResult = await compactModelMessagesInRun({
+              compactionPolicy,
               modelMessages: rollingModelMessages,
               sourceUiMessages: state.sourceUiMessages ?? state.finalMessages,
               transcriptModelMessages: rawModelMessages,
@@ -1837,31 +1873,6 @@ export async function createAgentStream(
                   ),
                 ),
               registerBackgroundWork: ctx.registerBackgroundWork,
-              ...(historyEnabled &&
-                cacheAlignedSummaryEnabled &&
-                lastHistoryRequest && {
-                  cacheAlignedSummary: {
-                    languageModel: effectiveModelInfo.languageModel,
-                    tools: lastHistoryTools,
-                    system: frozenSystemPrompt,
-                    providerOptions: getStepProviderOptions(
-                      effectiveModelInfo.modelName,
-                    ),
-                    onUsed: () =>
-                      phLogger.event("cache_aligned_summary_exposed", {
-                        userId: ctx.userId,
-                        chat_id: ctx.chatId,
-                        mode: ctx.mode,
-                        model: historyRoute,
-                        variant: "v1",
-                      }),
-                    onDiscardedUsage: (usage) =>
-                      ctx.summarizationTracker.recordSummarizationUsage(
-                        usage,
-                        ctx.usageTracker,
-                      ),
-                  },
-                }),
             });
 
             if (!inRunResult) {
@@ -1978,14 +1989,6 @@ export async function createAgentStream(
                 const providerOptions = getStepProviderOptions(
                   continuationModelInfo.modelName,
                 );
-                if (historyEnabled)
-                  lastHistoryTools = activeTools
-                    ? Object.fromEntries(
-                        Object.entries(ctx.tools).filter(([name]) =>
-                          activeTools.includes(name),
-                        ),
-                      )
-                    : ctx.tools;
                 const preparedMessages = await prepareProviderMessages(
                   nextBaseMessages,
                   continuationModelInfo.modelName,
@@ -2109,13 +2112,6 @@ export async function createAgentStream(
           ) as ModelMessage[];
           lastHistoryResponseCursor =
             rawModelMessages.length - initialModelMessages.length;
-          lastHistoryTools = activeTools
-            ? Object.fromEntries(
-                Object.entries(ctx.tools).filter(([name]) =>
-                  activeTools.includes(name),
-                ),
-              )
-            : ctx.tools;
         }
         recordProviderRequestDiagnostics({
           modelName: effectiveModelInfo.modelName,
@@ -2318,7 +2314,25 @@ export async function createAgentStream(
       providerMetadata,
       toolCalls,
       toolResults,
+      text,
+      finishReason,
     }) => {
+      // An assignment, failed attempt, reasoning-only output or vision baseline
+      // cannot activate this context. State survives retries within this run only.
+      if (
+        ctx.abliteratedStepRouting &&
+        isAbliterationModel(activeStepModelName) &&
+        isAbliterationModel(response.modelId) &&
+        ["stop", "tool-calls", "length"].includes(finishReason) &&
+        (Boolean(text?.trim()) ||
+          toolCalls?.some(
+            (call) =>
+              Object.hasOwn(ctx.tools, call.toolName) &&
+              !("invalid" in call && call.invalid),
+          ))
+      ) {
+        state.hasCompletedAbliterationStep = true;
+      }
       // Never persist an earlier partial candidate after an unsupported final step.
       historyToSave = undefined;
       if (

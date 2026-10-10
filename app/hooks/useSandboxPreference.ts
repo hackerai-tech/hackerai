@@ -59,6 +59,9 @@ function isRecoverableDesktopTermination(
 let bridgeRecoveryAttempt = 0;
 let bridgeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 let bridgeStableResetTimer: ReturnType<typeof setTimeout> | null = null;
+// Only transient failures may be retried on wake/network recovery. Never
+// restart a bridge terminated by an authentication or ownership failure.
+let bridgeRecoveryExhausted = false;
 
 function clearBridgeRecovery(resetAttempt: boolean): void {
   if (bridgeRecoveryTimer) {
@@ -207,6 +210,7 @@ export function useSandboxPreference(
           attempts,
         });
         clearBridgeRecovery(true);
+        bridgeRecoveryExhausted = true;
         updateBridgeState(false, "failed");
         return true;
       }
@@ -243,6 +247,7 @@ export function useSandboxPreference(
     };
 
     if (!isAuthenticated || !isTauriEnvironment()) {
+      bridgeRecoveryExhausted = false;
       syncDesktopEnvironmentId(undefined);
       bridgeStateListener = null;
       bridgeGeneration += 1;
@@ -294,6 +299,7 @@ export function useSandboxPreference(
                   onConnectionState: (state) => {
                     if (generation !== bridgeGeneration) return;
                     if (state === "connected") {
+                      bridgeRecoveryExhausted = false;
                       scheduleStableRecoveryReset(generation);
                     }
                     bridgeStateListener?.(state === "connected", state);
@@ -302,6 +308,7 @@ export function useSandboxPreference(
                     if (generation !== bridgeGeneration) return;
                     if (activeBridge === bridge) activeBridge = null;
                     if (!isRecoverableDesktopTermination(reason)) {
+                      bridgeRecoveryExhausted = false;
                       clearBridgeRecovery(true);
                       bridgeStateListener?.(false, "failed");
                       return;
@@ -405,12 +412,36 @@ export function useSandboxPreference(
   const retryDesktopBridge = useCallback(() => {
     if (!isAuthenticated || !isTauriEnvironment()) return;
     bridgeGeneration += 1;
+    bridgeRecoveryExhausted = false;
     clearBridgeRecovery(true);
     bridgeStartPromise = null;
     setDesktopBridgeActive(false);
     setDesktopBridgeStatus("connecting");
     setDesktopBridgeRetryAttempt((attempt) => attempt + 1);
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !isTauriEnvironment()) return;
+    const resumeRecovery = (event: Event) => {
+      if (
+        !bridgeRecoveryExhausted ||
+        (event.type !== "online" && document.visibilityState === "hidden") ||
+        activeBridge?.getConnectionId() ||
+        bridgeStartPromise ||
+        bridgeRecoveryTimer
+      )
+        return;
+      retryDesktopBridge();
+    };
+    window.addEventListener("online", resumeRecovery);
+    window.addEventListener("focus", resumeRecovery);
+    document.addEventListener("visibilitychange", resumeRecovery);
+    return () => {
+      window.removeEventListener("online", resumeRecovery);
+      window.removeEventListener("focus", resumeRecovery);
+      document.removeEventListener("visibilitychange", resumeRecovery);
+    };
+  }, [isAuthenticated, retryDesktopBridge]);
 
   return {
     sandboxPreference:

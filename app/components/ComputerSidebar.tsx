@@ -14,6 +14,7 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  PanelRight,
 } from "lucide-react";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { UIMessage } from "ai";
@@ -57,6 +58,7 @@ import {
 import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -320,9 +322,28 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   backNavigation,
   realtimeRecovery,
 }) => {
+  const computerSidebarOverlay = useComputerSidebarOverlay();
+  const [isExpanded, setIsExpanded] = useState(false);
+  const isFullscreen = isExpanded && !computerSidebarOverlay;
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const [isWrapped, setIsWrapped] = useState(true);
   const [isFollowingLive, setIsFollowingLive] = useState(followLiveOnOpen);
   const previousToolCountRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isFullscreen || !sidebarOpen || !sidebarRef.current) return;
+
+    const previousFocus =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    fullscreenButtonRef.current?.focus();
+
+    return () => {
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [isFullscreen, sidebarOpen]);
 
   const navigateManually = useCallback(
     (content: SidebarContent, context: { isLatest: boolean }) => {
@@ -513,12 +534,34 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     : "HackerAI\u2019s Computer";
 
   const handleClose = () => {
+    setIsExpanded(false);
     closeSidebar();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isFullscreen) return;
+
     if (e.key === "Escape") {
-      handleClose();
+      e.preventDefault();
+      e.stopPropagation();
+      setIsExpanded(false);
+    }
+
+    if (e.key === "Tab") {
+      const focusableElements = Array.from(
+        e.currentTarget.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => element.getClientRects().length > 0);
+      const firstElement = focusableElements[0];
+      const lastElement = focusableElements.at(-1);
+      if (e.shiftKey && document.activeElement === firstElement) {
+        e.preventDefault();
+        lastElement?.focus();
+      } else if (!e.shiftKey && document.activeElement === lastElement) {
+        e.preventDefault();
+        firstElement?.focus();
+      }
     }
   };
 
@@ -527,7 +570,18 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   };
 
   return (
-    <div className="h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full desktop:mr-4 flex-shrink-0">
+    <div
+      ref={sidebarRef}
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-50 h-full w-full bg-background p-4"
+          : "h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full desktop:mr-4 flex-shrink-0"
+      }
+      role={isFullscreen ? "dialog" : undefined}
+      aria-modal={isFullscreen ? true : undefined}
+      aria-label={isFullscreen ? headerTitle : undefined}
+      onKeyDown={handleKeyDown}
+    >
       <div className="h-full w-full">
         <div className="shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] border border-border/20 dark:border-border flex h-full w-full bg-background rounded-[22px]">
           <div className="flex-1 min-w-0 p-4 flex flex-col h-full">
@@ -551,6 +605,37 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
               <div className="text-foreground text-lg font-semibold flex-1">
                 {headerTitle}
               </div>
+              {!computerSidebarOverlay && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      ref={fullscreenButtonRef}
+                      onClick={() => setIsExpanded((expanded) => !expanded)}
+                      className="hidden desktop:inline-flex w-7 h-7 relative rounded-md items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label={
+                        isFullscreen ? "Exit full screen" : "Expand sidebar"
+                      }
+                      aria-pressed={isFullscreen}
+                    >
+                      {isFullscreen ? (
+                        <Minimize2
+                          className="w-5 h-5 text-muted-foreground"
+                          aria-hidden
+                        />
+                      ) : (
+                        <Maximize2
+                          className="w-5 h-5 text-muted-foreground"
+                          aria-hidden
+                        />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {isFullscreen ? "Exit full screen" : "Full screen"}
+                  </TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
@@ -559,9 +644,15 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
                     aria-label="Minimize sidebar"
                     tabIndex={0}
-                    onKeyDown={handleKeyDown}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape" && !isFullscreen) handleClose();
+                    }}
                   >
-                    <Minimize2 className="w-5 h-5 text-muted-foreground" />
+                    <Minimize2 className="w-5 h-5 text-muted-foreground desktop:hidden" />
+                    <PanelRight
+                      className="hidden desktop:block w-5 h-5 text-muted-foreground"
+                      aria-hidden
+                    />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>Minimize</TooltipContent>

@@ -533,6 +533,8 @@ export interface ExtraUsageConfig {
 }
 
 export interface QueuedMessage {
+  deliveryStatus?: "sending" | "failed" | "active";
+  firstAttemptAt?: number;
   id: string;
   text: string;
   files?: import("@/types/file").FileMessagePart[];

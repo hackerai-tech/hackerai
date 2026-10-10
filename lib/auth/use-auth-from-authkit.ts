@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useMemo } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useMemo,
+  useState,
+} from "react";
 import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { CrossTabMutex } from "@/lib/auth/cross-tab-mutex";
 import {
@@ -16,6 +23,8 @@ const refreshMutex = new CrossTabMutex({
   lockTimeoutMs: 15000,
   onLog: (msg) => console.log(`[Convex Auth] ${msg}`),
 });
+
+const REFRESH_COOLDOWN_MS = 10_000;
 
 export function useSharedTokenCleanup(enabled: boolean): void {
   useEffect(() => {
@@ -54,12 +63,23 @@ export function useAuthFromAuthKit(
     user,
     loading: isLoading,
     organizationId,
+    sessionId,
     refreshAuth,
   } = deps.useAuth();
   const { getAccessToken, accessToken, refresh } = deps.useAccessToken();
   const accessTokenRef = useRef<string | undefined>(undefined);
   const lastRefreshErrorAt = useRef<number>(0);
   const hasResolvedOrgRef = useRef(false);
+  const authContext = JSON.stringify([user?.id, sessionId, organizationId]);
+  const authContextRef = useRef(authContext);
+  useLayoutEffect(() => {
+    authContextRef.current = authContext;
+  }, [authContext]);
+  const [recovery, setRecovery] = useState<{
+    context: string;
+    failedToken: string | undefined;
+  } | null>(null);
+  const isRecovering = !!user && recovery?.context === authContext;
   const sessionRecoveryRef = useRef<{
     userId: string;
     startedAt: number;
@@ -97,6 +117,14 @@ export function useAuthFromAuthKit(
 
   const isAuthenticated = !!user;
 
+  useEffect(() => {
+    setRecovery((current) =>
+      current?.context === authContext ? current : null,
+    );
+    lastRefreshErrorAt.current = 0;
+    sessionRecoveryRef.current = null;
+  }, [authContext]);
+
   const reconcileMissingToken = useCallback(async (): Promise<boolean> => {
     if (!user || !refreshAuth) return false;
     const previous = sessionRecoveryRef.current;
@@ -127,6 +155,86 @@ export function useAuthFromAuthKit(
     return pending;
   }, [user, refreshAuth]);
 
+  const startRecovery = useCallback(() => {
+    if (authContextRef.current !== authContext) return;
+    setRecovery((current) =>
+      current?.context === authContext
+        ? current
+        : { context: authContext, failedToken: accessTokenRef.current },
+    );
+  }, [authContext]);
+
+  // A token-store refresh alone does not restart Convex after it has cleared
+  // auth: AuthKit's getAccessToken/refresh callbacks have stable identities.
+  // Keep transient failures in loading state until a usable token returns (or
+  // the session check clears the user). The loading transition makes
+  // ConvexProviderWithAuth register auth again without rotating every token.
+  useEffect(() => {
+    if (!isRecovering) return;
+    let cancelled = false;
+    let pending = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let nextAttemptAt = lastRefreshErrorAt.current + REFRESH_COOLDOWN_MS;
+
+    const retry = async () => {
+      clearTimeout(timer);
+      if (cancelled || pending) return;
+      if (
+        navigator.onLine === false ||
+        document.visibilityState === "hidden" ||
+        Date.now() < nextAttemptAt
+      ) {
+        timer = setTimeout(retry, REFRESH_COOLDOWN_MS);
+        return;
+      }
+      pending = true;
+      try {
+        // AuthKit checks JWT expiry and deduplicates concurrent wake refreshes.
+        const token = await getAccessToken();
+        if (cancelled || authContextRef.current !== recovery?.context) return;
+        if (!token) await reconcileMissingToken();
+        if (cancelled || authContextRef.current !== recovery?.context) return;
+        if (token) {
+          accessTokenRef.current = token;
+          lastRefreshErrorAt.current = 0;
+          setRecovery(null);
+          return;
+        }
+      } catch {
+        // A transport/provider failure is not evidence of sign-out.
+      } finally {
+        pending = false;
+      }
+      if (!cancelled) {
+        lastRefreshErrorAt.current = Date.now();
+        nextAttemptAt = Date.now() + REFRESH_COOLDOWN_MS;
+        timer = setTimeout(retry, REFRESH_COOLDOWN_MS);
+      }
+    };
+
+    // The SDK may have already recovered in the background during cooldown.
+    if (accessToken && accessToken !== recovery?.failedToken) nextAttemptAt = 0;
+    void retry();
+    window.addEventListener("online", retry);
+    window.addEventListener("focus", retry);
+    window.addEventListener("pageshow", retry);
+    document.addEventListener("visibilitychange", retry);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      window.removeEventListener("online", retry);
+      window.removeEventListener("focus", retry);
+      window.removeEventListener("pageshow", retry);
+      document.removeEventListener("visibilitychange", retry);
+    };
+  }, [
+    isRecovering,
+    recovery,
+    accessToken,
+    getAccessToken,
+    reconcileMissingToken,
+  ]);
+
   const fetchAccessToken = useCallback(
     async ({
       forceRefreshToken,
@@ -140,7 +248,6 @@ export function useAuthFromAuthKit(
         if (forceRefreshToken) {
           // Cooldown: skip refresh if we recently hit an error (e.g., rate limit)
           // to prevent Convex retry loops from hammering the server
-          const REFRESH_COOLDOWN_MS = 10_000;
           if (Date.now() - lastRefreshErrorAt.current < REFRESH_COOLDOWN_MS) {
             console.log(
               "[Convex Auth] Skipping refresh during cooldown, using cached token",
@@ -171,10 +278,15 @@ export function useAuthFromAuthKit(
         } else {
           token = await getAccessToken();
         }
+        if (authContextRef.current !== authContext) return null;
         if (!token) {
           const cachedToken = accessTokenRef.current;
           const recoveryFailed = await reconcileMissingToken();
-          if (recoveryFailed) return cachedToken ?? null;
+          if (authContextRef.current !== authContext) return null;
+          if (recoveryFailed) {
+            startRecovery();
+            return cachedToken ?? null;
+          }
           accessTokenRef.current = undefined;
         } else {
           accessTokenRef.current = token;
@@ -182,10 +294,11 @@ export function useAuthFromAuthKit(
         }
         return token ?? null;
       } catch {
-        // On network errors during laptop wake, fall back to cached token.
-        // Even if expired, Convex will treat it like null and clear auth.
-        // AuthKit's tokenStore schedules automatic retries in the background.
+        if (authContextRef.current !== authContext) return null;
+        // Preserve the shell while the token is unavailable. Returning an old
+        // token alone can leave Convex signed out even after AuthKit recovers.
         lastRefreshErrorAt.current = Date.now();
+        startRecovery();
         console.log("[Convex Auth] Using cached token during network issues");
         return accessTokenRef.current ?? null;
       }
@@ -197,11 +310,13 @@ export function useAuthFromAuthKit(
       deps.mutex,
       isCrossTabEnabled,
       reconcileMissingToken,
+      startRecovery,
+      authContext,
     ],
   );
 
   return {
-    isLoading,
+    isLoading: isLoading || isRecovering,
     isAuthenticated,
     fetchAccessToken,
   };

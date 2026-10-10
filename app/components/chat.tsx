@@ -28,6 +28,7 @@ import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
 import Footer from "./Footer";
 import { useMessageScroll } from "../hooks/useMessageScroll";
+import { useQueuedMessageDelivery } from "@/app/hooks/useQueuedMessageDelivery";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { resolveFreeDesktopSandboxPreference } from "@/lib/activation/free-desktop-sandbox";
@@ -114,9 +115,11 @@ import {
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { formatTaskUiCopy } from "@/app/utils/task-ui-copy";
 import { finalizeNewChatRoute } from "./chat-route";
+import { ChatPerformanceTracker } from "@/lib/analytics/chat-performance";
+import { useChatPerformance } from "@/app/hooks/useChatPerformance";
+import { useBrowserResponsiveness } from "@/app/hooks/useBrowserResponsiveness";
 
 import { HackingSuggestions } from "./HackingSuggestions";
-import { AcquisitionSurvey } from "./AcquisitionSurvey";
 
 const AGENT_LONG_SILENT_COMPLETION_POLL_DELAY_MS = 5_000;
 const AGENT_LONG_SILENT_COMPLETION_POLL_INTERVAL_MS = 5_000;
@@ -588,6 +591,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     messageQueue,
     editingQueuedMessageId,
     removeQueuedMessage,
+    setQueuedMessageDelivery,
     clearQueue,
     todos,
     sandboxPreference,
@@ -601,6 +605,8 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
     subscription,
     activeProjectId,
+    surveyActivation,
+    setSurveyActivation,
   } = useGlobalState();
   const { setAgentApprovalSession, clearAgentApprovalSession } =
     useAgentApproval();
@@ -900,11 +906,25 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   };
 
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  const queuedAdmissionRef = useRef<(chatId: string, id: string) => void>(
+    () => {},
+  );
+  const [performanceTracker] = useState(() => new ChatPerformanceTracker());
+  useBrowserResponsiveness();
   const transportRef = useRef(
     new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
         const mode = chatModeRef.current;
+        if (init?.method === "POST") {
+          performanceTracker.start(
+            activeChatIdRef.current,
+            mode,
+            messagesRef.current
+              .filter((message) => message.role === "assistant")
+              .map((message) => message.id),
+          );
+        }
         const isTauri = isTauriEnvironment();
         if (isLegacyDesktopAgentClient({ mode, isTauri })) {
           throw new ChatSDKError(
@@ -942,6 +962,9 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               messagesRef.current,
             ),
           };
+          const request =
+            typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+          const queuedMessageId = request?.messages?.at(-1)?.id;
           return fetchAgentLongStream(
             init,
             (run) => {
@@ -951,6 +974,12 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                   run.chatId !== activeChatIdRef.current)
               ) {
                 return;
+              }
+              if (
+                typeof request?.chatId === "string" &&
+                typeof queuedMessageId === "string"
+              ) {
+                queuedAdmissionRef.current(request.chatId, queuedMessageId);
               }
               setAgentLongRunId(run.runId);
               if (run.runCorrelationToken) {
@@ -1096,6 +1125,16 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       agentLongHasVisibleProgressRef.current = true;
       appendDataPart({ ...dataPart, __chatId: chatId });
       switch (dataPart.type) {
+        case "data-cloud-connection-error": {
+          const data = dataPart.data as { code?: unknown };
+          if (data?.code === "timeout") {
+            toast.error(
+              "Cloud connection timed out. Your workspace is preserved. Try sending your message again shortly.",
+              { duration: 10_000 },
+            );
+          }
+          break;
+        }
         case "data-agent-approval-session": {
           const approvalData = dataPart.data as {
             chatId?: unknown;
@@ -1211,6 +1250,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onFinish: ({ isAbort }) => {
+      performanceTracker.setOutcome(isAbort ? "aborted" : "completed");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1233,6 +1273,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      performanceTracker.setOutcome("error");
       if (!isChatMountedRef.current || activeChatIdRef.current !== chatId) {
         return;
       }
@@ -1260,6 +1301,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
   });
 
+  useChatPerformance({
+    tracker: performanceTracker,
+    chatId,
+    messages,
+    status,
+    runId: agentLongRunId,
+  });
+
   // Guard the shared dispatch boundary as well as the UI. Forks, retries,
   // auto-continue, and queued sends must retain the selected environment.
   const sendMessage = useCallback<typeof sendMessageUnchecked>(
@@ -1278,6 +1327,24 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     },
     [regenerateUnchecked, computerSendDisabledReasonRef],
   );
+
+  const { send: sendQueuedMessage, accept: acceptQueuedMessage } =
+    useQueuedMessageDelivery({
+      chatId,
+      messages,
+      queue: messageQueue,
+      enabled: shouldUseAgentLong,
+      isStopped: () => hasManuallyStoppedRef.current,
+      getRequestGeneration: () => agentLongRequestGenerationRef.current,
+      sendDisabledReason: computerSendDisabledReason,
+      sendMessage,
+      resumeStream,
+      remove: removeQueuedMessage,
+      setDelivery: setQueuedMessageDelivery,
+    });
+  useLayoutEffect(() => {
+    queuedAdmissionRef.current = acceptQueuedMessage;
+  }, [acceptQueuedMessage]);
 
   const previousChatStatusRef = useRef<typeof status | null>(null);
   useEffect(() => {
@@ -2076,6 +2143,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       status === "ready" &&
       !computerSendDisabledReason &&
       messageQueue.length > 0 &&
+      !messageQueue[0].deliveryStatus &&
       editingQueuedMessageId === null &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
@@ -2084,30 +2152,33 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       setIsProcessingQueue(true);
       const nextMessage = messageQueue[0];
 
-      if (nextMessage) {
-        try {
-          const sendPromise = sendMessage(
-            {
-              text: nextMessage.text,
-              files: nextMessage.files as any,
-              metadata: { createdAt: nextMessage.timestamp },
-            },
-            {
-              body: {
-                mode: chatModeRef.current,
-                todos: todosRef.current,
-                sandboxPreference: sandboxPreferenceRef.current,
-                agentPermissionMode: agentPermissionModeRef.current,
-                selectedModel: requestSelectedModelRef.current,
+      if (nextMessage && !nextMessage.deliveryStatus) {
+        const body = {
+          mode: chatModeRef.current,
+          todos: todosRef.current,
+          sandboxPreference: sandboxPreferenceRef.current,
+          agentPermissionMode: agentPermissionModeRef.current,
+          selectedModel: requestSelectedModelRef.current,
+        };
+        if (shouldUseAgentLong) {
+          void sendQueuedMessage(nextMessage.id, body);
+        } else {
+          try {
+            const sending = sendMessage(
+              {
+                text: nextMessage.text,
+                files: nextMessage.files as any,
+                metadata: { createdAt: nextMessage.timestamp },
               },
-            },
-          );
-          removeQueuedMessage(nextMessage.id);
-          sendPromise.catch((error) => {
+              { body },
+            );
+            removeQueuedMessage(nextMessage.id);
+            void sending.catch((error) =>
+              console.error("Failed to send queued message:", error),
+            );
+          } catch (error) {
             console.error("Failed to send queued message:", error);
-          });
-        } catch (error) {
-          console.error("Failed to send queued message:", error);
+          }
         }
       }
 
@@ -2115,12 +2186,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [
     status,
+    shouldUseAgentLong,
     messageQueue,
     editingQueuedMessageId,
     computerSendDisabledReason,
     isProcessingQueue,
-    removeQueuedMessage,
+    sendQueuedMessage,
     sendMessage,
+    removeQueuedMessage,
     chatModeRef,
     todosRef,
     sandboxPreferenceRef,
@@ -2147,6 +2220,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     chatId,
     messages,
     sendMessage,
+    sendQueuedMessage:
+      shouldUseAgentLong ||
+      messageQueue.some((message) => message.deliveryStatus)
+        ? sendQueuedMessage
+        : undefined,
     stop,
     regenerate,
     setMessages,
@@ -2242,24 +2320,36 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatDataForCurrentChat?.branched_from_chat_id;
   const branchedFromChatTitle = (chatDataForCurrentChat as any)
     ?.branched_from_title;
-  const [surveyActivation, setSurveyActivation] = useState<{
-    chatId: string;
-    mode: "ask" | "agent";
-  } | null>(null);
   useEffect(() => {
-    if (status !== "submitted" && status !== "streaming") return;
+    // Only a new submission arms the survey. Mounting/reconnecting an old
+    // streaming response must not be treated as a fresh activation.
+    const submittedMessage = messages.at(-1);
+    if (
+      status !== "submitted" ||
+      submittedMessage?.role !== "user" ||
+      submittedMessage.metadata?.isAutoContinue
+    )
+      return;
     setSurveyActivation({
       chatId,
+      userMessageId: submittedMessage.id,
       mode: chatMode === "agent" ? "agent" : "ask",
     });
-  }, [chatId, chatMode, status]);
+  }, [chatId, chatMode, messages, status, setSurveyActivation]);
   const lastMessage = messages.at(-1);
   const acquisitionSurveyEligible =
     surveyActivation?.chatId === chatId &&
     status === "ready" &&
+    !hasManuallyStoppedRef.current &&
+    !error &&
+    !chatDataForCurrentChat?.active_stream_id &&
+    !chatDataForCurrentChat?.active_trigger_run_id &&
+    chatDataForCurrentChat?.finish_reason === "stop" &&
     lastMessage?.role === "assistant" &&
-    hasVisibleAssistantContent([lastMessage]) &&
-    messages.some((message) => message.role === "user");
+    lastMessage.parts.some(
+      (part) => part.type === "text" && part.text.trim().length > 0,
+    ) &&
+    messages.some((message) => message.id === surveyActivation.userMessageId);
   const currentAgentRunUiId =
     agentLongRunId ??
     activeTriggerRunId ??
@@ -2308,10 +2398,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
         isExistingChat={isExistingChat}
         messageCount={messages.length}
         onSubmit={handleSubmit}
-      />
-      <AcquisitionSurvey
-        eligible={acquisitionSurveyEligible}
-        activationMode={surveyActivation?.mode ?? "ask"}
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
@@ -2368,6 +2454,14 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
                       scrollRef={scrollRef}
                       contentRef={contentRef}
                       messages={messages}
+                      acquisitionSurvey={
+                        acquisitionSurveyEligible && lastMessage
+                          ? {
+                              messageId: lastMessage.id,
+                              mode: surveyActivation!.mode,
+                            }
+                          : undefined
+                      }
                       setMessages={setMessages}
                       onRegenerate={handleRegenerate}
                       onRetry={handleRetry}

@@ -1,11 +1,16 @@
 import {
   evaluateAbliteratedModel,
-  ABLITERATED_EXPERIMENT_KEY,
-  ABLITERATION_CONTINUITY_FLAG,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
-import type { SelectedModel, SubscriptionTier } from "@/types";
+import type { SubscriptionTier } from "@/types";
+import { phLogger } from "@/lib/posthog/server";
+
+jest.mock("@/lib/posthog/server", () => ({
+  phLogger: { info: jest.fn(), warn: jest.fn() },
+}));
 import {
   ABLITERATION_MODEL_ID,
   ABLITERATION_MODEL_KEY,
@@ -34,9 +39,10 @@ describe("Abliteration model identity", () => {
   });
 });
 
-describe("moderation-gated Abliteration assignment", () => {
+describe("paid moderation-gated Abliteration after trial rollback", () => {
   const originalKey = process.env.ABLITERATION_API_KEY;
   beforeEach(() => {
+    jest.clearAllMocks();
     process.env.ABLITERATION_API_KEY = "test-only-placeholder";
   });
   afterAll(() => {
@@ -111,88 +117,65 @@ describe("moderation-gated Abliteration assignment", () => {
     moderationEligible: true,
     messages,
   };
-  it.each([undefined, "auto", "hackerai-standard"] as const)(
-    "routes an eligible %s request only for an explicit test variant",
-    async (selectedModelOverride) => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockResolvedValue(flagResult("test"));
-      const result = await evaluateAbliteratedModel({
-        ...defaults,
-        selectedModelOverride,
-        posthog: { getFeatureFlagResult },
-      });
-      expect(result).toMatchObject({
-        modelKey: "model-abliterated",
-      });
-      expect(getFeatureFlagResult).toHaveBeenCalledWith(
-        ABLITERATED_EXPERIMENT_KEY,
-        "u",
-        {
-          sendFeatureFlagEvents: false,
-          personProperties: { subscription: "pro", subscription_tier: "pro" },
-        },
-      );
-      expect(JSON.stringify(getFeatureFlagResult.mock.calls)).not.toContain(
-        "private test prompt",
-      );
-    },
-  );
-  it.each([
-    { moderationEligible: false },
-    { limitRescue: true },
-    { messages: [] },
-    {
-      messages: [
-        {
-          id: "f",
-          role: "user" as const,
-          parts: [
-            {
-              type: "file" as const,
-              mediaType: "application/pdf",
-              url: "https://example.test/private.pdf",
-            },
-          ],
-        },
-      ],
-    },
-  ])("does not evaluate ineligible requests: %j", async (overrides) => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockResolvedValue(flagResult("test"));
-    expect(
-      await evaluateAbliteratedModel({
-        ...defaults,
-        ...overrides,
-        posthog: { getFeatureFlagResult },
-      }),
-    ).toBeUndefined();
-    expect(getFeatureFlagResult).not.toHaveBeenCalled();
-  });
-
-  describe.each(["ask", "agent"] as const)("free %s exclusion", (mode) => {
-    it.each(["test", "control", true, false, undefined])(
-      "keeps the free baseline without evaluating flags, even if they return %s",
-      async (variant) => {
-        const getFeatureFlagResult = jest
-          .fn()
-          .mockResolvedValue(flagResult(variant));
-        const baselineModel =
-          mode === "ask" ? "ask-model-free-glm" : "agent-model-free";
-        const assignment = await evaluateAbliteratedModel({
-          ...defaults,
-          mode,
-          subscription: "free",
-          selectedModel: baselineModel,
-          posthog: { getFeatureFlagResult },
-        });
-        expect(assignment).toBeUndefined();
-        expect(assignment?.modelKey ?? baselineModel).toBe(baselineModel);
-        expect(getFeatureFlagResult).not.toHaveBeenCalled();
+  describe.each(["ask", "agent"] as const)("shipped %s default", (mode) => {
+    it.each(["pro", "pro-plus", "ultra", "team"] as const)(
+      "routes every eligible %s selector without a historical flag lookup",
+      async (subscription) => {
+        for (const selectedModelOverride of [
+          undefined,
+          "auto",
+          "hackerai-standard",
+          "hackerai-pro",
+          "hackerai-max",
+        ] as const) {
+          const getFeatureFlagResult = jest
+            .fn()
+            .mockRejectedValue(new Error("PostHog unavailable"));
+          const assignment = await evaluateAbliteratedModel({
+            ...defaults,
+            mode,
+            subscription,
+            selectedModelOverride,
+            posthog: { getFeatureFlagResult },
+          });
+          expect(assignment).toMatchObject({
+            key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+            variant: "test",
+            modelKey: ABLITERATION_MODEL_KEY,
+            baselineModel: defaults.selectedModel,
+            selectionSource: "moderation",
+            moderationChecked: true,
+          });
+          expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+        }
       },
     );
-    it("does not restore treatment from an existing Abliteration chat history", async () => {
+    it("does not depend on a configured analytics client", async () => {
+      await expect(
+        evaluateAbliteratedModel({ ...defaults, mode, posthog: null }),
+      ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
+    });
+    it.each([
+      { subscription: "free" as const },
+      { limitRescue: true },
+      { moderationEligible: false },
+      { messages: [] },
+      {
+        messages: [
+          {
+            id: "pdf",
+            role: "user" as const,
+            parts: [
+              {
+                type: "file" as const,
+                mediaType: "application/pdf",
+                url: "https://example.test/test.pdf",
+              },
+            ],
+          },
+        ],
+      },
+    ])("preserves baseline for excluded input %j", async (overrides) => {
       const getFeatureFlagResult = jest
         .fn()
         .mockResolvedValue(flagResult("test"));
@@ -200,334 +183,148 @@ describe("moderation-gated Abliteration assignment", () => {
         evaluateAbliteratedModel({
           ...defaults,
           mode,
-          subscription: "free",
-          allowsAbliterationContinuation: true,
-          independentAbliterationResponses: 5,
+          ...overrides,
           posthog: { getFeatureFlagResult },
         }),
       ).resolves.toBeUndefined();
       expect(getFeatureFlagResult).not.toHaveBeenCalled();
     });
-  });
-  it.each(["pro", "pro-plus", "ultra", "team"] as const)(
-    "preserves paid %s treatment in Ask and Agent",
-    async (subscription) => {
-      for (const mode of ["ask", "agent"] as const) {
+    it("keeps the baseline when the provider credential is absent", async () => {
+      delete process.env.ABLITERATION_API_KEY;
+      await expect(
+        evaluateAbliteratedModel({ ...defaults, mode, posthog: null }),
+      ).resolves.toBeUndefined();
+    });
+    it.each(["control", "test"] as const)(
+      "assigns %s using the authenticated ID without emitting exposure",
+      async (variant) => {
         const getFeatureFlagResult = jest
           .fn()
-          .mockResolvedValue(flagResult("test"));
-        await expect(
-          evaluateAbliteratedModel({
-            ...defaults,
-            mode,
-            subscription,
-            posthog: { getFeatureFlagResult },
-          }),
-        ).resolves.toMatchObject({
-          modelKey: ABLITERATION_MODEL_KEY,
-          key: ABLITERATED_EXPERIMENT_KEY,
+          .mockResolvedValue(flagResult(variant));
+        const assignment = await evaluateAbliteratedModel({
+          ...defaults,
+          mode,
+          posthog: { getFeatureFlagResult },
         });
-      }
-    },
-  );
-
-  it("keeps a request at the Abliteration image limit eligible", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockResolvedValue(flagResult("test"));
-
-    await expect(
-      evaluateAbliteratedModel({
-        ...defaults,
-        messages: imageAttachmentHistory(ABLITERATION_MAX_IMAGES_PER_REQUEST),
-        posthog: { getFeatureFlagResult },
-      }),
-    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
-    expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
-  });
-  it("keeps over-limit image requests eligible for vision preprocessing", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockResolvedValue(flagResult("test"));
-
-    await expect(
-      evaluateAbliteratedModel({
-        ...defaults,
-        messages: imageAttachmentTurn(ABLITERATION_MAX_IMAGES_PER_REQUEST + 1),
-        posthog: { getFeatureFlagResult },
-      }),
-    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
-    expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
-  });
-  it("keeps over-limit image history eligible across messages", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockResolvedValue(flagResult("test"));
-    const messages = imageAttachmentHistory(
-      ABLITERATION_MAX_IMAGES_PER_REQUEST,
+        expect(assignment).toMatchObject({
+          key: ABLITERATED_PAID_THREE_STEPS_KEY,
+          variant,
+          modelKey: ABLITERATION_MODEL_KEY,
+          baselineModel: defaults.selectedModel,
+          generationStepLimit: variant === "test" ? 3 : 1,
+        });
+        expect(getFeatureFlagResult).toHaveBeenCalledWith(
+          ABLITERATED_PAID_THREE_STEPS_KEY,
+          defaults.userId,
+          expect.objectContaining({
+            sendFeatureFlagEvents: false,
+            personProperties: {
+              subscription: "pro",
+              subscription_tier: "pro",
+            },
+          }),
+        );
+      },
     );
-    messages.push({
-      id: "combined-image-turn",
-      role: "user",
-      parts: [
-        { type: "text", text: "Inspect the full image history" },
-        {
-          type: "file",
-          mediaType: "image/jpeg",
-          url: "https://example.test/final-private.jpg",
-        },
-      ],
-    } as unknown as UIMessage);
-
-    await expect(
-      evaluateAbliteratedModel({
-        ...defaults,
-        messages,
-        posthog: { getFeatureFlagResult },
-      }),
-    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
-    expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
-  });
-  it.each([
-    {
-      name: "explicit Pro",
-      selectedModelOverride: "hackerai-pro" as SelectedModel,
-      selectedModel: "model-deepseek-v4-flash-vision-pro" as const,
-    },
-    {
-      name: "explicit Max",
-      selectedModelOverride: "hackerai-max" as SelectedModel,
-      selectedModel: "model-grok-4.6" as const,
-    },
-    {
-      name: "Ultra Ask Auto",
-      selectedModelOverride: "auto" as SelectedModel,
-      selectedModel: "model-deepseek-v4-pro-0813" as const,
-      subscription: "ultra" as SubscriptionTier,
-    },
-  ])("routes $name to Large v2 in treatment", async (overrides) => {
-    expect(
-      await evaluateAbliteratedModel({
-        ...defaults,
-        ...overrides,
-        posthog: {
-          getFeatureFlagResult: jest.fn().mockResolvedValue(flagResult("test")),
-        },
-      }),
-    ).toMatchObject({
-      variant: "test",
-      modelKey: ABLITERATION_LARGE_V2_MODEL_KEY,
-      baselineModel: overrides.selectedModel,
-    });
-  });
-
-  it.each([
-    {
-      name: "Pro image attachment",
-      selectedModelOverride: "hackerai-pro" as SelectedModel,
-      selectedModel: "model-deepseek-v4-flash-vision-pro" as const,
-      messages: imageAttachmentMessages,
-    },
-    {
-      name: "Pro image-view tool result",
-      selectedModelOverride: "hackerai-pro" as SelectedModel,
-      selectedModel: "model-deepseek-v4-flash-vision-pro" as const,
-      messages: imageViewMessages,
-    },
-    {
-      name: "Max image attachment",
-      selectedModelOverride: "hackerai-max" as SelectedModel,
-      selectedModel: "model-grok-4.6" as const,
-      messages: imageAttachmentMessages,
-    },
-    {
-      name: "Max image-view tool result",
-      selectedModelOverride: "hackerai-max" as SelectedModel,
-      selectedModel: "model-grok-4.6" as const,
-      messages: imageViewMessages,
-    },
-  ])(
-    "routes $name requests to the vision-capable base model",
-    async ({ messages, selectedModel, selectedModelOverride }) => {
-      expect(
-        await evaluateAbliteratedModel({
+    it.each([false, true, undefined, "unexpected"])(
+      "keeps the shipped one-step default for flag value %s",
+      async (value) => {
+        const assignment = await evaluateAbliteratedModel({
           ...defaults,
-          selectedModelOverride,
-          selectedModel,
-          messages,
-          posthog: {
-            getFeatureFlagResult: jest
-              .fn()
-              .mockResolvedValue(flagResult("test")),
-          },
-        }),
-      ).toMatchObject({
-        variant: "test",
-        modelKey: ABLITERATION_MODEL_KEY,
-        baselineModel: selectedModel,
-      });
-    },
-  );
-
-  it("keeps Ultra Agent Auto on the base Abliteration route", async () => {
-    expect(
-      await evaluateAbliteratedModel({
-        ...defaults,
-        subscription: "ultra",
-        selectedModelOverride: "auto",
-        posthog: {
-          getFeatureFlagResult: jest.fn().mockResolvedValue(flagResult("test")),
-        },
-      }),
-    ).toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
-  });
-  it.each([false, true, undefined, "unexpected"])(
-    "fails closed on %s",
-    async (value) => {
-      expect(
-        await evaluateAbliteratedModel({
-          ...defaults,
+          mode,
           posthog: {
             getFeatureFlagResult: jest
               .fn()
               .mockResolvedValue(flagResult(value)),
           },
-        }),
-      ).toBeUndefined();
-    },
-  );
-  it("preserves Ultra Auto's baseline for controls", async () => {
-    expect(
-      await evaluateAbliteratedModel({
-        ...defaults,
-        subscription: "ultra",
-        selectedModel: "model-deepseek-v4-pro-0813",
-        posthog: {
-          getFeatureFlagResult: jest
-            .fn()
-            .mockResolvedValue(flagResult("control")),
-        },
-      }),
-    ).toMatchObject({
-      variant: "control",
-      modelKey: "model-deepseek-v4-pro-0813",
-    });
+        });
+        expect(assignment).toMatchObject({
+          key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+          modelKey: ABLITERATION_MODEL_KEY,
+        });
+        expect(assignment?.generationStepLimit).toBeUndefined();
+      },
+    );
   });
-  it("fails closed on missing configuration or lookup failure", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockRejectedValue(new Error("offline"));
-    expect(
-      await evaluateAbliteratedModel({
-        ...defaults,
-        posthog: { getFeatureFlagResult },
-      }),
-    ).toBeUndefined();
-    getFeatureFlagResult.mockClear();
-    delete process.env.ABLITERATION_API_KEY;
-    expect(
-      await evaluateAbliteratedModel({
-        ...defaults,
-        posthog: { getFeatureFlagResult },
-      }),
-    ).toBeUndefined();
-    expect(getFeatureFlagResult).not.toHaveBeenCalled();
-  });
-  const historyDefaults = {
-    ...defaults,
-    moderationEligible: false,
-    allowsAbliterationContinuation: true,
-    independentAbliterationResponses: 2,
-  };
-  it("uses history only within parent treatment and an explicitly enabled continuity flag", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockImplementation(async (key: string) =>
-        flagResult(key === ABLITERATION_CONTINUITY_FLAG ? true : "test"),
-      );
-    await expect(
-      evaluateAbliteratedModel({
-        ...historyDefaults,
-        posthog: { getFeatureFlagResult },
-      }),
-    ).resolves.toMatchObject({
-      modelKey: ABLITERATION_MODEL_KEY,
-      selectionSource: "history",
-      independentHistoryCount: 2,
-    });
-    expect(getFeatureFlagResult).toHaveBeenCalledTimes(2);
-  });
-  it.each([
-    { allowsAbliterationContinuation: false },
-    { independentAbliterationResponses: 1 },
-    { independentAbliterationResponses: NaN },
-    { subscription: "free" as SubscriptionTier },
-    { subscription: "free" as SubscriptionTier, mode: "agent" as const },
-    { limitRescue: true },
-    {
-      messages: [
-        {
-          id: "file",
-          role: "user" as const,
-          parts: [
-            {
-              type: "file" as const,
-              mediaType: "application/pdf",
-              url: "https://example.test/a.pdf",
-            },
-          ],
-        },
-      ],
-    },
-  ])("preserves all eligibility gates for history: %j", async (overrides) => {
-    const getFeatureFlagResult = jest.fn().mockResolvedValue(flagResult(true));
-    await expect(
-      evaluateAbliteratedModel({
-        ...historyDefaults,
-        ...overrides,
-        posthog: { getFeatureFlagResult },
-      }),
-    ).resolves.toBeUndefined();
-    expect(getFeatureFlagResult).not.toHaveBeenCalled();
-  });
-  it.each([false, undefined, "test"])(
-    "fails closed on continuity flag %s",
-    async (value) => {
-      const getFeatureFlagResult = jest
-        .fn()
-        .mockResolvedValueOnce(flagResult("test"))
-        .mockResolvedValueOnce(flagResult(value));
+  it.each(
+    [
+      imageAttachmentMessages,
+      imageViewMessages,
+      imageAttachmentHistory(ABLITERATION_MAX_IMAGES_PER_REQUEST),
+      imageAttachmentTurn(ABLITERATION_MAX_IMAGES_PER_REQUEST + 1),
+    ].map((messages) => [messages]),
+  )(
+    "retains base-model vision routing and preprocessing eligibility",
+    async (messages) => {
       await expect(
         evaluateAbliteratedModel({
-          ...historyDefaults,
-          posthog: { getFeatureFlagResult },
+          ...defaults,
+          messages,
+          selectedModel: "model-grok-4.6",
+          posthog: null,
         }),
-      ).resolves.toBeUndefined();
+      ).resolves.toMatchObject({
+        modelKey: ABLITERATION_MODEL_KEY,
+        baselineModel: "model-grok-4.6",
+      });
     },
   );
-  it("does not move parent controls into continuity treatment", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockResolvedValue(flagResult("control"));
+  it("diagnoses the default without customer content and without changing behavior on logging failure", async () => {
+    const previewDiagnosticContext = {
+      chatId: "test-chat",
+      requestId: "test-run",
+    };
+    const result = await evaluateAbliteratedModel({
+      ...defaults,
+      posthog: null,
+      previewDiagnosticContext,
+    });
+    expect(result?.key).toBe(ABLITERATED_PAID_MODERATED_DEFAULT_KEY);
+    expect(phLogger.info).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        reason: "moderated_default",
+        moderation_checked: true,
+      }),
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.info).mock.calls)).not.toContain(
+      "private test prompt",
+    );
+    jest.mocked(phLogger.info).mockImplementationOnce(() => {
+      throw new Error("logging unavailable");
+    });
     await expect(
       evaluateAbliteratedModel({
-        ...historyDefaults,
-        posthog: { getFeatureFlagResult },
+        ...defaults,
+        posthog: null,
+        previewDiagnosticContext,
       }),
-    ).resolves.toBeUndefined();
-    expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+    ).resolves.toMatchObject({ modelKey: ABLITERATION_MODEL_KEY });
   });
-  it("keeps independent moderation selection independent even with enough history", async () => {
-    const getFeatureFlagResult = jest
-      .fn()
-      .mockResolvedValue(flagResult("test"));
+  it("reports lookup failure without error content and retains fallback if logging fails", async () => {
+    const posthog = {
+      getFeatureFlagResult: jest
+        .fn()
+        .mockRejectedValue(new Error("private error content")),
+    };
     await expect(
-      evaluateAbliteratedModel({
-        ...historyDefaults,
-        moderationEligible: true,
-        posthog: { getFeatureFlagResult },
+      evaluateAbliteratedModel({ ...defaults, posthog }),
+    ).resolves.toMatchObject({ key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY });
+    expect(phLogger.warn).toHaveBeenCalledWith(
+      "Abliteration three-step flag lookup failed",
+      expect.objectContaining({
+        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        error_type: "Error",
       }),
-    ).resolves.toMatchObject({ selectionSource: "moderation" });
-    expect(getFeatureFlagResult).toHaveBeenCalledTimes(1);
+    );
+    expect(JSON.stringify(jest.mocked(phLogger.warn).mock.calls)).not.toContain(
+      "private error content",
+    );
+    jest.mocked(phLogger.warn).mockImplementationOnce(() => {
+      throw new Error("logger unavailable");
+    });
+    await expect(
+      evaluateAbliteratedModel({ ...defaults, posthog }),
+    ).resolves.toMatchObject({ key: ABLITERATED_PAID_MODERATED_DEFAULT_KEY });
   });
 });

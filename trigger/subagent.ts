@@ -41,6 +41,11 @@ import {
 } from "@/lib/ai/provider-response-guard";
 import { namespaceLanguageModelToolCalls } from "@/lib/ai/tool-call-id-namespace";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
+import {
+  AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+  AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+  withProviderStreamTimeout,
+} from "@/lib/ai/provider-stream-timeout";
 import { createSubagentProviderHistory } from "@/lib/ai/subagents/provider-history";
 import {
   SUBAGENT_MAX_ACTIVE_SECONDS,
@@ -93,6 +98,7 @@ import {
   updateSubagentWorkLedger,
 } from "@/lib/db/subagents";
 import { setConvexUrl } from "@/lib/db/convex-client";
+import { createSubagentFinalizationDiagnostics } from "@/lib/ai/subagents/finalization-diagnostics";
 import { sanitizeForConvexValue } from "@/lib/db/convex-value-sanitizer";
 import {
   compactMessageForStorage,
@@ -548,6 +554,7 @@ export const subagentTask = task({
     let runtimeAuthorizationRevoked = false;
     const abortFromParent = () => activeAbort.abort();
     triggerSignal.addEventListener("abort", abortFromParent, { once: true });
+    if (triggerSignal.aborted) abortFromParent();
     const activeRuntimeBudget: ActiveRuntimeBudget = createActiveRuntimeBudget({
       maxDurationMs: SUBAGENT_MAX_ACTIVE_SECONDS * 1_000,
       onExceeded: () => {
@@ -558,6 +565,16 @@ export const subagentTask = task({
 
     const usageTracker = new UsageTracker();
     let resultValue: CheckedSubagentResult | undefined;
+    const observeFinalization = createSubagentFinalizationDiagnostics(
+      {
+        subagent_id: row.subagent_id,
+        parent_trigger_run_id: row.parent_trigger_run_id,
+        trigger_run_id: ctx.run.id,
+        environment: ctx.environment.type,
+      },
+      (fields) =>
+        triggerLogger.error("[subagent] finalization write failed", fields),
+    );
     let stepCount = 0;
     let responseModel: string | undefined;
     let runtimeFailure: unknown;
@@ -765,9 +782,10 @@ export const subagentTask = task({
               });
               if (!evidence.accepted) return evidence;
               runtimeStage = "result_finalization";
-              const finalizing = await markSubagentFinalizing(
-                row.subagent_id,
-                ctx.run.id,
+              const finalizing = await observeFinalization(
+                "result_submission",
+                Boolean(resultValue),
+                () => markSubagentFinalizing(row.subagent_id, ctx.run.id),
               );
               if (finalizing === "pending_messages") {
                 deferredForParentUpdate = true;
@@ -1067,6 +1085,7 @@ export const subagentTask = task({
                   ...allowedToolNames,
                   profile.finalResultTool.name,
                 ],
+                signal: activeAbort.signal,
                 additionalTools: () => ({
                   search_skills: createSearchSkillsTool(),
                   load_skill: createLoadSkillTool(),
@@ -1107,8 +1126,26 @@ export const subagentTask = task({
                     providerHistory.record(entry, generationAttempt),
                 },
               );
+              const boundedModel = withProviderStreamTimeout(languageModel, {
+                timeoutMs: AGENT_PROVIDER_IDLE_TIMEOUT_MS,
+                totalTimeoutMs: AGENT_PROVIDER_TOTAL_TIMEOUT_MS,
+                onTimeout: ({ phase, timeoutMs, modelId }) => {
+                  triggerLogger.warn("[subagent] provider timed out", {
+                    event: "subagent_provider_timeout",
+                    service: "hackerai-subagent",
+                    subagent_id: row.subagent_id,
+                    parent_trigger_run_id: row.parent_trigger_run_id,
+                    trigger_run_id: ctx.run.id,
+                    generation_attempt: generationAttempt,
+                    step: stepIndex + 1,
+                    phase,
+                    timeout_ms: timeoutMs,
+                    model: modelId,
+                  });
+                },
+              });
               return namespaceLanguageModelToolCalls(
-                guardLanguageModelProviderResponse(languageModel, {
+                guardLanguageModelProviderResponse(boundedModel, {
                   maxToolCalls: MAX_PROVIDER_TOOL_CALLS_PER_RESPONSE,
                   perToolCallLimits: {
                     [profile.finalResultTool.name]: 1,
@@ -1285,6 +1322,8 @@ export const subagentTask = task({
               let attemptResponseModel: string | undefined;
               let attemptUiMessages: UIMessage[] = [];
               const generation = streamText({
+                // Keep tool-loop step results without retaining every serialized prompt.
+                experimental_include: { requestBody: false },
                 model: getGuardedLanguageModel(
                   activeModelName,
                   generationAttempt,
@@ -1727,7 +1766,9 @@ export const subagentTask = task({
       );
       await waitUntilComplete();
       runtimeStage = "result_finalization";
-      await markSubagentFinalizing(row.subagent_id, ctx.run.id);
+      await observeFinalization("stream_completion", Boolean(resultValue), () =>
+        markSubagentFinalizing(row.subagent_id, ctx.run.id),
+      );
 
       runtimeStage = "usage_settlement";
       const { costDollars, billingFailure } = await settleUsage();

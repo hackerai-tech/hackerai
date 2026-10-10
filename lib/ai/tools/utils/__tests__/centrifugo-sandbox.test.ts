@@ -464,6 +464,8 @@ describe("CentrifugoSandbox", () => {
     it("bounds stalled project PowerShell script cleanup after canceling its native write", async () => {
       const sandbox = createDesktopSandbox("C:\\work\\project");
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       (sandbox as any).shellKind = "cmd";
       const controller = new AbortController();
       const run = jest.spyOn(sandbox.commands, "run");
@@ -1845,6 +1847,10 @@ describe("CentrifugoSandbox", () => {
         const sandbox = createDesktopSandbox(project);
         (sandbox as any).shellKind = shell;
         (sandbox as any).httpClient = "powershell";
+        (sandbox as any).powerShellExecutable =
+          (sandbox as any).shellKind === "bash"
+            ? "powershell.exe"
+            : "powershell";
         const run = jest.spyOn(sandbox.commands, "run").mockResolvedValue({
           stdout: "",
           stderr: "",
@@ -2096,6 +2102,85 @@ describe("CentrifugoSandbox", () => {
       }
     }, 15000);
 
+    it.each([
+      ["UTF-8 transcript", "秘密🙂\n'$(literal)'\n".repeat(20_000)],
+      ["binary file", Buffer.alloc(600_000, 253)],
+      ["ArrayBuffer", new Uint8Array(180_000).fill(241).buffer],
+      ["empty file", ""],
+      ["empty binary file", Buffer.alloc(0)],
+    ])(
+      "round-trips a %s through bounded POSIX commands",
+      async (_, content) => {
+        const { execFileSync } = jest.requireActual("node:child_process");
+        const { mkdtempSync, readFileSync, rmSync, writeFileSync } =
+          jest.requireActual("node:fs");
+        const { tmpdir } = jest.requireActual("node:os");
+        const directory = mkdtempSync(`${tmpdir()}/hackerai-write-`);
+        const path = `${directory}/quoted ' transcript.txt`;
+        const sandbox = createSandbox();
+        (sandbox as any).shellKind = "bash";
+        const commands: string[] = [];
+        (sandbox as any).commands.run = jest.fn(async (command: string) => {
+          commands.push(command);
+          // Enforce the complete argument budget, including quoting and path.
+          if (Buffer.byteLength(command, "utf8") > 16 * 1024) {
+            throw new Error("spawn E2BIG");
+          }
+          execFileSync("/bin/bash", ["-c", command]);
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+        try {
+          writeFileSync(path, "old bytes that must be truncated");
+          await sandbox.files.write(
+            path,
+            content as string | Buffer | ArrayBuffer,
+          );
+          const expected =
+            typeof content === "string"
+              ? Buffer.from(content)
+              : Buffer.from(content as ArrayBuffer);
+          expect(readFileSync(path)).toEqual(expected);
+          expect(commands.length).toBeGreaterThan(0);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it("rejects an oversized POSIX path before sending any command", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).shellKind = "bash";
+      const run = jest.fn();
+      (sandbox as any).commands.run = run;
+      await expect(
+        sandbox.files.write(`/tmp/${"界".repeat(6000)}/file`, "value"),
+      ).rejects.toThrow("File path exceeds the local file command limit");
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it.each(["failure", "cancel"])(
+      "stops a chunked POSIX write after %s",
+      async (reason) => {
+        const sandbox = createSandbox();
+        (sandbox as any).shellKind = "bash";
+        const controller = new AbortController();
+        let writes = 0;
+        (sandbox as any).commands.run = jest.fn(async (command: string) => {
+          if (command.startsWith("printf") && ++writes === 2) {
+            if (reason === "cancel") controller.abort();
+            else return { stdout: "", stderr: "disk full", exitCode: 1 };
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        });
+        await expect(
+          sandbox.files.write("/tmp/partial", "x".repeat(100_000), {
+            signal: controller.signal,
+          }),
+        ).rejects.toThrow(reason === "failure" ? "disk full" : undefined);
+        expect(writes).toBe(2);
+      },
+    );
+
     it("cleans the cmd Base64 temporary file when a chunk command rejects", async () => {
       const sandbox = createSandbox({
         osInfo: {
@@ -2311,6 +2396,192 @@ describe("CentrifugoSandbox", () => {
       });
     });
 
+    it.each([
+      ["cmd", "pwsh"],
+      [
+        "cmd",
+        '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+      ],
+      ["bash", "pwsh.exe"],
+      [
+        "bash",
+        '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
+      ],
+    ])(
+      "uses verified %s fallback %s and keeps transfer scripts private",
+      async (shell, executable) => {
+        const sandbox = createDesktopSandbox("C:\\work\\project with spaces");
+        (sandbox as any).shellKind = shell;
+        sandbox.files.write = jest.fn(async () => undefined);
+        sandbox.files.remove = jest.fn(async () => undefined);
+        const run = jest.fn(async (command: string) => {
+          if (command.includes("Write-Output"))
+            return {
+              stdout: command.startsWith(executable + " ")
+                ? "hackerai-powershell-ready"
+                : "",
+              stderr: "",
+              exitCode: command.startsWith(executable + " ") ? 0 : 1,
+            };
+          if (command.includes("-File "))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          return { stdout: "", stderr: "not found", exitCode: 1 };
+        });
+        sandbox.commands.run = run;
+        const url = "https://example.com/private?signature=secret";
+        await sandbox.files.downloadFromUrl(url, "file.txt");
+        const probes = run.mock.calls.filter(([command]) =>
+          command.includes("Write-Output"),
+        ).length;
+        await sandbox.files.uploadToUrl("file.txt", url, "text/plain");
+        expect(
+          run.mock.calls.filter(([command]) =>
+            command.includes("Write-Output"),
+          ),
+        ).toHaveLength(probes);
+        const commands = run.mock.calls
+          .filter(([command]) => command.includes("-File "))
+          .map(([command]) => command);
+        expect(commands).toHaveLength(2);
+        expect(
+          commands.every((command) => command.startsWith(executable + " ")),
+        ).toBe(true);
+        expect(commands.join("\n")).not.toContain(url);
+        expect(sandbox.files.remove).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([0, 1])(
+      "isolates Stop for concurrent Windows transfer %i during client detection",
+      async (cancelledIndex) => {
+        const sandbox = createDesktopSandbox();
+        (sandbox as any).shellKind = "cmd";
+        (sandbox as any).httpClient = "powershell";
+        sandbox.files.write = jest.fn(async () => undefined);
+        sandbox.files.remove = jest.fn(async () => undefined);
+        const controllers = [new AbortController(), new AbortController()];
+        const finishProbes: Array<() => void> = [];
+        let probesStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          probesStarted = resolve;
+        });
+        const run = jest.fn(async (command: string, options?: any) => {
+          if (!command.includes("Write-Output"))
+            return { stdout: "", stderr: "", exitCode: 0 };
+          const signal = options?.signal as AbortSignal;
+          return new Promise<any>((resolve, reject) => {
+            const onAbort = () => reject(signal.reason);
+            signal.addEventListener("abort", onAbort, { once: true });
+            finishProbes.push(() => {
+              signal.removeEventListener("abort", onAbort);
+              resolve({
+                stdout: "hackerai-powershell-ready",
+                stderr: "",
+                exitCode: 0,
+              });
+            });
+            if (finishProbes.length === 2) probesStarted();
+          });
+        });
+        sandbox.commands.run = run;
+        const transfers = controllers.map((controller, index) =>
+          sandbox.files.downloadFromUrl(
+            "https://example.com/file",
+            `file-${index}.txt`,
+            { signal: controller.signal },
+          ),
+        );
+        const stopped = expect(transfers[cancelledIndex]).rejects.toMatchObject(
+          {
+            name: "AbortError",
+          },
+        );
+        await started;
+        controllers[cancelledIndex].abort();
+        await stopped;
+        finishProbes.forEach((finish) => finish());
+        await expect(transfers[1 - cancelledIndex]).resolves.toBeUndefined();
+        await sandbox.files.downloadFromUrl(
+          "https://example.com/file",
+          "cached.txt",
+        );
+        expect(
+          run.mock.calls.filter(([command]) =>
+            command.includes("Write-Output"),
+          ),
+        ).toHaveLength(2);
+        expect(sandbox.files.write).toHaveBeenCalledTimes(2);
+        expect(sandbox.files.remove).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it("does not stage a script when no Windows transfer client is installed", async () => {
+      const sandbox = createDesktopSandbox();
+      (sandbox as any).shellKind = "cmd";
+      sandbox.files.write = jest.fn();
+      const run = jest.fn(async () => ({
+        stdout: "",
+        stderr: "not found",
+        exitCode: 1,
+      }));
+      sandbox.commands.run = run;
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "file.txt"),
+      ).rejects.toThrow(
+        "No supported Windows attachment transfer client is available",
+      );
+      expect(sandbox.files.write).not.toHaveBeenCalled();
+      expect(run).toHaveBeenCalledTimes(4);
+    });
+
+    it("retries a transient DNS failure but does not repeat a resolver thread failure", async () => {
+      const sandbox = createSandbox();
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: false,
+        retryConnrefused: false,
+        sslNoRevoke: false,
+      };
+      let attempts = 0;
+      const run = jest.fn(async (command: string) => {
+        if (!command.includes("curl -fsSL"))
+          throw new Error("diagnostics unavailable");
+        attempts++;
+        return attempts === 1
+          ? {
+              stdout: "",
+              stderr: "curl: (6) Could not resolve host",
+              exitCode: 6,
+            }
+          : { stdout: "", stderr: "", exitCode: 0 };
+      });
+      sandbox.commands.run = run;
+      const transfer = sandbox.files.downloadFromUrl(
+        "https://example.com/file",
+        "/tmp/file",
+      );
+      await jest.advanceTimersByTimeAsync(1000);
+      await expect(transfer).resolves.toBeUndefined();
+      expect(attempts).toBe(2);
+      run.mockImplementation(async (command: string) => {
+        if (!command.includes("curl -fsSL"))
+          throw new Error("diagnostics unavailable");
+        return {
+          stdout: "",
+          stderr: "curl: (6) getaddrinfo() thread failed to start",
+          exitCode: 6,
+        };
+      });
+      run.mockClear();
+      await expect(
+        sandbox.files.downloadFromUrl("https://example.com/file", "/tmp/file"),
+      ).rejects.toThrow("getaddrinfo() thread failed to start");
+      expect(
+        run.mock.calls.filter(([command]) => command.includes("curl -fsSL")),
+      ).toHaveLength(1);
+    });
+
     it("stages and cleans a PowerShell download script when curl is unavailable on Windows", async () => {
       const sandbox = createSandbox({
         osInfo: {
@@ -2328,7 +2599,13 @@ describe("CentrifugoSandbox", () => {
               stderr: "INFO: Could not find files for the given pattern(s).",
               exitCode: 1,
             }
-          : { stdout: "", stderr: "", exitCode: 0 },
+          : {
+              stdout: command.includes("Write-Output")
+                ? "hackerai-powershell-ready"
+                : "",
+              stderr: "",
+              exitCode: 0,
+            },
       );
       (sandbox as any).commands.run = run;
 
@@ -2343,8 +2620,9 @@ describe("CentrifugoSandbox", () => {
         timeoutMs: 30000,
       });
       const commands = run.mock.calls.map(([command]) => command as string);
-      const command = commands.find((command) =>
-        command.startsWith("powershell "),
+      const command = commands.find(
+        (command) =>
+          command.startsWith("powershell ") && command.includes("-File "),
       )!;
       expect(command).toMatch(
         /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
@@ -2396,6 +2674,12 @@ describe("CentrifugoSandbox", () => {
         if (command === "where curl 2>nul") {
           return { stdout: "", stderr: "", exitCode: 1 };
         }
+        if (command.includes("Write-Output"))
+          return {
+            stdout: "hackerai-powershell-ready",
+            stderr: "",
+            exitCode: 0,
+          };
         if (command.startsWith("powershell ")) {
           return {
             stdout: "",
@@ -2422,8 +2706,9 @@ describe("CentrifugoSandbox", () => {
       );
 
       const commands = run.mock.calls.map(([command]) => command as string);
-      const command = commands.find((command) =>
-        command.startsWith("powershell "),
+      const command = commands.find(
+        (command) =>
+          command.startsWith("powershell ") && command.includes("-File "),
       )!;
       expect(command).toMatch(
         /^powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File /,
@@ -2473,6 +2758,8 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       const write = jest.fn(async () => undefined);
       const remove = jest.fn(async () => undefined);
       sandbox.files.write = write;
@@ -2532,6 +2819,8 @@ describe("CentrifugoSandbox", () => {
       });
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "powershell";
+      (sandbox as any).powerShellExecutable =
+        (sandbox as any).shellKind === "bash" ? "powershell.exe" : "powershell";
       sandbox.files.write = jest.fn(async () => undefined);
       sandbox.files.remove = jest.fn(async () => undefined);
       const nativeDestination = "C:\\temp\\hackerai-upload\\report.txt";
