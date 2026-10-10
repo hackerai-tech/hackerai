@@ -138,7 +138,15 @@ AllowUsers labuser
 if __name__ == "__main__":
     role = sys.argv[1]
     if role == "bootstrap":
-        bootstrap()
+        uid, gid = int(sys.argv[2]), int(sys.argv[3])
+        try:
+            bootstrap()
+        finally:
+            # Native Linux bind mounts retain container ownership. Hand generated
+            # files back to the invoking host user, including on partial failure,
+            # so protected credentials can be read and removed without sudo.
+            for path in Path("/secrets").rglob("*"):
+                os.chown(path, uid, gid)
     else:
         settings = json.loads(Path("/secrets/settings.json").read_text())
         if role == "gateway":

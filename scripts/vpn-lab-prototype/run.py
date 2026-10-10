@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import ipaddress
 import json
+import os
 from pathlib import Path
 import secrets
 import subprocess
@@ -28,7 +29,10 @@ class Docker:
         result = subprocess.run(self.prefix + list(args), capture_output=True, text=True, timeout=timeout)
         if result.returncode:
             # Never echo arbitrary container output or config into the transcript.
-            raise RuntimeError(f"Docker {args[0]} failed (exit {result.returncode})")
+            # Network commands contain only generated fixture names/addresses,
+            # so their daemon diagnostics are safe and useful across Docker hosts.
+            detail = f": {result.stderr.strip()[:2000]}" if args[0] == "network" else ""
+            raise RuntimeError(f"Docker {args[0]} failed (exit {result.returncode}){detail}")
         return result.stdout.strip()
 
 
@@ -66,7 +70,20 @@ def main():
 
     def network(role):
         name = f"{prefix}-{role}"
-        docker.call("network", "create", "--internal", "--label", f"hackerai.vpn-spike={prefix}", name)
+        # Declare IPAM explicitly for portable static container addresses.
+        # Let Docker reject collisions with existing networks and retry only that
+        # condition, without inspecting or changing unrelated network resources.
+        for _ in range(10):
+            subnet = f"10.{240 + secrets.randbelow(15)}.{secrets.randbelow(256)}.0/24"
+            try:
+                docker.call("network", "create", "--internal", "--subnet", subnet,
+                            "--label", f"hackerai.vpn-spike={prefix}", name)
+                break
+            except RuntimeError as error:
+                if "Pool overlaps" not in str(error):
+                    raise
+        else:
+            raise RuntimeError("Could not allocate a non-overlapping fixture network")
         networks.append(name)
         data = json.loads(docker.call("network", "inspect", name))[0]
         subnet = data["IPAM"]["Config"][0]["Subnet"]
@@ -74,10 +91,10 @@ def main():
             raise RuntimeError("Fixture network overlaps the VPN subnet")
         return name, subnet
 
-    def create(role, network_name, secret_dir, extra=()):
+    def create(role, network_name, secret_dir, address, extra=()):
         name = f"{prefix}-{role}"
         docker.call("create", "--name", name, "--label", f"hackerai.vpn-spike={prefix}",
-                    "--network", network_name, "--memory", "256m", "--cpus", "0.5",
+                    "--network", network_name, "--ip", address, "--memory", "256m", "--cpus", "0.5",
                     "--mount", f"type=bind,src={secret_dir},dst=/secrets,readonly",
                     *extra, args.image, role if role != "other" else "lab")
         containers.append(name)
@@ -115,40 +132,36 @@ def main():
             containers.append(bootstrap_name)
             docker.call("run", "--name", bootstrap_name, "--network", "none",
                         "--label", f"hackerai.vpn-spike={prefix}",
-                        "--mount", f"type=bind,src={root},dst=/secrets", args.image, "bootstrap", timeout=90)
-            wan, _ = network("transport")
+                        "--mount", f"type=bind,src={root},dst=/secrets", args.image, "bootstrap",
+                        str(os.getuid()), str(os.getgid()), timeout=90)
+            wan, wan_subnet = network("transport")
             labnet, lab_subnet = network("private-lab")
-            runnernet, _ = network("runner")
-            caps = ("--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
-                    "--sysctl", "net.ipv4.ip_forward=1")
-            target = create("lab", labnet, root / "lab")
-            other = create("other", labnet, root / "lab")
-            server = create("server", wan, root / "server", caps)
-            gateway = create("gateway", wan, root / "gateway", caps)
-            runner = create("runner", runnernet, root / "runner")
-            docker.call("network", "connect", labnet, server)
-            docker.call("network", "connect", runnernet, gateway)
-            # Both paths can reach the VPN endpoint. The baseline must fail on
-            # its missing TUN device, not an unreachable server or invalid profile.
-            docker.call("network", "connect", wan, runner)
-            # Reserve static addresses before startup so configs never depend on a race
-            # between Docker assigning an address and OpenVPN reading its remote endpoint.
-            def reserve(container, net, offset):
-                data = json.loads(docker.call("network", "inspect", net))[0]
-                ip = str(ipaddress.ip_network(data["IPAM"]["Config"][0]["Subnet"]).network_address + offset)
-                docker.call("network", "disconnect", net, container)
-                docker.call("network", "connect", "--ip", ip, net, container)
-                return ip
+            runnernet, runner_subnet = network("runner")
+            def address(subnet, offset):
+                return str(ipaddress.ip_network(subnet).network_address + offset)
 
             settings = {
                 "lab_subnet": lab_subnet,
-                "target_ip": reserve(target, labnet, 10),
-                "other_ip": reserve(other, labnet, 11),
-                "server_ip": reserve(server, wan, 10),
-                "gateway_ip": reserve(gateway, runnernet, 10),
-                "runner_ip": reserve(runner, runnernet, 11),
+                "target_ip": address(lab_subnet, 10),
+                "other_ip": address(lab_subnet, 11),
+                "server_ip": address(wan_subnet, 10),
+                "gateway_ip": address(runner_subnet, 10),
+                "runner_ip": address(runner_subnet, 11),
             }
-            reserve(runner, wan, 11)
+            caps = ("--cap-add", "NET_ADMIN", "--device", "/dev/net/tun",
+                    "--sysctl", "net.ipv4.ip_forward=1")
+            # Declare static addresses before startup. Disconnecting a never-started
+            # container is unsupported on some Docker engines.
+            target = create("lab", labnet, root / "lab", settings["target_ip"])
+            other = create("other", labnet, root / "lab", settings["other_ip"])
+            server = create("server", wan, root / "server", settings["server_ip"], caps)
+            gateway = create("gateway", wan, root / "gateway", address(wan_subnet, 12), caps)
+            runner = create("runner", runnernet, root / "runner", settings["runner_ip"])
+            docker.call("network", "connect", "--ip", address(lab_subnet, 12), labnet, server)
+            docker.call("network", "connect", "--ip", settings["gateway_ip"], runnernet, gateway)
+            # Both paths can reach the VPN endpoint. The baseline must fail on
+            # its missing TUN device, not an unreachable server or invalid profile.
+            docker.call("network", "connect", "--ip", address(wan_subnet, 11), wan, runner)
             for directory in ("server", "gateway", "runner", "lab"):
                 (root / directory / "settings.json").write_text(json.dumps(settings))
             common = """dev tun0
