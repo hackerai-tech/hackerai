@@ -31,6 +31,9 @@ provider changes, also check the other affected callers and transports.
 5. Allocate available ports and task-specific worker/container names. Record
    original selections before changing configuration. Keep QA files and evidence
    under the worktree's ignored `.artifacts/desktop-qa/` directory.
+   Before starting Centrifugo, set the task-owned relay's `allowed_origins` to
+   include the exact frontend origin, such as `http://localhost:<frontend-port>`
+   for an alternate port. The reference config allows localhost port 3000.
 
 ## Start and verify each service
 
@@ -66,7 +69,7 @@ The application `CONVEX_SERVICE_ROLE_KEY` is separate from the local backend's
 instance secret/admin credential; do not assume they are interchangeable.
 
 The local sandbox requires a relay. Use `docker/centrifugo/config.json` and
-`docker-compose.yml` as references for a task-owned instance; bind its exposed
+`docker/centrifugo/docker-compose.yml` as references for a task-owned instance; bind its exposed
 ports to loopback and use only the local app's origins. Verify both the client
 WebSocket URL and any API consumers. The container's
 `CENTRIFUGO_TOKEN_HMAC_SECRET_KEY` must match this worktree's
