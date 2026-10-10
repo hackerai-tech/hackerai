@@ -929,7 +929,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
     );
     expect(taskSrc).toMatch(
-      /onModelStreamStart:\s*runTimingTracker\.startModelStream/,
+      /onModelStreamStart:\s*\(\) => \{\s*runReporting\.setStage\("model_stream"\);\s*runTimingTracker\.startModelStream\(\);/,
     );
     expect(taskSrc).toMatch(
       /onModelStreamFinish:\s*runTimingTracker\.finishModelStream/,
@@ -2544,6 +2544,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(
       /recordGroupedSpikeAlert\(\{[\s\S]*spikeKey:\s*`agent_long:\$\{summary\.category\}`[\s\S]*sourceEvent:\s*"agent_long_provider_transport_failed"/,
+    );
+  });
+});
+
+describe("Agent terminal reporting flush lifecycle", () => {
+  it("has one awaited shutdown after fallback capture so enqueue cannot race an earlier drain", () => {
+    const shutdowns = [...taskSrc.matchAll(/posthog\?\.shutdown\(\)/g)];
+    expect(shutdowns).toHaveLength(1);
+    const finalization = taskSrc.lastIndexOf("runReporting.finalize(");
+    expect(finalization).toBeGreaterThan(0);
+    expect(shutdowns[0].index).toBeGreaterThan(finalization);
+    expect(taskSrc).toContain(
+      "await posthog?.shutdown().catch(() => undefined)",
     );
   });
 });

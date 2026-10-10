@@ -1,3 +1,4 @@
+import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import {
   freeAgentBudgetProperties,
   type FreeAgentBudgetAssignment,
@@ -1593,6 +1594,9 @@ export function captureAgentRun({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-agent_run",
+    ...(triggerRunId && {
+      uuid: agentRunEventUuid(triggerRunId, "hackerai-agent_run"),
+    }),
     properties: {
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
@@ -1971,7 +1975,11 @@ export function captureUsageCost({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
+    ...(triggerRunId && {
+      uuid: agentRunEventUuid(triggerRunId, "hackerai-usage_cost"),
+    }),
     properties: {
+      cost_accounting_status: "recorded",
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
       user_id: userId,

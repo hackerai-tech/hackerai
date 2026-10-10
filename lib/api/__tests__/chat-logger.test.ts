@@ -1,3 +1,4 @@
+import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
 
 (globalThis as any).Request = class Request {};
@@ -213,6 +214,7 @@ describe("captureAgentRun", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_123", "hackerai-agent_run"),
       properties: {
         mode: "agent",
         subscription: "pro",
@@ -1034,6 +1036,7 @@ describe("captureAgentCompletionAnalytics", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_completion", "hackerai-agent_run"),
       properties: {
         mode: "agent",
         subscription: "pro",
@@ -1181,7 +1184,9 @@ describe("captureUsageCost", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-usage_cost",
+      uuid: agentRunEventUuid("run_cost_test", "hackerai-usage_cost"),
       properties: expect.objectContaining({
+        cost_accounting_status: "recorded",
         user_id: "user_123",
         trigger_run_id: "run_cost_test",
         subscription: "pro",

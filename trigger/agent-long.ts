@@ -1,3 +1,4 @@
+import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -1638,17 +1639,6 @@ export const agentLongTask = task({
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
 
-    if (
-      (agentPermissionMode === "ask_approval" ||
-        agentPermissionMode === "auto_review") &&
-      approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION
-    ) {
-      throw new ChatSDKError(
-        "bad_request:api",
-        "This Agent approval request uses an unsupported protocol version. Refresh HackerAI and start a new Agent request.",
-      );
-    }
-
     // Stable across retries so a failed-then-retried run upserts the same
     // message record rather than creating a duplicate.
     const assistantMessageId = ctx.run.id;
@@ -1864,7 +1854,16 @@ export const agentLongTask = task({
       finishCloudSandboxLifecycle,
     });
 
-    let posthog: ReturnType<typeof PostHogClient> = null;
+    // Available before the first database read, including failed setup.
+    const posthog = PostHogClient();
+    const runReporting = createAgentRunReporting({
+      posthog,
+      runId: ctx.run.id,
+      userId,
+      chatId,
+      subscription,
+      endpoint,
+    });
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
     // Register before async setup and handle a signal already canceled while
@@ -1878,6 +1877,16 @@ export const agentLongTask = task({
     if (triggerSignal.aborted) forwardTriggerAbort();
 
     try {
+      if (
+        (agentPermissionMode === "ask_approval" ||
+          agentPermissionMode === "auto_review") &&
+        approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION
+      ) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "This Agent approval request uses an unsupported protocol version. Refresh HackerAI and start a new Agent request.",
+        );
+      }
       userStopSignal.signal.throwIfAborted();
       await enforceRegionalSubscriptionFirst({
         userId,
@@ -1938,7 +1947,6 @@ export const agentLongTask = task({
         subscription,
         selectedModelOverride,
       });
-      posthog = PostHogClient();
       const cloudSandboxSelection = {
         provider: "e2b",
         reason: "e2b_only",
@@ -2216,9 +2224,18 @@ export const agentLongTask = task({
         triggerRunId: ctx.run.id,
         isUserAborted: () => userStopSignal.signal.aborted,
       });
+      runReporting.setStage("preparation");
       const uiStream = createUIMessageStream({
         onError: (error) => {
           streamError ??= error;
+          runReporting.fail(
+            error,
+            triggerSignal.aborted
+              ? "canceled"
+              : isHandledUserRateLimitError(error)
+                ? "usage_limit"
+                : "error",
+          );
           if (error instanceof ChatSDKError) {
             return serializeChatSDKErrorForStream(error);
           }
@@ -3294,7 +3311,7 @@ export const agentLongTask = task({
                     billingBreakdown,
                   });
                 }
-                captureUsageCost({
+                runReporting.captureCost(captureUsageCost, {
                   cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                   usageMeasurement:
                     usageTracker.measurementProperties(selectedModel),
@@ -3711,7 +3728,10 @@ export const agentLongTask = task({
               getSandboxCostDollars: getSandboxSessionCost,
               getTriggerRunCostDollars: () =>
                 getTriggerRunUsage().totalCostDollars,
-              onModelStreamStart: runTimingTracker.startModelStream,
+              onModelStreamStart: () => {
+                runReporting.setStage("model_stream");
+                runTimingTracker.startModelStream();
+              },
               onModelStreamFinish: runTimingTracker.finishModelStream,
               onModelChunk: runTimingTracker.recordFirstModelChunk,
               onModelStepSelected: (modelName) => {
@@ -3916,7 +3936,7 @@ export const agentLongTask = task({
                 : isTerminalProviderStreamError(state)
                   ? "error"
                   : "success";
-              captureAgentCompletionAnalytics({
+              runReporting.captureTerminal(captureAgentCompletionAnalytics, {
                 cacheHistoryTelemetry: state.cacheHistoryTelemetry,
                 usageMeasurement:
                   usageTracker.measurementProperties(selectedModel),
@@ -4070,7 +4090,6 @@ export const agentLongTask = task({
                   recoveryFields,
                 );
               }
-              posthog?.shutdown();
             };
 
             let result;
@@ -4934,64 +4953,67 @@ export const agentLongTask = task({
                         : isTerminalProviderStreamError(state)
                           ? "error"
                           : "success";
-                      captureAgentCompletionAnalytics({
-                        cacheHistoryTelemetry: state.cacheHistoryTelemetry,
-                        usageMeasurement:
-                          usageTracker.measurementProperties(selectedModel),
-                        hasResponseContent: hasCompletedAssistantText(
-                          finishedMessages,
-                          assistantMessageId,
-                        ),
-                        handledToolFailureCount,
-                        abliteratedProviderSummary:
-                          abliteratedTelemetry?.getSummary(),
-                        posthog,
-                        userId,
-                        chatId,
-                        endpoint,
-                        mode,
-                        subscription,
-                        sandboxInfo,
-                        outcome,
-                        abortSource: resolveAgentAbortSource({
+                      runReporting.captureTerminal(
+                        captureAgentCompletionAnalytics,
+                        {
+                          cacheHistoryTelemetry: state.cacheHistoryTelemetry,
+                          usageMeasurement:
+                            usageTracker.measurementProperties(selectedModel),
+                          hasResponseContent: hasCompletedAssistantText(
+                            finishedMessages,
+                            assistantMessageId,
+                          ),
+                          handledToolFailureCount,
+                          abliteratedProviderSummary:
+                            abliteratedTelemetry?.getSummary(),
+                          posthog,
+                          userId,
+                          chatId,
+                          endpoint,
+                          mode,
+                          subscription,
+                          sandboxInfo,
                           outcome,
-                          stoppedDueToBudgetExhaustion:
-                            state.stoppedDueToBudgetExhaustion,
-                          stoppedDueToAgentRunSpendCap:
-                            state.stoppedDueToAgentRunSpendCap,
-                          stoppedDueToElapsedTimeout:
-                            state.stoppedDueToElapsedTimeout,
-                          requestCancelled: triggerSignal.aborted,
-                        }),
-                        chatLogger,
-                        selectedModel,
-                        configuredModelId,
-                        responseModel: state.responseModel,
-                        fallbackServed:
-                          state.responseModel && retryUsedFallbackModel
-                            ? true
-                            : state.fallbackServed,
-                        finishReason: state.streamFinishReason,
-                        budgetAbortDetails: state.budgetAbortDetails,
-                        agentPermissionMode,
-                        messageCount: messagesForAccounting.length,
-                        estimatedInputTokens,
-                        attachmentCount: attachmentCounts.totalFiles,
-                        imageAttachmentCount: attachmentCounts.imageCount,
-                        isNewChat: !!isNewChat,
-                        hadSummarization: summarizationTracker.hasSummarized,
-                        isAutoContinue: !!isAutoContinue,
-                        experiment: routingExperimentContext,
-                        freeAgentBudget,
-                        stepLimitTelemetry: buildAgentStepLimitTelemetry({
-                          configuredMaxSteps: state.configuredMaxSteps,
-                          stepCount: state.agentStepCount,
-                          stepLimitReached: state.stoppedDueToStepLimit,
-                          todoRunMetrics: getTodoManager().getRunMetrics(),
-                        }),
-                        ...getProviderRecoveryAnalytics(outcome),
-                        ...getTriggerRunTelemetry(),
-                      });
+                          abortSource: resolveAgentAbortSource({
+                            outcome,
+                            stoppedDueToBudgetExhaustion:
+                              state.stoppedDueToBudgetExhaustion,
+                            stoppedDueToAgentRunSpendCap:
+                              state.stoppedDueToAgentRunSpendCap,
+                            stoppedDueToElapsedTimeout:
+                              state.stoppedDueToElapsedTimeout,
+                            requestCancelled: triggerSignal.aborted,
+                          }),
+                          chatLogger,
+                          selectedModel,
+                          configuredModelId,
+                          responseModel: state.responseModel,
+                          fallbackServed:
+                            state.responseModel && retryUsedFallbackModel
+                              ? true
+                              : state.fallbackServed,
+                          finishReason: state.streamFinishReason,
+                          budgetAbortDetails: state.budgetAbortDetails,
+                          agentPermissionMode,
+                          messageCount: messagesForAccounting.length,
+                          estimatedInputTokens,
+                          attachmentCount: attachmentCounts.totalFiles,
+                          imageAttachmentCount: attachmentCounts.imageCount,
+                          isNewChat: !!isNewChat,
+                          hadSummarization: summarizationTracker.hasSummarized,
+                          isAutoContinue: !!isAutoContinue,
+                          experiment: routingExperimentContext,
+                          freeAgentBudget,
+                          stepLimitTelemetry: buildAgentStepLimitTelemetry({
+                            configuredMaxSteps: state.configuredMaxSteps,
+                            stepCount: state.agentStepCount,
+                            stepLimitReached: state.stoppedDueToStepLimit,
+                            todoRunMetrics: getTodoManager().getRunMetrics(),
+                          }),
+                          ...getProviderRecoveryAnalytics(outcome),
+                          ...getTriggerRunTelemetry(),
+                        },
+                      );
                       if (!isTerminalProviderStreamError(state)) {
                         chatLogger?.emitSuccess({
                           finishReason: state.streamFinishReason,
@@ -5125,7 +5147,6 @@ export const agentLongTask = task({
                             }),
                           );
                           await deductAccumulatedUsage();
-                          posthog?.shutdown();
                           return;
                         }
 
@@ -5236,7 +5257,6 @@ export const agentLongTask = task({
                           reason: "continuation_run",
                         });
                       }
-                      posthog?.shutdown();
                     } finally {
                       if (!retryScheduled) {
                         await releaseFreeRunLockOnce();
@@ -5248,14 +5268,24 @@ export const agentLongTask = task({
               ),
             );
           } catch (error) {
+            const canceledDuringPreparation =
+              userStopSignal.signal.aborted &&
+              error === userStopSignal.signal.reason;
+            runReporting.fail(
+              error,
+              canceledDuringPreparation
+                ? agentLongDurationExceeded
+                  ? "elapsed_timeout"
+                  : "canceled"
+                : isHandledUserRateLimitError(error)
+                  ? "usage_limit"
+                  : "error",
+            );
             if (!hasObservedUsage()) {
               await releasePaidDailyFreeAllowanceReservation();
             }
             await releaseFreeRunLockOnce();
-            if (
-              userStopSignal.signal.aborted &&
-              error === userStopSignal.signal.reason
-            ) {
+            if (canceledDuringPreparation) {
               preparationCanceled = true;
               await usageRefundTracker.refund().catch(() => {});
               writer.write({ type: "abort" });
@@ -5350,6 +5380,14 @@ export const agentLongTask = task({
       metadata.set("status", preparationCanceled ? "canceled" : "done");
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      runReporting.fail(
+        error,
+        triggerSignal.aborted && error === triggerSignal.reason
+          ? "canceled"
+          : isHandledUserRateLimitError(error)
+            ? "usage_limit"
+            : "error",
+      );
       if (!hasObservedUsage()) {
         await releasePaidDailyFreeAllowanceReservation();
       }
@@ -5461,7 +5499,24 @@ export const agentLongTask = task({
 
       throw error;
     } finally {
-      // Flush quota-check exposure even when a preflight limit prevents streaming.
+      // Fill only missing reports; never repeat billing or manufacture a full cost.
+      let reportingUsage:
+        ReturnType<typeof triggerUsage.getCurrent> | undefined;
+      try {
+        reportingUsage = triggerUsage.getCurrent();
+      } catch {
+        /* Usage unavailable. */
+      }
+      runReporting.finalize({
+        canceled: triggerSignal.aborted,
+        triggerCostDollars:
+          typeof reportingUsage?.totalCostInCents === "number"
+            ? reportingUsage.totalCostInCents / 100
+            : undefined,
+        triggerDurationMs: reportingUsage?.compute?.total?.durationMs,
+        observedAccumulatedCostDollars: observedUsageTracker?.providerCost,
+      });
+      // Flush fallback records and quota-check exposure before the worker exits.
       await posthog?.shutdown().catch(() => undefined);
       triggerSignal.removeEventListener("abort", forwardTriggerAbort);
       await releaseFreeRunLockBestEffort("outer_finally");
