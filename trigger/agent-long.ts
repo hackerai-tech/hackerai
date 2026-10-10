@@ -4090,7 +4090,6 @@ export const agentLongTask = task({
                   recoveryFields,
                 );
               }
-              posthog?.shutdown();
             };
 
             let result;
@@ -5148,7 +5147,6 @@ export const agentLongTask = task({
                             }),
                           );
                           await deductAccumulatedUsage();
-                          posthog?.shutdown();
                           return;
                         }
 
@@ -5259,7 +5257,6 @@ export const agentLongTask = task({
                           reason: "continuation_run",
                         });
                       }
-                      posthog?.shutdown();
                     } finally {
                       if (!retryScheduled) {
                         await releaseFreeRunLockOnce();

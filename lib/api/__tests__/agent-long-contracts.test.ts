@@ -2547,3 +2547,16 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
   });
 });
+
+describe("Agent terminal reporting flush lifecycle", () => {
+  it("has one awaited shutdown after fallback capture so enqueue cannot race an earlier drain", () => {
+    const shutdowns = [...taskSrc.matchAll(/posthog\?\.shutdown\(\)/g)];
+    expect(shutdowns).toHaveLength(1);
+    const finalization = taskSrc.lastIndexOf("runReporting.finalize(");
+    expect(finalization).toBeGreaterThan(0);
+    expect(shutdowns[0].index).toBeGreaterThan(finalization);
+    expect(taskSrc).toContain(
+      "await posthog?.shutdown().catch(() => undefined)",
+    );
+  });
+});
