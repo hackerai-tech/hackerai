@@ -1,3 +1,4 @@
+import { classifySandboxReadinessFailureSignal } from "../sandbox-readiness-failure";
 import {
   CloudAcquisitionBudget,
   CLOUD_ACQUISITION_DEADLINE_MS,
@@ -31,6 +32,12 @@ describe("cloud acquisition deadline", () => {
     expect(onTimeout).toHaveBeenCalledTimes(1);
     await expect(budget.run(acquire, { userId: "test" })).rejects.toThrow(
       "workspace is preserved",
+    );
+    const exhausted = await budget
+      .run(acquire, { userId: "test" })
+      .catch((error) => error);
+    expect(classifySandboxReadinessFailureSignal(exhausted)).toBe(
+      "operation_timeout",
     );
     expect(acquire).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);

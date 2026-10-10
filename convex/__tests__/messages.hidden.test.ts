@@ -913,19 +913,30 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     };
   });
 
-  function setupPaginatedMessages(messages: Record<string, any>[]) {
+  function setupPaginatedMessages(
+    messages: Record<string, any>[],
+    chat: Record<string, any> | null = { id: CHAT_ID, user_id: USER_ID },
+  ) {
     const paginateMock = jest.fn<any>().mockResolvedValue({
       page: messages,
       isDone: true,
       continueCursor: "",
     });
-    mockCtx.db.query.mockReturnValue({
-      withIndex: jest.fn().mockReturnValue({
-        order: jest.fn().mockReturnValue({
-          paginate: paginateMock,
-        }),
-      }),
-    });
+    mockCtx.db.query.mockImplementation((table: string) =>
+      table === "chats"
+        ? {
+            withIndex: jest.fn().mockReturnValue({
+              first: jest.fn<any>().mockResolvedValue(chat),
+            }),
+          }
+        : {
+            withIndex: jest.fn().mockReturnValue({
+              order: jest.fn().mockReturnValue({
+                paginate: paginateMock,
+              }),
+            }),
+          },
+    );
     return paginateMock;
   }
 
@@ -986,17 +997,22 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     ).toBe(true);
   });
 
-  it("returns no history when chat ownership fails", async () => {
-    mockCtx.runQuery.mockResolvedValue(false);
+  it.each([
+    [null, "CHAT_NOT_FOUND"],
+    [{ id: CHAT_ID, user_id: "someone-else" }, "CHAT_UNAUTHORIZED"],
+  ])("denies history when ownership fails (%s)", async (chat, code) => {
+    const paginate = setupPaginatedMessages([], chat);
     const { getMessagesPageForBackend } = await import("../messages");
-    const result = await getMessagesPageForBackend.handler(mockCtx, {
-      serviceKey: SERVICE_KEY,
-      chatId: CHAT_ID,
-      userId: USER_ID,
-      paginationOpts: { numItems: 24, cursor: null },
-    });
-    expect(result.abliterationHistory).toEqual([]);
-    expect(mockCtx.db.query).not.toHaveBeenCalled();
+    await expect(
+      getMessagesPageForBackend.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        paginationOpts: { numItems: 24, cursor: null },
+      }),
+    ).rejects.toMatchObject({ data: { code } });
+    expect(paginate).not.toHaveBeenCalled();
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
   });
 
   it("should filter out hidden messages", async () => {
@@ -1024,6 +1040,7 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     });
 
     expect(result.page).toHaveLength(1);
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
     expect(result.page[0].id).toBe("msg-visible");
     expect(result.fileTokens).toEqual([]);
     expect(paginateMock).toHaveBeenCalledWith({

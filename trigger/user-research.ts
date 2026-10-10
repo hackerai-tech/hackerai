@@ -124,7 +124,15 @@ export const analyzeUserResearchProfile = schemaTask({
     ).filter((chat) => chat.messages.length > 0);
 
     if (evidence.length === 0) {
-      throw new Error("No eligible message evidence was found for this user");
+      // An empty eligible sample cannot improve by retrying the same window.
+      // Keep it explicit in coverage without fabricating a profile.
+      return {
+        status: "skipped" as const,
+        reason: "no_eligible_evidence" as const,
+        pseudonym: payload.pseudonym,
+        chatsReviewed: 0,
+        messagesReviewed: 0,
+      };
     }
 
     const firstActivityAt = evidence.at(0)?.updatedAt;
@@ -198,6 +206,7 @@ export const analyzeUserResearchProfile = schemaTask({
     // Do not persist raw messages or the detailed profile in Trigger child
     // outputs. The parent reads the restricted Convex record.
     return {
+      status: "completed" as const,
       pseudonym: payload.pseudonym,
       chatsReviewed: coverage.chatsReviewed,
       messagesReviewed: coverage.messagesReviewed,
@@ -294,6 +303,9 @@ export const pmUserResearch = schemaTask({
       const failedPseudonyms = batchResult.runs.flatMap((run, index) =>
         run.ok ? [] : [members[index]?.pseudonym ?? `U${index + 1}`],
       );
+      const skippedProfiles = batchResult.runs.filter(
+        (run) => run.ok && run.output.status === "skipped",
+      ).length;
       if (failedPseudonyms.length > 0) {
         console.warn("Some user research profiles failed", {
           analysisId,
@@ -393,6 +405,7 @@ export const pmUserResearch = schemaTask({
           usersRequested: payload.userIds.length,
           usersAnalyzed: profiles.length,
           profilesFailed: failedPseudonyms.length,
+          profilesSkipped: skippedProfiles,
           chatsReviewed: profiles.reduce(
             (count, profile) => count + profile.coverage.chatsReviewed,
             0,
@@ -419,6 +432,7 @@ export const pmUserResearch = schemaTask({
         userIds: payload.userIds,
         ...(comparisonGroups ? { comparisonGroups } : {}),
         failedProfiles: failedPseudonyms.length,
+        skippedProfiles,
         usersAnalyzed: profiles.length,
         report,
       };
