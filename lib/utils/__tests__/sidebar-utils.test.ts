@@ -235,6 +235,9 @@ describe("terminal sidebar output", () => {
     "tool-file",
     "tool-send_request",
     "tool-create_vulnerability_report",
+    "tool-list_reports",
+    "tool-get_report",
+    "tool-update_vulnerability_report",
   ])(
     "replaces raw %s parameter validation errors with safe details",
     (type) => {
@@ -359,6 +362,117 @@ describe("web search sidebar output", () => {
       query: "fallback sidebar query",
       isSearching: true,
       toolCallId: "call-search",
+    });
+  });
+});
+
+describe("report tool sidebar history", () => {
+  const report = {
+    finding_id: "finding-1",
+    title: "Saved finding",
+    target: "authorized lab",
+    severity: "medium",
+    cvss_score: 5.3,
+    updated_at: 123,
+  };
+  it.each(["tool-get_report", "tool-update_vulnerability_report"])(
+    "retains %s receipts without copying private proof",
+    (type) => {
+      const output =
+        type === "tool-get_report"
+          ? { success: true, report: { ...report, evidence: "private proof" } }
+          : { success: true, ...report };
+      const message = {
+        role: "assistant",
+        parts: [
+          {
+            type,
+            toolCallId: "report-call",
+            state: "output-available",
+            output,
+          },
+        ],
+      };
+      const contents = extractSidebarContentFromMessage(message);
+      expect(contents).toEqual([
+        {
+          findingId: "finding-1",
+          title: "Saved finding",
+          target: "authorized lab",
+          severity: "medium",
+          cvssScore: 5.3,
+          isExecuting: false,
+          toolCallId: "report-call",
+        },
+      ]);
+      expect(JSON.stringify(contents)).not.toContain("private proof");
+      expect(
+        extractSidebarContentFromMessage(JSON.parse(JSON.stringify(message))),
+      ).toEqual(contents);
+    },
+  );
+  it.each([
+    "tool-list_reports",
+    "tool-get_report",
+    "tool-update_vulnerability_report",
+  ])("retains safe %s failures for sidebar navigation", (type) => {
+    const contents = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type,
+          toolCallId: "report-failure",
+          state: "output-available",
+          output: {
+            success: false,
+            error: "conflict",
+            message: "private proof",
+          },
+        },
+      ],
+    });
+    expect(contents).toHaveLength(1);
+    expect(contents[0]).toMatchObject({
+      kind: "tool-error",
+      toolCallId: "report-failure",
+      isExecuting: false,
+    });
+    expect(JSON.stringify(contents)).not.toContain("private proof");
+  });
+  it("does not add successful metadata lists or pending calls to sidebar navigation", () => {
+    expect(
+      extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-list_reports",
+            state: "output-available",
+            output: { success: true, reports: [report] },
+          },
+          {
+            type: "tool-get_report",
+            state: "input-available",
+            input: { finding_id: "finding-1" },
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+  it("does not claim a malformed success is a saved report", () => {
+    const [content] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-get_report",
+          toolCallId: "malformed",
+          state: "output-available",
+          output: { success: true },
+        },
+      ],
+    });
+    expect(content).toMatchObject({
+      kind: "tool-error",
+      toolCallId: "malformed",
     });
   });
 });

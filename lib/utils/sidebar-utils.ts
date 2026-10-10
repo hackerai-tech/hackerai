@@ -13,6 +13,7 @@ import {
 } from "@/app/components/tools/shell-tool-utils";
 import {
   createFindingFailureContent,
+  createReportToolFailureContent,
   createToolInputErrorContent,
   isToolInputValidationError,
 } from "@/lib/chat/tool-error-display";
@@ -854,6 +855,59 @@ export function extractSidebarContentFromMessage(
         original,
         modified,
       });
+    }
+
+    if (
+      [
+        "tool-list_reports",
+        "tool-get_report",
+        "tool-update_vulnerability_report",
+      ].includes(part.type) &&
+      (part.state === "output-available" || part.state === "output-error")
+    ) {
+      const operation =
+        part.type === "tool-list_reports"
+          ? "list"
+          : part.type === "tool-get_report"
+            ? "get"
+            : "update";
+      const result = part.output?.result ?? part.output;
+      const report = operation === "get" ? result?.report : result;
+      if (part.state === "output-available" && result?.success === true) {
+        if (operation === "list") return;
+        if (
+          typeof report?.finding_id === "string" &&
+          report.finding_id &&
+          typeof report.title === "string" &&
+          report.title &&
+          typeof report.target === "string" &&
+          report.target &&
+          typeof report.severity === "string" &&
+          report.severity &&
+          typeof report.cvss_score === "number"
+        ) {
+          contentList.push({
+            findingId: report.finding_id,
+            title: report.title,
+            target: report.target,
+            endpoint: report.endpoint,
+            severity: report.severity,
+            cvssScore: report.cvss_score,
+            isExecuting: false,
+            toolCallId: part.toolCallId || "",
+          });
+          return;
+        }
+      }
+      contentList.push(
+        createReportToolFailureContent({
+          toolCallId: part.toolCallId || "",
+          operation,
+          reason:
+            result?.validation_kind === "evidence" ? "evidence" : result?.error,
+        }),
+      );
+      return;
     }
 
     if (
