@@ -20,7 +20,10 @@ async function main() {
     await import("../lib/ai/tool-call-id-namespace");
   const events: Array<{ event: string; properties?: Record<string, unknown> }> =
     [];
-  const useProBaseline = process.argv.includes("--pro-baseline");
+  // Retain the old smoke command as an alias; both routes use the base provider.
+  const useProBaseline =
+    process.argv.includes("--pro-baseline") ||
+    process.argv.includes("--large-v2");
   const expectedProviderModel = "abliterated-model";
   const assignment = await evaluateAbliteratedModel({
     userId: "local-provider-smoke",

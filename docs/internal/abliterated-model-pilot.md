@@ -388,31 +388,36 @@ corepack pnpm exec tsx scripts/test-abliteration.ts --pro-baseline
 
 It loads only the provider credential, uses synthetic arithmetic and an in-memory
 tool, exercises the registered provider plus tool IDs and telemetry, caps output
-and duration, and does not ingest PostHog events. It is not full app verification.
+and duration, and does not ingest PostHog events. `--large-v2` remains a legacy
+alias for `--pro-baseline`; both select the base Abliteration provider. This is
+not full app verification.
 
-For release verification on the verified Preview custom URL:
+For release verification on the verified Preview URL and Production custom domain:
 
-1. Use a disposable paid-user Ask chat and an eligible synthetic authorized lab
-   request. Confirm moderation eligibility, streaming completion, model attribution,
-   one exposure, and reload persistence. Repeat in Agent with one bounded tool call.
-2. Confirm benign/unflagged requests, prohibited-category moderation results,
-   moderation failure, PDFs, other unsupported files, and free-allowance
-   rescue keep their baseline routes. Confirm image requests use the base Abliteration
-   model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
-   Unit tests cover deterministic gates; use approved synthetic fixtures for
+1. Use a disposable paid Ask chat with a moderation-eligible synthetic authorized
+   lab request. Confirm streaming completion, the paid-default attribution key,
+   one actual-output exposure and reload persistence. Repeat in Agent with three
+   harmless, sequential tool calls. Confirm generation steps 1–3 use base
+   `abliterated-model`, then step 4 uses the exact saved baseline. A response that
+   finishes earlier must not force extra calls. Start a new response/run and
+   confirm its generation-step counter starts again at one.
+2. Confirm ordinary requests, prohibited-category moderation results, moderation
+   failure, unsupported original files and paid free-allowance rescue retain their
+   baseline routes. Paid Standard, Pro and Max selectors use base Abliteration
+   when eligible, including supported images; the new policy does not select
+   Large v2. Free requests remain excluded and retain their existing baselines.
+   Unit tests cover the deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
-   In Direct Ask and Agent, force one response/run through at least three sequential
-   model-generation steps. Confirm step 1 uses the assigned Abliteration route and
-   step 2 onward uses the exact OpenRouter baseline without flag re-evaluation. Start
-   a new response/run and confirm its generation-step counter starts again at one.
-3. Force the flag off/control and a provider outage. Verify fallback completes,
-   assignment stays unchanged in outcomes/costs, replacement messages can be rated,
-   and no duplicate tool action occurs.
-4. Stop, regenerate, rate, reload, and reconnect the disposable response. Confirm
-   message linkage, terminal outcomes, token/cost attribution, and no content in
-   analytics. Clean up the test chats. Repeat the bounded journey on the production
-   custom domain for the explicit test-user override and sampled treatment cohort
-   before any further rollout expansion.
+3. The retired experiment flag must not affect new assignments. Verify a provider
+   outage still recovers immediately to the existing baseline chain, records the
+   recovery separately from planned step-4 continuation, and does not duplicate a
+   tool action. Confirm historical outcomes remain separate from the paid default.
+4. Stop, regenerate, rate, reload and reconnect a disposable response. Confirm
+   message linkage, terminal outcomes and token/cost attribution contain no user
+   content. Check Vercel and the pinned Trigger worker independently in both
+   environments. After both Production runtimes are verified, end the paid trial
+   and disable its separate Preview and Production flags. Rollback requires a code
+   revert and both runtime releases.
 
 References: [provider models](https://docs.abliteration.ai/models),
 [provider pricing](https://docs.abliteration.ai/pricing),
@@ -420,7 +425,7 @@ References: [provider models](https://docs.abliteration.ai/models),
 [PostHog exposure semantics](https://posthog.com/docs/experiments/exposures),
 [PostHog retention](https://posthog.com/docs/product-analytics/retention).
 
-## Free-user rollback verification
+## Historical Free-user rollback verification
 
 Use a disposable free Ask chat and a free Agent chat with a connected local
 sandbox. Submit a bounded synthetic request that previously qualified for
