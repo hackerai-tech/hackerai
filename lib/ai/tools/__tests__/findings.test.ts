@@ -191,6 +191,7 @@ describe("report evidence integration", () => {
       ).toMatchObject({
         success: false,
         error: "validation",
+        validation_kind: "evidence",
         retryable: false,
       });
       expect(mockCreateFinding).not.toHaveBeenCalled();

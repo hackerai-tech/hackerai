@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { CVSS31_METRIC_VALUES } from "./cvss31";
+import {
+  FINDING_PROSE_FORMAT_MESSAGE,
+  hasEscapedProseFormatting,
+} from "./prose";
 
 export const FINDING_PAYLOAD_MAX_BYTES = 128 * 1024;
 export const FINDING_CODE_LOCATIONS_MAX = 50;
@@ -19,6 +23,12 @@ const optionalText = (label: string, max: number) =>
     .nullable()
     .optional()
     .transform((value) => value || undefined);
+
+const proseText = (label: string, max: number) =>
+  requiredText(label, max).refine(
+    (value) => !hasEscapedProseFormatting(value),
+    FINDING_PROSE_FORMAT_MESSAGE,
+  );
 
 const stripBoundaryNewlines = (value: string) =>
   value.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
@@ -126,19 +136,19 @@ export const cvss31BreakdownSchema = z
 export const createVulnerabilityReportInputSchema = z
   .object({
     title: requiredText("Title", 200),
-    description: requiredText("Description", 4_000),
-    impact: requiredText("Impact", 4_000),
+    description: proseText("Description", 4_000),
+    impact: proseText("Impact", 4_000),
     target: requiredText("Target", 1_000),
-    technical_analysis: requiredText("Technical analysis", 12_000),
-    poc_description: requiredText("PoC description", 8_000),
+    technical_analysis: proseText("Technical analysis", 12_000),
+    poc_description: proseText("PoC description", 8_000),
     poc_script_code: requiredCodeText("PoC script/code", 32_000),
-    remediation_steps: requiredText("Remediation steps", 8_000),
+    remediation_steps: proseText("Remediation steps", 8_000),
     evidence: requiredText("Evidence", 16_000),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
-    assumptions: requiredText("Assumptions", 4_000),
+    assumptions: proseText("Assumptions", 4_000),
     confidence: z.enum(["low", "medium", "high"]).optional(),
-    counterevidence: requiredText("Counterevidence", 4_000).optional(),
-    severity_change_conditions: requiredText(
+    counterevidence: proseText("Counterevidence", 4_000).optional(),
+    severity_change_conditions: proseText(
       "Severity change conditions",
       4_000,
     ).optional(),

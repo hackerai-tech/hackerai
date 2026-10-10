@@ -15,7 +15,7 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
   const sections: Array<[string, string | undefined]> = [
     ["Description", finding.description],
     ["Impact", finding.impact],
-    ["Evidence", finding.evidence],
+    ["Evidence", codeBlock(finding.evidence)],
     ["Technical analysis", finding.technical_analysis],
     ["Reproduction steps", finding.poc_description],
     ["Proof of concept", codeBlock(finding.poc_script_code)],

@@ -6,13 +6,17 @@ import { resetMockConvexQueries, setMockQueryResult } from "convex/react";
 const mockOpenInSidebar = jest.fn();
 const mockHandleKeyDown = jest.fn();
 const mockCapture = jest.fn();
+const mockSidebarContent = jest.fn();
 
 jest.mock("@/app/hooks/useToolSidebar", () => ({
-  useToolSidebar: () => ({
-    handleOpenInSidebar: mockOpenInSidebar,
-    handleKeyDown: mockHandleKeyDown,
-    isSidebarActive: false,
-  }),
+  useToolSidebar: ({ content }: any) => {
+    mockSidebarContent(content);
+    return {
+      handleOpenInSidebar: mockOpenInSidebar,
+      handleKeyDown: mockHandleKeyDown,
+      isSidebarActive: false,
+    };
+  },
 }));
 
 jest.mock("@/lib/analytics/client", () => ({
@@ -142,6 +146,36 @@ describe("FindingToolHandler", () => {
     expect(screen.getByText("Duplicate finding rejected")).toBeVisible();
     expect(screen.getByText("Already saved in this chat")).toBeVisible();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("opens actionable evidence details without leaking the raw path or payload", () => {
+    render(
+      <FindingToolHandler
+        status="ready"
+        part={{
+          toolCallId: "tool-evidence",
+          state: "output-available",
+          output: {
+            success: false,
+            error: "validation",
+            validation_kind: "evidence",
+            message: "Private capture missing: /private/customer/request.http",
+          },
+        }}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open vulnerability report error details",
+      }),
+    );
+    const content = mockSidebarContent.mock.calls.at(-1)?.[0] as any;
+    expect(content.summary).toContain("missing or inaccessible");
+    expect(content.nextStep).toContain("restore any missing captures");
+    expect(JSON.stringify(content)).not.toMatch(
+      /private|customer|request\.http/,
+    );
+    expect(mockOpenInSidebar).toHaveBeenCalledTimes(1);
   });
 
   it("never exposes framework validation payloads inline", () => {

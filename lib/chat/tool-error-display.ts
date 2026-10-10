@@ -228,7 +228,8 @@ export function createFindingFailureContent({
   reason,
 }: {
   toolCallId: string;
-  reason: "validation" | "chat_not_found" | "general" | "invalid_result";
+  reason:
+    "validation" | "evidence" | "chat_not_found" | "general" | "invalid_result";
 }): SidebarToolError {
   if (reason === "validation") {
     return createToolInputErrorContent({
@@ -238,33 +239,46 @@ export function createFindingFailureContent({
   }
 
   const details =
-    reason === "chat_not_found"
+    reason === "evidence"
       ? {
-          title: "The vulnerability report wasn’t saved",
+          title: "The report’s evidence needs attention",
           summary:
-            "The source chat is no longer available, so the finding couldn’t be linked and saved.",
+            "One or more evidence references could not be accepted. A capture may be missing or inaccessible in the connected environment. No finding was saved.",
           nextStep:
-            "Continue in an active chat and ask HackerAI to validate the issue again before saving it.",
+            "Ask HackerAI to check the evidence paths and access, restore any missing captures, and submit the report again after correcting them.",
         }
-      : reason === "invalid_result"
+      : reason === "chat_not_found"
         ? {
-            title: "The vulnerability report couldn’t be confirmed",
-            summary:
-              "The save response was incomplete, so HackerAI couldn’t verify that a finding was created.",
-            nextStep:
-              "Ask HackerAI to check the report and retry once. If it still fails, start a new Agent run.",
-          }
-        : {
             title: "The vulnerability report wasn’t saved",
             summary:
-              "HackerAI couldn’t save the confirmed finding because of a temporary error.",
+              "The source chat is no longer available, so the finding couldn’t be linked and saved.",
             nextStep:
-              "Ask HackerAI to save the finding once more. If it still fails, continue in a new Agent run.",
-          };
+              "Continue in an active chat and ask HackerAI to validate the issue again before saving it.",
+          }
+        : reason === "invalid_result"
+          ? {
+              title: "The vulnerability report couldn’t be confirmed",
+              summary:
+                "The save response was incomplete, so HackerAI couldn’t verify that a finding was created.",
+              nextStep:
+                "Ask HackerAI to check the report and retry once. If it still fails, start a new Agent run.",
+            }
+          : {
+              title: "The vulnerability report wasn’t saved",
+              summary:
+                "HackerAI couldn’t save the confirmed finding because of a temporary error.",
+              nextStep:
+                "Ask HackerAI to save the finding once more. If it still fails, continue in a new Agent run.",
+            };
 
   return {
     kind: "tool-error",
-    errorKind: reason === "chat_not_found" ? "not_found" : "execution",
+    errorKind:
+      reason === "chat_not_found"
+        ? "not_found"
+        : reason === "evidence"
+          ? "validation"
+          : "execution",
     toolName: "Vulnerability report",
     action: "Vulnerability report wasn’t saved",
     ...details,

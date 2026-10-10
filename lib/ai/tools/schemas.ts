@@ -821,6 +821,28 @@ const findingOptionalText = (label: string, max: number) =>
     .optional()
     .transform((value) => value || undefined);
 
+// Keep this catalog free of local imports for the Head Start bundle.
+// Shared validation cases verify parity with lib/findings/prose.ts.
+/**
+ * Catch escaped paragraph/list separators in prose without rewriting evidence.
+ * Literal escapes belong in code spans/blocks, where they must remain intact.
+ */
+function hasEscapedProseFormatting(value: string): boolean {
+  const prose = value
+    .replace(/~~~[\s\S]*?(?:~~~|$)/g, "")
+    .replace(/`[^`]*(?:`|$)/g, "");
+  return /(^|[^\\])\\(?:r\\)?n(?:\\(?:r\\)?n|[ \t]*\d+[.)][ \t])/.test(prose);
+}
+
+const FINDING_PROSE_FORMAT_MESSAGE =
+  "Use actual line breaks between prose paragraphs and numbered steps, not literal backslash-n separators. Preserve literal escapes inside Markdown code spans or fenced blocks; do not rewrite raw evidence or PoC code.";
+
+const findingProseText = (label: string, max: number) =>
+  findingRequiredText(label, max).refine(
+    (value) => !hasEscapedProseFormatting(value),
+    FINDING_PROSE_FORMAT_MESSAGE,
+  );
+
 const stripFindingBoundaryNewlines = (value: string) =>
   value.replace(/^(?:\r?\n)+|(?:\r?\n)+$/g, "");
 
@@ -910,19 +932,29 @@ const findingCodeLocationSchema = z
 export const createVulnerabilityReportToolInputSchema = z
   .object({
     title: findingRequiredText("Title", 200),
-    description: findingRequiredText("Description", 4_000),
-    impact: findingRequiredText("Impact", 4_000),
+    description: findingProseText("Description", 4_000).describe(
+      "Markdown overview. Use actual line breaks, not literal backslash-n separators.",
+    ),
+    impact: findingProseText("Impact", 4_000).describe(
+      "Demonstrated impact and its exact security boundary. Label potential consequences and untested access as such; root inside a container does not establish underlying host compromise.",
+    ),
     target: findingRequiredText("Target", 1_000),
-    technical_analysis: findingRequiredText("Technical analysis", 12_000),
-    poc_description: findingRequiredText("PoC description", 8_000),
+    technical_analysis: findingProseText("Technical analysis", 12_000).describe(
+      "Markdown analysis with actual line breaks. Put literal code and escaped strings in code spans or fenced blocks.",
+    ),
+    poc_description: findingProseText("PoC description", 8_000).describe(
+      "Numbered Markdown reproduction steps separated by actual line breaks. Keep literal payload characters inside code spans.",
+    ),
     poc_script_code: findingRequiredCodeText("PoC script/code", 32_000),
-    remediation_steps: findingRequiredText("Remediation steps", 8_000),
-    evidence: findingRequiredText("Evidence", 16_000),
+    remediation_steps: findingProseText("Remediation steps", 8_000),
+    evidence: findingRequiredText("Evidence", 16_000).describe(
+      "Literal plain-text observations and captures, displayed without Markdown interpretation. Preserve exact payloads and escapes. For HTTP, include the actual method, URL, relevant request headers/body, response status/headers/body, and capture time. Redact secrets consistently and label redactions and omitted data.",
+    ),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
-    assumptions: findingRequiredText("Assumptions", 4_000),
+    assumptions: findingProseText("Assumptions", 4_000),
     confidence: z.enum(["low", "medium", "high"]).optional(),
-    counterevidence: findingRequiredText("Counterevidence", 4_000).optional(),
-    severity_change_conditions: findingRequiredText(
+    counterevidence: findingProseText("Counterevidence", 4_000).optional(),
+    severity_change_conditions: findingProseText(
       "Severity change conditions",
       4_000,
     ).optional(),
@@ -1006,9 +1038,12 @@ Use this tool only after all of the following are true:
 - File one distinct root cause per call; do not combine unrelated vulnerabilities
 - Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once
 - Never retry a duplicate response
-- Use formal, objective, vendor-neutral markdown in the report fields
+- Use formal, objective, vendor-neutral Markdown in prose fields, with actual line breaks between paragraphs and numbered steps. Do not double-escape formatting into literal backslash-n text. Preserve meaningful escapes inside code, payloads, and raw captures
 - Put numbered reproduction steps only in poc_description and executable exploit/payload code only in poc_script_code
-- Put concrete requests, responses, observed behavior, logs, or code proof in evidence
+- Put literal plain-text requests, responses, observed behavior, logs, or code proof in evidence; this field is displayed verbatim, not interpreted as Markdown
+- Capture HTTP requests and their matching responses together while testing: method, URL, relevant request headers/body, response status/headers/body, and time. Redact credentials and unrelated sensitive data consistently, and identify redactions, truncation, or omitted bodies. A response-only file must be described as response-only; never reconstruct an uncaptured request and present it as a raw capture
+- Inspect saved captures before referencing them, and use get_terminal_files to deliver the relevant files. A file existing does not prove that its contents are complete or support the claim
+- Separate observed impact from possible consequences. Execution as root in a container or application process does not establish container escape, underlying host compromise, secret access, or successful pivoting. Only claim those boundaries were crossed when separate evidence demonstrates it
 - Include confidence, counterevidence, and severity_change_conditions: test the strongest alternative explanation, record what was checked and any remaining uncertainty, and state what new evidence would raise or lower severity
 - Never infer high confidence from a saved file or CVSS score; if execution or proof is incomplete, continue validation instead of filing
 - Keep remediation_steps as prose; put code replacements in code_locations

@@ -640,9 +640,9 @@ export function FindingDetail({
                   <CheckCircle2 className="size-4" aria-hidden="true" />
                   Observed Evidence
                 </h4>
-                <div className="mt-3 min-w-0 break-words text-sm leading-7 text-foreground">
-                  <MemoizedMarkdown content={finding.evidence} />
-                </div>
+                <pre className="mt-3 max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted/30 p-4 text-xs leading-relaxed text-foreground">
+                  <code translate="no">{finding.evidence}</code>
+                </pre>
               </section>
 
               <MarkdownSection

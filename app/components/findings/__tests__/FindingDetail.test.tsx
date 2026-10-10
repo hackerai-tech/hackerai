@@ -1,6 +1,12 @@
 import "@testing-library/jest-dom";
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { useMutation } from "convex/react";
 import { toast } from "sonner";
 import type { FindingDetailRecord } from "@/types/finding";
@@ -168,6 +174,24 @@ describe("FindingDetail", () => {
       expect(writeText).toHaveBeenNthCalledWith(1, finding.poc_script_code);
       expect(writeText).toHaveBeenNthCalledWith(2, finding.cvss_vector);
     });
+  });
+
+  it("preserves evidence payload characters in the UI and Markdown download", () => {
+    const evidence =
+      'GET /eval?s=__import__("os") HTTP/1.1\nHost: lab.example.test\n\nHTTP/1.1 200 OK\n{"value":"literal\\n","html":"<b>raw</b>"}\n```\n# not a heading';
+    const saved = { ...finding, evidence };
+    render(<FindingDetail finding={saved} />);
+    const section = screen.getByRole("region", {
+      name: "Observed Evidence",
+      exact: true,
+    });
+    expect(section.querySelector("pre code")?.textContent).toBe(evidence);
+    expect(section.querySelector("b")).toBeNull();
+    expect(within(section).queryByTestId("streamdown")).toBeNull();
+    const exported = renderFindingMarkdown(saved);
+    expect(exported).toContain(
+      `## Evidence\n\n\`\`\`\`\n${evidence}\n\`\`\`\``,
+    );
   });
 
   it("requires a resolution and context, then preserves the closed finding", async () => {

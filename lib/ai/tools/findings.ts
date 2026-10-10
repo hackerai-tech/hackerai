@@ -73,6 +73,7 @@ export const createCreateVulnerabilityReport = (
               return {
                 success: false as const,
                 error: "validation" as const,
+                validation_kind: "evidence" as const,
                 retryable: false as const,
                 message: checked.error,
               };

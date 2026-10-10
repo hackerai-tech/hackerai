@@ -29,6 +29,7 @@ type FindingOutput = {
   severity?: SidebarFinding["severity"];
   cvss_score?: number;
   error?: "validation" | "duplicate" | "chat_not_found" | "general";
+  validation_kind?: "evidence";
   message?: string;
   warning?: string;
 };
@@ -164,10 +165,13 @@ export const FindingToolHandler = memo(function FindingToolHandler({
             content={createFindingFailureContent({
               toolCallId,
               reason:
-                result.error === "validation" ||
-                result.error === "chat_not_found"
-                  ? result.error
-                  : "general",
+                result.error === "validation" &&
+                result.validation_kind === "evidence"
+                  ? "evidence"
+                  : result.error === "validation" ||
+                      result.error === "chat_not_found"
+                    ? result.error
+                    : "general",
             })}
           />
         );

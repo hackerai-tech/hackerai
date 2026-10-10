@@ -4,6 +4,7 @@ import {
   createVulnerabilityReportInputSchema,
   type CreateVulnerabilityReportInput,
 } from "../validation";
+import { createVulnerabilityReportToolInputSchema } from "@/lib/ai/tools/schemas";
 
 const validReport = (): CreateVulnerabilityReportInput => ({
   title: "Cross-tenant invoice access",
@@ -46,6 +47,49 @@ const validReport = (): CreateVulnerabilityReportInput => ({
 });
 
 describe("structured finding validation", () => {
+  describe.each([
+    ["tool", createVulnerabilityReportToolInputSchema],
+    ["persistence", createVulnerabilityReportInputSchema],
+  ] as const)("%s prose formatting", (_name, schema) => {
+    it.each([
+      "First paragraph.\\n\\nSecond paragraph.",
+      "1. Send the control request.\\n2. Compare the response.",
+      "1. Send the control request.\\r\\n2. Compare the response.",
+    ])("rejects escaped formatting before saving: %s", (poc_description) => {
+      const result = schema.safeParse({ ...validReport(), poc_description });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: ["poc_description"],
+              message: expect.stringContaining("actual line breaks"),
+            }),
+          ]),
+        );
+      }
+    });
+
+    it.each([
+      "1. Send the control request.\n2. Compare the response.",
+      "Inspect the literal `\\n\\n` in the response.",
+      'Payload:\n```python\ns = "\\n\\n"\n```',
+      'Payload:\n~~~python\ns = "\\n2. literal"\n~~~',
+      "Check `C:\\new\\notes.txt` and the regex `\\n2. `.",
+    ])("preserves valid prose and code escapes: %s", (poc_description) => {
+      const report = {
+        ...validReport(),
+        poc_description,
+        evidence: '__import__("os")\\n\\n{"escaped":"\\n"}',
+        poc_script_code: 'print("\\n\\n")',
+      };
+      const parsed = schema.parse(report);
+      expect(parsed.poc_description).toBe(poc_description);
+      expect(parsed.evidence).toBe(report.evidence);
+      expect(parsed.poc_script_code).toBe(report.poc_script_code);
+    });
+  });
+
   it("accepts a complete report", () => {
     expect(createVulnerabilityReportInputSchema.parse(validReport())).toEqual(
       validReport(),

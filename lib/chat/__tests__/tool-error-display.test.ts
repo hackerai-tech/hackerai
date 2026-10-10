@@ -76,6 +76,7 @@ describe("tool error display", () => {
 
   it.each([
     "validation",
+    "evidence",
     "chat_not_found",
     "general",
     "invalid_result",
@@ -88,5 +89,16 @@ describe("tool error display", () => {
     expect(content.title).toBeTruthy();
     expect(content.summary).toBeTruthy();
     expect(content.nextStep).toBeTruthy();
+  });
+
+  it("explains evidence failures without blaming report field formats", () => {
+    const content = createFindingFailureContent({
+      toolCallId: "finding-call",
+      reason: "evidence",
+    });
+    expect(content.summary).toContain("missing or inaccessible");
+    expect(content.nextStep).toContain("restore any missing captures");
+    expect(content.summary).not.toContain("required format");
+    expect(content.errorKind).toBe("validation");
   });
 });
