@@ -1540,24 +1540,9 @@ export const getMessagesPageForBackend = query({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    // Verify chat ownership - if chat doesn't exist, return empty page
-    const chatExists: boolean = await ctx.runQuery(
-      internal.messages.verifyChatOwnership,
-      {
-        chatId: args.chatId,
-        userId: args.userId,
-      },
-    );
-
-    if (!chatExists) {
-      return {
-        page: [],
-        abliterationHistory: [],
-        fileTokens: [],
-        isDone: true,
-        continueCursor: "",
-      };
-    }
+    // Keep ownership and history in one query snapshot, without scheduling a
+    // nested query for every history page during periods of high concurrency.
+    await loadOwnedChat(ctx, args.chatId, args.userId);
 
     const result = await ctx.db
       .query("messages")

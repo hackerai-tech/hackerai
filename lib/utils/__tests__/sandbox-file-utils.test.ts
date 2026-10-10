@@ -1787,20 +1787,27 @@ describe("attachment write fallback observability", () => {
     infoSpy.mockRestore();
     errorSpy.mockRestore();
   });
-  const makeSandbox = (finalFailure = false, probeFailure = false) => ({
+  const makeSandbox = (
+    finalFailure = false,
+    probeFailure = false,
+    diagnostics = probeOutput,
+  ) => ({
     sandboxId: "e2b-test-sandbox",
     commands: {
       run: jest.fn(async (command: string) => {
         if (command.startsWith("timeout --kill-after=1s 3s python3")) {
           if (probeFailure) throw new Error("probe timeout");
-          return { exitCode: 0, stdout: probeOutput, stderr: "" };
+          return { exitCode: 0, stdout: diagnostics, stderr: "" };
         }
-        if (command.includes("for base in"))
+        if (command.includes("for base in")) {
+          if (command.includes("df -Pk") && finalFailure)
+            return { exitCode: 1, stdout: "", stderr: "" };
           return {
             exitCode: 0,
             stdout: "/tmp/hackerai-upload/fallback/test.pdf",
             stderr: "",
           };
+        }
         if (
           command.startsWith("curl") &&
           (command.includes("/home/user/upload") || finalFailure)
@@ -1862,6 +1869,67 @@ describe("attachment write fallback observability", () => {
     expect(JSON.stringify(eventSpy.mock.calls)).not.toMatch(
       /sandbox_id|e2b-test-sandbox|DO_NOT_LOG|private\.pdf/,
     );
+  });
+
+  it.each([
+    { available_bytes: 0, write_probe_result: "writable" },
+    { available_bytes: 10000, write_probe_result: "disk_full" },
+    { available_bytes: 10000, write_probe_result: "quota_exceeded" },
+  ])(
+    "reports disk exhaustion without another transfer: %s",
+    async (diagnostics) => {
+      const sandbox = makeSandbox(
+        true,
+        false,
+        JSON.stringify({
+          ...JSON.parse(probeOutput),
+          ...diagnostics,
+        }),
+      );
+      const ensureSandbox = jest.fn(async () => sandbox);
+      const result = await uploadSandboxFiles([file], ensureSandbox, {
+        logContext: context,
+        retryAfterReconnectOnTransientFailure: true,
+      });
+      expect(result.failureDetails?.[0]).toMatchObject({
+        reason: "attachment_disk_full",
+        exitCode: 23,
+      });
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(
+        sandbox.commands.run.mock.calls.filter(([command]) =>
+          command.startsWith("curl"),
+        ),
+      ).toHaveLength(1);
+      expect(
+        sandbox.commands.run.mock.calls.some(([command]) =>
+          command.includes("df -Pk"),
+        ),
+      ).toBe(true);
+      expect(eventSpy).toHaveBeenCalledWith(
+        "sandbox_attachment_staging_fallback",
+        expect.objectContaining({
+          fallback_outcome: "unavailable",
+          final_failure_reason: "attachment_disk_full",
+        }),
+      );
+    },
+  );
+
+  it("can recover onto a fallback filesystem with available space", async () => {
+    const sandbox = makeSandbox(
+      false,
+      false,
+      JSON.stringify({
+        ...JSON.parse(probeOutput),
+        available_bytes: 0,
+      }),
+    );
+    const result = await uploadSandboxFiles([file], async () => sandbox, {
+      logContext: context,
+    });
+    expect(result.failedCount).toBe(0);
+    expect(result.pathRewrites).toHaveLength(1);
   });
 
   it("reports unsuccessful fallback even if the best-effort probe fails", async () => {

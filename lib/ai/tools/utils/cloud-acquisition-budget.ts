@@ -16,6 +16,7 @@ export class CloudAcquisitionTimeoutError extends Error {
 export class CloudAcquisitionBudget {
   private failures = 0;
   private failedWaitMs = 0;
+  private lastFailure: unknown;
 
   async run<T>(
     acquire: (signal: AbortSignal) => Promise<T>,
@@ -29,10 +30,13 @@ export class CloudAcquisitionBudget {
   ): Promise<T> {
     context.signal?.throwIfAborted();
     if (this.exhausted()) {
-      throw new Error(
+      const exhaustedError = new Error(
         "Cloud sandbox acquisition is unavailable for the rest of this request. " +
           "Do not retry cloud tools in this run. Your workspace is preserved; try a new request later.",
+        { cause: this.lastFailure },
       );
+      exhaustedError.name = "CloudAcquisitionBudgetExhaustedError";
+      throw exhaustedError;
     }
     const startedAt = Date.now();
     const controller = new AbortController();
@@ -61,11 +65,13 @@ export class CloudAcquisitionBudget {
       // tool's SDK client or health counter must not replenish this budget.
       this.failures = 0;
       this.failedWaitMs = 0;
+      this.lastFailure = undefined;
       return result;
     } catch (error) {
       if (context.signal?.aborted && controller.signal.reason !== timeoutError)
         throw error;
       this.failures++;
+      this.lastFailure = error;
       this.failedWaitMs += Math.max(0, Date.now() - startedAt);
       if (controller.signal.reason === timeoutError) {
         this.failedWaitMs = Math.max(

@@ -380,6 +380,8 @@ export const researchCohortReportSchema = cohortSynthesisSchema.extend({
     usersRequested: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
     usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
     profilesFailed: z.number().int().min(0).max(20),
+    // Optional for reports created before evidence exclusions were separated.
+    profilesSkipped: z.number().int().min(0).max(20).optional(),
     chatsReviewed: z.number().int().min(0),
     messagesReviewed: z.number().int().min(0),
   }),
@@ -402,6 +404,7 @@ export const pmUserResearchResultSchema = z
       .max(USER_RESEARCH_MAX_COMPARISON_GROUPS)
       .optional(),
     failedProfiles: z.number().int().min(0).max(20),
+    skippedProfiles: z.number().int().min(0).max(20).optional(),
     usersAnalyzed: z.number().int().min(USER_RESEARCH_MIN_COHORT_SIZE).max(20),
     report: researchCohortReportSchema,
   })

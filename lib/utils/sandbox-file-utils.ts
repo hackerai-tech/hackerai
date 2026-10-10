@@ -939,6 +939,7 @@ const resolveWritableUploadFallbackPath = async (
   sandbox: any,
   originalLocalPath: string,
   signal?: AbortSignal,
+  requireFreeSpace = false,
 ): Promise<string | null> => {
   signal?.throwIfAborted();
   const fileName = originalLocalPath.split(/[/\\]/).pop();
@@ -949,6 +950,11 @@ const resolveWritableUploadFallbackPath = async (
     `filename=${shellQuote(fileName)}`,
     `for base in "\${TMPDIR:-/tmp}" /var/tmp "\${HOME:-}" "\${PWD:-.}"; do`,
     `  [ -n "$base" ] || continue`,
+    ...(requireFreeSpace
+      ? [
+          `  df -Pk "$base" 2>/dev/null | awk 'NR > 1 && $4 > 0 { free = 1 } END { exit !free }' || continue`,
+        ]
+      : []),
     `  root="$base/hackerai-upload"`,
     `  mkdir -p "$root" 2>/dev/null && [ -w "$root" ] || continue`,
     `  root="$(cd "$root" 2>/dev/null && pwd -P)" || continue`,
@@ -1043,23 +1049,40 @@ const stageSandboxFile = async (
         outcome === "recovered" ? "info" : "warn",
       );
     };
+    // curl's exit 23 hides ENOSPC. A one-byte probe can succeed even when
+    // no blocks remain. Allow a fallback on another filesystem, but avoid
+    // transferring again to a destination that also has no free blocks.
+    const diskFull =
+      diagnostics.probe_status === "ok" &&
+      (diagnostics.available_bytes === 0 ||
+        diagnostics.write_probe_result === "disk_full" ||
+        diagnostics.write_probe_result === "quota_exceeded");
+    const transferError = diskFull
+      ? Object.assign(
+          new Error("No space left on device while staging attachment", {
+            cause: error,
+          }),
+          { exitCode: extractCommandExitCode(error) },
+        )
+      : error;
     let fallbackPath: string | null;
     try {
       fallbackPath = await resolveWritableUploadFallbackPath(
         sandbox,
         file.localPath,
         signal,
+        diskFull,
       );
     } catch (fallbackError) {
       throwIfAttachmentAborted(signal, fallbackError);
-      recordOutcome("unavailable", fallbackError);
+      recordOutcome("unavailable", transferError);
       // E2B throws for a nonzero exit instead of returning it. A failed
       // best-effort directory probe must not replace the transfer cause.
-      throw error;
+      throw transferError;
     }
     if (!fallbackPath || fallbackPath === file.localPath) {
-      recordOutcome("unavailable");
-      throw error;
+      recordOutcome("unavailable", transferError);
+      throw transferError;
     }
 
     recordOutcome("retrying");
@@ -1085,7 +1108,9 @@ const stageSandboxFile = async (
       throwIfAttachmentAborted(signal, fallbackError);
       recordOutcome("failed", fallbackError);
       const originalMessage =
-        error instanceof Error ? error.message : String(error);
+        transferError instanceof Error
+          ? transferError.message
+          : String(transferError);
       const fallbackMessage =
         fallbackError instanceof Error
           ? fallbackError.message
