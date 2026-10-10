@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation, useQueries, type RequestForQueries } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   ArrowLeft,
@@ -16,7 +16,7 @@ import {
   ShieldCheck,
   Target,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -220,10 +220,18 @@ export function FindingDetail({
   className?: string;
   onRequestClose?: () => void;
 }) {
-  const queriedFinding = useQuery(
-    api.findings.getFinding,
-    suppliedFinding !== undefined || !findingId ? "skip" : { findingId },
-  ) as FindingDetailRecord | null | undefined;
+  // Keep the subscription request stable; useQueries returns failures as values.
+  const skipQuery = suppliedFinding !== undefined || !findingId;
+  const queries = useMemo<RequestForQueries>(
+    (): RequestForQueries =>
+      skipQuery || !findingId
+        ? {}
+        : { finding: { query: api.findings.getFinding, args: { findingId } } },
+    [skipQuery, findingId],
+  );
+  const { finding: queriedFinding } = useQueries(queries) as {
+    finding?: FindingDetailRecord | null | Error;
+  };
   const closeFinding = useMutation(api.findings.closeFinding);
   const [isCloseDialogOpen, setIsCloseDialogOpen] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
@@ -239,6 +247,26 @@ export function FindingDetail({
   >();
   const persistedFinding =
     suppliedFinding !== undefined ? suppliedFinding : queriedFinding;
+
+  if (persistedFinding instanceof Error) {
+    return (
+      <div
+        role="alert"
+        className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center"
+      >
+        <p className="font-medium">Could not load finding</p>
+        <p className="text-sm text-muted-foreground">
+          Your saved report has not changed. Reload to try again.
+        </p>
+        <Button onClick={() => window.location.reload()}>Reload report</Button>
+        {onRequestClose && (
+          <Button variant="ghost" onClick={onRequestClose}>
+            Back to chat
+          </Button>
+        )}
+      </div>
+    );
+  }
 
   if (persistedFinding === undefined) {
     return (

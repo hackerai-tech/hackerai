@@ -11,6 +11,8 @@ export const setMockQueryResult = (next: unknown): void => {
 };
 
 export const useQuery = () => mockQueryResult;
+export const useQueries = (queries: Record<string, unknown>) =>
+  Object.fromEntries(Object.keys(queries).map((key) => [key, mockQueryResult]));
 
 export const useAction = () => mockAction;
 

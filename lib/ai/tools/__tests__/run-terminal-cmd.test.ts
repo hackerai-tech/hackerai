@@ -388,8 +388,29 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         },
         abort.signal,
       )) as any;
+      // Observe progress before cancellation rather than assuming Node has
+      // started and its output has been recorded within the initial 100ms.
+      const outputDeadline = Date.now() + 2_000;
+      let partialOutput = "";
+      while (
+        !partialOutput.includes("PARTIAL_EVIDENCE") &&
+        Date.now() < outputDeadline
+      ) {
+        const observation = await (
+          createInteractTerminalSession(context).execute as any
+        )(
+          { action: "view", session: second.result.session },
+          { toolCallId: "before-stop", messages: [] },
+        );
+        partialOutput = observation.result.output;
+        if (!partialOutput.includes("PARTIAL_EVIDENCE")) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
+      expect(partialOutput).toContain("PARTIAL_EVIDENCE");
       abort.abort();
       await closed;
+      await new Promise((resolve) => setTimeout(resolve, 0));
       await context.ptySessionManager.closeAll("chat-1");
       const cancelled = await (
         createInteractTerminalSession(next.context).execute as any

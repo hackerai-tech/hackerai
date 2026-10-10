@@ -85,6 +85,41 @@ fn get_cmd_server_info() -> CmdServerInfo {
     }
 }
 
+/// Write only after the user selects a destination in the native save dialog.
+/// No path supplied by the webview is accepted as a write destination.
+#[tauri::command]
+async fn save_file_with_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    tokio::task::spawn_blocking(move || {
+        let suggested_name = Path::new(&filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Invalid filename".to_string())?;
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_file_name(suggested_name);
+        if let Ok(downloads) = app.path().download_dir() {
+            dialog = dialog.set_directory(downloads);
+        }
+        let Some(selected) = dialog.blocking_save_file() else {
+            return Ok(None);
+        };
+        let path = selected.into_path().map_err(|error| error.to_string())?;
+        fs::write(&path, content.as_bytes()).map_err(|error| error.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[derive(Serialize)]
 struct CmdServerInfo {
     port: u16,
@@ -2092,6 +2127,7 @@ pub fn run() {
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            save_file_with_dialog,
             desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,

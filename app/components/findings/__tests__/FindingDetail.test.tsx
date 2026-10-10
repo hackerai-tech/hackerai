@@ -7,7 +7,11 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { useMutation } from "convex/react";
+import {
+  useMutation,
+  resetMockConvexQueries,
+  setMockQueryResult,
+} from "convex/react";
 import { toast } from "sonner";
 import type { FindingDetailRecord } from "@/types/finding";
 
@@ -222,7 +226,9 @@ describe("FindingDetail", () => {
         context: "Could not reproduce after validating tenant scope.",
       });
     });
-    expect(screen.getAllByText("Closed").length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(screen.getAllByText("Closed").length).toBeGreaterThan(0),
+    );
     expect(screen.getByText("False positive")).toBeVisible();
     expect(
       screen.getByText("Could not reproduce after validating tenant scope."),
@@ -332,4 +338,32 @@ it("does not infer confidence for an older saved report", () => {
   expect(renderFindingMarkdown(finding)).toContain(
     "Assessment confidence: Not recorded",
   );
+});
+
+describe("finding query recovery", () => {
+  afterEach(() => resetMockConvexQueries());
+
+  it("contains query errors in the report panel and recovers the saved finding", () => {
+    setMockQueryResult(new Error("Function execution timed out"));
+    const onRequestClose = jest.fn();
+    const { rerender } = render(
+      <div>
+        <p>Completed chat remains visible</p>
+        <FindingDetail findingId="finding-1" onRequestClose={onRequestClose} />
+      </div>,
+    );
+    expect(screen.getByText("Completed chat remains visible")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load finding",
+    );
+    expect(screen.queryByText("Finding deleted")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload report" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
+
+    setMockQueryResult(finding);
+    rerender(<FindingDetail findingId="finding-1" />);
+    expect(screen.getByText("Confirmed IDOR")).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

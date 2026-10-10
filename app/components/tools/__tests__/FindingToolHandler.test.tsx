@@ -212,3 +212,25 @@ describe("FindingToolHandler", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+it("keeps the saved card and surrounding chat visible when its live query fails", () => {
+  setMockQueryResult(new Error("Function execution timed out"));
+  const { rerender } = render(
+    <div>
+      <p>Completed chat remains visible</p>
+      <FindingToolHandler part={successPart} status="ready" />
+    </div>,
+  );
+  expect(screen.getByText("Completed chat remains visible")).toBeVisible();
+  expect(screen.getByText("Confirmed IDOR")).toBeVisible();
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "temporarily unavailable",
+  );
+  expect(screen.queryByText("Finding deleted")).not.toBeInTheDocument();
+
+  setMockQueryResult({ title: "Updated saved finding", severity: "high" });
+  rerender(<FindingToolHandler part={successPart} status="ready" />);
+  expect(screen.getByText("Updated saved finding")).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  resetMockConvexQueries();
+});

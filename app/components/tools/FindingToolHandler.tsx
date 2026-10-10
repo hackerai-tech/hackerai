@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import { useQuery } from "convex/react";
+import { useQueries } from "convex/react";
 import { ShieldAlert } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { ChatStatus, SidebarFinding } from "@/types/chat";
@@ -52,9 +52,20 @@ export const SavedFindingCard = ({
     Pick<FindingOutput, "endpoint" | "warning">;
   toolCallId: string;
 }) => {
-  const finding = useQuery(api.findings.getFinding, {
-    findingId: output.finding_id,
-  }) as FindingDetailRecord | null | undefined;
+  const queries = useMemo(
+    () => ({
+      finding: {
+        query: api.findings.getFinding,
+        args: { findingId: output.finding_id },
+      },
+    }),
+    [output.finding_id],
+  );
+  const { finding: result } = useQueries(queries) as {
+    finding?: FindingDetailRecord | null | Error;
+  };
+  const queryFailed = result instanceof Error;
+  const finding = queryFailed ? undefined : result;
 
   const content = useMemo<SidebarFinding>(
     () => ({
@@ -99,6 +110,11 @@ export const SavedFindingCard = ({
         cvssScore={content.cvssScore}
         onClick={handleOpen}
       />
+      {queryFailed && (
+        <p role="alert" className="text-xs text-muted-foreground">
+          Saved report temporarily unavailable. Open the report to retry.
+        </p>
+      )}
       {(finding?.evidence_verification?.warning ?? output.warning) && (
         <p role="note" className="text-xs text-amber-600 dark:text-amber-400">
           Evidence verification incomplete. Open the report for details.

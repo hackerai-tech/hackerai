@@ -21,6 +21,13 @@ jest.mock("convex/react", () => ({
   useConvexAuth: () => ({ isLoading: false, isAuthenticated: true }),
   usePaginatedQuery: (...args: unknown[]) => mockUsePaginatedQuery(...args),
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
+  useQueries: (queries: Record<string, { query: unknown; args: unknown }>) =>
+    Object.fromEntries(
+      Object.entries(queries).map(([key, { query, args }]) => [
+        key,
+        mockUseQuery(query, args),
+      ]),
+    ),
   useMutation: () => jest.fn(),
 }));
 
