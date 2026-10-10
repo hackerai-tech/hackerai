@@ -56,6 +56,11 @@ export const createAgentCancelPost =
       | { chatId: string; runId?: string; approvalSessionId?: string }
       | undefined;
     const requestStartedAt = Date.now();
+    const platformRequestId = req.headers.get("x-vercel-id");
+    const requestId =
+      platformRequestId && /^[A-Za-z0-9:_-]{1,128}$/.test(platformRequestId)
+        ? platformRequestId
+        : "unknown";
     // A platform hard timeout bypasses catch/finally. Keep the warning budget
     // at two for the entire request, even when several dependencies are slow.
     const slowRequestTimers = [10_000, 20_000].map((delay) =>
@@ -69,6 +74,7 @@ export const createAgentCancelPost =
             environment:
               process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
             endpoint,
+            request_id: requestId,
             user_id: userId,
             chat_id: ownedChat?.chatId,
             trigger_run_id: ownedChat?.runId,
@@ -191,6 +197,7 @@ export const createAgentCancelPost =
         action: "cancel",
         fallbackMessage: "Failed to cancel run",
         context: {
+          requestId,
           userId,
           chatId: ownedChat?.chatId,
           runId: ownedChat?.runId,

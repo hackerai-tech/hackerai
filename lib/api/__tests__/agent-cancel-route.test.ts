@@ -277,6 +277,7 @@ describe("cancellation timeout diagnostics", () => {
     expect(warnings()).toHaveLength(1);
     expect(warnings()[0]).toMatchObject({
       event: "agent_cancel_slow_request",
+      request_id: "req_agent_cancel",
       stage: stage === "clear_without_run" ? "clear_active_run" : stage,
       elapsed_ms: 10_000,
     });
@@ -366,6 +367,25 @@ describe("cancellation timeout diagnostics", () => {
     expect(warnings()).toHaveLength(1);
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  it.each([null, "private request content", "x".repeat(129)])(
+    "omits an absent or unsafe platform request identifier (%p)",
+    async (header) => {
+      const { createAgentCancelPost } = await import("../agent-cancel-route");
+      const pending = deferred();
+      const req = request();
+      req.headers.get = () => header;
+      mockGetUserIDAndPro.mockReturnValueOnce(pending.promise);
+      const response = createAgentCancelPost({ endpoint: "/api/agent" })(req);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(warnings()[0].request_id).toBe("unknown");
+      expect(warnings()[0].user_id).toBeUndefined();
+      if (header) expect(JSON.stringify(warnings())).not.toContain(header);
+      pending.resolve({ userId: "user-1" });
+      await response;
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
 
   it.each([
     "invalid_json",
