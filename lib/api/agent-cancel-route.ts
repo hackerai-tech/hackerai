@@ -44,6 +44,41 @@ function logAgentCancelRejection({
 export const createAgentCancelPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
+    let stage:
+      | "read_request"
+      | "authenticate"
+      | "get_chat"
+      | "close_approval_session"
+      | "cancel_trigger_run"
+      | "clear_active_run" = "read_request";
+    let userId: string | undefined;
+    let ownedChat:
+      | { chatId: string; runId?: string; approvalSessionId?: string }
+      | undefined;
+    const requestStartedAt = Date.now();
+    // A platform hard timeout bypasses catch/finally. Keep the warning budget
+    // at two for the entire request, even when several dependencies are slow.
+    const slowRequestTimers = [10_000, 20_000].map((delay) =>
+      setTimeout(() => {
+        console.warn(
+          JSON.stringify({
+            timestamp: new Date().toISOString(),
+            level: "warn",
+            event: "agent_cancel_slow_request",
+            service: "hackerai-web",
+            environment:
+              process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+            endpoint,
+            user_id: userId,
+            chat_id: ownedChat?.chatId,
+            trigger_run_id: ownedChat?.runId,
+            approval_session_id: ownedChat?.approvalSessionId,
+            stage,
+            elapsed_ms: Date.now() - requestStartedAt,
+          }),
+        );
+      }, delay),
+    );
     try {
       let body: { chatId?: string; expectedTriggerRunId?: string };
       try {
@@ -65,8 +100,11 @@ export const createAgentCancelPost =
         });
       }
 
-      const { userId } = await getUserIDAndPro(req);
+      stage = "authenticate";
+      const authContext = await getUserIDAndPro(req);
+      userId = authContext.userId;
 
+      stage = "get_chat";
       const chat = await getChatById({ id: chatId });
       if (chat && chat.user_id !== userId) {
         logAgentCancelRejection({
@@ -109,9 +147,16 @@ export const createAgentCancelPost =
           { status: 409 },
         );
       }
+      ownedChat = {
+        chatId: chat.id,
+        runId: runId ?? undefined,
+        approvalSessionId: approvalSessionId ?? undefined,
+      };
+      stage = "close_approval_session";
       await closeAgentApprovalSession(approvalSessionId, "agent-run-canceled");
       if (!runId) {
         if (approvalSessionId) {
+          stage = "clear_active_run";
           await setActiveTriggerRun({
             chatId,
             triggerRunId: null,
@@ -124,7 +169,9 @@ export const createAgentCancelPost =
         return NextResponse.json({ canceled: false, reason: "no_active_run" });
       }
 
+      stage = "cancel_trigger_run";
       await cancelAgentTriggerRun(runId);
+      stage = "clear_active_run";
       await setActiveTriggerRun({
         chatId,
         triggerRunId: null,
@@ -143,6 +190,15 @@ export const createAgentCancelPost =
         endpoint,
         action: "cancel",
         fallbackMessage: "Failed to cancel run",
+        context: {
+          userId,
+          chatId: ownedChat?.chatId,
+          runId: ownedChat?.runId,
+          approvalSessionId: ownedChat?.approvalSessionId,
+          stage,
+        },
       });
+    } finally {
+      slowRequestTimers.forEach(clearTimeout);
     }
   };
