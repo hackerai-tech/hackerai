@@ -31,7 +31,7 @@ export type RateLimitWarningData =
     }
   | {
       warningType: "token-bucket";
-      bucketType: "monthly";
+      bucketType: "monthly" | "daily";
       remainingPercent: number;
       resetTime: Date;
       subscription: SubscriptionTier;
@@ -131,6 +131,13 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `This Pro Agent run paused after using $${data.runCostDollars.toFixed(2)} of the $${data.runCapDollars.toFixed(2)} legacy per-run safety cap. Continue to keep working.`;
   }
 
+  if (data.subscription === "free" && data.bucketType === "daily") {
+    if (data.remainingPercent === 0) {
+      return `You've used today's free Agent allowance${data.cutOff ? " and this response was cut off" : ""}. Upgrade to continue. Resets ${timeString} at midnight UTC.`;
+    }
+    return `You've used $${(data.usedDollars ?? 0).toFixed(2)} of today's $${(data.limitDollars ?? 0.1).toFixed(2)} free Agent allowance. Resets ${timeString} at midnight UTC.`;
+  }
+
   // Token bucket warning — show dollar amounts when available
   if (data.remainingPercent === 0) {
     if (data.cutOff) {
@@ -166,7 +173,9 @@ const getUpgradeCtaText = (
 ): string => {
   if (
     data.subscription === "free" &&
-    (limitType === "daily_requests" || limitType === "free_monthly")
+    (limitType === "daily_requests" ||
+      limitType === "free_monthly" ||
+      limitType === "free_daily_cost")
   ) {
     return "Keep going";
   }

@@ -806,6 +806,8 @@ export type AgentStreamContext = {
   getSandboxCostDollars?: () => number | Promise<number>;
   /** Current cumulative Trigger.dev run cost, including compute and invocation. */
   getTriggerRunCostDollars?: () => number;
+  /** Revalidate shared capacity before starting each cost-incurring model step. */
+  checkBudgetBeforeStep?: () => Promise<void>;
   settleUsageAfterStep?: (args: {
     currentCostDollars: number;
     sandboxCostDollars: number;
@@ -1616,6 +1618,9 @@ export async function createAgentStream(
     experimental_onToolCallStart: () => ctx.onModelStreamFinish?.(),
 
     prepareStep: async ({ steps, messages, stepNumber }) => {
+      // Keep admission outside preparation recovery: an exhausted shared ledger
+      // must never fall back to an unchecked provider request.
+      await ctx.checkBudgetBeforeStep?.();
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0

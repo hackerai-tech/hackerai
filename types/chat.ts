@@ -500,6 +500,7 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
 };
 
 export type RateLimitInfo = {
+  freeDailyCost?: boolean;
   remaining: number;
   resetTime: Date;
   limit: number;

@@ -9,6 +9,8 @@ export const FREE_AGENT_REQUEST_COST = 1;
 export type FreeLimitPolicy = {
   dailyRequests: number;
   monthlyCostDollars: number;
+  /** Server-selected, frozen for the entire Agent run, including durable waits. */
+  agentDailyBudget?: { bucket: string; resetTimestamp: number };
 };
 
 export const getFreeRequestLimit = (policy?: FreeLimitPolicy): number => {

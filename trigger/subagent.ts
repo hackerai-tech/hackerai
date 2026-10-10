@@ -110,10 +110,12 @@ import { UsageTracker } from "@/lib/usage-tracker";
 import { resolveTriggerRunCost } from "@/lib/billing/trigger-run-cost";
 import {
   deductUsage,
+  checkFreeCostBudget,
   isHandledUserRateLimitError,
   recordFreeMonthlyCost,
 } from "@/lib/rate-limit";
 import { checkSubagentBillingCapacity } from "@/lib/ai/subagents/billing";
+import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   finalizeHandledSubagentRateLimit,
   type SubagentTerminalOutput as SubagentTaskOutput,
@@ -593,6 +595,15 @@ export const subagentTask = task({
       Awaited<ReturnType<typeof buildExtraUsageConfig>> | undefined;
     let rateLimitInfo: Awaited<ReturnType<typeof checkSubagentBillingCapacity>>;
     let usageSettled = false;
+    const freeDailySettlement =
+      row.subscription === "free" &&
+      payload.regionalFreeLimits?.agentDailyBudget
+        ? new FreeDailyCostSettlement(
+            row.free_quota_subject ?? row.user_id,
+            payload.regionalFreeLimits,
+            crypto.randomUUID(),
+          )
+        : undefined;
     let triggerRunCostRecorded = false;
     const selectedModel =
       row.selected_model ?? resolveSubagentTextModel(row.subscription);
@@ -639,10 +650,14 @@ export const subagentTask = task({
         return { costDollars, billingFailure: false };
       }
       if (row.subscription === "free") {
-        await recordFreeMonthlyCost(
-          row.free_quota_subject ?? row.user_id,
-          costDollars,
-        );
+        if (freeDailySettlement) {
+          await freeDailySettlement.settle(costDollars);
+        } else {
+          await recordFreeMonthlyCost(
+            row.free_quota_subject ?? row.user_id,
+            costDollars,
+          );
+        }
         usageSettled = true;
         return { costDollars, billingFailure: false };
       }
@@ -1332,6 +1347,12 @@ export const subagentTask = task({
                 prepareStep: async ({ messages, steps }) => {
                   runtimeStage = "authorization";
                   await assertRuntimeAuthorized();
+                  if (freeDailySettlement) {
+                    await checkFreeCostBudget(
+                      row.free_quota_subject ?? row.user_id,
+                      payload.regionalFreeLimits,
+                    );
+                  }
                   runtimeStage = "generation";
                   let deadlineMessage: ModelMessage | undefined;
                   if (
@@ -1487,6 +1508,21 @@ export const subagentTask = task({
                     index,
                     openRouter.openrouter_upstream_inference_cost,
                   );
+                  if (freeDailySettlement) {
+                    try {
+                      await freeDailySettlement.settle(
+                        usageTracker.computeCostDollars(
+                          selectedModel,
+                          responseModel,
+                        ) +
+                          resolveTriggerRunCost(triggerUsage.getCurrent())
+                            .totalCostDollars,
+                      );
+                    } catch (error) {
+                      activeAbort.abort();
+                      throw error;
+                    }
+                  }
                   if (
                     usageTracker.computeCostDollars(
                       selectedModel,
@@ -1555,6 +1591,7 @@ export const subagentTask = task({
                 conversationMessages.push(...partialMessages);
               }
 
+              if (isHandledUserRateLimitError(attemptError)) throw attemptError;
               if (resultValue) break;
               if (attemptError) {
                 if (structuredResultRecovery) {

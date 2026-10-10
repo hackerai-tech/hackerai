@@ -16,7 +16,7 @@ const WARNING_TYPES = [
 ] as const;
 type RawWarningType = (typeof WARNING_TYPES)[number];
 
-const BUCKET_TYPES = ["monthly"] as const;
+const BUCKET_TYPES = ["monthly", "daily"] as const;
 type RawBucketType = (typeof BUCKET_TYPES)[number];
 
 function isString(v: unknown): v is string {
@@ -154,7 +154,7 @@ export function parseRateLimitWarning(
 
   if (warningType === "extra-usage-active") {
     const bucketType = rawData.bucketType as RawBucketType | undefined;
-    if (!bucketType || !BUCKET_TYPES.includes(bucketType)) {
+    if (bucketType !== "monthly") {
       return null;
     }
     // Mid-stream emits bypass per-reset-period dedup so the user sees the
@@ -222,7 +222,8 @@ export function parseRateLimitWarning(
 
   const cutOff = rawData.cutOff === true;
 
-  // Dedup by severity tier — don't spam users with info-level warnings.
+  // Monthly info warnings retain their existing weekly cooldown. Daily
+  // warnings must remain visible after each reset and cannot share that key.
   // Mid-stream emits skip this gate; server-side highestThresholdEmitted
   // already prevents duplicates within a single stream.
   if (
@@ -231,7 +232,8 @@ export function parseRateLimitWarning(
     typeof window !== "undefined" &&
     window.localStorage
   ) {
-    const dedupHours = SEVERITY_DEDUP_HOURS[severity] ?? 0;
+    const dedupHours =
+      bucketType === "daily" ? 0 : (SEVERITY_DEDUP_HOURS[severity] ?? 0);
     if (dedupHours > 0) {
       const storageKey = `${TOKEN_BUCKET_WARNING_KEY_PREFIX}${severity}`;
       const lastShown = localStorage.getItem(storageKey);

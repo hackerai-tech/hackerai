@@ -1,4 +1,8 @@
 import {
+  freeAgentBudgetProperties,
+  type FreeAgentBudgetAssignment,
+} from "@/lib/experiments/free-agent-budget";
+import {
   regionalFreeLimitsProperties,
   type RegionalFreeLimitsPolicy,
 } from "@/lib/rate-limit/regional-free-limits";
@@ -1371,6 +1375,7 @@ type AgentCompletionAnalyticsArgs = {
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
+  freeAgentBudget?: FreeAgentBudgetAssignment;
   upstreamProvider?: string;
   providerErrorProvider?: string;
   providerErrorCategory?: string;
@@ -1430,6 +1435,7 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
+  freeAgentBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1743,6 +1749,7 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeAgentBudgetProperties(freeAgentBudget),
     },
   });
 }
@@ -1870,6 +1877,7 @@ export function captureAgentCompletionAnalytics(
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     experiment: args.experiment,
+    freeAgentBudget: args.freeAgentBudget,
     upstreamProvider: args.upstreamProvider,
     providerErrorProvider: args.providerErrorProvider,
     providerErrorCategory: args.providerErrorCategory,
@@ -1908,6 +1916,7 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
+  freeAgentBudget,
   regionalFreeLimits,
   triggerRunId,
 }: {
@@ -1941,6 +1950,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
+  freeAgentBudget?: FreeAgentBudgetAssignment;
   regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
 }) {
@@ -2047,6 +2057,7 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeAgentBudgetProperties(freeAgentBudget),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
     },
   });
@@ -2076,6 +2087,7 @@ export function captureUsageSettlement({
   deduction,
   forced,
   experiment,
+  freeAgentBudget,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -2095,6 +2107,7 @@ export function captureUsageSettlement({
   deduction: UsageDeductionResult;
   forced: boolean;
   experiment?: ExperimentAnalyticsContext;
+  freeAgentBudget?: FreeAgentBudgetAssignment;
 }) {
   if (!posthog) return;
   const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
@@ -2144,6 +2157,7 @@ export function captureUsageSettlement({
       settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
       settlement_event_version: 2,
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeAgentBudgetProperties(freeAgentBudget),
     },
   });
 }
