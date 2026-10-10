@@ -193,10 +193,11 @@ Setup instructions: https://help.hackerai.co/en/articles/12961920-connecting-a-h
 </local_machine_access>`;
 
 const getDefaultSandboxEnvironmentSection = (): string => {
-  const portScanningSection = `Port-scanning limitation:
+  const cloudNetworkingSection = `Cloud networking limitations:
 - Cloud Agent networking can produce false-positive port results because a low-level connection can appear successful even when no traffic reached the destination.
 - Do not use low-level TCP connection success, UDP behavior, raw sockets, or zero-I/O probes to determine whether ports are open in Cloud Agent. Never treat a successful low-level connection or implausible scan output as confirmation that a port is open.
-- Explain this environment limitation instead of retrying the scan or changing command options. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack.
+- When the user wants to connect a VPN or use a VPN-dependent private lab, explain immediately that Cloud Agent cannot connect directly to their VPN because this sandbox lacks TUN/TAP support, the virtual network interface OpenVPN needs. Uploading an .ovpn file or installing a VPN client does not remove this limitation.
+- Explain the relevant environment limitation instead of retrying scans, changing command options, or attempting VPN setup. When reliable port discovery or native networking is required, recommend selecting the HackerAI Desktop App or a Remote Control connection so the work uses that machine's native network stack. For VPN-dependent labs, guide the user to connect the VPN on that computer first, then connect and select that computer in HackerAI. Once selected, verify the target is reachable with an expected application response before starting the task.
 - Narrow application-level checks remain appropriate when they verify expected protocol behavior, such as an HTTP response, completed TLS handshake, or expected service banner.`;
   const systemEnvironment = `- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
@@ -220,14 +221,13 @@ Local/internal target access:
 - For local or internal targets, use the HackerAI Desktop App, Remote Control, or a user-provided reachable tunnel URL.
 - Do not invent host aliases or imply the cloud sandbox can directly reach private/internal assets unless the user has provided a reachable route.
 
-${portScanningSection}
+${cloudNetworkingSection}
 
 System Environment:
 ${systemEnvironment}
 - Home directory: /home/user
 - User attachments are available in /home/user/upload. If a specific file is not found, ask the user to re-upload and resend their message with the file attached
 - Inline image attachments are already visible in the conversation. If an \`inline_image_attachment\` also lists a sandbox path, use that path only for file-system operations such as metadata extraction, conversion, or scripting; do not call the file view action just to describe the image.
-- VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
 ${developmentEnvironment}
 

@@ -782,7 +782,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
-  it("keeps the false-positive port-scan warning specific to E2B", async () => {
+  it("keeps networking limitations specific to cloud Agent", async () => {
     const cloudPrompt = await systemPrompt(
       "user_123",
       "agent",
@@ -819,14 +819,19 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(cloudPrompt).toContain(
       "Narrow application-level checks remain appropriate when they verify expected protocol behavior",
     );
-    const portScanningPolicy = cloudPrompt.match(
-      /Port-scanning limitation:[\s\S]*?\n\nSystem Environment:/,
+    const cloudNetworkingPolicy = cloudPrompt.match(
+      /Cloud networking limitations:[\s\S]*?\n\nSystem Environment:/,
     )?.[0];
-    expect(portScanningPolicy).toBeDefined();
-    expect(portScanningPolicy).not.toMatch(
+    expect(cloudNetworkingPolicy).toBeDefined();
+    expect(cloudNetworkingPolicy).toContain(
+      "this sandbox lacks TUN/TAP support",
+    );
+    expect(cloudNetworkingPolicy).toContain("attempting VPN setup");
+    expect(cloudNetworkingPolicy).not.toMatch(
       /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
     );
-    expect(localPrompt).not.toContain("Port-scanning limitation:");
+    expect(localPrompt).not.toContain("Cloud networking limitations:");
+    expect(localPrompt).not.toContain("this sandbox lacks TUN/TAP support");
     expect(localPrompt).not.toContain(
       "Cloud Agent networking can produce false-positive port results",
     );
