@@ -830,7 +830,7 @@ const findingOptionalText = (label: string, max: number) =>
 function hasEscapedProseFormatting(value: string): boolean {
   const prose = value
     .replace(/~~~[\s\S]*?(?:~~~|$)/g, "")
-    .replace(/`[^`]*(?:`|$)/g, "");
+    .replace(/(?<!`)(`+)(?!`)[\s\S]*?(?<!`)\1(?!`)/g, "");
   return /(^|[^\\])\\(?:r\\)?n(?:\\(?:r\\)?n|[ \t]*\d+[.)][ \t])/.test(prose);
 }
 

@@ -73,6 +73,8 @@ describe("structured finding validation", () => {
     it.each([
       "1. Send the control request.\n2. Compare the response.",
       "Inspect the literal `\\n\\n` in the response.",
+      "Inspect the literal ``\\n\\n`` in the response.",
+      "Inspect ``a ` tick and \\n2. literal`` in the response.",
       'Payload:\n```python\ns = "\\n\\n"\n```',
       'Payload:\n~~~python\ns = "\\n2. literal"\n~~~',
       "Check `C:\\new\\notes.txt` and the regex `\\n2. `.",
