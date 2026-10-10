@@ -1,5 +1,6 @@
 mod platform;
 mod environment_identity;
+mod file_save;
 mod pty;
 #[cfg(test)]
 mod updater_tests;
@@ -117,7 +118,7 @@ async fn save_file_with_dialog(
             return Ok(None);
         };
         let path = selected.into_path().map_err(|error| error.to_string())?;
-        fs::write(&path, content.as_bytes()).map_err(|error| error.to_string())?;
+        file_save::save_text(&path, &content).map_err(|error| error.to_string())?;
         Ok(Some(path.to_string_lossy().into_owned()))
     })
     .await
