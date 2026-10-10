@@ -1039,8 +1039,8 @@ export const saveFile = action({
  * Save metadata for an assistant-generated sandbox artifact.
  *
  * These files are download-only artifacts produced by tools like
- * get_terminal_files, not prompt attachments. Avoid fetching or parsing the
- * object here so large generated archives do not consume Convex memory.
+ * get_terminal_files, not prompt attachments. Verify storage metadata before
+ * publishing, without fetching/parsing large archives into Convex memory.
  */
 export const saveSandboxGeneratedFile = action({
   args: {
@@ -1061,12 +1061,32 @@ export const saveSandboxGeneratedFile = action({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    if (!isUserScopedS3Key(args.s3Key, args.userId)) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED_UPLOAD_RESERVATION",
+        message: "Generated file storage key does not belong to this user.",
+      });
+    }
+    if (!Number.isSafeInteger(args.size) || args.size < 0) {
+      throw new ConvexError({
+        code: "INVALID_FILE_SIZE",
+        message: "Generated file size must be a non-negative integer.",
+      });
+    }
+
     const storageLocation = getStoredS3Location(args.s3Region, args.s3Bucket);
 
     await checkFileUploadRateLimit(args.userId, false);
 
     const cleanupUploadedObject = async (stage: string) => {
       try {
+        // A retry after a lost acknowledgement must not delete a file that
+        // was already published, even if verification now fails.
+        const published = await ctx.runQuery(
+          internal.fileStorage.getFileByS3Key,
+          { s3Key: args.s3Key },
+        );
+        if (published) return;
         await ctx.scheduler.runAfter(
           0,
           internal.s3Cleanup.deleteS3ObjectAction,
@@ -1107,7 +1127,22 @@ export const saveSandboxGeneratedFile = action({
       });
     }
 
+    let stage: "verification" | "metadata_save" = "verification";
     try {
+      // A successful sandbox command is not proof that the object arrived.
+      // HEAD verifies the exact upload bucket without buffering large files.
+      const storedSize = await getS3ObjectSizeBytes(
+        args.s3Key,
+        storageLocation,
+      );
+      if (storedSize !== args.size) {
+        throw new ConvexError({
+          code: "GENERATED_FILE_SIZE_MISMATCH",
+          message:
+            "The uploaded file size does not match the source file. Wait for the file to finish writing and retry delivery.",
+        });
+      }
+      stage = "metadata_save";
       const fileUrl = await generateS3DownloadUrl(args.s3Key, storageLocation);
       const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
         s3Key: args.s3Key,
@@ -1127,8 +1162,13 @@ export const saveSandboxGeneratedFile = action({
         tokens: 0,
       };
     } catch (error) {
-      convexLogger.error("sandbox_generated_file_metadata_save_failed", {
-        event: "sandbox_generated_file_metadata_save_failed",
+      const event =
+        stage === "verification"
+          ? "sandbox_generated_file_verification_failed"
+          : "sandbox_generated_file_metadata_save_failed";
+      convexLogger.error(event, {
+        event,
+        stage,
         service: "convex-file-actions",
         user_id: args.userId,
         file_name: args.name,
@@ -1143,6 +1183,13 @@ export const saveSandboxGeneratedFile = action({
 
       if (error instanceof ConvexError) {
         throw error;
+      }
+      if (stage === "verification") {
+        throw new ConvexError({
+          code: "GENERATED_FILE_VERIFICATION_FAILED",
+          message:
+            "The uploaded file could not be verified in storage. Retry delivery before sharing it.",
+        });
       }
       throw new ConvexError({
         code: "GENERATED_FILE_SAVE_FAILED",
