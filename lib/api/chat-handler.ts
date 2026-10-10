@@ -587,7 +587,6 @@ export const createChatHandler = () => {
 
       const assistantMessageId = uuidv4();
       const abliteratedExperiment = await evaluateAbliteratedModel({
-        posthog: (posthog ??= PostHogClient()),
         userId,
         selectedModel,
         subscription,

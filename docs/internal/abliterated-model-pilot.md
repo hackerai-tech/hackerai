@@ -6,32 +6,30 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## One versus three moderation-selected steps
+## Shipped three-step moderation policy
 
-[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns
-`abliterated_paid_three_steps_v1`. Eligible paid Ask and Agent requests evaluate
-it with the authenticated user ID after the existing moderation, provider,
-input and rescue checks. Control uses base `abliterated-model` for step 1;
-treatment uses it for steps 1–3. Both return to the exact saved baseline afterward.
-The limit is captured once per response/run, survives stream retries without
-resetting the completed-step counter, and provider failure still disables
-Abliteration immediately. Missing flags, unknown variants, lookup errors and
-missing analytics preserve the shipped one-step policy.
+[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns the universal default.
+Free and paid Ask and Agent requests that meet the existing moderation decision
+use base `abliterated-model` for generation steps 1–3, then return to the exact
+saved baseline. A response that finishes earlier does not force extra calls.
+Usage limits, allowance rescue, unsupported original attachments, missing provider
+configuration, cancellation and immediate provider recovery retain their existing
+checks and behavior. Step counts survive stream retries rather than restarting.
 
-Production enrolls all eligible paid users with a stable 50/50 control/test split;
-Preview forces eligible treatment at 100%. Free and non-moderated requests do
-not evaluate this flag. These are generation steps, not a requirement to run
-three calls when a response finishes earlier. Deploy Vercel and Trigger separately
-before activation; flag changes then apply to new requests/runs without another
-release. Existing runs retain their worker and assignment.
+The application no longer evaluates `abliterated_paid_three_steps_v1`.
+New routing uses attribution key `abliterated_moderated_three_steps_default_v1`,
+which is not a feature flag or randomized cohort. Historical one-step and
+three-step assignments remain readable for already-running requests and analytics.
+Do not pool new universal-default observations with the paid trial or treat the
+owner's adoption decision as proof of satisfaction or a statistically conclusive
+primary-metric result.
 
-Eligibility, actual streamed text/tool exposure and response outcomes carry the
-new key/variant and `generation_step_limit`. Native exposed-user results exclude
-pre-output failures; the owning issue requires a separate deduplicated eligible
-request readout with missing outcomes retained. This experiment uses operational
-telemetry, not the historical task-outcome survey cohorts. Disable the new flag
-to restore one-step routing. Keep owner, review dates, guardrails and cleanup
-choices in HAC-153.
+Deploy and verify Vercel and Trigger separately in Preview and Production.
+Existing runs retain their worker and captured assignment. After both Production
+runtimes are verified, end the paid experiment and disable its separate Preview
+and Production flags. Keep the historical readout and response-quality view for
+review. Rollback requires a code revert and both runtime releases; the retired
+flag cannot restore one-step routing.
 
 ## Retired paid first-step trial
 
@@ -57,53 +55,18 @@ stopped-experiment results end at the recorded cutoff; later cancellation/renewa
 follow-up needs a separately bounded readout. Keep decisions and readout dates in
 HAC-142 rather than treating the operational rollback as a proven churn result.
 
-## Shipped moderation-selected paid default
+## Retired paid default and Free-user pilots
 
-[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the shipped default.
-All authorized paid Auto, Standard, Pro and Max requests in Ask and Agent that
-qualify under the existing moderation decision use base `abliterated-model` on
-generation step 1. Later steps and provider recovery retain the exact selected
-baseline. Free users, allowance rescue, unsupported original attachments, missing
-provider configuration and requests below the moderation routing threshold retain
-the baseline. Analytics availability does not control this default.
+The earlier `abliterated_paid_moderated_default_v1` policy used only generation
+step 1 and excluded Free users. It is superseded by the universal three-step
+policy above. Its attribution key and the stopped Free-user pilot records remain
+historical; do not reuse them for new routing. Retired flags remain disabled and
+cannot change the current moderation-selected policy.
 
-The application no longer evaluates the retired `abliterated_max_moderated_v1`,
-`abliterated_paid_moderated_v1` or continuity flags. Existing PostHog records remain
-historical; their status and percentages do not describe new runtime routing.
-New default routing uses attribution key `abliterated_paid_moderated_default_v1`,
-which is not a feature flag or randomized cohort. Do not pool those observations
-with the retired trial or label an all-treatment default a causal comparison.
-Record Vercel and Trigger rollout boundaries separately, retain old assignments
-for already-running requests, and account for crossover in subscriber follow-up.
-Historical trial feedback remains separate from the shipped default.
+## Historical pilot routing contract
 
-A default-route rollback needs a code revert and separate Vercel/Trigger releases;
-changing a retired flag no longer reroutes requests. Deploy and verify Preview
-and Production independently. Use deterministic moderation fixtures for gates,
-and a disposable paid moderated Agent request to verify actual served step-1
-output, saved baseline continuation, completion and reload persistence. Never
-use customer content as a test fixture. Historical contracts below describe
-retired pilots, not this shipped default.
-
-## Free-user exclusion
-
-Free-user Abliteration pilots are stopped. The shared assignment eligibility
-check excludes `subscription=free` in both Ask and Agent before any flag lookup,
-including requests with existing Abliteration chat history. Free users retain
-their normal baseline models even if a retired flag is re-enabled.
-
-In both Preview and Production, disable `abliterated_free_ask_moderated_v1`
-and remove the free-tier release condition from `abliterated_paid_moderated_v1`.
-Keep paid targeting and rollout intact. Flag rollback applies to new requests
-and runs; already-running work can retain its original assignment. Deploy the
-shared code guard to Vercel and Trigger independently for permanent enforcement.
-
-Historical events and PostHog experiment records remain available for readouts.
-Analyze the original Ask and Agent cohorts separately, preserving assignment,
-exposure, prior-payer exclusions and equal follow-up windows. Stopping enrollment
-does not establish a statistical winner or remove historical data.
-
-## Routing contract
+The contract below describes the retired pilots. The current policy is documented
+above; do not use these historical selector and step rules for new requests.
 
 Eligible paid requests in Ask and Agent may use an Abliteration model at
 `https://api.abliteration.ai/v1`. Auto/Standard routes use `abliterated-model`;

@@ -240,6 +240,11 @@ describe("current Pro/Max experiment feedback", () => {
       selectionSource: "moderation",
       variant: "control",
     },
+    {
+      key: "abliterated_moderated_three_steps_default_v1",
+      selectionSource: "moderation",
+      variant: "test",
+    },
   ] as const)(
     "does not mislabel an ineligible new-phase assignment",
     async (overrides) => {

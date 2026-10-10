@@ -21,18 +21,8 @@ async function main() {
   const events: Array<{ event: string; properties?: Record<string, unknown> }> =
     [];
   const useLargeV2 = process.argv.includes("--large-v2");
-  const expectedProviderModel = useLargeV2
-    ? "abliterated-model-large-v2"
-    : "abliterated-model";
+  const expectedProviderModel = "abliterated-model";
   const assignment = await evaluateAbliteratedModel({
-    posthog: {
-      getFeatureFlagResult: async (key) => ({
-        key,
-        enabled: true,
-        variant: "test",
-        payload: undefined,
-      }),
-    },
     userId: "local-provider-smoke",
     selectedModel: useLargeV2
       ? "model-deepseek-v4-pro-0813"
@@ -109,7 +99,7 @@ async function main() {
   console.log(
     JSON.stringify({
       test: useLargeV2
-        ? "abliteration_large_v2_provider_and_telemetry"
+        ? "abliteration_pro_selector_base_provider_and_telemetry"
         : "abliteration_provider_and_telemetry",
       passed,
       model: responseModel,

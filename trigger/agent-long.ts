@@ -2024,7 +2024,6 @@ export const agentLongTask = task({
       }
 
       const abliteratedExperiment = await evaluateAbliteratedModel({
-        posthog,
         userId,
         selectedModel,
         subscription,

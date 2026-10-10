@@ -1202,6 +1202,8 @@ describe("createAgentStream repeated compaction", () => {
     ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
     ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
     ["ask", "free", "ask-model-free-glm", 1],
+    ["ask", "free", "ask-model-free-glm", 3],
+    ["agent", "free", "model-deepseek-v4-flash-0731", 3],
   ] as const)(
     "routes %s %s through Abliteration then %s after %i steps",
     async (mode, subscription, baselineModel, generationStepLimit) => {
@@ -1302,6 +1304,7 @@ describe("createAgentStream repeated compaction", () => {
         },
         abliteratedStepRouting: {
           baselineModel: "model-deepseek-v4-flash-0731",
+          generationStepLimit: 1,
         },
         tools: { lookup: {} },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
@@ -1589,6 +1592,7 @@ describe("createAgentStream repeated compaction", () => {
         },
         abliteratedStepRouting: {
           baselineModel: "model-deepseek-v4-flash-0731",
+          generationStepLimit: 1,
         },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {
@@ -1784,7 +1788,7 @@ describe("createAgentStream repeated compaction", () => {
     expect(mockDescribeImage).not.toHaveBeenCalled();
   });
 
-  it("describes persisted tool images on the first step and uses baseline on the next", async () => {
+  it("describes persisted tool images and uses baseline after the third step", async () => {
     const stream = (await createAgentStream(
       "model-abliterated",
       createTestStreamContext({
@@ -1844,8 +1848,18 @@ describe("createAgentStream repeated compaction", () => {
     expect(JSON.stringify(prepared.messages)).not.toContain(
       PLATFORM_AUTHORIZATION_ANNOTATION,
     );
+    for (const stepNumber of [1, 2]) {
+      expect(
+        (
+          await prepare(
+            [{ role: "user", content: "Compacted context" }],
+            stepNumber,
+          )
+        ).model.modelId,
+      ).toBe("model-abliterated");
+    }
     expect(
-      (await prepare([{ role: "user", content: "Compacted context" }], 1)).model
+      (await prepare([{ role: "user", content: "Compacted context" }], 3)).model
         .modelId,
     ).toBe("model-grok-4.6");
   });
@@ -1856,7 +1870,7 @@ describe("createAgentStream repeated compaction", () => {
       [uiMessage("initial", "Inspect the authorized lab")],
       { usedTokens: 1_000, maxTokens: 128_000 },
     );
-    state.agentStepCount = 1;
+    state.agentStepCount = 3;
 
     const stream = (await createAgentStream(
       "model-abliterated",
@@ -1894,7 +1908,7 @@ describe("createAgentStream repeated compaction", () => {
       expect.objectContaining({
         model: "model-deepseek-v4-flash-0731",
         source: "prepare_step",
-        step_index: 2,
+        step_index: 4,
       }),
       expect.anything(),
     );
