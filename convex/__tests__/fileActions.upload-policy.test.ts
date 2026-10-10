@@ -454,3 +454,171 @@ describe("fileActions saveFile upload policy", () => {
     expect(ctx.runMutation).not.toHaveBeenCalled();
   });
 });
+
+describe("saveSandboxGeneratedFile storage verification", () => {
+  const args = {
+    serviceKey: "test-service-key",
+    userId: "user123",
+    s3Key: "users/user123/report.zip",
+    name: "report.zip",
+    mediaType: "application/zip",
+    size: 1024,
+    s3Region: "eu-central-1",
+    s3Bucket: "test-eu-bucket",
+  };
+  const makeCtx = () => ({
+    runMutation: jest.fn().mockResolvedValue("file_123"),
+    runQuery: jest.fn().mockResolvedValue(null),
+    scheduler: { runAfter: jest.fn().mockResolvedValue(undefined) },
+  });
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    const { getS3ObjectSizeBytes, getStoredS3Location, generateS3DownloadUrl } =
+      await import("../s3Utils");
+    jest.mocked(getS3ObjectSizeBytes).mockResolvedValue(args.size);
+    jest.mocked(getStoredS3Location).mockReturnValue({
+      region: args.s3Region,
+      bucket: args.s3Bucket,
+    });
+    jest
+      .mocked(generateS3DownloadUrl)
+      .mockResolvedValue("https://s3.example/download");
+  });
+
+  it.each([0, 1024, 100 * 1024 * 1024])(
+    "publishes only after the stored size matches %i bytes without fetching the body",
+    async (size) => {
+      const { saveSandboxGeneratedFile } = await import("../fileActions");
+      const { getS3ObjectSizeBytes, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      const ctx = makeCtx();
+      let finishVerification!: (size: number) => void;
+      jest.mocked(getS3ObjectSizeBytes).mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishVerification = resolve;
+        }),
+      );
+      const pending = saveSandboxGeneratedFile.handler(ctx as any, {
+        ...args,
+        size,
+      });
+      // Let the action reach the pending HEAD request.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(getS3ObjectSizeBytes).toHaveBeenCalledWith(args.s3Key, {
+        region: args.s3Region,
+        bucket: args.s3Bucket,
+      });
+      expect(ctx.runMutation).not.toHaveBeenCalled();
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+      finishVerification(size);
+      await expect(pending).resolves.toMatchObject({ fileId: "file_123" });
+      expect(ctx.runMutation).toHaveBeenCalledWith(
+        "internal.fileStorage.saveFileToDb",
+        expect.objectContaining({
+          size,
+          s3Region: args.s3Region,
+          s3Bucket: args.s3Bucket,
+        }),
+      );
+      expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([0, 1023, 1025])(
+    "rejects a truncated or changed object (%i bytes)",
+    async (size) => {
+      const { saveSandboxGeneratedFile } = await import("../fileActions");
+      const { getS3ObjectSizeBytes, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      jest.mocked(getS3ObjectSizeBytes).mockResolvedValueOnce(size);
+      const ctx = makeCtx();
+      await expect(
+        saveSandboxGeneratedFile.handler(ctx as any, args),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "GENERATED_FILE_SIZE_MISMATCH" }),
+      });
+      expect(ctx.runMutation).not.toHaveBeenCalled();
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+      expect(ctx.scheduler.runAfter).toHaveBeenCalledWith(
+        0,
+        "internal.s3Cleanup.deleteS3ObjectAction",
+        { s3Key: args.s3Key, s3Region: args.s3Region, s3Bucket: args.s3Bucket },
+      );
+    },
+  );
+
+  it.each(["NotFound", "AccessDenied", "request timed out"])(
+    "does not publish when storage verification fails: %s",
+    async (message) => {
+      const { saveSandboxGeneratedFile } = await import("../fileActions");
+      const { getS3ObjectSizeBytes, generateS3DownloadUrl } =
+        await import("../s3Utils");
+      jest
+        .mocked(getS3ObjectSizeBytes)
+        .mockRejectedValueOnce(new Error(message));
+      const ctx = makeCtx();
+      await expect(
+        saveSandboxGeneratedFile.handler(ctx as any, args),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({
+          code: "GENERATED_FILE_VERIFICATION_FAILED",
+        }),
+      });
+      expect(ctx.runMutation).not.toHaveBeenCalled();
+      expect(generateS3DownloadUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves an already-published file when a retry cannot verify storage", async () => {
+    const { saveSandboxGeneratedFile } = await import("../fileActions");
+    const { getS3ObjectSizeBytes } = await import("../s3Utils");
+    jest
+      .mocked(getS3ObjectSizeBytes)
+      .mockRejectedValueOnce(new Error("temporary outage"));
+    const ctx = makeCtx();
+    ctx.runQuery.mockResolvedValueOnce({ user_id: args.userId });
+    await expect(
+      saveSandboxGeneratedFile.handler(ctx as any, args),
+    ).rejects.toThrow();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    expect(ctx.runMutation).not.toHaveBeenCalled();
+  });
+
+  it.each([-1, 0.5, NaN, Infinity])(
+    "rejects invalid source size %s before storage access",
+    async (size) => {
+      const { saveSandboxGeneratedFile } = await import("../fileActions");
+      const { getS3ObjectSizeBytes } = await import("../s3Utils");
+      const ctx = makeCtx();
+      await expect(
+        saveSandboxGeneratedFile.handler(ctx as any, { ...args, size }),
+      ).rejects.toMatchObject({
+        data: expect.objectContaining({ code: "INVALID_FILE_SIZE" }),
+      });
+      expect(getS3ObjectSizeBytes).not.toHaveBeenCalled();
+      expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects another user's object without reading or deleting it", async () => {
+    const { saveSandboxGeneratedFile } = await import("../fileActions");
+    const { getS3ObjectSizeBytes } = await import("../s3Utils");
+    const ctx = makeCtx();
+    await expect(
+      saveSandboxGeneratedFile.handler(ctx as any, {
+        ...args,
+        s3Key: "users/another-user/report.zip",
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        code: "UNAUTHORIZED_UPLOAD_RESERVATION",
+      }),
+    });
+    expect(getS3ObjectSizeBytes).not.toHaveBeenCalled();
+    expect(ctx.scheduler.runAfter).not.toHaveBeenCalled();
+  });
+});
