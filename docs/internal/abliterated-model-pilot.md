@@ -8,19 +8,20 @@ so base and Large v2 traffic can be checked independently.
 
 ## Shipped three-step moderation policy
 
-[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns the universal default.
-Free and paid Ask and Agent requests that meet the existing moderation decision
+[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns the paid default.
+Paid Ask and Agent requests that meet the existing moderation decision
 use base `abliterated-model` for generation steps 1–3, then return to the exact
-saved baseline. A response that finishes earlier does not force extra calls.
+saved baseline. Free users remain excluded and retain their existing Ask and Agent
+baselines. A response that finishes earlier does not force extra calls.
 Usage limits, allowance rescue, unsupported original attachments, missing provider
 configuration, cancellation and immediate provider recovery retain their existing
 checks and behavior. Step counts survive stream retries rather than restarting.
 
 The application no longer evaluates `abliterated_paid_three_steps_v1`.
-New routing uses attribution key `abliterated_moderated_three_steps_default_v1`,
+New routing uses attribution key `abliterated_paid_moderated_three_steps_default_v1`,
 which is not a feature flag or randomized cohort. Historical one-step and
 three-step assignments remain readable for already-running requests and analytics.
-Do not pool new universal-default observations with the paid trial or treat the
+Do not pool new paid-default observations with the paid trial or treat the
 owner's adoption decision as proof of satisfaction or a statistically conclusive
 primary-metric result.
 
@@ -58,7 +59,7 @@ HAC-142 rather than treating the operational rollback as a proven churn result.
 ## Retired paid default and Free-user pilots
 
 The earlier `abliterated_paid_moderated_default_v1` policy used only generation
-step 1 and excluded Free users. It is superseded by the universal three-step
+step 1 and excluded Free users. It is superseded by the paid three-step
 policy above. Its attribution key and the stopped Free-user pilot records remain
 historical; do not reuse them for new routing. Retired flags remain disabled and
 cannot change the current moderation-selected policy.
@@ -382,7 +383,7 @@ Run the bounded live provider test from this checkout:
 
 ```sh
 corepack pnpm exec tsx scripts/test-abliteration.ts
-corepack pnpm exec tsx scripts/test-abliteration.ts --large-v2
+corepack pnpm exec tsx scripts/test-abliteration.ts --pro-baseline
 ```
 
 It loads only the provider credential, uses synthetic arithmetic and an in-memory

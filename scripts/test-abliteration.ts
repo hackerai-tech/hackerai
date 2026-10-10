@@ -20,16 +20,18 @@ async function main() {
     await import("../lib/ai/tool-call-id-namespace");
   const events: Array<{ event: string; properties?: Record<string, unknown> }> =
     [];
-  const useLargeV2 = process.argv.includes("--large-v2");
+  const useProBaseline = process.argv.includes("--pro-baseline");
   const expectedProviderModel = "abliterated-model";
   const assignment = await evaluateAbliteratedModel({
     userId: "local-provider-smoke",
-    selectedModel: useLargeV2
+    selectedModel: useProBaseline
       ? "model-deepseek-v4-pro-0813"
       : "model-deepseek-v4-flash-vision",
     subscription: "pro",
     mode: "agent",
-    selectedModelOverride: useLargeV2 ? "hackerai-pro" : "hackerai-standard",
+    selectedModelOverride: useProBaseline
+      ? "hackerai-pro"
+      : "hackerai-standard",
     moderationEligible: true,
     messages: [
       {
@@ -98,7 +100,7 @@ async function main() {
     outcomes.every((event) => event.properties?.outcome === "completed");
   console.log(
     JSON.stringify({
-      test: useLargeV2
+      test: useProBaseline
         ? "abliteration_pro_selector_base_provider_and_telemetry"
         : "abliteration_provider_and_telemetry",
       passed,

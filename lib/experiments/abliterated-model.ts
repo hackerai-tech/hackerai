@@ -5,7 +5,7 @@ import {
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
-  ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
 } from "./abliteration-keys";
 export {
   ABLITERATED_EXPERIMENT_KEY,
@@ -13,12 +13,9 @@ export {
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
-  ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
 } from "./abliteration-keys";
-import {
-  ABLITERATION_MAX_GENERATION_STEPS,
-  type AbliterationGenerationStepLimit,
-} from "./abliterated-model-steps";
+import type { AbliterationGenerationStepLimit } from "./abliterated-model-steps";
 import type { UIMessage } from "ai";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
 import type { ModelName } from "@/lib/ai/providers";
@@ -35,7 +32,7 @@ export type AbliteratedAssignment = ExperimentAnalyticsContext & {
     | typeof ABLITERATED_PAID_FIRST_STEP_KEY
     | typeof ABLITERATED_PAID_MODERATED_DEFAULT_KEY
     | typeof ABLITERATED_PAID_THREE_STEPS_KEY
-    | typeof ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY;
+    | typeof ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY;
   variant: "control" | "test";
   modelKey: ModelName;
   baselineModel: ModelName;
@@ -57,15 +54,18 @@ const messagesContainUnsupportedFiles = (messages: UIMessage[]): boolean =>
   );
 
 export function isEligibleForAbliteratedModel({
+  subscription,
   moderationEligible,
   messages,
   limitRescue = false,
 }: {
+  subscription: SubscriptionTier;
   moderationEligible: boolean;
   messages: UIMessage[];
   limitRescue?: boolean;
 }): boolean {
   return (
+    subscription !== "free" &&
     !limitRescue &&
     moderationEligible &&
     messages.length > 0 &&
@@ -104,7 +104,7 @@ export async function evaluateAbliteratedModel({
         userId,
         chatId: previewDiagnosticContext.chatId,
         requestId: previewDiagnosticContext.requestId,
-        experiment_key: ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+        experiment_key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
         mode,
         subscription_tier: subscription,
         selected_model_override: selectedModelOverride,
@@ -121,6 +121,7 @@ export async function evaluateAbliteratedModel({
   if (
     !providerConfigured ||
     !isEligibleForAbliteratedModel({
+      subscription,
       moderationEligible,
       messages,
       limitRescue,
@@ -128,6 +129,7 @@ export async function evaluateAbliteratedModel({
   ) {
     let reason = "moderation_not_eligible";
     if (!providerConfigured) reason = "provider_not_configured";
+    else if (subscription === "free") reason = "free_user";
     else if (limitRescue) reason = "limit_rescue";
     else if (!messages.length || messagesContainUnsupportedFiles(messages))
       reason = "unsupported_input";
@@ -137,11 +139,11 @@ export async function evaluateAbliteratedModel({
 
   reportDecision("moderated_three_step_default", "test");
   return {
-    key: ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+    key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
     variant: "test",
     modelKey: ABLITERATION_MODEL_KEY,
     baselineModel: selectedModel,
-    generationStepLimit: ABLITERATION_MAX_GENERATION_STEPS,
+    generationStepLimit: 3,
     selectionSource: "moderation",
     moderationEligible,
     moderationChecked,

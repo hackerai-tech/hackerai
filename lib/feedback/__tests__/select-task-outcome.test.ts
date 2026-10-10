@@ -241,7 +241,7 @@ describe("current Pro/Max experiment feedback", () => {
       variant: "control",
     },
     {
-      key: "abliterated_moderated_three_steps_default_v1",
+      key: "abliterated_paid_moderated_three_steps_default_v1",
       selectionSource: "moderation",
       variant: "test",
     },

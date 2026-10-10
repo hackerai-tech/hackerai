@@ -7,7 +7,7 @@ import {
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
   ABLITERATED_PAID_THREE_STEPS_KEY,
-  ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
 } from "@/lib/experiments/abliterated-model";
 
 const finishPart = {
@@ -286,7 +286,7 @@ describe("Abliteration stream telemetry", () => {
     expect(events("abliterated_model_eligible")).toHaveLength(1);
     expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
       assigned_platform_authorization_context: "not_appended",
-      generation_step_limit: 3,
+      generation_step_limit: 1,
     });
     expect(events("abliterated_model_provider_attempt")).toHaveLength(0);
     expect(events("abliterated_model_provider_outcome")).toHaveLength(1);
@@ -684,13 +684,15 @@ describe("Abliteration stream telemetry", () => {
   );
   it.each([
     ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
-    ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+    ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
   ])(
     "attributes %s output separately from the retired experiment",
     async (key) => {
       const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
         assignment: {
           key,
+          generationStepLimit:
+            key === ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ? 3 : 1,
           variant: "test",
           modelKey: "model-abliterated",
           baselineModel: "model-grok-4.6",
@@ -710,6 +712,8 @@ describe("Abliteration stream telemetry", () => {
       );
       expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
         experiment_key: key,
+        generation_step_limit:
+          key === ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY ? 3 : 1,
         moderation_checked: true,
         moderation_eligible: true,
         generation_step: 1,

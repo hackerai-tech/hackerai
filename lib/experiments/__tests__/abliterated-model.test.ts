@@ -1,6 +1,6 @@
 import {
   evaluateAbliteratedModel,
-  ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
 } from "../abliterated-model";
 import { ABLITERATION_MAX_IMAGES_PER_REQUEST } from "@/lib/ai/abliteration-media";
 import type { UIMessage } from "ai";
@@ -33,7 +33,7 @@ describe("Abliteration model identity", () => {
   });
 });
 
-describe("universal moderation-gated three-step Abliteration", () => {
+describe("paid moderation-gated three-step Abliteration", () => {
   const originalKey = process.env.ABLITERATION_API_KEY;
   beforeEach(() => {
     jest.clearAllMocks();
@@ -112,7 +112,7 @@ describe("universal moderation-gated three-step Abliteration", () => {
     messages,
   };
   describe.each(["ask", "agent"] as const)("shipped %s default", (mode) => {
-    it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    it.each(["pro", "pro-plus", "ultra", "team"] as const)(
       "routes every eligible %s selector without any flag lookup",
       async (subscription) => {
         for (const selectedModelOverride of [
@@ -129,7 +129,7 @@ describe("universal moderation-gated three-step Abliteration", () => {
             selectedModelOverride,
           });
           expect(assignment).toMatchObject({
-            key: ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY,
+            key: ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
             variant: "test",
             modelKey: ABLITERATION_MODEL_KEY,
             baselineModel: defaults.selectedModel,
@@ -141,6 +141,36 @@ describe("universal moderation-gated three-step Abliteration", () => {
         }
       },
     );
+    it("excludes Free users for every selector even when moderation is eligible", async () => {
+      for (const selectedModelOverride of [
+        undefined,
+        "auto",
+        "hackerai-standard",
+        "hackerai-pro",
+        "hackerai-max",
+      ] as const) {
+        await expect(
+          evaluateAbliteratedModel({
+            ...defaults,
+            mode,
+            subscription: "free",
+            selectedModelOverride,
+            previewDiagnosticContext: {
+              chatId: "free-chat",
+              requestId: "free-run",
+            },
+          }),
+        ).resolves.toBeUndefined();
+      }
+      expect(getPostHogFlagWithoutExposure).not.toHaveBeenCalled();
+      expect(phLogger.info).toHaveBeenLastCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          reason: "free_user",
+          subscription_tier: "free",
+        }),
+      );
+    });
     it.each([
       { limitRescue: true },
       { moderationEligible: false },
@@ -208,7 +238,9 @@ describe("universal moderation-gated three-step Abliteration", () => {
       ...defaults,
       previewDiagnosticContext,
     });
-    expect(result?.key).toBe(ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY);
+    expect(result?.key).toBe(
+      ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+    );
     expect(phLogger.info).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({

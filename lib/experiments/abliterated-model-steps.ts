@@ -1,4 +1,4 @@
-export const ABLITERATION_MAX_GENERATION_STEPS = 3;
+export const ABLITERATION_MAX_GENERATION_STEPS = 1;
 export type AbliterationGenerationStepLimit = 1 | 3;
 
 /**

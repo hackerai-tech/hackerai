@@ -1198,12 +1198,43 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each([
+    ["ask", "ask-model-free-glm"],
+    ["agent", "model-deepseek-v4-flash-0731"],
+  ] as const)(
+    "keeps Free %s on its baseline through later generation steps",
+    async (mode, baselineModel) => {
+      const state = initAgentStreamState(
+        [uiMessage("initial", "Inspect the authorized lab")],
+        { usedTokens: 1_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        baselineModel,
+        createTestStreamContext({
+          mode,
+          subscription: "free",
+          trackedProvider: {
+            languageModel: (name: string) => ({ modelId: name }),
+          },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+          usageTracker: {},
+        }) as any,
+        state,
+      )) as any;
+      for (let step = 0; step < 5; step++) {
+        const prepared = await stream.prepareStep({
+          stepNumber: step,
+          steps: Array.from({ length: step }, () => ({ toolResults: [] })),
+          messages: [{ role: "user", content: "Continue" }],
+        });
+        expect(prepared.model.modelId).toBe(baselineModel);
+      }
+    },
+  );
+
+  it.each([
     ["agent", "pro", "model-deepseek-v4-flash-0731", 1],
     ["agent", "pro", "model-deepseek-v4-flash-0731", 3],
     ["ask", "pro", "model-deepseek-v4-flash-0731", 3],
-    ["ask", "free", "ask-model-free-glm", 1],
-    ["ask", "free", "ask-model-free-glm", 3],
-    ["agent", "free", "model-deepseek-v4-flash-0731", 3],
   ] as const)(
     "routes %s %s through Abliteration then %s after %i steps",
     async (mode, subscription, baselineModel, generationStepLimit) => {
@@ -1549,7 +1580,10 @@ describe("createAgentStream repeated compaction", () => {
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
           },
-          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          abliteratedStepRouting: {
+            baselineModel: "model-grok-4.6",
+            generationStepLimit: 3,
+          },
           tools: { lookup: {} },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {
@@ -1676,7 +1710,10 @@ describe("createAgentStream repeated compaction", () => {
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
           },
-          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          abliteratedStepRouting: {
+            baselineModel: "model-grok-4.6",
+            generationStepLimit: 3,
+          },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {},
         }) as any,
@@ -1712,7 +1749,10 @@ describe("createAgentStream repeated compaction", () => {
           trackedProvider: {
             languageModel: (name: string) => ({ modelId: name }),
           },
-          abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+          abliteratedStepRouting: {
+            baselineModel: "model-grok-4.6",
+            generationStepLimit: 3,
+          },
           summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
           usageTracker: {},
         }) as any,
@@ -1732,7 +1772,10 @@ describe("createAgentStream repeated compaction", () => {
         trackedProvider: {
           languageModel: (name: string) => ({ modelId: name }),
         },
-        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        abliteratedStepRouting: {
+          baselineModel: "model-grok-4.6",
+          generationStepLimit: 3,
+        },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
       }) as any,
@@ -1796,7 +1839,10 @@ describe("createAgentStream repeated compaction", () => {
           languageModel: (name: string) => ({ modelId: name }),
         },
         platformAuthorized: true,
-        abliteratedStepRouting: { baselineModel: "model-grok-4.6" },
+        abliteratedStepRouting: {
+          baselineModel: "model-grok-4.6",
+          generationStepLimit: 3,
+        },
         summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
         usageTracker: {},
       }) as any,
@@ -1881,6 +1927,7 @@ describe("createAgentStream repeated compaction", () => {
         platformAuthorized: true,
         abliteratedStepRouting: {
           baselineModel: "model-deepseek-v4-flash-0731",
+          generationStepLimit: 3,
         },
         summarizationTracker: {
           hasSummarized: false,

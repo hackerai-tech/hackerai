@@ -8,6 +8,6 @@ export const ABLITERATED_PAID_THREE_STEPS_KEY =
 export const ABLITERATED_PAID_MODERATED_DEFAULT_KEY =
   "abliterated_paid_moderated_default_v1";
 
-// Universal three-step policy, separate from the retired paid trial/default.
-export const ABLITERATED_MODERATED_THREE_STEPS_DEFAULT_KEY =
-  "abliterated_moderated_three_steps_default_v1";
+// Paid three-step policy, separate from the retired paid trial/default.
+export const ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY =
+  "abliterated_paid_moderated_three_steps_default_v1";
