@@ -1,9 +1,17 @@
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockCreateFinding = jest.fn<any>();
+const mockListReports = jest.fn<any>();
+const mockGetReport = jest.fn<any>();
+const mockUpdateFinding = jest.fn<any>();
 const mockEvent = jest.fn();
 
-jest.mock("@/lib/db/actions", () => ({ createFinding: mockCreateFinding }));
+jest.mock("@/lib/db/actions", () => ({
+  createFinding: mockCreateFinding,
+  listReports: mockListReports,
+  getReport: mockGetReport,
+  updateFinding: mockUpdateFinding,
+}));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: mockEvent },
 }));
@@ -224,5 +232,227 @@ describe("report evidence integration", () => {
       }),
     ).rejects.toThrow();
     expect(mockCreateFinding).not.toHaveBeenCalled();
+  });
+});
+
+describe("Agent report read/update tools", () => {
+  const context = {
+    userID: "user-1",
+    chatId: "chat-1",
+    assistantMessageId: "update-message",
+  } as any;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetReport.mockResolvedValue({
+      success: true,
+      report: { finding_id: "finding-1", updated_at: 10, ...input },
+    });
+    mockUpdateFinding.mockResolvedValue({
+      success: true,
+      finding_id: "finding-1",
+      title: input.title,
+    });
+  });
+  it("uses trusted scope for listing and reading, and returns full proof only to the read call", async () => {
+    const { createListReports, createGetReport } = await import("../findings");
+    mockListReports.mockResolvedValue({
+      success: true,
+      reports: [],
+      is_done: true,
+      next_cursor: null,
+    });
+    await (createListReports(context) as any).execute(
+      { limit: 10 },
+      { toolCallId: "list-1" },
+    );
+    expect(mockListReports).toHaveBeenCalledWith({
+      userId: "user-1",
+      chatId: "chat-1",
+      limit: 10,
+      cursor: null,
+      search: undefined,
+      status: undefined,
+    });
+    const read = createGetReport(context) as any;
+    const output = await read.execute(
+      { finding_id: "finding-1" },
+      { toolCallId: "read-1" },
+    );
+    expect(mockGetReport).toHaveBeenCalledWith({
+      userId: "user-1",
+      chatId: "chat-1",
+      findingId: "finding-1",
+    });
+    expect(
+      JSON.parse(read.toModelOutput({ output }).value).report.evidence,
+    ).toBe(input.evidence);
+  });
+  it("updates once with trusted provenance and content-free analytics", async () => {
+    const { createUpdateVulnerabilityReport } = await import("../findings");
+    const update = {
+      finding_id: "finding-1",
+      expected_updated_at: 10,
+      reason: "Correct assessment",
+      changes: { impact: "Limited disclosure" },
+    };
+    await (createUpdateVulnerabilityReport(context) as any).execute(update, {
+      toolCallId: "update-1",
+    });
+    expect(mockUpdateFinding).toHaveBeenCalledWith({
+      userId: "user-1",
+      chatId: "chat-1",
+      messageId: "update-message",
+      toolCallId: "update-1",
+      update,
+    });
+    expect(mockEvent).toHaveBeenCalledWith("finding_updated", {
+      userId: "user-1",
+    });
+    expect(JSON.stringify(mockEvent.mock.calls)).not.toMatch(
+      /disclosure|assessment|finding-1/,
+    );
+  });
+  it.each(["not_found", "conflict"])(
+    "does not write after %s",
+    async (error) => {
+      const { createUpdateVulnerabilityReport } = await import("../findings");
+      mockGetReport.mockResolvedValue(
+        error === "not_found"
+          ? { success: false, error }
+          : { success: true, report: { updated_at: 11 } },
+      );
+      const result = await (
+        createUpdateVulnerabilityReport(context) as any
+      ).execute(
+        {
+          finding_id: "finding-1",
+          expected_updated_at: 10,
+          reason: "Correct",
+          changes: { evidence_refs: ["/private.txt"] },
+        },
+        { toolCallId: "update-1" },
+      );
+      expect(result).toMatchObject({ success: false, error });
+      expect(mockUpdateFinding).not.toHaveBeenCalled();
+    },
+  );
+  it("preserves the update with a warning when no sandbox is connected", async () => {
+    const { createUpdateVulnerabilityReport } = await import("../findings");
+    await (createUpdateVulnerabilityReport(context) as any).execute(
+      {
+        finding_id: "finding-1",
+        expected_updated_at: 10,
+        reason: "Correct",
+        changes: { evidence_refs: ["/capture.txt"] },
+      },
+      { toolCallId: "update-1" },
+    );
+    expect(mockUpdateFinding).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ changes: { evidence_refs: [] } }),
+        evidenceVerification: expect.objectContaining({
+          unavailable_refs: ["/capture.txt"],
+          warning: expect.any(String),
+        }),
+      }),
+    );
+  });
+  it.each(["missing", "forbidden"])(
+    "rejects changed %s captures without altering the existing report",
+    async (state) => {
+      const { createUpdateVulnerabilityReport } = await import("../findings");
+      const sandbox = {
+        sandboxKind: "e2b",
+        sandboxId: "owned",
+        commands: {
+          run: jest.fn<any>().mockResolvedValue({
+            stdout: JSON.stringify([state]),
+            exitCode: 0,
+          }),
+        },
+      } as any;
+      const result = await (
+        createUpdateVulnerabilityReport(context, () => sandbox) as any
+      ).execute(
+        {
+          finding_id: "finding-1",
+          expected_updated_at: 10,
+          reason: "Improved proof",
+          changes: { evidence_refs: ["/capture.txt"] },
+        },
+        { toolCallId: "update-1" },
+      );
+      expect(result).toMatchObject({
+        success: false,
+        error: "validation",
+        validation_kind: "evidence",
+        retryable: false,
+      });
+      expect(mockUpdateFinding).not.toHaveBeenCalled();
+      expect(sandbox.commands.run).toHaveBeenCalledTimes(1);
+    },
+  );
+  it("does not inspect captures when only report prose changes", async () => {
+    const { createUpdateVulnerabilityReport } = await import("../findings");
+    const getSandbox = jest.fn(() => {
+      throw new Error("Must not acquire a sandbox");
+    });
+    await (createUpdateVulnerabilityReport(context, getSandbox) as any).execute(
+      {
+        finding_id: "finding-1",
+        expected_updated_at: 10,
+        reason: "Correct impact",
+        changes: { impact: "Limited impact" },
+      },
+      { toolCallId: "update-1" },
+    );
+    expect(getSandbox).not.toHaveBeenCalled();
+    expect(mockUpdateFinding).toHaveBeenCalledTimes(1);
+  });
+  it("asks for reconciliation rather than blind retry after an uncertain write", async () => {
+    const { createUpdateVulnerabilityReport } = await import("../findings");
+    mockUpdateFinding.mockRejectedValueOnce(new Error("Lost response"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const result = await (
+      createUpdateVulnerabilityReport(context) as any
+    ).execute(
+      {
+        finding_id: "finding-1",
+        expected_updated_at: 10,
+        reason: "Correct",
+        changes: { impact: "Updated" },
+      },
+      { toolCallId: "update-1" },
+    );
+    expect(result).toMatchObject({
+      success: false,
+      retryable: false,
+      message: expect.stringContaining("Read the report again"),
+    });
+    errorSpy.mockRestore();
+  });
+  it("does not write when aborted or provenance is missing", async () => {
+    const { createUpdateVulnerabilityReport } = await import("../findings");
+    const update = {
+      finding_id: "finding-1",
+      expected_updated_at: 10,
+      reason: "Correct",
+      changes: { impact: "Updated" },
+    };
+    await expect(
+      (createUpdateVulnerabilityReport(context) as any).execute(update, {
+        toolCallId: "update-1",
+        abortSignal: AbortSignal.abort(),
+      }),
+    ).rejects.toBeDefined();
+    expect(
+      await (
+        createUpdateVulnerabilityReport({
+          ...context,
+          assistantMessageId: undefined,
+        }) as any
+      ).execute(update, { toolCallId: "update-2" }),
+    ).toMatchObject({ success: false, retryable: false });
+    expect(mockUpdateFinding).not.toHaveBeenCalled();
   });
 });

@@ -1897,3 +1897,58 @@ describe("repairAnthropicModelMessages", () => {
     expect(repairAnthropicModelMessages(toolEnding)).toBe(toolEnding);
   });
 });
+
+it("stores compact report read/update receipts even below the size threshold", () => {
+  const report = {
+    finding_id: "finding-1",
+    title: "Synthetic report",
+    target: "lab.test",
+    severity: "high",
+    cvss_score: 7.1,
+    updated_at: 10,
+    evidence: "private capture",
+    poc_script_code: "private payload",
+    technical_analysis: "private source",
+  };
+  const message = makeAssistantMessage([
+    makeToolPart(
+      "get_report",
+      { success: true, report },
+      { finding_id: "finding-1" },
+    ),
+    makeToolPart(
+      "update_vulnerability_report",
+      { success: true, finding_id: "finding-1", title: report.title },
+      {
+        finding_id: "finding-1",
+        expected_updated_at: 10,
+        reason: "private reason",
+        changes: { evidence: "private new capture" },
+      },
+    ),
+  ]);
+  const result = compactMessageForStorage(message, {
+    softLimitBytes: 1_000_000,
+  });
+  expect(result.compacted).toBe(true);
+  expect(JSON.stringify(result.message)).not.toMatch(
+    /private|technical_analysis|poc_script_code|changes|reason/,
+  );
+  expect(result.message.parts[0]).toMatchObject({
+    output: {
+      success: true,
+      report: { finding_id: "finding-1", updated_at: 10 },
+    },
+  });
+  expect(result.message.parts[1]).toMatchObject({
+    input: { finding_id: "finding-1", expected_updated_at: 10 },
+    output: { success: true, finding_id: "finding-1" },
+  });
+  expect(message.parts[0]).toMatchObject({
+    output: { report: { evidence: "private capture" } },
+  });
+  expect(
+    compactMessageForStorage(result.message, { softLimitBytes: 1_000_000 })
+      .compacted,
+  ).toBe(false);
+});

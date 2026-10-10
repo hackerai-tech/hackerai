@@ -7,6 +7,8 @@ import { validateServiceKey } from "./lib/utils";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { calculateCvss31 } from "../lib/findings/cvss31";
 import {
+  updateVulnerabilityReportInputSchema,
+  mergeFindingReportChanges,
   createFindingDedupeKey,
   createFindingSearchText,
   createVulnerabilityReportInputSchema,
@@ -657,5 +659,358 @@ export const deleteFinding = mutation({
       }
     }
     return { deleted: true };
+  },
+});
+
+const reportErrorFields = {
+  success: v.literal(false),
+  error: v.union(
+    v.literal("not_found"),
+    v.literal("validation"),
+    v.literal("conflict"),
+    v.literal("duplicate"),
+    v.literal("chat_not_found"),
+  ),
+  message: v.string(),
+};
+const reportErrorValidator = v.object(reportErrorFields);
+const reportSummaryFields = {
+  finding_id: v.string(),
+  title: v.string(),
+  target: v.string(),
+  endpoint: v.optional(v.string()),
+  severity: findingSeverityArgValidator,
+  cvss_score: v.number(),
+  category: findingCategoryArgValidator,
+  status: findingStatusArgValidator,
+  chat_id: v.string(),
+  chat_title: v.string(),
+  created_at: v.number(),
+  updated_at: v.number(),
+};
+const reportSummaryValidator = v.object(reportSummaryFields);
+const reportDetailValidator = v.object({
+  ...reportSummaryFields,
+  description: v.string(),
+  impact: v.string(),
+  technical_analysis: v.string(),
+  poc_description: v.string(),
+  poc_script_code: v.string(),
+  remediation_steps: v.string(),
+  evidence: v.string(),
+  evidence_refs: v.optional(v.array(v.string())),
+  evidence_verification: v.optional(
+    v.object({
+      checked_refs: v.array(v.string()),
+      unavailable_refs: v.array(v.string()),
+      warning: v.optional(v.string()),
+    }),
+  ),
+  assumptions: v.string(),
+  confidence: v.optional(
+    v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
+  ),
+  counterevidence: v.optional(v.string()),
+  severity_change_conditions: v.optional(v.string()),
+  fix_effort: v.union(
+    v.literal("trivial"),
+    v.literal("low"),
+    v.literal("medium"),
+    v.literal("high"),
+  ),
+  cvss_breakdown: v.object({
+    attack_vector: v.union(
+      v.literal("N"),
+      v.literal("A"),
+      v.literal("L"),
+      v.literal("P"),
+    ),
+    attack_complexity: v.union(v.literal("L"), v.literal("H")),
+    privileges_required: v.union(
+      v.literal("N"),
+      v.literal("L"),
+      v.literal("H"),
+    ),
+    user_interaction: v.union(v.literal("N"), v.literal("R")),
+    scope: v.union(v.literal("U"), v.literal("C")),
+    confidentiality: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+    integrity: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+    availability: v.union(v.literal("N"), v.literal("L"), v.literal("H")),
+  }),
+  cvss_vector: v.string(),
+  method: v.optional(v.string()),
+  cve: v.optional(v.string()),
+  cwe: v.optional(v.string()),
+  code_locations: v.optional(
+    v.array(
+      v.object({
+        file: v.string(),
+        start_line: v.number(),
+        end_line: v.number(),
+        snippet: v.optional(v.string()),
+        label: v.optional(v.string()),
+        fix_before: v.optional(v.string()),
+        fix_after: v.optional(v.string()),
+      }),
+    ),
+  ),
+  message_id: v.string(),
+  closure_reason: v.optional(findingClosureReasonArgValidator),
+  closure_context: v.optional(v.string()),
+  closed_at: v.optional(v.number()),
+});
+
+const reportNotFound = () => ({
+  success: false as const,
+  error: "not_found" as const,
+  message: "The report is not available in this chat.",
+});
+
+export const listReportsForBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    paginationOpts: paginationOptsValidator,
+    search: v.optional(v.string()),
+    status: v.optional(findingStatusArgValidator),
+  },
+  returns: v.union(
+    reportErrorValidator,
+    v.object({
+      success: v.literal(true),
+      reports: v.array(reportSummaryValidator),
+      is_done: v.boolean(),
+      next_cursor: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await assertUserCanAccessChatHistory(ctx, args.userId);
+    const chat = await getChat(ctx, args.chatId);
+    if (!chat || chat.user_id !== args.userId || chat.deletion_started_at)
+      return reportNotFound();
+    if (
+      !Number.isInteger(args.paginationOpts.numItems) ||
+      args.paginationOpts.numItems < 1 ||
+      args.paginationOpts.numItems > 25 ||
+      (args.search?.length ?? 0) > MAX_SEARCH_LENGTH
+    ) {
+      return {
+        success: false as const,
+        error: "validation" as const,
+        message:
+          "Use a page size of 1–25 and search text of at most 200 characters.",
+      };
+    }
+    const search = args.search?.trim();
+    const page = search
+      ? await ctx.db
+          .query("findings")
+          .withSearchIndex("search_findings", (q) => {
+            let b = q
+              .search("search_text", search)
+              .eq("user_id", args.userId)
+              .eq("chat_id", args.chatId);
+            if (args.status) b = b.eq("status", args.status);
+            return b;
+          })
+          .paginate(args.paginationOpts)
+      : await getFindingsByFacets(ctx, args.userId, {
+          chatId: args.chatId,
+          status: args.status,
+        })
+          .order("desc")
+          .paginate(args.paginationOpts);
+    return {
+      success: true as const,
+      reports: page.page.map((f) => ({
+        ...toFindingSummary(f, chat.title),
+        updated_at: f.updated_at,
+      })),
+      is_done: page.isDone,
+      next_cursor: page.isDone ? null : page.continueCursor,
+    };
+  },
+});
+
+export const getReportForBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    findingId: v.string(),
+  },
+  returns: v.union(
+    reportErrorValidator,
+    v.object({ success: v.literal(true), report: reportDetailValidator }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await assertUserCanAccessChatHistory(ctx, args.userId);
+    const chat = await getChat(ctx, args.chatId);
+    if (!chat || chat.user_id !== args.userId || chat.deletion_started_at)
+      return reportNotFound();
+    const finding = await getFindingByPublicId(ctx, args.findingId);
+    if (
+      !finding ||
+      finding.user_id !== args.userId ||
+      finding.chat_id !== args.chatId
+    )
+      return reportNotFound();
+    return {
+      success: true as const,
+      report: toFindingDetail(finding, chat.title),
+    };
+  },
+});
+
+export const updateFindingForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    messageId: v.string(),
+    toolCallId: v.string(),
+    update: v.any(),
+    evidenceVerification: v.optional(
+      v.object({
+        checked_refs: v.array(v.string()),
+        unavailable_refs: v.array(v.string()),
+        warning: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.union(
+    reportErrorValidator,
+    v.object({
+      success: v.literal(true),
+      finding_id: v.string(),
+      title: v.string(),
+      target: v.string(),
+      endpoint: v.optional(v.string()),
+      severity: findingSeverityArgValidator,
+      cvss_score: v.number(),
+      updated_at: v.number(),
+      warning: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    await assertUserCanAccessChatHistory(ctx, args.userId);
+    const parsed = updateVulnerabilityReportInputSchema.safeParse(args.update);
+    if (!parsed.success)
+      return {
+        success: false as const,
+        error: "validation" as const,
+        message: "The report changes did not pass validation.",
+      };
+    const chat = await getChat(ctx, args.chatId);
+    if (
+      !chat ||
+      chat.user_id !== args.userId ||
+      chat.deletion_started_at ||
+      chat.canceled_at
+    )
+      return {
+        success: false as const,
+        error: "chat_not_found" as const,
+        message: "The source chat is no longer available for updates.",
+      };
+    const update = parsed.data;
+    const finding = await getFindingByPublicId(ctx, update.finding_id);
+    if (
+      !finding ||
+      finding.user_id !== args.userId ||
+      finding.chat_id !== args.chatId
+    )
+      return reportNotFound();
+    if (finding.updated_at !== update.expected_updated_at)
+      return {
+        success: false as const,
+        error: "conflict" as const,
+        message:
+          "The report changed. Read it again and reconcile the changes before updating.",
+      };
+    const report = createVulnerabilityReportInputSchema.safeParse(
+      mergeFindingReportChanges(finding, update.changes),
+    );
+    if (!report.success)
+      return {
+        success: false as const,
+        error: "validation" as const,
+        message:
+          "The complete report did not pass validation. Read it and correct any invalid report fields before updating.",
+      };
+    const input = report.data;
+    const dedupeKey = createFindingDedupeKey(input);
+    const matches = await ctx.db
+      .query("findings")
+      .withIndex("by_user_chat_dedupe", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("dedupe_key", dedupeKey),
+      )
+      .take(2);
+    if (matches.some((f) => f._id !== finding._id))
+      return {
+        success: false as const,
+        error: "duplicate" as const,
+        message: "These changes would duplicate another finding in this chat.",
+      };
+    const cvss = calculateCvss31(input.cvss_breakdown);
+    const category = deriveFindingCategory({
+      cwe: input.cwe,
+      title: input.title,
+    });
+    const now = Math.max(Date.now(), finding.updated_at + 1);
+    const evidenceVerification = Object.hasOwn(update.changes, "evidence_refs")
+      ? args.evidenceVerification
+        ? evidenceVerificationSchema.parse(args.evidenceVerification)
+        : undefined
+      : finding.evidence_verification;
+    await ctx.db.patch(finding._id, {
+      ...input,
+      method: input.method?.toUpperCase(),
+      // Explicit undefined clears optional fields rather than retaining their old values.
+      endpoint: input.endpoint,
+      cve: input.cve,
+      cwe: input.cwe,
+      code_locations: input.code_locations,
+      confidence: input.confidence,
+      counterevidence: input.counterevidence,
+      severity_change_conditions: input.severity_change_conditions,
+      evidence_refs: input.evidence_refs,
+      evidence_verification: evidenceVerification,
+      cvss_score: cvss.score,
+      cvss_vector: cvss.vector,
+      severity: cvss.severity,
+      category,
+      dedupe_key: dedupeKey,
+      search_text: createFindingSearchText(
+        input,
+        FINDING_CATEGORY_LABELS[category],
+      ),
+      updated_at: now,
+      last_update: {
+        message_id: args.messageId,
+        tool_call_id: args.toolCallId,
+        reason: update.reason,
+      },
+    });
+    return {
+      success: true as const,
+      finding_id: finding.finding_id,
+      title: input.title,
+      target: input.target,
+      ...(input.endpoint ? { endpoint: input.endpoint } : {}),
+      severity: cvss.severity,
+      cvss_score: cvss.score,
+      updated_at: now,
+      ...(evidenceVerification?.warning
+        ? { warning: evidenceVerification.warning }
+        : {}),
+    };
   },
 });

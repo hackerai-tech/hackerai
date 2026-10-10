@@ -19,6 +19,9 @@ export function isToolInputValidationError(errorText: unknown): boolean {
 
 const TOOL_DISPLAY_NAMES: Record<string, string> = {
   "tool-create_vulnerability_report": "Vulnerability report",
+  "tool-list_reports": "Reports",
+  "tool-get_report": "Vulnerability report",
+  "tool-update_vulnerability_report": "Vulnerability report",
   "tool-shell": "Terminal",
   "tool-run_terminal_cmd": "Terminal",
   "tool-interact_terminal_session": "Terminal",
@@ -284,5 +287,57 @@ export function createFindingFailureContent({
     ...details,
     isExecuting: false,
     toolCallId,
+  };
+}
+
+export function createReportToolFailureContent({
+  toolCallId,
+  operation,
+  reason,
+}: {
+  toolCallId: string;
+  operation: "list" | "get" | "update";
+  reason?: string;
+}): SidebarToolError {
+  const updating = operation === "update";
+  const summary =
+    reason === "conflict"
+      ? "This report changed after HackerAI read it. The newer edit was preserved."
+      : reason === "evidence"
+        ? "One or more evidence references could not be accepted. A capture may be missing or inaccessible. No changes were saved."
+        : reason === "validation"
+          ? "The complete report did not pass validation. No changes were saved."
+          : reason === "duplicate"
+            ? "These changes would duplicate another finding in this chat. No changes were saved."
+            : reason === "not_found" || reason === "chat_not_found"
+              ? "The report or its source chat is no longer available for this action."
+              : updating
+                ? "The update response could not be confirmed. The report may already have changed."
+                : "HackerAI could not read the saved reports for this chat.";
+  return {
+    kind: "tool-error",
+    errorKind:
+      reason === "not_found" || reason === "chat_not_found"
+        ? "not_found"
+        : reason === "validation" ||
+            reason === "evidence" ||
+            reason === "conflict" ||
+            reason === "duplicate"
+          ? "validation"
+          : "execution",
+    isExecuting: false,
+    toolName: operation === "list" ? "Reports" : "Vulnerability report",
+    toolCallId,
+    action: updating ? "Report update needs attention" : "Report unavailable",
+    title: updating
+      ? "The report update needs attention"
+      : "The saved report is unavailable",
+    summary,
+    nextStep:
+      reason === "evidence"
+        ? "Ask HackerAI to check the evidence paths and access, restore missing captures, and correct the report before trying again."
+        : updating
+          ? "Ask HackerAI to read the current report, reconcile the correction with its latest contents, and update it only if the change is still needed."
+          : "Continue in the original chat and ask HackerAI to list its saved reports again.",
   };
 }

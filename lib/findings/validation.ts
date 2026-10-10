@@ -133,7 +133,7 @@ export const cvss31BreakdownSchema = z
   })
   .strict();
 
-export const createVulnerabilityReportInputSchema = z
+const findingReportFieldsSchema = z
   .object({
     title: requiredText("Title", 200),
     description: proseText("Description", 4_000),
@@ -182,8 +182,10 @@ export const createVulnerabilityReportInputSchema = z
       .optional()
       .transform((value) => value ?? undefined),
   })
-  .strict()
-  .superRefine((input, ctx) => {
+  .strict();
+
+export const createVulnerabilityReportInputSchema =
+  findingReportFieldsSchema.superRefine((input, ctx) => {
     const payloadBytes = new TextEncoder().encode(JSON.stringify(input)).length;
     if (payloadBytes > FINDING_PAYLOAD_MAX_BYTES) {
       ctx.addIssue({
@@ -192,6 +194,54 @@ export const createVulnerabilityReportInputSchema = z
       });
     }
   });
+
+const findingChangesSchema = z
+  .object({
+    ...findingReportFieldsSchema.shape,
+    endpoint: findingReportFieldsSchema.shape.endpoint.nullable(),
+    method: findingReportFieldsSchema.shape.method.nullable(),
+    cve: findingReportFieldsSchema.shape.cve.nullable(),
+    cwe: findingReportFieldsSchema.shape.cwe.nullable(),
+    code_locations: findingReportFieldsSchema.shape.code_locations.nullable(),
+    confidence: findingReportFieldsSchema.shape.confidence.nullable(),
+    counterevidence: findingReportFieldsSchema.shape.counterevidence.nullable(),
+    severity_change_conditions:
+      findingReportFieldsSchema.shape.severity_change_conditions.nullable(),
+  })
+  .partial()
+  .strict()
+  .refine(
+    (changes) => Object.values(changes).some((value) => value !== undefined),
+    "Supply at least one report field to update",
+  );
+
+export const updateVulnerabilityReportInputSchema = z
+  .object({
+    finding_id: requiredText("Finding ID", 100),
+    expected_updated_at: z.number().int().nonnegative(),
+    reason: requiredText("Update reason", 1_000),
+    changes: findingChangesSchema,
+  })
+  .strict();
+
+export type UpdateVulnerabilityReportInput = z.infer<
+  typeof updateVulnerabilityReportInputSchema
+>;
+
+/** Only report fields can be merged; lifecycle and provenance stay server-owned. */
+export function mergeFindingReportChanges(
+  finding: Record<string, unknown>,
+  changes: UpdateVulnerabilityReportInput["changes"],
+) {
+  return Object.fromEntries(
+    Object.keys(findingReportFieldsSchema.shape).map((key) => [
+      key,
+      Object.hasOwn(changes, key)
+        ? (changes[key as keyof typeof changes] ?? undefined)
+        : finding[key],
+    ]),
+  );
+}
 
 export type CreateVulnerabilityReportInput = z.infer<
   typeof createVulnerabilityReportInputSchema

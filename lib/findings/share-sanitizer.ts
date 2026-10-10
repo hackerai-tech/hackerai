@@ -54,11 +54,21 @@ export const sanitizeFindingPartsForShare = (parts: any[]): any[] =>
   parts.flatMap((part) => {
     if (
       part?.type === "dynamic-tool" &&
-      part?.toolName === "create_vulnerability_report"
+      [
+        "create_vulnerability_report",
+        "list_reports",
+        "get_report",
+        "update_vulnerability_report",
+      ].includes(part?.toolName)
     ) {
       return [];
     }
-    if (part?.type !== "tool-create_vulnerability_report") {
+    if (part?.type === "tool-list_reports" || part?.type === "tool-get_report")
+      return [];
+    if (
+      part?.type !== "tool-create_vulnerability_report" &&
+      part?.type !== "tool-update_vulnerability_report"
+    ) {
       if (
         part?.state === "output-error" &&
         isToolInputValidationError(part?.errorText)

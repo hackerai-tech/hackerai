@@ -29,6 +29,7 @@ const PROTECTED_TOOLS = new Set([
   "update_note",
   "delete_note",
   "create_vulnerability_report",
+  "update_vulnerability_report",
 ]);
 
 const TOOL_TYPE_PREFIX = "tool-";
@@ -406,6 +407,75 @@ const countOutputTokens = (output: unknown): number => {
 export const estimateSerializedSizeBytes = (value: unknown): number =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
+const stripReportSnapshotsForStorage = (part: ToolPart): ToolPart => {
+  // Report bodies belong to Findings, not duplicate private snapshots in chat history.
+  // Current-step model output still receives the complete get_report result.
+  if (
+    part.type === "tool-update_vulnerability_report" &&
+    isCompletedToolPart(part)
+  ) {
+    const input = part.input as Record<string, unknown> | undefined;
+    if (
+      !Object.keys(input ?? {}).some(
+        (key) => key !== "finding_id" && key !== "expected_updated_at",
+      )
+    )
+      return part;
+    return {
+      ...part,
+      input: {
+        finding_id: input?.finding_id,
+        expected_updated_at: input?.expected_updated_at,
+      },
+    };
+  }
+  if (part.type === "tool-get_report" && isCompletedToolPart(part)) {
+    const output = part.output as
+      { success?: boolean; report?: Record<string, unknown> } | undefined;
+    if (
+      output?.report &&
+      Object.keys(output.report).some(
+        (key) =>
+          ![
+            "finding_id",
+            "title",
+            "target",
+            "endpoint",
+            "severity",
+            "cvss_score",
+            "updated_at",
+          ].includes(key),
+      )
+    ) {
+      const {
+        finding_id,
+        title,
+        target,
+        endpoint,
+        severity,
+        cvss_score,
+        updated_at,
+      } = output.report;
+      return {
+        ...part,
+        output: {
+          success: output.success,
+          report: {
+            finding_id,
+            title,
+            target,
+            endpoint,
+            severity,
+            cvss_score,
+            updated_at,
+          },
+        },
+      };
+    }
+  }
+  return part;
+};
+
 const stripBulkyOutputFields = (part: ToolPart): ToolPart => {
   if (!part || typeof part !== "object") return part;
   const output = part.output;
@@ -702,8 +772,20 @@ export function compactMessageForStorage<T extends UIMessage>(
   } = {},
 ): StorageCompactionResult<T> {
   const beforeSizeBytes = estimateSerializedSizeBytes(message.parts);
+  let strippedReportSnapshots = false;
+  const snapshotParts =
+    message.role === "assistant"
+      ? message.parts.map((part) => {
+          const stripped = stripReportSnapshotsForStorage(part as ToolPart);
+          if (stripped !== part) strippedReportSnapshots = true;
+          return stripped as UIMessage["parts"][number];
+        })
+      : message.parts;
 
-  if (message.role !== "assistant" || beforeSizeBytes <= softLimitBytes) {
+  if (
+    message.role !== "assistant" ||
+    (beforeSizeBytes <= softLimitBytes && !strippedReportSnapshots)
+  ) {
     return {
       message,
       compacted: false,
@@ -714,9 +796,12 @@ export function compactMessageForStorage<T extends UIMessage>(
     };
   }
 
-  let strippedUiOnlyFields = false;
-  let parts = message.parts.map((part) => {
-    const stripped = stripBulkyOutputFields(part as ToolPart);
+  let strippedUiOnlyFields = strippedReportSnapshots;
+  let parts = snapshotParts.map((part) => {
+    const stripped =
+      beforeSizeBytes > softLimitBytes
+        ? stripBulkyOutputFields(part as ToolPart)
+        : part;
     if (stripped !== part) strippedUiOnlyFields = true;
     return stripped as UIMessage["parts"][number];
   });

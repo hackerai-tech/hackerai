@@ -110,3 +110,60 @@ describe("public finding sanitizer", () => {
     expect(part.errorText).not.toMatch(/password|private|Value:/);
   });
 });
+
+it("drops private report reads/lists and sanitizes update inputs from shares and forks", () => {
+  const parts = [
+    {
+      type: "tool-get_report",
+      toolCallId: "private-id",
+      state: "output-available",
+      output: { success: true, report: privateInput },
+    },
+    {
+      type: "tool-list_reports",
+      state: "output-available",
+      output: {
+        success: true,
+        reports: [{ finding_id: "private-id", ...privateInput }],
+      },
+    },
+    {
+      type: "tool-update_vulnerability_report",
+      input: {
+        finding_id: "private-id",
+        reason: "secret correction",
+        changes: privateInput,
+      },
+      output: {
+        success: true,
+        finding_id: "private-id",
+        title: "Corrected report",
+        target: "app.example.test",
+        severity: "high",
+        cvss_score: 7.1,
+      },
+    },
+    ...["list_reports", "get_report", "update_vulnerability_report"].map(
+      (toolName) => ({
+        type: "dynamic-tool",
+        toolName,
+        input: privateInput,
+        output: privateInput,
+      }),
+    ),
+  ];
+  expect(sanitizeFindingPartsForShare(parts)).toEqual([
+    {
+      type: "data-shared-finding",
+      data: {
+        title: "Corrected report",
+        target: "app.example.test",
+        severity: "high",
+        cvss_score: 7.1,
+      },
+    },
+  ]);
+  expect(JSON.stringify(sanitizeFindingPartsForShare(parts))).not.toMatch(
+    /secret|private-id|evidence|changes|reason/,
+  );
+});

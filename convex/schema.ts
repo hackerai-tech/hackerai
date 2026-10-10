@@ -439,6 +439,13 @@ export default defineSchema({
         }),
       ),
     ),
+    last_update: v.optional(
+      v.object({
+        message_id: v.string(),
+        tool_call_id: v.string(),
+        reason: v.string(),
+      }),
+    ),
     dedupe_key: v.string(),
     search_text: v.string(),
     closure_reason: v.optional(findingClosureReasonValidator),

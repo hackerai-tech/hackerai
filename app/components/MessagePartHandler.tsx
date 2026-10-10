@@ -8,6 +8,7 @@ import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
+import { ReportToolHandler } from "./tools/ReportToolHandler";
 import { FindingToolHandler } from "./tools/FindingToolHandler";
 import { ToolValidationErrorHandler } from "./tools/ToolErrorHandler";
 import { FindingCard } from "./findings/FindingCard";
@@ -386,6 +387,26 @@ export const MessagePartHandler = memo(function MessagePartHandler({
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
 
+    case "tool-list_reports":
+      return (
+        <ReportToolHandler
+          part={part}
+          status={status}
+          toolName="list_reports"
+        />
+      );
+    case "tool-get_report":
+      return (
+        <ReportToolHandler part={part} status={status} toolName="get_report" />
+      );
+    case "tool-update_vulnerability_report":
+      return (
+        <ReportToolHandler
+          part={part}
+          status={status}
+          toolName="update_vulnerability_report"
+        />
+      );
     case "tool-create_vulnerability_report":
       return <FindingToolHandler part={part} status={status} />;
 

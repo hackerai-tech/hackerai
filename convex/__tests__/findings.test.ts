@@ -867,3 +867,284 @@ describe("findings Convex lifecycle", () => {
     ).toBeNull();
   });
 });
+
+describe("chat-scoped Agent report retrieval and correction", () => {
+  beforeEach(() => jest.clearAllMocks());
+  async function setup() {
+    const api = await import("../findings");
+    const tables = seedTables();
+    const mock = createMockCtx(tables);
+    const saved = await api.createFindingForBackend.handler(
+      mock.ctx,
+      createArgs(),
+    );
+    if (!saved.success) throw new Error("Expected finding");
+    const row = tables.findings[0];
+    const scope = {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+    };
+    const updateArgs = (
+      changes: Record<string, unknown>,
+      overrides: Record<string, unknown> = {},
+    ) => ({
+      ...scope,
+      messageId: "update-message",
+      toolCallId: "update-call",
+      update: {
+        finding_id: saved.finding_id,
+        expected_updated_at: row.updated_at,
+        reason: "Correct the demonstrated impact",
+        changes,
+      },
+      ...overrides,
+    });
+    return { api, tables, mock, saved, row, scope, updateArgs };
+  }
+
+  it("lists bounded metadata, reads and corrects the same finding, and reopens/exports the correction", async () => {
+    const { api, tables, mock, row, scope, updateArgs } = await setup();
+    const original = {
+      id: row.finding_id,
+      created: row.created_at,
+      message: row.message_id,
+      tool: row.tool_call_id,
+    };
+    const listed = await api.listReportsForBackend.handler(mock.ctx, {
+      ...scope,
+      paginationOpts: { numItems: 1, cursor: null },
+    });
+    expect(listed).toMatchObject({
+      success: true,
+      is_done: true,
+      next_cursor: null,
+      reports: [{ finding_id: original.id }],
+    });
+    expect(JSON.stringify(listed)).not.toMatch(
+      /poc_script_code|technical_analysis|evidence/,
+    );
+    const current = await api.getReportForBackend.handler(mock.ctx, {
+      ...scope,
+      findingId: original.id,
+    });
+    expect(current).toMatchObject({
+      success: true,
+      report: {
+        poc_script_code: row.poc_script_code,
+        updated_at: row.updated_at,
+      },
+    });
+    const result = await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs({
+        title: "Limited invoice disclosure",
+        impact: "Only one synthetic address was disclosed.",
+        cvss_breakdown: { ...row.cvss_breakdown, confidentiality: "L" },
+      }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      finding_id: original.id,
+      severity: "medium",
+    });
+    expect(tables.findings).toHaveLength(1);
+    expect(tables.finding_sources[0].finding_count).toBe(1);
+    expect(row).toMatchObject({
+      finding_id: original.id,
+      created_at: original.created,
+      message_id: original.message,
+      tool_call_id: original.tool,
+      title: "Limited invoice disclosure",
+      last_update: {
+        message_id: "update-message",
+        tool_call_id: "update-call",
+        reason: "Correct the demonstrated impact",
+      },
+    });
+    expect(row.search_text).toContain("Limited invoice disclosure");
+    const reloaded = await api.getFinding.handler(createMockCtx(tables).ctx, {
+      findingId: original.id,
+    });
+    const { renderFindingMarkdown } =
+      await import("../../lib/findings/markdown");
+    expect(renderFindingMarkdown(reloaded!)).toContain(
+      "Only one synthetic address was disclosed.",
+    );
+    expect(row.updated_at).toBeGreaterThan(
+      current.success ? current.report.updated_at : Infinity,
+    );
+  });
+
+  it("never returns or mutates another user's report or another chat's report", async () => {
+    const { api, tables, mock, row, scope, updateArgs } = await setup();
+    const before = JSON.stringify(row);
+    for (const alternate of [
+      { userId: "other-user", chatId: "chat-other" },
+      { userId: "user-1", chatId: "chat-2" },
+    ]) {
+      const read = await api.getReportForBackend.handler(mock.ctx, {
+        ...scope,
+        ...alternate,
+        findingId: row.finding_id,
+      });
+      expect(read).toEqual({
+        success: false,
+        error: "not_found",
+        message: "The report is not available in this chat.",
+      });
+      expect(
+        await api.updateFindingForBackend.handler(
+          mock.ctx,
+          updateArgs({ title: "Unauthorized" }, alternate),
+        ),
+      ).toMatchObject({ success: false, error: "not_found" });
+      const list = await api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        ...alternate,
+        paginationOpts: { numItems: 10, cursor: null },
+      });
+      expect(list).toMatchObject({ success: true, reports: [] });
+    }
+    expect(JSON.stringify(row)).toBe(before);
+    expect(tables.findings).toHaveLength(1);
+  });
+
+  it("rejects stale writes and preserves a concurrent edit", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    const stale = updateArgs({ impact: "Stale correction" });
+    await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs({ impact: "Latest correction" }),
+    );
+    expect(
+      await api.updateFindingForBackend.handler(mock.ctx, stale),
+    ).toMatchObject({ success: false, error: "conflict" });
+    expect(row.impact).toBe("Latest correction");
+  });
+
+  it("does not let updates replace identity, provenance, score, or lifecycle", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    const before = JSON.stringify(row);
+    for (const changes of [
+      {},
+      { user_id: "other-user" },
+      { chat_id: "chat-2" },
+      { created_at: 1 },
+      { severity: "critical" },
+      { status: "active" },
+      { cvss_score: 10 },
+    ]) {
+      expect(
+        await api.updateFindingForBackend.handler(
+          mock.ctx,
+          updateArgs(changes),
+        ),
+      ).toMatchObject({ success: false, error: "validation" });
+    }
+    expect(JSON.stringify(row)).toBe(before);
+  });
+
+  it("preserves closure state and clears optional report fields explicitly", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    row.status = "closed";
+    row.closure_reason = "already_fixed";
+    row.closure_context = "Retest passed";
+    row.closed_at = 7;
+    const result = await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs({ cwe: null, endpoint: null }),
+    );
+    expect(result).toMatchObject({ success: true });
+    expect(row).toMatchObject({
+      status: "closed",
+      closure_context: "Retest passed",
+      closed_at: 7,
+    });
+    expect(row.cwe).toBeUndefined();
+    expect(row.endpoint).toBeUndefined();
+  });
+
+  it("keeps or replaces evidence verification with the referenced evidence", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    row.evidence_refs = ["/old.txt"];
+    row.evidence_verification = {
+      checked_refs: ["/old.txt"],
+      unavailable_refs: [],
+    };
+    await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs({ impact: "Corrected impact" }),
+    );
+    expect(row.evidence_verification.checked_refs).toEqual(["/old.txt"]);
+    await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs(
+        { evidence_refs: ["/new.txt"] },
+        {
+          evidenceVerification: {
+            checked_refs: ["/new.txt"],
+            unavailable_refs: [],
+          },
+        },
+      ),
+    );
+    expect(row.evidence_verification.checked_refs).toEqual(["/new.txt"]);
+    await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs({ evidence_refs: [] }),
+    );
+    expect(row.evidence_refs).toEqual([]);
+    expect(row.evidence_verification).toBeUndefined();
+  });
+
+  it("rejects a correction that collides with another finding", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    await api.createFindingForBackend.handler(
+      mock.ctx,
+      createArgs({ report: report({ title: "Other finding" }) }),
+    );
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ title: "Other finding" }),
+      ),
+    ).toMatchObject({ success: false, error: "duplicate" });
+    expect(row.title).toBe("Cross-tenant invoice access");
+  });
+
+  it.each(["canceled_at", "deletion_started_at"])(
+    "rejects writes in a chat with %s",
+    async (field) => {
+      const { api, tables, mock, row, updateArgs } = await setup();
+      tables.chats[0][field] = 1;
+      expect(
+        await api.updateFindingForBackend.handler(
+          mock.ctx,
+          updateArgs({ impact: "Invalid write" }),
+        ),
+      ).toMatchObject({ success: false, error: "chat_not_found" });
+      expect(row.impact).not.toBe("Invalid write");
+    },
+  );
+
+  it("caps list requests and rejects invalid service credentials", async () => {
+    const { api, mock, scope, updateArgs } = await setup();
+    expect(
+      await api.listReportsForBackend.handler(mock.ctx, {
+        ...scope,
+        paginationOpts: { numItems: 100, cursor: null },
+      }),
+    ).toMatchObject({ success: false, error: "validation" });
+    const { validateServiceKey } = await import("../lib/utils");
+    (validateServiceKey as jest.Mock).mockImplementationOnce(() => {
+      throw new Error("Unauthorized");
+    });
+    await expect(
+      api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ title: "Unauthorized" }),
+      ),
+    ).rejects.toThrow("Unauthorized");
+  });
+});

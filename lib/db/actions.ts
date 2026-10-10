@@ -27,7 +27,10 @@ import type {
   SubscriptionTier,
   NoteCategory,
 } from "@/types";
-import type { CreateVulnerabilityReportInput } from "@/lib/findings/validation";
+import type {
+  UpdateVulnerabilityReportInput,
+  CreateVulnerabilityReportInput,
+} from "@/lib/findings/validation";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
@@ -2055,6 +2058,74 @@ export async function createFinding({
       tool_call_id: toolCallId,
     });
   }
+}
+
+export async function listReports({
+  userId,
+  chatId,
+  limit,
+  cursor,
+  search,
+  status,
+}: {
+  userId: string;
+  chatId: string;
+  limit: number;
+  cursor: string | null;
+  search?: string;
+  status?: "active" | "closed";
+}) {
+  return getConvexClient().query(api.findings.listReportsForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    paginationOpts: { numItems: limit, cursor },
+    ...(search !== undefined ? { search } : {}),
+    ...(status ? { status } : {}),
+  });
+}
+
+export async function getReport({
+  userId,
+  chatId,
+  findingId,
+}: {
+  userId: string;
+  chatId: string;
+  findingId: string;
+}) {
+  return getConvexClient().query(api.findings.getReportForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    findingId,
+  });
+}
+
+export async function updateFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  update,
+  evidenceVerification,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  update: UpdateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  return getConvexClient().mutation(api.findings.updateFindingForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    messageId,
+    toolCallId,
+    update,
+    ...(evidenceVerification ? { evidenceVerification } : {}),
+  });
 }
 
 // ============================================================================

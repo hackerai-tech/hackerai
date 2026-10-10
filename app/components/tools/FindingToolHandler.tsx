@@ -39,7 +39,7 @@ const failureAction = (output: FindingOutput) => {
   return "Finding was not saved";
 };
 
-const SavedFindingCard = ({
+export const SavedFindingCard = ({
   output,
   toolCallId,
 }: {

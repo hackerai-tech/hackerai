@@ -1,4 +1,7 @@
 import {
+  listReportsToolInputSchema,
+  getReportToolInputSchema,
+  updateVulnerabilityReportToolInputSchema,
   createAgentToolSchemaSet,
   createFileToolSchema,
   createGetTerminalFilesToolSchema,
@@ -11,7 +14,10 @@ import {
   runTerminalCmdTool,
   todoWriteTool,
 } from "../schemas";
-import { createVulnerabilityReportInputSchema } from "@/lib/findings/validation";
+import {
+  updateVulnerabilityReportInputSchema,
+  createVulnerabilityReportInputSchema,
+} from "@/lib/findings/validation";
 import { zodSchema } from "ai";
 
 const getDescription = (value: unknown): string =>
@@ -424,5 +430,90 @@ describe("agent tool schema descriptions", () => {
       expect(deepSeekBrief.description).toContain("English only");
       expect(otherBrief.description).not.toContain("English only");
     }
+  });
+});
+
+describe("report read/update contracts", () => {
+  it("exposes all report tools in Agent and excludes them from Ask", () => {
+    for (const name of [
+      "list_reports",
+      "get_report",
+      "update_vulnerability_report",
+    ]) {
+      expect(createAgentToolSchemaSet({ mode: "agent" })).toHaveProperty(name);
+      expect(createAgentToolSchemaSet({ mode: "ask" })).not.toHaveProperty(
+        name,
+      );
+    }
+  });
+  it("bounds list results and does not accept model-selected user/chat scope", () => {
+    expect(listReportsToolInputSchema.parse({})).toEqual({ limit: 10 });
+    expect(listReportsToolInputSchema.safeParse({ limit: 26 }).success).toBe(
+      false,
+    );
+    expect(
+      listReportsToolInputSchema.safeParse({ user_id: "other-user" }).success,
+    ).toBe(false);
+    expect(
+      getReportToolInputSchema.safeParse({
+        finding_id: "finding-1",
+        chat_id: "other-chat",
+      }).success,
+    ).toBe(false);
+  });
+  it("keeps tool and persistence patch validation aligned", () => {
+    for (const changes of [
+      { title: "Corrected title" },
+      { cwe: null, endpoint: null, counterevidence: null },
+      { evidence_refs: [] },
+      {},
+      { status: "closed" },
+      { cvss_score: 10 },
+      { cvss_breakdown: { confidentiality: "L" } },
+      { impact: "First\\n\\nSecond" },
+    ]) {
+      const update = {
+        finding_id: "finding-1",
+        expected_updated_at: 10,
+        reason: "Corrected evidence",
+        changes,
+      };
+      expect(
+        findingValidationResult(
+          updateVulnerabilityReportToolInputSchema.safeParse(update),
+        ),
+      ).toEqual(
+        findingValidationResult(
+          updateVulnerabilityReportInputSchema.safeParse(update),
+        ),
+      );
+    }
+    expect(
+      updateVulnerabilityReportToolInputSchema.parse({
+        finding_id: "finding-1",
+        expected_updated_at: 10,
+        reason: "Remove an unsupported claim",
+        changes: { counterevidence: null },
+      }).changes,
+    ).toEqual({ counterevidence: null });
+    expect(
+      updateVulnerabilityReportInputSchema.safeParse({
+        finding_id: "finding-1",
+        reason: "Correct",
+        changes: { title: "New" },
+      }).success,
+    ).toBe(false);
+  });
+  it("serializes the provider schema without exposing runtime code", async () => {
+    const schema = await zodSchema(updateVulnerabilityReportToolInputSchema)
+      .jsonSchema;
+    expect(schema).toMatchObject({
+      type: "object",
+      properties: expect.objectContaining({
+        finding_id: expect.any(Object),
+        changes: expect.objectContaining({ type: "object" }),
+      }),
+    });
+    expect(JSON.stringify(schema)).not.toContain("execute");
   });
 });
