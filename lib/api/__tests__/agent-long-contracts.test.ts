@@ -929,7 +929,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
     );
     expect(taskSrc).toMatch(
-      /onModelStreamStart:\s*runTimingTracker\.startModelStream/,
+      /onModelStreamStart:\s*\(\) => \{\s*runReporting\.setStage\("model_stream"\);\s*runTimingTracker\.startModelStream\(\);/,
     );
     expect(taskSrc).toMatch(
       /onModelStreamFinish:\s*runTimingTracker\.finishModelStream/,

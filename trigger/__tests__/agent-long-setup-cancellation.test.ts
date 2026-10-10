@@ -37,6 +37,8 @@ function fixture(
   const ordinaryFailure = new Error("ordinary failure handler reached");
   const dependencies = {
     triggerSignal,
+    runReporting: { fail: jest.fn() },
+    isHandledUserRateLimitError: () => false,
     streamPiped,
     hasObservedUsage: () => used,
     releasePaidDailyFreeAllowanceReservation: jest.fn(async () => {}),
@@ -74,6 +76,10 @@ it.each([false, true])(
       chatId: "test-chat",
       assistantMessageId: "test-run",
     });
+    expect(d.runReporting.fail).toHaveBeenCalledWith(
+      controller.signal.reason,
+      "canceled",
+    );
     expect(d.releaseFreeRunLockBestEffort).toHaveBeenCalledWith("outer_catch");
     expect(d.releasePaidDailyFreeAllowanceReservation).toHaveBeenCalledTimes(
       used ? 0 : 1,
@@ -102,6 +108,10 @@ it.each(["not_canceled", "unrelated_error", "streaming"])(
       ordinaryFailure,
     } = fixture(controller.signal, scenario === "streaming");
     await expect(execute(error)).rejects.toBe(ordinaryFailure);
+    expect(d.runReporting.fail).toHaveBeenCalledWith(
+      error,
+      scenario === "streaming" ? "canceled" : "error",
+    );
     expect(d.classifyAgentLongError).toHaveBeenCalledWith(error);
     expect(d.metadata.set).not.toHaveBeenCalledWith("status", "canceled");
   },
