@@ -41,7 +41,15 @@ export default async function redirectToBillingPortal(
     stripe_customer_id: stripeCustomerId,
   };
 
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+  // Preview's configured base URL can point at an older branch. Keep recovery
+  // on this deployment, just as checkout does, without trusting a client origin.
+  const previewHost =
+    process.env.VERCEL_ENV === "preview"
+      ? (process.env.VERCEL_BRANCH_URL ?? process.env.VERCEL_URL)
+      : undefined;
+  const baseUrl = previewHost
+    ? `https://${previewHost}`
+    : process.env.NEXT_PUBLIC_BASE_URL;
   const returnUrl =
     options?.returnPath || flow === "payment_method"
       ? getExtraUsageReturnUrl(baseUrl!, options?.returnPath)
