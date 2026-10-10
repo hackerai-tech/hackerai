@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { AgentToolGroupRow } from "../AgentToolGroupRow";
+import { summarizeCompletedToolActivities } from "../worked-for-parts";
 import type { ChatMessage } from "@/types";
 
 const mockCaptureScrollPosition = jest.fn();
@@ -335,3 +336,46 @@ describe("AgentToolGroupRow", () => {
     expect(chevron).toHaveClass("touch-device:!opacity-100");
   });
 });
+
+it.each([
+  ["tool-create_vulnerability_report", "Created findings", "finding-create"],
+  ["tool-update_vulnerability_report", "Updated findings", "finding-update"],
+])(
+  "renders the specific %s label and retains expandable details",
+  (type, label, icon) => {
+    const reportActivities = [0, 1].map((index) => ({
+      id: `report-${index}`,
+      partIndex: index,
+      part: {
+        type,
+        state: "output-available",
+        output: {
+          success: true,
+          finding_id: `finding-${index}`,
+          title: "Synthetic finding",
+          target: "lab.example.test",
+          severity: "high",
+          cvss_score: 7.1,
+        },
+      } as unknown as ChatMessage["parts"][number],
+    }));
+    render(
+      group(
+        true,
+        reportActivities,
+        summarizeCompletedToolActivities(reportActivities),
+      ),
+    );
+    const header = screen.getByRole("button", {
+      name: `${label}. Show tool details`,
+    });
+    expect(header).toHaveTextContent(label);
+    expect(header.querySelector("[data-summary-icon]")).toHaveAttribute(
+      "data-summary-icon",
+      icon,
+    );
+    expect(screen.queryByText("Used tools")).not.toBeInTheDocument();
+    fireEvent.click(header);
+    expect(screen.getAllByTestId("grouped-tool-detail")).toHaveLength(2);
+  },
+);
