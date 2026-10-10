@@ -3,6 +3,7 @@ import {
   ABLITERATED_MAX_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
 } from "../experiments/abliteration-keys";
 import type { AbliteratedAssignment } from "../experiments/abliterated-model";
 
@@ -28,6 +29,9 @@ export function experimentTaskOutcomePhase(key: AbliteratedAssignment["key"]) {
     case ABLITERATED_PAID_MODERATED_DEFAULT_KEY:
       return PAID_MODERATED_TASK_OUTCOME_PHASE;
     case ABLITERATED_EXPERIMENT_KEY:
+    case ABLITERATED_PAID_THREE_STEPS_KEY:
+      // This experiment measures operational outcomes; do not reuse an old
+      // survey cohort or relabel its historical reservations.
       return undefined;
     default: {
       // A future routing phase must explicitly choose its feedback cohort.

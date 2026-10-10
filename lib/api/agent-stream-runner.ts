@@ -3,7 +3,10 @@ import type {
   AbliteratedModelTelemetry,
   ModelStepRouting,
 } from "@/lib/analytics/abliterated-model";
-import { resolveAbliterationModelForGenerationStep } from "@/lib/experiments/abliterated-model-steps";
+import {
+  resolveAbliterationModelForGenerationStep,
+  type AbliterationGenerationStepLimit,
+} from "@/lib/experiments/abliterated-model-steps";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
 import { CompactionModelPolicy } from "@/lib/chat/summarization/compaction-policy";
 import { withProviderModelHistory } from "@/lib/ai/provider-model-history";
@@ -726,6 +729,7 @@ export type AgentStreamContext = {
   abliteratedTelemetry?: AbliteratedModelTelemetry;
   abliteratedStepRouting?: {
     baselineModel: string;
+    generationStepLimit?: AbliterationGenerationStepLimit;
   };
   trackedProvider: ReturnType<typeof createTrackedProvider>;
   currentSystemPrompt: string;
@@ -1173,6 +1177,7 @@ export async function createAgentStream(
       ? resolveAbliterationModelForGenerationStep({
           treatmentModel: routeModelName,
           baselineModel: ctx.abliteratedStepRouting.baselineModel,
+          generationStepLimit: ctx.abliteratedStepRouting.generationStepLimit,
           stepIndex,
         })
       : routeModelName;

@@ -79,6 +79,7 @@ export class AbliteratedModelTelemetry {
   private selectionSource: "moderation" | "history" | "paid_first_step";
   private readonly startedAt = Date.now();
   private readonly properties: Record<string, string | number | boolean>;
+  private readonly generationStepLimit: number;
 
   constructor(
     private readonly posthog: Pick<PostHog, "capture"> | null,
@@ -93,6 +94,8 @@ export class AbliteratedModelTelemetry {
     },
   ) {
     this.selectionSource = args.assignment.selectionSource ?? "moderation";
+    this.generationStepLimit =
+      args.assignment.generationStepLimit ?? ABLITERATION_MAX_GENERATION_STEPS;
     this.properties = {
       experiment_key: args.assignment.key,
       experiment_variant: args.assignment.variant,
@@ -105,7 +108,7 @@ export class AbliteratedModelTelemetry {
       selected_model_override: args.selectedModelOverride ?? "auto",
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
-      generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
+      generation_step_limit: this.generationStepLimit,
       moderation_eligible:
         args.assignment.moderationEligible ??
         this.selectionSource === "moderation",
@@ -158,6 +161,7 @@ export class AbliteratedModelTelemetry {
   getSummary() {
     return {
       telemetry_version: 2,
+      generation_step_limit: this.generationStepLimit,
       ...this.routing,
       // Planned step/vision selection never establishes a fallback. Evidence
       // must come from a recovering call or an actual upstream fallback model.
@@ -247,7 +251,7 @@ export class AbliteratedModelTelemetry {
             attempt,
             generation_step: stepIndex + 1,
             within_abliteration_step_limit:
-              stepIndex < ABLITERATION_MAX_GENERATION_STEPS,
+              stepIndex >= 0 && stepIndex < this.generationStepLimit,
             requested_model: model.modelId,
             response_model: responseModel,
             platform_authorization_context: annotationAppended

@@ -6,6 +6,7 @@ import {
   ABLITERATED_EXPERIMENT_KEY,
   ABLITERATED_PAID_FIRST_STEP_KEY,
   ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
 } from "@/lib/experiments/abliterated-model";
 
 const finishPart = {
@@ -641,6 +642,45 @@ describe("Abliteration stream telemetry", () => {
       independent_history_count: 2,
     });
   });
+  it.each(["control", "test"] as const)(
+    "records %s step policy only on actual stream exposure",
+    async (variant) => {
+      const generationStepLimit = variant === "test" ? 3 : 1;
+      const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
+        assignment: {
+          key: ABLITERATED_PAID_THREE_STEPS_KEY,
+          variant,
+          generationStepLimit,
+          modelKey: "model-abliterated",
+          baselineModel: "model-grok-4.6",
+          selectionSource: "moderation",
+        },
+        messageId: "m",
+        chatId: "c",
+        mode: "agent",
+        subscription: "pro",
+      });
+      expect(events("abliterated_model_eligible")[0].properties).toMatchObject({
+        generation_step_limit: generationStepLimit,
+      });
+      expect(events("abliterated_model_exposed")).toHaveLength(0);
+      await consume(
+        telemetry,
+        model([{ type: "text-delta", id: "t", delta: "ok" }, finishPart]),
+        2,
+      );
+      expect(events("abliterated_model_exposed")[0].properties).toMatchObject({
+        experiment_key: ABLITERATED_PAID_THREE_STEPS_KEY,
+        [`$feature/${ABLITERATED_PAID_THREE_STEPS_KEY}`]: variant,
+        generation_step_limit: generationStepLimit,
+        generation_step: 3,
+        within_abliteration_step_limit: variant === "test",
+      });
+      expect(telemetry.getSummary()).toMatchObject({
+        generation_step_limit: generationStepLimit,
+      });
+    },
+  );
   it("attributes actual shipped-default output separately from the retired experiment", async () => {
     const telemetry = new AbliteratedModelTelemetry({ capture }, "user", {
       assignment: {

@@ -6,6 +6,33 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
+## One versus three moderation-selected steps
+
+[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns
+`abliterated_paid_three_steps_v1`. Eligible paid Ask and Agent requests evaluate
+it with the authenticated user ID after the existing moderation, provider,
+input and rescue checks. Control uses base `abliterated-model` for step 1;
+treatment uses it for steps 1–3. Both return to the exact saved baseline afterward.
+The limit is captured once per response/run, survives stream retries without
+resetting the completed-step counter, and provider failure still disables
+Abliteration immediately. Missing flags, unknown variants, lookup errors and
+missing analytics preserve the shipped one-step policy.
+
+Production enrolls all eligible paid users with a stable 50/50 control/test split;
+Preview forces eligible treatment at 100%. Free and non-moderated requests do
+not evaluate this flag. These are generation steps, not a requirement to run
+three calls when a response finishes earlier. Deploy Vercel and Trigger separately
+before activation; flag changes then apply to new requests/runs without another
+release. Existing runs retain their worker and assignment.
+
+Eligibility, actual streamed text/tool exposure and response outcomes carry the
+new key/variant and `generation_step_limit`. Native exposed-user results exclude
+pre-output failures; the owning issue requires a separate deduplicated eligible
+request readout with missing outcomes retained. This experiment uses operational
+telemetry, not the historical task-outcome survey cohorts. Disable the new flag
+to restore one-step routing. Keep owner, review dates, guardrails and cleanup
+choices in HAC-153.
+
 ## Retired paid first-step trial
 
 [HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the historical
