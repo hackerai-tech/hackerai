@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 const NOTICE_ID = "billing-recovery-return";
 
@@ -52,9 +53,16 @@ export function BillingRecoveryReturnNotice() {
           (status.subscriptionStatus === "active" ||
             status.subscriptionStatus === "trialing")
         ) {
-          toast.success("Your renewal invoice is paid. Your plan is active.", {
-            id: NOTICE_ID,
-          });
+          toast.success(
+            "Your renewal invoice is paid. Refresh to update your access.",
+            {
+              id: NOTICE_ID,
+              action: {
+                label: "Refresh",
+                onClick: reloadWithEntitlementRefresh,
+              },
+            },
+          );
         } else if (status.renewalPaymentRequired) {
           const detail =
             status.renewalPaymentFailure === "insufficient_funds"

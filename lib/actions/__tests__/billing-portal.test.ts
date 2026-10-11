@@ -1,10 +1,32 @@
-import { describe, expect, it, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  expect,
+  it,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 
 const mockCreateBillingPortalSession = jest.fn();
 const mockGetBillingActionContext = jest.fn();
 const mockPostHogError = jest.fn();
 const mockPostHogEvent = jest.fn();
 const mockAssertUserCanStartBillingTransaction = jest.fn();
+const mockHeaders = jest.fn();
+const originalEnv = process.env;
+
+beforeEach(() => {
+  process.env = { ...originalEnv };
+  delete process.env.VERCEL_ENV;
+  delete process.env.VERCEL_BRANCH_URL;
+  delete process.env.VERCEL_URL;
+  mockHeaders.mockResolvedValue(new Headers() as never);
+});
+afterEach(() => {
+  process.env = originalEnv;
+});
+
+jest.mock("next/headers", () => ({ headers: mockHeaders }));
 
 jest.mock("@/app/api/stripe", () => ({
   stripe: {
@@ -96,6 +118,70 @@ describe("redirectToBillingPortal", () => {
     );
   });
 
+  it.each([
+    ["hackerai-git-recovery.vercel.app", "hackerai-git-recovery.vercel.app"],
+    [undefined, "hackerai-build.vercel.app"],
+  ])(
+    "returns Preview recovery to its own deployment (%s)",
+    async (branchUrl, expectedHost) => {
+      process.env.VERCEL_ENV = "preview";
+      process.env.VERCEL_URL = "hackerai-build.vercel.app";
+      if (branchUrl) process.env.VERCEL_BRANCH_URL = branchUrl;
+      process.env.NEXT_PUBLIC_BASE_URL = "https://stale-preview.vercel.app";
+      mockCreateBillingPortalSession.mockResolvedValue({
+        id: "bps_preview",
+        url: "https://billing.stripe.com/session",
+      } as never);
+      const { default: openPortal } = await import("../billing-portal");
+      await openPortal("payment_method", { returnPath: "/c/test-chat" });
+      expect(mockCreateBillingPortalSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          return_url: `https://${expectedHost}/c/test-chat?billing-recovery-return=1&refresh=entitlements`,
+        }),
+      );
+    },
+  );
+
+  it("keeps the configured public origin in Production", async () => {
+    process.env.VERCEL_ENV = "production";
+    process.env.VERCEL_BRANCH_URL = "hackerai-git-main.vercel.app";
+    process.env.VERCEL_URL = "hackerai-build.vercel.app";
+    mockCreateBillingPortalSession.mockResolvedValue({
+      url: "https://billing.stripe.com/session",
+    } as never);
+    const { default: openPortal } = await import("../billing-portal");
+    await openPortal();
+    expect(mockCreateBillingPortalSession).toHaveBeenCalledWith({
+      customer: "cus_123",
+      return_url: "https://hackerai.co",
+    });
+  });
+
+  it.each([
+    ["hackerai-build.vercel.app", "hackerai-build.vercel.app"],
+    ["hackerai-git-recovery.vercel.app", "hackerai-git-recovery.vercel.app"],
+    ["untrusted.example", "hackerai-git-recovery.vercel.app"],
+  ])(
+    "preserves the authenticated Preview host only when trusted (%s)",
+    async (host, expectedHost) => {
+      process.env.VERCEL_ENV = "preview";
+      process.env.VERCEL_URL = "hackerai-build.vercel.app";
+      process.env.VERCEL_BRANCH_URL = "hackerai-git-recovery.vercel.app";
+      mockHeaders.mockResolvedValue(new Headers({ host }) as never);
+      mockCreateBillingPortalSession.mockResolvedValue({
+        id: "bps_preview",
+        url: "https://billing.stripe.com/session",
+      } as never);
+      const { default: openPortal } = await import("../billing-portal");
+      await openPortal("payment_method", { returnPath: "/c/test-chat" });
+      expect(mockCreateBillingPortalSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          return_url: `https://${expectedHost}/c/test-chat?billing-recovery-return=1&refresh=entitlements`,
+        }),
+      );
+    },
+  );
+
   it("logs the action stage when Stripe session creation fails", async () => {
     const error = new Error("Stripe unavailable");
     mockCreateBillingPortalSession.mockRejectedValue(error as never);
@@ -181,6 +267,9 @@ describe("redirectToBillingPortal", () => {
 });
 
 describe("blocked-chat payment portal return", () => {
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_BASE_URL = "https://preview.example.com";
+  });
   it("returns to the same chat with an actual entitlement refresh", async () => {
     process.env.NEXT_PUBLIC_BASE_URL = "https://preview.example.com";
     mockGetBillingActionContext.mockResolvedValue({

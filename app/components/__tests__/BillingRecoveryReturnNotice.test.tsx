@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { toast } from "sonner";
 import { BillingRecoveryReturnNotice } from "../BillingRecoveryReturnNotice";
 import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
+import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 jest.mock("sonner", () => ({
   toast: {
@@ -14,6 +15,9 @@ jest.mock("sonner", () => ({
 }));
 jest.mock("@/lib/billing/client", () => ({
   getSubscriptionCancellationStatus: jest.fn(),
+}));
+jest.mock("@/lib/auth/entitlement-refresh-navigation", () => ({
+  reloadWithEntitlementRefresh: jest.fn(),
 }));
 
 const statusMock = jest.mocked(getSubscriptionCancellationStatus);
@@ -110,16 +114,28 @@ it("reports an unpaid retry after portal return and supports checking again", as
   );
   expect(window.location.search).toBe("?refresh=entitlements");
   expect(window.history.state).toEqual({ route: "chat" });
+  expect(reloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  // The initial entitlement refresh can finish before Stripe's payment webhook.
+  window.history.replaceState({ route: "chat" }, "", "/c/test");
   const options = jest.mocked(toast.error).mock.calls[0][1] as {
     action: { onClick: () => void };
   };
   options.action.onClick();
   await waitFor(() =>
     expect(toast.success).toHaveBeenCalledWith(
-      "Your renewal invoice is paid. Your plan is active.",
-      { id: "billing-recovery-return" },
+      "Your renewal invoice is paid. Refresh to update your access.",
+      expect.objectContaining({
+        id: "billing-recovery-return",
+        action: { label: "Refresh", onClick: expect.any(Function) },
+      }),
     ),
   );
+  expect(reloadWithEntitlementRefresh).not.toHaveBeenCalled();
+  const paidOptions = jest.mocked(toast.success).mock.calls[0][1] as {
+    action: { onClick: () => void };
+  };
+  paidOptions.action.onClick();
+  expect(reloadWithEntitlementRefresh).toHaveBeenCalledTimes(1);
 });
 
 it("does not claim invoice success from an active plan alone", async () => {
