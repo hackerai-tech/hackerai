@@ -358,3 +358,31 @@ it("offers an explicit entitlement refresh after a payment status check succeeds
     ),
   );
 });
+
+it.each([
+  [
+    { ...delinquent, renewalPaymentRequired: false },
+    "Payment is not confirmed yet. Review your invoice or update your card.",
+  ],
+  [
+    {
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      checkoutRequiresReview: true,
+    },
+    "Your previous payment still needs review. Contact billing support.",
+  ],
+] as const)(
+  "preserves status-check feedback for non-renewal recovery (%j)",
+  async (status, feedback) => {
+    statusMock.mockResolvedValue(status);
+    setup();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Check payment status" }),
+    );
+    expect(await screen.findByText(feedback)).toBeVisible();
+    expect(
+      screen.queryByText("Add credits or upgrade"),
+    ).not.toBeInTheDocument();
+  },
+);

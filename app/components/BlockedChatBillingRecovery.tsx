@@ -55,7 +55,7 @@ export function BlockedChatBillingRecovery({
     },
   );
 
-  if (loading || isLoading || (isValidating && !data?.renewalPaymentRequired)) {
+  if (loading || isLoading || (isValidating && !data && !error)) {
     return (
       <p role="status" className="p-3 text-sm text-muted-foreground">
         Checking billing…
