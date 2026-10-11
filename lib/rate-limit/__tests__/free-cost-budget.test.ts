@@ -8,6 +8,7 @@ import {
 } from "../free-monthly-cost";
 import { createRedisClient } from "../redis";
 import type { FreeLimitPolicy } from "../free-config";
+import { isHandledUserRateLimitError } from "../error-classification";
 
 jest.mock("../redis");
 jest.mock("../free-monthly-cost");
@@ -57,11 +58,15 @@ it("treatment reads shared daily cost with no monthly admission gate", async () 
 });
 it("denies an exhausted daily allowance with a distinct cap and next-day reset", async () => {
   get.mockResolvedValue(1010);
-  await expect(checkFreeCostBudget("quota", policy)).rejects.toMatchObject({
+  const error = await checkFreeCostBudget("quota", policy).catch(
+    (error) => error,
+  );
+  expect(error).toMatchObject({
     metadata: expect.objectContaining({
       capReason: "free_daily_cost_exhausted",
     }),
   });
+  expect(isHandledUserRateLimitError(error)).toBe(true);
 });
 it("settles cumulative actual cost into the original day and monthly shadow ledger", async () => {
   jest.setSystemTime(new Date("2026-10-02T00:01:00Z"));
@@ -89,16 +94,24 @@ it("settles cumulative actual cost into the original day and monthly shadow ledg
 });
 it("does not allow a durable approval to reopen yesterday's quota", async () => {
   jest.setSystemTime(new Date("2026-10-02T00:01:00Z"));
-  await expect(checkFreeCostBudget("quota", policy)).rejects.toMatchObject({
+  const error = await checkFreeCostBudget("quota", policy).catch(
+    (error) => error,
+  );
+  expect(error).toMatchObject({
     cause: expect.stringContaining("daily allowance window has ended"),
   });
+  expect(isHandledUserRateLimitError(error)).toBe(true);
   expect(get).not.toHaveBeenCalled();
 });
 it("fails closed on invalid ledger data", async () => {
   get.mockResolvedValue("bad");
-  await expect(checkFreeCostBudget("quota", policy)).rejects.toMatchObject({
+  const error = await checkFreeCostBudget("quota", policy).catch(
+    (error) => error,
+  );
+  expect(error).toMatchObject({
     cause: "Rate limiting service returned invalid usage",
   });
+  expect(isHandledUserRateLimitError(error)).toBe(false);
 });
 it("retries cumulative settlement after a lost response without advancing local state", async () => {
   evalCost

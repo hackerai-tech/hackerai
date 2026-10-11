@@ -41,7 +41,11 @@ describe("isHandledUserRateLimitError", () => {
     "Extra usage billing is temporarily unavailable",
   ])("does not hide operational failure: %s", (cause) => {
     expect(
-      isHandledUserRateLimitError(new ChatSDKError("rate_limit:chat", cause)),
+      isHandledUserRateLimitError(
+        new ChatSDKError("rate_limit:chat", cause, {
+          capReason: "free_daily_cost_exhausted",
+        }),
+      ),
     ).toBe(false);
   });
 

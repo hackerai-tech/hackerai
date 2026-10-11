@@ -10,6 +10,7 @@ const HANDLED_USER_RATE_LIMIT_CAP_REASONS = new Set([
   "free_concurrency",
   "daily_requests_exhausted",
   "free_monthly_exhausted",
+  "free_daily_cost_exhausted",
   "monthly_exhausted",
   "extra_usage_cap",
   "team_member_cap",
