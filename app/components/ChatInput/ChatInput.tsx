@@ -340,6 +340,7 @@ const ChatInputContent = ({
   const [compactAgentControls, setCompactAgentControls] = useState(false);
   const [composerActive, setComposerActive] = useState(false);
   const [editorExpanded, setEditorExpanded] = useState(false);
+  const showAgentControls = isCentered || composerActive;
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
@@ -1020,7 +1021,7 @@ const ChatInputContent = ({
             />
             <ChatInputToolbar
               compactAgentControls={compactAgentControls}
-              showAgentControls={composerActive}
+              showAgentControls={showAgentControls}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
@@ -1039,7 +1040,7 @@ const ChatInputContent = ({
 
         {/* Compact Agent controls below the input. The composer switches to
             this strip whenever its own width is constrained, even on desktop. */}
-        {user && isAgent && composerActive && !showAgentApprovalPrompt && (
+        {user && isAgent && showAgentControls && !showAgentApprovalPrompt && (
           <div
             className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}

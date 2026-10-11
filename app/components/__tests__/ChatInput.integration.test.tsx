@@ -260,8 +260,9 @@ describe("ChatInput - Integration Tests", () => {
       mockIsMobile = true;
     });
 
-    const renderEditor = (onSubmit = mockOnSubmit) =>
-      render(
+    const multilineDraft = (text: string) => `${text}${"\n".repeat(6)}`;
+    const renderEditor = (onSubmit = mockOnSubmit) => {
+      const result = render(
         <TestWrapper>
           <ChatInput
             onSubmit={onSubmit}
@@ -272,11 +273,49 @@ describe("ChatInput - Integration Tests", () => {
           />
         </TestWrapper>,
       );
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: multilineDraft("A multiline draft") },
+      });
+      return result;
+    };
+
+    it("offers mobile expansion only above five newline characters", () => {
+      renderEditor();
+      const input = screen.getByTestId("chat-input");
+      fireEvent.change(input, { target: { value: "" } });
+      expect(
+        screen.queryByRole("button", { name: "Expand message editor" }),
+      ).not.toBeInTheDocument();
+      fireEvent.change(input, {
+        target: { value: `A draft${"\n".repeat(5)}` },
+      });
+      expect(
+        screen.queryByRole("button", { name: "Expand message editor" }),
+      ).not.toBeInTheDocument();
+      fireEvent.change(input, { target: { value: multilineDraft("A draft") } });
+      expect(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      ).toBeInTheDocument();
+      fireEvent.change(input, { target: { value: "Short again" } });
+      expect(
+        screen.queryByRole("button", { name: "Expand message editor" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps expansion hidden on desktop even for multiline drafts", () => {
+      mockIsMobile = false;
+      renderEditor();
+      expect(
+        screen.queryByRole("button", { name: "Expand message editor" }),
+      ).not.toBeInTheDocument();
+    });
 
     it("keeps edits, selection and the saved draft when collapsed", async () => {
       renderEditor();
       const compact = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-      fireEvent.change(compact, { target: { value: "Review this draft" } });
+      fireEvent.change(compact, {
+        target: { value: multilineDraft("Review this draft") },
+      });
       compact.setSelectionRange(7, 11);
       fireEvent.click(
         screen.getByRole("button", { name: "Expand message editor" }),
@@ -308,7 +347,7 @@ describe("ChatInput - Integration Tests", () => {
     it("keeps Enter for editing and sends through the existing submit handler", async () => {
       renderEditor();
       fireEvent.change(screen.getByTestId("chat-input"), {
-        target: { value: "A bounded request" },
+        target: { value: multilineDraft("A bounded request") },
       });
       fireEvent.click(
         screen.getByRole("button", { name: "Expand message editor" }),
@@ -330,7 +369,7 @@ describe("ChatInput - Integration Tests", () => {
       const rejectSubmit = jest.fn(() => false);
       renderEditor(rejectSubmit);
       fireEvent.change(screen.getByTestId("chat-input"), {
-        target: { value: "Keep this draft" },
+        target: { value: multilineDraft("Keep this draft") },
       });
       fireEvent.click(
         screen.getByRole("button", { name: "Expand message editor" }),
@@ -338,7 +377,7 @@ describe("ChatInput - Integration Tests", () => {
       fireEvent.click(screen.getByRole("button", { name: "Send message" }));
       await waitFor(() => expect(rejectSubmit).toHaveBeenCalledTimes(1));
       expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
-        "Keep this draft",
+        multilineDraft("Keep this draft"),
       );
       act(() => {
         setNavigatorOnline(false);
@@ -357,7 +396,7 @@ describe("ChatInput - Integration Tests", () => {
     it("restores the draft on Escape", async () => {
       renderEditor();
       fireEvent.change(screen.getByTestId("chat-input"), {
-        target: { value: "Escape keeps this" },
+        target: { value: multilineDraft("Escape keeps this") },
       });
       fireEvent.click(
         screen.getByRole("button", { name: "Expand message editor" }),
@@ -368,7 +407,9 @@ describe("ChatInput - Integration Tests", () => {
       await waitFor(() =>
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
       );
-      expect(screen.getByTestId("chat-input")).toHaveValue("Escape keeps this");
+      expect(screen.getByTestId("chat-input")).toHaveValue(
+        multilineDraft("Escape keeps this"),
+      );
     });
 
     it("follows keyboard viewport resize and scroll without covering the send controls", () => {
@@ -1118,6 +1159,50 @@ describe("ChatInput - Integration Tests", () => {
         );
       },
     );
+
+    it("shows home-screen Agent controls immediately and keeps them visible when clicking outside", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "localSandbox:listConnections"
+          ? [
+              {
+                connectionId: "local-sandbox",
+                name: "Local sandbox",
+                isDesktop: false,
+              },
+            ]
+          : undefined,
+      );
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            autoFocus={false}
+            isCentered
+            isNewChat
+          />
+        </TestWrapper>,
+      );
+      expect(
+        await screen.findByTestId("chat-input-agent-context"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("chat-input-desktop-permission"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("chat-input-desktop-sandbox"),
+      ).toBeInTheDocument();
+      fireEvent.pointerDown(document.body);
+      expect(
+        screen.getByTestId("chat-input-agent-context"),
+      ).toBeInTheDocument();
+    });
 
     it("reveals Agent controls on interaction and keeps them during permission selection", async () => {
       jest.mocked(useAuth).mockReturnValue({

@@ -69,6 +69,9 @@ export function ChatInputTextarea({
   const selectionRef = useRef({ start: 0, end: 0 });
   const isMobile = useIsMobile();
   const editorOpen = expanded && Boolean(isMobile);
+  const showExpandButton = Boolean(
+    isMobile && onExpandedChange && (input.match(/\n/g)?.length ?? 0) > 5,
+  );
   const inputRef = useRef(input);
   const prevDraftIdRef = useRef(draftId);
   const inputPlaceholder =
@@ -232,7 +235,7 @@ export function ChatInputTextarea({
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder={inputPlaceholder}
-        className={`flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${onExpandedChange ? "pr-10 md:pr-0" : ""}`}
+        className={`flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px] ${showExpandButton ? "pr-10" : ""}`}
         minRows={minRows}
         autoFocus={autoFocus}
         disabled={disabled}
@@ -244,7 +247,7 @@ export function ChatInputTextarea({
           }
         }}
       />
-      {isMobile && onExpandedChange && (
+      {showExpandButton && (
         <Button
           type="button"
           variant="ghost"
@@ -257,7 +260,7 @@ export function ChatInputTextarea({
               start: textareaRef.current?.selectionStart ?? input.length,
               end: textareaRef.current?.selectionEnd ?? input.length,
             };
-            onExpandedChange(true);
+            onExpandedChange?.(true);
           }}
         >
           <Maximize2 className="h-4 w-4" />
