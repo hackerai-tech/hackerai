@@ -37,6 +37,7 @@ import { SandboxSelector } from "../SandboxSelector";
 import { AgentPermissionSelector } from "../AgentPermissionSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
+import { SubmitStopButton } from "./SubmitStopButton";
 import { AgentApprovalPrompt } from "./AgentApprovalPrompt";
 import type { UploadedFileState } from "@/types/file";
 import { useQuery } from "convex/react";
@@ -337,9 +338,30 @@ const ChatInputContent = ({
   const [isStoppingAgent, setIsStoppingAgent] = useState(false);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [compactAgentControls, setCompactAgentControls] = useState(false);
+  const [composerActive, setComposerActive] = useState(false);
+  const [editorExpanded, setEditorExpanded] = useState(false);
   const chatInputContainerRef = useRef<HTMLDivElement>(null);
   const showAgentApprovalPrompt =
     !!user && !!approvalRequest && !isStoppingAgent;
+
+  useEffect(() => {
+    const isComposerTarget = (target: EventTarget | null) =>
+      target instanceof Element &&
+      (chatInputContainerRef.current?.contains(target) ||
+        Boolean(target.closest("[data-composer-overlay]")));
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!isComposerTarget(e.target)) setComposerActive(false);
+    };
+    const handleFocus = (e: FocusEvent) => {
+      setComposerActive(Boolean(isComposerTarget(e.target)));
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("focusin", handleFocus);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("focusin", handleFocus);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const container = chatInputContainerRef.current;
@@ -789,6 +811,8 @@ const ChatInputContent = ({
         isSubmittingAttachmentsRef.current = false;
         return;
       }
+      setEditorExpanded(false);
+      setComposerActive(false);
       if (clearDraftOnSubmit) {
         uploadedFilesRef.current = [];
         removeDraft(draftId);
@@ -852,6 +876,8 @@ const ChatInputContent = ({
         ref={chatInputContainerRef}
         className="mx-auto flex w-full min-w-0 max-w-full flex-1 flex-col sm:min-w-[390px] sm:max-w-[768px]"
         data-testid="chat-input-container"
+        onPointerDownCapture={() => setComposerActive(true)}
+        onKeyDownCapture={() => setComposerActive(true)}
       >
         {isOffline && (
           <div
@@ -972,9 +998,29 @@ const ChatInputContent = ({
               minRows={isCentered ? 3 : 1}
               placeholder={placeholder}
               autoFocus={autoFocus}
+              expanded={editorExpanded}
+              onExpandedChange={setEditorExpanded}
+              expandedActions={
+                <SubmitStopButton
+                  isGenerating={isGenerating}
+                  hideStop={hideStop}
+                  onStop={() => void handleAgentStop()}
+                  onSubmit={handleSubmit}
+                  status={status}
+                  isUploadingFiles={isUploadingFiles}
+                  input={input}
+                  uploadedFiles={uploadedFiles}
+                  chatMode={user ? chatMode : "ask"}
+                  isPaid={subscription !== "free"}
+                  useNeutralAgentStyle={freeDesktopAgentOnlyActive}
+                  isOnline={!isOffline}
+                  sendDisabledReason={effectiveSendDisabledReason}
+                />
+              }
             />
             <ChatInputToolbar
               compactAgentControls={compactAgentControls}
+              showAgentControls={composerActive}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}
               hideStop={hideStop}
@@ -993,7 +1039,7 @@ const ChatInputContent = ({
 
         {/* Compact Agent controls below the input. The composer switches to
             this strip whenever its own width is constrained, even on desktop. */}
-        {user && isAgent && !showAgentApprovalPrompt && (
+        {user && isAgent && composerActive && !showAgentApprovalPrompt && (
           <div
             className={`chat-input-glass-context relative z-0 order-3 mx-2 -mt-2 flex min-h-10 min-w-0 flex-nowrap items-center gap-2 rounded-b-[18px] border border-t-0 border-black/8 px-3 py-2 sm:mx-6 dark:border-border/70 ${compactAgentControls ? "" : "md:hidden"}`}
             data-compact={compactAgentControls ? "true" : "false"}

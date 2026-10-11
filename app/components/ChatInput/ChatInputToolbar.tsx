@@ -16,11 +16,13 @@ import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   compactAgentControls?: boolean;
+  showAgentControls?: boolean;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
   compactAgentControls = false,
+  showAgentControls = true,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -65,7 +67,7 @@ export function ChatInputToolbar({
           <ChatModeSelector />
         ) : null}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
-        {user && isAgentMode(chatMode) ? (
+        {user && isAgentMode(chatMode) && showAgentControls ? (
           <>
             <div
               className={

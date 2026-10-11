@@ -30,6 +30,8 @@ import { toast } from "sonner";
 let mockSandboxState: Partial<
   ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
 > = {};
+let mockIsMobile = false;
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 jest.mock("@/app/contexts/GlobalState", () => {
   const original = jest.requireActual<
     typeof import("@/app/contexts/GlobalState")
@@ -229,6 +231,7 @@ describe("ChatInput - Integration Tests", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSandboxState = {};
+    mockIsMobile = false;
     jest.mocked(isTauriEnvironment).mockReturnValue(false);
     jest
       .mocked(useAuth)
@@ -250,6 +253,160 @@ describe("ChatInput - Integration Tests", () => {
     });
     window.localStorage.clear();
     setNavigatorOnline(true);
+  });
+
+  describe("Mobile message editor", () => {
+    beforeEach(() => {
+      mockIsMobile = true;
+    });
+
+    const renderEditor = (onSubmit = mockOnSubmit) =>
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={onSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            autoFocus={false}
+            chatId="mobile-draft"
+          />
+        </TestWrapper>,
+      );
+
+    it("keeps edits, selection and the saved draft when collapsed", async () => {
+      renderEditor();
+      const compact = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+      fireEvent.change(compact, { target: { value: "Review this draft" } });
+      compact.setSelectionRange(7, 11);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      );
+      const editor = screen.getByRole("textbox", {
+        name: "Message",
+      }) as HTMLTextAreaElement;
+      expect(editor).toHaveFocus();
+      expect(editor.selectionStart).toBe(7);
+      expect(editor.selectionEnd).toBe(11);
+      fireEvent.change(editor, {
+        target: { value: "Review this draft\nWith more detail" },
+      });
+      editor.setSelectionRange(5, 5);
+      fireEvent.select(editor);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Collapse message editor" }),
+      );
+      await waitFor(() => expect(compact).toHaveFocus());
+      expect(compact).toHaveValue("Review this draft\nWith more detail");
+      expect(compact.selectionStart).toBe(5);
+      await waitFor(() =>
+        expect(getDraftContentById("mobile-draft")).toBe(
+          "Review this draft\nWith more detail",
+        ),
+      );
+    });
+
+    it("keeps Enter for editing and sends through the existing submit handler", async () => {
+      renderEditor();
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: "A bounded request" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      );
+      const editor = screen.getByRole("textbox", { name: "Message" });
+      fireEvent.keyDown(editor, { key: "Enter" });
+      expect(mockOnSubmit).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() => expect(mockOnSubmit).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(screen.getByTestId("chat-input")).toHaveValue(""),
+      );
+    });
+
+    it("keeps a rejected draft open and respects offline send protection", async () => {
+      const rejectSubmit = jest.fn(() => false);
+      renderEditor(rejectSubmit);
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: "Keep this draft" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() => expect(rejectSubmit).toHaveBeenCalledTimes(1));
+      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+        "Keep this draft",
+      );
+      act(() => {
+        setNavigatorOnline(false);
+        window.dispatchEvent(new Event("offline"));
+      });
+      expect(
+        screen.getByRole("button", { name: "Send message" }),
+      ).toBeDisabled();
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), {
+        key: "Enter",
+        ctrlKey: true,
+      });
+      expect(rejectSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("restores the draft on Escape", async () => {
+      renderEditor();
+      fireEvent.change(screen.getByTestId("chat-input"), {
+        target: { value: "Escape keeps this" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      );
+      fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), {
+        key: "Escape",
+      });
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(screen.getByTestId("chat-input")).toHaveValue("Escape keeps this");
+    });
+
+    it("follows keyboard viewport resize and scroll without covering the send controls", () => {
+      const original = Object.getOwnPropertyDescriptor(
+        window,
+        "visualViewport",
+      );
+      const viewport = Object.assign(new EventTarget(), {
+        height: 500,
+        offsetTop: 0,
+      });
+      Object.defineProperty(window, "visualViewport", {
+        configurable: true,
+        value: viewport,
+      });
+      try {
+        renderEditor();
+        fireEvent.click(
+          screen.getByRole("button", { name: "Expand message editor" }),
+        );
+        const editor = screen.getByRole("dialog");
+        expect(editor).toHaveStyle({ height: "500px", top: "0px" });
+        act(() => {
+          viewport.height = 300;
+          viewport.offsetTop = 45;
+          viewport.dispatchEvent(new Event("resize"));
+        });
+        expect(editor).toHaveStyle({ height: "300px", top: "45px" });
+        act(() => {
+          viewport.offsetTop = 60;
+          viewport.dispatchEvent(new Event("scroll"));
+        });
+        expect(editor).toHaveStyle({ top: "60px" });
+      } finally {
+        if (original) Object.defineProperty(window, "visualViewport", original);
+        else Reflect.deleteProperty(window, "visualViewport");
+      }
+    });
   });
 
   describe("Sandbox disconnect warnings", () => {
@@ -962,6 +1119,70 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
+    it("reveals Agent controls on interaction and keeps them during permission selection", async () => {
+      jest.mocked(useAuth).mockReturnValue({
+        user: { id: "user_123" },
+        entitlements: [],
+      } as ReturnType<typeof useAuth>);
+      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+      mockUseQuery.mockImplementation((query) =>
+        getFunctionName(query) === "localSandbox:listConnections"
+          ? [
+              {
+                connectionId: "local-sandbox",
+                name: "Local sandbox",
+                isDesktop: false,
+              },
+            ]
+          : undefined,
+      );
+      render(
+        <TestWrapper>
+          <ChatInput
+            onSubmit={mockOnSubmit}
+            onStop={mockOnStop}
+            status="ready"
+            autoFocus={false}
+          />
+        </TestWrapper>,
+      );
+      await screen.findByTestId("chat-input");
+      expect(
+        screen.queryByTestId("chat-input-agent-context"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("chat-input-desktop-permission"),
+      ).not.toBeInTheDocument();
+      fireEvent.pointerDown(screen.getByTestId("chat-input"));
+      expect(
+        screen.getByTestId("chat-input-agent-context"),
+      ).toBeInTheDocument();
+      fireEvent.click(
+        screen
+          .getByTestId("chat-input-mobile-permission")
+          .querySelector("button")!,
+      );
+      const approvalOption = screen.getByRole("button", {
+        name: /ask for approval always ask/i,
+      });
+      fireEvent.pointerDown(approvalOption);
+      expect(
+        screen.getByTestId("chat-input-agent-context"),
+      ).toBeInTheDocument();
+      fireEvent.click(approvalOption);
+      expect(
+        screen.getByTestId("chat-input-agent-context"),
+      ).toBeInTheDocument();
+      fireEvent.pointerDown(document.body);
+      expect(
+        screen.queryByTestId("chat-input-agent-context"),
+      ).not.toBeInTheDocument();
+      fireEvent.focus(screen.getByTestId("chat-input"));
+      expect(
+        screen.getByTestId("chat-input-agent-context"),
+      ).toBeInTheDocument();
+    });
+
     it("renders a glass composer with a narrower sandbox context strip", async () => {
       jest.mocked(useAuth).mockReturnValue({
         user: { id: "user_123" },
@@ -992,6 +1213,7 @@ describe("ChatInput - Integration Tests", () => {
       );
 
       await screen.findByTestId("chat-input-surface");
+      fireEvent.pointerDown(screen.getByTestId("chat-input"));
       expect(screen.getByTestId("chat-input-surface")).toHaveClass(
         "chat-input-glass-surface",
         "z-10",
@@ -1101,6 +1323,7 @@ describe("ChatInput - Integration Tests", () => {
         );
 
         await screen.findByTestId("chat-input-surface");
+        fireEvent.pointerDown(screen.getByTestId("chat-input"));
         act(() => {
           (resizeCallback as ResizeObserverCallback)(
             [{ contentRect: { width: 700 } } as ResizeObserverEntry],

@@ -18,6 +18,14 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useAgentAutoReviewAvailability } from "@/app/contexts/AgentAutoReviewAvailabilityContext";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { AgentPermissionMode } from "@/types";
+import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 
 type AgentPermissionSelectorProps = {
   size?: "sm" | "md";
@@ -61,6 +69,7 @@ export function AgentPermissionSelector({
   analyticsSurface,
 }: AgentPermissionSelectorProps) {
   const [open, setOpen] = useState(false);
+  const isMobile = useIsMobile();
   const { agentPermissionMode, setAgentPermissionMode } = useGlobalState();
   const { agentAutoReviewAvailable, resolveAgentAutoReviewAvailability } =
     useAgentAutoReviewAvailability();
@@ -100,84 +109,134 @@ export function AgentPermissionSelector({
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-5 w-5 shrink-0";
 
+  const trigger = (
+    <Button
+      variant="ghost"
+      size={size === "md" ? "default" : "sm"}
+      className={buttonClassName}
+    >
+      <Icon className={iconClassName} aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">
+        {selectedOption.shortLabel}
+      </span>
+      <ChevronDown
+        aria-hidden="true"
+        className={
+          size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-4 w-4 ml-0.5 shrink-0"
+        }
+      />
+    </Button>
+  );
+  const optionList = (
+    <div
+      className={
+        isMobile ? "overflow-hidden rounded-2xl bg-muted/50" : "space-y-1"
+      }
+    >
+      {options.map((option) => {
+        const OptionIcon = option.icon;
+        const selected = option.id === agentPermissionMode;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => {
+              if (option.id !== agentPermissionMode) {
+                captureAuthenticatedEvent("agent_permission_mode_changed", {
+                  mode: "agent",
+                  previous_agent_permission_mode: agentPermissionMode,
+                  agent_permission_mode: option.id,
+                  surface: analyticsSurface,
+                  agent_permission_event_version: 1,
+                  $set: {
+                    agent_permission_mode: option.id,
+                    last_agent_permission_mode_changed_at:
+                      new Date().toISOString(),
+                  },
+                });
+              }
+              setAgentPermissionMode(option.id);
+              setOpen(false);
+            }}
+            className={`flex w-full items-center gap-3 text-left transition-colors ${isMobile ? "min-h-20 px-4 py-4 border-b border-border/60 last:border-b-0" : "rounded-md px-2.5 py-2"} ${
+              isMobile && option.id === "full_access"
+                ? "text-orange-600 dark:text-orange-400 hover:bg-muted"
+                : selected
+                  ? "bg-accent text-accent-foreground"
+                  : "hover:bg-muted"
+            }`}
+          >
+            <OptionIcon
+              className={isMobile ? "h-6 w-6 shrink-0" : "h-4 w-4 shrink-0"}
+              aria-hidden="true"
+            />
+            <div className="flex-1 min-w-0">
+              <div
+                className={
+                  isMobile
+                    ? "text-base font-medium"
+                    : "truncate text-sm font-medium"
+                }
+              >
+                {option.label}
+              </div>
+              <div
+                className={`mt-0.5 text-sm leading-snug ${
+                  isMobile && option.id === "full_access"
+                    ? "text-orange-600/80 dark:text-orange-400/80"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {option.description}
+              </div>
+            </div>
+            {selected && (
+              <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger asChild>{trigger}</SheetTrigger>
+        <SheetContent
+          side="bottom"
+          data-composer-overlay
+          className="max-h-[85dvh] overflow-y-auto rounded-t-[28px] border-black/8 bg-input-chat px-5 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] dark:border-border"
+        >
+          <div
+            aria-hidden="true"
+            className="mx-auto h-1 w-9 shrink-0 rounded-full bg-muted-foreground/40"
+          />
+          <SheetTitle className="px-5 text-center text-base leading-snug">
+            How should HackerAI actions be approved?
+          </SheetTitle>
+          <SheetDescription className="sr-only">
+            Choose the permissions for Agent actions.
+          </SheetDescription>
+          {optionList}
+        </SheetContent>
+      </Sheet>
+    );
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size={size === "md" ? "default" : "sm"}
-          className={buttonClassName}
-        >
-          <Icon className={iconClassName} aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate">
-            {selectedOption.shortLabel}
-          </span>
-          <ChevronDown
-            aria-hidden="true"
-            className={
-              size === "md"
-                ? "h-4 w-4 ml-1 shrink-0"
-                : "h-4 w-4 ml-0.5 shrink-0"
-            }
-          />
-        </Button>
-      </PopoverTrigger>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
+        data-composer-overlay
         className="w-[480px] max-w-[calc(100vw-2rem)] p-3"
         align="start"
       >
         <div className="mb-2 text-sm text-muted-foreground">
           How should HackerAI actions be approved?
         </div>
-        <div className="space-y-1">
-          {options.map((option) => {
-            const OptionIcon = option.icon;
-            const selected = option.id === agentPermissionMode;
-            return (
-              <button
-                key={option.id}
-                type="button"
-                aria-pressed={selected}
-                onClick={() => {
-                  if (option.id !== agentPermissionMode) {
-                    captureAuthenticatedEvent("agent_permission_mode_changed", {
-                      mode: "agent",
-                      previous_agent_permission_mode: agentPermissionMode,
-                      agent_permission_mode: option.id,
-                      surface: analyticsSurface,
-                      agent_permission_event_version: 1,
-                      $set: {
-                        agent_permission_mode: option.id,
-                        last_agent_permission_mode_changed_at:
-                          new Date().toISOString(),
-                      },
-                    });
-                  }
-                  setAgentPermissionMode(option.id);
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors ${
-                  selected
-                    ? "bg-accent text-accent-foreground"
-                    : "hover:bg-muted"
-                }`}
-              >
-                <OptionIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <div className="flex-1 min-w-0">
-                  <div className="truncate text-sm font-medium">
-                    {option.label}
-                  </div>
-                  <div className="mt-0.5 text-sm leading-snug text-muted-foreground">
-                    {option.description}
-                  </div>
-                </div>
-                {selected && (
-                  <Check className="h-4 w-4 shrink-0" aria-hidden="true" />
-                )}
-              </button>
-            );
-          })}
-        </div>
+        {optionList}
       </PopoverContent>
     </Popover>
   );
