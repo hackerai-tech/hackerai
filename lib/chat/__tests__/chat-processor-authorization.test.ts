@@ -45,6 +45,34 @@ describe("processChatMessages authorization metadata", () => {
     else process.env.ABLITERATION_API_KEY = originalAbliterationKey;
   });
 
+  it.each([
+    { mode: "ask", subscription: "free" },
+    { mode: "ask", subscription: "pro" },
+    { mode: "agent", subscription: "free" },
+    { mode: "agent", subscription: "pro" },
+  ] as const)(
+    "authorizes a score of 0.05 for $subscription users in $mode mode",
+    async ({ mode, subscription }) => {
+      mockModerationsCreate.mockResolvedValue({
+        results: [
+          {
+            categories: { illicit: false },
+            category_scores: { illicit: 0.05 },
+          },
+        ],
+      });
+
+      const result = await processChatMessages({
+        messages: [makeMessage("Continue the authorized security assessment")],
+        mode,
+        userId: "user-1",
+        subscription,
+      });
+
+      expect(result.platformAuthorized).toBe(true);
+    },
+  );
+
   it.each(["ask", "agent"] as const)(
     "always moderates %s despite a stale paid treatment flag",
     async (mode) => {

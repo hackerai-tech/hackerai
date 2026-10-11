@@ -198,7 +198,7 @@ function determineShouldUncensorResponse(
   moderationLevel: number,
   hazardCategories: string[],
   isPaidUser: boolean,
-  minModerationLevel = 0.1,
+  minModerationLevel = 0.05,
 ): boolean {
   const forbiddenCategories = [
     "sexual",
@@ -217,7 +217,7 @@ function determineShouldUncensorResponse(
     forbiddenCategories.includes(category),
   );
 
-  // 0.1 is the minimum moderation level for the model to be used
+  // The same minimum moderation level applies to free and paid users.
   const maxModerationLevel = 0.98;
   return (
     moderationLevel >= minModerationLevel &&
