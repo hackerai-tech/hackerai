@@ -728,6 +728,13 @@ export class HybridSandboxManager implements SandboxManager {
         user_id: this.userID,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (isEnvironmentPreference(this.sandboxPreference)) {
+        throw new ChatSDKError(
+          "bad_request:sandbox",
+          "Could not check the selected computer's connection. Try again shortly.",
+          { localConnectionLookupFailed: true },
+        );
+      }
       return [];
     }
   }

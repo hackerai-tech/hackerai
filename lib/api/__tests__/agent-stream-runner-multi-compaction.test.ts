@@ -809,6 +809,43 @@ describe("createAgentStream repeated compaction", () => {
     },
   );
 
+  it.each([true, false])(
+    "resolves a terminal finish around cancellation (finish first: %s)",
+    async (finishFirst) => {
+      const { getTerminalProviderStreamError } = jest.requireActual(
+        "@/lib/api/provider-terminal-error",
+      );
+      const controller = new AbortController();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          abortController: controller,
+          usageTracker: { setAuthoritativeModelCostForStep: jest.fn() },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      if (!finishFirst) controller.abort();
+      await stream.onFinish({
+        finishReason: "error",
+        usage: {},
+        response: { modelId: "test-model" },
+      });
+      if (finishFirst) controller.abort();
+      const error = getTerminalProviderStreamError(
+        state,
+        controller.signal.aborted,
+      );
+      if (finishFirst)
+        expect(error).toHaveProperty("name", "ProviderStreamError");
+      else expect(error).toBeUndefined();
+    },
+  );
+
   it("does not attribute a bare disconnect to the previous step's upstream", async () => {
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
       usedTokens: 1_000,

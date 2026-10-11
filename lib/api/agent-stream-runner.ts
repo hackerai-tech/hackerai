@@ -398,6 +398,8 @@ export type AgentStreamState = {
   lastStepInputTokens: number;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
+  /** Snapshot when onFinish starts, before cancellation during async settlement. */
+  providerFinishObservedBeforeAbort?: boolean;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
   /** Set only when provider/retry state can identify fallback serving. */
@@ -2520,6 +2522,8 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
+      state.providerFinishObservedBeforeAbort =
+        !ctx.abortController.signal.aborted;
       ctx.onModelStreamFinish?.();
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();

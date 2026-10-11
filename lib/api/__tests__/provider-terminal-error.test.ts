@@ -1,4 +1,5 @@
 import {
+  getTerminalProviderStreamError,
   getProviderDisconnectIgnoredSlugs,
   wrapProviderTerminalError,
 } from "../provider-terminal-error";
@@ -160,5 +161,52 @@ describe("wrapProviderTerminalError", () => {
       "Provider terminal error category=provider_4xx status=413",
     );
     expect(upstreamRejection.origin).toBeUndefined();
+  });
+});
+
+describe("getTerminalProviderStreamError", () => {
+  it.each(["error", "content-filter"])(
+    "preserves %s observed before cancellation",
+    (streamFinishReason) => {
+      expect(
+        getTerminalProviderStreamError(
+          {
+            providerError: undefined,
+            streamFinishReason,
+            providerFinishObservedBeforeAbort: true,
+          },
+          true,
+        ),
+      ).toBeInstanceOf(Error);
+      expect(
+        getTerminalProviderStreamError(
+          {
+            providerError: undefined,
+            streamFinishReason,
+            providerFinishObservedBeforeAbort: false,
+          },
+          true,
+        ),
+      ).toBeUndefined();
+      expect(
+        getTerminalProviderStreamError(
+          { providerError: undefined, streamFinishReason },
+          false,
+        ),
+      ).toBeInstanceOf(Error);
+    },
+  );
+  it("preserves a captured error even if finish occurs after cancellation", () => {
+    const error = new Error("Upstream unavailable");
+    expect(
+      getTerminalProviderStreamError(
+        {
+          providerError: error,
+          streamFinishReason: "error",
+          providerFinishObservedBeforeAbort: false,
+        },
+        true,
+      ),
+    ).toBe(error);
   });
 });

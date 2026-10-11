@@ -205,6 +205,7 @@ import {
   isInvalidImageInputError,
   isProviderContentFilterFinishReason,
   isRetriableProviderStreamDisconnectError,
+  isCancellationError,
 } from "@/lib/utils/error-utils";
 import { ChatSDKError, serializeChatSDKErrorForStream } from "@/lib/errors";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -284,6 +285,7 @@ import {
   ProviderTerminalError,
   getProviderDisconnectIgnoredSlugs,
   wrapProviderTerminalError,
+  getTerminalProviderStreamError,
 } from "@/lib/api/provider-terminal-error";
 import {
   omitImageViewToolResultsForProviderRetry,
@@ -891,33 +893,6 @@ const recordAgentLongChatMetadataUpdateFailure = (
   });
 };
 
-const getTerminalProviderStreamError = (
-  state:
-    Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
-  wasAborted = false,
-): unknown | undefined => {
-  if (!state) return undefined;
-  if (state.providerError) return state.providerError;
-  if (wasAborted) return undefined;
-  if (
-    state.streamFinishReason !== "error" &&
-    !isProviderContentFilterFinishReason(state.streamFinishReason)
-  ) {
-    return undefined;
-  }
-  if (isProviderContentFilterFinishReason(state.streamFinishReason)) {
-    return createProviderContentBlockedFinishReasonError();
-  }
-
-  return Object.assign(
-    new Error("Provider stream finished with error finish reason"),
-    {
-      name: "ProviderStreamError",
-      finishReason: state.streamFinishReason,
-    },
-  );
-};
-
 const isTerminalProviderStreamError = (
   state:
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
@@ -931,6 +906,7 @@ const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
   state.lastStepInputTokens = 0;
   state.stoppedDueToStepLimit = false;
   state.streamFinishReason = undefined;
+  state.providerFinishObservedBeforeAbort = undefined;
   state.providerError = undefined;
   state.providerErrorMetadata = undefined;
   state.providerRejectedMultimodalToolResults = false;
@@ -2229,10 +2205,7 @@ export const agentLongTask = task({
       runReporting.setStage("preparation");
       const uiStream = createUIMessageStream({
         onError: (error) => {
-          if (
-            userStopSignal.signal.aborted &&
-            !(error instanceof ChatSDKError)
-          ) {
+          if (isCancellationError(error, userStopSignal.signal)) {
             return "";
           }
           streamError ??= error;

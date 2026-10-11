@@ -113,6 +113,40 @@ describe("filterConnectionsByPresence", () => {
 });
 
 describe("stable environment acquisition", () => {
+  it("reports a failed connection lookup without falsely asking for reconnection", async () => {
+    const manager = new HybridSandboxManager(
+      "user-1",
+      jest.fn(),
+      "environment:machine-a",
+      "service-key",
+      null,
+      "pro",
+    );
+    const warn = jest.spyOn(console, "error").mockImplementation(() => {});
+    mockConvexQuery.mockRejectedValue(new Error("Temporary lookup failure"));
+    try {
+      await expect(manager.getSandbox()).rejects.toMatchObject({
+        type: "bad_request",
+        surface: "sandbox",
+        metadata: { localConnectionLookupFailed: true },
+      });
+      await expect(
+        prepareSandboxContextForPrompt({
+          sandboxManager: manager,
+          writer: { write: jest.fn() } as any,
+          eventId: "lookup-failed",
+        }),
+      ).rejects.toMatchObject({
+        message:
+          "Could not check the selected computer's connection. Try again shortly.",
+      });
+      expect(manager.peekFallbackInfo()).toBeNull();
+    } finally {
+      mockConvexQuery.mockReset();
+      warn.mockRestore();
+    }
+  });
+
   it.each(["free", "pro"] as const)(
     "blocks wrong-host and cloud fallback for %s",
     async (subscription) => {
