@@ -1,3 +1,4 @@
+import type { LimitRescueRequest } from "@/types/chat";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { ChatMode } from "@/types/chat";
@@ -18,22 +19,30 @@ interface FinishReasonNoticeProps {
   finishReason?: string;
   mode?: ChatMode;
   agentRunSpendCapPremiumContinuationAllowed?: boolean;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void | Promise<void>;
+  onContinue?: (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => void | Promise<void>;
 }
 
 export const FinishReasonNotice = ({
   finishReason,
+  mode,
   onContinue,
 }: FinishReasonNoticeProps) => {
   const { isAutoResuming, isAutoContinuing } = useDataStreamState();
   const pendingRef = useRef(false);
   const [pending, setPending] = useState(false);
-  const resume = async (selectedModelOverride?: SelectedModel) => {
+  const resume = async (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => {
     if (!onContinue || pendingRef.current) return;
     pendingRef.current = true;
     setPending(true);
     try {
-      await onContinue(selectedModelOverride);
+      if (limitRescue) await onContinue(selectedModelOverride, limitRescue);
+      else await onContinue(selectedModelOverride);
     } catch {
       toast.error("Could not resume. Your saved progress is still available.");
     } finally {
@@ -63,6 +72,7 @@ export const FinishReasonNotice = ({
       <BudgetExhaustedNotice
         onContinue={onContinue ? resume : undefined}
         pending={pending}
+        mode={mode}
       />
     );
   }

@@ -1,19 +1,16 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import useSWR from "swr";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { Button } from "@/components/ui/button";
 import {
   BillingRequestError,
   getSubscriptionCancellationStatus,
-  redirectToBillingPortal,
 } from "@/lib/billing/client";
-import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { PastDueBillingBanner } from "./PastDueBillingBanner";
+import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
 
 async function getRecoveryStatus() {
   try {
@@ -42,7 +39,6 @@ export function BlockedChatBillingRecovery({
 }) {
   const { user, organizationId, loading } = useAuth();
   const { subscription } = useGlobalState();
-  const [isOpening, setIsOpening] = useState(false);
   const { data, error, isLoading, isValidating, mutate } = useSWR(
     user && !loading
       ? ["blocked-chat-billing", user.id, organizationId ?? null]
@@ -58,21 +54,6 @@ export function BlockedChatBillingRecovery({
       revalidateOnReconnect: true,
     },
   );
-
-  const openPayment = async () => {
-    if (isOpening) return;
-    setIsOpening(true);
-    try {
-      const url = await redirectToBillingPortal("payment_method", {
-        surface: "blocked_chat",
-        returnPath: window.location.pathname,
-      });
-      window.location.href = url;
-    } catch {
-      toast.error("Could not open billing. Please try again.");
-      setIsOpening(false);
-    }
-  };
 
   if (loading || isLoading || (isValidating && !data?.renewalPaymentRequired)) {
     return (
@@ -121,55 +102,22 @@ export function BlockedChatBillingRecovery({
     );
   }
 
-  if (
-    data.renewalPaymentRequired &&
-    (data.subscriptionStatus === "past_due" ||
-      data.subscriptionStatus === "unpaid")
-  ) {
-    return (
-      <div className="my-2 space-y-2">
-        <PastDueBillingBanner
-          surface="blocked_chat"
-          subscription={subscription}
-          subscriptionStatus={data.subscriptionStatus}
-          latestInvoiceId={data.latestInvoiceId}
-          renewalPaymentRequired={data.renewalPaymentRequired}
-          renewalPaymentFailure={data.renewalPaymentFailure}
-          isOpening={isOpening}
-          onUpdatePayment={() => void openPayment()}
-        />
-        <Button
-          size="sm"
-          variant="outline"
-          // This re-reads the actual entitlement session without resuming a run.
-          onClick={reloadWithEntitlementRefresh}
-        >
-          Refresh chat after payment
-        </Button>
-      </div>
-    );
-  }
-
-  if (
+  const needsBillingRecovery =
+    data.checkoutRequiresReview ||
     data.subscriptionStatus === "past_due" ||
-    data.subscriptionStatus === "unpaid"
-  ) {
-    return (
-      <div role="status" className="rounded-lg border p-3 text-sm space-y-2">
-        <p>
-          Your subscription needs billing attention. Open Account settings to
-          review your payment status.
-        </p>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => openSettingsDialog("Account")}
-        >
-          Account settings
-        </Button>
-      </div>
-    );
-  }
+    data.subscriptionStatus === "unpaid";
 
-  return <>{children}</>;
+  // Keep the panel mounted across its status check so a paid result can show
+  // the explicit entitlement-refresh action before ordinary usage UI returns.
+  return (
+    <>
+      <BillingRecoveryPanel
+        status={data}
+        subscription={subscription}
+        surface="blocked_chat"
+        onCheck={() => mutate()}
+      />
+      {!needsBillingRecovery && children}
+    </>
+  );
 }

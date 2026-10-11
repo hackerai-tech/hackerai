@@ -1,3 +1,4 @@
+import type { LimitRescueRequest } from "@/types/chat";
 import { memo, useMemo, useCallback, Fragment, useState } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
@@ -86,7 +87,10 @@ interface MessageItemProps {
     RateLimitWarningData,
     { warningType: "agent-run-spend-cap" }
   >;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void | Promise<void>;
+  onContinue?: (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => void | Promise<void>;
   onBranchMessage?: (messageId: string) => void;
   onFeedback: (messageId: string, type: "positive" | "negative") => void;
   onFeedbackSubmit: (details: string) => Promise<void>;

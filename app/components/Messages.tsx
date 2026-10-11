@@ -1,3 +1,4 @@
+import type { LimitRescueRequest } from "@/types/chat";
 import { TaskOutcomeFeedback } from "./TaskOutcomeFeedback";
 import { AcquisitionSurvey } from "./AcquisitionSurvey";
 import {
@@ -199,7 +200,10 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void | Promise<void>;
   onRetry: (options?: RetryOptions) => void | Promise<void>;
-  onContinue?: (selectedModelOverride?: SelectedModel) => void | Promise<void>;
+  onContinue?: (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => void | Promise<void>;
   onReconnect?: () => void;
   onEditMessage: (
     messageId: string,

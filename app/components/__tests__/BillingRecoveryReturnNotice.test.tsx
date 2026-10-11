@@ -109,6 +109,7 @@ it("reports an unpaid retry after portal return and supports checking again", as
       "Your renewal invoice is still unpaid",
       expect.objectContaining({
         description: expect.stringContaining("insufficient funds"),
+        action: expect.objectContaining({ label: "Resolve payment" }),
       }),
     ),
   );
@@ -118,9 +119,9 @@ it("reports an unpaid retry after portal return and supports checking again", as
   // The initial entitlement refresh can finish before Stripe's payment webhook.
   window.history.replaceState({ route: "chat" }, "", "/c/test");
   const options = jest.mocked(toast.error).mock.calls[0][1] as {
-    action: { onClick: () => void };
+    cancel: { onClick: () => void };
   };
-  options.action.onClick();
+  options.cancel.onClick();
   await waitFor(() =>
     expect(toast.success).toHaveBeenCalledWith(
       "Your renewal invoice is paid. Refresh to update your access.",

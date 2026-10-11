@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import "@testing-library/jest-dom";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
@@ -6,6 +7,7 @@ import {
   BillingRequestError,
   getSubscriptionCancellationStatus,
   redirectToBillingPortal,
+  openRenewalInvoice,
 } from "@/lib/billing/client";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
@@ -25,6 +27,7 @@ jest.mock("@/lib/billing/client", () => ({
   ...jest.requireActual("@/lib/billing/client"),
   getSubscriptionCancellationStatus: jest.fn(),
   redirectToBillingPortal: jest.fn(),
+  openRenewalInvoice: jest.fn(),
 }));
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
@@ -32,7 +35,9 @@ jest.mock("@/lib/analytics/client", () => ({
 jest.mock("@/lib/utils/settings-dialog", () => ({
   openSettingsDialog: jest.fn(),
 }));
-jest.mock("sonner", () => ({ toast: { error: jest.fn() } }));
+jest.mock("sonner", () => ({
+  toast: { error: jest.fn(), success: jest.fn() },
+}));
 const statusMock = jest.mocked(getSubscriptionCancellationStatus);
 const portalMock = jest.mocked(redirectToBillingPortal);
 const delinquent: SubscriptionCancellationStatus = {
@@ -71,10 +76,10 @@ it.each(["past_due", "unpaid"] as const)(
       screen.queryByText("Add credits or upgrade"),
     ).not.toBeInTheDocument();
     expect(
-      await screen.findByRole("button", { name: "Update payment" }),
+      await screen.findByRole("button", { name: "Update card" }),
     ).toBeEnabled();
     expect(
-      screen.getByText(/access returns only after payment succeeds/i),
+      screen.getByText(/access returns after payment succeeds/i),
     ).toBeVisible();
     expect(
       screen.queryByText("Add credits or upgrade"),
@@ -95,17 +100,15 @@ it("explains an insufficient-funds retry without offering credits", async () => 
   });
   setup();
   expect(
-    await screen.findByText(/declined for insufficient funds/),
+    await screen.findByText(/declined the renewal for insufficient funds/),
   ).toBeVisible();
-  expect(screen.getByText(/invoice is still unpaid/)).toBeVisible();
+  expect(screen.getByText(/Pay the invoice after adding funds/)).toBeVisible();
   expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
 });
 it("opens the existing portal at the current chat and never resumes on selection", async () => {
   portalMock.mockRejectedValue(new Error("Portal unavailable"));
   setup();
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Update payment" }),
-  );
+  fireEvent.click(await screen.findByRole("button", { name: "Update card" }));
   await waitFor(() =>
     expect(portalMock).toHaveBeenCalledWith("payment_method", {
       surface: "blocked_chat",
@@ -113,16 +116,14 @@ it("opens the existing portal at the current chat and never resumes on selection
     }),
   );
   await waitFor(() =>
-    expect(
-      screen.getByRole("button", { name: "Update payment" }),
-    ).toBeEnabled(),
+    expect(screen.getByRole("button", { name: "Update card" })).toBeEnabled(),
   );
   expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
 });
 it("shares one status lookup across saved stops", async () => {
   setup(3);
   expect(
-    await screen.findAllByRole("button", { name: "Update payment" }),
+    await screen.findAllByRole("button", { name: "Update card" }),
   ).toHaveLength(3);
   expect(statusMock).toHaveBeenCalledTimes(1);
 });
@@ -135,7 +136,7 @@ it("offers ordinary usage actions only after a successful non-delinquent lookup"
   setup();
   expect(await screen.findByText("Add credits or upgrade")).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Update payment" }),
+    screen.queryByRole("button", { name: "Update card" }),
   ).not.toBeInTheDocument();
 });
 it("allows a free account without a billing account to use its normal limit actions", async () => {
@@ -165,7 +166,7 @@ it("still shows recovery for an unscoped user's resolved past-due membership", a
   mockAuth = { ...mockAuth, organizationId: undefined };
   setup();
   expect(
-    await screen.findByRole("button", { name: "Update payment" }),
+    await screen.findByRole("button", { name: "Update card" }),
   ).toBeEnabled();
   expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
 });
@@ -176,7 +177,7 @@ it("does not mistake a billing outage for exhausted usage and allows rechecking"
   setup();
   fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
   expect(
-    await screen.findByRole("button", { name: "Update payment" }),
+    await screen.findByRole("button", { name: "Update card" }),
   ).toBeEnabled();
   expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
 });
@@ -189,13 +190,13 @@ it("does not offer billing mutations to a non-admin", async () => {
     await screen.findByText(/Ask your billing administrator/),
   ).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Update payment" }),
+    screen.queryByRole("button", { name: "Update card" }),
   ).not.toBeInTheDocument();
   expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
 });
 it("never reuses the previous organization's delinquency state", async () => {
   const view = setup();
-  await screen.findByRole("button", { name: "Update payment" });
+  await screen.findByRole("button", { name: "Update card" });
   statusMock.mockResolvedValue({
     hasActiveSubscription: false,
     cancelAtPeriodEnd: false,
@@ -210,12 +211,12 @@ it("never reuses the previous organization's delinquency state", async () => {
   );
   expect(await screen.findByText("Other organization usage")).toBeVisible();
   expect(
-    screen.queryByRole("button", { name: "Update payment" }),
+    screen.queryByRole("button", { name: "Update card" }),
   ).not.toBeInTheDocument();
 });
 it("rechecks a reopened chat after successful payment without granting access itself", async () => {
   const first = setup();
-  await screen.findByRole("button", { name: "Update payment" });
+  await screen.findByRole("button", { name: "Update card" });
   first.unmount();
   statusMock.mockResolvedValue({
     ...delinquent,
@@ -249,7 +250,7 @@ it("does not recommend credits for delinquency outside automatic recovery", asyn
   ).toBeVisible();
   expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
   expect(
-    screen.queryByRole("button", { name: "Update payment" }),
+    screen.queryByRole("button", { name: "Update card" }),
   ).not.toBeInTheDocument();
 });
 
@@ -280,9 +281,7 @@ it.each(["focus", "online"])(
       await act(async () => {
         view = setup();
       });
-      expect(
-        screen.getByRole("button", { name: "Update payment" }),
-      ).toBeVisible();
+      expect(screen.getByRole("button", { name: "Update card" })).toBeVisible();
       statusMock.mockResolvedValue({
         ...delinquent,
         subscriptionStatus: "active",
@@ -297,7 +296,7 @@ it.each(["focus", "online"])(
       });
       expect(statusMock).toHaveBeenCalledTimes(2);
       expect(
-        screen.queryByRole("button", { name: "Update payment" }),
+        screen.queryByRole("button", { name: "Update card" }),
       ).not.toBeInTheDocument();
       expect(screen.getByText("Add credits or upgrade")).toBeVisible();
       view!.unmount();
@@ -306,3 +305,56 @@ it.each(["focus", "online"])(
     }
   },
 );
+
+it("offers invoice authentication directly in the blocked chat", async () => {
+  statusMock.mockResolvedValue({
+    ...delinquent,
+    renewalInvoicePayable: true,
+    renewalPaymentFailure: "authentication_required",
+  });
+  jest
+    .mocked(openRenewalInvoice)
+    .mockRejectedValue(new Error("Invoice changed. Check again."));
+  setup();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Complete payment" }),
+  );
+  await waitFor(() => expect(openRenewalInvoice).toHaveBeenCalledTimes(1));
+  expect(
+    await screen.findByText("Invoice changed. Check again."),
+  ).toBeVisible();
+  expect(portalMock).not.toHaveBeenCalled();
+});
+it("keeps canceled payment review ahead of usage purchases", async () => {
+  statusMock.mockResolvedValue({
+    hasActiveSubscription: false,
+    cancelAtPeriodEnd: false,
+    checkoutRequiresReview: true,
+  });
+  setup();
+  expect(
+    await screen.findByRole("link", { name: "Get billing help" }),
+  ).toBeVisible();
+  expect(screen.queryByText("Add credits or upgrade")).not.toBeInTheDocument();
+});
+
+it("offers an explicit entitlement refresh after a payment status check succeeds", async () => {
+  statusMock.mockResolvedValueOnce(delinquent).mockResolvedValue({
+    hasActiveSubscription: true,
+    cancelAtPeriodEnd: false,
+    subscriptionStatus: "active",
+    renewalInvoicePaid: true,
+  });
+  setup();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Check payment status" }),
+  );
+  await waitFor(() =>
+    expect(toast.success).toHaveBeenCalledWith(
+      expect.stringContaining("Refresh"),
+      expect.objectContaining({
+        action: expect.objectContaining({ label: "Refresh" }),
+      }),
+    ),
+  );
+});
