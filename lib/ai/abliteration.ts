@@ -31,9 +31,10 @@ export const ABLITERATION_BASE_PRICING = {
 };
 
 // Historical Large v2 accounting; the Max trial uses only the base model above.
+// Current provider rates verified at the pricing URL above (2026-10-10).
 export const ABLITERATION_LARGE_V2_PRICING = {
-  input: 5,
+  input: 3,
   output: 5,
-  cacheRead: 0.5,
-  cacheWrite: 5,
+  cacheRead: 0.3,
+  cacheWrite: 3,
 };
