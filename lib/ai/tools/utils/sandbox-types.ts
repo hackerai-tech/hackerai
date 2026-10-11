@@ -2,6 +2,24 @@ import type { Sandbox } from "@e2b/code-interpreter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
 import type { AnySandbox, SandboxInfo } from "@/types";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
+import path from "node:path";
+
+/** Keep native Desktop artifacts inside its selected project file boundary. */
+export function getSandboxArtifactDirectory(
+  sandbox: AnySandbox,
+  artifact: "agent-transcripts" | "terminal_full_output",
+): string {
+  if (isCentrifugoSandbox(sandbox)) {
+    const project = sandbox.getWorkingDirectory?.();
+    if (project && sandbox.supportsNativeFileRelay?.()) {
+      const paths = sandbox.isWindows() ? path.win32 : path.posix;
+      const directory = paths.join(project, ".hackerai", artifact);
+      return sandbox.isWindows() ? directory.replaceAll("\\", "/") : directory;
+    }
+    return `/tmp/${artifact}`;
+  }
+  return `/home/user/${artifact}`;
+}
 
 export interface OsInfo {
   platform: string;

@@ -1,3 +1,4 @@
+import { ChatSDKError } from "@/lib/errors";
 import {
   Centrifuge,
   type Subscription,
@@ -777,7 +778,8 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     if (isEnvironmentPreference(this.sandboxPreference)) {
-      throw new Error(
+      throw new ChatSDKError(
+        "offline:sandbox",
         "The selected computer is disconnected. Reconnect that computer to continue this task.",
       );
     }
@@ -998,7 +1000,8 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     if (isEnvironmentPreference(this.sandboxPreference)) {
-      throw new Error(
+      throw new ChatSDKError(
+        "offline:sandbox",
         "The selected computer is disconnected. Reconnect that computer to continue this task.",
       );
     }

@@ -52,6 +52,36 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
+  it.each(["/Users/test/My Project", "C:\\Users\\test\\My Project"])(
+    "writes and prunes native artifacts inside %s without shell setup",
+    async (project) => {
+      const sandbox = {
+        ...createSandbox({
+          sandboxKind: "centrifugo",
+          nativeFileRelay: true,
+          listedFiles: Array.from({ length: 12 }, (_, i) => ({
+            name: `2026-10-${String(i + 1).padStart(2, "0")}.txt`,
+          })),
+        }),
+        getWorkingDirectory: () => project,
+        isWindows: () => project.startsWith("C:"),
+      };
+      const directory = `${project.replaceAll("\\", "/")}/.hackerai/terminal_full_output/chat-${CHAT_KEY}`;
+      const savedPath = await saveFullOutputToFile(
+        sandbox as any,
+        "output",
+        CHAT_ID,
+      );
+      expect(savedPath?.startsWith(`${directory}/`)).toBe(true);
+      expect(sandbox.files.write).toHaveBeenCalledWith(savedPath, "output");
+      expect(sandbox.files.list).toHaveBeenCalledWith(directory);
+      expect(sandbox.files.remove.mock.calls).toEqual([
+        [`${directory}/2026-10-02.txt`],
+        [`${directory}/2026-10-01.txt`],
+      ]);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+    },
+  );
   it("does not attempt a file write when directory creation exits unsuccessfully", async () => {
     const sandbox = createSandbox();
     sandbox.commands.run.mockResolvedValueOnce({
@@ -413,6 +443,7 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
       "relay_unavailable",
     ],
     ["Direct file mutation path is outside its allowed root", "permission"],
+    ["Path is outside the allowed project folder: /tmp/output", "permission"],
     ["ENOSPC: no space left on device", "filesystem"],
     ["opaque failure", "unknown"],
   ])("classifies %s as %s", (message, category) => {

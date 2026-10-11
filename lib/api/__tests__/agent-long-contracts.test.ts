@@ -1574,7 +1574,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const terminalErrorIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(terminalAgentState)",
+      "getTerminalProviderStreamError(\n          terminalAgentState,",
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
@@ -1631,7 +1631,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       terminalHelperIdx,
     );
     const terminalCheckIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(terminalAgentState)",
+      "getTerminalProviderStreamError(\n          terminalAgentState,",
       contentFilterIdx,
     );
     expect(terminalHelperIdx).toBeGreaterThan(-1);

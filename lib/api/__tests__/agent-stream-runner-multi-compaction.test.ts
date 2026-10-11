@@ -766,6 +766,45 @@ describe("createAgentStream repeated compaction", () => {
     );
   });
 
+  it.each([
+    ["ask", false],
+    ["agent", false],
+    ["ask", true],
+    ["agent", true],
+  ])(
+    "classifies cancellation in %s with prior failure %s",
+    async (mode, priorFailure) => {
+      const controller = new AbortController();
+      const recordProviderError = jest.fn();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          abortController: controller,
+          usageTracker: { hasUsage: true },
+          chatLogger: {
+            recordProviderError,
+            recordProviderRequestDiagnostics: jest.fn(),
+          },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const originalFailure = new Error("Upstream unavailable");
+      if (priorFailure) await stream.onError({ error: originalFailure });
+      controller.abort();
+      await stream.onError({ error: new TypeError("terminated") });
+      expect(state.providerError).toBe(
+        priorFailure ? originalFailure : undefined,
+      );
+      expect(recordProviderError).toHaveBeenCalledTimes(priorFailure ? 1 : 0);
+    },
+  );
+
   it("does not attribute a bare disconnect to the previous step's upstream", async () => {
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
       usedTokens: 1_000,

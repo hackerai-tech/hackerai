@@ -894,9 +894,11 @@ const recordAgentLongChatMetadataUpdateFailure = (
 const getTerminalProviderStreamError = (
   state:
     Pick<AgentStreamState, "streamFinishReason" | "providerError"> | undefined,
+  wasAborted = false,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.providerError) return state.providerError;
+  if (wasAborted) return undefined;
   if (
     state.streamFinishReason !== "error" &&
     !isProviderContentFilterFinishReason(state.streamFinishReason)
@@ -2227,6 +2229,12 @@ export const agentLongTask = task({
       runReporting.setStage("preparation");
       const uiStream = createUIMessageStream({
         onError: (error) => {
+          if (
+            userStopSignal.signal.aborted &&
+            !(error instanceof ChatSDKError)
+          ) {
+            return "";
+          }
           streamError ??= error;
           runReporting.fail(
             error,
@@ -3812,7 +3820,10 @@ export const agentLongTask = task({
             const getProviderRecoveryAnalytics = (
               outcome: "success" | "error" | "aborted",
             ) => {
-              const terminalError = getTerminalProviderStreamError(state);
+              const terminalError = getTerminalProviderStreamError(
+                state,
+                userStopSignal.signal.aborted,
+              );
               const providerError = terminalError
                 ? wrapProviderTerminalError(terminalError, {
                     model: terminalRequestedModelSlug,
@@ -5346,7 +5357,11 @@ export const agentLongTask = task({
       memoryTelemetry.checkpoint({ phase: "stream_finished" });
 
       const terminalStreamError =
-        streamError ?? getTerminalProviderStreamError(terminalAgentState);
+        streamError ??
+        getTerminalProviderStreamError(
+          terminalAgentState,
+          userStopSignal.signal.aborted,
+        );
       if (terminalStreamError) {
         if (isHandledUserRateLimitError(terminalStreamError)) {
           await recordAgentLongHandledRateLimitForDashboard(
@@ -5377,7 +5392,10 @@ export const agentLongTask = task({
         });
       }
 
-      metadata.set("status", preparationCanceled ? "canceled" : "done");
+      metadata.set(
+        "status",
+        preparationCanceled || triggerSignal.aborted ? "canceled" : "done",
+      );
       await phLogger.flush().catch(() => {});
     } catch (error) {
       runReporting.fail(

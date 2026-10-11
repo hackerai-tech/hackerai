@@ -2676,6 +2676,20 @@ export async function createAgentStream(
     },
 
     onError: async ({ error }) => {
+      // Some transports report a disconnect while settling an aborted stream.
+      // Keep errors observed before Stop, but do not create a provider failure
+      // from a callback that begins after the caller has canceled the request.
+      if (ctx.abortController.signal.aborted) {
+        await ptySessionManager
+          .closeAll(ctx.chatId)
+          .catch((err) =>
+            console.error(
+              "[agent-stream] PTY closeAll (canceled error) failed:",
+              err,
+            ),
+          );
+        return;
+      }
       state.providerError = error;
       const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
       state.providerErrorMetadata = errorOpenRouterMetadata;

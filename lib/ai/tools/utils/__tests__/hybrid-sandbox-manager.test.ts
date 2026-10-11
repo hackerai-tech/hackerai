@@ -133,6 +133,19 @@ describe("stable environment acquisition", () => {
       await expect(manager.getSandboxContextForPrompt()).rejects.toThrow(
         "selected computer is disconnected",
       );
+      const writer = { write: jest.fn() };
+      await expect(
+        prepareSandboxContextForPrompt({
+          sandboxManager: manager,
+          writer: writer as any,
+          eventId: "disconnected-host",
+        }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        surface: "sandbox",
+        message: expect.stringContaining("selected computer is disconnected"),
+      });
+      expect(writer.write).not.toHaveBeenCalled();
       expect(manager.getEffectivePreference()).toBe("environment:machine-a");
     },
   );
