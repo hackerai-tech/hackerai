@@ -16,23 +16,25 @@ export const getTerminalProviderStreamError = (
     | {
         providerError: unknown;
         streamFinishReason?: string;
-        providerFinishObservedBeforeAbort?: boolean;
+        providerTerminalFinishReasonBeforeAbort?: string;
       }
     | undefined,
   wasAborted = false,
 ): unknown | undefined => {
   if (!state) return undefined;
   if (state.providerError) return state.providerError;
-  if (wasAborted && !state.providerFinishObservedBeforeAbort) return undefined;
-  if (isProviderContentFilterFinishReason(state.streamFinishReason)) {
+  const finishReason =
+    state.providerTerminalFinishReasonBeforeAbort ??
+    (wasAborted ? undefined : state.streamFinishReason);
+  if (isProviderContentFilterFinishReason(finishReason)) {
     return createProviderContentBlockedFinishReasonError();
   }
-  if (state.streamFinishReason !== "error") return undefined;
+  if (finishReason !== "error") return undefined;
   return Object.assign(
     new Error("Provider stream finished with error finish reason"),
     {
       name: "ProviderStreamError",
-      finishReason: state.streamFinishReason,
+      finishReason,
     },
   );
 };

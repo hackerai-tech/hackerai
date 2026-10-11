@@ -906,7 +906,7 @@ const resetAgentStreamStateForRetry = (state: AgentStreamState): void => {
   state.lastStepInputTokens = 0;
   state.stoppedDueToStepLimit = false;
   state.streamFinishReason = undefined;
-  state.providerFinishObservedBeforeAbort = undefined;
+  state.providerTerminalFinishReasonBeforeAbort = undefined;
   state.providerError = undefined;
   state.providerErrorMetadata = undefined;
   state.providerRejectedMultimodalToolResults = false;

@@ -1632,7 +1632,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const getTerminalProviderStreamError",
     );
     const contentFilterIdx = providerTerminalErrorSrc.indexOf(
-      "isProviderContentFilterFinishReason(state.streamFinishReason)",
+      "isProviderContentFilterFinishReason(finishReason)",
       terminalHelperIdx,
     );
     const terminalCheckIdx = taskSrc.indexOf(

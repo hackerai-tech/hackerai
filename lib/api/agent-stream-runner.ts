@@ -171,6 +171,7 @@ import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-u
 import {
   classifyProviderOverflowError,
   isProviderContentBlockedFinishReasonError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import { createProviderContentBlockedRefundLifecycle } from "@/lib/api/provider-content-blocked-refund";
 import type { UsageTracker } from "@/lib/usage-tracker";
@@ -399,7 +400,7 @@ export type AgentStreamState = {
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
   /** Snapshot when onFinish starts, before cancellation during async settlement. */
-  providerFinishObservedBeforeAbort?: boolean;
+  providerTerminalFinishReasonBeforeAbort?: string;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
   /** Set only when provider/retry state can identify fallback serving. */
@@ -2522,8 +2523,12 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
-      state.providerFinishObservedBeforeAbort =
-        !ctx.abortController.signal.aborted;
+      state.providerTerminalFinishReasonBeforeAbort =
+        !ctx.abortController.signal.aborted &&
+        (finishResult.finishReason === "error" ||
+          isProviderContentFilterFinishReason(finishResult.finishReason))
+          ? finishResult.finishReason
+          : undefined;
       ctx.onModelStreamFinish?.();
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();

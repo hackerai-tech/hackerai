@@ -172,8 +172,8 @@ describe("getTerminalProviderStreamError", () => {
         getTerminalProviderStreamError(
           {
             providerError: undefined,
-            streamFinishReason,
-            providerFinishObservedBeforeAbort: true,
+            streamFinishReason: undefined,
+            providerTerminalFinishReasonBeforeAbort: streamFinishReason,
           },
           true,
         ),
@@ -183,7 +183,7 @@ describe("getTerminalProviderStreamError", () => {
           {
             providerError: undefined,
             streamFinishReason,
-            providerFinishObservedBeforeAbort: false,
+            providerTerminalFinishReasonBeforeAbort: undefined,
           },
           true,
         ),
@@ -203,7 +203,7 @@ describe("getTerminalProviderStreamError", () => {
         {
           providerError: error,
           streamFinishReason: "error",
-          providerFinishObservedBeforeAbort: false,
+          providerTerminalFinishReasonBeforeAbort: undefined,
         },
         true,
       ),

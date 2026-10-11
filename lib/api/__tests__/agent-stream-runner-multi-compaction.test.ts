@@ -836,6 +836,8 @@ describe("createAgentStream repeated compaction", () => {
         response: { modelId: "test-model" },
       });
       if (finishFirst) controller.abort();
+      // Agent clears its displayed finish reason when Stop is requested.
+      state.streamFinishReason = undefined;
       const error = getTerminalProviderStreamError(
         state,
         controller.signal.aborted,
