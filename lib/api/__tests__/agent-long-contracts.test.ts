@@ -117,6 +117,11 @@ const convexMessagesSrc = fs.readFileSync(
   "utf8",
 );
 
+const providerTerminalErrorSrc = fs.readFileSync(
+  path.resolve(__dirname, "../provider-terminal-error.ts"),
+  "utf8",
+);
+
 const taskSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../trigger/agent-long.ts"),
   "utf8",
@@ -1574,7 +1579,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const terminalErrorIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(terminalAgentState)",
+      "getTerminalProviderStreamError(\n          terminalAgentState,",
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
@@ -1623,20 +1628,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       ),
     ]).toHaveLength(2);
 
-    const terminalHelperIdx = taskSrc.indexOf(
+    const terminalHelperIdx = providerTerminalErrorSrc.indexOf(
       "const getTerminalProviderStreamError",
     );
-    const contentFilterIdx = taskSrc.indexOf(
-      "isProviderContentFilterFinishReason(state.streamFinishReason)",
+    const contentFilterIdx = providerTerminalErrorSrc.indexOf(
+      "isProviderContentFilterFinishReason(finishReason)",
       terminalHelperIdx,
     );
     const terminalCheckIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(terminalAgentState)",
-      contentFilterIdx,
+      "getTerminalProviderStreamError(\n          terminalAgentState,",
     );
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
-    expect(terminalCheckIdx).toBeGreaterThan(contentFilterIdx);
+    expect(terminalCheckIdx).toBeGreaterThan(-1);
   });
 
   test("mid-stream disconnect continuation is bounded and preserves a replay-safe transcript", () => {

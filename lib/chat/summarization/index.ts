@@ -24,7 +24,10 @@ import {
   writeSummarizationFailed,
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
-import { isCloudSandbox } from "@/lib/ai/tools/utils/sandbox-types";
+import {
+  getSandboxArtifactDirectory,
+  isCloudSandbox,
+} from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
@@ -1111,7 +1114,7 @@ export const compactModelMessagesInRun = async ({
 
 /**
  * Writes a JSON transcript of the summarized messages to the sandbox.
- * E2B (cloud) persists to ~/agent-transcripts/, local Docker to /tmp/agent-transcripts/.
+ * Native Desktop uses the selected project; other local clients use /tmp.
  *
  * Content is written as a Buffer (not a string) so that ConvexSandbox's binary
  * chunking path is used, avoiding the shell argument size limits that occur when
@@ -1128,9 +1131,7 @@ const saveTranscriptToSandbox = async (
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const transcriptId = uuidv4();
-      const dir = isCloudSandbox(sandbox)
-        ? "/home/user/agent-transcripts"
-        : "/tmp/agent-transcripts";
+      const dir = getSandboxArtifactDirectory(sandbox, "agent-transcripts");
       const path = `${dir}/${transcriptId}.json`;
 
       // E2B needs an explicit mkdir since its files.write doesn't create parents.

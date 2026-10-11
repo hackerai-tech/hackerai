@@ -1,3 +1,4 @@
+import { ChatSDKError } from "@/lib/errors";
 import {
   Centrifuge,
   type Subscription,
@@ -727,6 +728,13 @@ export class HybridSandboxManager implements SandboxManager {
         user_id: this.userID,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (isEnvironmentPreference(this.sandboxPreference)) {
+        throw new ChatSDKError(
+          "bad_request:sandbox",
+          "Could not check the selected computer's connection. Try again shortly.",
+          { localConnectionLookupFailed: true },
+        );
+      }
       return [];
     }
   }
@@ -777,7 +785,8 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     if (isEnvironmentPreference(this.sandboxPreference)) {
-      throw new Error(
+      throw new ChatSDKError(
+        "offline:sandbox",
         "The selected computer is disconnected. Reconnect that computer to continue this task.",
       );
     }
@@ -998,7 +1007,8 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     if (isEnvironmentPreference(this.sandboxPreference)) {
-      throw new Error(
+      throw new ChatSDKError(
+        "offline:sandbox",
         "The selected computer is disconnected. Reconnect that computer to continue this task.",
       );
     }

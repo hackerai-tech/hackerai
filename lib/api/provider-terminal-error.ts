@@ -1,12 +1,43 @@
 import type { OpenRouterModelMetadata } from "@/lib/api/openrouter-metadata";
 import {
   extractErrorDetails,
+  createProviderContentBlockedFinishReasonError,
+  isProviderContentFilterFinishReason,
   getLocalOpenRouterRequestSizeGuardDetails,
   getProviderErrorCategory,
   getProviderStatusCode,
   isRetriableProviderStreamDisconnectError,
   type ProviderErrorCategory,
 } from "@/lib/utils/error-utils";
+
+/** Preserve failures observed before Stop, without synthesizing one from abort settlement. */
+export const getTerminalProviderStreamError = (
+  state:
+    | {
+        providerError: unknown;
+        streamFinishReason?: string;
+        providerTerminalFinishReasonBeforeAbort?: string;
+      }
+    | undefined,
+  wasAborted = false,
+): unknown | undefined => {
+  if (!state) return undefined;
+  if (state.providerError) return state.providerError;
+  const finishReason =
+    state.providerTerminalFinishReasonBeforeAbort ??
+    (wasAborted ? undefined : state.streamFinishReason);
+  if (isProviderContentFilterFinishReason(finishReason)) {
+    return createProviderContentBlockedFinishReasonError();
+  }
+  if (finishReason !== "error") return undefined;
+  return Object.assign(
+    new Error("Provider stream finished with error finish reason"),
+    {
+      name: "ProviderStreamError",
+      finishReason,
+    },
+  );
+};
 
 const providerFromModel = (model: string | undefined): string | undefined =>
   model?.includes("/") ? model.split("/", 1)[0] : undefined;

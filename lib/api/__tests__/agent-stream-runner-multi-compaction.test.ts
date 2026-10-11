@@ -766,6 +766,88 @@ describe("createAgentStream repeated compaction", () => {
     );
   });
 
+  it.each([
+    ["ask", false],
+    ["agent", false],
+    ["ask", true],
+    ["agent", true],
+  ])(
+    "classifies cancellation in %s with prior failure %s",
+    async (mode, priorFailure) => {
+      const controller = new AbortController();
+      const recordProviderError = jest.fn();
+      const refund = jest.fn();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          abortController: controller,
+          usageTracker: { hasUsage: false },
+          usageRefundTracker: { refund },
+          chatLogger: {
+            recordProviderError,
+            recordProviderRequestDiagnostics: jest.fn(),
+          },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const originalFailure = new Error("Upstream unavailable");
+      if (priorFailure) await stream.onError({ error: originalFailure });
+      refund.mockClear();
+      controller.abort();
+      await stream.onError({ error: new TypeError("terminated") });
+      expect(state.providerError).toBe(
+        priorFailure ? originalFailure : undefined,
+      );
+      expect(recordProviderError).toHaveBeenCalledTimes(priorFailure ? 1 : 0);
+      expect(refund).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([true, false])(
+    "resolves a terminal finish around cancellation (finish first: %s)",
+    async (finishFirst) => {
+      const { getTerminalProviderStreamError } = jest.requireActual(
+        "@/lib/api/provider-terminal-error",
+      );
+      const controller = new AbortController();
+      const state = initAgentStreamState([uiMessage("initial", "Continue")], {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          abortController: controller,
+          usageTracker: { setAuthoritativeModelCostForStep: jest.fn() },
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      if (!finishFirst) controller.abort();
+      await stream.onFinish({
+        finishReason: "error",
+        usage: {},
+        response: { modelId: "test-model" },
+      });
+      if (finishFirst) controller.abort();
+      // Agent clears its displayed finish reason when Stop is requested.
+      state.streamFinishReason = undefined;
+      const error = getTerminalProviderStreamError(
+        state,
+        controller.signal.aborted,
+      );
+      if (finishFirst)
+        expect(error).toHaveProperty("name", "ProviderStreamError");
+      else expect(error).toBeUndefined();
+    },
+  );
+
   it("does not attribute a bare disconnect to the previous step's upstream", async () => {
     const state = initAgentStreamState([uiMessage("initial", "Continue")], {
       usedTokens: 1_000,

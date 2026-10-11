@@ -204,6 +204,8 @@ export async function prepareSandboxContextForPrompt({
       sandboxContext = await sandboxManager.getSandboxContextForPrompt();
     } catch (error) {
       onContextError?.(error);
+      // A missing selected host is a user-facing failure, not optional context.
+      if (error instanceof ChatSDKError) throw error;
     }
   }
 

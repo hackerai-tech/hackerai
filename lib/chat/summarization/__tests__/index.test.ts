@@ -1758,72 +1758,92 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
   });
 
-  it("does not wait for transcript saving before returning the summary", async () => {
-    mockGenerateText.mockResolvedValue({
-      finishReason: "stop",
-      text: "Fast summary",
-      usage: { inputTokens: 10, outputTokens: 2 },
-    });
-    let finishWrite!: () => void;
-    const writePending = new Promise<void>((resolve) => {
-      finishWrite = resolve;
-    });
-    const sandbox = {
-      commands: {
-        run: jest.fn<() => Promise<any>>().mockResolvedValue({
-          stdout: "",
-          stderr: "",
-          exitCode: 0,
-        }),
-      },
-      files: {
-        write: jest.fn<() => Promise<void>>().mockReturnValue(writePending),
-      },
-    };
-    const backgroundWork: Promise<void>[] = [];
-    const phaseDurations: Array<[string, number]> = [];
+  it.each([
+    [undefined, "/home/user/agent-transcripts/"],
+    [
+      "/Users/test/My Project",
+      "/Users/test/My Project/.hackerai/agent-transcripts/",
+    ],
+    [
+      "C:\\Users\\test\\My Project",
+      "C:/Users/test/My Project/.hackerai/agent-transcripts/",
+    ],
+  ])(
+    "saves the background transcript within the sandbox boundary %s",
+    async (project, expectedDirectory) => {
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: "Fast summary",
+        usage: { inputTokens: 10, outputTokens: 2 },
+      });
+      let finishWrite!: () => void;
+      const writePending = new Promise<void>((resolve) => {
+        finishWrite = resolve;
+      });
+      const sandbox = {
+        ...(project
+          ? {
+              sandboxKind: "centrifugo",
+              getWorkingDirectory: () => project,
+              supportsNativeFileRelay: () => true,
+              isWindows: () => project.startsWith("C:"),
+            }
+          : {}),
+        commands: {
+          run: jest.fn<() => Promise<any>>().mockResolvedValue({
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          }),
+        },
+        files: {
+          write: jest.fn<() => Promise<void>>().mockReturnValue(writePending),
+        },
+      };
+      const backgroundWork: Promise<void>[] = [];
+      const phaseDurations: Array<[string, number]> = [];
 
-    const result = await checkAndSummarizeIfNeeded({
-      uiMessages: fourMessagesAboveThreshold,
-      subscription: "pro",
-      languageModel: mockLanguageModel,
-      mode: "agent",
-      writer: mockWriter,
-      chatId: "chat-background-transcript",
-      ensureSandbox: async () => sandbox as any,
-      onPhaseDuration: (phase, durationMs) =>
-        phaseDurations.push([phase, durationMs]),
-      registerBackgroundWork: (work) => backgroundWork.push(work),
-    });
-
-    expect(result.summaryText).toContain("Fast summary");
-    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
-    expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
-    expect(backgroundWork).toHaveLength(1);
-    expect(phaseDurations.map(([phase]) => phase)).toContain(
-      "summary_generation",
-    );
-
-    finishWrite();
-    await Promise.all(backgroundWork);
-
-    expect(mockAttachChatSummaryTranscript).toHaveBeenCalledWith(
-      expect.objectContaining({
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: fourMessagesAboveThreshold,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
         chatId: "chat-background-transcript",
-        summaryUpToMessageId: "msg-3",
-        transcriptPath: expect.stringContaining(
-          "/home/user/agent-transcripts/",
-        ),
-        summaryText: expect.stringContaining("Transcript location:"),
-      }),
-    );
-    expect(
-      (mockAttachChatSummaryTranscript.mock.calls[0][0] as any).summaryText,
-    ).toContain("<preserved_user_message>");
-    expect(phaseDurations.map(([phase]) => phase)).toContain(
-      "transcript_saving",
-    );
-  });
+        ensureSandbox: async () => sandbox as any,
+        onPhaseDuration: (phase, durationMs) =>
+          phaseDurations.push([phase, durationMs]),
+        registerBackgroundWork: (work) => backgroundWork.push(work),
+      });
+
+      expect(result.summaryText).toContain("Fast summary");
+      expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+      expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
+      expect(backgroundWork).toHaveLength(1);
+      expect(phaseDurations.map(([phase]) => phase)).toContain(
+        "summary_generation",
+      );
+
+      finishWrite();
+      await Promise.all(backgroundWork);
+
+      expect(mockAttachChatSummaryTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: "chat-background-transcript",
+          summaryUpToMessageId: "msg-3",
+          transcriptPath: expect.stringContaining(expectedDirectory),
+          summaryText: expect.stringContaining("Transcript location:"),
+        }),
+      );
+      expect(
+        (mockAttachChatSummaryTranscript.mock.calls[0][0] as any).summaryText,
+      ).toContain("<preserved_user_message>");
+      expect(phaseDurations.map(([phase]) => phase)).toContain(
+        "transcript_saving",
+      );
+      if (project) expect(sandbox.commands.run).not.toHaveBeenCalled();
+    },
+  );
 
   it("should skip database persistence when chatId is absent", async () => {
     mockGenerateText.mockResolvedValue({

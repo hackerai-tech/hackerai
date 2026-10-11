@@ -171,6 +171,7 @@ import { getOpenRouterUpstreamInferenceCostFromUsageRaw } from "@/lib/provider-u
 import {
   classifyProviderOverflowError,
   isProviderContentBlockedFinishReasonError,
+  isProviderContentFilterFinishReason,
 } from "@/lib/utils/error-utils";
 import { createProviderContentBlockedRefundLifecycle } from "@/lib/api/provider-content-blocked-refund";
 import type { UsageTracker } from "@/lib/usage-tracker";
@@ -398,6 +399,8 @@ export type AgentStreamState = {
   lastStepInputTokens: number;
   /** Set in streamText.onFinish; read by the caller's toUIMessageStream.onFinish. */
   streamFinishReason: string | undefined;
+  /** Snapshot when onFinish starts, before cancellation during async settlement. */
+  providerTerminalFinishReasonBeforeAbort?: string;
   streamUsage: Record<string, unknown> | undefined;
   responseModel: string | undefined;
   /** Set only when provider/retry state can identify fallback serving. */
@@ -2520,6 +2523,12 @@ export async function createAgentStream(
     },
 
     onFinish: async (finishResult) => {
+      state.providerTerminalFinishReasonBeforeAbort =
+        !ctx.abortController.signal.aborted &&
+        (finishResult.finishReason === "error" ||
+          isProviderContentFilterFinishReason(finishResult.finishReason))
+          ? finishResult.finishReason
+          : undefined;
       ctx.onModelStreamFinish?.();
       const { finishReason, usage, response } = finishResult;
       const hardReason = ctx.getHardTimeoutReason();
@@ -2676,6 +2685,27 @@ export async function createAgentStream(
     },
 
     onError: async ({ error }) => {
+      // Some transports report a disconnect while settling an aborted stream.
+      // Keep errors observed before Stop, but do not create a provider failure
+      // from a callback that begins after the caller has canceled the request.
+      if (ctx.abortController.signal.aborted) {
+        await refundProviderContentBlockedIfSettled({ error, settled: false });
+        if (
+          !isProviderContentBlockedFinishReasonError(error) &&
+          !ctx.usageTracker.hasUsage
+        ) {
+          await ctx.usageRefundTracker.refund();
+        }
+        await ptySessionManager
+          .closeAll(ctx.chatId)
+          .catch((err) =>
+            console.error(
+              "[agent-stream] PTY closeAll (canceled error) failed:",
+              err,
+            ),
+          );
+        return;
+      }
       state.providerError = error;
       const errorOpenRouterMetadata = extractOpenRouterMetadataFromError(error);
       state.providerErrorMetadata = errorOpenRouterMetadata;

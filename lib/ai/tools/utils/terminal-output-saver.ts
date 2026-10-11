@@ -5,8 +5,8 @@ import { phLogger } from "@/lib/posthog/server";
 import { FULL_OUTPUT_SAVED_MESSAGE } from "@/lib/token-utils";
 import {
   asCommonSandbox,
-  isCloudSandbox,
   isCentrifugoSandbox,
+  getSandboxArtifactDirectory,
 } from "./sandbox-types";
 import {
   listOwnerOnlyPosixFiles,
@@ -83,7 +83,7 @@ export const classifyTerminalOutputPersistenceFailure = (
     return "transport";
   }
   if (
-    /outside its allowed root|permission denied|access denied|eacces|eperm/.test(
+    /outside (?:its allowed root|the allowed project folder)|permission denied|access denied|eacces|eperm/.test(
       message,
     )
   ) {
@@ -168,9 +168,10 @@ const emitPersistenceFailure = (args: {
 
 /** Builds a stable, non-identifying output directory for one chat scope. */
 const getOutputDirectory = (sandbox: AnySandbox, scopeId?: string): string => {
-  const baseDirectory = isCloudSandbox(sandbox)
-    ? "/home/user/terminal_full_output"
-    : "/tmp/terminal_full_output";
+  const baseDirectory = getSandboxArtifactDirectory(
+    sandbox,
+    "terminal_full_output",
+  );
   const scopeKey = scopeId
     ? createHash("sha256").update(scopeId).digest("hex").slice(0, 16)
     : "unscoped";
@@ -210,8 +211,8 @@ const pruneOldSavedOutputs = async (
 
 /**
  * Save full terminal output to a file in the sandbox when it exceeds token limits.
- * E2B saves under ~/terminal_full_output/. Desktop and other Centrifugo
- * sandboxes save under /tmp/terminal_full_output/. Each chat gets an isolated
+ * Native Desktop saves within the selected project. Other local sandboxes
+ * use /tmp/terminal_full_output/. Each chat gets an isolated
  * retained directory.
  * Returns the file path if saved, or null if saving failed.
  */
@@ -240,13 +241,17 @@ export async function saveFullOutputToFile(
       failureStage = "write_output";
       await writeOwnerOnlyPosixFile(sandbox, root, dir, filePath, fullOutput);
     } else {
-      const mkdirResult = await sandbox.commands.run(`mkdir -p ${dir}`, {
-        timeoutMs: 5000,
-      });
-      if (mkdirResult.exitCode !== 0)
-        throw Object.assign(new Error("Output directory creation failed"), {
-          exitCode: mkdirResult.exitCode,
+      // Native file writes create parents and enforce the project boundary.
+      // Avoid an unquoted POSIX shell command on Desktop (including Windows).
+      if (provider !== "desktop") {
+        const mkdirResult = await sandbox.commands.run(`mkdir -p ${dir}`, {
+          timeoutMs: 5000,
         });
+        if (mkdirResult.exitCode !== 0)
+          throw Object.assign(new Error("Output directory creation failed"), {
+            exitCode: mkdirResult.exitCode,
+          });
+      }
       failureStage = "write_output";
       await sandbox.files.write(filePath, fullOutput);
     }
