@@ -1,3 +1,5 @@
+import type { ChatMode, LimitRescueRequest, SelectedModel } from "@/types/chat";
+import type { PaidDailyFreeAllowanceMetadata } from "@/lib/rate-limit/paid-daily-free-allowance";
 import { BlockedChatBillingRecovery } from "./BlockedChatBillingRecovery";
 import { useAction, useQuery } from "convex/react";
 import useSWR from "swr";
@@ -9,13 +11,19 @@ import { Button } from "@/components/ui/button";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface BudgetExhaustedNoticeProps {
-  onContinue?: () => void | Promise<void>;
+  onContinue?: (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => void | Promise<void>;
+  mode?: ChatMode;
   pending?: boolean;
 }
 
 /** Mounted only for a stopped run, including when its saved chat is reopened. */
 export const BudgetExhaustedNotice = (props: BudgetExhaustedNoticeProps) => (
-  <BlockedChatBillingRecovery onRetry={props.onContinue}>
+  <BlockedChatBillingRecovery
+    onRetry={props.onContinue ? () => void props.onContinue?.() : undefined}
+  >
     <UsageBudgetExhaustedNotice {...props} />
   </BlockedChatBillingRecovery>
 );
@@ -23,9 +31,10 @@ export const BudgetExhaustedNotice = (props: BudgetExhaustedNoticeProps) => (
 const UsageBudgetExhaustedNotice = ({
   onContinue,
   pending = false,
+  mode,
 }: BudgetExhaustedNoticeProps) => {
   const { subscription, isCheckingProPlan } = useGlobalState();
-  const { user } = useAuth();
+  const { user, organizationId } = useAuth();
   const isPersonalPaid = subscription !== "free" && subscription !== "team";
   const getAgentRateLimitStatus = useAction(
     api.rateLimitStatus.getAgentRateLimitStatus,
@@ -67,6 +76,49 @@ const UsageBudgetExhaustedNotice = ({
   const isLoading =
     isCheckingProPlan ||
     (isPersonalPaid && (entitlement === undefined || isCheckingIncludedUsage));
+
+  const canOfferRescue =
+    entitlement?.reason === "disabled" || entitlement?.reason === "empty";
+  const { data: dailyAllowance, error: dailyAllowanceError } = useSWR<
+    Partial<PaidDailyFreeAllowanceMetadata>
+  >(
+    mode === "agent" &&
+      canOfferRescue &&
+      isPersonalPaid &&
+      user &&
+      !isLoading &&
+      !canContinue &&
+      !isIncludedUsageUnavailable
+      ? [
+          "stopped-agent-daily-allowance",
+          user.id,
+          organizationId ?? null,
+          subscription,
+        ]
+      : null,
+    async () => {
+      const response = await fetch("/api/agent/daily-allowance", {
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error("Could not check daily allowance");
+      return response.json();
+    },
+    {
+      revalidateOnFocus: true,
+      revalidateOnReconnect: true,
+      refreshInterval: 60_000,
+      shouldRetryOnError: false,
+    },
+  );
+  const canUseDailyAllowance =
+    mode === "agent" &&
+    isPersonalPaid &&
+    canOfferRescue &&
+    !canContinue &&
+    !isLoading &&
+    !isIncludedUsageUnavailable &&
+    !dailyAllowanceError &&
+    dailyAllowance?.available === true;
 
   const recoveryLabel =
     subscription === "free"
@@ -115,7 +167,28 @@ const UsageBudgetExhaustedNotice = ({
                 ? "This run stopped when your Extra Usage spending limit was reached."
                 : "This run stopped when your usage limit was reached."}
         </span>
+        {canUseDailyAllowance && (
+          <p className="text-sm">
+            Continue on Auto with today&apos;s free allowance
+            {typeof dailyAllowance?.costRemainingDollars === "number"
+              ? ` ($${dailyAllowance.costRemainingDollars.toFixed(2)} remaining)`
+              : ""}
+            . Your saved progress is kept.
+          </p>
+        )}
         <div className="flex items-center gap-2 flex-wrap">
+          {canUseDailyAllowance && onContinue && (
+            <Button
+              type="button"
+              size="sm"
+              disabled={pending}
+              onClick={() =>
+                void onContinue("auto", { type: "paid_daily_free_allowance" })
+              }
+            >
+              {pending ? "Resuming…" : "Continue with daily allowance"}
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"

@@ -74,9 +74,13 @@ export function BillingRecoveryReturnNotice() {
                   : "A successful payment has not been confirmed yet.";
           toast.error("Your renewal invoice is still unpaid", {
             id: NOTICE_ID,
-            description: `${detail} Check your payment in billing to restore access.`,
+            description: `${detail} Open billing to pay the invoice, complete verification, or update your card.`,
             duration: Infinity,
             action: {
+              label: "Resolve payment",
+              onClick: () => openSettingsDialog("Account"),
+            },
+            cancel: {
               label: "Check again",
               onClick: () => void checkPayment(),
             },

@@ -1086,8 +1086,10 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleContinue = (selectedModelOverride?: SelectedModel) =>
-    continueSavedTask({ selectedModel: selectedModelOverride });
+  const handleContinue = (
+    selectedModelOverride?: SelectedModel,
+    limitRescue?: LimitRescueRequest,
+  ) => continueSavedTask({ selectedModel: selectedModelOverride, limitRescue });
 
   const handleSendNow = async (
     messageId: string,

@@ -211,6 +211,40 @@ describe("useChatHandlers regenerate model", () => {
     );
   });
 
+  it("passes explicit allowance consent when continuing saved work", async () => {
+    const { result } = renderHook(() =>
+      useChatHandlers({
+        chatId: "chat-1",
+        messages,
+        sendMessage: mockSendMessage,
+        stop: jest.fn(),
+        regenerate: mockRegenerate,
+        setMessages: mockSetMessages,
+        isExistingChat: true,
+        status: "ready",
+        isSendingNowRef: { current: false },
+        hasManuallyStoppedRef: { current: false },
+      }),
+    );
+    await act(async () => {
+      await result.current.handleContinue("auto", {
+        type: "paid_daily_free_allowance",
+      });
+    });
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: { isAutoContinue: true } }),
+      expect.objectContaining({
+        body: expect.objectContaining({
+          selectedModel: "auto",
+          limitRescue: { type: "paid_daily_free_allowance" },
+          isAutoContinue: true,
+        }),
+      }),
+    );
+    expect(mockRegenerate).not.toHaveBeenCalled();
+    expect(mockSetMessages).not.toHaveBeenCalled();
+  });
+
   it("uses a fresh request identity for each regeneration attempt", async () => {
     const { result } = renderHook(() =>
       useChatHandlers({
