@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
+import { getDocumentSize } from "convex/values";
 
 const mockValidateUserResearchServiceKey = jest.fn();
 
@@ -8,6 +9,9 @@ jest.mock("../_generated/server", () => ({
 }));
 
 jest.mock("convex/values", () => ({
+  getDocumentSize:
+    jest.requireActual<typeof import("convex/values")>("convex/values")
+      .getDocumentSize,
   ConvexError: class ConvexError extends Error {},
   v: new Proxy(
     {},
@@ -72,6 +76,15 @@ const createCtx = (args: {
     })),
   };
 
+  const reads = { bytes: 0, messageIds: [] as string[] };
+  const recordRead = (row: Row, table: string) => {
+    reads.bytes += getDocumentSize(row as never);
+    if (table === "messages") reads.messageIds.push(row._id);
+    if (reads.bytes > 16 * 1024 * 1024) {
+      throw new Error("Too many bytes read in a single function execution");
+    }
+    return row;
+  };
   const db = {
     query: jest.fn((table: string) => ({
       withIndex: jest.fn(
@@ -118,20 +131,31 @@ const createCtx = (args: {
             return direction === "desc" ? sorted.reverse() : sorted;
           };
           return {
-            unique: jest.fn(async () => rows[0] ?? null),
-            take: jest.fn(async (limit: number) => rows.slice(0, limit)),
+            unique: jest.fn(async () =>
+              rows[0] ? recordRead(rows[0], table) : null,
+            ),
+            take: jest.fn(async (limit: number) =>
+              rows.slice(0, limit).map((row) => recordRead(row, table)),
+            ),
             order: jest.fn((direction: "asc" | "desc") => ({
               first: jest.fn(async () => ordered(direction)[0] ?? null),
               take: jest.fn(async (limit: number) =>
-                ordered(direction).slice(0, limit),
+                ordered(direction)
+                  .slice(0, limit)
+                  .map((row) => recordRead(row, table)),
               ),
+              async *[Symbol.asyncIterator]() {
+                for (const row of ordered(direction)) {
+                  yield recordRead(row, table);
+                }
+              },
             })),
           };
         },
       ),
     })),
   };
-  return { ctx: { db }, userId, chatId };
+  return { ctx: { db }, userId, chatId, tables, reads };
 };
 
 describe("userResearch.getMessageExcerpt", () => {
@@ -212,6 +236,120 @@ describe("userResearch.getMessageExcerpt", () => {
     expect(result.messages).toHaveLength(20);
     expect(result.truncated).toBe(true);
   });
+
+  it.each([20, 120])(
+    "bounds the entire transaction for %i requested large messages",
+    async (maxMessages) => {
+      const { getMessageExcerpt } = await import("../userResearch");
+      const { ctx, userId, chatId, tables, reads } = createCtx({
+        messageCount: 140,
+      });
+      // Include worst-case authorization overhead, not just message reads.
+      for (const table of ["research_runs", "research_run_members", "chats"]) {
+        tables[table][0].padding = "x".repeat(900_000);
+      }
+      for (const message of tables.messages) {
+        message.parts = [
+          { type: "text", text: message._id },
+          { type: "tool-result", output: "界".repeat(300_000) },
+        ];
+      }
+      tables.messages[1].is_hidden = true;
+      tables.messages[138].role = "system";
+
+      const result = await getMessageExcerpt.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        userId,
+        chatId,
+        maxMessages,
+      });
+
+      expect(result.truncated).toBe(true);
+      expect(result.messages).toEqual([
+        { role: "user", text: "message-1" },
+        { role: "user", text: "message-3" },
+        { role: "assistant", text: "message-4" },
+        { role: "user", text: "message-137" },
+        { role: "assistant", text: "message-138" },
+        { role: "assistant", text: "message-140" },
+      ]);
+      expect(reads.bytes).toBeLessThan(11 * 1024 * 1024);
+      expect(reads.messageIds).toEqual([
+        "message-1",
+        "message-2",
+        "message-3",
+        "message-4",
+        "message-140",
+        "message-139",
+        "message-138",
+        "message-137",
+      ]);
+    },
+  );
+
+  it("preserves the full requested sample and overlapping lookaheads for small documents", async () => {
+    const { getMessageExcerpt } = await import("../userResearch");
+    const { ctx, userId, chatId, reads } = createCtx({ messageCount: 120 });
+    const result = await getMessageExcerpt.handler(ctx as never, {
+      serviceKey: "service-key",
+      analysisId: "analysis-1",
+      userId,
+      chatId,
+      maxMessages: 120,
+    });
+    expect(result.messages).toHaveLength(120);
+    expect(result.messages[0].text).toBe("message 1");
+    expect(result.messages[119].text).toBe("message 120");
+    expect(result.truncated).toBe(false);
+    expect(reads.messageIds).toHaveLength(122);
+  });
+
+  it("does not refill the byte budget after filtering private-only documents", async () => {
+    const { getMessageExcerpt } = await import("../userResearch");
+    const { ctx, userId, chatId, tables, reads } = createCtx({
+      messageCount: 140,
+    });
+    for (const message of tables.messages) {
+      message.parts = [{ type: "reasoning", text: "x".repeat(900_000) }];
+    }
+    // Eligible text outside the bounded ends must not become a false
+    // no_eligible_evidence skip, including on an older Trigger worker.
+    tables.messages[70].parts = [{ type: "text", text: "eligible middle" }];
+    await expect(
+      getMessageExcerpt.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        userId,
+        chatId,
+        maxMessages: 120,
+      }),
+    ).rejects.toThrow(
+      "Research excerpt read budget exhausted before eligible text was found",
+    );
+    expect(reads.messageIds).toHaveLength(8);
+  });
+
+  it.each(["foreign", "deleting"])(
+    "does not read %s chat messages",
+    async (state) => {
+      const { getMessageExcerpt } = await import("../userResearch");
+      const { ctx, userId, chatId, tables, reads } = createCtx({
+        messageCount: 20,
+      });
+      if (state === "foreign") tables.chats[0].user_id = "someone-else";
+      else tables.chats[0].deletion_started_at = 1;
+      const result = await getMessageExcerpt.handler(ctx as never, {
+        serviceKey: "service-key",
+        analysisId: "analysis-1",
+        userId,
+        chatId,
+        maxMessages: 20,
+      });
+      expect(result).toEqual({ messages: [], truncated: false });
+      expect(reads.messageIds).toHaveLength(0);
+    },
+  );
 });
 
 describe("userResearch.listRepresentativeChats", () => {
