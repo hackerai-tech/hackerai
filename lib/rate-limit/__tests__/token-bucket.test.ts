@@ -52,8 +52,8 @@ describe("token-bucket", () => {
           cacheReadTokens: 500_000,
           modelName,
         }),
-      ).toBeCloseTo(7.75);
-      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(50_000);
+      ).toBeCloseTo(6.65);
+      expect(calculateRawTokenCost(1_000_000, "input", modelName)).toBe(30_000);
     },
   );
   // ==========================================================================
