@@ -776,6 +776,7 @@ describe("createAgentStream repeated compaction", () => {
     async (mode, priorFailure) => {
       const controller = new AbortController();
       const recordProviderError = jest.fn();
+      const refund = jest.fn();
       const state = initAgentStreamState([uiMessage("initial", "Continue")], {
         usedTokens: 1_000,
         maxTokens: 128_000,
@@ -785,7 +786,8 @@ describe("createAgentStream repeated compaction", () => {
         createTestStreamContext({
           mode,
           abortController: controller,
-          usageTracker: { hasUsage: true },
+          usageTracker: { hasUsage: false },
+          usageRefundTracker: { refund },
           chatLogger: {
             recordProviderError,
             recordProviderRequestDiagnostics: jest.fn(),
@@ -796,12 +798,14 @@ describe("createAgentStream repeated compaction", () => {
       )) as any;
       const originalFailure = new Error("Upstream unavailable");
       if (priorFailure) await stream.onError({ error: originalFailure });
+      refund.mockClear();
       controller.abort();
       await stream.onError({ error: new TypeError("terminated") });
       expect(state.providerError).toBe(
         priorFailure ? originalFailure : undefined,
       );
       expect(recordProviderError).toHaveBeenCalledTimes(priorFailure ? 1 : 0);
+      expect(refund).toHaveBeenCalledTimes(1);
     },
   );
 

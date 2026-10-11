@@ -2680,6 +2680,13 @@ export async function createAgentStream(
       // Keep errors observed before Stop, but do not create a provider failure
       // from a callback that begins after the caller has canceled the request.
       if (ctx.abortController.signal.aborted) {
+        await refundProviderContentBlockedIfSettled({ error, settled: false });
+        if (
+          !isProviderContentBlockedFinishReasonError(error) &&
+          !ctx.usageTracker.hasUsage
+        ) {
+          await ctx.usageRefundTracker.refund();
+        }
         await ptySessionManager
           .closeAll(ctx.chatId)
           .catch((err) =>
