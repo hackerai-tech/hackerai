@@ -1,4 +1,5 @@
-import { ConvexError, v } from "convex/values";
+import { ConvexError, getDocumentSize, v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import {
   mutation,
   query,
@@ -20,6 +21,10 @@ const MAX_CHATS_PER_USER = 20;
 const MIN_MESSAGES_PER_CHAT = 20;
 const MAX_MESSAGES_PER_CHAT = 120;
 const MAX_MESSAGE_CHARS = 8_000;
+// Both ends share one 16 MiB transaction with the run, member, and chat reads.
+// Each scan can overshoot this threshold by at most one 1 MiB document,
+// keeping the two scans below 8 MiB and leaving room for authorization reads.
+const EXCERPT_END_READ_BYTES = 3 * 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const MAX_EVIDENCE_WINDOW_DAYS = 365;
 const MAX_SELECTION_LIMITATIONS = 8;
@@ -512,16 +517,30 @@ export const getMessageExcerpt = query({
 
     const firstLimit = Math.ceil(args.maxMessages / 2);
     const lastLimit = Math.floor(args.maxMessages / 2);
-    const first = await ctx.db
-      .query("messages")
-      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-      .order("asc")
-      .take(firstLimit + 1);
-    const last = await ctx.db
-      .query("messages")
-      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-      .order("desc")
-      .take(lastLimit + 1);
+    const readEnd = async (direction: "asc" | "desc", limit: number) => {
+      const rows: Doc<"messages">[] = [];
+      let bytesRead = 0;
+      let byteLimited = false;
+      for await (const message of ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .order(direction)) {
+        rows.push(message);
+        // Count the full stored document, including hidden/tool/reasoning
+        // content and the lookahead, before applying any output filtering.
+        bytesRead += getDocumentSize(message);
+        if (rows.length >= limit) break;
+        if (bytesRead >= EXCERPT_END_READ_BYTES) {
+          byteLimited = true;
+          break;
+        }
+      }
+      return { rows, byteLimited };
+    };
+    const firstPage = await readEnd("asc", firstLimit + 1);
+    const lastPage = await readEnd("desc", lastLimit + 1);
+    const first = firstPage.rows;
+    const last = lastPage.rows;
 
     const selectedFirst = first.slice(0, firstLimit);
     const selectedLast = last.slice(0, lastLimit);
@@ -547,9 +566,23 @@ export const getMessageExcerpt = query({
         return text ? [{ role: message.role, text }] : [];
       });
 
+    if (
+      messages.length === 0 &&
+      (firstPage.byteLimited || lastPage.byteLimited)
+    ) {
+      // Older workers treat an empty result as no eligible evidence. A bounded
+      // scan cannot establish that when unread documents may contain text.
+      throw new ConvexError(
+        "Research excerpt read budget exhausted before eligible text was found",
+      );
+    }
+
     return {
       messages,
-      truncated: lookaheads.some((message) => !byId.has(message._id)),
+      truncated:
+        firstPage.byteLimited ||
+        lastPage.byteLimited ||
+        lookaheads.some((message) => !byId.has(message._id)),
     };
   },
 });
