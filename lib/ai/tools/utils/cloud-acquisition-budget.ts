@@ -147,6 +147,11 @@ export class CloudAcquisitionBudget {
                 : "failed_wait",
           }),
         );
+        // The failure that spends the last attempt must expose exhaustion too,
+        // so callers do not schedule a refresh that this budget will reject.
+        if (!isCloudAcquisitionBudgetSpent(error)) {
+          throw new CloudAcquisitionBudgetExhaustedError(error);
+        }
       }
       throw error;
     } finally {

@@ -3,6 +3,8 @@ import {
   CloudAcquisitionBudget,
   CLOUD_ACQUISITION_DEADLINE_MS,
   CloudAcquisitionTimeoutError,
+  CloudAcquisitionBudgetExhaustedError,
+  isCloudAcquisitionBudgetSpent,
 } from "../cloud-acquisition-budget";
 
 describe("cloud acquisition deadline", () => {
@@ -67,6 +69,32 @@ describe("cloud acquisition deadline", () => {
     );
     expect(acquire).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("marks the final fast failure as exhausted while preserving its provider cause", async () => {
+    const budget = new CloudAcquisitionBudget();
+    const cause = new Error("connection timed out");
+    const acquire = jest.fn(async () => {
+      throw cause;
+    });
+    const first = await budget
+      .run(acquire, { userId: "test" })
+      .catch((error) => error);
+    expect(first).toBe(cause);
+    expect(isCloudAcquisitionBudgetSpent(first)).toBe(false);
+    const final = await budget
+      .run(acquire, { userId: "test" })
+      .catch((error) => error);
+    expect(final).toBeInstanceOf(CloudAcquisitionBudgetExhaustedError);
+    expect(final.cause).toBe(cause);
+    expect(isCloudAcquisitionBudgetSpent(final)).toBe(true);
+    expect(classifySandboxReadinessFailureSignal(final)).toBe(
+      "operation_timeout",
+    );
+    await expect(budget.run(acquire, { userId: "test" })).rejects.toMatchObject(
+      { cause },
+    );
+    expect(acquire).toHaveBeenCalledTimes(2);
   });
 
   it("shares remaining time across failed acquisition attempts", async () => {

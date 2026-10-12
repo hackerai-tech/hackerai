@@ -8,6 +8,7 @@ jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
 import {
+  CloudAcquisitionBudget,
   CloudAcquisitionTimeoutError,
   CloudAcquisitionBudgetExhaustedError,
 } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
@@ -2067,3 +2068,49 @@ it.each([
     }
   },
 );
+
+it("skips attachment refresh when an earlier acquisition has already spent the first attempt", async () => {
+  const budget = new CloudAcquisitionBudget();
+  const acquire = jest.fn(async () => {
+    throw new Error("connection timed out");
+  });
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await expect(budget.run(acquire, { userId: "test" })).rejects.toThrow(
+      "connection timed out",
+    );
+    const ensureSandbox = jest.fn(() =>
+      budget.run(acquire, { userId: "test" }),
+    );
+    const result = await uploadSandboxFiles(
+      [
+        {
+          kind: "url",
+          url: "https://example.com/test",
+          localPath: "/tmp/test",
+        },
+      ],
+      ensureSandbox,
+      { retryAfterReconnectOnTransientFailure: true },
+    );
+    expect(ensureSandbox).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(result.retriedAfterReconnect).toBeUndefined();
+    expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+      upload_failure_phase: "acquisition",
+      upload_failure_reason: "sandbox_operation_timeout",
+      upload_failure_error_name: "CloudAcquisitionBudgetExhaustedError",
+    });
+    const events = warn.mock.calls.map(
+      ([value]) => JSON.parse(String(value)).event,
+    );
+    expect(events).toContain("sandbox_attachment_acquisition_retry_skipped");
+    expect(events).not.toContain(
+      "sandbox_attachment_acquisition_retry_scheduled",
+    );
+  } finally {
+    warn.mockRestore();
+    errorSpy.mockRestore();
+  }
+});
