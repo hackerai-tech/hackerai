@@ -1,3 +1,4 @@
+import { validateFindingAssessment } from "../../findings/quality";
 import { tool } from "ai";
 import { z } from "zod";
 
@@ -952,12 +953,16 @@ const findingReportToolFieldsSchema = z
     ),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: findingProseText("Assumptions", 4_000),
-    confidence: z.enum(["low", "medium", "high"]).optional(),
-    counterevidence: findingProseText("Counterevidence", 4_000).optional(),
+    confidence: z.enum(["low", "medium", "high"]),
+    confidence_rationale: findingProseText(
+      "Confidence rationale",
+      4_000,
+    ).optional(),
+    counterevidence: findingProseText("Counterevidence", 4_000),
     severity_change_conditions: findingProseText(
       "Severity change conditions",
       4_000,
-    ).optional(),
+    ),
     fix_effort: z.enum(["trivial", "low", "medium", "high"]),
     cvss_breakdown: z
       .object({
@@ -1000,6 +1005,7 @@ const findingReportToolFieldsSchema = z
 
 export const createVulnerabilityReportToolInputSchema =
   findingReportToolFieldsSchema.superRefine((input, ctx) => {
+    validateFindingAssessment(input, ctx);
     const payloadBytes = new TextEncoder().encode(JSON.stringify(input)).length;
     if (payloadBytes > 128 * 1024) {
       ctx.addIssue({
@@ -1047,6 +1053,7 @@ Use this tool only after all of the following are true:
 - Inspect saved captures before referencing them, and use get_terminal_files to deliver the relevant files. A file existing does not prove that its contents are complete or support the claim
 - Separate observed impact from possible consequences. Execution as root in a container or application process does not establish container escape, underlying host compromise, secret access, or successful pivoting. Only claim those boundaries were crossed when separate evidence demonstrates it
 - Include confidence, counterevidence, and severity_change_conditions: test the strongest alternative explanation, record what was checked and any remaining uncertainty, and state what new evidence would raise or lower severity
+- Include confidence_rationale when confidence is low or medium: explain the remaining proof gap without overstating impact
 - Never infer high confidence from a saved file or CVSS score; if execution or proof is incomplete, continue validation instead of filing
 - Keep remediation_steps as prose; put code replacements in code_locations
 - Populate code_locations whenever source code is available, after reading the actual file
@@ -1106,6 +1113,8 @@ export const updateVulnerabilityReportToolInputSchema = z
         code_locations:
           findingReportToolFieldsSchema.shape.code_locations.nullable(),
         confidence: findingReportToolFieldsSchema.shape.confidence.nullable(),
+        confidence_rationale:
+          findingReportToolFieldsSchema.shape.confidence_rationale.nullable(),
         counterevidence:
           findingReportToolFieldsSchema.shape.counterevidence.nullable(),
         severity_change_conditions:
@@ -1126,7 +1135,7 @@ export type UpdateVulnerabilityReportToolInput = z.infer<
 
 export const updateVulnerabilityReportTool = tool({
   description: `Correct an existing confirmed vulnerability report in the current chat without creating a second finding. Read get_report first and supply its updated_at as expected_updated_at. Supply only changed report fields plus a concise reason. The server validates the complete merged report, recalculates CVSS/category, and rejects duplicates and stale writes. Original finding ID, source provenance, creation time, and closure state are preserved.
-Use the same proof, formatting, capture, impact, and CVSS requirements as create_vulnerability_report. Evidence remains literal plain text. Supply the full replacement evidence_refs array when changing captures; [] clears it. The existing sandbox checks new references without booting an environment; unavailable checks preserve the correction with an explicit warning. Optional endpoint/method/CVE/CWE/code locations/confidence/assessment limits may be cleared with null. CVSS changes must include all eight base metrics. If existing prose is malformed, correct its formatting too. If a result is uncertain or reports conflict, read again and reconcile before retrying. Never overwrite another edit blindly. This does not close, reopen, delete, or change the source of a finding.`,
+Use the same proof, formatting, capture, impact, and CVSS requirements as create_vulnerability_report. Evidence remains literal plain text. Supply the full replacement evidence_refs array when changing captures; [] clears it. The existing sandbox checks new references without booting an environment; unavailable checks preserve the correction with an explicit warning. Optional endpoint/method/CVE/CWE/code locations may be cleared with null. Every corrected report must include confidence, counterevidence, severity-change conditions, and a confidence rationale when confidence is low or medium. Supply missing assessment fields when correcting a legacy report. CVSS changes must include all eight base metrics. If existing prose is malformed, correct its formatting too. If a result is uncertain or reports conflict, read again and reconcile before retrying. Never overwrite another edit blindly. This does not close, reopen, delete, or change the source of a finding.`,
   inputSchema: updateVulnerabilityReportToolInputSchema,
 });
 

@@ -1,3 +1,8 @@
+import {
+  findingRevisionValidator,
+  findingFeedbackValidator,
+  findingFeedbackAnswerValidator,
+} from "./findingValidators";
 import { evidenceVerificationSchema } from "../lib/ai/subagents/contracts";
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
@@ -290,6 +295,18 @@ const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
     : {}),
   ...(finding.closed_at ? { closed_at: finding.closed_at } : {}),
   updated_at: finding.updated_at,
+  ...(finding.confidence_rationale
+    ? { confidence_rationale: finding.confidence_rationale }
+    : {}),
+  ...(finding.correction_history
+    ? { correction_history: finding.correction_history }
+    : {}),
+  ...(finding.correction_count !== undefined
+    ? { correction_count: finding.correction_count }
+    : {}),
+  ...(finding.usefulness_feedback
+    ? { usefulness_feedback: finding.usefulness_feedback }
+    : {}),
 });
 
 export const createFindingForBackend = mutation({
@@ -316,7 +333,7 @@ export const createFindingForBackend = mutation({
       return {
         success: false as const,
         error: "validation" as const,
-        message: "The vulnerability report did not pass validation.",
+        message: `The vulnerability report did not pass validation. Check fields: ${[...new Set(parsed.error.issues.map((issue) => issue.path[0]))].join(", ")}. Confidence, counterevidence and severity-change conditions are required; low/medium confidence needs a rationale.`,
       };
     }
 
@@ -388,6 +405,9 @@ export const createFindingForBackend = mutation({
         : {}),
       assumptions: input.assumptions,
       ...(input.confidence ? { confidence: input.confidence } : {}),
+      ...(input.confidence_rationale
+        ? { confidence_rationale: input.confidence_rationale }
+        : {}),
       ...(input.counterevidence
         ? { counterevidence: input.counterevidence }
         : {}),
@@ -710,6 +730,10 @@ const reportDetailValidator = v.object({
   confidence: v.optional(
     v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
   ),
+  confidence_rationale: v.optional(v.string()),
+  correction_history: v.optional(v.array(findingRevisionValidator)),
+  correction_count: v.optional(v.number()),
+  usefulness_feedback: v.optional(findingFeedbackValidator),
   counterevidence: v.optional(v.string()),
   severity_change_conditions: v.optional(v.string()),
   fix_effort: v.union(
@@ -939,8 +963,7 @@ export const updateFindingForBackend = mutation({
       return {
         success: false as const,
         error: "validation" as const,
-        message:
-          "The complete report did not pass validation. Read it and correct any invalid report fields before updating.",
+        message: `The complete report did not pass validation. Check fields: ${[...new Set(report.error.issues.map((issue) => issue.path[0]))].join(", ")}. Include missing assessment limits when correcting an older report.`,
       };
     const input = report.data;
     const dedupeKey = createFindingDedupeKey(input);
@@ -979,6 +1002,7 @@ export const updateFindingForBackend = mutation({
       cwe: input.cwe,
       code_locations: input.code_locations,
       confidence: input.confidence,
+      confidence_rationale: input.confidence_rationale,
       counterevidence: input.counterevidence,
       severity_change_conditions: input.severity_change_conditions,
       evidence_refs: input.evidence_refs,
@@ -993,6 +1017,33 @@ export const updateFindingForBackend = mutation({
         FINDING_CATEGORY_LABELS[category],
       ),
       updated_at: now,
+      correction_count: (finding.correction_count ?? 0) + 1,
+      correction_history: [
+        ...(finding.correction_history ?? []),
+        {
+          updated_at: now,
+          message_id: args.messageId,
+          reason: update.reason,
+          changed_fields: Object.keys(update.changes).filter((key) => {
+            const next =
+              key === "method"
+                ? input.method?.toUpperCase()
+                : input[key as keyof typeof input];
+            return (
+              JSON.stringify(finding[key as keyof typeof finding]) !==
+              JSON.stringify(next)
+            );
+          }),
+          previous_severity: finding.severity,
+          severity: cvss.severity,
+          previous_cvss_score: finding.cvss_score,
+          cvss_score: cvss.score,
+          ...(finding.confidence
+            ? { previous_confidence: finding.confidence }
+            : {}),
+          ...(input.confidence ? { confidence: input.confidence } : {}),
+        },
+      ].slice(-20),
       last_update: {
         message_id: args.messageId,
         tool_call_id: args.toolCallId,
@@ -1012,5 +1063,48 @@ export const updateFindingForBackend = mutation({
         ? { warning: evidenceVerification.warning }
         : {}),
     };
+  },
+});
+
+/** Deliberate, private feedback on a specific saved revision. Never modifies report content. */
+export const submitFindingFeedback = mutation({
+  args: {
+    findingId: v.string(),
+    expectedUpdatedAt: v.number(),
+    answer: findingFeedbackAnswerValidator,
+  },
+  returns: v.union(
+    v.object({ success: v.literal(true), changed: v.boolean() }),
+    v.object({
+      success: v.literal(false),
+      error: v.union(v.literal("not_found"), v.literal("conflict")),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity)
+      throw new ConvexError({ code: "UNAUTHORIZED", message: "Unauthorized" });
+    await assertUserCanAccessChatHistory(ctx, identity.subject);
+    const finding = await getFindingByPublicId(ctx, args.findingId);
+    if (!finding || finding.user_id !== identity.subject)
+      return { success: false as const, error: "not_found" as const };
+    const chat = await getChat(ctx, finding.chat_id);
+    if (!chat || chat.user_id !== identity.subject || chat.deletion_started_at)
+      return { success: false as const, error: "not_found" as const };
+    if (finding.updated_at !== args.expectedUpdatedAt)
+      return { success: false as const, error: "conflict" as const };
+    if (
+      finding.usefulness_feedback?.report_updated_at === finding.updated_at &&
+      finding.usefulness_feedback.answer === args.answer
+    )
+      return { success: true as const, changed: false };
+    await ctx.db.patch(finding._id, {
+      usefulness_feedback: {
+        answer: args.answer,
+        report_updated_at: finding.updated_at,
+        submitted_at: Date.now(),
+      },
+    });
+    return { success: true as const, changed: true };
   },
 });

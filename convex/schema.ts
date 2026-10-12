@@ -1,3 +1,7 @@
+import {
+  findingRevisionValidator,
+  findingFeedbackValidator,
+} from "./findingValidators";
 import { analyticsFields } from "./lib/influencerAnalytics";
 import { defineSchema, defineTable } from "convex/server";
 import {
@@ -439,6 +443,10 @@ export default defineSchema({
         }),
       ),
     ),
+    confidence_rationale: v.optional(v.string()),
+    correction_history: v.optional(v.array(findingRevisionValidator)),
+    correction_count: v.optional(v.number()),
+    usefulness_feedback: v.optional(findingFeedbackValidator),
     last_update: v.optional(
       v.object({
         message_id: v.string(),

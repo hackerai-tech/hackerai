@@ -309,7 +309,7 @@ describe("Agent report read/update tools", () => {
       userId: "user-1",
     });
     expect(JSON.stringify(mockEvent.mock.calls)).not.toMatch(
-      /disclosure|assessment|finding-1/,
+      /disclosure|assessment/,
     );
   });
   it.each(["not_found", "conflict"])(
@@ -336,9 +336,11 @@ describe("Agent report read/update tools", () => {
       expect(mockUpdateFinding).not.toHaveBeenCalled();
     },
   );
-  it("preserves the update with a warning when no sandbox is connected", async () => {
+  it("rejects unverified replacement evidence without overwriting the saved report", async () => {
     const { createUpdateVulnerabilityReport } = await import("../findings");
-    await (createUpdateVulnerabilityReport(context) as any).execute(
+    const result = await (
+      createUpdateVulnerabilityReport(context) as any
+    ).execute(
       {
         finding_id: "finding-1",
         expected_updated_at: 10,
@@ -347,15 +349,13 @@ describe("Agent report read/update tools", () => {
       },
       { toolCallId: "update-1" },
     );
-    expect(mockUpdateFinding).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({ changes: { evidence_refs: [] } }),
-        evidenceVerification: expect.objectContaining({
-          unavailable_refs: ["/capture.txt"],
-          warning: expect.any(String),
-        }),
-      }),
-    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "validation",
+      validation_kind: "evidence",
+      retryable: false,
+    });
+    expect(mockUpdateFinding).not.toHaveBeenCalled();
   });
   it.each(["missing", "forbidden"])(
     "rejects changed %s captures without altering the existing report",
@@ -406,7 +406,7 @@ describe("Agent report read/update tools", () => {
       },
       { toolCallId: "update-1" },
     );
-    expect(getSandbox).not.toHaveBeenCalled();
+    expect(getSandbox).toHaveBeenCalledTimes(1); // Read-only transport metadata, no capture access.
     expect(mockUpdateFinding).toHaveBeenCalledTimes(1);
   });
   it("asks for reconciliation rather than blind retry after an uncertain write", async () => {

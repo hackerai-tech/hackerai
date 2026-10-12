@@ -43,6 +43,10 @@ const report = (overrides: Record<string, unknown> = {}) => ({
   remediation_steps: "Scope the invoice query to the authenticated user.",
   evidence: "The response returned user B's billing address.",
   assumptions: "Both accounts are ordinary customer accounts.",
+  confidence: "high",
+  counterevidence: "An owner check was absent on the tested path.",
+  severity_change_conditions:
+    "A verified owner check would rule out this path.",
   fix_effort: "low",
   cvss_breakdown: {
     attack_vector: "N",
@@ -261,6 +265,7 @@ describe("findings Convex lifecycle", () => {
       await import("../../lib/findings/share-sanitizer");
     const assessment = {
       confidence: "medium" as const,
+      confidence_rationale: "Only the synthetic invoice was tested.",
       counterevidence:
         "The control account was denied; only the cross-tenant request returned the synthetic invoice.",
       severity_change_conditions:
@@ -902,6 +907,153 @@ describe("chat-scoped Agent report retrieval and correction", () => {
     });
     return { api, tables, mock, saved, row, scope, updateArgs };
   }
+
+  it("bounds correction history and preserves it on rejected writes", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    const original = { id: row.finding_id, created: row.created_at };
+    for (let i = 0; i < 22; i++) {
+      expect(
+        await api.updateFindingForBackend.handler(
+          mock.ctx,
+          updateArgs({ impact: `Impact ${i}` }),
+        ),
+      ).toMatchObject({ success: true });
+    }
+    expect(row.correction_count).toBe(22);
+    expect(row.correction_history).toHaveLength(20);
+    expect(row.correction_history[19]).toMatchObject({
+      changed_fields: ["impact"],
+      message_id: "update-message",
+      previous_severity: row.severity,
+    });
+    expect(row.finding_id).toBe(original.id);
+    expect(row.created_at).toBe(original.created);
+    const before = JSON.stringify(row);
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ confidence: null }),
+      ),
+    ).toMatchObject({ success: false, error: "validation" });
+    const stale = updateArgs({ impact: "stale" });
+    stale.update.expected_updated_at = 0;
+    expect(
+      await api.updateFindingForBackend.handler(mock.ctx, stale),
+    ).toMatchObject({ success: false, error: "conflict" });
+    expect(JSON.stringify(row)).toBe(before);
+    const { renderFindingMarkdown } =
+      await import("../../lib/findings/markdown");
+    const reopened = await api.getFinding.handler(mock.ctx, {
+      findingId: row.finding_id,
+    });
+    expect(renderFindingMarkdown(reopened!)).toContain(
+      "Correct the demonstrated impact",
+    );
+  });
+
+  it("records method changes after normalization", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    expect(row.method).toBe("GET");
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ method: "get" }),
+      ),
+    ).toMatchObject({ success: true });
+    expect(row.method).toBe("GET");
+    expect(row.correction_history[0].changed_fields).toEqual([]);
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ method: "post" }),
+      ),
+    ).toMatchObject({ success: true });
+    expect(row.method).toBe("POST");
+    expect(row.correction_history[1].changed_fields).toEqual(["method"]);
+  });
+
+  it("requires missing assessment fields when correcting a legacy report", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    delete row.confidence;
+    delete row.counterevidence;
+    delete row.severity_change_conditions;
+    expect(
+      await api.getFinding.handler(mock.ctx, { findingId: row.finding_id }),
+    ).not.toBeNull();
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ impact: "Corrected" }),
+      ),
+    ).toMatchObject({ success: false, error: "validation" });
+    expect(row.correction_history).toBeUndefined();
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({
+          impact: "Corrected",
+          confidence: "medium",
+          confidence_rationale: "Only one synthetic control was tested.",
+          counterevidence: "The other control was denied.",
+          severity_change_conditions:
+            "An owner check would rule out this path.",
+        }),
+      ),
+    ).toMatchObject({ success: true });
+  });
+
+  it("authenticates revision-specific feedback, deduplicates retries and preserves report version", async () => {
+    const { api, tables, mock, row, updateArgs } = await setup();
+    const args = {
+      findingId: row.finding_id,
+      expectedUpdatedAt: row.updated_at,
+      answer: "useful" as const,
+    };
+    const version = row.updated_at;
+    expect(
+      await api.submitFindingFeedback.handler(
+        createMockCtx(tables, "other-user").ctx,
+        args,
+      ),
+    ).toEqual({ success: false, error: "not_found" });
+    const unauthenticated = createMockCtx(tables);
+    unauthenticated.ctx.auth.getUserIdentity.mockResolvedValueOnce(null);
+    await expect(
+      api.submitFindingFeedback.handler(unauthenticated.ctx, args),
+    ).rejects.toThrow();
+    expect(await api.submitFindingFeedback.handler(mock.ctx, args)).toEqual({
+      success: true,
+      changed: true,
+    });
+    expect(await api.submitFindingFeedback.handler(mock.ctx, args)).toEqual({
+      success: true,
+      changed: false,
+    });
+    expect(row.updated_at).toBe(version);
+    expect(row.usefulness_feedback).toMatchObject({
+      answer: "useful",
+      report_updated_at: version,
+    });
+    await api.updateFindingForBackend.handler(
+      mock.ctx,
+      updateArgs({ impact: "Revised impact" }),
+    );
+    expect(
+      await api.submitFindingFeedback.handler(mock.ctx, {
+        ...args,
+        answer: "needs_correction",
+      }),
+    ).toEqual({ success: false, error: "conflict" });
+    expect(row.usefulness_feedback.answer).toBe("useful");
+    expect(row.usefulness_feedback.report_updated_at).not.toBe(row.updated_at);
+    tables.chats[0].deletion_started_at = 1;
+    expect(
+      await api.submitFindingFeedback.handler(mock.ctx, {
+        ...args,
+        expectedUpdatedAt: row.updated_at,
+      }),
+    ).toEqual({ success: false, error: "not_found" });
+  });
 
   it("lists bounded metadata, reads and corrects the same finding, and reopens/exports the correction", async () => {
     const { api, tables, mock, row, scope, updateArgs } = await setup();

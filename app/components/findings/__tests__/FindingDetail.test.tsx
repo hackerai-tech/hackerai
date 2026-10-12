@@ -15,7 +15,9 @@ import {
 import { toast } from "sonner";
 import type { FindingDetailRecord } from "@/types/finding";
 
-jest.mock("@/lib/utils/file-download", () => ({ downloadFile: jest.fn() }));
+jest.mock("@/lib/utils/file-download", () => ({
+  downloadFile: jest.fn<any>().mockResolvedValue({ outcome: "success" }),
+}));
 const { downloadFile } =
   require("@/lib/utils/file-download") as typeof import("@/lib/utils/file-download");
 import { renderFindingMarkdown } from "@/lib/findings/markdown";
@@ -95,10 +97,86 @@ describe("FindingDetail", () => {
     });
   });
 
+  it("renders correction provenance and clears an old revision's feedback", () => {
+    const { rerender } = render(
+      <FindingDetail
+        finding={{
+          ...finding,
+          usefulness_feedback: {
+            answer: "useful",
+            report_updated_at: 1,
+            submitted_at: 2,
+          },
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Useful and reproducible" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    rerender(
+      <FindingDetail
+        finding={{
+          ...finding,
+          updated_at: 3,
+          usefulness_feedback: {
+            answer: "useful",
+            report_updated_at: 1,
+            submitted_at: 2,
+          },
+          correction_count: 1,
+          correction_history: [
+            {
+              updated_at: 3,
+              message_id: "correction-message",
+              reason: "Narrow the supported impact",
+              changed_fields: ["impact"],
+              previous_severity: "high",
+              severity: "medium",
+              previous_cvss_score: 7.1,
+              cvss_score: 4.3,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Useful and reproducible" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByText("Correction history (1)"));
+    expect(screen.getByText("Narrow the supported impact")).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "View correction message" }),
+    ).toHaveAttribute("href", expect.stringContaining("correction-message"));
+  });
+
+  it("submits feedback for the viewed revision and displays a stale rejection", async () => {
+    const mutate = useMutation({} as any) as jest.Mock;
+    mutate.mockResolvedValue({ success: false, error: "conflict" });
+    const feedbackErrorToast = jest.spyOn(toast, "error");
+    render(<FindingDetail finding={finding} />);
+    fireEvent.click(screen.getByRole("button", { name: "Needs correction" }));
+    await waitFor(() =>
+      expect(mutate).toHaveBeenCalledWith({
+        findingId: "finding-1",
+        expectedUpdatedAt: 1,
+        answer: "needs_correction",
+      }),
+    );
+    await waitFor(() =>
+      expect(feedbackErrorToast).toHaveBeenCalledWith(
+        "This report changed. Review the latest version before rating it.",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Needs correction" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    feedbackErrorToast.mockRestore();
+  });
+
   it("renders the complete report and source chat link", () => {
     render(<FindingDetail finding={finding} surface="findings_page" />);
     expect(screen.getByRole("heading", { name: finding.title })).toBeVisible();
-    expect(screen.getByText("Confirmed Vulnerability")).toBeVisible();
+    expect(screen.getByText("Vulnerability finding")).toBeVisible();
     expect(screen.getByText("Access Control / IDOR")).toBeVisible();
     expect(screen.getByText("Active")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Summary" })).toBeVisible();

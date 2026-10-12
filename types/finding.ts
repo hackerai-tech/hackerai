@@ -41,6 +41,25 @@ export interface FindingDetailRecord extends FindingSummary {
   evidence_verification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
   assumptions: string;
   confidence?: "low" | "medium" | "high";
+  confidence_rationale?: string;
+  correction_history?: Array<{
+    updated_at: number;
+    message_id: string;
+    reason: string;
+    changed_fields: string[];
+    previous_severity: string;
+    severity: string;
+    previous_cvss_score: number;
+    cvss_score: number;
+    previous_confidence?: string;
+    confidence?: string;
+  }>;
+  correction_count?: number;
+  usefulness_feedback?: {
+    answer: "useful" | "needs_correction" | "not_checked";
+    report_updated_at: number;
+    submitted_at: number;
+  };
   counterevidence?: string;
   severity_change_conditions?: string;
   fix_effort: "trivial" | "low" | "medium" | "high";

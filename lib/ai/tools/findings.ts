@@ -1,3 +1,4 @@
+import { observeFindingTool } from "./finding-telemetry";
 import { tool } from "ai";
 import type { AnySandbox, ToolContext } from "@/types";
 import {
@@ -78,174 +79,28 @@ export const createCreateVulnerabilityReport = (
 ) =>
   tool({
     ...createVulnerabilityReportTool,
-    execute: async (
-      input: CreateVulnerabilityReportInput,
-      { toolCallId, abortSignal },
-    ) => {
-      if (!context.assistantMessageId) {
-        return {
-          success: false as const,
-          error: "general" as const,
-          retryable: false as const,
-          message:
-            "Finding provenance is unavailable. The report was not saved.",
-        };
-      }
-
-      try {
-        abortSignal?.throwIfAborted();
-        const prepared = await prepareFindingEvidence(
-          input,
-          getCurrentSandbox,
-          abortSignal,
-        );
-        if (!prepared.accepted)
+    execute: observeFindingTool(
+      context,
+      "create",
+      getCurrentSandbox,
+      async (
+        input: CreateVulnerabilityReportInput,
+        { toolCallId, abortSignal },
+      ) => {
+        if (!context.assistantMessageId) {
           return {
             success: false as const,
-            error: "validation" as const,
-            validation_kind: "evidence" as const,
-            retryable: false as const,
-            message: prepared.error,
-          };
-        const { report, evidenceVerification } = prepared;
-        abortSignal?.throwIfAborted();
-        const result = await createFinding({
-          userId: context.userID,
-          chatId: context.chatId,
-          messageId: context.assistantMessageId,
-          toolCallId,
-          report,
-          ...(evidenceVerification ? { evidenceVerification } : {}),
-        });
-
-        if (!result.success && result.error === "duplicate") {
-          phLogger.event("finding_duplicate_rejected", {
-            userId: context.userID,
-          });
-        } else if (result.success) {
-          phLogger.event("finding_created", { userId: context.userID });
-        }
-
-        return result;
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        console.error("Create vulnerability report tool failed", {
-          error_name: error instanceof Error ? error.name : typeof error,
-        });
-        return {
-          success: false as const,
-          error: "general" as const,
-          retryable: true as const,
-          message:
-            "The finding could not be saved. Retry the same report once.",
-        };
-      }
-    },
-    toModelOutput({ output }) {
-      return { type: "text" as const, value: JSON.stringify(output) };
-    },
-  });
-
-export const createListReports = (context: ToolContext) =>
-  tool({
-    ...listReportsTool,
-    execute: async (
-      { limit, cursor, search, status }: ListReportsInput,
-      { abortSignal },
-    ) => {
-      try {
-        abortSignal?.throwIfAborted();
-        const result = await listReports({
-          userId: context.userID,
-          chatId: context.chatId,
-          limit,
-          cursor: cursor ?? null,
-          search,
-          status,
-        });
-        abortSignal?.throwIfAborted();
-        return result;
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        return {
-          success: false as const,
-          error: "general" as const,
-          message: "Reports could not be listed. Try again later.",
-        };
-      }
-    },
-    toModelOutput({ output }) {
-      return { type: "text" as const, value: JSON.stringify(output) };
-    },
-  });
-
-export const createGetReport = (context: ToolContext) =>
-  tool({
-    ...getReportTool,
-    execute: async ({ finding_id }: GetReportInput, { abortSignal }) => {
-      try {
-        abortSignal?.throwIfAborted();
-        const result = await getReport({
-          userId: context.userID,
-          chatId: context.chatId,
-          findingId: finding_id,
-        });
-        abortSignal?.throwIfAborted();
-        return result;
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        return {
-          success: false as const,
-          error: "general" as const,
-          message: "The report could not be read. Try again later.",
-        };
-      }
-    },
-    toModelOutput({ output }) {
-      return { type: "text" as const, value: JSON.stringify(output) };
-    },
-  });
-
-export const createUpdateVulnerabilityReport = (
-  context: ToolContext,
-  getCurrentSandbox: () => AnySandbox | null = () => null,
-) =>
-  tool({
-    ...updateVulnerabilityReportTool,
-    execute: async (
-      input: UpdateVulnerabilityReportToolInput,
-      { toolCallId, abortSignal },
-    ) => {
-      if (!context.assistantMessageId)
-        return {
-          success: false as const,
-          error: "general" as const,
-          retryable: false as const,
-          message:
-            "Update provenance is unavailable. The report was not changed.",
-        };
-      try {
-        abortSignal?.throwIfAborted();
-        // Authorize the report before inspecting any model-supplied capture path.
-        const current = await getReport({
-          userId: context.userID,
-          chatId: context.chatId,
-          findingId: input.finding_id,
-        });
-        if (!current.success) return current;
-        if (current.report.updated_at !== input.expected_updated_at)
-          return {
-            success: false as const,
-            error: "conflict" as const,
+            error: "general" as const,
             retryable: false as const,
             message:
-              "The report changed. Read it again and reconcile before updating.",
+              "Finding provenance is unavailable. The report was not saved.",
           };
-        let changes = input.changes;
-        let evidenceVerification: EvidenceVerification | undefined;
-        if (Object.hasOwn(changes, "evidence_refs")) {
+        }
+
+        try {
+          abortSignal?.throwIfAborted();
           const prepared = await prepareFindingEvidence(
-            changes,
+            input,
             getCurrentSandbox,
             abortSignal,
           );
@@ -257,35 +112,212 @@ export const createUpdateVulnerabilityReport = (
               retryable: false as const,
               message: prepared.error,
             };
-          changes = prepared.report;
-          evidenceVerification = prepared.evidenceVerification;
+          const { report, evidenceVerification } = prepared;
+          abortSignal?.throwIfAborted();
+          const result = await createFinding({
+            userId: context.userID,
+            chatId: context.chatId,
+            messageId: context.assistantMessageId,
+            toolCallId,
+            report,
+            ...(evidenceVerification ? { evidenceVerification } : {}),
+          });
+
+          if (!result.success && result.error === "duplicate") {
+            phLogger.event("finding_duplicate_rejected", {
+              userId: context.userID,
+            });
+          } else if (result.success) {
+            phLogger.event("finding_created", { userId: context.userID });
+          }
+
+          return result;
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          console.error("Create vulnerability report tool failed", {
+            error_name: error instanceof Error ? error.name : typeof error,
+          });
+          return {
+            success: false as const,
+            error: "general" as const,
+            retryable: true as const,
+            message:
+              "The finding could not be saved. Retry the same report once.",
+          };
         }
-        abortSignal?.throwIfAborted();
-        const result = await updateFinding({
-          userId: context.userID,
-          chatId: context.chatId,
-          messageId: context.assistantMessageId,
-          toolCallId,
-          update: { ...input, changes },
-          ...(evidenceVerification ? { evidenceVerification } : {}),
-        });
-        if (result.success)
-          phLogger.event("finding_updated", { userId: context.userID });
-        return result;
-      } catch (error) {
-        if (abortSignal?.aborted) throw error;
-        console.error("Update vulnerability report tool failed", {
-          error_name: error instanceof Error ? error.name : typeof error,
-        });
-        return {
-          success: false as const,
-          error: "general" as const,
-          retryable: false as const,
-          message:
-            "The update response could not be confirmed. Read the report again before retrying; it may already be saved.",
-        };
-      }
+      },
+    ),
+    toModelOutput({ output }) {
+      return { type: "text" as const, value: JSON.stringify(output) };
     },
+  });
+
+export const createListReports = (context: ToolContext) =>
+  tool({
+    ...listReportsTool,
+    execute: observeFindingTool(
+      context,
+      "list",
+      () => null,
+      async (
+        { limit, cursor, search, status }: ListReportsInput,
+        { abortSignal },
+      ) => {
+        try {
+          abortSignal?.throwIfAborted();
+          const result = await listReports({
+            userId: context.userID,
+            chatId: context.chatId,
+            limit,
+            cursor: cursor ?? null,
+            search,
+            status,
+          });
+          abortSignal?.throwIfAborted();
+          return result;
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          return {
+            success: false as const,
+            error: "general" as const,
+            message: "Reports could not be listed. Try again later.",
+          };
+        }
+      },
+    ),
+    toModelOutput({ output }) {
+      return { type: "text" as const, value: JSON.stringify(output) };
+    },
+  });
+
+export const createGetReport = (context: ToolContext) =>
+  tool({
+    ...getReportTool,
+    execute: observeFindingTool(
+      context,
+      "get",
+      () => null,
+      async ({ finding_id }: GetReportInput, { abortSignal }) => {
+        try {
+          abortSignal?.throwIfAborted();
+          const result = await getReport({
+            userId: context.userID,
+            chatId: context.chatId,
+            findingId: finding_id,
+          });
+          abortSignal?.throwIfAborted();
+          return result;
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          return {
+            success: false as const,
+            error: "general" as const,
+            message: "The report could not be read. Try again later.",
+          };
+        }
+      },
+    ),
+    toModelOutput({ output }) {
+      return { type: "text" as const, value: JSON.stringify(output) };
+    },
+  });
+
+export const createUpdateVulnerabilityReport = (
+  context: ToolContext,
+  getCurrentSandbox: () => AnySandbox | null = () => null,
+) =>
+  tool({
+    ...updateVulnerabilityReportTool,
+    execute: observeFindingTool(
+      context,
+      "update",
+      getCurrentSandbox,
+      async (
+        input: UpdateVulnerabilityReportToolInput,
+        { toolCallId, abortSignal },
+      ) => {
+        if (!context.assistantMessageId)
+          return {
+            success: false as const,
+            error: "general" as const,
+            retryable: false as const,
+            message:
+              "Update provenance is unavailable. The report was not changed.",
+          };
+        try {
+          abortSignal?.throwIfAborted();
+          // Authorize the report before inspecting any model-supplied capture path.
+          const current = await getReport({
+            userId: context.userID,
+            chatId: context.chatId,
+            findingId: input.finding_id,
+          });
+          if (!current.success) return current;
+          if (current.report.updated_at !== input.expected_updated_at)
+            return {
+              success: false as const,
+              error: "conflict" as const,
+              retryable: false as const,
+              message:
+                "The report changed. Read it again and reconcile before updating.",
+            };
+          let changes = input.changes;
+          let evidenceVerification: EvidenceVerification | undefined;
+          if (Object.hasOwn(changes, "evidence_refs")) {
+            const prepared = await prepareFindingEvidence(
+              changes,
+              getCurrentSandbox,
+              abortSignal,
+            );
+            if (!prepared.accepted)
+              return {
+                success: false as const,
+                error: "validation" as const,
+                validation_kind: "evidence" as const,
+                retryable: false as const,
+                message: prepared.error,
+              };
+            // A correction must not replace verified references with unchecked files.
+            // The caller can acquire the selected sandbox and inspect them first.
+            if (prepared.evidenceVerification?.unavailable_refs.length)
+              return {
+                success: false as const,
+                error: "validation" as const,
+                validation_kind: "evidence" as const,
+                retryable: false as const,
+                message:
+                  "Replacement evidence could not be verified. Inspect the files in the selected sandbox before updating. The saved report was not changed.",
+              };
+            changes = prepared.report;
+            evidenceVerification = prepared.evidenceVerification;
+          }
+          abortSignal?.throwIfAborted();
+          const result = await updateFinding({
+            userId: context.userID,
+            chatId: context.chatId,
+            messageId: context.assistantMessageId,
+            toolCallId,
+            update: { ...input, changes },
+            ...(evidenceVerification ? { evidenceVerification } : {}),
+          });
+          if (result.success)
+            phLogger.event("finding_updated", { userId: context.userID });
+          return result;
+        } catch (error) {
+          if (abortSignal?.aborted) throw error;
+          console.error("Update vulnerability report tool failed", {
+            error_name: error instanceof Error ? error.name : typeof error,
+          });
+          return {
+            success: false as const,
+            error: "general" as const,
+            retryable: false as const,
+            message:
+              "The update response could not be confirmed. Read the report again before retrying; it may already be saved.",
+          };
+        }
+      },
+    ),
     toModelOutput({ output }) {
       return { type: "text" as const, value: JSON.stringify(output) };
     },

@@ -44,6 +44,7 @@ import {
   FINDING_CATEGORIES,
   FINDING_CATEGORY_LABELS,
 } from "@/lib/findings/category";
+import { captureFindingEvent } from "@/lib/findings/client-telemetry";
 import { downloadFile } from "@/lib/utils/file-download";
 import { cn } from "@/lib/utils";
 import type {
@@ -203,6 +204,28 @@ function FindingsPageContent() {
     { initialNumItems: 25 },
   );
   const findings = (findingsQuery.results ?? []) as FindingSummary[];
+  const lastObservedSearch = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isAuthenticated || findingsQuery.status === "LoadingFirstPage") return;
+    const key = JSON.stringify([deferredSearch, severity, category, status]);
+    if (lastObservedSearch.current === key) return;
+    lastObservedSearch.current = key;
+    captureFindingEvent({
+      operation: "search",
+      outcome: "success",
+      surface: "findings_page",
+      has_search: Boolean(deferredSearch),
+      result_count: findings.length,
+    });
+  }, [
+    isAuthenticated,
+    deferredSearch,
+    severity,
+    category,
+    status,
+    findingsQuery.status,
+    findings.length,
+  ]);
   const hasActiveFilters =
     Boolean(deferredSearch) ||
     severity !== "all" ||
@@ -326,15 +349,30 @@ function FindingsPageContent() {
         .map((row) => row.map(escapeCsvCell).join(","))
         .join("\n");
 
-      await downloadFile({
+      const result = await downloadFile({
         filename: `findings-${new Date().toISOString().slice(0, 10)}.csv`,
         content: csv,
         mimeType: "text/csv;charset=utf-8",
       });
-      if (!isDone) {
+      captureFindingEvent({
+        operation: "export",
+        ...result,
+        format: "csv",
+        result_count: rows.length,
+      });
+      if (
+        !isDone &&
+        (result.outcome === "success" || result.outcome === "initiated")
+      ) {
         toast.warning("Exported the first 5,000 matching findings.");
       }
     } catch {
+      captureFindingEvent({
+        operation: "export",
+        outcome: "failed",
+        format: "csv",
+        reason: "general",
+      });
       toast.error("Could not export findings. Try again.");
     } finally {
       setIsExporting(false);
@@ -374,7 +412,7 @@ function FindingsPageContent() {
               Findings
             </h1>
             <p className="hidden text-xs text-muted-foreground sm:block">
-              Confirmed vulnerabilities, evidence, and remediation guidance
+              Vulnerability assessments, evidence, and remediation guidance
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -651,7 +689,7 @@ function FindingsPageContent() {
                     >
                       {deferredSearch
                         ? `Best matches for “${deferredSearch}”`
-                        : "Newest confirmed findings first"}
+                        : "Newest findings first"}
                     </p>
                   </div>
                 </div>

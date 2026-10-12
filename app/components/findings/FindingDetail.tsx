@@ -16,7 +16,7 @@ import {
   ShieldCheck,
   Target,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,6 +55,10 @@ import {
   getFindingSeverityDotClasses,
 } from "./FindingCard";
 import { FindingDiscoveredAt } from "./FindingTime";
+
+import { captureFindingEvent } from "@/lib/findings/client-telemetry";
+import { FindingFeedback } from "./FindingFeedback";
+import { FindingHistory } from "./FindingHistory";
 
 const CVSS_METRICS: Array<{
   key: keyof Cvss31Breakdown;
@@ -248,6 +252,36 @@ export function FindingDetail({
   const persistedFinding =
     suppliedFinding !== undefined ? suppliedFinding : queriedFinding;
 
+  const observed = useRef<string | null>(null);
+  useEffect(() => {
+    if (persistedFinding === undefined) return;
+    const outcome =
+      persistedFinding instanceof Error
+        ? "failed"
+        : persistedFinding
+          ? "success"
+          : "rejected";
+    const key = `${findingId ?? suppliedFinding?.finding_id}:${outcome}:${persistedFinding && !(persistedFinding instanceof Error) ? persistedFinding.updated_at : ""}`;
+    if (observed.current === key) return;
+    observed.current = key;
+    captureFindingEvent({
+      operation: "load",
+      outcome,
+      surface,
+      ...(persistedFinding && !(persistedFinding instanceof Error)
+        ? {
+            finding_id: persistedFinding.finding_id,
+            report_updated_at: persistedFinding.updated_at,
+            evidence_warning: Boolean(
+              persistedFinding.evidence_verification?.warning,
+            ),
+          }
+        : {
+            reason: persistedFinding instanceof Error ? "general" : "not_found",
+          }),
+    });
+  }, [persistedFinding, findingId, suppliedFinding?.finding_id, surface]);
+
   if (persistedFinding instanceof Error) {
     return (
       <div
@@ -306,6 +340,14 @@ export function FindingDetail({
         reason: closureReason,
         context: closureContext,
       });
+      captureFindingEvent({
+        operation: "close",
+        outcome: result.closed ? "success" : "rejected",
+        finding_id: finding.finding_id,
+        ...(result.closed
+          ? { closure_reason: closureReason }
+          : { reason: result.not_found ? "not_found" : "conflict" }),
+      });
       if (result.closed) {
         setLocalClosure({
           status: "closed",
@@ -324,6 +366,11 @@ export function FindingDetail({
         toast.error("This finding no longer exists.");
       }
     } catch {
+      captureFindingEvent({
+        operation: "close",
+        outcome: "uncertain",
+        reason: "general",
+      });
       toast.error("Could not close finding. Try again.");
     } finally {
       setIsClosing(false);
@@ -359,7 +406,7 @@ export function FindingDetail({
               <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
                   <ShieldCheck className="size-4" aria-hidden="true" />
-                  Confirmed Vulnerability
+                  Vulnerability finding
                 </span>
                 <span aria-hidden="true">·</span>
                 <span className="inline-flex items-center gap-1.5">
@@ -389,6 +436,14 @@ export function FindingDetail({
                       finding.chat_id,
                       finding.message_id,
                     )}
+                    onClick={() =>
+                      captureFindingEvent({
+                        operation: "source",
+                        outcome: "initiated",
+                        finding_id: finding.finding_id,
+                        surface,
+                      })
+                    }
                     aria-label={`Open source message in ${finding.chat_title}`}
                   >
                     <MessageSquareText className="size-4" aria-hidden="true" />
@@ -421,7 +476,15 @@ export function FindingDetail({
                   filename: `finding-${finding.finding_id.replace(/[^a-zA-Z0-9_-]/g, "_")}.md`,
                   content: renderFindingMarkdown(finding),
                   mimeType: "text/markdown;charset=utf-8",
-                })
+                }).then((result) =>
+                  captureFindingEvent({
+                    operation: "export",
+                    ...result,
+                    format: "markdown",
+                    finding_id: finding.finding_id,
+                    report_updated_at: finding.updated_at,
+                  }),
+                )
               }
             >
               <Download className="size-4" aria-hidden="true" />
@@ -851,6 +914,22 @@ export function FindingDetail({
                   {finding.confidence ?? "Not recorded"}
                 </p>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Assessment confidence reflects the report’s evidence and
+                limitations. Saved file availability does not independently
+                validate a vulnerability.
+              </p>
+              {finding.confidence_rationale && (
+                <MarkdownSection
+                  title="Confidence rationale"
+                  value={finding.confidence_rationale}
+                />
+              )}
+              <FindingHistory finding={finding} />
+              <FindingFeedback
+                key={`${finding.finding_id}:${finding.updated_at}`}
+                finding={finding}
+              />
               {finding.counterevidence && (
                 <MarkdownSection
                   title="Counterevidence"

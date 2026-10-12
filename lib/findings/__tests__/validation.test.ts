@@ -22,6 +22,10 @@ const validReport = (): CreateVulnerabilityReportInput => ({
   remediation_steps: "Scope the invoice query to the authenticated account.",
   evidence: "The response returned HTTP 200 and user B's billing address.",
   assumptions: "Both accounts are ordinary customer accounts.",
+  confidence: "high",
+  counterevidence: "An owner check was absent on the tested path.",
+  severity_change_conditions:
+    "A verified owner check would rule out this path.",
   fix_effort: "low",
   cvss_breakdown: {
     attack_vector: "N",
@@ -92,6 +96,27 @@ describe("structured finding validation", () => {
     });
   });
 
+  it.each(["low", "medium"])(
+    "requires a proof-gap rationale for %s confidence in both boundaries",
+    (confidence) => {
+      for (const schema of [
+        createVulnerabilityReportInputSchema,
+        createVulnerabilityReportToolInputSchema,
+      ]) {
+        expect(schema.safeParse({ ...validReport(), confidence }).success).toBe(
+          false,
+        );
+        expect(
+          schema.safeParse({
+            ...validReport(),
+            confidence,
+            confidence_rationale: "Only one synthetic request was tested.",
+          }).success,
+        ).toBe(true);
+      }
+    },
+  );
+
   it("accepts a complete report", () => {
     expect(createVulnerabilityReportInputSchema.parse(validReport())).toEqual(
       validReport(),
@@ -110,6 +135,9 @@ describe("structured finding validation", () => {
     "evidence",
     "assumptions",
     "fix_effort",
+    "confidence",
+    "counterevidence",
+    "severity_change_conditions",
     "cvss_breakdown",
   ] as const)("requires %s", (field) => {
     const report = validReport() as Record<string, unknown>;

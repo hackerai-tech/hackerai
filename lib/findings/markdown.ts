@@ -20,6 +20,7 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
     ["Reproduction steps", finding.poc_description],
     ["Proof of concept", codeBlock(finding.poc_script_code)],
     ["Assumptions and prerequisites", finding.assumptions],
+    ["Confidence rationale", finding.confidence_rationale],
     ["Counterevidence", finding.counterevidence],
     ["What would change severity", finding.severity_change_conditions],
     ["Remediation", finding.remediation_steps],
@@ -93,6 +94,26 @@ export function renderFindingMarkdown(finding: FindingDetailRecord): string {
     if (finding.closure_context) lines.push("", finding.closure_context);
     if (finding.closed_at)
       lines.push("", `Closed: ${new Date(finding.closed_at).toISOString()}`);
+  }
+  if (finding.correction_history?.length) {
+    lines.push(
+      "",
+      "## Correction history",
+      "",
+      `Showing the latest ${finding.correction_history.length} of ${finding.correction_count ?? finding.correction_history.length} recorded corrections. Earlier report content is not retained here.`,
+    );
+    for (const revision of finding.correction_history) {
+      lines.push(
+        "",
+        `### ${new Date(revision.updated_at).toISOString()}`,
+        "",
+        codeBlock(revision.reason),
+        "",
+        `Changed fields: ${revision.changed_fields.join(", ")}`,
+        `Severity: ${revision.previous_severity} (${revision.previous_cvss_score}) -> ${revision.severity} (${revision.cvss_score})`,
+        `Confidence: ${revision.previous_confidence ?? "Not recorded"} -> ${revision.confidence ?? "Not recorded"}`,
+      );
+    }
   }
   return `${lines.join("\n")}\n`;
 }
