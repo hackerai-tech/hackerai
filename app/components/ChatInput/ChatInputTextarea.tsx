@@ -269,7 +269,6 @@ export function ChatInputTextarea({
       <Dialog open={editorOpen} onOpenChange={onExpandedChange}>
         <DialogContent
           ref={setEditorContainer}
-          data-composer-overlay
           showCloseButton={false}
           aria-describedby={undefined}
           className="left-0 top-0 flex h-dvh max-w-none translate-x-0 translate-y-0 flex-col gap-3 rounded-none border-0 bg-input-chat p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] shadow-none duration-0 data-[state=open]:animate-none data-[state=closed]:animate-none sm:max-w-none"

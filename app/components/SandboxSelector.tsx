@@ -354,11 +354,7 @@ export function SandboxSelector({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent
-        data-composer-overlay
-        className="w-[240px] p-1"
-        align="start"
-      >
+      <PopoverContent className="w-[240px] p-1" align="start">
         <div className="space-y-0.5">
           <button
             key={cloudOption.id}
@@ -448,7 +444,6 @@ export function SandboxSelector({
                 </button>
               </PopoverTrigger>
               <PopoverContent
-                data-composer-overlay
                 side="top"
                 sideOffset={8}
                 className="w-[240px] p-4"

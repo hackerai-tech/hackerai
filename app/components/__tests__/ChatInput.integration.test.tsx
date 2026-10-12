@@ -1160,113 +1160,74 @@ describe("ChatInput - Integration Tests", () => {
       },
     );
 
-    it("shows home-screen Agent controls immediately and keeps them visible when clicking outside", async () => {
-      jest.mocked(useAuth).mockReturnValue({
-        user: { id: "user_123" },
-        entitlements: [],
-      } as ReturnType<typeof useAuth>);
-      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
-      mockUseQuery.mockImplementation((query) =>
-        getFunctionName(query) === "localSandbox:listConnections"
-          ? [
-              {
-                connectionId: "local-sandbox",
-                name: "Local sandbox",
-                isDesktop: false,
-              },
-            ]
-          : undefined,
-      );
-      render(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="ready"
-            autoFocus={false}
-            isCentered
-            isNewChat
-          />
-        </TestWrapper>,
-      );
-      expect(
-        await screen.findByTestId("chat-input-agent-context"),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByTestId("chat-input-desktop-permission"),
-      ).toBeInTheDocument();
-      expect(
-        screen.getByTestId("chat-input-desktop-sandbox"),
-      ).toBeInTheDocument();
-      fireEvent.pointerDown(document.body);
-      expect(
-        screen.getByTestId("chat-input-agent-context"),
-      ).toBeInTheDocument();
-    });
-
-    it("reveals Agent controls on interaction and keeps them during permission selection", async () => {
-      jest.mocked(useAuth).mockReturnValue({
-        user: { id: "user_123" },
-        entitlements: [],
-      } as ReturnType<typeof useAuth>);
-      window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
-      mockUseQuery.mockImplementation((query) =>
-        getFunctionName(query) === "localSandbox:listConnections"
-          ? [
-              {
-                connectionId: "local-sandbox",
-                name: "Local sandbox",
-                isDesktop: false,
-              },
-            ]
-          : undefined,
-      );
-      render(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="ready"
-            autoFocus={false}
-          />
-        </TestWrapper>,
-      );
-      await screen.findByTestId("chat-input");
-      expect(
-        screen.queryByTestId("chat-input-agent-context"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.queryByTestId("chat-input-desktop-permission"),
-      ).not.toBeInTheDocument();
-      fireEvent.pointerDown(screen.getByTestId("chat-input"));
-      expect(
-        screen.getByTestId("chat-input-agent-context"),
-      ).toBeInTheDocument();
-      fireEvent.click(
-        screen
-          .getByTestId("chat-input-mobile-permission")
-          .querySelector("button")!,
-      );
-      const approvalOption = screen.getByRole("button", {
-        name: /ask for approval always ask/i,
-      });
-      fireEvent.pointerDown(approvalOption);
-      expect(
-        screen.getByTestId("chat-input-agent-context"),
-      ).toBeInTheDocument();
-      fireEvent.click(approvalOption);
-      expect(
-        screen.getByTestId("chat-input-agent-context"),
-      ).toBeInTheDocument();
-      fireEvent.pointerDown(document.body);
-      expect(
-        screen.queryByTestId("chat-input-agent-context"),
-      ).not.toBeInTheDocument();
-      fireEvent.focus(screen.getByTestId("chat-input"));
-      expect(
-        screen.getByTestId("chat-input-agent-context"),
-      ).toBeInTheDocument();
-    });
+    it.each([true, false])(
+      "keeps Agent controls visible without composer interaction (home=%s)",
+      async (isCentered) => {
+        jest.mocked(useAuth).mockReturnValue({
+          user: { id: "user_123" },
+          entitlements: [],
+        } as ReturnType<typeof useAuth>);
+        window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, "agent");
+        mockUseQuery.mockImplementation((query) =>
+          getFunctionName(query) === "localSandbox:listConnections"
+            ? [
+                {
+                  connectionId: "local-sandbox",
+                  name: "Local sandbox",
+                  isDesktop: false,
+                },
+              ]
+            : undefined,
+        );
+        render(
+          <TestWrapper>
+            <ChatInput
+              onSubmit={mockOnSubmit}
+              onStop={mockOnStop}
+              status="ready"
+              autoFocus={false}
+              isCentered={isCentered}
+              isNewChat={isCentered}
+            />
+          </TestWrapper>,
+        );
+        await screen.findByTestId("chat-input");
+        expect(
+          screen.getByTestId("chat-input-agent-context"),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByTestId("chat-input-desktop-permission"),
+        ).toBeInTheDocument();
+        fireEvent.pointerDown(screen.getByTestId("chat-input"));
+        expect(
+          screen.getByTestId("chat-input-agent-context"),
+        ).toBeInTheDocument();
+        fireEvent.click(
+          screen
+            .getByTestId("chat-input-mobile-permission")
+            .querySelector("button")!,
+        );
+        const approvalOption = screen.getByRole("button", {
+          name: /ask for approval always ask/i,
+        });
+        fireEvent.pointerDown(approvalOption);
+        expect(
+          screen.getByTestId("chat-input-agent-context"),
+        ).toBeInTheDocument();
+        fireEvent.click(approvalOption);
+        expect(
+          screen.getByTestId("chat-input-agent-context"),
+        ).toBeInTheDocument();
+        fireEvent.pointerDown(document.body);
+        expect(
+          screen.getByTestId("chat-input-agent-context"),
+        ).toBeInTheDocument();
+        fireEvent.focus(screen.getByTestId("chat-input"));
+        expect(
+          screen.getByTestId("chat-input-agent-context"),
+        ).toBeInTheDocument();
+      },
+    );
 
     it("renders a glass composer with a narrower sandbox context strip", async () => {
       jest.mocked(useAuth).mockReturnValue({

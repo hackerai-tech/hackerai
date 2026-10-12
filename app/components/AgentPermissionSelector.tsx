@@ -206,7 +206,6 @@ export function AgentPermissionSelector({
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
           side="bottom"
-          data-composer-overlay
           className="max-h-[85dvh] overflow-y-auto rounded-t-[28px] border-black/8 bg-input-chat px-5 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] dark:border-border"
         >
           <div
@@ -229,7 +228,6 @@ export function AgentPermissionSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent
-        data-composer-overlay
         className="w-[480px] max-w-[calc(100vw-2rem)] p-3"
         align="start"
       >
