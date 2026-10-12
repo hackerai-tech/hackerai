@@ -50,9 +50,26 @@ export async function POST(request: NextRequest) {
     const current = subscriptions.data.filter(
       (s) => s.status !== "canceled" && s.status !== "incomplete_expired",
     );
+    if (subscriptions.has_more || current.length !== 1) {
+      return conflict(
+        "Annual switching is unavailable for this subscription. Review billing and any pending changes first.",
+      );
+    }
     const subscription = current[0];
-    const tier = subscription && annualSwitchTier(subscription);
-    if (subscriptions.has_more || current.length !== 1 || !tier) {
+    // A paid update can outlive its HTTP response. Recover only this exact
+    // completed attempt, without issuing another update or relaxing ambiguity.
+    if (
+      confirming &&
+      subscription.metadata?.checkoutAttemptId === attemptId &&
+      subscription.metadata.checkoutType === "subscription_change" &&
+      subscription.metadata.checkoutSource === "annual_switch" &&
+      annualSwitchTier(subscription, "year") &&
+      subscription.items.data[0].price.lookup_key === body.plan
+    ) {
+      return NextResponse.json({ success: true });
+    }
+    const tier = annualSwitchTier(subscription);
+    if (!tier) {
       return conflict(
         "Annual switching is unavailable for this subscription. Review billing and any pending changes first.",
       );

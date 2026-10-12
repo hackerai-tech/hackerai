@@ -2,7 +2,10 @@ import type Stripe from "stripe";
 import { subscriptionTierFromPrice } from "./current-subscription";
 
 /** A same-tier annual switch must not override a payment or retention decision. */
-export function annualSwitchTier(subscription: Stripe.Subscription) {
+export function annualSwitchTier(
+  subscription: Stripe.Subscription,
+  interval: "month" | "year" = "month",
+) {
   const item = subscription.items?.data[0];
   const tier = subscriptionTierFromPrice(item?.price);
   const invoice = subscription.latest_invoice;
@@ -19,7 +22,7 @@ export function annualSwitchTier(subscription: Stripe.Subscription) {
     subscription.items?.data.length !== 1 ||
     item?.quantity !== 1 ||
     item.price.currency !== "usd" ||
-    item.price.recurring?.interval !== "month" ||
+    item.price.recurring?.interval !== interval ||
     item.price.recurring.interval_count !== 1 ||
     item.price.recurring.usage_type !== "licensed" ||
     !invoice ||

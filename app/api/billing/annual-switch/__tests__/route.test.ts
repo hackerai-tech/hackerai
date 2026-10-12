@@ -211,3 +211,54 @@ it("preserves authorization and suspension failures", async () => {
   expect((await POST(request())).status).toBe(403);
   expect(mockSubscriptions).not.toHaveBeenCalled();
 });
+
+function completedAnnual() {
+  const sub = active();
+  return {
+    ...sub,
+    metadata: {
+      checkoutAttemptId: "ca_12345678-1234-1234-1234-123456789012",
+      checkoutType: "subscription_change",
+      checkoutSource: "annual_switch",
+    },
+    items: { data: [{ ...sub.items.data[0], price: yearly }] },
+  };
+}
+it("recovers a paid annual update after a lost response without another write", async () => {
+  mockSubscriptions.mockResolvedValue({ data: [completedAnnual()] });
+  expect(await (await POST(request({ confirm: true }))).json()).toEqual({
+    success: true,
+  });
+  expect(mockUpdate).not.toHaveBeenCalled();
+  expect(mockPreview).not.toHaveBeenCalled();
+});
+it.each([
+  { metadata: {} },
+  { pending_update: {} },
+  { latest_invoice: { status: "open" } },
+  { cancel_at_period_end: true },
+])(
+  "does not recover an unrelated or incomplete annual attempt %j",
+  async (change) => {
+    mockSubscriptions.mockResolvedValue({
+      data: [{ ...completedAnnual(), ...change }],
+    });
+    expect((await POST(request({ confirm: true }))).status).toBe(409);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  },
+);
+it.each([
+  { data: [completedAnnual(), active()] },
+  { data: [completedAnnual()], has_more: true },
+])("never recovers an ambiguous completed attempt", async (result) => {
+  mockSubscriptions.mockResolvedValue(result);
+  expect((await POST(request({ confirm: true }))).status).toBe(409);
+  expect(mockUpdate).not.toHaveBeenCalled();
+});
+it("does not treat an annual preview or another requested plan as completion", async () => {
+  mockSubscriptions.mockResolvedValue({ data: [completedAnnual()] });
+  expect((await POST(request())).status).toBe(409);
+  expect(
+    (await POST(request({ confirm: true, plan: "ultra-yearly-plan" }))).status,
+  ).toBe(409);
+});

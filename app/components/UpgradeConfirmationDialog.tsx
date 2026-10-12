@@ -285,7 +285,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                   </div>
                   <div className="text-sm text-muted-foreground mt-1">
                     {details.billingIntervalChanged
-                      ? `$${details.annualAmount?.toFixed(2)} billed annually. Your annual billing period starts when the change is paid. Unused monthly time is credited below.`
+                      ? `$${details.annualAmount?.toFixed(2)} billed annually. The switch takes effect after payment succeeds. Unused monthly time is credited below.`
                       : "Prorated charge for remaining time in your current billing cycle."}
                   </div>
                   {isValidUnix(details?.currentPeriodStart) &&
