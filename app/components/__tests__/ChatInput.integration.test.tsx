@@ -1204,7 +1204,7 @@ describe("ChatInput - Integration Tests", () => {
         ).toBeInTheDocument();
         fireEvent.click(
           screen
-            .getByTestId("chat-input-mobile-permission")
+            .getByTestId("chat-input-desktop-permission")
             .querySelector("button")!,
         );
         const approvalOption = screen.getByRole("button", {
