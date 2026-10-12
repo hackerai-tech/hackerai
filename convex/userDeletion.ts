@@ -18,6 +18,8 @@ export const USER_DELETION_TABLE_POLICY = {
     "messages",
     "files",
     "feedback",
+    "findings",
+    "finding_sources",
     "task_outcome_surveys",
     "notes",
     "user_customization",
@@ -444,6 +446,20 @@ async function cleanupUserDataForUser(
     "by_user_and_updated",
     (q) => q.eq("user_id", userId),
   );
+  const findingsBatch = await collectByIndexBatch<Doc<"findings">>(
+    ctx,
+    budget,
+    "findings",
+    "by_user_and_created",
+    (q) => q.eq("user_id", userId),
+  );
+  const findingSourcesBatch = await collectByIndexBatch<Doc<"finding_sources">>(
+    ctx,
+    budget,
+    "finding_sources",
+    "by_user_and_latest",
+    (q) => q.eq("user_id", userId),
+  );
   const customizationBatch = await collectByIndexBatch<
     Doc<"user_customization">
   >(ctx, budget, "user_customization", "by_user_id", (q) =>
@@ -523,6 +539,8 @@ async function cleanupUserDataForUser(
     projectsBatch,
     chatsBatch,
     filesBatch,
+    findingsBatch,
+    findingSourcesBatch,
     notesBatch,
     taskOutcomeSurveysBatch,
     customizationBatch,
@@ -544,6 +562,8 @@ async function cleanupUserDataForUser(
 
   const projects = projectsBatch.docs;
   const files = filesBatch.docs;
+  const findings = findingsBatch.docs;
+  const findingSources = findingSourcesBatch.docs;
   const notes = notesBatch.docs;
   const customization = customizationBatch.docs;
   const localSandboxTokens = localSandboxTokensBatch.docs;
@@ -612,6 +632,8 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
+  await deleteDocs(ctx, stats, "findings", findings, mode);
+  await deleteDocs(ctx, stats, "finding_sources", findingSources, mode);
   await deleteDocs(ctx, stats, "notes", notes, mode);
   await deleteDocs(ctx, stats, "user_customization", customization, mode);
   await deleteDocs(

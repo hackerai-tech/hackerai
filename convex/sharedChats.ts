@@ -1,3 +1,4 @@
+import { sanitizeFindingPartsForShare } from "../lib/findings/share-sanitizer";
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { convexLogger } from "./lib/logger";
@@ -388,8 +389,8 @@ export const forkSharedChat = mutation({
       // Remove file/image parts entirely — the forking user doesn't own the
       // original files, signed URLs will expire, and placeholder parts render
       // as broken "Unknown file" cards in the regular chat view.
-      const sanitizedParts = stripOpenRouterReasoningMetadataFromParts(
-        msg.parts,
+      const sanitizedParts = sanitizeFindingPartsForShare(
+        stripOpenRouterReasoningMetadataFromParts(msg.parts),
       ).filter((part: any) => part.type !== "file");
       await ctx.db.insert("messages", {
         id: newMessageId,

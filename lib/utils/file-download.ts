@@ -21,7 +21,7 @@ interface DownloadFileOptions {
  * Unified file download handler that works across Tauri desktop and web browsers.
  *
  * Strategy:
- * 1. Tauri: save via command server (anchor downloads don't work in WebView)
+ * 1. Tauri: save via native dialog (anchor downloads don't work in WebView)
  * 2. File System Access API: native save dialog (Chrome/Edge)
  * 3. Blob download: traditional anchor element fallback
  */
@@ -30,17 +30,19 @@ export async function downloadFile({
   content,
   mimeType = "text/plain",
 }: DownloadFileOptions): Promise<void> {
-  // Tauri: save via command server
+  // Tauri: cancellation is a successful no-op, distinct from a failed write.
   if (isTauriEnvironment()) {
-    const filePath = await saveFileToLocal(filename, content);
-    if (filePath) {
-      toast.success(`Saved ${filename}`, {
-        action: {
-          label: "Show in Finder",
-          onClick: () => revealFileInDir(filePath),
-        },
-      });
-    } else {
+    try {
+      const filePath = await saveFileToLocal(filename, content);
+      if (filePath) {
+        toast.success("File saved successfully", {
+          action: {
+            label: "Show in Finder",
+            onClick: () => revealFileInDir(filePath),
+          },
+        });
+      }
+    } catch {
       toast.error("Failed to save file");
     }
     return;

@@ -28,6 +28,10 @@ import type {
   SubscriptionTier,
   NoteCategory,
 } from "@/types";
+import type {
+  UpdateVulnerabilityReportInput,
+  CreateVulnerabilityReportInput,
+} from "@/lib/findings/validation";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
@@ -1229,6 +1233,12 @@ export async function handleInitialChatAndUserMessage({
     }
   }
 
+  // Regeneration skips the user-message write that clears cancellation. Reset
+  // it after ownership validation, before tools or cancellation polling start.
+  if (regenerate && chat) {
+    await prepareForNewStream({ chatId });
+  }
+
   // Only save user message if this is not a regeneration
   if (!regenerate && Array.isArray(messages) && messages.length > 0) {
     await saveMessage({
@@ -2009,6 +2019,116 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
     console.error("[DB Actions] Failed to get latest summary:", error);
     return null;
   }
+}
+
+// ============================================================================
+// Findings Actions
+// ============================================================================
+
+export async function createFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  report,
+  evidenceVerification,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  report: CreateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  try {
+    return await getConvexClient().mutation(
+      api.findings.createFindingForBackend,
+      {
+        serviceKey,
+        userId,
+        chatId,
+        messageId,
+        toolCallId,
+        report,
+        ...(evidenceVerification ? { evidenceVerification } : {}),
+      },
+    );
+  } catch (error) {
+    throw databaseError("findings.createFindingForBackend", error, {
+      user_id: userId,
+      chat_id: chatId,
+      message_id: messageId,
+      tool_call_id: toolCallId,
+    });
+  }
+}
+
+export async function listReports({
+  userId,
+  chatId,
+  limit,
+  cursor,
+  search,
+  status,
+}: {
+  userId: string;
+  chatId: string;
+  limit: number;
+  cursor: string | null;
+  search?: string;
+  status?: "active" | "closed";
+}) {
+  return getConvexClient().query(api.findings.listReportsForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    paginationOpts: { numItems: limit, cursor },
+    ...(search !== undefined ? { search } : {}),
+    ...(status ? { status } : {}),
+  });
+}
+
+export async function getReport({
+  userId,
+  chatId,
+  findingId,
+}: {
+  userId: string;
+  chatId: string;
+  findingId: string;
+}) {
+  return getConvexClient().query(api.findings.getReportForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    findingId,
+  });
+}
+
+export async function updateFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  update,
+  evidenceVerification,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  update: UpdateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  return getConvexClient().mutation(api.findings.updateFindingForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    messageId,
+    toolCallId,
+    update,
+    ...(evidenceVerification ? { evidenceVerification } : {}),
+  });
 }
 
 // ============================================================================

@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { SubscriptionTier } from "@/types";
 
+let mockPathname = "/";
+jest.mock("next/navigation", () => ({
+  usePathname: () => mockPathname,
+  useRouter: () => ({ push: jest.fn() }),
+}));
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 const mockToggleSidebar = jest.fn();
 const mockStartNewChat = jest.fn();
 let mockSubscription: SubscriptionTier = "free";
@@ -28,6 +34,8 @@ jest.mock("@/components/icons/hackerai-svg", () => ({
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
     subscription: mockSubscription,
+    closeSidebar: jest.fn(),
+    setChatSidebarOpen: jest.fn(),
     isCheckingProPlan: mockIsCheckingProPlan,
   }),
 }));
@@ -182,4 +190,24 @@ describe("SidebarHeaderContent", () => {
     fireEvent.click(closeButton);
     expect(handleCloseSidebar).toHaveBeenCalledTimes(1);
   });
+});
+
+describe("findings navigation", () => {
+  it.each([true, false])(
+    "marks the active findings destination (collapsed=%s)",
+    (isCollapsed) => {
+      mockPathname = "/findings";
+      render(
+        <SidebarHeaderContent
+          handleCloseSidebar={jest.fn()}
+          isCollapsed={isCollapsed}
+          isMobileOverlay
+        />,
+      );
+      expect(
+        screen.getByRole("button", { name: "Open findings" }),
+      ).toHaveAttribute("aria-current", "page");
+      mockPathname = "/";
+    },
+  );
 });

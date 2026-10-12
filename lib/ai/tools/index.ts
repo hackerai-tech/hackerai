@@ -17,6 +17,12 @@ import {
   createUpdateNote,
   createDeleteNote,
 } from "./notes";
+import {
+  createCreateVulnerabilityReport,
+  createListReports,
+  createGetReport,
+  createUpdateVulnerabilityReport,
+} from "./findings";
 // match tool removed — usage analytics showed it wasn't being used enough to justify
 // the added complexity. The agent should use run_terminal_cmd with rg instead.
 // import { createMatch } from "./match";
@@ -283,6 +289,16 @@ export const createTools = (
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),
       todo_write: createTodoWrite(context),
+      create_vulnerability_report: createCreateVulnerabilityReport(
+        context,
+        () => sandbox,
+      ),
+      list_reports: createListReports(context),
+      get_report: createGetReport(context),
+      update_vulnerability_report: createUpdateVulnerabilityReport(
+        context,
+        () => sandbox,
+      ),
       ...(notesEnabled && {
         create_note: createCreateNote(context),
         list_notes: createListNotes(context),

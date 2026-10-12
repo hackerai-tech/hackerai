@@ -516,3 +516,116 @@ describe("projectAgentWorkTimelineItems", () => {
     ).toHaveLength(2);
   });
 });
+
+describe("completed report activity labels", () => {
+  const receipt = {
+    finding_id: "finding-1",
+    title: "Synthetic finding",
+    target: "lab.example.test",
+    severity: "high",
+    cvss_score: 7.1,
+  };
+  const activity = (
+    type: string,
+    output: unknown,
+    state = "output-available",
+  ) => ({
+    id: type,
+    part: part(type, { state, output }),
+    partIndex: 0,
+  });
+  it.each([
+    [
+      "tool-create_vulnerability_report",
+      { success: true, ...receipt },
+      "Created a finding",
+      "Created findings",
+      "finding-create",
+    ],
+    [
+      "tool-update_vulnerability_report",
+      { success: true, ...receipt },
+      "Updated a finding",
+      "Updated findings",
+      "finding-update",
+    ],
+    [
+      "tool-get_report",
+      { success: true, report: receipt },
+      "Read a report",
+      "Read reports",
+      "report-read",
+    ],
+    [
+      "tool-list_reports",
+      { success: true, reports: [receipt] },
+      "Listed reports",
+      "Listed reports",
+      "report-list",
+    ],
+  ])(
+    "describes successful %s in collapsed live and restored history",
+    (type, output, singular, plural, icon) => {
+      const row = activity(type as string, output);
+      expect(summarizeCompletedToolActivities([row])).toBe(singular);
+      expect(
+        summarizeCompletedToolActivities([row, { ...row, id: "another" }]),
+      ).toBe(plural);
+      expect(getCompletedToolSummaryIconCategory([row])).toBe(icon);
+      expect(
+        summarizeCompletedToolActivities(JSON.parse(JSON.stringify([row]))),
+      ).toBe(singular);
+      expect(
+        summarizeCompletedToolActivities([
+          activity(type as string, { result: output }),
+        ]),
+      ).toBe(singular);
+    },
+  );
+  it.each([
+    { state: "output-available", output: { success: false, error: "general" } },
+    {
+      state: "output-available",
+      output: { result: { success: false, error: "conflict" } },
+    },
+    { state: "output-error", output: undefined },
+    { state: "output-denied", output: undefined },
+    { state: "input-available", output: undefined },
+    { state: "output-available", output: { success: true } },
+  ])(
+    "does not claim creation or update succeeded for %j",
+    ({ state, output }) => {
+      expect(
+        summarizeCompletedToolActivities([
+          activity("tool-create_vulnerability_report", output, state),
+        ]),
+      ).toBe("Attempted to create a finding");
+      expect(
+        summarizeCompletedToolActivities([
+          activity("tool-update_vulnerability_report", output, state),
+        ]),
+      ).toBe("Attempted to update a finding");
+    },
+  );
+  it("keeps successful writes and failed attempts distinct in mixed work", () => {
+    expect(
+      summarizeCompletedToolActivities([
+        activity("tool-create_vulnerability_report", {
+          success: true,
+          ...receipt,
+        }),
+        activity("tool-create_vulnerability_report", {
+          success: false,
+          error: "duplicate",
+        }),
+        activity("tool-update_vulnerability_report", {
+          success: true,
+          ...receipt,
+        }),
+        activity("tool-shell", { exitCode: 0 }),
+      ]),
+    ).toBe(
+      "Created a finding, attempted to create a finding, updated a finding, ran a command",
+    );
+  });
+});
