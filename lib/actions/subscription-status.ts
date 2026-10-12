@@ -1,5 +1,6 @@
 "use server";
 
+import { annualSwitchTier } from "@/lib/billing/annual-switch";
 import { stripe } from "../../app/api/stripe";
 import { isExpectedBillingContextError } from "@/lib/actions/billing-action-errors";
 import { getBillingStatusContext } from "@/lib/actions/billing-context";
@@ -198,6 +199,7 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
           stripeCustomerId,
         ),
       }),
+    ...(annualSwitchTier(currentSubscription) && { canSwitchToAnnual: true }),
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
     currentPeriodEnd,

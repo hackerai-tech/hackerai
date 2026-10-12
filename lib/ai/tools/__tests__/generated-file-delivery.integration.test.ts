@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { FileAccumulator } from "../utils/file-accumulator";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { getSandboxUploadedFileUrl } from "../utils/sandbox-file-uploader";
 import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
@@ -154,7 +155,10 @@ describe("generated artifact delivery over HTTP", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  async function deliverAfterReconnect(useSymlink = false) {
+  async function deliverAfterReconnect(
+    useSymlink = false,
+    disconnectStream = false,
+  ) {
     const source = join(directory, "report.txt");
     await rm(source, { force: true });
     if (useSymlink) {
@@ -208,8 +212,14 @@ describe("generated artifact delivery over HTTP", () => {
           processes: [],
         }),
       },
-      fileAccumulator: { add: jest.fn() },
-      writer: { write: jest.fn() },
+      fileAccumulator: Object.assign(new FileAccumulator(), {
+        add: jest.fn(FileAccumulator.prototype.add),
+      }),
+      writer: {
+        write: jest.fn(() => {
+          if (disconnectStream) throw new Error("Stream closed");
+        }),
+      },
     } as unknown as ToolContext;
     const tool = createGetTerminalFiles(context);
     const result = await (tool.execute as any)(
@@ -249,6 +259,30 @@ describe("generated artifact delivery over HTTP", () => {
       expect(await readFile(destination, "utf8")).toBe(contents);
     },
   );
+
+  it("downloads the original persisted bytes after the live notification fails", async () => {
+    const { source, context, result } = await deliverAfterReconnect(
+      false,
+      true,
+    );
+    expect(result.failedFiles).toEqual([]);
+    expect(context.fileAccumulator.getAll()).toMatchObject([
+      {
+        fileId: "file-fixture",
+        name: "report.txt",
+        sizeBytes: Buffer.byteLength(contents),
+      },
+    ]);
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    await rm(source);
+    const url = await getSandboxUploadedFileUrl({
+      fileId: "file-fixture" as never,
+      userId: "test-user",
+    });
+    const downloaded = await transfer(url!);
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.body.toString("utf8")).toBe(contents);
+  });
 
   it("does not emit a file card or receipt when an upload reports success but stores no object", async () => {
     dropUpload = true;

@@ -33,6 +33,8 @@ import {
   ultraFeatures,
   teamFeatures,
 } from "@/lib/pricing/features";
+import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
+import { PRICING } from "@/lib/pricing/config";
 import DeleteAccountDialog from "./DeleteAccountDialog";
 import CancelSubscriptionDialog from "./CancelSubscriptionDialog";
 import {
@@ -111,6 +113,7 @@ const AccountTab = () => {
   const { user, organizationId } = useAuth();
   const billingScope = `${user?.id ?? ""}:${organizationId ?? ""}`;
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
+  const [showAnnualSwitch, setShowAnnualSwitch] = useState(false);
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [isKeepingPlan, setIsKeepingPlan] = useState(false);
@@ -636,6 +639,38 @@ const AccountTab = () => {
                 surface="account_settings"
                 onCheck={checkBilling}
               />
+            </div>
+          )}
+
+        {canManageBilling &&
+          currentCancellationStatus?.canSwitchToAnnual &&
+          (subscription === "pro" ||
+            subscription === "pro-plus" ||
+            subscription === "ultra") && (
+            <div className="mt-4">
+              <Button
+                variant="outline"
+                onClick={() => setShowAnnualSwitch(true)}
+              >
+                Switch to annual
+              </Button>
+              <p className="mt-2 text-sm text-muted-foreground">
+                ${PRICING[subscription].yearly * 12} billed annually. Review
+                your credit and amount due before confirming.
+              </p>
+              {showAnnualSwitch && (
+                <UpgradeConfirmationDialog
+                  key={billingScope}
+                  isOpen
+                  onClose={() => setShowAnnualSwitch(false)}
+                  planName={getPlanDisplayName(subscription)}
+                  price={PRICING[subscription].yearly * 12}
+                  targetPlan={`${subscription}-yearly-plan`}
+                  annualSwitch
+                  source="annual_switch"
+                  surface="account_settings"
+                />
+              )}
             </div>
           )}
 

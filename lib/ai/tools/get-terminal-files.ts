@@ -24,16 +24,22 @@ export const createGetTerminalFiles = (context: ToolContext) => {
     execute: async ({ files }: { files: string[] }) => {
       let relayRecoveryAttempted = false;
       let relayRecoverySucceeded = false;
+      let streamNotificationFailures = 0;
       const recordOutcome = (delivered: number, failed: number) => {
-        phLogger.event("agent_file_delivery_completed", {
-          userId: context.userID,
-          requested_file_count: files.length,
-          delivered_file_count: delivered,
-          failed_file_count: failed,
-          relay_recovery_attempted: relayRecoveryAttempted,
-          relay_recovery_succeeded: relayRecoverySucceeded,
-          sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
-        });
+        try {
+          phLogger.event("agent_file_delivery_completed", {
+            userId: context.userID,
+            stream_notification_failed_count: streamNotificationFailures,
+            requested_file_count: files.length,
+            delivered_file_count: delivered,
+            failed_file_count: failed,
+            relay_recovery_attempted: relayRecoveryAttempted,
+            relay_recovery_succeeded: relayRecoverySucceeded,
+            sandbox_type: sandboxManager.getSandboxInfo()?.type ?? "unknown",
+          });
+        } catch {
+          // Analytics cannot turn a stored artifact into a failed delivery.
+        }
       };
       try {
         let { sandbox } = await getSandboxWithFallbackGuard({
@@ -157,21 +163,28 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               // Stream file metadata immediately so the client can show the file card
               // while the rest of the response is still streaming
               if (context.assistantMessageId) {
-                context.writer.write({
-                  type: "data-file-metadata" as const,
-                  data: {
-                    messageId: context.assistantMessageId,
-                    fileDetails: [
-                      {
-                        fileId: saved.fileId,
-                        name: saved.name,
-                        mediaType: saved.mediaType,
-                        s3Key: saved.s3Key,
-                        sizeBytes: saved.sizeBytes,
-                      },
-                    ],
-                  },
-                });
+                try {
+                  context.writer.write({
+                    type: "data-file-metadata" as const,
+                    data: {
+                      messageId: context.assistantMessageId,
+                      fileDetails: [
+                        {
+                          fileId: saved.fileId,
+                          name: saved.name,
+                          mediaType: saved.mediaType,
+                          s3Key: saved.s3Key,
+                          sizeBytes: saved.sizeBytes,
+                        },
+                      ],
+                    },
+                  });
+                } catch {
+                  // The verified file is already in the accumulator. Final message
+                  // persistence owns it even when the live stream has disconnected.
+                  // Do not retry an upload or select another path for a UI failure.
+                  streamNotificationFailures += 1;
+                }
               }
 
               providedFiles.push({ path: originalPath });

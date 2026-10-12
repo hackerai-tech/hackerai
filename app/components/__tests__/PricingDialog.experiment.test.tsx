@@ -15,6 +15,7 @@ const mockFetch = jest.fn();
 const mockClearBillingReview = jest.fn();
 let mockBillingReviewRequired = false;
 let mockAuthLoading = false;
+let mockSubscription = "free";
 let mockBilling = {
   data: { hasActiveSubscription: false, cancelAtPeriodEnd: false } as
     | import("@/lib/billing/api-types").SubscriptionCancellationStatus
@@ -29,7 +30,7 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 }));
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
-    subscription: "free",
+    subscription: mockSubscription,
     isCheckingProPlan: false,
     setTeamPricingDialogOpen: jest.fn(),
   }),
@@ -71,7 +72,22 @@ jest.mock("../BillingFrequencySelector", () => ({
 }));
 jest.mock("../UpgradeConfirmationDialog", () => ({
   __esModule: true,
-  default: () => null,
+  default: ({
+    isOpen,
+    annualSwitch,
+    targetPlan,
+  }: {
+    isOpen: boolean;
+    annualSwitch?: boolean;
+    targetPlan: string;
+  }) =>
+    isOpen ? (
+      <div
+        data-testid="confirmation"
+        data-annual={annualSwitch}
+        data-plan={targetPlan}
+      />
+    ) : null,
 }));
 
 const PricingDialog = require("../PricingDialog")
@@ -82,6 +98,7 @@ describe("PricingDialog prices and billing status", () => {
     jest.clearAllMocks();
     mockBillingReviewRequired = false;
     mockAuthLoading = false;
+    mockSubscription = "free";
     mockBilling = {
       data: { hasActiveSubscription: false, cancelAtPeriodEnd: false },
       isLoading: false,
@@ -93,6 +110,39 @@ describe("PricingDialog prices and billing status", () => {
       value: mockFetch,
     });
   });
+
+  it.each(["pro", "pro-plus", "ultra"])(
+    "offers same-tier annual switching for eligible %s subscribers",
+    async (tier) => {
+      mockSubscription = tier;
+      mockBilling.data = {
+        hasActiveSubscription: true,
+        cancelAtPeriodEnd: false,
+        canSwitchToAnnual: true,
+      };
+      const close = jest.fn();
+      render(<PricingDialog isOpen onClose={close} />);
+      expect(
+        screen.queryByRole("button", { name: "Switch to annual" }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Yearly" }));
+      expect(
+        screen.getByRole("button", { name: "Switch to annual" }),
+      ).toBeEnabled();
+      await userEvent.click(
+        screen.getByRole("button", { name: "Switch to annual" }),
+      );
+      expect(screen.getByTestId("confirmation")).toHaveAttribute(
+        "data-annual",
+        "true",
+      );
+      expect(screen.getByTestId("confirmation")).toHaveAttribute(
+        "data-plan",
+        `${tier}-yearly-plan`,
+      );
+      expect(close).not.toHaveBeenCalled();
+    },
+  );
 
   it("preserves review controls when a fresh status check fails despite a healthy cached status", async () => {
     mockBillingReviewRequired = true;

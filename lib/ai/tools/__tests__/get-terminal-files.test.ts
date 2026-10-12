@@ -75,6 +75,79 @@ describe("get_terminal_files", () => {
     jest.clearAllMocks();
   });
 
+  it.each(["cloud", "desktop", "remote-connection"] as const)(
+    "retains the original stored file when a %s stream disconnects",
+    async (type) => {
+      mockUploadSandboxFileToConvex.mockResolvedValue({
+        url: "https://files.example/report.zip?signature=private",
+        fileId: "stored-file" as never,
+        tokens: 0,
+        name: "report.zip",
+        mediaType: "application/zip",
+        s3Key: "private-key",
+        sizeBytes: 1024,
+      });
+      const context = makeContext();
+      jest
+        .mocked(context.sandboxManager.getSandboxInfo)
+        .mockReturnValue({ type });
+      jest.mocked(context.writer.write).mockImplementation(() => {
+        throw new Error("Stream closed");
+      });
+      const result = await runTool(createGetTerminalFiles(context), {
+        files: ["report.zip"],
+      });
+      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
+      expect(context.fileAccumulator.add).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        files: [{ path: "report.zip" }],
+        deliveryReceipts: [{ fileId: "stored-file", storageStatus: "stored" }],
+        failedFiles: [],
+      });
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "agent_file_delivery_completed",
+        expect.objectContaining({
+          delivered_file_count: 1,
+          failed_file_count: 0,
+          stream_notification_failed_count: 1,
+        }),
+      );
+      expect(
+        JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+      ).not.toMatch(/report\.zip|private-key|signature|Stream closed/);
+    },
+  );
+
+  it("keeps storage failures separate from notification and analytics failures", async () => {
+    mockUploadSandboxFileToConvex.mockReset();
+    mockUploadSandboxFileToConvex
+      .mockResolvedValueOnce({
+        url: "https://files.example/report.zip",
+        fileId: "stored-file" as never,
+        tokens: 0,
+        name: "report.zip",
+        mediaType: "application/zip",
+        sizeBytes: 1024,
+      })
+      .mockRejectedValueOnce(new Error("Storage unavailable"));
+    const context = makeContext();
+    jest.mocked(context.writer.write).mockImplementation(() => {
+      throw new Error("Stream closed");
+    });
+    jest.mocked(phLogger.event).mockImplementationOnce(() => {
+      throw new Error("Analytics unavailable");
+    });
+    const result = await runTool(createGetTerminalFiles(context), {
+      files: ["/report.zip", "/missing.zip"],
+    });
+    expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      files: [{ path: "/report.zip" }],
+      deliveryReceipts: [{ fileId: "stored-file" }],
+      failedFiles: [{ path: "/missing.zip" }],
+    });
+  });
+
   it.each(["desktop", "remote-connection", null] as const)(
     "does not prefer a Cloud path over the selected %s working directory",
     async (type) => {
