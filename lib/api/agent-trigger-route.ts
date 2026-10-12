@@ -439,6 +439,36 @@ export const createAgentTriggerPost =
   ({ endpoint }: { endpoint: AgentApiEndpoint }) =>
   async (req: NextRequest) => {
     const routeStartedAt = Date.now();
+    let stage = "parse_request";
+    const diagnosticContext: {
+      requestId?: string;
+      userId?: string;
+      chatId?: string;
+      runId?: string;
+    } = {
+      requestId: req.headers.get("x-vercel-id")?.slice(0, 128) ?? undefined,
+    };
+    // A platform timeout cannot run catch/finally. Emit the in-flight phase
+    // before that deadline, without including request contents or credentials.
+    const slowRequestInterval = setInterval(() => {
+      console.warn(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          level: "warn",
+          event: "agent_start_slow_request",
+          service: "hackerai-web",
+          environment:
+            process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown",
+          endpoint,
+          request_id: diagnosticContext.requestId,
+          user_id: diagnosticContext.userId,
+          chat_id: diagnosticContext.chatId,
+          trigger_run_id: diagnosticContext.runId,
+          stage,
+          elapsed_ms: Date.now() - routeStartedAt,
+        }),
+      );
+    }, 10_000);
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
@@ -459,13 +489,17 @@ export const createAgentTriggerPost =
         projectId: requestedProjectId,
       } = parsedBody.body;
 
+      diagnosticContext.chatId = chatId.slice(0, 128);
+      stage = "authenticate";
       const { userId, subscription, organizationId, freeQuotaSubject } =
         await getUserIDAndPro(req);
+      diagnosticContext.userId = userId.slice(0, 128);
       let selectedModelOverride: SelectedModel | undefined =
         normalizeSelectedModelOverrideForSubscription(
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );
+      stage = "access_gates";
       await assertUserCanMakeCostIncurringRequest(userId);
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
@@ -513,6 +547,7 @@ export const createAgentTriggerPost =
       // These independent authorization/config reads used to run serially
       // before Trigger was called. Overlap them so the worker starts booting as
       // soon as possible after the suspension check succeeds.
+      stage = "load_chat_and_preferences";
       const [existingChat, userCustomization] = await Promise.all([
         getChatById({ id: chatId }),
         getUserCustomization({ userId }),
@@ -521,6 +556,7 @@ export const createAgentTriggerPost =
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
+      stage = "resolve_execution_context";
       const [projectContext, extraUsageConfig] = await Promise.all([
         resolveProjectExecutionContext({
           chat: existingChat,
@@ -555,6 +591,7 @@ export const createAgentTriggerPost =
       let localDesktopAttachmentsPrepared = false;
 
       if (hasLocalDesktopSourcePaths(requestMessages)) {
+        stage = "prepare_desktop_attachments";
         if (!isDesktopPreference(sandboxPreference ?? "e2b")) {
           throw new ChatSDKError(
             "bad_request:api",
@@ -625,6 +662,7 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
+      stage = "persist_user_message";
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
@@ -668,6 +706,7 @@ export const createAgentTriggerPost =
         triggerRequestedAt,
         agentRunRequestId,
       });
+      stage = "create_idempotency_key";
       const triggerIdempotencyKey = await buildAgentRunIdempotencyKey(
         triggerDedupeKeyParts,
       );
@@ -800,6 +839,7 @@ export const createAgentTriggerPost =
 
       let runId: string;
       try {
+        stage = triggerApiMethod;
         if (approvalSessionId) {
           const approvalTriggerConfig = {
             basePayload: agentPayload,
@@ -853,6 +893,8 @@ export const createAgentTriggerPost =
       }
 
       const triggerCompletedAt = Date.now();
+      diagnosticContext.runId = runId;
+      stage = "create_tokens_and_associate_run";
 
       // Access-token creation and durable association are independent, so
       // overlap them while treating every post-start failure as terminal.
@@ -898,6 +940,9 @@ export const createAgentTriggerPost =
         endpoint,
         action: "start",
         fallbackMessage: "Failed to start agent run",
+        context: { ...diagnosticContext, stage },
       });
+    } finally {
+      clearInterval(slowRequestInterval);
     }
   };
