@@ -625,6 +625,7 @@ const USER_CORRECTABLE_AGENT_LONG_ERROR_CATEGORIES = new Set([
   "input_too_large",
   "empty_after_processing",
   "local_sandbox_fallback_blocked",
+  "sandbox_offline",
   "invalid_image_input",
   "content_blocked",
 ]);
@@ -634,6 +635,7 @@ const isUserCorrectableAgentLongErrorCategory = (category: string): boolean =>
 
 const getAgentLongErrorRunStatus = (category: string): string => {
   if (category === "chat_not_found") return "chat_not_found";
+  if (category === "sandbox_offline") return "reconnect_required";
   if (isUserCorrectableAgentLongErrorCategory(category)) {
     return "user_correctable";
   }
@@ -722,9 +724,11 @@ const classifyAgentLongError = (error: unknown): AgentLongErrorSummary => {
                     ? "empty_after_processing"
                     : errorMetadata?.localSandboxFallbackBlocked === true
                       ? "local_sandbox_fallback_blocked"
-                      : errorMetadata?.upload_failure_kind
-                        ? "sandbox_upload_failure"
-                        : "chat_error",
+                      : error.type === "offline" && error.surface === "sandbox"
+                        ? "sandbox_offline"
+                        : errorMetadata?.upload_failure_kind
+                          ? "sandbox_upload_failure"
+                          : "chat_error",
       code,
       name: "ChatSDKError",
       message: errorMessage,

@@ -48,7 +48,11 @@ const code = ts.transpileModule(
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 
-async function recordFailure(error: ChatSDKError, phase = "setup") {
+async function recordFailure(
+  error: ChatSDKError,
+  phase = "setup",
+  reconnectRequired = false,
+) {
   const metadata = {
     set: jest.fn().mockReturnThis(),
     flush: jest.fn(async () => {}),
@@ -73,12 +77,15 @@ async function recordFailure(error: ChatSDKError, phase = "setup") {
     runId: "run-opaque",
     phase,
   });
-  expect(result).toEqual({ userCorrectable: false });
-  expect(metadata.set).toHaveBeenCalledWith("status", "failed");
+  expect(result).toEqual({ userCorrectable: reconnectRequired });
+  expect(metadata.set).toHaveBeenCalledWith(
+    "status",
+    reconnectRequired ? "reconnect_required" : "failed",
+  );
   expect(metadata.set).toHaveBeenCalledWith("terminalPhase", phase);
   expect(metadata.flush).toHaveBeenCalledTimes(1);
-  expect(triggerLogger.error).toHaveBeenCalledTimes(1);
-  expect(triggerLogger.warn).not.toHaveBeenCalled();
+  expect(triggerLogger.error).toHaveBeenCalledTimes(reconnectRequired ? 0 : 1);
+  expect(triggerLogger.warn).toHaveBeenCalledTimes(reconnectRequired ? 1 : 0);
   expect(recordGroupedSpikeAlert).not.toHaveBeenCalled();
   return { metadata, triggerLogger };
 }
@@ -153,4 +160,22 @@ it("keeps metadata-free errors compatible with the terminal recorder", async () 
   expect(metadata.set.mock.calls.map(([key]) => key)).not.toContain(
     "uploadFailurePhase",
   );
+});
+
+it("records a disconnected computer as actionable reconnection rather than a platform failure", async () => {
+  const { metadata } = await recordFailure(
+    new ChatSDKError("offline:sandbox", "Reconnect the selected computer."),
+    "setup",
+    true,
+  );
+  expect(metadata.set).toHaveBeenCalledWith("errorCategory", "sandbox_offline");
+});
+
+it("keeps connection lookup failures actionable as platform failures", async () => {
+  const { metadata } = await recordFailure(
+    new ChatSDKError("bad_request:sandbox", "Connection lookup failed", {
+      localConnectionLookupFailed: true,
+    }),
+  );
+  expect(metadata.set).toHaveBeenCalledWith("errorCategory", "chat_error");
 });

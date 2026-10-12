@@ -1,3 +1,4 @@
+import { CloudAcquisitionBudget } from "../cloud-acquisition-budget";
 import type { Sandbox } from "@e2b/code-interpreter";
 import { ensureCloudSandboxConnection } from "../cloud-sandbox";
 import { ensureSandboxConnection } from "../sandbox";
@@ -51,6 +52,41 @@ describe("E2B cloud acquisition", () => {
   afterEach(() => {
     jest.restoreAllMocks();
     process.env = originalEnv;
+  });
+
+  it("reports a workspace lookup timeout and fences its late result", async () => {
+    jest.useFakeTimers();
+    let finish!: (value: null) => void;
+    read.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const setSandbox = jest.fn();
+    try {
+      const result = new CloudAcquisitionBudget()
+        .run(
+          (signal, reportStage) =>
+            ensureCloudSandboxConnection({
+              userId: "user-1",
+              setSandbox,
+              signal,
+              reportStage,
+            }),
+          { userId: "user-1" },
+        )
+        .catch((error) => error);
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(await result).toMatchObject({
+        acquisitionStage: "workspace_lookup",
+      });
+      finish(null);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(ensure).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("publishes only an authorized E2B result with one acquisition outcome", async () => {

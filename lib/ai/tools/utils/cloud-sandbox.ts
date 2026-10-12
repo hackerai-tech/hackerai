@@ -1,3 +1,4 @@
+import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import type { AnySandbox, SandboxBootInfo, SubscriptionTier } from "@/types";
 import { randomUUID } from "node:crypto";
 import { Sandbox } from "@e2b/code-interpreter";
@@ -36,6 +37,7 @@ export type CloudSandboxAcquisitionContext = {
 };
 
 export async function ensureCloudSandboxConnection(options: {
+  reportStage?: ReportCloudAcquisitionStage;
   userId: string;
   signal?: AbortSignal;
   initialSandbox?: AnySandbox | null;
@@ -78,6 +80,7 @@ export async function ensureCloudSandboxConnection(options: {
 
   try {
     options.signal?.throwIfAborted();
+    options.reportStage?.("workspace_lookup");
     const state = await readCloudWorkspaceState(options.userId);
     options.signal?.throwIfAborted();
     if (state) {
@@ -103,6 +106,7 @@ export async function ensureCloudSandboxConnection(options: {
       },
       {
         signal: options.signal,
+        reportStage: options.reportStage,
         initialSandbox:
           options.initialSandbox && isE2BSandbox(options.initialSandbox)
             ? options.initialSandbox
@@ -113,6 +117,7 @@ export async function ensureCloudSandboxConnection(options: {
         destinationId: state?.phase === "e2b" ? state.destinationId : undefined,
       },
     );
+    options.reportStage?.("workspace_verification");
     await assertCloudWorkspaceAvailable(
       options.userId,
       result.sandbox.sandboxId,

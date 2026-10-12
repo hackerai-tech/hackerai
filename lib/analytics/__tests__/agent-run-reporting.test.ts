@@ -235,3 +235,19 @@ describe("safe failure classification", () => {
     ).toBe("unknown");
   });
 });
+
+it("keeps reconnect-required Agent attempts unsuccessful in analytics", () => {
+  const { reporter, events } = setup();
+  reporter.fail(
+    new ChatSDKError("offline:sandbox", "Reconnect the selected computer."),
+  );
+  reporter.finalize({ canceled: false });
+  expect(events()[0].properties).toMatchObject({
+    outcome: "error",
+    failure_category: "sandbox_offline",
+  });
+  expect(events()[1].properties).toMatchObject({
+    cost_dollars: null,
+    cost_accounting_status: "incomplete",
+  });
+});

@@ -116,6 +116,34 @@ describe("MessageErrorState", () => {
     ).toBeInTheDocument();
   });
 
+  it("offers a fresh retry for a serialized offline computer error without resuming its finished stream", () => {
+    const onRetry = jest.fn();
+    const onReconnect = jest.fn();
+    const cause =
+      "The selected computer is disconnected. Reconnect that computer to continue this task.";
+    render(
+      <TestWrapper>
+        <MessageErrorState
+          error={
+            new Error(
+              serializeChatSDKErrorForStream(
+                new ChatSDKError("offline:sandbox", cause),
+              ),
+            )
+          }
+          onRetry={onRetry}
+          onReconnect={onReconnect}
+          mode="agent"
+        />
+      </TestWrapper>,
+    );
+    expect(screen.getByText(cause)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reconnect$/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^retry$/i }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onReconnect).not.toHaveBeenCalled();
+  });
+
   it("keeps retry available for ordinary errors", () => {
     const onRetry = jest.fn();
 

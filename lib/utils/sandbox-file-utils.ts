@@ -1,5 +1,7 @@
 import "server-only";
 
+import { isCloudAcquisitionBudgetSpent } from "@/lib/ai/tools/utils/cloud-acquisition-budget";
+
 import {
   checkAttachmentReadiness,
   sampleAttachmentFailureMetrics,
@@ -128,6 +130,8 @@ type CollectSandboxFilesOptions = {
 
 const MAX_UPLOAD_FAILURE_CAUSE_LENGTH = 1000;
 const ACQUISITION_ERROR_NAMES = new Set([
+  "CloudAcquisitionTimeoutError",
+  "CloudAcquisitionBudgetExhaustedError",
   "E2BAcquisitionError",
   "CloudWorkspaceUnavailableError",
 ]);
@@ -289,6 +293,7 @@ const classifySandboxUploadFailureReason = (
 const logSandboxAcquisitionRecovery = (
   options: UploadSandboxFilesOptions | undefined,
   event:
+    | "sandbox_attachment_acquisition_retry_skipped"
     | "sandbox_attachment_acquisition_retry_scheduled"
     | "sandbox_attachment_acquisition_recovered"
     | "sandbox_attachment_acquisition_retry_failed",
@@ -296,6 +301,7 @@ const logSandboxAcquisitionRecovery = (
   initialFailureReason: SandboxReadinessFailureReason,
   finalFailureReason?: SandboxReadinessFailureReason,
   recoveryStrategy?: "reconnect",
+  skipReason?: "budget_exhausted",
 ): void => {
   const payload = JSON.stringify({
     timestamp: new Date().toISOString(),
@@ -314,6 +320,7 @@ const logSandboxAcquisitionRecovery = (
     initial_failure_reason: initialFailureReason,
     final_failure_reason: finalFailureReason ?? null,
     recovery_strategy: recoveryStrategy ?? null,
+    ...(skipReason ? { skip_reason: skipReason } : {}),
   });
 
   if (level === "warn") console.warn(payload);
@@ -1561,6 +1568,15 @@ export const getSandboxUploadUserMessage = (
     case "sandbox_placement_failure":
       return "The Cloud sandbox could not start to receive the attachment. Please try again.";
     case "sandbox_operation_timeout":
+      if (
+        result.failureDetails?.[0]?.phase === "acquisition" &&
+        [
+          "CloudAcquisitionTimeoutError",
+          "CloudAcquisitionBudgetExhaustedError",
+        ].includes(result.failureDetails[0].errorName ?? "")
+      ) {
+        return "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.";
+      }
       return "The computer took too long to become ready for the attachment. Please try again.";
     case "attachment_download_timeout":
       return "The attachment download timed out on the selected computer. Check its network connection and try again.";
@@ -1657,10 +1673,22 @@ export const uploadSandboxFiles = async (
     signal?.throwIfAborted();
     const initialFailureReason = classifySandboxUploadReadinessFailure(error);
     const shouldRetryAcquisition =
+      !isCloudAcquisitionBudgetSpent(error) &&
       RETRYABLE_SANDBOX_ACQUISITION_FAILURES.has(initialFailureReason) &&
       shouldRetryAfterReconnect(options);
 
     if (!shouldRetryAcquisition) {
+      if (isCloudAcquisitionBudgetSpent(error)) {
+        logSandboxAcquisitionRecovery(
+          options,
+          "sandbox_attachment_acquisition_retry_skipped",
+          "warn",
+          initialFailureReason,
+          undefined,
+          undefined,
+          "budget_exhausted",
+        );
+      }
       console.error("Failed to acquire sandbox for upload:", error);
       return {
         failedCount: sandboxFiles.length,

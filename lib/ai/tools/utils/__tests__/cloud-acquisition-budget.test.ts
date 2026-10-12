@@ -3,6 +3,8 @@ import {
   CloudAcquisitionBudget,
   CLOUD_ACQUISITION_DEADLINE_MS,
   CloudAcquisitionTimeoutError,
+  CloudAcquisitionBudgetExhaustedError,
+  isCloudAcquisitionBudgetSpent,
 } from "../cloud-acquisition-budget";
 
 describe("cloud acquisition deadline", () => {
@@ -13,6 +15,32 @@ describe("cloud acquisition deadline", () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  it("retains the last bounded stage when the provider ignores cancellation", async () => {
+    let reportStage!: (stage: "connect" | "create") => void;
+    const result = new CloudAcquisitionBudget()
+      .run(
+        async (_, report) => {
+          reportStage = report;
+          report("discovery");
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          report("connect");
+          return new Promise(() => {});
+        },
+        { userId: "test" },
+      )
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(30_000);
+    reportStage("create");
+    expect(await result).toMatchObject({ acquisitionStage: "connect" });
+    expect(
+      JSON.parse(String(jest.mocked(console.warn).mock.calls[0][0])),
+    ).toMatchObject({
+      acquisition_stage: "connect",
+      stage_elapsed_ms: 25_000,
+      failed_acquisition_wait_ms: 30_000,
+    });
   });
 
   it("bounds a never-settling call, aborts its signal, and refuses another attempt", async () => {
@@ -41,6 +69,32 @@ describe("cloud acquisition deadline", () => {
     );
     expect(acquire).toHaveBeenCalledTimes(1);
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("marks the final fast failure as exhausted while preserving its provider cause", async () => {
+    const budget = new CloudAcquisitionBudget();
+    const cause = new Error("connection timed out");
+    const acquire = jest.fn(async () => {
+      throw cause;
+    });
+    const first = await budget
+      .run(acquire, { userId: "test" })
+      .catch((error) => error);
+    expect(first).toBe(cause);
+    expect(isCloudAcquisitionBudgetSpent(first)).toBe(false);
+    const final = await budget
+      .run(acquire, { userId: "test" })
+      .catch((error) => error);
+    expect(final).toBeInstanceOf(CloudAcquisitionBudgetExhaustedError);
+    expect(final.cause).toBe(cause);
+    expect(isCloudAcquisitionBudgetSpent(final)).toBe(true);
+    expect(classifySandboxReadinessFailureSignal(final)).toBe(
+      "operation_timeout",
+    );
+    await expect(budget.run(acquire, { userId: "test" })).rejects.toMatchObject(
+      { cause },
+    );
+    expect(acquire).toHaveBeenCalledTimes(2);
   });
 
   it("shares remaining time across failed acquisition attempts", async () => {
