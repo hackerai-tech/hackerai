@@ -25,11 +25,16 @@ interface DownloadFileOptions {
  * 2. File System Access API: native save dialog (Chrome/Edge)
  * 3. Blob download: traditional anchor element fallback
  */
+export type DownloadFileResult = {
+  outcome: "success" | "canceled" | "failed" | "initiated";
+  reason?: "unsupported_native";
+};
+
 export async function downloadFile({
   filename,
   content,
   mimeType = "text/plain",
-}: DownloadFileOptions): Promise<void> {
+}: DownloadFileOptions): Promise<DownloadFileResult> {
   // Tauri: cancellation is a successful no-op, distinct from a failed write.
   if (isTauriEnvironment()) {
     try {
@@ -42,10 +47,19 @@ export async function downloadFile({
           },
         });
       }
-    } catch {
-      toast.error("Failed to save file");
+      return { outcome: filePath ? "success" : "canceled" };
+    } catch (error) {
+      const unsupported =
+        typeof error === "string" &&
+        /command.*save_file_with_dialog.*not found/i.test(error);
+      toast.error(
+        unsupported ? "Update Desktop to save reports" : "Failed to save file",
+      );
+      return {
+        outcome: "failed",
+        ...(unsupported ? { reason: "unsupported_native" as const } : {}),
+      };
     }
-    return;
   }
 
   // File System Access API (native save dialog)
@@ -65,15 +79,15 @@ export async function downloadFile({
       await writable.write(content);
       await writable.close();
       toast.success("File saved successfully");
-      return;
+      return { outcome: "success" };
     }
   } catch (err) {
     // User cancelled the save dialog — not an error
     if (err instanceof DOMException && err.name === "AbortError") {
-      return;
+      return { outcome: "canceled" };
     }
     toast.error("Failed to save file");
-    return;
+    return { outcome: "failed" };
   }
 
   // Blob download fallback
@@ -88,14 +102,16 @@ export async function downloadFile({
     a.click();
     document.body.removeChild(a);
     toast.success("File downloaded successfully");
+    return { outcome: "initiated" };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      return;
+      return { outcome: "canceled" };
     }
     toast.error("Failed to download file", {
       description:
         error instanceof Error ? error.message : "Unknown error occurred",
     });
+    return { outcome: "failed" };
   } finally {
     // Always revoke the blob URL to prevent memory leaks
     if (url) {

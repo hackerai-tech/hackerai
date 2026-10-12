@@ -1,3 +1,4 @@
+import { validateFindingAssessment } from "./quality";
 import { z } from "zod";
 import { CVSS31_METRIC_VALUES } from "./cvss31";
 import {
@@ -146,12 +147,10 @@ const findingReportFieldsSchema = z
     evidence: requiredText("Evidence", 16_000),
     evidence_refs: z.array(z.string().trim().min(1).max(500)).max(8).optional(),
     assumptions: proseText("Assumptions", 4_000),
-    confidence: z.enum(["low", "medium", "high"]).optional(),
-    counterevidence: proseText("Counterevidence", 4_000).optional(),
-    severity_change_conditions: proseText(
-      "Severity change conditions",
-      4_000,
-    ).optional(),
+    confidence: z.enum(["low", "medium", "high"]),
+    confidence_rationale: proseText("Confidence rationale", 4_000).optional(),
+    counterevidence: proseText("Counterevidence", 4_000),
+    severity_change_conditions: proseText("Severity change conditions", 4_000),
     fix_effort: z.enum(["trivial", "low", "medium", "high"]),
     cvss_breakdown: cvss31BreakdownSchema,
     endpoint: optionalText("Endpoint", 1_000),
@@ -186,6 +185,7 @@ const findingReportFieldsSchema = z
 
 export const createVulnerabilityReportInputSchema =
   findingReportFieldsSchema.superRefine((input, ctx) => {
+    validateFindingAssessment(input, ctx);
     const payloadBytes = new TextEncoder().encode(JSON.stringify(input)).length;
     if (payloadBytes > FINDING_PAYLOAD_MAX_BYTES) {
       ctx.addIssue({
@@ -204,6 +204,8 @@ const findingChangesSchema = z
     cwe: findingReportFieldsSchema.shape.cwe.nullable(),
     code_locations: findingReportFieldsSchema.shape.code_locations.nullable(),
     confidence: findingReportFieldsSchema.shape.confidence.nullable(),
+    confidence_rationale:
+      findingReportFieldsSchema.shape.confidence_rationale.nullable(),
     counterevidence: findingReportFieldsSchema.shape.counterevidence.nullable(),
     severity_change_conditions:
       findingReportFieldsSchema.shape.severity_change_conditions.nullable(),

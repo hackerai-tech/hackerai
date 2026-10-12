@@ -42,6 +42,9 @@ const validFindingReport = () => ({
   remediation_steps: "Scope the query to the authenticated account.",
   evidence: "The response returned HTTP 200 and user B's billing address.",
   assumptions: "Both accounts are ordinary customer accounts.",
+  confidence: "high",
+  counterevidence: "The other account was denied.",
+  severity_change_conditions: "An owner check would rule out this path.",
   fix_effort: "low",
   cvss_breakdown: {
     attack_vector: "N",
@@ -120,6 +123,7 @@ describe("agent tool schema descriptions", () => {
       {
         ...validReport,
         confidence: "medium",
+        confidence_rationale: "Only one synthetic account pair was tested.",
         counterevidence: "Control was denied.",
         severity_change_conditions:
           "Tenant enforcement would disprove the result.",

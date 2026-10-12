@@ -269,14 +269,20 @@ describe("direct vision and summary recovery contracts", () => {
 });
 
 describe("agent tool schemas — Head Start bundle boundary", () => {
-  test("schema-only tool catalog imports only ai and zod", () => {
+  test("schema-only tool catalog keeps its assessment helper free of runtime dependencies", () => {
     const importSources = Array.from(
       toolSchemasSrc.matchAll(/^import\s+[^;]+?\s+from\s+"([^"]+)";/gm),
     ).map((match) => match[1]);
 
-    expect(importSources).toEqual(["ai", "zod"]);
+    expect(importSources).toEqual(["../../findings/quality", "ai", "zod"]);
     expect(toolSchemasSrc).not.toMatch(/from\s+"@\/[^"]+"/);
-    expect(toolSchemasSrc).not.toMatch(/from\s+"\.\.?\/[^"]+"/);
+    const qualitySource = fs.readFileSync(
+      path.resolve(__dirname, "../../findings/quality.ts"),
+      "utf8",
+    );
+    expect(qualitySource.match(/^import.*$/gm)).toEqual([
+      'import type { RefinementCtx } from "zod";',
+    ]);
     expect(toolSchemasSrc).not.toMatch(/\bexecute\s*:/);
   });
 
