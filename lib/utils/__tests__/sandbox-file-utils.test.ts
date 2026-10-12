@@ -7,6 +7,10 @@ jest.mock("../sandbox-upload-readiness", () => ({
 jest.mock("server-only", () => ({}), { virtual: true });
 
 import type { UIMessage } from "ai";
+import {
+  CloudAcquisitionTimeoutError,
+  CloudAcquisitionBudgetExhaustedError,
+} from "@/lib/ai/tools/utils/cloud-acquisition-budget";
 import { phLogger } from "@/lib/posthog/server";
 import {
   collectSandboxFiles,
@@ -2016,3 +2020,50 @@ describe("attachment write fallback observability", () => {
     );
   });
 });
+
+it.each([
+  new CloudAcquisitionTimeoutError("connect"),
+  new CloudAcquisitionBudgetExhaustedError(
+    new CloudAcquisitionTimeoutError("discovery"),
+  ),
+])(
+  "does not schedule an attachment reconnect after the cloud budget is spent: %s",
+  async (error) => {
+    const ensureSandbox = jest.fn().mockRejectedValue(error);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await uploadSandboxFiles(
+        [
+          {
+            kind: "url",
+            url: "https://example.com/private?token=secret",
+            localPath: "/tmp/private",
+          },
+        ],
+        ensureSandbox,
+        { retryAfterReconnectOnTransientFailure: true },
+      );
+      expect(ensureSandbox).toHaveBeenCalledTimes(1);
+      expect(result.failedCount).toBe(1);
+      expect(result.retriedAfterReconnect).toBeUndefined();
+      expect(getSandboxUploadFailureMetadata(result)).toMatchObject({
+        upload_failure_phase: "acquisition",
+        upload_failure_reason: "sandbox_operation_timeout",
+        upload_failure_error_name: error.name,
+      });
+      expect(getSandboxUploadUserMessage(result)).toBe(
+        "Cloud connection timed out before preparing your attachment. Your workspace is preserved. Try again shortly.",
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({
+        event: "sandbox_attachment_acquisition_retry_skipped",
+        skip_reason: "budget_exhausted",
+      });
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/private|secret/);
+    } finally {
+      warn.mockRestore();
+      errorSpy.mockRestore();
+    }
+  },
+);

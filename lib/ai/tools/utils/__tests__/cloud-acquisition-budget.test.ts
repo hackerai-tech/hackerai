@@ -15,6 +15,32 @@ describe("cloud acquisition deadline", () => {
     jest.restoreAllMocks();
   });
 
+  it("retains the last bounded stage when the provider ignores cancellation", async () => {
+    let reportStage!: (stage: "connect" | "create") => void;
+    const result = new CloudAcquisitionBudget()
+      .run(
+        async (_, report) => {
+          reportStage = report;
+          report("discovery");
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          report("connect");
+          return new Promise(() => {});
+        },
+        { userId: "test" },
+      )
+      .catch((error) => error);
+    await jest.advanceTimersByTimeAsync(30_000);
+    reportStage("create");
+    expect(await result).toMatchObject({ acquisitionStage: "connect" });
+    expect(
+      JSON.parse(String(jest.mocked(console.warn).mock.calls[0][0])),
+    ).toMatchObject({
+      acquisition_stage: "connect",
+      stage_elapsed_ms: 25_000,
+      failed_acquisition_wait_ms: 30_000,
+    });
+  });
+
   it("bounds a never-settling call, aborts its signal, and refuses another attempt", async () => {
     const budget = new CloudAcquisitionBudget();
     let signal!: AbortSignal;

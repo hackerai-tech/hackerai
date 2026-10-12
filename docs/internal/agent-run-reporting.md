@@ -10,6 +10,13 @@ Join by `trigger_run_id`; do not infer run completion from a UI-stream pipe or a
 configured model. A quota stop is an aborted outcome with `usage_limit` as the
 finish reason; it is not a technical error or subscription cancellation.
 
+A disconnected selected computer uses Trigger metadata
+`status=reconnect_required`, `errorCategory=sandbox_offline`, and
+`userCorrectable=true`. The task can return after delivering the error stream,
+but its analytics outcome remains `error` with `failure_category=sandbox_offline`.
+Trigger task completion therefore does not imply a successful Agent result.
+Connection lookup failures and cloud acquisition failures remain task failures.
+
 For `hackerai-usage_cost`:
 
 - `cost_accounting_status=recorded` retains the existing settled/observed cost

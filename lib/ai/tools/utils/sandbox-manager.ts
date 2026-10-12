@@ -23,7 +23,10 @@ import {
   isE2BSandbox,
 } from "./sandbox-types";
 import { isExpectedAlreadyGoneCleanupError } from "@/lib/utils/cleanup-errors";
-import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
+import {
+  CloudAcquisitionBudget,
+  type ReportCloudAcquisitionStage,
+} from "./cloud-acquisition-budget";
 
 // One failed initial readiness check plus one failed reconnect is enough to
 // stop terminal retries in this Agent run. The manager only forgets its local
@@ -115,7 +118,7 @@ export class DefaultSandboxManager implements SandboxManager {
 
     if (this.acquisition) return this.acquisition;
     this.acquisition = this.acquisitionBudget
-      .run((signal) => this.acquireSandbox(signal), {
+      .run((signal, reportStage) => this.acquireSandbox(signal, reportStage), {
         userId: this.userID,
         ...this.cloudSandboxContext,
       })
@@ -127,10 +130,12 @@ export class DefaultSandboxManager implements SandboxManager {
 
   private async acquireSandbox(
     signal: AbortSignal,
+    reportStage: ReportCloudAcquisitionStage,
   ): Promise<{ sandbox: AnySandbox }> {
     signal.throwIfAborted();
     const result = await ensureCloudSandboxConnection({
       signal,
+      reportStage,
       userId: this.userID,
       setSandbox: (sandbox) => {
         signal.throwIfAborted();

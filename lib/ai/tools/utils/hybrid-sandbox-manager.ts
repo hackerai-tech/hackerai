@@ -46,7 +46,10 @@ import {
   type CloudSandboxAcquisitionContext,
 } from "./cloud-sandbox";
 import type { CloudSandboxProvider } from "./cloud-sandbox-provider";
-import { CloudAcquisitionBudget } from "./cloud-acquisition-budget";
+import {
+  CloudAcquisitionBudget,
+  type ReportCloudAcquisitionStage,
+} from "./cloud-acquisition-budget";
 import {
   connectionMatchesPreference,
   environmentPreference,
@@ -896,11 +899,14 @@ export class HybridSandboxManager implements SandboxManager {
 
     if (this.cloudAcquisition) return this.cloudAcquisition;
     this.cloudAcquisition = this.acquisitionBudget
-      .run((signal) => this.acquireCloudSandbox(signal), {
-        userId: this.userID,
-        chatId: this.chatId,
-        ...this.cloudSandboxContext,
-      })
+      .run(
+        (signal, reportStage) => this.acquireCloudSandbox(signal, reportStage),
+        {
+          userId: this.userID,
+          chatId: this.chatId,
+          ...this.cloudSandboxContext,
+        },
+      )
       .finally(() => {
         this.cloudAcquisition = null;
       });
@@ -909,11 +915,14 @@ export class HybridSandboxManager implements SandboxManager {
 
   private async acquireCloudSandbox(
     signal: AbortSignal,
+    reportStage: ReportCloudAcquisitionStage,
   ): Promise<{ sandbox: AnySandbox }> {
+    reportStage("closing_connection");
     await this.closeCurrentSandbox();
     signal.throwIfAborted();
     const result = await ensureCloudSandboxConnection({
       signal,
+      reportStage,
       userId: this.userID,
       setSandbox: (sandbox) => {
         signal.throwIfAborted();

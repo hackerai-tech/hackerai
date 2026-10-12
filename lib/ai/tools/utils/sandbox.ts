@@ -1,3 +1,4 @@
+import type { ReportCloudAcquisitionStage } from "./cloud-acquisition-budget";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxBootInfo, SandboxContext } from "@/types";
 import {
@@ -88,6 +89,7 @@ export const ensureSandboxConnection = async (
   context: SandboxContext,
   options: {
     signal?: AbortSignal;
+    reportStage?: ReportCloudAcquisitionStage;
     initialSandbox?: Sandbox | null;
     triggerRegion?: TriggerRunRegion;
     acquisitionId?: string;
@@ -117,12 +119,14 @@ export const ensureSandboxConnection = async (
     });
   };
   try {
+    options.reportStage?.("routing");
     const { discoveryClusters, createCluster } =
       getE2BClusterRouting(triggerRegion);
     if (options.destinationId) {
       // A recovered workspace is pinned to one verified sandbox. Never let
       // discovery choose an older copy or create an empty replacement.
       phase = "connect";
+      options.reportStage?.("workspace_identity");
       const info = await Sandbox.getInfo(options.destinationId, {
         ...createCluster.connectionOptions,
         ...requestOptions,
@@ -136,6 +140,7 @@ export const ensureSandboxConnection = async (
         info.metadata?.sandboxVersion !== SANDBOX_VERSION
       )
         throw new Error("Pinned E2B workspace identity mismatch");
+      options.reportStage?.("connect");
       const sandbox = await retryWithBackoff(
         () =>
           Sandbox.connect(options.destinationId!, {
@@ -156,6 +161,7 @@ export const ensureSandboxConnection = async (
       return { sandbox };
     }
     phase = "discovery";
+    options.reportStage?.("discovery");
 
     // Step 1: Look only in the cluster selected for this request. Crossing
     // clusters here would defeat the regional execution policy.
@@ -244,6 +250,7 @@ export const ensureSandboxConnection = async (
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
         phase = "connect";
+        options.reportStage?.("connect");
         const sandbox = await retryWithBackoff(
           () =>
             Sandbox.connect(existingSandboxInfo.sandboxId, {
@@ -287,6 +294,7 @@ export const ensureSandboxConnection = async (
     // Step 5: Create new sandbox with retry on E2B 429 rate limits
     let lastError: unknown;
     phase = "create";
+    options.reportStage?.("create");
     for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
       signal?.throwIfAborted();
       if (attempt > 0) {

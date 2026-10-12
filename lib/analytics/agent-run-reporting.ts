@@ -35,6 +35,11 @@ export function agentFailureCategory(error: unknown): string {
     )
       return "database_concurrency";
     if (field(error, "surface") === "database") category = "database";
+    else if (
+      field(error, "type") === "offline" &&
+      field(error, "surface") === "sandbox"
+    )
+      category = "sandbox_offline";
     else if (code === "InternalServerError" && category === "unknown")
       category = "server_error";
     else if (field(error, "name") === "TimeoutError" && category === "unknown")

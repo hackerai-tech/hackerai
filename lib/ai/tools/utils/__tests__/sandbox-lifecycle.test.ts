@@ -40,6 +40,7 @@ import {
   startE2BSandboxLeaseHeartbeat,
   withE2BSandboxLeaseHeartbeat,
 } from "../sandbox";
+import { CloudAcquisitionBudget } from "../cloud-acquisition-budget";
 import { DefaultSandboxManager } from "../sandbox-manager";
 import { E2BRegionUnavailableError } from "../e2b-cluster";
 
@@ -90,6 +91,50 @@ describe("E2B sandbox lease lifecycle", () => {
   afterAll(() => {
     process.env = originalEnv;
   });
+
+  it.each(["discovery", "connect", "create"] as const)(
+    "identifies a stalled E2B %s without replacing or publishing the workspace",
+    async (stage) => {
+      jest.useFakeTimers();
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const setSandbox = jest.fn();
+      let finish!: (value: any) => void;
+      const pending = new Promise((resolve) => {
+        finish = resolve;
+      });
+      if (stage === "discovery") {
+        sandboxApi.list.mockReturnValue({ nextItems: jest.fn(() => pending) });
+      } else if (stage === "connect") {
+        listSandbox();
+        sandboxApi.connect.mockReturnValueOnce(pending);
+      } else {
+        sandboxApi.list.mockReturnValue({ nextItems: jest.fn(async () => []) });
+        sandboxApi.create.mockReturnValueOnce(pending);
+      }
+      try {
+        const result = new CloudAcquisitionBudget()
+          .run(
+            (signal, reportStage) =>
+              ensureSandboxConnection(
+                { userID: "user-1", setSandbox },
+                { signal, reportStage },
+              ),
+            { userId: "user-1" },
+          )
+          .catch((error) => error);
+        await jest.advanceTimersByTimeAsync(30_000);
+        expect(await result).toMatchObject({ acquisitionStage: stage });
+        finish(stage === "discovery" ? [] : { sandboxId: "late-sandbox" });
+        await jest.advanceTimersByTimeAsync(1);
+        expect(setSandbox).not.toHaveBeenCalled();
+        expect(sandboxApi.kill).not.toHaveBeenCalled();
+        if (stage !== "create")
+          expect(sandboxApi.create).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it("passes cancellation to E2B and neither publishes nor replaces a late reconnect", async () => {
     listSandbox();
