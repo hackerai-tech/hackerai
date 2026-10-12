@@ -27,6 +27,23 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { toast } from "sonner";
 
+jest.mock("@/lib/utils/client-token-validation", () => {
+  const original = jest.requireActual<
+    typeof import("@/lib/utils/client-token-validation")
+  >("@/lib/utils/client-token-validation");
+  return {
+    ...original,
+    inputTokenCountCouldExceedLimit: jest.fn(
+      original.inputTokenCountCouldExceedLimit,
+    ),
+    getInputTokenLimitStatus: jest.fn(original.getInputTokenLimitStatus),
+  };
+});
+
+const clientTokenValidation = jest.requireMock<
+  typeof import("@/lib/utils/client-token-validation")
+>("@/lib/utils/client-token-validation");
+
 let mockSandboxState: Partial<
   ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
 > = {};
@@ -342,6 +359,36 @@ describe("ChatInput - Integration Tests", () => {
           "Review this draft\nWith more detail",
         ),
       );
+    });
+
+    it("restores the pasted cursor when collapsed before the selection frame", async () => {
+      jest
+        .mocked(clientTokenValidation.inputTokenCountCouldExceedLimit)
+        .mockReturnValueOnce(true);
+      jest
+        .mocked(clientTokenValidation.getInputTokenLimitStatus)
+        .mockResolvedValueOnce({ exceedsLimit: false });
+      jest.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+      renderEditor();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      );
+      const editor = screen.getByRole("textbox", {
+        name: "Message",
+      }) as HTMLTextAreaElement;
+      editor.setSelectionRange(3, 3);
+      fireEvent.select(editor);
+      await act(async () => {
+        fireEvent.paste(editor, { clipboardData: { getData: () => "paste" } });
+      });
+      expect(editor.value).toContain("A mpasteultiline draft");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Collapse message editor" }),
+      );
+      const compact = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+      await waitFor(() => expect(compact).toHaveFocus());
+      expect(compact.selectionStart).toBe(8);
+      expect(compact.selectionEnd).toBe(8);
     });
 
     it("keeps Enter for editing and sends through the existing submit handler", async () => {

@@ -212,6 +212,10 @@ export function ChatInputTextarea({
         currentInput.slice(selectionEnd);
       const nextCursorPosition = selectionStart + pastedText.length;
 
+      selectionRef.current = {
+        start: nextCursorPosition,
+        end: nextCursorPosition,
+      };
       setInput(nextInput);
       requestAnimationFrame(() => {
         textarea?.focus();
