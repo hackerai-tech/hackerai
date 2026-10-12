@@ -67,6 +67,7 @@ export function ChatInputTextarea({
   const expandedTextareaRef = useRef<HTMLTextAreaElement>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const selectionRef = useRef({ start: 0, end: 0 });
+  const restoringPasteSelectionRef = useRef(false);
   const isMobile = useIsMobile();
   const editorOpen = expanded && Boolean(isMobile);
   const showExpandButton = Boolean(
@@ -216,10 +217,12 @@ export function ChatInputTextarea({
         start: nextCursorPosition,
         end: nextCursorPosition,
       };
+      restoringPasteSelectionRef.current = true;
       setInput(nextInput);
       requestAnimationFrame(() => {
         textarea?.focus();
         textarea?.setSelectionRange(nextCursorPosition, nextCursorPosition);
+        restoringPasteSelectionRef.current = false;
       });
     };
     document.addEventListener("paste", handlePaste);
@@ -314,6 +317,9 @@ export function ChatInputTextarea({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onSelect={(e) => {
+              // Ignore selection events from the controlled value update until
+              // the paste cursor has been restored.
+              if (restoringPasteSelectionRef.current) return;
               selectionRef.current = {
                 start: e.currentTarget.selectionStart,
                 end: e.currentTarget.selectionEnd,

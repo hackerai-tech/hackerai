@@ -368,7 +368,13 @@ describe("ChatInput - Integration Tests", () => {
       jest
         .mocked(clientTokenValidation.getInputTokenLimitStatus)
         .mockResolvedValueOnce({ exceedsLimit: false });
-      jest.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
+      const frames: FrameRequestCallback[] = [];
+      jest
+        .spyOn(window, "requestAnimationFrame")
+        .mockImplementation((callback) => {
+          frames.push(callback);
+          return frames.length;
+        });
       renderEditor();
       fireEvent.click(
         screen.getByRole("button", { name: "Expand message editor" }),
@@ -386,9 +392,24 @@ describe("ChatInput - Integration Tests", () => {
         screen.getByRole("button", { name: "Collapse message editor" }),
       );
       const compact = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-      await waitFor(() => expect(compact).toHaveFocus());
-      expect(compact.selectionStart).toBe(8);
-      expect(compact.selectionEnd).toBe(8);
+      await waitFor(() => {
+        expect(compact).toHaveFocus();
+        expect(compact.selectionStart).toBe(8);
+        expect(compact.selectionEnd).toBe(8);
+      });
+      act(() => frames.splice(0).forEach((callback) => callback(0)));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Expand message editor" }),
+      );
+      const reopened = screen.getByRole("textbox", {
+        name: "Message",
+      }) as HTMLTextAreaElement;
+      reopened.setSelectionRange(4, 4);
+      fireEvent.select(reopened);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Collapse message editor" }),
+      );
+      await waitFor(() => expect(compact.selectionStart).toBe(4));
     });
 
     it("keeps Enter for editing and sends through the existing submit handler", async () => {
