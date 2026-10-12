@@ -206,12 +206,8 @@ export function AgentPermissionSelector({
         <SheetTrigger asChild>{trigger}</SheetTrigger>
         <SheetContent
           side="bottom"
-          className="max-h-[85dvh] overflow-y-auto rounded-t-[28px] border-black/8 bg-input-chat px-5 pt-3 pb-[max(1.5rem,env(safe-area-inset-bottom))] dark:border-border"
+          className="max-h-[85dvh] overflow-y-auto rounded-t-[28px] border-black/8 bg-input-chat px-5 pt-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] dark:border-border"
         >
-          <div
-            aria-hidden="true"
-            className="mx-auto h-1 w-9 shrink-0 rounded-full bg-muted-foreground/40"
-          />
           <SheetTitle className="px-5 text-center text-base leading-snug">
             How should HackerAI actions be approved?
           </SheetTitle>
