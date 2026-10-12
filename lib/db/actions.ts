@@ -364,6 +364,21 @@ const getRetryableDatabaseErrorReason = (
   return undefined;
 };
 
+// Response-body termination is safe to retry only for this read. Do not
+// broaden mutation retries: the write may already have committed.
+const getRetryableHistoryPageErrorReason = (
+  error: unknown,
+): string | undefined => {
+  if (
+    error instanceof TypeError &&
+    error.message === "terminated" &&
+    getErrorData(error) === undefined
+  ) {
+    return "network_response_terminated";
+  }
+  return getRetryableDatabaseErrorReason(error);
+};
+
 const getRetryableSaveMessageErrorReason = (
   error: unknown,
 ): string | undefined => {
@@ -419,6 +434,9 @@ const getRetryableReasonForDatabaseOperation = (
   operation: string,
   error: unknown,
 ): string | undefined => {
+  if (operation === "messages.getMessagesPageForBackend") {
+    return getRetryableHistoryPageErrorReason(error);
+  }
   if (operation === "messages.saveMessage") {
     return getRetryableSaveMessageErrorReason(error);
   }
@@ -633,6 +651,7 @@ const getMessagesPageForBackendWithRetry = async ({
   mode,
   regenerate,
   newMessagesCount,
+  retryBudget,
 }: {
   chatId: string;
   userId: string;
@@ -640,6 +659,7 @@ const getMessagesPageForBackendWithRetry = async ({
   mode?: ChatMode;
   regenerate: boolean;
   newMessagesCount: number;
+  retryBudget: { used: number };
 }): Promise<MessagesPageForBackendResult> => {
   const queryArgs = {
     serviceKey,
@@ -655,12 +675,13 @@ const getMessagesPageForBackendWithRetry = async ({
         queryArgs,
       );
     } catch (error) {
-      const retryReason = getRetryableDatabaseErrorReason(error);
-      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[attemptIndex];
+      const retryReason = getRetryableHistoryPageErrorReason(error);
+      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[retryBudget.used];
       if (!retryReason || retryDelayMs === undefined) {
         throw error;
       }
 
+      retryBudget.used++;
       console.warn(
         JSON.stringify({
           level: "warn",
@@ -672,6 +693,8 @@ const getMessagesPageForBackendWithRetry = async ({
           attempt: attemptIndex + 1,
           next_attempt: attemptIndex + 2,
           retry_delay_ms: retryDelayMs,
+          history_retry_count: retryBudget.used,
+          history_retry_limit: GET_MESSAGES_PAGE_RETRY_DELAYS_MS.length,
           chat_id: chatId,
           user_id: userId,
           mode,
@@ -1428,6 +1451,8 @@ export async function getMessagesByChatId({
         const PAGE_SIZE = 24;
         const MAX_PAGES = 4;
 
+        // One budget for the complete history read, not a fresh budget per page.
+        const retryBudget = { used: 0 };
         let cursor: string | null = null;
         let pagesFetched = 0;
         let fetchedDesc: UIMessage[] = [];
@@ -1452,6 +1477,7 @@ export async function getMessagesByChatId({
             mode,
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
+            retryBudget,
           });
           const {
             page,
@@ -1647,7 +1673,7 @@ export async function getMessagesByChatId({
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
-          db_retry_reason: getRetryableDatabaseErrorReason(error),
+          db_retry_reason: getRetryableHistoryPageErrorReason(error),
           db_error_data: getErrorData(error),
         });
 

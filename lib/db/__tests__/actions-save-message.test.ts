@@ -1354,6 +1354,226 @@ describe("getMessagesByChatId", () => {
     }
   });
 
+  it.each(["ask", "agent"] as const)(
+    "recovers a terminated history response in %s without losing or duplicating pages",
+    async (mode) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const older = {
+        id: "older",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "old" }],
+      };
+      const newer = {
+        id: "newer",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "new" }],
+      };
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockResolvedValueOnce({
+          page: [newer],
+          isDone: false,
+          continueCursor: "page-2",
+        })
+        .mockRejectedValueOnce(new TypeError("terminated"))
+        .mockResolvedValueOnce({
+          page: [older],
+          isDone: true,
+          continueCursor: null,
+        });
+      const result = await getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "pro",
+        newMessages: [],
+        mode,
+      });
+      expect(result.truncatedMessages).toEqual([older, newer]);
+      expect(mockQuery).toHaveBeenCalledTimes(4);
+      expect(mockQuery.mock.calls[2][1]).toEqual(mockQuery.mock.calls[3][1]);
+    },
+  );
+
+  it("shares two retries across pages and error reasons, preserving terminal failure", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const message = {
+      id: "message",
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: "old" }],
+    };
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce({
+        page: [message],
+        isDone: false,
+        continueCursor: "page-2",
+      })
+      .mockRejectedValueOnce(new TypeError("terminated"))
+      .mockResolvedValueOnce({
+        page: [],
+        isDone: false,
+        continueCursor: "page-3",
+      })
+      .mockRejectedValueOnce(new TypeError("terminated"));
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(
+        getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription: "pro",
+          newMessages: [],
+          mode: "agent",
+        }),
+      ).rejects.toMatchObject({
+        type: "offline",
+        surface: "database",
+        metadata: expect.objectContaining({
+          db_retry_reason: "network_response_terminated",
+        }),
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(6);
+      const retries = warnSpy.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .filter(
+          (event) => event.event === "chat_history_fetch_retry_scheduled",
+        );
+      expect(retries).toHaveLength(2);
+      expect(retries.map((event) => event.history_retry_count)).toEqual([1, 2]);
+      expect(errorSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    new Error("terminated"),
+    new TypeError("unrelated failure"),
+    Object.assign(new TypeError("terminated"), {
+      data: { code: "CHAT_UNAUTHORIZED" },
+    }),
+  ])(
+    "does not retry unrelated or structured history errors: %s",
+    async (failure) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockRejectedValue(failure);
+      await expect(
+        getMessagesByChatId({
+          chatId: "chat-1",
+          userId: "user-1",
+          subscription: "pro",
+          newMessages: [],
+          mode: "agent",
+        }),
+      ).rejects.toThrow();
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("completes four pages with two retries without renewing the budget", async () => {
+    const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
+    const messages = [0, 1, 2, 3].map((i) => ({
+      id: `message-${i}`,
+      role: "user" as const,
+      parts: [{ type: "text" as const, text: `message ${i}` }],
+    }));
+    mockQuery
+      .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+      .mockRejectedValueOnce(new TypeError("terminated"))
+      .mockResolvedValueOnce({
+        page: [messages[3]],
+        isDone: false,
+        continueCursor: "page-2",
+      })
+      .mockResolvedValueOnce({
+        page: [messages[2]],
+        isDone: false,
+        continueCursor: "page-3",
+      })
+      .mockResolvedValueOnce({
+        page: [messages[1]],
+        isDone: false,
+        continueCursor: "page-4",
+      })
+      .mockRejectedValueOnce(new Error("fetch failed"))
+      .mockResolvedValueOnce({
+        page: [messages[0]],
+        isDone: false,
+        continueCursor: "page-5",
+      });
+    const result = await getMessagesByChatId({
+      chatId: "chat-1",
+      userId: "user-1",
+      subscription: "pro",
+      newMessages: [],
+      mode: "agent",
+      regenerate: true,
+    });
+    expect(result.truncatedMessages).toEqual(messages);
+    expect(mockQuery).toHaveBeenCalledTimes(7);
+    expect(mockQuery.mock.calls[5][1]).toEqual(mockQuery.mock.calls[6][1]);
+  });
+
+  it.each([false, true])(
+    "exhausts repeated response terminations with client messages=%s",
+    async (hasClientMessages) => {
+      const { getMessagesByChatId, mockQuery } =
+        await loadSaveMessageWithMocks();
+      const messages = [
+        {
+          id: "new-message",
+          role: "user" as const,
+          parts: [{ type: "text" as const, text: "hello" }],
+        },
+      ];
+      mockQuery
+        .mockResolvedValueOnce({ id: "chat-1", user_id: "user-1" })
+        .mockRejectedValue(new TypeError("terminated"));
+      const result = getMessagesByChatId({
+        chatId: "chat-1",
+        userId: "user-1",
+        subscription: "pro",
+        newMessages: hasClientMessages ? messages : [],
+        mode: "ask",
+      });
+      if (hasClientMessages) {
+        await expect(result).resolves.toMatchObject({
+          truncatedMessages: messages,
+        });
+      } else {
+        await expect(result).rejects.toMatchObject({
+          type: "offline",
+          surface: "database",
+        });
+      }
+      expect(mockQuery).toHaveBeenCalledTimes(4);
+    },
+  );
+
+  it("does not add terminated-response retries to writes", async () => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValue(new TypeError("terminated"));
+    await expect(
+      saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "hello" }],
+        },
+      }),
+    ).rejects.toThrow();
+    expect(mockMutation).toHaveBeenCalledTimes(1);
+  });
+
   it("reuses file token metadata returned with existing history pages", async () => {
     const { getMessagesByChatId, mockQuery } = await loadSaveMessageWithMocks();
     const fileId = "file-existing";
