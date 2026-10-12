@@ -7,6 +7,9 @@ const resolveAgentAutoReviewAvailability = jest.fn();
 const captureAuthenticatedEvent = jest.fn();
 let agentPermissionMode = "full_access";
 let agentAutoReviewAvailable: boolean | null = true;
+let mockIsMobile = false;
+
+jest.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => mockIsMobile }));
 
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -33,6 +36,7 @@ const { AgentPermissionSelector } = jest.requireActual<
 describe("AgentPermissionSelector", () => {
   beforeEach(() => {
     agentPermissionMode = "full_access";
+    mockIsMobile = false;
     agentAutoReviewAvailable = true;
     setAgentPermissionMode.mockClear();
     resolveAgentAutoReviewAvailability.mockClear();
@@ -167,5 +171,36 @@ describe("AgentPermissionSelector", () => {
       screen.getByRole("button", { name: /^ask for approval$/i }),
     ).toBeInTheDocument();
     expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+  });
+
+  it("opens an accessible mobile sheet and closes after selecting a permission", () => {
+    mockIsMobile = true;
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^full access$/i }));
+    expect(
+      screen.getByRole("dialog", {
+        name: /how should HackerAI actions be approved/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /full access run commands/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(
+      screen.getByRole("button", { name: /ask for approval always ask/i }),
+    );
+    expect(setAgentPermissionMode).toHaveBeenCalledWith("ask_approval");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("preserves the availability gate in the mobile sheet", () => {
+    mockIsMobile = true;
+    agentAutoReviewAvailable = false;
+    render(<AgentPermissionSelector analyticsSurface="chat_input" />);
+    fireEvent.click(screen.getByRole("button", { name: /^full access$/i }));
+    expect(screen.queryByText("Approve for me")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /ask for approval always ask/i }),
+    ).toBeInTheDocument();
   });
 });
