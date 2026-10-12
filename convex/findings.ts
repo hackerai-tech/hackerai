@@ -1024,11 +1024,16 @@ export const updateFindingForBackend = mutation({
           updated_at: now,
           message_id: args.messageId,
           reason: update.reason,
-          changed_fields: Object.keys(update.changes).filter(
-            (key) =>
+          changed_fields: Object.keys(update.changes).filter((key) => {
+            const next =
+              key === "method"
+                ? input.method?.toUpperCase()
+                : input[key as keyof typeof input];
+            return (
               JSON.stringify(finding[key as keyof typeof finding]) !==
-              JSON.stringify(input[key as keyof typeof input]),
-          ),
+              JSON.stringify(next)
+            );
+          }),
           previous_severity: finding.severity,
           severity: cvss.severity,
           previous_cvss_score: finding.cvss_score,

@@ -951,6 +951,27 @@ describe("chat-scoped Agent report retrieval and correction", () => {
     );
   });
 
+  it("records method changes after normalization", async () => {
+    const { api, mock, row, updateArgs } = await setup();
+    expect(row.method).toBe("GET");
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ method: "get" }),
+      ),
+    ).toMatchObject({ success: true });
+    expect(row.method).toBe("GET");
+    expect(row.correction_history[0].changed_fields).toEqual([]);
+    expect(
+      await api.updateFindingForBackend.handler(
+        mock.ctx,
+        updateArgs({ method: "post" }),
+      ),
+    ).toMatchObject({ success: true });
+    expect(row.method).toBe("POST");
+    expect(row.correction_history[1].changed_fields).toEqual(["method"]);
+  });
+
   it("requires missing assessment fields when correcting a legacy report", async () => {
     const { api, mock, row, updateArgs } = await setup();
     delete row.confidence;
