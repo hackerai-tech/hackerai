@@ -278,11 +278,12 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     plan: string;
     planName: string;
     price: number;
+    annualSwitch?: boolean;
   } | null>(null);
   const pricingIntentCopy = getPricingIntentCopy(context, subscription);
-  // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
+  // Team pricing is managed separately; personal plans can switch to annual.
   React.useEffect(() => {
-    if (isOpen && (subscription === "ultra" || subscription === "team")) {
+    if (isOpen && subscription === "team") {
       onClose();
     }
   }, [isOpen, subscription, onClose]);
@@ -408,13 +409,34 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   // Button configurations for Pro plan
   const getProButtonConfig = () => {
     if (user && !isCheckingProPlan && subscription === "pro") {
+      if (isYearly && billing.data?.canSwitchToAnnual) {
+        return {
+          text: "Switch to annual",
+          disabled: billingBlocked,
+          className: "",
+          variant: "default" as const,
+          onClick: () => {
+            if (billingBlocked) return;
+            setPendingUpgrade({
+              plan: "pro-yearly-plan",
+              planName: "Pro",
+              price: PRICING["pro"].yearly * 12,
+              annualSwitch: true,
+            });
+            setShowConfirmDialog(true);
+          },
+        };
+      }
       return {
         text: "Current Plan",
         disabled: true,
         className: "opacity-50 cursor-not-allowed",
         variant: "secondary" as const,
       };
-    } else if (user && subscription === "pro-plus") {
+    } else if (
+      user &&
+      (subscription === "pro-plus" || subscription === "ultra")
+    ) {
       // Pro+ users can't downgrade to Pro
       return {
         text: "Pro",
@@ -452,7 +474,32 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
   // Button configurations for Pro+ plan
   const getProPlusButtonConfig = () => {
+    if (user && subscription === "ultra")
+      return {
+        text: "Pro+",
+        disabled: true,
+        className: "opacity-50 cursor-not-allowed",
+        variant: "secondary" as const,
+      };
     if (user && !isCheckingProPlan && subscription === "pro-plus") {
+      if (isYearly && billing.data?.canSwitchToAnnual) {
+        return {
+          text: "Switch to annual",
+          disabled: billingBlocked,
+          className: "",
+          variant: "default" as const,
+          onClick: () => {
+            if (billingBlocked) return;
+            setPendingUpgrade({
+              plan: "pro-plus-yearly-plan",
+              planName: "Pro+",
+              price: PRICING["pro-plus"].yearly * 12,
+              annualSwitch: true,
+            });
+            setShowConfirmDialog(true);
+          },
+        };
+      }
       return {
         text: "Current Plan",
         disabled: true,
@@ -494,6 +541,24 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
   // Button configurations for Ultra plan
   const getUltraButtonConfig = () => {
     if (user && !isCheckingProPlan && subscription === "ultra") {
+      if (isYearly && billing.data?.canSwitchToAnnual) {
+        return {
+          text: "Switch to annual",
+          disabled: billingBlocked,
+          className: "",
+          variant: "default" as const,
+          onClick: () => {
+            if (billingBlocked) return;
+            setPendingUpgrade({
+              plan: "ultra-yearly-plan",
+              planName: "Ultra",
+              price: PRICING["ultra"].yearly * 12,
+              annualSwitch: true,
+            });
+            setShowConfirmDialog(true);
+          },
+        };
+      }
       return {
         text: "Current Plan",
         disabled: true,
@@ -548,6 +613,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
         planName={pendingUpgrade?.planName || ""}
         price={pendingUpgrade?.price || 0}
         targetPlan={pendingUpgrade?.plan || ""}
+        annualSwitch={pendingUpgrade?.annualSwitch}
+        key={`${user?.id ?? "guest"}:${organizationId ?? "personal"}`}
         source={context?.source ?? "plan_card"}
         surface="pricing_dialog"
         reason={context?.reason}
@@ -583,6 +650,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           <div className="mt-2 mb-4 flex justify-center px-6">
             <BillingFrequencySelector
               value={isYearly ? "yearly" : "monthly"}
+              showSavings={!hasSubscription}
               onChange={handleBillingChange}
               isOpen={isOpen}
             />

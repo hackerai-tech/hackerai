@@ -22,6 +22,20 @@ describe("UpgradeConfirmationDialog", () => {
     mockFetch.mockReset();
   });
 
+  it("keeps payment disabled when the preview request fails", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    mockFetch.mockRejectedValueOnce(new Error("Network unavailable"));
+    render(<UpgradeConfirmationDialog {...defaultProps} />);
+    expect(
+      await screen.findByText(/Unable to load the charge preview/),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /confirm and pay/i }),
+    ).toBeDisabled();
+    expect(screen.queryByText("Total due today")).not.toBeInTheDocument();
+    jest.restoreAllMocks();
+  });
+
   describe("Loading state", () => {
     it("should show loading spinner while fetching details", () => {
       mockFetch.mockImplementation(() => new Promise(() => {})); // Never resolves

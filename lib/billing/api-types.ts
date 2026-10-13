@@ -24,6 +24,8 @@ export type SubscriptionCancellationStatus = {
   checkoutRequiresReview?: boolean;
   /** Payment-history lookup failed; review is required without asserting an unpaid invoice. */
   billingReviewUnavailable?: boolean;
+  /** A paid personal monthly subscription eligible for a same-tier annual quote. */
+  canSwitchToAnnual?: boolean;
   hasActiveSubscription: boolean;
   cancelAtPeriodEnd: boolean;
   currentPeriodEnd?: number;

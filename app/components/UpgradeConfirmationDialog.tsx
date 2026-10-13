@@ -1,11 +1,13 @@
 "use client";
 
+import type { AnnualSwitchQuote } from "@/lib/billing/annual-switch";
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { X } from "lucide-react";
 import { Loader2 } from "lucide-react";
 import {
+  captureAuthenticatedEvent,
   getPostHogRequestHeaders,
   newCheckoutAttemptId,
 } from "@/lib/analytics/client";
@@ -17,6 +19,7 @@ interface UpgradeConfirmationDialogProps {
   price: number;
   targetPlan: string;
   quantity?: number;
+  annualSwitch?: boolean;
   source?: string;
   surface?: string;
   reason?: string;
@@ -31,6 +34,10 @@ const formatUnixDate = (ts?: number) =>
   isValidUnix(ts) ? new Date(ts * 1000).toLocaleDateString() : "";
 
 interface SubscriptionDetails {
+  quote?: AnnualSwitchQuote;
+  annualAmount?: number;
+  billingIntervalChanged?: boolean;
+  additionalCredit?: number;
   paymentMethod: string;
   currentPlan: string;
   proratedAmount: number;
@@ -50,6 +57,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   price,
   targetPlan,
   quantity,
+  annualSwitch = false,
   source,
   surface,
   reason,
@@ -70,9 +78,20 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
     }
 
     setCheckoutAttemptId(newCheckoutAttemptId());
-  }, [isOpen, targetPlan]);
+    if (annualSwitch)
+      captureAuthenticatedEvent("annual_switch_confirmation_viewed", {
+        surface,
+        target_plan: targetPlan,
+      });
+  }, [isOpen, targetPlan, annualSwitch, surface]);
+
+  const endpoint = annualSwitch
+    ? "/api/billing/annual-switch"
+    : "/api/subscription-details";
 
   useEffect(() => {
+    let active = true;
+    setDetails(null);
     const fetchDetails = async () => {
       if (!isOpen || !checkoutAttemptId) return;
 
@@ -80,7 +99,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
       setError("");
       try {
         // Single API call: preview + current details in one response
-        const previewRes = await fetch("/api/subscription-details", {
+        const previewRes = await fetch(endpoint, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -99,18 +118,21 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         });
 
         const previewData = await previewRes.json().catch(() => ({}));
+        if (!active) return;
         if (!previewRes.ok) {
           setError(previewData.error || "Failed to calculate upgrade preview");
           return;
         }
 
         setDetails({
+          quote: previewData.quote,
+          annualAmount: previewData.annualAmount,
+          billingIntervalChanged: previewData.billingIntervalChanged,
           paymentMethod: previewData.paymentMethod,
           currentPlan: previewData.currentPlan,
           proratedAmount: previewData.proratedAmount ?? price,
           proratedCredit: previewData.proratedCredit,
           totalDue: previewData.totalDue,
-          // @ts-expect-error - backend may not send this on older versions
           additionalCredit: previewData.additionalCredit || 0,
           currentPeriodStart: previewData.currentPeriodStart,
           currentPeriodEnd: previewData.currentPeriodEnd,
@@ -120,21 +142,21 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         });
       } catch (error) {
         console.error("Error fetching subscription details:", error);
-        // Set fallback values
-        setDetails({
-          paymentMethod: "Payment method on file",
-          currentPlan: "current",
-          proratedAmount: price,
-          proratedCredit: 0,
-          totalDue: price,
-        });
+        if (active)
+          setError(
+            "Unable to load the charge preview. Close and reopen this dialog to try again.",
+          );
       } finally {
-        setLoadingDetails(false);
+        if (active) setLoadingDetails(false);
       }
     };
 
-    fetchDetails();
+    void fetchDetails();
+    return () => {
+      active = false;
+    };
   }, [
+    endpoint,
     isOpen,
     targetPlan,
     price,
@@ -149,10 +171,15 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   const proratedCredit = details?.proratedCredit || 0;
   const additionalCredit = (details as any)?.additionalCredit || 0;
   const totalDue = details?.totalDue ?? price;
-  const canConfirm = Boolean(checkoutAttemptId && details);
+  const canConfirm = Boolean(
+    checkoutAttemptId &&
+    details &&
+    !loadingDetails &&
+    (!annualSwitch || details.quote),
+  );
 
   const handleConfirmPayment = async () => {
-    if (!checkoutAttemptId || !details) {
+    if (!canConfirm || !details) {
       setError("Still preparing checkout details. Please wait a moment.");
       return;
     }
@@ -160,7 +187,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
     setConfirming(true);
     setError("");
     try {
-      const response = await fetch("/api/subscription-details", {
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -176,6 +203,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           reason,
           limitType,
           fromTier: details.currentPlan,
+          ...(annualSwitch && { quote: details.quote }),
         }),
       });
 
@@ -241,7 +269,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
-          ) : (
+          ) : details ? (
             <>
               {/* Plan Details */}
               <div className="flex items-center justify-between pb-4 border-b">
@@ -256,8 +284,9 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                     )}
                   </div>
                   <div className="text-sm text-muted-foreground mt-1">
-                    Prorated charge for remaining time in your current billing
-                    cycle.
+                    {details.billingIntervalChanged
+                      ? `$${details.annualAmount?.toFixed(2)} billed annually. The switch takes effect after payment succeeds. Unused monthly time is credited below.`
+                      : "Prorated charge for remaining time in your current billing cycle."}
                   </div>
                   {isValidUnix(details?.currentPeriodStart) &&
                     isValidUnix(details?.currentPeriodEnd) && (
@@ -343,7 +372,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                 </div>
               )}
             </>
-          )}
+          ) : null}
 
           {/* Error Message */}
           {error && (
