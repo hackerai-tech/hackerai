@@ -188,6 +188,24 @@ const agentAutoReviewConversationContextValidator = v.object({
 });
 
 export default defineSchema({
+  user_skill_drafts: defineTable({
+    user_id: v.string(),
+    chat_id: v.string(),
+    ids: v.array(v.id("user_skills")),
+    updated_at: v.number(),
+  })
+    .index("by_user_chat", ["user_id", "chat_id"])
+    .index("by_user", ["user_id"]),
+  user_skills: defineTable({
+    user_id: v.string(),
+    name: v.string(),
+    description: v.string(),
+    content: v.string(),
+    is_default: v.boolean(),
+    updated_at: v.number(),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_user_default", ["user_id", "is_default"]),
   influencer_analytics_optouts: defineTable({ visitor_id: v.string() }).index(
     "by_visitor",
     ["visitor_id"],
@@ -234,6 +252,7 @@ export default defineSchema({
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
 
   chats: defineTable({
+    user_skill_ids: v.optional(v.array(v.id("user_skills"))),
     id: v.string(),
     title: v.string(),
     user_id: v.string(),

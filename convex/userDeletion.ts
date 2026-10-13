@@ -12,6 +12,8 @@ export const DELETED_USER_ID = "__deleted_user__";
 // account API checks them before removing the external identity.
 export const USER_DELETION_TABLE_POLICY = {
   delete: [
+    "user_skill_drafts",
+    "user_skills",
     "projects",
     "chats",
     "chat_summaries",
@@ -420,6 +422,18 @@ async function cleanupUserDataForUser(
   const { summaries: chatSummaries, incompleteChatIds } =
     await collectChatSummariesForChats(ctx, budget, chats, stats);
 
+  const userSkillDraftsBatch = await collectByIndexBatch<
+    Doc<"user_skill_drafts">
+  >(ctx, budget, "user_skill_drafts", "by_user", (q) =>
+    q.eq("user_id", userId),
+  );
+  const userSkillsBatch = await collectByIndexBatch<Doc<"user_skills">>(
+    ctx,
+    budget,
+    "user_skills",
+    "by_user",
+    (q) => q.eq("user_id", userId),
+  );
   const projectsBatch = await collectByIndexBatch<Doc<"projects">>(
     ctx,
     budget,
@@ -536,6 +550,8 @@ async function cleanupUserDataForUser(
     (q) => q.eq("user_id", userId),
   );
   const deletionBatches = [
+    userSkillDraftsBatch,
+    userSkillsBatch,
     projectsBatch,
     chatsBatch,
     filesBatch,
@@ -630,6 +646,14 @@ async function cleanupUserDataForUser(
   await deleteDocs(ctx, stats, "subagent_work_items", subagentWorkItems, mode);
   await deleteDocs(ctx, stats, "subagent_runs", subagentRuns, mode);
   await deleteDocs(ctx, stats, "chats", chatsReadyToDelete, mode);
+  await deleteDocs(
+    ctx,
+    stats,
+    "user_skill_drafts",
+    userSkillDraftsBatch.docs,
+    mode,
+  );
+  await deleteDocs(ctx, stats, "user_skills", userSkillsBatch.docs, mode);
   await deleteDocs(ctx, stats, "projects", projects, mode);
   await deleteFiles(ctx, stats, files, mode);
   await deleteDocs(ctx, stats, "findings", findings, mode);

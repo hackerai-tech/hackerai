@@ -22,6 +22,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as findingValidators from "../findingValidators.js";
 import type * as findings from "../findings.js";
 import type * as influencerAnalytics from "../influencerAnalytics.js";
 import type * as influencerValidators from "../influencerValidators.js";
@@ -43,6 +44,7 @@ import type * as lib_userResearchAuth from "../lib/userResearchAuth.js";
 import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
+import type * as modelHistory from "../modelHistory.js";
 import type * as notes from "../notes.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
@@ -67,6 +69,7 @@ import type * as userCustomization from "../userCustomization.js";
 import type * as userDeletion from "../userDeletion.js";
 import type * as userResearch from "../userResearch.js";
 import type * as userResearchValidators from "../userResearchValidators.js";
+import type * as userSkills from "../userSkills.js";
 import type * as userSuspensions from "../userSuspensions.js";
 
 import type {
@@ -90,6 +93,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
+  findingValidators: typeof findingValidators;
   findings: typeof findings;
   influencerAnalytics: typeof influencerAnalytics;
   influencerValidators: typeof influencerValidators;
@@ -111,6 +115,7 @@ declare const fullApi: ApiFromModules<{
   "lib/utils": typeof lib_utils;
   localSandbox: typeof localSandbox;
   messages: typeof messages;
+  modelHistory: typeof modelHistory;
   notes: typeof notes;
   platformCosts: typeof platformCosts;
   projects: typeof projects;
@@ -135,6 +140,7 @@ declare const fullApi: ApiFromModules<{
   userDeletion: typeof userDeletion;
   userResearch: typeof userResearch;
   userResearchValidators: typeof userResearchValidators;
+  userSkills: typeof userSkills;
   userSuspensions: typeof userSuspensions;
 }>;
 

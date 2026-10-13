@@ -1,3 +1,4 @@
+import { resolvePrivateSkillTools } from "@/lib/user-skills/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
@@ -837,6 +838,13 @@ export async function createAgentStream(
   ctx: AgentStreamContext,
   state: AgentStreamState,
 ) {
+  const privateSkillTools = await resolvePrivateSkillTools(
+    ctx.userId,
+    ctx.chatId,
+    "search_skills" in ctx.tools,
+  );
+  if (privateSkillTools)
+    ctx = { ...ctx, tools: { ...ctx.tools, ...privateSkillTools } };
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;

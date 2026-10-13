@@ -974,6 +974,7 @@ const ChatInputContent = ({
               autoFocus={autoFocus}
             />
             <ChatInputToolbar
+              chatId={chatId}
               compactAgentControls={compactAgentControls}
               onAttachClick={handleAttachClick}
               isGenerating={isGenerating}

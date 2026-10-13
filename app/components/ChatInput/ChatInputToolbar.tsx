@@ -1,5 +1,6 @@
 "use client";
 
+import { MySkills } from "../MySkills";
 import { AttachmentButton } from "@/app/components/AttachmentButton";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 import { ChatModeSelector } from "./ChatModeSelector";
@@ -16,11 +17,13 @@ import { FreeAskComputerActivation } from "./FreeAskComputerActivation";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   compactAgentControls?: boolean;
+  chatId?: string;
   onAttachClick: () => void;
 }
 
 export function ChatInputToolbar({
   compactAgentControls = false,
+  chatId,
   onAttachClick,
   chatMode,
   isOnline = true,
@@ -64,6 +67,12 @@ export function ChatInputToolbar({
         !freeDesktopAgentOnlyActive ? (
           <ChatModeSelector />
         ) : null}
+        {user && (
+          <MySkills
+            chatId={chatId}
+            disabled={!isOnline || submitStopProps.isGenerating}
+          />
+        )}
         {showFreeAskComputerActivation ? <FreeAskComputerActivation /> : null}
         {user && isAgentMode(chatMode) ? (
           <>
