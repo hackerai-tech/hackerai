@@ -1300,3 +1300,140 @@ describe("chat-scoped Agent report retrieval and correction", () => {
     ).rejects.toThrow("Unauthorized");
   });
 });
+
+describe("semantic finding deduplication", () => {
+  beforeEach(() => jest.clearAllMocks());
+  it("scopes and bounds candidates and keeps raw evidence out of comparison", async () => {
+    const { createFindingForBackend, getFindingDedupeContextForBackend } =
+      await import("../findings");
+    const tables = seedTables();
+    const { ctx, indexes } = createMockCtx(tables);
+    for (let i = 0; i < 30; i++) {
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({
+          report: report({
+            title: `Finding ${i}`,
+            evidence: "PRIVATE_CAPTURE",
+          }),
+        }),
+      );
+      tables.findings[i].created_at = i;
+    }
+    await createFindingForBackend.handler(
+      ctx,
+      createArgs({ chatId: "chat-2", report: report({ title: "OTHER_CHAT" }) }),
+    );
+    const result = await getFindingDedupeContextForBackend.handler(ctx, {
+      serviceKey: "service-key",
+      userId: "user-1",
+      chatId: "chat-1",
+      dedupeKey: "absent",
+    });
+    expect(result.candidates).toHaveLength(25);
+    expect(result.candidates[0].finding_id).toBe(
+      tables.findings[29].finding_id,
+    );
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE_CAPTURE|OTHER_CHAT/);
+    expect(indexes).toContain("by_user_chat_created");
+    await expect(
+      getFindingDedupeContextForBackend.handler(ctx, {
+        serviceKey: "service-key",
+        userId: "other-user",
+        chatId: "chat-1",
+        dedupeKey: "absent",
+      }),
+    ).rejects.toThrow();
+    const { validateServiceKey } = await import("../lib/utils");
+    expect(validateServiceKey).toHaveBeenCalledWith("service-key");
+  });
+  it("rejects a reworded duplicate with its ID without overwriting the saved finding", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await createFindingForBackend.handler(ctx, createArgs());
+    const before = JSON.parse(JSON.stringify(tables.findings[0]));
+    const result = await createFindingForBackend.handler(
+      ctx,
+      createArgs({
+        report: report({
+          title: "Billing documents accessible across accounts",
+        }),
+        comparisonSnapshot: [
+          { finding_id: before.finding_id, updated_at: before.updated_at },
+        ],
+        semanticDuplicateId: before.finding_id,
+      }),
+    );
+    expect(result).toMatchObject({
+      success: false,
+      error: "duplicate",
+      duplicate_of: before.finding_id,
+    });
+    expect(tables.findings).toEqual([before]);
+    expect(tables.finding_sources[0].finding_count).toBe(1);
+  });
+  it("rejects stale decisions after an insert, correction, or deletion", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await createFindingForBackend.handler(ctx, createArgs());
+    const finding = tables.findings[0];
+    const check = (snapshot: any[]) =>
+      createFindingForBackend.handler(
+        ctx,
+        createArgs({
+          report: report({ title: "Reworded" }),
+          comparisonSnapshot: snapshot,
+          semanticDuplicateId: finding.finding_id,
+        }),
+      );
+    expect(await check([])).toEqual({
+      success: false,
+      error: "comparison_stale",
+    });
+    const snapshot = [
+      { finding_id: finding.finding_id, updated_at: finding.updated_at },
+    ];
+    finding.updated_at++;
+    expect(await check(snapshot)).toEqual({
+      success: false,
+      error: "comparison_stale",
+    });
+    tables.findings.length = 0;
+    expect(await check(snapshot)).toEqual({
+      success: false,
+      error: "comparison_stale",
+    });
+    expect(tables.findings).toHaveLength(0);
+  });
+  it("cannot reject against another chat's ID and permits distinct findings", async () => {
+    const { createFindingForBackend } = await import("../findings");
+    const tables = seedTables();
+    const { ctx } = createMockCtx(tables);
+    await createFindingForBackend.handler(
+      ctx,
+      createArgs({ chatId: "chat-2" }),
+    );
+    const foreignId = tables.findings[0].finding_id;
+    expect(
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ comparisonSnapshot: [], semanticDuplicateId: foreignId }),
+      ),
+    ).toMatchObject({ error: "validation" });
+    expect(
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ semanticDuplicateId: foreignId }),
+      ),
+    ).toMatchObject({ error: "validation" });
+    expect(
+      await createFindingForBackend.handler(
+        ctx,
+        createArgs({ comparisonSnapshot: [] }),
+      ),
+    ).toMatchObject({ success: true });
+    expect(tables.findings).toHaveLength(2);
+  });
+});

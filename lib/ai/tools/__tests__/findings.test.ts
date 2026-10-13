@@ -1,3 +1,6 @@
+jest.mock("@/lib/findings/semantic-dedupe", () => ({
+  createFindingWithDedupe: (...args: any[]) => mockCreateFinding(args[0]),
+}));
 import { describe, expect, it, jest, beforeEach } from "@jest/globals";
 
 const mockCreateFinding = jest.fn<any>();

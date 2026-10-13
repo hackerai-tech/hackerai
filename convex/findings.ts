@@ -1,4 +1,10 @@
 import {
+  FINDING_DEDUPE_LIMIT,
+  findingComparisonSummary,
+  findingDedupeVersions,
+  sameFindingDedupeVersions,
+} from "../lib/findings/dedupe-context";
+import {
   findingRevisionValidator,
   findingFeedbackValidator,
   findingFeedbackAnswerValidator,
@@ -309,6 +315,82 @@ const toFindingDetail = (finding: Doc<"findings">, chatTitle: string) => ({
     : {}),
 });
 
+const dedupeVersionValidator = v.object({
+  finding_id: v.string(),
+  updated_at: v.number(),
+});
+
+async function recentDedupeFindings(
+  ctx: FindingReadCtx,
+  userId: string,
+  chatId: string,
+) {
+  // Findings include captures, code and correction history. Bound bytes as well
+  // as rows so unusually large reports cannot exhaust Convex's read budget.
+  const result = await ctx.db
+    .query("findings")
+    .withIndex("by_user_chat_created", (q) =>
+      q.eq("user_id", userId).eq("chat_id", chatId),
+    )
+    .order("desc")
+    .paginate({
+      numItems: FINDING_DEDUPE_LIMIT,
+      cursor: null,
+      maximumBytesRead: 2_000_000,
+    });
+  return result.page;
+}
+
+export const getFindingDedupeContextForBackend = query({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    chatId: v.string(),
+    dedupeKey: v.string(),
+  },
+  returns: v.object({
+    exact_duplicate_id: v.union(v.string(), v.null()),
+    candidates: v.array(
+      v.object({
+        finding_id: v.string(),
+        updated_at: v.number(),
+        summary: v.string(),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+    const chat = await getChat(ctx, args.chatId);
+    if (
+      !chat ||
+      chat.user_id !== args.userId ||
+      chat.deletion_started_at ||
+      chat.canceled_at
+    ) {
+      throw new ConvexError("The source chat is no longer available.");
+    }
+    await assertUserCanAccessChatHistory(ctx, args.userId);
+    const exact = await ctx.db
+      .query("findings")
+      .withIndex("by_user_chat_dedupe", (q) =>
+        q
+          .eq("user_id", args.userId)
+          .eq("chat_id", args.chatId)
+          .eq("dedupe_key", args.dedupeKey),
+      )
+      .first();
+    const findings = await recentDedupeFindings(ctx, args.userId, args.chatId);
+    return {
+      exact_duplicate_id: exact?.finding_id ?? null,
+      candidates: findings.map((finding) => ({
+        finding_id: finding.finding_id,
+        updated_at: finding.updated_at,
+        summary: findingComparisonSummary(finding),
+      })),
+    };
+  },
+});
+
 export const createFindingForBackend = mutation({
   args: {
     serviceKey: v.string(),
@@ -317,6 +399,8 @@ export const createFindingForBackend = mutation({
     messageId: v.string(),
     toolCallId: v.string(),
     report: v.any(),
+    comparisonSnapshot: v.optional(v.array(dedupeVersionValidator)),
+    semanticDuplicateId: v.optional(v.string()),
     evidenceVerification: v.optional(
       v.object({
         checked_refs: v.array(v.string()),
@@ -325,6 +409,33 @@ export const createFindingForBackend = mutation({
       }),
     ),
   },
+  returns: v.union(
+    v.object({
+      success: v.literal(true),
+      finding_id: v.string(),
+      title: v.string(),
+      target: v.string(),
+      endpoint: v.optional(v.string()),
+      severity: findingSeverityArgValidator,
+      cvss_score: v.number(),
+      warning: v.optional(v.string()),
+    }),
+    v.object({
+      success: v.literal(false),
+      error: v.union(v.literal("validation"), v.literal("chat_not_found")),
+      message: v.string(),
+    }),
+    v.object({
+      success: v.literal(false),
+      error: v.literal("duplicate"),
+      duplicate_of: v.string(),
+      message: v.string(),
+    }),
+    v.object({
+      success: v.literal(false),
+      error: v.literal("comparison_stale"),
+    }),
+  ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
@@ -371,7 +482,48 @@ export const createFindingForBackend = mutation({
       return {
         success: false as const,
         error: "duplicate" as const,
-        message: "A matching finding already exists in this chat.",
+        duplicate_of: duplicate.finding_id,
+        message:
+          "A matching finding already exists in this chat. Use get_report to inspect it; use update_vulnerability_report for new evidence.",
+      };
+    }
+
+    if (args.comparisonSnapshot) {
+      const current = await recentDedupeFindings(ctx, args.userId, args.chatId);
+      // This indexed read participates in Convex OCC: a concurrent create,
+      // correction or deletion invalidates the model's comparison before commit.
+      if (
+        !sameFindingDedupeVersions(
+          args.comparisonSnapshot,
+          findingDedupeVersions(current),
+        )
+      ) {
+        return { success: false as const, error: "comparison_stale" as const };
+      }
+      if (args.semanticDuplicateId) {
+        const match = current.find(
+          (finding) => finding.finding_id === args.semanticDuplicateId,
+        );
+        if (!match) {
+          return {
+            success: false as const,
+            error: "validation" as const,
+            message: "The duplicate comparison is invalid.",
+          };
+        }
+        return {
+          success: false as const,
+          error: "duplicate" as const,
+          duplicate_of: match.finding_id,
+          message:
+            "This root cause is already reported in this chat. Use get_report to inspect it; use update_vulnerability_report for new evidence.",
+        };
+      }
+    } else if (args.semanticDuplicateId) {
+      return {
+        success: false as const,
+        error: "validation" as const,
+        message: "The duplicate comparison is invalid.",
       };
     }
 
