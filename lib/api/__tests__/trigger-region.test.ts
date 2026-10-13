@@ -243,4 +243,26 @@ describe("getTriggerRegionForVercelRequest", () => {
       }),
     ).not.toThrow();
   });
+
+  test.each(["us-east-1", "us-west-2", "eu-central-1"] as const)(
+    "accepts a qualified queue identifier for the requested %s region only",
+    (requestedRegion) => {
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion,
+          actualRegion: `${requestedRegion}:v2:ondemand:fresh:container:stable`,
+          environmentType: "PREVIEW",
+        }),
+      ).not.toThrow();
+      const otherRegion =
+        requestedRegion === "eu-central-1" ? "us-east-1" : "eu-central-1";
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion,
+          actualRegion: `${otherRegion}:v2:ondemand:fresh:container:stable`,
+          environmentType: "PRODUCTION",
+        }),
+      ).toThrow(expect.objectContaining({ code: "TRIGGER_REGION_MISMATCH" }));
+    },
+  );
 });

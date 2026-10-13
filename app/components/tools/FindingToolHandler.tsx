@@ -1,8 +1,9 @@
 "use client";
 
 import { memo, useMemo } from "react";
+import Link from "next/link";
 import { useQueries } from "convex/react";
-import { ShieldAlert } from "lucide-react";
+import { CopyCheck, ShieldAlert } from "lucide-react";
 import { api } from "@/convex/_generated/api";
 import type { ChatStatus, SidebarFinding } from "@/types/chat";
 import type { FindingDetailRecord } from "@/types/finding";
@@ -23,6 +24,7 @@ import {
 type FindingOutput = {
   success?: boolean;
   finding_id?: string;
+  duplicate_of?: string;
   title?: string;
   target?: string;
   endpoint?: string;
@@ -32,11 +34,6 @@ type FindingOutput = {
   validation_kind?: "evidence";
   message?: string;
   warning?: string;
-};
-
-const failureAction = (output: FindingOutput) => {
-  if (output.error === "duplicate") return "Duplicate finding rejected";
-  return "Finding was not saved";
 };
 
 export const SavedFindingCard = ({
@@ -194,11 +191,24 @@ export const FindingToolHandler = memo(function FindingToolHandler({
       }
 
       return (
-        <ToolBlock
-          icon={<ShieldAlert aria-hidden="true" />}
-          action={failureAction(result)}
-          target={result.message}
-        />
+        <div className="max-w-xl space-y-2 rounded-xl border border-border bg-muted/20 p-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <CopyCheck className="size-4 shrink-0" aria-hidden="true" />
+            Already reported
+          </div>
+          <p className="text-sm text-muted-foreground">
+            This issue matches an existing finding in this chat. No duplicate
+            was saved.
+          </p>
+          {result.duplicate_of && (
+            <Link
+              href={`/findings?finding=${encodeURIComponent(result.duplicate_of)}`}
+              className="inline-flex rounded-md text-sm font-medium text-link hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Open existing finding
+            </Link>
+          )}
+        </div>
       );
     }
 

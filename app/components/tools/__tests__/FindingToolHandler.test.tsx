@@ -128,7 +128,7 @@ describe("FindingToolHandler", () => {
     },
   );
 
-  it("shows duplicate failures without opening error details", () => {
+  it("links a duplicate to the existing finding without showing an error", () => {
     render(
       <FindingToolHandler
         status="ready"
@@ -138,14 +138,34 @@ describe("FindingToolHandler", () => {
           output: {
             success: false,
             error: "duplicate",
+            duplicate_of: "existing-finding",
             message: "Already saved in this chat",
           },
         }}
       />,
     );
-    expect(screen.getByText("Duplicate finding rejected")).toBeVisible();
-    expect(screen.getByText("Already saved in this chat")).toBeVisible();
+    expect(screen.getByText("Already reported")).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Open existing finding" }),
+    ).toHaveAttribute("href", "/findings?finding=existing-finding");
+    expect(
+      screen.queryByText("Already saved in this chat"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy duplicate responses without an ID informational", () => {
+    render(
+      <FindingToolHandler
+        status="ready"
+        part={{
+          state: "output-available",
+          output: { success: false, error: "duplicate" },
+        }}
+      />,
+    );
+    expect(screen.getByText("Already reported")).toBeVisible();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
   it("opens actionable evidence details without leaking the raw path or payload", () => {
