@@ -429,9 +429,15 @@ function FindingsPageContent() {
                 {isExporting ? "Exporting…" : "Export"}
               </span>
             </Button>
-            <Button type="button" size="sm" onClick={startNewScan}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={startNewScan}
+              aria-label="Start new scan"
+            >
               <Play className="size-4" aria-hidden="true" />
-              Start new scan
+              <span className="sm:hidden">New scan</span>
+              <span className="hidden sm:inline">Start new scan</span>
             </Button>
           </div>
         </header>
@@ -668,7 +674,7 @@ function FindingsPageContent() {
               </aside>
 
               <section
-                className="min-w-0 pt-6 lg:px-8 lg:py-6"
+                className="@container min-w-0 pt-6 lg:px-8 lg:py-6"
                 aria-labelledby="findings-results-heading"
               >
                 <div className="mb-4 flex min-h-9 flex-wrap items-center justify-between gap-2">
@@ -731,7 +737,7 @@ function FindingsPageContent() {
                 ) : (
                   <>
                     <div
-                      className="hidden grid-cols-[minmax(300px,1.6fr)_minmax(170px,0.8fr)_120px_100px_90px_20px] items-center gap-4 px-4 pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground xl:grid"
+                      className="hidden grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] items-center gap-4 px-4 pb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground @min-[58rem]:grid"
                       aria-hidden="true"
                     >
                       <div>Finding</div>
@@ -778,7 +784,7 @@ function FindingsPageContent() {
                               );
                             }}
                             className={cn(
-                              "group block min-w-0 rounded-xl border border-border bg-card/30 p-4 text-left shadow-sm transition-[background-color,border-color] hover:border-foreground/15 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring xl:grid xl:grid-cols-[minmax(300px,1.6fr)_minmax(170px,0.8fr)_120px_100px_90px_20px] xl:items-center xl:gap-4",
+                              "group block min-w-0 rounded-xl border border-border bg-card/30 p-4 text-left shadow-sm transition-[background-color,border-color] hover:border-foreground/15 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @min-[58rem]:grid @min-[58rem]:grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_120px_100px_90px_20px] @min-[58rem]:items-center @min-[58rem]:gap-4",
                               selectedFindingId === finding.finding_id &&
                                 "border-foreground/20 bg-muted/40",
                             )}
@@ -794,7 +800,7 @@ function FindingsPageContent() {
                                 aria-hidden="true"
                               />
                               <div className="min-w-0 flex-1">
-                                <div className="line-clamp-2 text-sm font-medium leading-5 text-foreground xl:truncate">
+                                <div className="line-clamp-2 text-sm font-medium leading-5 text-foreground @min-[58rem]:truncate">
                                   {finding.title}
                                 </div>
                                 <div
@@ -806,11 +812,11 @@ function FindingsPageContent() {
                               </div>
                             </div>
 
-                            <div className="mt-3 text-xs text-muted-foreground xl:mt-0">
+                            <div className="mt-3 min-w-0 break-words text-xs text-muted-foreground @min-[58rem]:mt-0">
                               {FINDING_CATEGORY_LABELS[finding.category]}
                             </div>
 
-                            <div className="mt-3 flex items-center justify-between gap-3 xl:mt-0 xl:block">
+                            <div className="mt-3 flex items-center justify-between gap-3 @min-[58rem]:mt-0 @min-[58rem]:block">
                               <span className="inline-flex items-center gap-1.5 text-xs font-medium capitalize text-foreground">
                                 <span
                                   className={cn(
@@ -827,14 +833,14 @@ function FindingsPageContent() {
                                   {finding.cvss_score.toFixed(1)}
                                 </span>
                               </span>
-                              <span className="text-xs tabular-nums text-muted-foreground xl:hidden">
+                              <span className="text-xs tabular-nums text-muted-foreground @min-[58rem]:hidden">
                                 <FindingRelativeTime
                                   timestamp={finding.created_at}
                                 />
                               </span>
                             </div>
 
-                            <div className="mt-2 xl:mt-0">
+                            <div className="mt-2 @min-[58rem]:mt-0">
                               <span className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground">
                                 <span
                                   className={cn(
@@ -851,14 +857,14 @@ function FindingsPageContent() {
                               </span>
                             </div>
 
-                            <div className="hidden text-right text-xs tabular-nums text-muted-foreground xl:block">
+                            <div className="hidden text-right text-xs tabular-nums text-muted-foreground @min-[58rem]:block">
                               <FindingRelativeTime
                                 timestamp={finding.created_at}
                               />
                             </div>
 
                             <ChevronRight
-                              className="hidden size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none xl:block"
+                              className="hidden size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground motion-reduce:transition-none @min-[58rem]:block"
                               aria-hidden="true"
                             />
                           </Link>
