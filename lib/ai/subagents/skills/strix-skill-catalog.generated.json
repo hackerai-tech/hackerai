@@ -1,6 +1,6 @@
 {
   "sourceRepository": "https://github.com/usestrix/strix.git",
-  "sourceCommit": "62b496430da5df5e9e79a190e7af6f92529883a3",
+  "sourceCommit": "d8c00a8f4ebadec265582fb777081067a35f79d3",
   "skills": [
     {
       "id": "analysis/counterevidence",
@@ -129,10 +129,10 @@
       "filename": "dependency_cve_scanning",
       "name": "dependency-cve-scanning",
       "description": "Supply-chain / SCA playbook — scan repository lockfiles for known dependency CVEs and report them with create_dependency_report (no dynamic PoC required)",
-      "contentBytes": 18991,
+      "contentBytes": 19806,
       "internal": false,
       "sourcePath": "custom/dependency_cve_scanning.md",
-      "sourceSha256": "6e3f08707c2d31204f90f11862b360c25fbc95d0bbe3b9ff89baece91ec22b84"
+      "sourceSha256": "49a94cda76b22f1882e24d353be3b14bcac6496a40d25123d165b73ec291b613"
     },
     {
       "id": "custom/npx_confusion",
