@@ -1,4 +1,5 @@
 import "server-only";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "@/lib/errors";
@@ -30,8 +31,57 @@ export async function getActiveChatAccessBlockForUser(userId: string) {
   );
 }
 
-export async function assertUserCanMakeCostIncurringRequest(userId: string) {
-  const suspension = await getActiveSuspensionForUser(userId);
+export async function assertUserCanMakeCostIncurringRequest(
+  userId: string,
+  options?: { retryNetworkFailure?: boolean; signal?: AbortSignal },
+) {
+  let suspension;
+  try {
+    suspension = await getActiveSuspensionForUser(userId);
+  } catch (error) {
+    // Only web preflight opts in, once before any writes or task creation.
+    // Workers recheck this gate after waits/tools; they must not replenish a
+    // retry budget on every check. Never retry an application/auth rejection.
+    if (
+      !options?.retryNetworkFailure ||
+      !(error instanceof TypeError) ||
+      error.message !== "fetch failed"
+    ) {
+      throw error;
+    }
+    options.signal?.throwIfAborted();
+    const fields = {
+      user_id: userId,
+      reason: "network_fetch_failed",
+      retry_limit: 1,
+    };
+    console.warn(
+      JSON.stringify({ event: "suspension_gate_read_retry", ...fields }),
+    );
+    try {
+      await delay(250, undefined, { signal: options.signal });
+      options.signal?.throwIfAborted();
+      suspension = await getActiveSuspensionForUser(userId);
+      options.signal?.throwIfAborted();
+      console.info(
+        JSON.stringify({
+          event: "suspension_gate_read_retry_result",
+          ...fields,
+          outcome: "read_succeeded",
+          access: suspension ? "blocked" : "allowed",
+        }),
+      );
+    } catch (retryError) {
+      console.warn(
+        JSON.stringify({
+          event: "suspension_gate_read_retry_result",
+          ...fields,
+          outcome: options.signal?.aborted ? "canceled" : "exhausted",
+        }),
+      );
+      throw retryError;
+    }
+  }
   if (!suspension) return;
 
   throw new ChatSDKError(

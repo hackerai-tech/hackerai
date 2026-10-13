@@ -380,7 +380,10 @@ export const createChatHandler = () => {
           coerceSelectedModel(rawSelectedModel ?? null),
           subscription,
         );
-      await assertUserCanMakeCostIncurringRequest(userId);
+      await assertUserCanMakeCostIncurringRequest(userId, {
+        retryNetworkFailure: true,
+        signal: req.signal,
+      });
       await enforceRegionalSubscriptionFirst({
         userId,
         subscription,
