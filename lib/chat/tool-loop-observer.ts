@@ -23,6 +23,7 @@ const TERMINAL_BOOKKEEPING_FIELDS = new Set([
   "recordPath",
   "pid",
   "rawSnapshot",
+  "callTiming",
 ]);
 
 // New handles and replay bytes are not new command evidence. Preserve stdout,

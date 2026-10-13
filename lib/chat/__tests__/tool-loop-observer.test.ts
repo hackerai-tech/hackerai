@@ -64,6 +64,7 @@ describe("ToolLoopObserver", () => {
             recordPath: `/records/session-${i}.json`,
             pid: 100 + i,
             rawSnapshot: `replay-${i}`,
+            callTiming: { startedAt: `time-${i}`, elapsedMs: i * 100 },
             executionEnvironment: "cloud",
             workingDirectory: "/home/user",
           },

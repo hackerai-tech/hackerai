@@ -394,6 +394,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         workingDirectory: "/tmp/fixture",
       });
       expect(recovered.result.output).toContain("FINAL_EVIDENCE");
+      expect(running.result.callTiming.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(recovered.result.callTiming.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(sandbox.commands.run).toHaveBeenCalledTimes(countBeforeRecovery);
 
       const abort = new AbortController();

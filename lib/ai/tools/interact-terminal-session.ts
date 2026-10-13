@@ -1,3 +1,4 @@
+import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { tool } from "ai";
 import type { AnySandbox, ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
@@ -66,7 +67,7 @@ export const createInteractTerminalSession = (context: ToolContext) => {
     log_budget: context.ptyParserLogBudget,
   });
 
-  return tool({
+  const terminalTool = tool({
     ...interactTerminalSessionTool,
     inputSchema: createInteractTerminalSessionToolSchema({
       modelName: context.getCurrentModelName?.() ?? context.modelName,
@@ -630,4 +631,19 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       return { type: "text", value: JSON.stringify({ result: rest }) };
     },
   });
+  return {
+    ...terminalTool,
+    execute: withTerminalCallTiming(
+      context,
+      "interact_terminal_session",
+      async (
+        input: Parameters<NonNullable<typeof terminalTool.execute>>[0],
+        options,
+      ) =>
+        // Terminal tools return one result, never an AsyncIterable.
+        (await terminalTool.execute!(input, options)) as {
+          result: Record<string, unknown>;
+        },
+    ),
+  };
 };

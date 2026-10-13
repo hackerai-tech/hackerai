@@ -1,3 +1,4 @@
+import { withTerminalCallTiming } from "./utils/terminal-call-timing";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
@@ -244,7 +245,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     return { ...env, ...(await context.browserSessions?.prepare(sandbox)) };
   };
 
-  return tool({
+  const terminalTool = tool({
     ...runTerminalCmdTool,
     execute: async (
       {
@@ -1453,4 +1454,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       };
     },
   });
+  return {
+    ...terminalTool,
+    execute: withTerminalCallTiming(
+      context,
+      "run_terminal_cmd",
+      async (
+        input: Parameters<NonNullable<typeof terminalTool.execute>>[0],
+        options,
+      ) =>
+        // Terminal tools return one result, never an AsyncIterable.
+        (await terminalTool.execute!(input, options)) as {
+          result: Record<string, unknown>;
+        },
+    ),
+  };
 };
