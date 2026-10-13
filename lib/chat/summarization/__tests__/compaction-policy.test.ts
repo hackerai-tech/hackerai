@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 const mockConfigured = jest.fn(() => true);
+const mockFlag = jest.fn<() => Promise<boolean | null>>();
 const mockEvent =
   jest.fn<(event: string, properties: Record<string, any>) => void>();
 jest.mock("@/lib/ai/abliteration", () => ({
@@ -8,6 +9,7 @@ jest.mock("@/lib/ai/abliteration", () => ({
 }));
 jest.mock("@/lib/posthog/server", () => ({
   phLogger: { event: mockEvent },
+  getPostHogBooleanFlagDecisionForUser: mockFlag,
 }));
 const {
   CompactionModelPolicy,
@@ -21,11 +23,13 @@ const context = {
   mode: "agent" as const,
   subscription: "pro" as const,
   baselineModel: "agent-model",
+  platformAuthorized: false,
   onDiscardedUsage: jest.fn(),
 };
 describe("compaction model assignment and telemetry", () => {
   beforeEach(() => {
     mockConfigured.mockReturnValue(true);
+    mockFlag.mockReset().mockResolvedValue(false);
     mockEvent.mockClear();
   });
   it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
@@ -37,7 +41,7 @@ describe("compaction model assignment and telemetry", () => {
       });
       const assignment = await experiment.resolve();
       expect(await experiment.resolve()).toBe(assignment);
-      expect(assignment).toEqual({ model: "model-abliterated" });
+      expect(assignment).toMatchObject({ model: "model-abliterated" });
       expect(mockEvent).not.toHaveBeenCalled();
       const first = experiment.start(assignment!, "durable");
       first.attempt(assignment!.model, "error", 3);
@@ -94,10 +98,89 @@ describe("compaction model assignment and telemetry", () => {
   );
   it("starts with GLM when Abliteration credentials are missing", async () => {
     mockConfigured.mockReturnValue(false);
-    expect(await new CompactionModelPolicy(context).resolve()).toEqual({
+    expect(await new CompactionModelPolicy(context).resolve()).toMatchObject({
       model: "model-glm-5.3-flash",
     });
     expect(mockEvent).not.toHaveBeenCalled();
+  });
+  it.each(["free", "pro", "pro-plus", "ultra", "team"] as const)(
+    "uses the moderation decision for %s in Ask and Agent",
+    async (subscription) => {
+      mockFlag.mockResolvedValue(true);
+      for (const mode of ["ask", "agent"] as const) {
+        for (const platformAuthorized of [false, true]) {
+          const policy = new CompactionModelPolicy({
+            ...context,
+            subscription,
+            mode,
+            platformAuthorized,
+          });
+          const assignment = await policy.resolve();
+          expect(assignment).toMatchObject({
+            model: platformAuthorized
+              ? "model-abliterated"
+              : "model-glm-5.3-flash",
+            fallbackModel: platformAuthorized
+              ? "model-glm-5.3-flash"
+              : "model-abliterated",
+            policy: "moderation_glm53_abliteration_fallback_v1",
+            flagEnabled: true,
+          });
+          expect(mockEvent).not.toHaveBeenCalled();
+          policy.start(assignment, "durable");
+          expect(mockEvent).toHaveBeenLastCalledWith(
+            "compaction_model_started",
+            expect.objectContaining({
+              compaction_flag_enabled: true,
+              compaction_moderation_routed: platformAuthorized,
+              assigned_model: assignment.model,
+            }),
+          );
+          mockEvent.mockClear();
+        }
+      }
+    },
+  );
+  it("retains control and records unknown when flag evaluation is unavailable", async () => {
+    mockFlag.mockResolvedValue(null);
+    const policy = new CompactionModelPolicy(context);
+    const assignment = await policy.resolve();
+    expect(assignment).toMatchObject({
+      model: "model-abliterated",
+      flagEnabled: null,
+      policy: COMPACTION_POLICY_VERSION,
+    });
+    policy.start(assignment, "durable");
+    expect(mockEvent).toHaveBeenLastCalledWith(
+      "compaction_model_started",
+      expect.objectContaining({ compaction_flag_enabled: null }),
+    );
+  });
+  it("keeps GLM without an Abliteration fallback when credentials are absent", async () => {
+    mockFlag.mockResolvedValue(true);
+    mockConfigured.mockReturnValue(false);
+    for (const platformAuthorized of [false, true]) {
+      const assignment = await new CompactionModelPolicy({
+        ...context,
+        platformAuthorized,
+      }).resolve();
+      expect(assignment.model).toBe("model-glm-5.3-flash");
+      expect(assignment.fallbackModel).toBeUndefined();
+    }
+  });
+  it("evaluates once across repeated compactions even if the remote flag changes", async () => {
+    mockFlag.mockResolvedValue(true);
+    const policy = new CompactionModelPolicy(context);
+    const first = await policy.resolve();
+    mockFlag.mockResolvedValue(false);
+    expect(await policy.resolve()).toBe(first);
+    expect(mockFlag).toHaveBeenCalledTimes(1);
+    expect(mockFlag).toHaveBeenCalledWith(
+      "moderation_compaction_v1",
+      "test-user",
+      { subscription_tier: "pro" },
+      { sendFeatureFlagEvents: false },
+    );
   });
   it("rejects refusal prose and incomplete structured output", () => {
     expect(

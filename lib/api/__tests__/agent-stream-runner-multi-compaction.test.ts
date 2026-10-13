@@ -21,6 +21,11 @@ const mockCompactModelMessagesInRun = jest.fn();
 const mockGetProviderPromptPressure = jest.fn();
 const mockBuildProviderOptions = jest.fn(() => ({}));
 const mockHistoryFlag = jest.fn(async () => false);
+const mockAbliterationConfigured = jest.fn(() => false);
+jest.mock("@/lib/ai/abliteration", () => ({
+  ...jest.requireActual("@/lib/ai/abliteration"),
+  isAbliterationConfigured: () => mockAbliterationConfigured(),
+}));
 const mockLoadHistory = jest.fn();
 const mockSaveHistory = jest.fn();
 const mockNotesUpdate = jest.fn();
@@ -678,6 +683,50 @@ describe("createAgentStream repeated compaction", () => {
     mockCompactModelMessagesInRun.mockReset();
     mockGetProviderPromptPressure.mockReset();
   });
+
+  it.each(["ask", "agent"] as const)(
+    "passes the original moderation signal into %s compaction instead of continuation eligibility",
+    async (mode) => {
+      mockAbliterationConfigured.mockReturnValue(true);
+      mockHistoryFlag.mockResolvedValue(true);
+      try {
+        for (const platformAuthorized of [false, true]) {
+          const state = initAgentStreamState(
+            [uiMessage("initial", "Continue")],
+            {
+              usedTokens: 1000,
+              maxTokens: 128000,
+            },
+          );
+          state.hasCompletedAbliterationStep = true;
+          await createAgentStream(
+            "test-model",
+            createTestStreamContext({
+              mode,
+              platformAuthorized,
+              usageTracker: {},
+              summarizationTracker: {
+                hasSummarized: false,
+                summarizationCount: 0,
+              },
+            }) as any,
+            state,
+          );
+          expect(await state.compactionPolicy!.resolve()).toMatchObject({
+            model: platformAuthorized
+              ? "model-abliterated"
+              : "model-glm-5.3-flash",
+          });
+          expect(phLogger.event).not.toHaveBeenCalledWith(
+            "compaction_model_started",
+            expect.anything(),
+          );
+        }
+      } finally {
+        mockAbliterationConfigured.mockReturnValue(false);
+      }
+    },
+  );
 
   it("rechecks shared capacity before each generation and fails closed after another run exhausts it", async () => {
     const checkBudgetBeforeStep = jest.fn().mockResolvedValueOnce(undefined);

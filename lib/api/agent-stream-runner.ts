@@ -1526,6 +1526,7 @@ export async function createAgentStream(
       mode: ctx.mode,
       subscription: ctx.subscription,
       baselineModel: modelName,
+      platformAuthorized: ctx.platformAuthorized,
       onDiscardedUsage: (usage) =>
         ctx.summarizationTracker.recordSummarizationUsage(
           usage,

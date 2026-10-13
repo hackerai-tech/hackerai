@@ -2,7 +2,6 @@ import "server-only";
 
 import {
   CompactionModelPolicy,
-  COMPACTION_FALLBACK_MODEL,
   COMPACTION_PRIMARY_MODEL,
   hasStructuredCompactionSummary,
 } from "@/lib/chat/summarization/compaction-policy";
@@ -557,9 +556,7 @@ const generateSummaryTextWithRetry = async ({
       const telemetry = compactionPolicy.start(assignment, persistence);
       const models = [
         assignment.model,
-        ...(assignment.model === COMPACTION_PRIMARY_MODEL
-          ? [COMPACTION_FALLBACK_MODEL]
-          : []),
+        ...(assignment.fallbackModel ? [assignment.fallbackModel] : []),
         ...STARTUP_COMPACTION_FALLBACK_MODELS,
       ];
       let servedModel: string | undefined;
@@ -570,7 +567,7 @@ const generateSummaryTextWithRetry = async ({
           const attemptStartedAt = Date.now();
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
-            variant: "abliteration_glm53_fallback_v1",
+            variant: assignment.policy,
             fallbackUsed: index > 0,
           });
           try {
