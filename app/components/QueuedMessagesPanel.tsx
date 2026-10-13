@@ -15,6 +15,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import TextareaAutosize from "react-textarea-autosize";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useMediaQuery } from "@/hooks/use-media-query";
 
 interface QueuedMessagesPanelProps {
   messages: QueuedMessage[];
@@ -105,6 +111,7 @@ const QueuedMessageRow = ({
   onQueueBehaviorChange,
 }: QueuedMessageRowProps) => {
   const [editText, setEditText] = useState(message.text);
+  const canHover = useMediaQuery("(hover: hover) and (pointer: fine)");
 
   const startEditing = () => {
     setEditText(message.text);
@@ -171,9 +178,31 @@ const QueuedMessageRow = ({
           </div>
         ) : (
           <>
-            <div className="text-sm truncate text-foreground">
-              {message.text}
-            </div>
+            {canHover && message.text ? (
+              <Tooltip delayDuration={500}>
+                <TooltipTrigger asChild>
+                  <div
+                    tabIndex={0}
+                    className="text-sm truncate text-foreground rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {message.text}
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent
+                  side="top"
+                  align="start"
+                  sideOffset={8}
+                  collisionPadding={16}
+                  className="max-w-[min(36rem,calc(100vw-2rem))] max-h-[min(50vh,var(--radix-tooltip-content-available-height))] overflow-y-auto overscroll-contain whitespace-pre-wrap wrap-anywhere text-sm text-left text-pretty leading-relaxed p-4"
+                >
+                  {message.text}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <div className="text-sm truncate text-foreground">
+                {message.text}
+              </div>
+            )}
             {message.deliveryStatus && (
               <div
                 className="text-xs text-muted-foreground mt-0.5"
