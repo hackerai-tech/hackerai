@@ -2051,6 +2051,20 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
 // Findings Actions
 // ============================================================================
 
+export async function getFindingDedupeContext(args: {
+  userId: string;
+  chatId: string;
+  dedupeKey: string;
+}) {
+  return getConvexClient().query(
+    api.findings.getFindingDedupeContextForBackend,
+    {
+      serviceKey,
+      ...args,
+    },
+  );
+}
+
 export async function createFinding({
   userId,
   chatId,
@@ -2058,12 +2072,16 @@ export async function createFinding({
   toolCallId,
   report,
   evidenceVerification,
+  comparisonSnapshot,
+  semanticDuplicateId,
 }: {
   userId: string;
   chatId: string;
   messageId: string;
   toolCallId: string;
   report: CreateVulnerabilityReportInput;
+  comparisonSnapshot?: import("@/lib/findings/dedupe-context").FindingDedupeVersion[];
+  semanticDuplicateId?: string;
   evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
 }) {
   try {
@@ -2076,6 +2094,8 @@ export async function createFinding({
         messageId,
         toolCallId,
         report,
+        ...(comparisonSnapshot ? { comparisonSnapshot } : {}),
+        ...(semanticDuplicateId ? { semanticDuplicateId } : {}),
         ...(evidenceVerification ? { evidenceVerification } : {}),
       },
     );

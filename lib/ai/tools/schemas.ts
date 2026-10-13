@@ -1045,7 +1045,7 @@ Use this tool only after all of the following are true:
 - Persist at most one successful report for each distinct confirmed root cause
 - File one distinct root cause per call; do not combine unrelated vulnerabilities
 - Call once after confirmation; if a non-duplicate response explicitly returns retryable: true, retry the same report once
-- Never retry a duplicate response
+- Never retry a duplicate response or reword it to create another finding. If duplicate_of is returned, call get_report with that ID and use update_vulnerability_report only when adding meaningful evidence or corrections
 - Use formal, objective, vendor-neutral Markdown in prose fields, with actual line breaks between paragraphs and numbered steps. Do not double-escape formatting into literal backslash-n text. Preserve meaningful escapes inside code, payloads, and raw captures
 - Put numbered reproduction steps only in poc_description and executable exploit/payload code only in poc_script_code
 - Put literal plain-text requests, responses, observed behavior, logs, or code proof in evidence; this field is displayed verbatim, not interpreted as Markdown

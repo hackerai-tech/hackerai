@@ -1,3 +1,4 @@
+import { createFindingWithDedupe } from "@/lib/findings/semantic-dedupe";
 import { observeFindingTool } from "./finding-telemetry";
 import { tool } from "ai";
 import type { AnySandbox, ToolContext } from "@/types";
@@ -7,12 +8,7 @@ import {
 } from "@/lib/ai/subagents/evidence-references";
 import { getSubagentSandboxIdentity } from "@/lib/ai/subagents/sandbox-identity";
 import type { EvidenceVerification } from "@/lib/ai/subagents/contracts";
-import {
-  createFinding,
-  listReports,
-  getReport,
-  updateFinding,
-} from "@/lib/db/actions";
+import { listReports, getReport, updateFinding } from "@/lib/db/actions";
 import { phLogger } from "@/lib/posthog/server";
 import {
   listReportsTool,
@@ -114,14 +110,17 @@ export const createCreateVulnerabilityReport = (
             };
           const { report, evidenceVerification } = prepared;
           abortSignal?.throwIfAborted();
-          const result = await createFinding({
-            userId: context.userID,
-            chatId: context.chatId,
-            messageId: context.assistantMessageId,
-            toolCallId,
-            report,
-            ...(evidenceVerification ? { evidenceVerification } : {}),
-          });
+          const result = await createFindingWithDedupe(
+            {
+              userId: context.userID,
+              chatId: context.chatId,
+              messageId: context.assistantMessageId,
+              toolCallId,
+              report,
+              ...(evidenceVerification ? { evidenceVerification } : {}),
+            },
+            { abortSignal, onCost: context.onToolCost },
+          );
 
           if (!result.success && result.error === "duplicate") {
             phLogger.event("finding_duplicate_rejected", {
