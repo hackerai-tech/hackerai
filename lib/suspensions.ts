@@ -31,6 +31,12 @@ export async function getActiveChatAccessBlockForUser(userId: string) {
   );
 }
 
+/**
+ * Fails closed unless the suspension read succeeds and permits access.
+ * Web preflight may retry one native fetch failure before any writes; repeated
+ * worker checks retain their single-read budget. Honors a supplied abort signal
+ * when the runtime delivers it, without changing platform cancellation settings.
+ */
 export async function assertUserCanMakeCostIncurringRequest(
   userId: string,
   options?: { retryNetworkFailure?: boolean; signal?: AbortSignal },
@@ -38,6 +44,7 @@ export async function assertUserCanMakeCostIncurringRequest(
   let suspension;
   try {
     suspension = await getActiveSuspensionForUser(userId);
+    options?.signal?.throwIfAborted();
   } catch (error) {
     // Only web preflight opts in, once before any writes or task creation.
     // Workers recheck this gate after waits/tools; they must not replenish a

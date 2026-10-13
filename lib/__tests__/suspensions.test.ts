@@ -291,6 +291,30 @@ describe("web suspension-gate transport recovery", () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects a clear initial read that finishes after cancellation", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    const controller = new AbortController();
+    let finishRead!: (value: never) => void;
+    mockQuery.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const result = assertUserCanMakeCostIncurringRequest("user_123", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toThrow("canceled");
+    controller.abort(new Error("canceled"));
+    finishRead(null as never);
+    await rejected;
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(console.info).not.toHaveBeenCalled();
+  });
+
   it("cancels during backoff without issuing the retry", async () => {
     const { assertUserCanMakeCostIncurringRequest } =
       await import("../suspensions");
