@@ -157,9 +157,36 @@ export const getAgentTriggerMachine = (subscription: SubscriptionTier) =>
 type AgentDeploymentEnvironment = {
   NODE_ENV?: string;
   VERCEL_ENV?: string;
+  TRIGGER_VERSION?: string;
+  TRIGGER_EXTERNAL_DEPLOYMENT_ID?: string;
+  TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION?: string;
+  VERCEL_GIT_COMMIT_SHA?: string;
 };
 
-export const shouldRequireAgentApprovalWorkerVersion = (
+export const getAgentApprovalDeploymentPin = (
+  environment: AgentDeploymentEnvironment = process.env,
+): { lockToVersion?: string; externalDeploymentId?: string } => {
+  // Preserve the legacy pin until the coordinated migration removes it.
+  const workerVersion = environment.TRIGGER_VERSION?.trim();
+  if (workerVersion) return { lockToVersion: workerVersion };
+
+  const normalizeId = (value: string | undefined) => {
+    const id = value?.trim();
+    return id && id.length <= 128 ? id : undefined;
+  };
+  const automatic =
+    environment.TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION?.trim().toLowerCase();
+  // Match the SDK's explicit-id / Vercel discovery precedence. Pass the pin
+  // explicitly so Session identity and the worker it schedules cannot diverge.
+  const externalDeploymentId =
+    normalizeId(environment.TRIGGER_EXTERNAL_DEPLOYMENT_ID) ??
+    (automatic === "1" || automatic === "true"
+      ? normalizeId(environment.VERCEL_GIT_COMMIT_SHA)
+      : undefined);
+  return externalDeploymentId ? { externalDeploymentId } : {};
+};
+
+export const shouldRequireAgentApprovalDeploymentPin = (
   environment: AgentDeploymentEnvironment = process.env,
 ) =>
   environment.VERCEL_ENV
@@ -334,17 +361,23 @@ export const buildAgentApprovalSessionId = ({
   keyParts,
   approvalProtocolVersion,
   approvalWorkerVersion,
+  approvalExternalDeploymentId,
 }: {
   chatId: string;
   keyParts: ReturnType<typeof buildAgentRunDedupeKeyParts>;
   approvalProtocolVersion: number;
   approvalWorkerVersion: string | undefined;
+  approvalExternalDeploymentId?: string;
 }) => {
   const digest = createHash("sha256")
     .update(
       [
         `protocol:${approvalProtocolVersion}`,
-        `worker:${approvalWorkerVersion ?? "unversioned"}`,
+        approvalWorkerVersion
+          ? `worker:${approvalWorkerVersion}`
+          : approvalExternalDeploymentId
+            ? `deployment:${approvalExternalDeploymentId}`
+            : "worker:unversioned",
         ...keyParts,
       ].join("\0"),
     )
@@ -692,10 +725,10 @@ export const createAgentTriggerPost =
       const triggerRequestedAt = Date.now();
       const triggerPriority = getAgentTriggerPriority(subscription);
       const triggerMachine = getAgentTriggerMachine(subscription);
-      // Trigger.dev's atomic Vercel integration pins the app and worker from the
-      // same commit. Reuse that pin so Sessions cannot schedule an older worker.
-      const approvalWorkerVersion =
-        process.env.TRIGGER_VERSION?.trim() || undefined;
+      const approvalDeploymentPin = getAgentApprovalDeploymentPin();
+      const approvalWorkerVersion = approvalDeploymentPin.lockToVersion;
+      const approvalExternalDeploymentId =
+        approvalDeploymentPin.externalDeploymentId;
       const triggerDedupeKeyParts = buildAgentRunDedupeKeyParts({
         userId,
         chatId,
@@ -716,12 +749,14 @@ export const createAgentTriggerPost =
             keyParts: triggerDedupeKeyParts,
             approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
             approvalWorkerVersion,
+            approvalExternalDeploymentId,
           })
         : undefined;
       if (
         approvalSessionId &&
-        shouldRequireAgentApprovalWorkerVersion() &&
-        !approvalWorkerVersion
+        shouldRequireAgentApprovalDeploymentPin() &&
+        !approvalWorkerVersion &&
+        !approvalExternalDeploymentId
       ) {
         throw new ChatSDKError(
           "bad_request:api",
@@ -789,6 +824,9 @@ export const createAgentTriggerPost =
         genericDelegationEnabled,
         approvalProtocolVersion: AGENT_APPROVAL_PROTOCOL_VERSION,
         ...(approvalWorkerVersion ? { approvalWorkerVersion } : {}),
+        ...(approvalExternalDeploymentId
+          ? { approvalExternalDeploymentId }
+          : {}),
         ...(approvalSessionId ? { approvalSessionId } : {}),
         ...(autoReviewAssignment && {
           autoReviewRolloutPhase: autoReviewAssignment.phase,
@@ -846,9 +884,7 @@ export const createAgentTriggerPost =
             machine: triggerMachine,
             tags: getAgentApprovalTriggerTags(triggerTags),
             region: triggerRegion,
-            ...(approvalWorkerVersion
-              ? { lockToVersion: approvalWorkerVersion }
-              : {}),
+            ...approvalDeploymentPin,
           };
           const approvalSessionBody = {
             type: `agent-long-approval.v${AGENT_APPROVAL_PROTOCOL_VERSION}`,

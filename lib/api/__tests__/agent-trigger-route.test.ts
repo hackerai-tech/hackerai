@@ -105,12 +105,13 @@ const {
   createAgentTriggerPost,
   finalizeStartedAgentRun,
   getAgentApprovalTriggerTags,
+  getAgentApprovalDeploymentPin,
   getAgentTriggerPayloadSizeBytes,
   getAgentTriggerMachine,
   isAgentTriggerPayloadSizeTooLarge,
   isAgentTriggerRequestSizeTooLarge,
   isTriggerRequestBodyTooLargeError,
-  shouldRequireAgentApprovalWorkerVersion,
+  shouldRequireAgentApprovalDeploymentPin,
 } =
   require("../agent-trigger-route") as typeof import("../agent-trigger-route");
 
@@ -371,25 +372,97 @@ describe("Agent trigger route lifecycle", () => {
     expect(v2WorkerA).toMatch(/^agent-approval:v2:chat-1:/);
   });
 
-  it("requires an approval worker pin only for production deployments", () => {
+  it("requires an approval deployment pin only for production deployments", () => {
     expect(
-      shouldRequireAgentApprovalWorkerVersion({
+      shouldRequireAgentApprovalDeploymentPin({
         NODE_ENV: "production",
         VERCEL_ENV: "production",
       }),
     ).toBe(true);
     expect(
-      shouldRequireAgentApprovalWorkerVersion({
+      shouldRequireAgentApprovalDeploymentPin({
         NODE_ENV: "production",
         VERCEL_ENV: "preview",
       }),
     ).toBe(false);
     expect(
-      shouldRequireAgentApprovalWorkerVersion({ NODE_ENV: "production" }),
+      shouldRequireAgentApprovalDeploymentPin({ NODE_ENV: "production" }),
     ).toBe(true);
     expect(
-      shouldRequireAgentApprovalWorkerVersion({ NODE_ENV: "development" }),
+      shouldRequireAgentApprovalDeploymentPin({ NODE_ENV: "development" }),
     ).toBe(false);
+  });
+
+  it("pins approval sessions to the app commit without a legacy version", () => {
+    expect(
+      getAgentApprovalDeploymentPin({
+        TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION: " TRUE ",
+        VERCEL_GIT_COMMIT_SHA: " commit-a ",
+      }),
+    ).toEqual({ externalDeploymentId: "commit-a" });
+  });
+
+  it("keeps the legacy version authoritative during the migration", () => {
+    expect(
+      getAgentApprovalDeploymentPin({
+        TRIGGER_VERSION: " 20261013.1 ",
+        TRIGGER_EXTERNAL_DEPLOYMENT_ID: "commit-a",
+        TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION: "1",
+        VERCEL_GIT_COMMIT_SHA: "commit-b",
+      }),
+    ).toEqual({ lockToVersion: "20261013.1" });
+  });
+
+  it("accepts an explicit deployment id even when automatic discovery is off", () => {
+    expect(
+      getAgentApprovalDeploymentPin({
+        TRIGGER_EXTERNAL_DEPLOYMENT_ID: " release-a ",
+        TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION: "0",
+        VERCEL_GIT_COMMIT_SHA: "commit-b",
+      }),
+    ).toEqual({ externalDeploymentId: "release-a" });
+  });
+
+  it.each([
+    {},
+    { VERCEL_GIT_COMMIT_SHA: "commit-a" },
+    {
+      TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION: "0",
+      VERCEL_GIT_COMMIT_SHA: "commit-a",
+    },
+    {
+      TRIGGER_EXTERNAL_DEPLOYMENT_ID: " ",
+      TRIGGER_AUTOMATIC_SKEW_VERSION_PROTECTION: "1",
+      VERCEL_GIT_COMMIT_SHA: " ",
+    },
+    { TRIGGER_EXTERNAL_DEPLOYMENT_ID: "a".repeat(129) },
+  ])("does not invent a pin when deployment identity is unavailable", (env) => {
+    expect(getAgentApprovalDeploymentPin(env)).toEqual({});
+  });
+
+  it("isolates approval session identities across app releases", () => {
+    const input = {
+      chatId: "chat-1",
+      keyParts: ["agent-run", "user-1", "chat-1", "send", "message-1"],
+      approvalProtocolVersion: 2,
+      approvalWorkerVersion: undefined,
+    };
+    const first = buildAgentApprovalSessionId({
+      ...input,
+      approvalExternalDeploymentId: "commit-a",
+    });
+    expect(
+      buildAgentApprovalSessionId({
+        ...input,
+        approvalExternalDeploymentId: "commit-a",
+      }),
+    ).toBe(first);
+    expect(
+      buildAgentApprovalSessionId({
+        ...input,
+        approvalExternalDeploymentId: "commit-b",
+      }),
+    ).not.toBe(first);
   });
 
   it("uses a new Session identity for each regeneration attempt", () => {
