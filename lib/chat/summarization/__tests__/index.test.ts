@@ -151,7 +151,11 @@ describe("default compaction policy pipeline", () => {
     attempt.mockClear();
     finish.mockClear();
     onDiscardedUsage.mockClear();
-    resolve.mockResolvedValue({ model: "model-abliterated" });
+    resolve.mockResolvedValue({
+      model: "model-abliterated",
+      fallbackModel: "model-glm-5.3-flash",
+      policy: "abliteration_glm53_fallback_v1",
+    });
   });
   it.each(["free", "pro"] as const)(
     "uses Abliteration for %s compaction and retains source user scope",
@@ -256,7 +260,7 @@ describe("default compaction policy pipeline", () => {
       "model-abliterated",
     );
     expect(start).toHaveBeenCalledWith(
-      { model: "model-abliterated" },
+      expect.objectContaining({ model: "model-abliterated" }),
       "run_scoped",
     );
   });
@@ -272,6 +276,116 @@ describe("default compaction policy pipeline", () => {
     });
     expect(resolve).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["empty", "", "stop"],
+    ["refusal", "I cannot summarize this conversation", "stop"],
+    ["missing sections", "## Current State\nPending authorized check", "stop"],
+    ["truncated", summary, "length"],
+  ])(
+    "retries %s GLM output with Abliteration and retains both usage records",
+    async (_label, text, finishReason) => {
+      resolve.mockResolvedValue({
+        model: "model-glm-5.3-flash",
+        fallbackModel: "model-abliterated",
+        policy: "moderation_glm53_abliteration_fallback_v1",
+      });
+      mockGenerateText
+        .mockResolvedValueOnce({
+          text,
+          finishReason,
+          usage: { inputTokens: 100, outputTokens: 10 },
+        })
+        .mockResolvedValueOnce({
+          text: summary,
+          finishReason: "stop",
+          usage: { inputTokens: 50, outputTokens: 20 },
+        });
+      const result = await compact();
+      expect(result.needsSummarization).toBe(true);
+      expect(
+        mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+      ).toEqual(["model-glm-5.3-flash", "model-abliterated"]);
+      expect(onDiscardedUsage).toHaveBeenCalledWith(
+        expect.objectContaining({ inputTokens: 100, outputTokens: 10 }),
+      );
+      expect(result.summarizationUsage).toMatchObject({
+        inputTokens: 50,
+        outputTokens: 20,
+      });
+      expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
+      expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
+    },
+  );
+  it("retries a transient GLM failure but does not retry a canceled treatment", async () => {
+    resolve.mockResolvedValue({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated",
+      policy: "moderation_glm53_abliteration_fallback_v1",
+    });
+    mockGenerateText
+      .mockRejectedValueOnce({ statusCode: 503 })
+      .mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      });
+    expect((await compact()).needsSummarization).toBe(true);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-glm-5.3-flash", "model-abliterated"]);
+    mockGenerateText.mockClear();
+    const controller = new AbortController();
+    mockGenerateText.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error("canceled");
+    });
+    await expect(compact(controller.signal)).rejects.toThrow();
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenLastCalledWith("aborted", undefined);
+  });
+  it("uses GLM then Abliteration for rolling treatment compaction", async () => {
+    resolve.mockResolvedValue({
+      model: "model-glm-5.3-flash",
+      fallbackModel: "model-abliterated",
+      policy: "moderation_glm53_abliteration_fallback_v1",
+    });
+    mockGenerateText
+      .mockResolvedValueOnce({
+        text: "I cannot summarize",
+        finishReason: "stop",
+        usage: { inputTokens: 100, outputTokens: 10 },
+      })
+      .mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      });
+    const result = await compactModelMessagesInRun({
+      modelMessages: [
+        { role: "user", content: "Authorized fixture.test only" },
+      ],
+      transcriptModelMessages: [],
+      sourceUiMessages: fourMessages,
+      subscription: "free",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "experiment-chat",
+      maxTokens: 100000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+      compactionPolicy: experiment,
+    });
+    expect(result).not.toBeNull();
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-glm-5.3-flash", "model-abliterated"]);
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "model-glm-5.3-flash" }),
+      "run_scoped",
+    );
   });
 });
 

@@ -144,6 +144,32 @@ describe("phLogger", () => {
       ),
     ).resolves.toBeUndefined();
   });
+  it.each([true, false, undefined])(
+    "evaluates deferred boolean assignment %s without emitting flag access",
+    async (enabled) => {
+      mockGetFeatureFlagResult.mockResolvedValueOnce(
+        enabled === undefined ? undefined : { enabled },
+      );
+      await expect(
+        getPostHogBooleanFlagDecisionForUser(
+          "moderation_compaction_v1",
+          "user",
+          { subscription_tier: "free" },
+          { sendFeatureFlagEvents: false },
+        ),
+      ).resolves.toBe(enabled ?? null);
+      expect(mockGetFeatureFlagResult).toHaveBeenCalledWith(
+        "moderation_compaction_v1",
+        "user",
+        {
+          personProperties: { subscription_tier: "free" },
+          sendFeatureFlagEvents: false,
+        },
+      );
+      expect(mockEvaluateFlags).not.toHaveBeenCalled();
+      expect(mockCapture).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["test", true, false, undefined, 42])(
     "preserves raw flag value %s and unavailable results",

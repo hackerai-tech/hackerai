@@ -49,15 +49,25 @@ export async function getPostHogBooleanFlagDecisionForUser(
   flagKey: string,
   userId: string,
   personProperties?: Record<string, string>,
+  options?: { sendFeatureFlagEvents?: boolean },
 ): Promise<boolean | null> {
   const client = getClient();
   if (!client) return null;
   try {
-    const flags = await client.evaluateFlags(userId, {
-      flagKeys: [flagKey],
-      ...(personProperties && { personProperties }),
-    });
-    const value = flags.getFlag(flagKey);
+    const value =
+      options?.sendFeatureFlagEvents === false
+        ? await getPostHogFlagWithoutExposure(
+            client,
+            flagKey,
+            userId,
+            personProperties,
+          )
+        : (
+            await client.evaluateFlags(userId, {
+              flagKeys: [flagKey],
+              ...(personProperties && { personProperties }),
+            })
+          ).getFlag(flagKey);
     return typeof value === "boolean" ? value : null;
   } catch {
     return null;
