@@ -1,3 +1,4 @@
+import { BrowserSessions } from "./utils/browser-sessions";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -249,7 +250,9 @@ export const createTools = (
     triggerRunId,
   });
 
+  const browserSessions = triggerRunId ? new BrowserSessions() : undefined;
   const context: ToolContext = {
+    browserSessions,
     sandboxManager,
     writer,
     userLocation,
@@ -435,6 +438,8 @@ export const createTools = (
 
   return {
     tools,
+    cleanupBrowserSessions: () =>
+      browserSessions?.cleanup() ?? Promise.resolve(),
     getSandbox,
     ensureSandbox,
     getTodoManager,

@@ -686,6 +686,7 @@ export type UnsignedAgentToolApprovalInputRecord = Omit<
 };
 
 export interface ToolContext {
+  browserSessions?: import("@/lib/ai/tools/utils/browser-sessions").BrowserSessions;
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
   userLocation: Geo;

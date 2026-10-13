@@ -57,6 +57,7 @@ import {
 import {
   captureAgentBrowserUsage,
   getAgentBrowserRuntimeEnv,
+  detectAgentBrowserUsage,
 } from "./utils/agent-browser-usage";
 import {
   RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS,
@@ -236,6 +237,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     // The conditional schema adds approval-only fields, but both branches
     // normalize to the same execution input handled below.
   }) as unknown as Tool<RunTerminalCmdInput, unknown>;
+
+  const prepareBrowserEnv = async (sandbox: AnySandbox, command: string) => {
+    const env = getAgentBrowserRuntimeEnv(command);
+    if (!env) return undefined;
+    return { ...env, ...(await context.browserSessions?.prepare(sandbox)) };
+  };
 
   return tool({
     ...runTerminalCmdTool,
@@ -438,7 +445,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             isBackground: false,
           });
           const agentBrowserEnv = isE2B
-            ? getAgentBrowserRuntimeEnv(command)
+            ? await prepareBrowserEnv(sandbox, command)
             : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
@@ -483,7 +490,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           // passed in pty_create and the local runner spawns it directly.
           if (!isCentrifugo) {
             await session.handle.sendInput(
-              new TextEncoder().encode(command + "\n"),
+              new TextEncoder().encode(
+                (context.browserSessions && agentBrowserEnv
+                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                  : command) + "\n",
+              ),
             );
           }
           session.lastActivityAt = Date.now();
@@ -758,6 +769,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           : executeWithLocalRelayRecovery(sandbox));
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
+          const agentBrowserEnv = isE2BSandbox(sandboxInstance)
+            ? await prepareBrowserEnv(sandboxInstance, command)
+            : undefined;
           captureAgentBrowserUsage({
             context,
             command,
@@ -1099,9 +1113,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
-            const agentBrowserEnv = isE2BSandbox(sandboxInstance)
-              ? getAgentBrowserRuntimeEnv(command)
-              : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
@@ -1157,7 +1168,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Augment PATH for local sandboxes so user-installed tools
             // (e.g. ~/go/bin/waybackurls) are found without full paths.
             const effectiveCommand = augmentCommandPath(
-              command,
+              context.browserSessions &&
+                isE2BSandbox(sandboxInstance) &&
+                detectAgentBrowserUsage(command)
+                ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                : command,
               sandboxInstance,
             );
 
