@@ -1,4 +1,7 @@
-import { resolvePrivateSkillTools } from "@/lib/user-skills/runtime";
+import {
+  resolvePrivateSkillTools,
+  PRIVATE_SKILL_DISCOVERY,
+} from "@/lib/user-skills/runtime";
 import type { AuxiliaryVisionDescriptionCacheWriter } from "@/lib/chat/auxiliary-vision";
 import type {
   AbliteratedModelTelemetry,
@@ -844,7 +847,12 @@ export async function createAgentStream(
     "search_skills" in ctx.tools,
   );
   if (privateSkillTools)
-    ctx = { ...ctx, tools: { ...ctx.tools, ...privateSkillTools } };
+    ctx = {
+      ...ctx,
+      tools: { ...ctx.tools, ...privateSkillTools },
+      // Trusted discovery guidance only; user-authored metadata/content stays in tool results.
+      currentSystemPrompt: `${ctx.currentSystemPrompt}\n\n${PRIVATE_SKILL_DISCOVERY}`,
+    };
   const configuredMaxSteps = getMaxStepsForUser(ctx.mode);
   const generationStepOffset = state.agentStepCount;
   state.configuredMaxSteps = configuredMaxSteps;
