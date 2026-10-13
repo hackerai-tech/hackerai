@@ -533,7 +533,10 @@ export const createAgentTriggerPost =
           subscription,
         );
       stage = "access_gates";
-      await assertUserCanMakeCostIncurringRequest(userId);
+      await assertUserCanMakeCostIncurringRequest(userId, {
+        retryNetworkFailure: true,
+        signal: req.signal,
+      });
       const regionalSubscriptionCountry =
         subscriptionFirstCountryFromRequest(req);
       await enforceRegionalSubscriptionFirst({

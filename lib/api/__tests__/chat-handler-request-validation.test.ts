@@ -30,7 +30,7 @@ describe("chat-handler request validation", () => {
     const modeBoundary = source.indexOf("requireVercelChatMode(rawMode)");
     const authentication = source.indexOf("getUserIDAndPro(req)");
     const billingGate = source.indexOf(
-      "assertUserCanMakeCostIncurringRequest(userId)",
+      "assertUserCanMakeCostIncurringRequest(userId,",
     );
 
     expect(modeBoundary).toBeGreaterThan(-1);

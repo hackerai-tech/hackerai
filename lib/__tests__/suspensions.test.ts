@@ -1,4 +1,11 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 import { ChatSDKError } from "../errors";
 
 const mockQuery = jest.fn();
@@ -165,5 +172,192 @@ describe("suspensions", () => {
         suspensionSource: "support",
       },
     });
+  });
+});
+
+describe("web suspension-gate transport recovery", () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    jest.spyOn(console, "warn").mockImplementation(() => {});
+    jest.spyOn(console, "info").mockImplementation(() => {});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("retries one failed read with the same user and accepts an authoritative clear result", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce(null as never);
+    await expect(
+      assertUserCanMakeCostIncurringRequest("user_123", {
+        retryNetworkFailure: true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(mockQuery.mock.calls[1]).toEqual(mockQuery.mock.calls[0]);
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"access":"allowed"'),
+    );
+  });
+
+  it("still blocks a suspended account when the retry succeeds", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockResolvedValueOnce({
+        category: "dispute_billing_hold",
+        source: "stripe",
+        source_id: "private_source",
+      } as never);
+    await expect(
+      assertUserCanMakeCostIncurringRequest("user_123", {
+        retryNetworkFailure: true,
+      }),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(console.info).toHaveBeenCalledWith(
+      expect.stringContaining('"access":"blocked"'),
+    );
+    expect(
+      JSON.stringify((console.info as jest.Mock).mock.calls),
+    ).not.toContain("private_source");
+  });
+
+  it("exhausts one retry and fails closed without another read", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    const lastError = new TypeError("fetch failed");
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockRejectedValueOnce(lastError as never)
+      .mockResolvedValueOnce(null as never);
+    await expect(
+      assertUserCanMakeCostIncurringRequest("user_123", {
+        retryNetworkFailure: true,
+      }),
+    ).rejects.toBe(lastError);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('"outcome":"exhausted"'),
+    );
+  });
+
+  it.each([
+    new Error("fetch failed"),
+    new TypeError("unknown parser failure"),
+    new ChatSDKError("forbidden:chat"),
+  ])("does not retry application or unknown errors: %s", async (error) => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    mockQuery.mockRejectedValueOnce(error as never);
+    await expect(
+      assertUserCanMakeCostIncurringRequest("user_123", {
+        retryNetworkFailure: true,
+      }),
+    ).rejects.toBe(error);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps worker, billing, and history checks at their existing read budgets", async () => {
+    const guards = await import("../suspensions");
+    for (const guard of [
+      guards.assertUserCanMakeCostIncurringRequest,
+      guards.assertUserCanStartBillingTransaction,
+      guards.assertUserCanAccessChatHistory,
+    ]) {
+      mockQuery.mockReset();
+      const error = new TypeError("fetch failed");
+      mockQuery.mockRejectedValueOnce(error as never);
+      await expect(guard("user_123")).rejects.toBe(error);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("does not retry an already canceled request", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    const controller = new AbortController();
+    controller.abort(new Error("canceled"));
+    mockQuery.mockRejectedValueOnce(new TypeError("fetch failed") as never);
+    await expect(
+      assertUserCanMakeCostIncurringRequest("user_123", {
+        retryNetworkFailure: true,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("canceled");
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a clear initial read that finishes after cancellation", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    const controller = new AbortController();
+    let finishRead!: (value: never) => void;
+    mockQuery.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const result = assertUserCanMakeCostIncurringRequest("user_123", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toThrow("canceled");
+    controller.abort(new Error("canceled"));
+    finishRead(null as never);
+    await rejected;
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(console.info).not.toHaveBeenCalled();
+  });
+
+  it("cancels during backoff without issuing the retry", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    const controller = new AbortController();
+    mockQuery.mockRejectedValueOnce(new TypeError("fetch failed") as never);
+    const result = assertUserCanMakeCostIncurringRequest("user_123", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    await rejected;
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not accept a late clear result after the request is canceled", async () => {
+    const { assertUserCanMakeCostIncurringRequest } =
+      await import("../suspensions");
+    const controller = new AbortController();
+    let finishRead!: (value: never) => void;
+    let startedRetry!: () => void;
+    const retryStarted = new Promise<void>((resolve) => {
+      startedRetry = resolve;
+    });
+    mockQuery
+      .mockRejectedValueOnce(new TypeError("fetch failed") as never)
+      .mockImplementationOnce(() => {
+        startedRetry();
+        return new Promise((resolve) => {
+          finishRead = resolve;
+        });
+      });
+    const result = assertUserCanMakeCostIncurringRequest("user_123", {
+      retryNetworkFailure: true,
+      signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toThrow("canceled");
+    await retryStarted;
+    controller.abort(new Error("canceled"));
+    finishRead(null as never);
+    await rejected;
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(console.info).not.toHaveBeenCalled();
   });
 });
