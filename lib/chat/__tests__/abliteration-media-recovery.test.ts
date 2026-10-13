@@ -13,6 +13,7 @@ import { createAbliterationVisionPreprocessor } from "../abliteration-vision";
 
 jest.mock("server-only", () => ({}));
 jest.mock("../auxiliary-vision", () => ({
+  ...jest.requireActual("../auxiliary-vision"),
   describeImageWithAuxiliaryVision: jest.fn(),
 }));
 

@@ -314,8 +314,8 @@ describe("file tool large text safety", () => {
 
   test("reads ranges through the bounded sandbox-side path", async () => {
     const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_READ_RANGE_START).toBe("500");
-      expect(opts.envVars.HACKERAI_FILE_READ_RANGE_END).toBe("501");
+      expect(opts.envs.HACKERAI_FILE_READ_RANGE_START).toBe("500");
+      expect(opts.envs.HACKERAI_FILE_READ_RANGE_END).toBe("501");
       return {
         stdout: JSON.stringify({
           path: "/tmp/download.php",
@@ -606,7 +606,7 @@ describe("file tool image view", () => {
     const commandRun = jest
       .fn<Promise<FakeCommandResult>, [string, any?]>()
       .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
         return {
           stdout: JSON.stringify({
             path: "/tmp/screenshot.png",
@@ -690,7 +690,7 @@ describe("file tool image view", () => {
     const commandRun = jest
       .fn<Promise<FakeCommandResult>, [string, any?]>()
       .mockImplementationOnce(async (_command, opts) => {
-        expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
+        expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("0");
         return {
           stdout: JSON.stringify({
             path: "/tmp/screenshot.png",
@@ -798,7 +798,7 @@ describe("file tool image view", () => {
       new Error("temporary URL refresh failure"),
     );
     const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
       return {
         stdout: JSON.stringify({
           path: "/tmp/screenshot.png",
@@ -856,7 +856,7 @@ describe("file tool image view", () => {
       mediaType: "image/png",
     });
     const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
       return {
         stdout: JSON.stringify({
           path: "/tmp/screenshot.png",
@@ -911,7 +911,7 @@ describe("file tool image view", () => {
       mediaType: "image/png",
     });
     const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
       return {
         stdout: JSON.stringify({
           path: "/tmp/screenshot.png",
@@ -1168,7 +1168,7 @@ describe("file tool image view", () => {
     });
 
     const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
       return {
         stdout: JSON.stringify({
           path: "/tmp/screenshot.png",
@@ -1214,7 +1214,7 @@ describe("file tool image view", () => {
 
   test("returns a text error instead of invalid image-data for corrupt sandbox images", async () => {
     const commandRun = jest.fn(async (_command, opts) => {
-      expect(opts.envVars.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
+      expect(opts.envs.HACKERAI_FILE_VIEW_INCLUDE_DATA).toBe("1");
       return {
         stdout: JSON.stringify({
           path: "/tmp/broken.png",

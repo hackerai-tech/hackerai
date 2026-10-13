@@ -204,10 +204,10 @@ describe("AccountTab", () => {
 
     render(<AccountTab />);
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(
-      "Your latest renewal payment was declined for insufficient funds. The invoice is still unpaid",
-    );
+    const alert = await screen.findByRole("region", {
+      name: "Subscription payment recovery",
+    });
+    expect(alert).toHaveTextContent("Your renewal payment didn’t go through");
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
       "recovery_prompt_impressed",
       expect.objectContaining({
@@ -220,12 +220,13 @@ describe("AccountTab", () => {
 
     const user = userEvent.setup();
     await user.click(
-      within(alert).getByRole("button", { name: "Update payment" }),
+      within(alert).getByRole("button", { name: "Update card" }),
     );
 
     await waitFor(() => {
       expect(mockRedirectToBillingPortal).toHaveBeenCalledWith(
         "payment_method",
+        { surface: "account_settings", returnPath: "/" },
       );
     });
     expect(mockCaptureAuthenticatedEvent).toHaveBeenCalledWith(
@@ -264,6 +265,39 @@ describe("AccountTab", () => {
       "billing_past_due_banner_impressed",
       expect.anything(),
     );
+  });
+
+  it("offers access refresh after a status recheck confirms the renewal is paid", async () => {
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "past_due",
+      latestInvoiceId: "in_renewal",
+      renewalPaymentRequired: true,
+    } as never);
+    render(<AccountTab />);
+    const check = await screen.findByRole("button", {
+      name: "Check payment status",
+    });
+    mockGetSubscriptionCancellationStatus.mockResolvedValueOnce({
+      hasActiveSubscription: true,
+      cancelAtPeriodEnd: false,
+      subscriptionStatus: "active",
+      latestInvoiceId: "in_renewal",
+      renewalInvoicePaid: true,
+    } as never);
+    await userEvent.click(check);
+    await waitFor(() =>
+      expect(mockToastSuccess).toHaveBeenCalledWith(
+        "Your renewal invoice is paid. Refresh to update your access.",
+        expect.objectContaining({
+          action: expect.objectContaining({ label: "Refresh" }),
+        }),
+      ),
+    );
+    expect(
+      screen.queryByRole("region", { name: "Subscription payment recovery" }),
+    ).not.toBeInTheDocument();
   });
 
   it("updates the tab when cancellation is scheduled from the dialog", async () => {

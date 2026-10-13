@@ -1,4 +1,5 @@
 import "server-only";
+import { extractPreviewFileIdsFromParts } from "@/lib/utils/file-preview-ids";
 import {
   countIndependentAbliterationResponses,
   type AbliterationHistoryEntry,
@@ -27,6 +28,10 @@ import type {
   SubscriptionTier,
   NoteCategory,
 } from "@/types";
+import type {
+  UpdateVulnerabilityReportInput,
+  CreateVulnerabilityReportInput,
+} from "@/lib/findings/validation";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { buildTodoContext } from "@/lib/chat/todo-context";
@@ -359,6 +364,21 @@ const getRetryableDatabaseErrorReason = (
   return undefined;
 };
 
+// Response-body termination is safe to retry only for this read. Do not
+// broaden mutation retries: the write may already have committed.
+const getRetryableHistoryPageErrorReason = (
+  error: unknown,
+): string | undefined => {
+  if (
+    error instanceof TypeError &&
+    error.message === "terminated" &&
+    getErrorData(error) === undefined
+  ) {
+    return "network_response_terminated";
+  }
+  return getRetryableDatabaseErrorReason(error);
+};
+
 const getRetryableSaveMessageErrorReason = (
   error: unknown,
 ): string | undefined => {
@@ -414,6 +434,9 @@ const getRetryableReasonForDatabaseOperation = (
   operation: string,
   error: unknown,
 ): string | undefined => {
+  if (operation === "messages.getMessagesPageForBackend") {
+    return getRetryableHistoryPageErrorReason(error);
+  }
   if (operation === "messages.saveMessage") {
     return getRetryableSaveMessageErrorReason(error);
   }
@@ -628,6 +651,7 @@ const getMessagesPageForBackendWithRetry = async ({
   mode,
   regenerate,
   newMessagesCount,
+  retryBudget,
 }: {
   chatId: string;
   userId: string;
@@ -635,6 +659,7 @@ const getMessagesPageForBackendWithRetry = async ({
   mode?: ChatMode;
   regenerate: boolean;
   newMessagesCount: number;
+  retryBudget: { used: number };
 }): Promise<MessagesPageForBackendResult> => {
   const queryArgs = {
     serviceKey,
@@ -650,12 +675,13 @@ const getMessagesPageForBackendWithRetry = async ({
         queryArgs,
       );
     } catch (error) {
-      const retryReason = getRetryableDatabaseErrorReason(error);
-      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[attemptIndex];
+      const retryReason = getRetryableHistoryPageErrorReason(error);
+      const retryDelayMs = GET_MESSAGES_PAGE_RETRY_DELAYS_MS[retryBudget.used];
       if (!retryReason || retryDelayMs === undefined) {
         throw error;
       }
 
+      retryBudget.used++;
       console.warn(
         JSON.stringify({
           level: "warn",
@@ -667,6 +693,8 @@ const getMessagesPageForBackendWithRetry = async ({
           attempt: attemptIndex + 1,
           next_attempt: attemptIndex + 2,
           retry_delay_ms: retryDelayMs,
+          history_retry_count: retryBudget.used,
+          history_retry_limit: GET_MESSAGES_PAGE_RETRY_DELAYS_MS.length,
           chat_id: chatId,
           user_id: userId,
           mode,
@@ -984,6 +1012,7 @@ export async function saveMessage({
   isHidden,
   wasAborted,
   wasPreemptiveTimeout,
+  userInitiatedAbort,
   abliterationRouting,
 }: {
   chatId: string;
@@ -1005,6 +1034,7 @@ export async function saveMessage({
   isHidden?: boolean;
   wasAborted?: boolean;
   wasPreemptiveTimeout?: boolean;
+  userInitiatedAbort?: boolean;
   abliterationRouting?: AbliterationRoutingMarker;
 }) {
   let fixedParts = message.parts;
@@ -1016,6 +1046,7 @@ export async function saveMessage({
     fixedParts =
       message.role === "assistant"
         ? fixIncompleteMessageParts(message.parts, {
+            userInitiatedAbort,
             logContext: {
               service: "chat-handler",
               source: "save_message",
@@ -1036,6 +1067,7 @@ export async function saveMessage({
       any,
       any
     >[];
+    const previewFileIds = extractPreviewFileIdsFromParts(convexSafeParts);
     const storageSafeMessage =
       message.role === "assistant"
         ? compactMessageForStorage({ ...message, parts: convexSafeParts })
@@ -1099,6 +1131,7 @@ export async function saveMessage({
       role: message.role,
       parts: partsForSave,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
+      previewFileIds: previewFileIds.length > 0 ? previewFileIds : undefined,
       model,
       mode,
       generationStartedAt,
@@ -1221,6 +1254,12 @@ export async function handleInitialChatAndUserMessage({
         "You don't have permission to access this chat",
       );
     }
+  }
+
+  // Regeneration skips the user-message write that clears cancellation. Reset
+  // it after ownership validation, before tools or cancellation polling start.
+  if (regenerate && chat) {
+    await prepareForNewStream({ chatId });
   }
 
   // Only save user message if this is not a regeneration
@@ -1412,6 +1451,8 @@ export async function getMessagesByChatId({
         const PAGE_SIZE = 24;
         const MAX_PAGES = 4;
 
+        // One budget for the complete history read, not a fresh budget per page.
+        const retryBudget = { used: 0 };
         let cursor: string | null = null;
         let pagesFetched = 0;
         let fetchedDesc: UIMessage[] = [];
@@ -1436,6 +1477,7 @@ export async function getMessagesByChatId({
             mode,
             regenerate: !!regenerate,
             newMessagesCount: newMessages.length,
+            retryBudget,
           });
           const {
             page,
@@ -1631,7 +1673,7 @@ export async function getMessagesByChatId({
           new_messages_count: newMessages.length,
           error_name: error instanceof Error ? error.name : typeof error,
           error_message: truncateDiagnosticString(stringifyError(error)),
-          db_retry_reason: getRetryableDatabaseErrorReason(error),
+          db_retry_reason: getRetryableHistoryPageErrorReason(error),
           db_error_data: getErrorData(error),
         });
 
@@ -2003,6 +2045,116 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
     console.error("[DB Actions] Failed to get latest summary:", error);
     return null;
   }
+}
+
+// ============================================================================
+// Findings Actions
+// ============================================================================
+
+export async function createFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  report,
+  evidenceVerification,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  report: CreateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  try {
+    return await getConvexClient().mutation(
+      api.findings.createFindingForBackend,
+      {
+        serviceKey,
+        userId,
+        chatId,
+        messageId,
+        toolCallId,
+        report,
+        ...(evidenceVerification ? { evidenceVerification } : {}),
+      },
+    );
+  } catch (error) {
+    throw databaseError("findings.createFindingForBackend", error, {
+      user_id: userId,
+      chat_id: chatId,
+      message_id: messageId,
+      tool_call_id: toolCallId,
+    });
+  }
+}
+
+export async function listReports({
+  userId,
+  chatId,
+  limit,
+  cursor,
+  search,
+  status,
+}: {
+  userId: string;
+  chatId: string;
+  limit: number;
+  cursor: string | null;
+  search?: string;
+  status?: "active" | "closed";
+}) {
+  return getConvexClient().query(api.findings.listReportsForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    paginationOpts: { numItems: limit, cursor },
+    ...(search !== undefined ? { search } : {}),
+    ...(status ? { status } : {}),
+  });
+}
+
+export async function getReport({
+  userId,
+  chatId,
+  findingId,
+}: {
+  userId: string;
+  chatId: string;
+  findingId: string;
+}) {
+  return getConvexClient().query(api.findings.getReportForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    findingId,
+  });
+}
+
+export async function updateFinding({
+  userId,
+  chatId,
+  messageId,
+  toolCallId,
+  update,
+  evidenceVerification,
+}: {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  toolCallId: string;
+  update: UpdateVulnerabilityReportInput;
+  evidenceVerification?: import("@/lib/ai/subagents/contracts").EvidenceVerification;
+}) {
+  return getConvexClient().mutation(api.findings.updateFindingForBackend, {
+    serviceKey,
+    userId,
+    chatId,
+    messageId,
+    toolCallId,
+    update,
+    ...(evidenceVerification ? { evidenceVerification } : {}),
+  });
 }
 
 // ============================================================================

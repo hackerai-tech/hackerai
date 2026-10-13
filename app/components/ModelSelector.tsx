@@ -162,14 +162,12 @@ const AutoOptionButton = ({
     aria-pressed={isSelected}
     className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
       mobile ? "py-2.5" : "py-2"
-    } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+    } ${isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted active:bg-muted"}`}
   >
     <div className="flex-1 min-w-0">
       <span
         className={`text-sm font-medium transition-colors ${
-          isSelected
-            ? "text-accent-foreground"
-            : "text-muted-foreground group-hover:text-foreground"
+          isSelected ? "text-accent-foreground" : "text-popover-foreground"
         }`}
       >
         Auto
@@ -222,17 +220,15 @@ const ModelOptionButton = ({
         isPending
           ? `cursor-wait opacity-80 ${isSelected ? "bg-accent" : ""}`
           : isSelected
-            ? "cursor-pointer bg-accent"
-            : "cursor-pointer hover:bg-muted/50 active:bg-muted/50"
+            ? "cursor-pointer bg-accent text-accent-foreground"
+            : "cursor-pointer hover:bg-muted active:bg-muted"
       }`}
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <span
             className={`text-sm transition-colors ${
-              isSelected
-                ? "text-accent-foreground"
-                : "text-muted-foreground group-hover:text-foreground"
+              isSelected ? "text-accent-foreground" : "text-popover-foreground"
             }`}
           >
             {option.label}

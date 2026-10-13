@@ -627,11 +627,28 @@ describe("selectModel", () => {
     });
   });
 
+  it.each([
+    undefined,
+    "auto",
+    "hackerai-standard",
+    "hackerai-pro",
+    "hackerai-max",
+  ] as const)(
+    "routes free Agent %s directly to GLM Flash for text and PDFs",
+    (selection) => {
+      for (const hasPdf of [false, true]) {
+        expect(selectModel("agent", "free", selection, false, hasPdf)).toBe(
+          "model-glm-5.3-flash-agent",
+        );
+      }
+    },
+  );
+
   // Free user guard
   describe("free user guard", () => {
     it("should ignore tier override for free users in agent mode", () => {
       expect(selectModel("agent", "free", "hackerai-pro")).toBe(
-        "agent-model-free",
+        "model-glm-5.3-flash-agent",
       );
     });
 
@@ -753,7 +770,7 @@ describe("fixIncompleteMessageParts", () => {
       toolCallId: "call_1",
       state: "output-error",
       input: { title: "Test", content: "Content" },
-      errorText: "Stopped by user before the tool completed.",
+      errorText: expect.stringContaining("Execution was interrupted"),
     });
   });
 
@@ -826,7 +843,7 @@ describe("fixIncompleteMessageParts", () => {
       type: "tool-create_note",
       state: "output-error",
       input: { title: "Partial" },
-      errorText: "Stopped by user before the tool completed.",
+      errorText: expect.stringContaining("Execution was interrupted"),
     });
   });
 
@@ -857,7 +874,7 @@ describe("fixIncompleteMessageParts", () => {
         brief: "Test with cloudscraper to handle Cloudflare challenge",
         path: "/home/user/telenet_cloudscraper.py",
       },
-      errorText: "Stopped by user before the tool completed.",
+      errorText: expect.stringContaining("Execution was interrupted"),
     });
   });
 

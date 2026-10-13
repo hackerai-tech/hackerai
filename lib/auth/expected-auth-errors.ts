@@ -58,6 +58,23 @@ export const isEndedSessionRefreshError = (value: unknown): boolean => {
   );
 };
 
+/** Match only WorkOS's terminal provider response, not arbitrary invalid_grant text. */
+export const isInvalidRefreshTokenError = (value: unknown): boolean => {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.name === "TokenRefreshError" && record.isTransient !== false) {
+    return false;
+  }
+  const cause = record.name === "TokenRefreshError" ? record.cause : record;
+  if (!cause || typeof cause !== "object") return false;
+  const provider = cause as Record<string, unknown>;
+  return (
+    provider.status === 400 &&
+    provider.error === "invalid_grant" &&
+    provider.errorDescription === "Invalid refresh token."
+  );
+};
+
 export const isInvalidCodeVerifierError = (value: unknown): boolean => {
   const errorText = collectAuthErrorText(value).toLowerCase();
   return (

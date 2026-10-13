@@ -25,6 +25,8 @@ return nextUsed
 `;
 
 export interface FreeMonthlyCostSnapshot {
+  capReasonOnExhaustion?: import("@/lib/limit-pressure").LimitCapReason;
+  budgetPeriod?: "daily" | "monthly";
   monthlyLimitPoints: number;
   monthlyRemainingAtStart: number;
   monthlyResetTime: Date;

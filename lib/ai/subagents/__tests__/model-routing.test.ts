@@ -1,4 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
+import { myProvider, supportsMultimodalToolResults } from "@/lib/ai/providers";
+import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 
 import {
   resolveSubagentModelForImageToolResults,
@@ -17,6 +19,30 @@ describe("subagent model routing", () => {
     expect(
       resolveSubagentModelForImageToolResults(SUBAGENT_FREE_TEXT_MODEL, false),
     ).toBe(SUBAGENT_FREE_TEXT_MODEL);
+  });
+
+  it("executes paid text work on V4.1 with matching cached-token pricing", () => {
+    const model = resolveInitialSubagentModel({
+      capabilities: ["code_read"],
+      complexity: "low",
+      expectedDurationMinutes: 3,
+      outputKind: "answer",
+      subscription: "pro",
+    });
+    expect(myProvider.languageModel(model).modelId).toBe(
+      "deepseek/deepseek-v4.1-flash",
+    );
+    expect(supportsMultimodalToolResults(model)).toBe(true);
+    expect(
+      calculateRawModelUsageCostDollars({
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 500_000,
+        modelName: model,
+      }),
+    ).toBeCloseTo(1.353);
+    expect(resolveSubagentModelForImageToolResults(model, true)).toBe(model);
+    expect(resolveSubagentModelForImageToolResults(model, false)).toBe(model);
   });
 
   it("prioritizes browser QA and longer complex children", () => {

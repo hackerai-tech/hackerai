@@ -64,13 +64,16 @@ describe("terminal shell tool display helpers", () => {
 
     expect(result.blockAction(false)).toBe("Invalid command");
     expect(result.blockTarget).toBe("Invalid command");
-    expect(result.finalOutput).toBe(validationError);
+    expect(result.finalOutput).toBe(
+      "Some tool parameters did not match the required format.",
+    );
     expect(result.sidebarContent).toMatchObject({
       command: "Invalid command",
-      output: validationError,
+      output: "Some tool parameters did not match the required format.",
       toolCallId: "call-empty",
       executionPhase: "failed",
     });
+    expect(JSON.stringify(result.sidebarContent)).not.toContain("Value: {}.");
   });
 
   it("keeps non-validation empty terminal failures label-consistent", () => {

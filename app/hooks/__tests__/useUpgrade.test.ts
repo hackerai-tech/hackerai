@@ -78,6 +78,39 @@ describe("useUpgrade checkout attempts", () => {
     window.sessionStorage.clear();
   });
 
+  it("turns a canceled-renewal 409 into a persistent actionable billing error", async () => {
+    global.fetch = jest.fn().mockResolvedValue(
+      response({
+        ok: false,
+        status: 409,
+        body: {
+          code: "recent_renewal_payment_needs_review",
+          error: "A recent subscription payment is still being resolved",
+        },
+      }),
+    );
+    const { result } = renderHook(() => useUpgrade());
+    await act(async () => {
+      await result.current.handleUpgrade(
+        "pro-monthly-plan",
+        undefined,
+        undefined,
+        "free",
+      );
+    });
+    expect(result.current.billingReviewRequired).toBe(true);
+    expect(result.current.upgradeLoading).toBe(false);
+    expect(mockToastError).toHaveBeenCalledWith(
+      "Your previous subscription payment needs review",
+      expect.objectContaining({
+        duration: Infinity,
+        action: expect.objectContaining({ label: "Review billing" }),
+      }),
+    );
+    act(() => result.current.clearBillingReview());
+    expect(result.current.billingReviewRequired).toBe(false);
+  });
+
   it("coalesces duplicate clicks before React commits the loading state", async () => {
     let resolveFetch: ((value: Response) => void) | undefined;
     global.fetch = jest.fn(

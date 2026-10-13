@@ -195,7 +195,7 @@ async function main() {
       for (const count of [1, 11, 23]) {
         await score(
           `recovered-answer-${count}`,
-          "model-deepseek-v4-flash-0731",
+          "model-deepseek-v4-flash-vision",
           recovered,
           count,
         );

@@ -9,6 +9,7 @@ interface ToolBlockProps {
   isClickable?: boolean;
   onClick?: () => void;
   onKeyDown?: (e: React.KeyboardEvent) => void;
+  ariaLabel?: string;
   accessibleLabel?: string;
 }
 
@@ -20,6 +21,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
   isClickable = false,
   onClick,
   onKeyDown,
+  ariaLabel,
   accessibleLabel,
 }) => {
   const baseClasses =
@@ -28,33 +30,49 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
     ? "cursor-pointer hover:bg-muted/40 transition-colors"
     : "";
 
+  const content = (
+    <>
+      <div className="w-[21px] inline-flex items-center flex-shrink-0 text-foreground [&>svg]:h-4 [&>svg]:w-4">
+        {icon}
+      </div>
+      <div className="max-w-[100%] truncate text-muted-foreground relative top-[-1px]">
+        <span className="text-[13px]">
+          {isShimmer ? <Shimmer>{action}</Shimmer> : action}
+        </span>
+        {target && (
+          <span className="text-[12px] font-mono ml-[6px] text-muted-foreground/70">
+            {target}
+          </span>
+        )}
+      </div>
+    </>
+  );
+
   return (
     <div className="flex-1 min-w-0">
-      <button
-        className={`${baseClasses} ${clickableClasses}`}
-        onClick={isClickable ? onClick : undefined}
-        onKeyDown={isClickable ? onKeyDown : undefined}
-        tabIndex={isClickable ? 0 : undefined}
-        role={isClickable ? "button" : undefined}
-        aria-label={
-          accessibleLabel ??
-          (isClickable && target ? `Open ${target} in sidebar` : undefined)
-        }
-      >
-        <div className="w-[21px] inline-flex items-center flex-shrink-0 text-foreground [&>svg]:h-4 [&>svg]:w-4">
-          {icon}
+      {isClickable ? (
+        <button
+          type="button"
+          className={`${baseClasses} ${clickableClasses}`}
+          onClick={onClick}
+          onKeyDown={onKeyDown}
+          aria-label={
+            accessibleLabel ??
+            ariaLabel ??
+            (target ? `Open ${target} in sidebar` : undefined)
+          }
+        >
+          {content}
+        </button>
+      ) : (
+        <div
+          className={baseClasses}
+          role={accessibleLabel ? "group" : undefined}
+          aria-label={accessibleLabel}
+        >
+          {content}
         </div>
-        <div className="max-w-[100%] truncate text-muted-foreground relative top-[-1px]">
-          <span className="text-[13px]">
-            {isShimmer ? <Shimmer>{action}</Shimmer> : action}
-          </span>
-          {target && (
-            <span className="text-[12px] font-mono ml-[6px] text-muted-foreground/70">
-              {target}
-            </span>
-          )}
-        </div>
-      </button>
+      )}
     </div>
   );
 };

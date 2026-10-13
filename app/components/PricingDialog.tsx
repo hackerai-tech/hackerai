@@ -9,6 +9,9 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
+import { useBillingRecoveryStatus } from "../hooks/useBillingRecoveryStatus";
+import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
+import { getSubscriptionCancellationStatus } from "@/lib/billing/client";
 import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
@@ -20,17 +23,8 @@ import {
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
-import {
-  captureAuthenticatedEvent,
-  captureUpgradeCtaImpression,
-} from "@/lib/analytics/client";
+import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
 import type { PricingDialogContext } from "../hooks/usePricingDialog";
-import {
-  PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-  proMonthlyPricingAssignmentForVariant,
-  proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentPresentation,
-} from "@/lib/experiments/pro-monthly-pricing";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -69,9 +63,6 @@ type PricingIntentCopy = {
   proPlusButtonText: string;
   ultraButtonText: string;
 };
-
-const PRICING_EXPOSURE_RETRY_MS = 500;
-const PRICING_EXPOSURE_MAX_ATTEMPTS = 10;
 
 export function getPricingIntentCopy(
   context: PricingDialogContext | undefined,
@@ -233,25 +224,55 @@ const PlanCard: React.FC<PlanCardProps> = ({
   );
 };
 
+function DelayedBillingStatus() {
+  const [visible, setVisible] = React.useState(false);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), 300);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!visible) return null;
+  return (
+    <p role="status" className="text-center text-sm text-muted-foreground">
+      Checking your billing status…
+    </p>
+  );
+}
+
 const PricingDialog: React.FC<PricingDialogProps> = ({
   isOpen,
   onClose,
   context,
 }) => {
-  const { user } = useAuth();
+  const { user, organizationId, loading: authLoading } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
-  const { upgradeLoading, handleUpgrade } = useUpgrade();
+  const {
+    upgradeLoading,
+    handleUpgrade,
+    billingReviewRequired,
+    clearBillingReview,
+  } = useUpgrade();
+  const billing = useBillingRecoveryStatus(isOpen);
+  const billingBlocked = Boolean(
+    user &&
+    (authLoading ||
+      billing.isLoading ||
+      billing.error ||
+      billingReviewRequired ||
+      billing.data?.checkoutRequiresReview ||
+      billing.data?.subscriptionStatus === "past_due" ||
+      billing.data?.subscriptionStatus === "unpaid"),
+  );
+  const checkBilling = async () => {
+    const status = await getSubscriptionCancellationStatus();
+    await billing.mutate(status, { revalidate: false });
+    if (status && !status.checkoutRequiresReview) clearBillingReview?.();
+    return status;
+  };
   const [isYearly, setIsYearly] = React.useState(false);
   const capturedPricingCtaImpressionRef = React.useRef(false);
-  const capturedPricingExperimentExposureRef = React.useRef(false);
-  const [pricingExperiment, setPricingExperiment] = React.useState<
-    ProMonthlyPricingExperimentPresentation | undefined
-  >();
-  const [pricingExperimentResolved, setPricingExperimentResolved] =
-    React.useState(false);
-  const [pricingExperimentUnavailable, setPricingExperimentUnavailable] =
-    React.useState(false);
   const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
   const [pendingUpgrade, setPendingUpgrade] = React.useState<{
     plan: string;
@@ -259,69 +280,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     price: number;
   } | null>(null);
   const pricingIntentCopy = getPricingIntentCopy(context, subscription);
-  const monthlyProPrice =
-    subscription === "free" && pricingExperiment
-      ? pricingExperiment.displayedAmountDollars
-      : PRICING.pro.monthly;
-  const displayedMonthlyProPrice =
-    subscription === "free" && pricingExperimentUnavailable
-      ? "—"
-      : subscription === "free" && !pricingExperimentResolved
-        ? "…"
-        : monthlyProPrice;
-  const activePricingExperiment =
-    subscription === "free" && !isYearly ? pricingExperiment : undefined;
-
-  React.useEffect(() => {
-    if (!isOpen || pricingExperimentResolved) return;
-    if (subscription !== "free") return;
-
-    const controller = new AbortController();
-    setPricingExperimentUnavailable(false);
-    void fetch("/api/pricing/pro-monthly-experiment", {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Pricing assignment unavailable");
-        const value = (await response.json()) as {
-          key?: unknown;
-          variant?: unknown;
-          priceLookupKey?: unknown;
-          displayedAmountDollars?: unknown;
-          stripePriceId?: unknown;
-        };
-        if (controller.signal.aborted) return;
-        const expected = proMonthlyPricingAssignmentForVariant(
-          value.variant === "test" ? "test" : "control",
-        );
-        const stripePriceId =
-          typeof value.stripePriceId === "string" &&
-          value.stripePriceId.length > 0
-            ? value.stripePriceId
-            : undefined;
-        const isValid =
-          value.key === expected.key &&
-          value.priceLookupKey === expected.priceLookupKey &&
-          value.displayedAmountDollars === expected.displayedAmountDollars &&
-          stripePriceId;
-        if (!isValid) throw new Error("Invalid pricing assignment");
-        setPricingExperiment({
-          ...expected,
-          stripePriceId,
-        });
-        setPricingExperimentResolved(true);
-      })
-      .catch((error: unknown) => {
-        if ((error as { name?: unknown })?.name === "AbortError") return;
-        setPricingExperiment(undefined);
-        setPricingExperimentUnavailable(true);
-        setPricingExperimentResolved(false);
-      });
-
-    return () => controller.abort();
-  }, [isOpen, pricingExperimentResolved, subscription]);
-
   // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
   React.useEffect(() => {
     if (isOpen && (subscription === "ultra" || subscription === "team")) {
@@ -331,53 +289,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
   React.useEffect(() => {
     if (!isOpen) {
-      capturedPricingExperimentExposureRef.current = false;
-      return;
-    }
-    if (
-      !activePricingExperiment ||
-      capturedPricingExperimentExposureRef.current
-    ) {
-      return;
-    }
-
-    let exposureCaptureAttempts = 0;
-    let exposureRetryTimeout: ReturnType<typeof setTimeout> | undefined;
-    const captureExperimentExposure = () => {
-      exposureCaptureAttempts += 1;
-      if (
-        captureAuthenticatedEvent(
-          PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-          proMonthlyPricingExperimentProperties(activePricingExperiment),
-        )
-      ) {
-        capturedPricingExperimentExposureRef.current = true;
-        return;
-      }
-      if (exposureCaptureAttempts < PRICING_EXPOSURE_MAX_ATTEMPTS) {
-        exposureRetryTimeout = setTimeout(
-          captureExperimentExposure,
-          PRICING_EXPOSURE_RETRY_MS,
-        );
-      }
-    };
-    captureExperimentExposure();
-
-    return () => {
-      if (exposureRetryTimeout) clearTimeout(exposureRetryTimeout);
-    };
-  }, [activePricingExperiment, isOpen]);
-
-  React.useEffect(() => {
-    if (!isOpen) {
       capturedPricingCtaImpressionRef.current = false;
       return;
     }
 
-    if (
-      capturedPricingCtaImpressionRef.current ||
-      (subscription === "free" && !pricingExperimentResolved)
-    ) {
+    if (capturedPricingCtaImpressionRef.current) {
       return;
     }
     capturedPricingCtaImpressionRef.current = true;
@@ -388,15 +304,12 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       cta_text: "plan_card_buttons",
       ...(context?.reason && { reason: context.reason }),
       ...(context?.limitType && { limit_type: context.limitType }),
-      ...proMonthlyPricingExperimentProperties(activePricingExperiment),
     });
   }, [
     context?.limitType,
     context?.reason,
     context?.source,
     isOpen,
-    activePricingExperiment,
-    pricingExperimentResolved,
     subscription,
   ]);
 
@@ -415,6 +328,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
     planName: string,
     price: number,
   ) => {
+    if (billingBlocked) return;
     // If user is free, upgrade directly using checkout
     if (subscription === "free") {
       try {
@@ -423,8 +337,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           surface: "pricing_dialog",
           reason: context?.reason,
           limit_type: context?.limitType,
-          pricing_experiment:
-            plan === "pro-monthly-plan" ? activePricingExperiment : undefined,
         });
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
@@ -450,13 +362,16 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       return;
     }
 
+    // Close pricing while its hash is still active so its URL cleanup runs.
+    onClose();
+
     // Update URL with billing period before opening team dialog
     const url = new URL(window.location.href);
     url.searchParams.set("selectedPlan", isYearly ? "yearly" : "monthly");
     url.hash = "team-pricing-seat-selection";
     window.history.replaceState({}, "", url.toString());
+    window.dispatchEvent(new Event("hashchange"));
 
-    onClose(); // Close the pricing dialog
     setTeamPricingDialogOpen(true);
   };
 
@@ -509,20 +424,15 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
       };
     } else if (user) {
       return {
-        text:
-          subscription === "free" && !isYearly && pricingExperimentUnavailable
-            ? "Pricing unavailable"
-            : (pricingIntentCopy?.proButtonText ?? "Get Pro"),
-        disabled:
-          upgradeLoading ||
-          (subscription === "free" && !isYearly && !pricingExperimentResolved),
+        text: pricingIntentCopy?.proButtonText ?? "Get Pro",
+        disabled: upgradeLoading || billingBlocked,
         className: "",
         variant: "default" as const,
         onClick: () =>
           handleUpgradeClick(
             isYearly ? "pro-yearly-plan" : "pro-monthly-plan",
             "Pro",
-            isYearly ? PRICING.pro.yearly : monthlyProPrice,
+            isYearly ? PRICING.pro.yearly : PRICING.pro.monthly,
           ),
         loading: upgradeLoading,
       };
@@ -556,7 +466,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           : (pricingIntentCopy?.proPlusButtonText ?? "Get Pro+");
       return {
         text: buttonText,
-        disabled: upgradeLoading,
+        disabled: upgradeLoading || billingBlocked,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
@@ -596,7 +506,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           subscription === "pro" || subscription === "pro-plus"
             ? "Upgrade to Ultra"
             : (pricingIntentCopy?.ultraButtonText ?? "Get Ultra"),
-        disabled: upgradeLoading,
+        disabled: upgradeLoading || billingBlocked,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
@@ -653,7 +563,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           <div className="relative grid grid-cols-[1fr_auto_1fr] px-6 py-4 md:pt-[4.5rem] md:pb-6">
             <div></div>
             <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
-              <DialogTitle className="text-3xl font-semibold">
+              <DialogTitle className="text-center text-2xl font-semibold sm:text-3xl">
                 {pricingIntentCopy?.title ?? "Upgrade your plan"}
               </DialogTitle>
               {pricingIntentCopy && (
@@ -679,6 +589,51 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
           </div>
 
           <div className="px-6 pb-8">
+            {user && (
+              <div className="mx-auto mb-6 w-full max-w-[88rem]">
+                {isOpen && billing.isLoading && <DelayedBillingStatus />}
+                {billing.error && !billingReviewRequired && (
+                  <div role="status" className="rounded-xl border p-4 text-sm">
+                    <p>
+                      We couldn’t check your billing status. Try again, or ask
+                      your billing administrator for help.
+                    </p>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-3"
+                      disabled={billing.isValidating}
+                      onClick={() => void checkBilling().catch(() => {})}
+                    >
+                      Check again
+                    </Button>
+                  </div>
+                )}
+                {(billing.data || billingReviewRequired) && (
+                  <BillingRecoveryPanel
+                    key={`${user.id}:${organizationId ?? ""}:${billing.data?.latestInvoiceId ?? "review"}`}
+                    status={
+                      billingReviewRequired
+                        ? {
+                            ...billing.data,
+                            hasActiveSubscription: false,
+                            cancelAtPeriodEnd: false,
+                            checkoutRequiresReview: true,
+                          }
+                        : billing.data!
+                    }
+                    subscription={subscription}
+                    surface="pricing_dialog"
+                    onCheck={checkBilling}
+                  />
+                )}
+                {billingBlocked && !billing.isLoading && (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Resolve your billing issue before changing plans.
+                  </p>
+                )}
+              </div>
+            )}
             <div
               className={cn(
                 "mx-auto grid w-full max-w-[88rem] grid-cols-1 gap-6 md:grid-cols-2",
@@ -703,7 +658,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({
 
               <PlanCard
                 planName="Pro"
-                price={isYearly ? PRICING.pro.yearly : displayedMonthlyProPrice}
+                price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
                 description={
                   pricingIntentCopy?.proDescription ??
                   "For everyday productivity"

@@ -1,6 +1,9 @@
 mod platform;
 mod environment_identity;
+mod file_save;
 mod pty;
+#[cfg(test)]
+mod updater_tests;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -16,6 +19,8 @@ use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 const DESKTOP_AUTH_STATE_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_PENDING_DESKTOP_AUTH_STATES: usize = 16;
@@ -83,6 +88,41 @@ fn get_cmd_server_info() -> CmdServerInfo {
         port: CMD_SERVER_PORT.load(Ordering::Relaxed),
         token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
     }
+}
+
+/// Write only after the user selects a destination in the native save dialog.
+/// No path supplied by the webview is accepted as a write destination.
+#[tauri::command]
+async fn save_file_with_dialog(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    filename: String,
+    content: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    tokio::task::spawn_blocking(move || {
+        let suggested_name = Path::new(&filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Invalid filename".to_string())?;
+        let mut dialog = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_file_name(suggested_name);
+        if let Ok(downloads) = app.path().download_dir() {
+            dialog = dialog.set_directory(downloads);
+        }
+        let Some(selected) = dialog.blocking_save_file() else {
+            return Ok(None);
+        };
+        let path = selected.into_path().map_err(|error| error.to_string())?;
+        file_save::save_text(&path, &content).map_err(|error| error.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Serialize)]
@@ -1714,28 +1754,31 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     }
 }
 
+async fn check_update(
+    builder: tauri_plugin_updater::UpdaterBuilder,
+    check_timeout: Duration,
+    download_timeout: Duration,
+) -> tauri_plugin_updater::Result<Option<tauri_plugin_updater::Update>> {
+    let updater = builder.timeout(check_timeout).build()?;
+    let mut update = updater.check().await?;
+    if let Some(update) = update.as_mut() {
+        // The updater does not propagate the check timeout to the returned download.
+        // Bound HTTP activity without timing out user approval or native installation.
+        update.timeout = Some(download_timeout);
+    }
+    Ok(update)
+}
+
 async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
-    let updater = match app.updater() {
-        Ok(updater) => updater,
-        Err(e) => {
-            if silent {
-                log::warn!("Auto-update check failed to get updater: {}", e);
-            } else {
-                log::error!("Failed to get updater: {}", e);
-                let _ = app
-                    .dialog()
-                    .message(format!("Failed to check for updates: {}", e))
-                    .kind(MessageDialogKind::Error)
-                    .title("Update Error")
-                    .blocking_show();
-            }
-            return;
-        }
-    };
-
-    match updater.check().await {
+    match check_update(
+        app.updater_builder(),
+        UPDATE_CHECK_TIMEOUT,
+        UPDATE_DOWNLOAD_TIMEOUT,
+    )
+    .await
+    {
         Ok(Some(update)) => {
             let version = update.version.clone();
             log::info!("Update available: {}", version);
@@ -1833,8 +1876,14 @@ async fn execute_pty_input(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
-    manager.send_input(&session_id, &data)
+    let writer = {
+        let manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        manager.input_writer(&session_id)?
+    };
+    // Backpressure must not hold manager locks or block a Tauri async worker.
+    tauri::async_runtime::spawn_blocking(move || pty::PtyManager::write_input(writer, &data))
+        .await
+        .map_err(|error| format!("PTY input task failed: {}", error))?
 }
 
 #[tauri::command]
@@ -2086,6 +2135,7 @@ pub fn run() {
             get_dev_auth_port,
             prepare_desktop_auth_state,
             get_cmd_server_info,
+            save_file_with_dialog,
             desktop_file_request,
             get_local_file_metadata,
             write_generated_text_attachment,

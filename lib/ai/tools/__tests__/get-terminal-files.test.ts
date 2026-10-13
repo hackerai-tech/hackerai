@@ -75,6 +75,112 @@ describe("get_terminal_files", () => {
     jest.clearAllMocks();
   });
 
+  it.each(["desktop", "remote-connection", null] as const)(
+    "does not prefer a Cloud path over the selected %s working directory",
+    async (type) => {
+      mockUploadSandboxFileToConvex.mockResolvedValue({
+        url: "https://files.example/report.zip?signature=private",
+        fileId: "file_report" as never,
+        tokens: 0,
+        name: "report.zip",
+        mediaType: "application/zip",
+        s3Key: "private-storage-key",
+        sizeBytes: 1024,
+      });
+      const context = makeContext();
+      jest
+        .mocked(context.sandboxManager.getSandboxInfo)
+        .mockReturnValue(type ? { type } : null);
+
+      const result = await runTool(createGetTerminalFiles(context), {
+        files: ["report.zip"],
+      });
+
+      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(1);
+      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledWith(
+        expect.objectContaining({ fullPath: "report.zip" }),
+      );
+      expect(result).toMatchObject({
+        files: [{ path: "report.zip" }],
+        deliveryReceipts: [
+          {
+            fileId: "file_report",
+            sourcePath: "report.zip",
+            name: "report.zip",
+            sizeBytes: 1024,
+            sourceEnvironment: type ?? "unknown",
+            storageStatus: "stored",
+            validation: "not_performed_by_delivery_tool",
+          },
+        ],
+        failedFiles: [],
+      });
+      expect(JSON.stringify(result)).not.toMatch(
+        /signature|private-storage-key/,
+      );
+      expect(
+        JSON.stringify(jest.mocked(phLogger.event).mock.calls),
+      ).not.toMatch(/report\.zip|file_report|signature|private-storage-key/);
+    },
+  );
+
+  it("keeps Cloud fallback paths and records the path that actually uploaded", async () => {
+    mockUploadSandboxFileToConvex
+      .mockRejectedValueOnce(new Error("File not found"))
+      .mockResolvedValueOnce({
+        url: "https://files.example/report.zip",
+        fileId: "file_report" as never,
+        tokens: 0,
+        name: "report.zip",
+        mediaType: "application/zip",
+        sizeBytes: 1024,
+      });
+    const context = makeContext();
+    jest
+      .mocked(context.sandboxManager.getSandboxInfo)
+      .mockReturnValue({ type: "cloud" });
+
+    const result = await runTool(createGetTerminalFiles(context), {
+      files: ["report.zip"],
+    });
+
+    expect(
+      mockUploadSandboxFileToConvex.mock.calls.map(([args]) => args.fullPath),
+    ).toEqual(["/home/user/report.zip", "report.zip"]);
+    expect(result).toMatchObject({
+      deliveryReceipts: [
+        { sourcePath: "report.zip", sourceEnvironment: "cloud" },
+      ],
+    });
+  });
+
+  it.each([false, true])(
+    "does not issue a receipt for an undelivered file (active writer: %s)",
+    async (active) => {
+      const context = makeContext();
+      mockUploadSandboxFileToConvex.mockRejectedValue(
+        new Error("Upload unavailable"),
+      );
+      jest
+        .mocked(context.backgroundProcessTracker.hasActiveProcessesForFiles)
+        .mockResolvedValue({ active, processes: [] });
+
+      const result = await runTool(createGetTerminalFiles(context), {
+        files: ["/work/report.zip"],
+      });
+
+      expect(result).toMatchObject({
+        files: [],
+        deliveryReceipts: [],
+        failedFiles: [{ path: "/work/report.zip" }],
+      });
+      expect(context.fileAccumulator.add).not.toHaveBeenCalled();
+      expect(mockUploadSandboxFileToConvex).toHaveBeenCalledTimes(
+        active ? 0 : 1,
+      );
+    },
+  );
+
   it("blocks file delivery when a selected local sandbox falls back", async () => {
     const writerWrites: unknown[] = [];
     const context = makeContext({
@@ -112,6 +218,7 @@ describe("get_terminal_files", () => {
 
     expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
     expect(result.files).toEqual([]);
+    expect(result).toHaveProperty("deliveryReceipts", []);
     expect(result.failedFiles[0]?.reason).toContain(
       "HackerAI did not switch this run to Cloud",
     );
@@ -153,6 +260,12 @@ describe("get_terminal_files", () => {
     };
 
     expect(result.files).toEqual([{ path: "/home/user/server.zip" }]);
+    expect(result).toHaveProperty("deliveryReceipts", [
+      expect.objectContaining({
+        fileId: "file_server",
+        sourcePath: "/home/user/server.zip",
+      }),
+    ]);
     expect(result.failedFiles).toHaveLength(1);
     expect(result.failedFiles[0]).toMatchObject({
       path: "/home/user/client.zip",

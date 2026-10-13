@@ -80,6 +80,7 @@ export async function retryWithBackoff<T>(
     try {
       return await operation();
     } catch (error) {
+      signal?.throwIfAborted();
       lastError = error;
 
       // Check if this is a permanent error (sandbox terminated/not found)

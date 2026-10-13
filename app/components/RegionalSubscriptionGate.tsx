@@ -21,11 +21,10 @@ import {
   type RegionalSubscriptionAssignment,
 } from "@/lib/experiments/regional-subscription-first";
 import {
-  PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-  proMonthlyPricingAssignmentForVariant,
-  proMonthlyPricingExperimentProperties,
-  type ProMonthlyPricingExperimentPresentation,
-} from "@/lib/experiments/pro-monthly-pricing";
+  PRO_MONTHLY_PRICE_LOOKUP_KEY,
+  type ProMonthlyPricePresentation,
+} from "@/lib/pricing/pro-monthly";
+import { PRICING } from "@/lib/pricing/config";
 
 function SubscriptionOffer({
   assignment,
@@ -33,7 +32,7 @@ function SubscriptionOffer({
   assignment: RegionalSubscriptionAssignment;
 }) {
   const { handleUpgrade, upgradeLoading } = useUpgrade();
-  const [price, setPrice] = useState<ProMonthlyPricingExperimentPresentation>();
+  const [price, setPrice] = useState<ProMonthlyPricePresentation>();
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
@@ -48,19 +47,23 @@ function SubscriptionOffer({
       .then(async (response) => {
         if (!response.ok) throw new Error("Price unavailable");
         const value = await response.json();
-        const expected = proMonthlyPricingAssignmentForVariant(
-          value.variant === "test" ? "test" : "control",
-        );
         if (
-          value.key !== expected.key ||
-          value.priceLookupKey !== expected.priceLookupKey ||
-          value.displayedAmountDollars !== expected.displayedAmountDollars ||
+          value.priceLookupKey !== PRO_MONTHLY_PRICE_LOOKUP_KEY ||
+          value.displayedAmountDollars !== PRICING.pro.monthly ||
+          value.currency !== "usd" ||
+          value.billingInterval !== "month" ||
           typeof value.stripePriceId !== "string" ||
           !value.stripePriceId
         )
           throw new Error("Invalid price");
         if (active)
-          setPrice({ ...expected, stripePriceId: value.stripePriceId });
+          setPrice({
+            priceLookupKey: PRO_MONTHLY_PRICE_LOOKUP_KEY,
+            displayedAmountDollars: PRICING.pro.monthly,
+            currency: "usd",
+            billingInterval: "month",
+            stripePriceId: value.stripePriceId,
+          });
       })
       .catch(() => {
         if (active) setFailed(true);
@@ -78,7 +81,6 @@ function SubscriptionOffer({
     // The price is now rendered. Retry if authenticated analytics is still initializing.
     let tries = 0;
     let capturedOffer = false;
-    let capturedPrice = false;
     const capture = () => {
       tries += 1;
       capturedOffer ||= captureAuthenticatedEvent(
@@ -89,11 +91,7 @@ function SubscriptionOffer({
           subscription_tier: "free",
         },
       );
-      capturedPrice ||= captureAuthenticatedEvent(
-        PRO_MONTHLY_PRICING_EXPOSURE_EVENT,
-        proMonthlyPricingExperimentProperties(price),
-      );
-      return (capturedOffer && capturedPrice) || tries >= 10;
+      return capturedOffer || tries >= 10;
     };
     if (capture()) return;
     const timer = setInterval(() => {
@@ -164,7 +162,6 @@ function SubscriptionOffer({
                     source: "regional_subscription_first",
                     surface: "composer",
                     reason: "subscription_required",
-                    pricing_experiment: price,
                   },
                 )
               }

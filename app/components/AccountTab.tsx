@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Button } from "@/components/ui/button";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
@@ -47,11 +48,12 @@ import type {
   SubscriptionCancellationStatus,
 } from "@/lib/billing/api-types";
 import type { SubscriptionTier } from "@/types";
-import { PastDueBillingBanner } from "./PastDueBillingBanner";
+import { BillingRecoveryPanel } from "./BillingRecoveryPanel";
 import { reloadWithEntitlementRefresh } from "@/lib/auth/entitlement-refresh-navigation";
 
 type AccountCancellationStatus = SubscriptionCancellationStatus & {
   subscription: SubscriptionTier;
+  billingScope: string;
   statusUnavailable?: boolean;
 };
 
@@ -106,6 +108,8 @@ function formatRenewalPrice(status: AccountCancellationStatus | null) {
 }
 
 const AccountTab = () => {
+  const { user, organizationId } = useAuth();
+  const billingScope = `${user?.id ?? ""}:${organizationId ?? ""}`;
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
@@ -136,6 +140,7 @@ const AccountTab = () => {
   // For individual plans (pro/pro-plus/ultra), user always has billing access
   // For team plans, only admins can manage billing
   const canManageBilling =
+    subscription === "free" ||
     subscription === "pro" ||
     subscription === "pro-plus" ||
     subscription === "ultra" ||
@@ -148,7 +153,9 @@ const AccountTab = () => {
         ? proPlusFeatures
         : proFeatures;
   const hasCurrentCancellationStatus =
-    canManageBilling && cancellationStatus?.subscription === subscription;
+    canManageBilling &&
+    cancellationStatus?.subscription === subscription &&
+    cancellationStatus.billingScope === billingScope;
   const currentCancellationStatus = hasCurrentCancellationStatus
     ? cancellationStatus
     : null;
@@ -183,8 +190,9 @@ const AccountTab = () => {
       : null;
   const pausedPlanResumeDate = formatCancellationDate(pausedPlan?.resumeAt);
   const pastDueStatus =
-    currentCancellationStatus?.subscriptionStatus === "past_due"
-      ? "past_due"
+    currentCancellationStatus?.subscriptionStatus === "past_due" ||
+    currentCancellationStatus?.subscriptionStatus === "unpaid"
+      ? currentCancellationStatus.subscriptionStatus
       : null;
   const isCheckingCancellationStatus =
     canManageBilling && !hasCurrentCancellationStatus;
@@ -196,7 +204,8 @@ const AccountTab = () => {
 
     getSubscriptionCancellationStatus()
       .then((status) => {
-        if (!ignore) setCancellationStatus({ ...status, subscription });
+        if (!ignore)
+          setCancellationStatus({ ...status, subscription, billingScope });
       })
       .catch((error) => {
         if (!ignore) {
@@ -206,6 +215,7 @@ const AccountTab = () => {
           );
           setCancellationStatus({
             subscription,
+            billingScope,
             hasActiveSubscription: false,
             cancelAtPeriodEnd: false,
             statusUnavailable: true,
@@ -216,7 +226,12 @@ const AccountTab = () => {
     return () => {
       ignore = true;
     };
-  }, [canManageBilling, hasCurrentCancellationStatus, subscription]);
+  }, [
+    canManageBilling,
+    hasCurrentCancellationStatus,
+    subscription,
+    billingScope,
+  ]);
 
   const redirectToBillingPortal = async (flow?: BillingPortalFlow) => {
     if (isOpeningBillingPortal) return;
@@ -234,6 +249,12 @@ const AccountTab = () => {
     }
   };
 
+  const checkBilling = async () => {
+    const status = await getSubscriptionCancellationStatus();
+    setCancellationStatus({ ...status, subscription, billingScope });
+    return status;
+  };
+
   const handleCancelSubscription = () => {
     setShowCancelDialog(true);
   };
@@ -247,6 +268,7 @@ const AccountTab = () => {
   }) => {
     setCancellationStatus({
       subscription,
+      billingScope,
       hasActiveSubscription: cancelAtPeriodEnd,
       cancelAtPeriodEnd,
       currentPeriodEnd: cancelAtPeriodEnd ? currentPeriodEnd : undefined,
@@ -257,6 +279,7 @@ const AccountTab = () => {
     setCancellationStatus({
       ...(currentCancellationStatus ?? {}),
       subscription,
+      billingScope,
       hasActiveSubscription: true,
       cancelAtPeriodEnd: true,
       currentPeriodEnd: result.pauseEffectiveAt,
@@ -272,6 +295,7 @@ const AccountTab = () => {
     setCancellationStatus({
       ...(currentCancellationStatus ?? {}),
       subscription,
+      billingScope,
       hasActiveSubscription: true,
       cancelAtPeriodEnd: false,
       pendingPlanChange: {
@@ -295,6 +319,7 @@ const AccountTab = () => {
       setCancellationStatus({
         ...(currentCancellationStatus ?? {}),
         subscription,
+        billingScope,
         hasActiveSubscription: true,
         cancelAtPeriodEnd: result.cancelAtPeriodEnd,
         currentPeriodEnd: result.currentPeriodEnd,
@@ -600,26 +625,19 @@ const AccountTab = () => {
           </p>
         )}
 
-        {pastDueStatus && subscription !== "free" && (
-          <div className="mt-3">
-            <PastDueBillingBanner
-              surface="account_settings"
-              subscription={subscription}
-              subscriptionStatus={pastDueStatus}
-              latestInvoiceId={currentCancellationStatus?.latestInvoiceId}
-              renewalPaymentRequired={
-                currentCancellationStatus?.renewalPaymentRequired
-              }
-              renewalPaymentFailure={
-                currentCancellationStatus?.renewalPaymentFailure
-              }
-              isOpening={isOpeningBillingPortal}
-              onUpdatePayment={() =>
-                void redirectToBillingPortal("payment_method")
-              }
-            />
-          </div>
-        )}
+        {currentCancellationStatus &&
+          (pastDueStatus ||
+            currentCancellationStatus.checkoutRequiresReview) && (
+            <div className="mt-3">
+              <BillingRecoveryPanel
+                key={`${billingScope}:${currentCancellationStatus.latestInvoiceId ?? "review"}`}
+                status={currentCancellationStatus}
+                subscription={subscription}
+                surface="account_settings"
+                onCheck={checkBilling}
+              />
+            </div>
+          )}
 
         <div className="mt-2 rounded-lg bg-transparent px-0">
           <span className="text-sm font-semibold inline-block pb-4">
@@ -671,32 +689,41 @@ const AccountTab = () => {
         </div>
       )}
 
-      {subscription !== "free" && canManageBilling && (
-        <div>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between py-3">
-              <div>
-                <div className="font-medium">Payment</div>
+      {canManageBilling &&
+        (subscription !== "free" ||
+          currentCancellationStatus?.billingAccountAvailable ||
+          currentCancellationStatus?.statusUnavailable) && (
+          <div>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between py-3">
+                <div>
+                  <div className="font-medium">Payment</div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    isOpeningBillingPortal || isCheckingCancellationStatus
+                  }
+                  onClick={() =>
+                    void redirectToBillingPortal(
+                      pastDueStatus &&
+                        currentCancellationStatus?.renewalPaymentRequired
+                        ? "payment_method"
+                        : undefined,
+                    )
+                  }
+                >
+                  {pastDueStatus &&
+                  currentCancellationStatus?.renewalPaymentRequired
+                    ? "Update card"
+                    : "Manage"}
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={
-                  isOpeningBillingPortal || isCheckingCancellationStatus
-                }
-                onClick={() =>
-                  void redirectToBillingPortal(
-                    pastDueStatus ? "payment_method" : undefined,
-                  )
-                }
-              >
-                {pastDueStatus ? "Update payment" : "Manage"}
-              </Button>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Delete Account Section */}
       <div>

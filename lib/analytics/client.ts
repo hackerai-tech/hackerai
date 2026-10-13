@@ -29,6 +29,25 @@ let posthogClient: PostHogClient | null = null;
 let posthogImportPromise: Promise<PostHogClient> | null = null;
 let authenticatedAnalyticsUserId: string | null = null;
 let identifiedAnalyticsUserId: string | null = null;
+const authenticatedAnalyticsListeners = new Set<() => void>();
+
+export function subscribeAuthenticatedAnalytics(listener: () => void) {
+  authenticatedAnalyticsListeners.add(listener);
+  return () => {
+    authenticatedAnalyticsListeners.delete(listener);
+  };
+}
+
+/** Null until consent permits capture and the provider has identified this user. */
+export function getIdentifiedAnalyticsUserId() {
+  return identifiedAnalyticsUserId === authenticatedAnalyticsUserId
+    ? identifiedAnalyticsUserId
+    : null;
+}
+
+function notifyAuthenticatedAnalyticsListeners() {
+  authenticatedAnalyticsListeners.forEach((listener) => listener());
+}
 const pendingAuthenticatedEvents: PendingAuthenticatedEvent[] = [];
 const MAX_PENDING_AUTHENTICATED_EVENTS = 100;
 const UPGRADE_IMPRESSION_STORAGE_KEY =
@@ -105,6 +124,7 @@ export function setAuthenticatedAnalyticsUserId(userId: string | null) {
   authenticatedAnalyticsUserId = userId;
   identifiedAnalyticsUserId = null;
   pendingAuthenticatedEvents.splice(0);
+  notifyAuthenticatedAnalyticsListeners();
 }
 
 export function flushPendingAuthenticatedEvents(userId: string) {
@@ -138,6 +158,7 @@ export function flushPendingAuthenticatedEvents(userId: string) {
 export function confirmAuthenticatedAnalyticsUserId(userId: string) {
   if (authenticatedAnalyticsUserId !== userId) return false;
   identifiedAnalyticsUserId = userId;
+  notifyAuthenticatedAnalyticsListeners();
   return flushPendingAuthenticatedEvents(userId);
 }
 

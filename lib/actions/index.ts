@@ -1,11 +1,17 @@
-import { generateText, Output, UIMessage, UIMessageStreamWriter } from "ai";
 import {
-  DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
-  getOpenRouterProviderRoutingForModel,
-  myProvider,
-} from "@/lib/ai/providers";
+  APICallError,
+  generateText,
+  NoObjectGeneratedError,
+  Output,
+  UIMessage,
+  UIMessageStreamWriter,
+} from "ai";
+import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
-import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
+import {
+  buildProviderOptions,
+  isXaiSafetyError,
+} from "@/lib/api/chat-stream-helpers";
 import { getProviderUsageRawModelCost } from "@/lib/provider-usage-cost";
 
 const MAX_GENERATED_TITLE_LENGTH = 100;
@@ -93,14 +99,12 @@ export const generateTitleFromUserMessage = async (
   try {
     const result = await generateText({
       model: myProvider.languageModel("title-generator-model"),
-      providerOptions: {
-        openrouter: {
-          reasoning: { enabled: false },
-          provider: getOpenRouterProviderRoutingForModel(
-            DEEPSEEK_V4_FLASH_PREVIOUS_SLUG,
-          ),
-        },
-      },
+      providerOptions: buildProviderOptions(
+        false,
+        undefined,
+        "title-generator-model",
+        "ask",
+      ),
       output: Output.object({
         schema: z.object({
           title: z
@@ -130,7 +134,18 @@ export const generateTitleFromUserMessage = async (
     }
 
     return normalizeTitle(result.output?.title) ?? fallbackTitle;
-  } catch {
+  } catch (error) {
+    // SDK errors can contain prompts, provider responses, and credentials.
+    // Keep fallback diagnostics limited to fixed categories and HTTP status.
+    const isProviderError = APICallError.isInstance(error);
+    console.warn("chat_title_generation_failed", {
+      category: isProviderError
+        ? "provider_error"
+        : NoObjectGeneratedError.isInstance(error)
+          ? "invalid_output"
+          : "unknown_error",
+      ...(isProviderError && { statusCode: error.statusCode }),
+    });
     return fallbackTitle;
   }
 };

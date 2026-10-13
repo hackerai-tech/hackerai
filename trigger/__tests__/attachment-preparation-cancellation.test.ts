@@ -46,6 +46,10 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
     const refund = jest.fn(async () => {});
     const deps = {
       userStopSignal,
+      triggerSignal: new AbortController().signal,
+      agentLongDurationExceeded: false,
+      runReporting: { fail: jest.fn() },
+      isHandledUserRateLimitError: () => false,
       writer,
       hasObservedUsage: () => false,
       paidDailyFreeAllowanceUsageTracker: { hasUsage: false },
@@ -70,6 +74,12 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
         userStopSignal.signal.reason,
       ),
     ).resolves.toBeUndefined();
+    if (file === "trigger/agent-long.ts") {
+      expect(deps.runReporting.fail).toHaveBeenCalledWith(
+        userStopSignal.signal.reason,
+        "canceled",
+      );
+    }
     expect(refund).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledTimes(2);
     expect(writer.write).toHaveBeenCalledWith({ type: "abort" });
@@ -84,5 +94,22 @@ it.each(["trigger/agent-long.ts", "lib/api/chat-handler.ts"])(
       ),
     ).rejects.toBe(unrelated);
     expect(writer.write).not.toHaveBeenCalled();
+    if (file === "trigger/agent-long.ts") {
+      expect(deps.runReporting.fail).toHaveBeenLastCalledWith(
+        unrelated,
+        "error",
+      );
+      deps.agentLongDurationExceeded = true;
+      await executeCatch(
+        file,
+        "releasePaidDailyFreeAllowanceReservation",
+        deps,
+        userStopSignal.signal.reason,
+      );
+      expect(deps.runReporting.fail).toHaveBeenLastCalledWith(
+        userStopSignal.signal.reason,
+        "elapsed_timeout",
+      );
+    }
   },
 );

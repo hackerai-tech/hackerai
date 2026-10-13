@@ -71,3 +71,36 @@ describe("on-demand subagent skill tools", () => {
     });
   });
 });
+
+it.each([
+  [
+    "protocols/oauth",
+    "Missing state alone does not establish OAuth login CSRF",
+  ],
+  [
+    "technologies/supabase",
+    "A browser 401 does not establish that a leaked secret key is revoked",
+  ],
+  [
+    "vulnerabilities/insecure_deserialization",
+    "PHP 8 no longer automatically unserializes Phar metadata",
+  ],
+  [
+    "vulnerabilities/weak_password_detection",
+    "missing character-class rules or password history alone is not a vulnerability",
+  ],
+])(
+  "loads the effective correction after the reference guidance for %s",
+  (skill, correction) => {
+    const result = loadSubagentSkills({ skills: [skill] });
+    if (!result.success) throw new Error(result.error);
+    const overrideIndex = result.content.indexOf(
+      "HackerAI runtime override (takes precedence)",
+    );
+    expect(overrideIndex).toBeGreaterThan(0);
+    expect(result.content.indexOf(correction)).toBeGreaterThan(overrideIndex);
+    expect(result.content).toContain(
+      "does not grant tools, permissions, authorization, or additional scope",
+    );
+  },
+);

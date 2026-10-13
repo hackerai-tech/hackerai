@@ -1,3 +1,4 @@
+import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
 
 (globalThis as any).Request = class Request {};
@@ -213,6 +214,7 @@ describe("captureAgentRun", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_123", "hackerai-agent_run"),
       properties: {
         mode: "agent",
         subscription: "pro",
@@ -900,6 +902,16 @@ describe("captureAgentCompletionAnalytics", () => {
   it.each([
     ["ask", "abliterated_paid_moderated_v1"],
     ["agent", "abliterated_paid_moderated_v1"],
+    ["ask", "abliterated_max_moderated_v1"],
+    ["agent", "abliterated_max_moderated_v1"],
+    ["ask", "abliterated_paid_first_step_v2"],
+    ["agent", "abliterated_paid_first_step_v2"],
+    ["ask", "abliterated_paid_moderated_default_v1"],
+    ["agent", "abliterated_paid_moderated_default_v1"],
+    ["ask", "abliterated_paid_three_steps_v1"],
+    ["agent", "abliterated_paid_three_steps_v1"],
+    ["ask", "abliterated_paid_moderated_three_steps_default_v1"],
+    ["agent", "abliterated_paid_moderated_three_steps_default_v1"],
   ] as const)(
     "captures %s %s summaries while preserving assignment through fallback",
     (mode, experimentKey) => {
@@ -944,6 +956,8 @@ describe("captureAgentCompletionAnalytics", () => {
             experiment_variant: "test",
             experiment_request_id: "message",
             fallback_served: true,
+            has_response_content: true,
+            step_limit_reached: false,
           }),
         }),
       );
@@ -1022,6 +1036,7 @@ describe("captureAgentCompletionAnalytics", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-agent_run",
+      uuid: agentRunEventUuid("run_completion", "hackerai-agent_run"),
       properties: {
         mode: "agent",
         subscription: "pro",
@@ -1151,9 +1166,7 @@ describe("captureUsageCost", () => {
         midRunCount: 7,
       },
       sandboxUsage: {
-        totalCostDollars: 0.12,
-        miosaRuntimeMs: 2_000,
-        miosaCostDollars: 0.1,
+        totalCostDollars: 0.02,
         e2bRuntimeMs: 1_000,
         e2bCostDollars: 0.02,
       },
@@ -1171,7 +1184,9 @@ describe("captureUsageCost", () => {
     expect(capture).toHaveBeenCalledWith({
       distinctId: "user_123",
       event: "hackerai-usage_cost",
+      uuid: agentRunEventUuid("run_cost_test", "hackerai-usage_cost"),
       properties: expect.objectContaining({
+        cost_accounting_status: "recorded",
         user_id: "user_123",
         trigger_run_id: "run_cost_test",
         subscription: "pro",
@@ -1207,9 +1222,7 @@ describe("captureUsageCost", () => {
         non_model_cost_dollars: 0.12,
         sandbox_cost_accounting_version: 2,
         sandbox_cost_source: "request_runtime_rate",
-        sandbox_cost_dollars: 0.12,
-        sandbox_miosa_runtime_ms: 2_000,
-        sandbox_miosa_cost_dollars: 0.1,
+        sandbox_cost_dollars: 0.02,
         sandbox_e2b_runtime_ms: 1_000,
         sandbox_e2b_cost_dollars: 0.02,
         trigger_run_cost_accounting_version: 1,
@@ -2047,8 +2060,8 @@ describe("createChatLogger ChatSDKError metadata", () => {
             upload_failure_cause:
               "Command timeout after 35000ms [firstMsg: no]",
             upload_failure_transient_sandbox_command: true,
-            upload_failure_sandbox_provider: "miosa",
-            upload_failure_error_name: "MiosaError",
+            upload_failure_sandbox_provider: "e2b",
+            upload_failure_error_name: "E2BAcquisitionError",
             upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
             upload_failure_error_http_status: 503,
             upload_failure_error_request_id: "request-safe-123",
@@ -2075,8 +2088,8 @@ describe("createChatLogger ChatSDKError metadata", () => {
         upload_failure_reason: "local_command_no_response",
         upload_failure_cause: "Command timeout after 35000ms [firstMsg: no]",
         upload_failure_transient_sandbox_command: true,
-        upload_failure_sandbox_provider: "miosa",
-        upload_failure_error_name: "MiosaError",
+        upload_failure_sandbox_provider: "e2b",
+        upload_failure_error_name: "E2BAcquisitionError",
         upload_failure_error_code: "FILE_TRANSPORT_UNAVAILABLE",
         upload_failure_error_http_status: 503,
         upload_failure_error_request_id: "request-safe-123",

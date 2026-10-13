@@ -97,6 +97,7 @@ describe("saveMessage — is_hidden handling", () => {
       db: {
         query: jest.fn(),
         get: jest.fn<any>().mockResolvedValue(null),
+        normalizeId: jest.fn((_table: string, id: string) => id),
         insert: jest
           .fn<any>()
           .mockResolvedValue("new-msg-id" as Id<"messages">),
@@ -540,6 +541,140 @@ describe("saveMessage — is_hidden handling", () => {
     expect(mockCtx.db.patch).not.toHaveBeenCalled();
   });
 
+  const previewParts = (ids: string[]) => [
+    {
+      type: "tool-file",
+      state: "output-available",
+      output: {
+        action: "view",
+        previewFiles: ids.map((fileId) => ({ fileId, name: "preview.jpg" })),
+      },
+    },
+  ];
+
+  it("retains nested previews without caller-supplied file IDs", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockResolvedValue({
+      _id: "preview-1",
+      user_id: USER_ID,
+      is_attached: false,
+    });
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "preview-message",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      parts: [{ type: "tool-file", output: "[File: view preview.jpg]" }],
+      previewFileIds: ["preview-1", "preview-1"],
+    });
+    expect(mockCtx.db.insert).toHaveBeenCalledWith(
+      "messages",
+      expect.objectContaining({ file_ids: ["preview-1"] }),
+    );
+    expect(mockCtx.db.patch).toHaveBeenCalledWith("preview-1", {
+      is_attached: true,
+    });
+  });
+
+  it("merges previews with existing attachments and repairs an unattached reference", async () => {
+    setupExistingMessage(makeMessage({ file_ids: ["original", "preview-1"] }));
+    mockCtx.db.get.mockImplementation(async (id: string) => ({
+      _id: id,
+      user_id: USER_ID,
+      is_attached: id === "original",
+    }));
+    const { saveMessage } = await import("../messages");
+    await saveMessage.handler(mockCtx, {
+      serviceKey: SERVICE_KEY,
+      id: "msg-1",
+      chatId: CHAT_ID,
+      userId: USER_ID,
+      role: "assistant",
+      parts: previewParts(["preview-1", "preview-2", "preview-2"]),
+      fileIds: ["original" as Id<"files">, "preview-2" as Id<"files">],
+    });
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(
+      "msg-doc-1",
+      expect.objectContaining({
+        file_ids: ["original", "preview-1", "preview-2"],
+      }),
+    );
+    for (const id of ["preview-1", "preview-2"]) {
+      expect(mockCtx.db.patch).toHaveBeenCalledWith(id, { is_attached: true });
+    }
+    expect(mockCtx.db.patch).not.toHaveBeenCalledWith("original", {
+      is_attached: true,
+    });
+  });
+
+  it("keeps legacy messages saveable when previews are missing or malformed", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.normalizeId.mockImplementation((_table: string, id: string) =>
+      id === "malformed" ? null : id,
+    );
+    const { saveMessage } = await import("../messages");
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "legacy-message",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: previewParts(["missing", "malformed"]),
+      }),
+    ).resolves.toBeNull();
+    expect(mockCtx.db.insert).toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+    expect(mockCtx.db.get).not.toHaveBeenCalledWith("malformed");
+  });
+
+  it("rejects another user's preview before any writes", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockResolvedValue({ _id: "preview-1", user_id: "other" });
+    const { saveMessage } = await import("../messages");
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "unowned-preview-message",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: previewParts(["preview-1"]),
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        failureStage: "verify_preview_file_ownership",
+        causeMessage: "File does not belong to user",
+      }),
+    });
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+    expect(mockCtx.db.patch).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake a preview metadata read failure for a missing legacy file", async () => {
+    setupExistingMessage(null);
+    mockCtx.db.get.mockRejectedValue(new Error("database unavailable"));
+    const { saveMessage } = await import("../messages");
+    await expect(
+      saveMessage.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        id: "preview-read-failure",
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        role: "assistant",
+        parts: previewParts(["preview-1"]),
+      }),
+    ).rejects.toMatchObject({
+      data: expect.objectContaining({
+        failureStage: "verify_preview_file_ownership",
+        causeMessage: "database unavailable",
+      }),
+    });
+    expect(mockCtx.db.insert).not.toHaveBeenCalled();
+  });
+
   it("rejects unowned file IDs before updating an existing message", async () => {
     const existing = makeMessage({
       _id: "existing-doc" as Id<"messages">,
@@ -778,19 +913,30 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     };
   });
 
-  function setupPaginatedMessages(messages: Record<string, any>[]) {
+  function setupPaginatedMessages(
+    messages: Record<string, any>[],
+    chat: Record<string, any> | null = { id: CHAT_ID, user_id: USER_ID },
+  ) {
     const paginateMock = jest.fn<any>().mockResolvedValue({
       page: messages,
       isDone: true,
       continueCursor: "",
     });
-    mockCtx.db.query.mockReturnValue({
-      withIndex: jest.fn().mockReturnValue({
-        order: jest.fn().mockReturnValue({
-          paginate: paginateMock,
-        }),
-      }),
-    });
+    mockCtx.db.query.mockImplementation((table: string) =>
+      table === "chats"
+        ? {
+            withIndex: jest.fn().mockReturnValue({
+              first: jest.fn<any>().mockResolvedValue(chat),
+            }),
+          }
+        : {
+            withIndex: jest.fn().mockReturnValue({
+              order: jest.fn().mockReturnValue({
+                paginate: paginateMock,
+              }),
+            }),
+          },
+    );
     return paginateMock;
   }
 
@@ -851,17 +997,22 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     ).toBe(true);
   });
 
-  it("returns no history when chat ownership fails", async () => {
-    mockCtx.runQuery.mockResolvedValue(false);
+  it.each([
+    [null, "CHAT_NOT_FOUND"],
+    [{ id: CHAT_ID, user_id: "someone-else" }, "CHAT_UNAUTHORIZED"],
+  ])("denies history when ownership fails (%s)", async (chat, code) => {
+    const paginate = setupPaginatedMessages([], chat);
     const { getMessagesPageForBackend } = await import("../messages");
-    const result = await getMessagesPageForBackend.handler(mockCtx, {
-      serviceKey: SERVICE_KEY,
-      chatId: CHAT_ID,
-      userId: USER_ID,
-      paginationOpts: { numItems: 24, cursor: null },
-    });
-    expect(result.abliterationHistory).toEqual([]);
-    expect(mockCtx.db.query).not.toHaveBeenCalled();
+    await expect(
+      getMessagesPageForBackend.handler(mockCtx, {
+        serviceKey: SERVICE_KEY,
+        chatId: CHAT_ID,
+        userId: USER_ID,
+        paginationOpts: { numItems: 24, cursor: null },
+      }),
+    ).rejects.toMatchObject({ data: { code } });
+    expect(paginate).not.toHaveBeenCalled();
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
   });
 
   it("should filter out hidden messages", async () => {
@@ -889,6 +1040,7 @@ describe("getMessagesPageForBackend — is_hidden filtering", () => {
     });
 
     expect(result.page).toHaveLength(1);
+    expect(mockCtx.runQuery).not.toHaveBeenCalled();
     expect(result.page[0].id).toBe("msg-visible");
     expect(result.fileTokens).toEqual([]);
     expect(paginateMock).toHaveBeenCalledWith({

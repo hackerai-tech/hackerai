@@ -13,7 +13,7 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
-import { getTestUsersRecord } from "./test-users-config";
+import { getTestUserEmails } from "./test-users-config";
 
 config({ path: resolve(process.cwd(), ".env.e2e") });
 config({ path: resolve(process.cwd(), ".env.local") });
@@ -32,7 +32,7 @@ const MONTHLY_CREDITS: Record<SupportedTier, number> = {
   ultra: 2_000_000,
 };
 
-const TEST_USERS = getTestUsersRecord();
+const TEST_USERS = getTestUserEmails();
 
 function usage() {
   console.log(`
@@ -99,11 +99,11 @@ function resolveUser(input: string | undefined): {
   defaultTier: SupportedTier;
 } {
   if (!input || input === "pro") {
-    return { email: TEST_USERS.pro.email, defaultTier: "pro" };
+    return { email: TEST_USERS.pro, defaultTier: "pro" };
   }
 
   if (input === "ultra") {
-    return { email: TEST_USERS.ultra.email, defaultTier: "ultra" };
+    return { email: TEST_USERS.ultra, defaultTier: "ultra" };
   }
 
   if (input.includes("@")) {

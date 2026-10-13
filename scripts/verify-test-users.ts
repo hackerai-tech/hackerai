@@ -2,7 +2,7 @@ import { WorkOS } from "@workos-inc/node";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import chalk from "chalk";
-import { getTestUsers } from "./test-users-config";
+import { getTestUserEmails } from "./test-users-config";
 
 // Load environment variables from .env.e2e and .env.local
 dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -26,7 +26,7 @@ async function verifyTestUsers() {
 
   const userIds: Array<{ email: string; id: string }> = [];
 
-  const testEmails = getTestUsers().map((u) => u.email);
+  const testEmails = Object.values(getTestUserEmails());
 
   // First, get all user IDs
   for (const email of testEmails) {

@@ -36,6 +36,15 @@ jest.doMock("@/lib/ai/providers", () => ({
   KIMI_K3_SLUG: "synthetic-fallback",
   myProvider: { languageModel: (name: string) => models.get(name) },
 }));
+jest.doMock("@/lib/ai/abliteration", () => ({
+  ABLITERATION_MODEL_KEY: "model-abliterated",
+  isAbliterationConfigured: () => true,
+}));
+jest.doMock("@/lib/posthog/server", () => ({ phLogger: { event: jest.fn() } }));
+const { CompactionModelPolicy } =
+  require("../compaction-policy") as typeof import("../compaction-policy");
+const { AGENT_SUMMARIZATION_PROMPT, ASK_SUMMARIZATION_PROMPT } =
+  require("../prompts") as typeof import("../prompts");
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
 
@@ -112,6 +121,72 @@ describe("startup compaction through the real AI SDK", () => {
     models.set("model-glm-5.3", finalFallback);
     writer = { write: jest.fn() } as unknown as UIMessageStreamWriter;
   });
+
+  it.each([
+    ["free", "agent"],
+    ["pro", "agent"],
+    ["free", "ask"],
+    ["pro", "ask"],
+  ] as const)(
+    "persists GLM fallback after an Abliteration error for %s %s",
+    async (subscription, mode) => {
+      const abliteration = new MockLanguageModelV3({
+        modelId: "synthetic-abliteration",
+        doGenerate: async () => {
+          throw new Error("Synthetic provider failure");
+        },
+      });
+      models.set("model-abliterated", abliteration);
+      const glm = new MockLanguageModelV3({
+        modelId: "synthetic-glm",
+        doGenerate: async () => ({
+          ...summary(),
+          content: [
+            {
+              type: "text",
+              text: (mode === "agent"
+                ? AGENT_SUMMARIZATION_PROMPT
+                : ASK_SUMMARIZATION_PROMPT
+              )
+                .match(/^## .+$/gm)!
+                .join("\n(none)\n"),
+            },
+          ],
+        }),
+      });
+      models.set("model-glm-5.3-flash", glm);
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: messages,
+        subscription,
+        languageModel: primary,
+        mode,
+        writer,
+        chatId: "synthetic-default-policy",
+        startupCompaction: {},
+        compactionPolicy: new CompactionModelPolicy({
+          userId: "synthetic",
+          runId: "synthetic",
+          chatId: "synthetic-default-policy",
+          subscription,
+          mode,
+          baselineModel: "agent-model",
+          onDiscardedUsage: () => {},
+        }),
+        providerPromptPressure: {
+          reason: "message_count",
+          reasons: ["message_count"],
+          toolResultCount: 0,
+          messageCount: 120,
+          summarizationMaxTokensOverride: 128000,
+        },
+      });
+      expect(result.needsSummarization).toBe(true);
+      expect(abliteration.doGenerateCalls).toHaveLength(1);
+      expect(glm.doGenerateCalls).toHaveLength(1);
+      expect(fallback.doGenerateCalls).toHaveLength(0);
+      expect(saveSummary).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("persists one fallback after a recoverable primary failure", async () => {
     let primarySignal: AbortSignal | undefined;

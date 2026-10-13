@@ -1,3 +1,5 @@
+import { sandboxOperationChannel } from "@/packages/local/src/operation-channels";
+import { dispatchIsolatedOperation } from "@/lib/centrifugo/dispatch-operation";
 import {
   runAttachmentCommand,
   throwIfAttachmentAborted,
@@ -21,7 +23,7 @@ import {
 import { presenceHasConnectionId } from "@/lib/centrifugo/presence";
 import {
   estimateRelayPayloadBytes,
-  relayTrafficSampleRate,
+  recordRelayReceivedBytes,
 } from "@/lib/centrifugo/traffic";
 import {
   CentrifugoMessageReassembler,
@@ -331,6 +333,10 @@ export class CentrifugoSandbox extends EventEmitter {
     );
   }
 
+  supportsOperationChannels(): boolean {
+    return this.connectionInfo.capabilities?.operationChannels === true;
+  }
+
   supportsCommandStdin(): boolean {
     return this.connectionInfo.capabilities?.commandStdin === true;
   }
@@ -353,6 +359,10 @@ export class CentrifugoSandbox extends EventEmitter {
 
   getUserId(): string {
     return this.userId;
+  }
+
+  getRelayTrafficSource(): "agent-long" | "chat-handler" {
+    return this.triggerRunId ? "agent-long" : "chat-handler";
   }
 
   getWsUrl(): string {
@@ -425,10 +435,15 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     }
 
     const requestId = crypto.randomUUID();
-    const channel = sandboxConnectionChannel(
-      this.userId,
-      this.connectionInfo.connectionId,
-    );
+    const isolated = this.supportsOperationChannels();
+    const channel = isolated
+      ? sandboxOperationChannel(
+          this.userId,
+          this.connectionInfo.connectionId,
+          "file",
+          requestId,
+        )
+      : sandboxConnectionChannel(this.userId, this.connectionInfo.connectionId);
     const tokenExpSeconds = Math.ceil(timeoutMs / 1000) + 30;
     const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
     signal?.throwIfAborted();
@@ -440,42 +455,21 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       let timeoutId: NodeJS.Timeout | undefined;
       let subscription: Subscription | undefined;
       let requestDispatchStarted = false;
-      let requestPublishAttempts = 0;
-      let subscriptionEvents = 0;
       let receivedPayloadBytesEstimate = 0;
       let unmatchedPayloadBytesEstimate = 0;
-      let receivedPublications = 0;
-      let unmatchedPublications = 0;
-      const startedAt = Date.now();
+      let trafficMetricRecorded = false;
       const reassembler = new CentrifugoMessageReassembler();
 
       const onAbort = () => fail(new Error("Desktop file request aborted"));
       const cleanup = () => {
-        const sampleRate = relayTrafficSampleRate(
-          requestId,
-          receivedPayloadBytesEstimate,
-        );
-        if (sampleRate !== null) {
-          console.log(
-            JSON.stringify({
-              timestamp: new Date().toISOString(),
-              event: "local_relay_file_traffic",
-              service: this.triggerRunId ? "agent-long" : "chat-handler",
-              user_id: this.userId,
-              connection_id: this.connectionInfo.connectionId,
-              chat_id: this.chatId ?? null,
-              trigger_run_id: this.triggerRunId ?? null,
-              request_id: requestId,
-              request_type: input.type,
-              sample_rate: sampleRate,
-              received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-              unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-              received_publications: receivedPublications,
-              unmatched_publications: unmatchedPublications,
-              subscription_events: subscriptionEvents,
-              request_publish_attempts: requestPublishAttempts,
-              duration_ms: Date.now() - startedAt,
-            }),
+        if (!trafficMetricRecorded) {
+          trafficMetricRecorded = true;
+          recordRelayReceivedBytes(
+            "file",
+            this.triggerRunId ? "agent-long" : "chat-handler",
+            receivedPayloadBytesEstimate,
+            unmatchedPayloadBytesEstimate,
+            isolated ? "operation" : "connection",
           );
         }
         signal?.removeEventListener("abort", onAbort);
@@ -524,12 +518,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription = client.newSubscription(channel);
       subscription.on("publication", (ctx) => {
+        if (ctx.data?.type === "operation_ready") return;
         if (settled) return;
-        receivedPublications += 1;
+
         const payloadBytes = estimateRelayPayloadBytes(ctx.data);
         receivedPayloadBytesEstimate += payloadBytes;
         if (!fragmentMatchesCorrelation(ctx.data, "requestId", requestId)) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -538,7 +532,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         if (!reassembled) return;
         const message = parseFileResponseMessage(reassembled);
         if (!message || message.requestId !== requestId) {
-          unmatchedPublications += 1;
           unmatchedPayloadBytesEstimate += payloadBytes;
           return;
         }
@@ -566,15 +559,16 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       subscription.on("subscribed", () => {
         if (settled || !subscription) return;
-        subscriptionEvents += 1;
+
         // File writes and appends are not safe to replay after a reconnect.
         if (requestDispatchStarted) return;
         requestDispatchStarted = true;
 
         void (async () => {
           try {
-            const presence = await subscription!.presence();
+            const presence = isolated ? null : await subscription!.presence();
             if (
+              presence !== null &&
               !presenceHasConnectionId(
                 presence,
                 this.connectionInfo.connectionId,
@@ -613,8 +607,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           } as FileRequestMessage;
 
           try {
-            requestPublishAttempts += 1;
-            await subscription.publish(request);
+            if (isolated) {
+              await dispatchIsolatedOperation(
+                client,
+                this.userId,
+                this.connectionInfo.connectionId,
+                request as unknown as Record<string, unknown>,
+                () => !settled,
+                subscription!,
+              );
+            } else {
+              await subscription.publish(request);
+            }
           } catch (error) {
             fail(
               new Error(
@@ -660,10 +664,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       }
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
-      const channel = sandboxConnectionChannel(
-        this.userId,
-        this.connectionInfo.connectionId,
-      );
+      const isolated = this.supportsOperationChannels();
+      const channel = isolated
+        ? sandboxOperationChannel(
+            this.userId,
+            this.connectionInfo.connectionId,
+            "command",
+            commandId,
+          )
+        : sandboxConnectionChannel(
+            this.userId,
+            this.connectionInfo.connectionId,
+          );
 
       // Generate short-lived JWT for this subscription (30s + command timeout)
       const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
@@ -685,15 +697,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let publishedCommand = false;
         let commandPublishInFlight = false;
         let commandDispatchStarted = false;
-        let subscriptionEvents = 0;
-        let commandPublishAttempts = 0;
-        let stdoutBytes = 0;
-        let stderrBytes = 0;
-        let outputChunks = 0;
         let receivedPayloadBytesEstimate = 0;
         let unmatchedPayloadBytesEstimate = 0;
-        let receivedPublications = 0;
-        let unmatchedPublications = 0;
+        let trafficMetricRecorded = false;
         let cancelRequested = false;
         let cancelPublishStarted = false;
         let cancelTriggeredBySignal = false;
@@ -712,36 +718,14 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         let tFirstMessage = 0;
 
         const cleanup = () => {
-          // Sample ordinary commands, but always record large streams. This
-          // attributes relay traffic without logging command or output data.
-          const outputBytes = stdoutBytes + stderrBytes;
-          const sampleRate = relayTrafficSampleRate(
-            commandId,
-            Math.max(outputBytes, receivedPayloadBytesEstimate),
-          );
-          if (sampleRate !== null) {
-            console.log(
-              JSON.stringify({
-                timestamp: new Date().toISOString(),
-                event: "local_relay_command_traffic",
-                service: this.triggerRunId ? "agent-long" : "chat-handler",
-                user_id: this.userId,
-                connection_id: this.connectionInfo.connectionId,
-                chat_id: this.chatId ?? null,
-                trigger_run_id: this.triggerRunId ?? null,
-                command_id: commandId,
-                sample_rate: sampleRate,
-                stdout_bytes: stdoutBytes,
-                stderr_bytes: stderrBytes,
-                output_chunks: outputChunks,
-                received_payload_bytes_estimate: receivedPayloadBytesEstimate,
-                unmatched_payload_bytes_estimate: unmatchedPayloadBytesEstimate,
-                received_publications: receivedPublications,
-                unmatched_publications: unmatchedPublications,
-                subscription_events: subscriptionEvents,
-                command_publish_attempts: commandPublishAttempts,
-                duration_ms: Date.now() - t0,
-              }),
+          if (!trafficMetricRecorded) {
+            trafficMetricRecorded = true;
+            recordRelayReceivedBytes(
+              "command",
+              this.triggerRunId ? "agent-long" : "chat-handler",
+              receivedPayloadBytesEstimate,
+              unmatchedPayloadBytesEstimate,
+              isolated ? "operation" : "connection",
             );
           }
           if (timeoutId) {
@@ -888,12 +872,12 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         subscription = client.newSubscription(channel);
 
         subscription.on("publication", (ctx) => {
+          if (ctx.data?.type === "operation_ready") return;
           if (settled) return;
-          receivedPublications += 1;
+
           const payloadBytes = estimateRelayPayloadBytes(ctx.data);
           receivedPayloadBytesEstimate += payloadBytes;
           if (!fragmentMatchesCorrelation(ctx.data, "commandId", commandId)) {
-            unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
@@ -909,13 +893,11 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               typeof reassembled.type === "string" &&
               IGNORED_MESSAGE_TYPES.has(reassembled.type)
             ) {
-              unmatchedPublications += 1;
               unmatchedPayloadBytesEstimate += payloadBytes;
             }
             return;
           }
           if (message.commandId !== commandId) {
-            unmatchedPublications += 1;
             unmatchedPayloadBytesEstimate += payloadBytes;
             return;
           }
@@ -956,14 +938,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
           switch (message.type) {
             case "stdout":
-              stdoutBytes += Buffer.byteLength(message.data, "utf8");
-              outputChunks += 1;
               stdout += message.data;
               opts?.onStdout?.(message.data);
               break;
             case "stderr":
-              stderrBytes += Buffer.byteLength(message.data, "utf8");
-              outputChunks += 1;
               stderr += message.data;
               opts?.onStderr?.(message.data);
               break;
@@ -1038,7 +1016,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         // ensuring we receive messages published to the channel.
         subscription.on("subscribed", () => {
           if (settled) return;
-          subscriptionEvents += 1;
+
           // A reconnect may emit "subscribed" again while a command is still
           // running. Never execute the same command twice, including when the
           // second event arrives before the first presence check completes.
@@ -1048,8 +1026,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
           void (async () => {
             try {
-              const presence = await subscription!.presence();
+              const presence = isolated ? null : await subscription!.presence();
               if (
+                presence !== null &&
                 !presenceHasConnectionId(
                   presence,
                   this.connectionInfo.connectionId,
@@ -1103,9 +1082,18 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
             };
 
             commandPublishInFlight = true;
-            commandPublishAttempts += 1;
+
             (async () => {
-              if (opts?.stdin === undefined) {
+              if (isolated) {
+                await dispatchIsolatedOperation(
+                  client,
+                  this.userId,
+                  this.connectionInfo.connectionId,
+                  commandMessage as unknown as Record<string, unknown>,
+                  () => !settled,
+                  subscription!,
+                );
+              } else if (opts?.stdin === undefined) {
                 // Preserve the legacy command shape for local clients that do
                 // not implement transport-fragment reassembly.
                 await subscription!.publish(commandMessage);
@@ -1210,8 +1198,9 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     return `${base}${separator}${relative}`;
   }
 
-  // Max chunk size ~500KB base64 to stay under size limits (bash path)
-  private static readonly MAX_CHUNK_SIZE = 500 * 1024;
+  // Bound the complete shell argument, including quoting and path, below
+  // Linux per-argument and Windows Git Bash process command-line limits.
+  private static readonly MAX_POSIX_FILE_COMMAND_BYTES = 16 * 1024;
 
   // Keep native file relay messages comfortably below common WebSocket frame
   // limits after JSON overhead. Base64 chunks must stay divisible by 4.
@@ -1413,6 +1402,48 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
   // Cache for the detected HTTP client.
   private httpClient: HttpClient | null = null;
+  private powerShellExecutable: string | undefined;
+
+  private async resolvePowerShellExecutable(
+    signal?: AbortSignal,
+  ): Promise<string> {
+    signal?.throwIfAborted();
+    if (this.powerShellExecutable) return this.powerShellExecutable;
+    // Cache only verified results: an in-flight probe belongs to its caller,
+    // so Stop cannot cancel another transfer sharing this sandbox.
+    const shell = await this.detectShell(signal);
+    // Resolve on the selected computer, never against the worker's PATH.
+    const candidates =
+      shell === "bash"
+        ? [
+            "powershell.exe",
+            "pwsh.exe",
+            '"$(cygpath -u "${SYSTEMROOT:-${WINDIR:-C:/Windows}}")/System32/WindowsPowerShell/v1.0/powershell.exe"',
+          ]
+        : [
+            "powershell",
+            "pwsh",
+            '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+          ];
+    for (const executable of candidates) {
+      const result = await this.runSetupCommand(
+        `${executable} -NoLogo -NoProfile -NonInteractive -Command "Write-Output 'hackerai-powershell-ready'"`,
+        { displayName: "", timeoutMs: 5_000, signal },
+      );
+      signal?.throwIfAborted();
+      if (
+        result.exitCode === 0 &&
+        result.stdout.trim() === "hackerai-powershell-ready"
+      ) {
+        this.powerShellExecutable = executable;
+        return executable;
+      }
+    }
+    throw new Error(
+      "No supported Windows attachment transfer client is available. Install curl or PowerShell, or restore it to PATH.",
+    );
+  }
+
   private snapCurlFallbackSelected = false;
 
   // Cache for detected curl capabilities (probed once per sandbox).
@@ -1479,6 +1510,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
         return "curl";
       }
 
+      await this.resolvePowerShellExecutable(signal);
       this.httpClient = "powershell";
       return "powershell";
     }
@@ -1572,6 +1604,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
     signal?: AbortSignal,
   ): Promise<{ command: string; cleanup: () => Promise<void> }> {
     signal?.throwIfAborted();
+    const executable = await this.resolvePowerShellExecutable(signal);
     const scriptName = `hackerai-transfer-${crypto.randomUUID()}.ps1`;
     // Native Desktop writes enforce the selected project root. Stage helper
     // scripts there too, rather than attempting an out-of-project temp write.
@@ -1585,11 +1618,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       // files.write already chunks legacy cmd.exe writes below its command
       // length limit and uses the native file relay when the client supports it.
       await this.files.write(nativeScriptPath, script, { signal });
-      const { useBash, path, escapePath } = await this.shellContext(
+      const { path, escapePath } = await this.shellContext(
         nativeScriptPath,
         signal,
       );
-      const executable = useBash ? "powershell.exe" : "powershell";
       return {
         command: `${executable} -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${escapePath(path)}`,
         cleanup: async () => {
@@ -1820,6 +1852,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       const { useBash, path, escapePath, escapeValue } =
         await this.shellContext(rawPath, signal);
       const fileName = path.split(/[/\\]/).pop() || "file";
+      const escapedPath = escapePath(path);
+      const commandBudget = CentrifugoSandbox.MAX_POSIX_FILE_COMMAND_BYTES;
+      const overhead = Buffer.byteLength(
+        `printf '%s' "" | base64 -d >> ${escapedPath}`,
+        "utf8",
+      );
+      const chunkSize = Math.floor((commandBudget - overhead) / 4) * 4;
+      if (useBash && chunkSize < 4) {
+        // Reject before even issuing mkdir with an oversized path argument.
+        throw new Error("File path exceeds the local file command limit");
+      }
 
       // Ensure parent directory exists. Pass the native (unconverted) dir
       // so ensureDirectory re-applies its own shell-aware path handling.
@@ -1843,7 +1886,6 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       if (!useBash) {
         // Windows cmd.exe: use certutil to decode base64
-        const escapedPath = escapePath(path);
         const b64 = isBinary
           ? contentStr
           : Buffer.from(contentStr).toString("base64");
@@ -1888,50 +1930,43 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           );
           throw error;
         }
-      } else if (
-        isBinary &&
-        contentStr.length > CentrifugoSandbox.MAX_CHUNK_SIZE
-      ) {
-        // POSIX: Chunk large binary files to stay under size limits
-        const chunks: string[] = [];
-        for (
-          let i = 0;
-          i < contentStr.length;
-          i += CentrifugoSandbox.MAX_CHUNK_SIZE
+      } else {
+        const literalCommand = isBinary
+          ? undefined
+          : `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
+        if (
+          literalCommand &&
+          Buffer.byteLength(literalCommand, "utf8") <= commandBudget
         ) {
-          chunks.push(
-            contentStr.slice(i, i + CentrifugoSandbox.MAX_CHUNK_SIZE),
-          );
+          const result = await this.runFileCommand(literalCommand, {
+            displayName: `Writing: ${fileName}`,
+            signal,
+          });
+          if (result.exitCode !== 0) {
+            throw new Error(`Failed to write file: ${result.stderr}`);
+          }
+          return;
         }
 
-        const escapedPath = escapePath(path);
-        for (let i = 0; i < chunks.length; i++) {
-          const operator = i === 0 ? ">" : ">>";
+        // Encode large text as well as binary data. Chunking base64 on a
+        // multiple of four preserves UTF-8 bytes and avoids shell expansion.
+        const encoded = isBinary
+          ? contentStr
+          : Buffer.from(contentStr, "utf8").toString("base64");
+        for (
+          let offset = 0;
+          offset < encoded.length || offset === 0;
+          offset += chunkSize
+        ) {
+          const chunk = encoded.slice(offset, offset + chunkSize);
+          const operator = offset === 0 ? ">" : ">>";
           const result = await this.runFileCommand(
-            `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
-            { displayName: i === 0 ? `Writing: ${fileName}` : "", signal },
+            `printf '%s' "${chunk}" | base64 -d ${operator} ${escapedPath}`,
+            { displayName: offset === 0 ? `Writing: ${fileName}` : "", signal },
           );
           if (result.exitCode !== 0) {
             throw new Error(`Failed to write file: ${result.stderr}`);
           }
-        }
-      } else {
-        const escapedPath = escapePath(path);
-        // Quote text as one literal argument; printf preserves trailing newlines
-        // exactly, unlike a heredoc which always adds a final newline.
-        let command: string;
-        if (isBinary) {
-          command = `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`;
-        } else {
-          command = `printf '%s' ${escapeValue(contentStr)} > ${escapedPath}`;
-        }
-
-        const result = await this.runFileCommand(command, {
-          displayName: `Writing: ${fileName}`,
-          signal,
-        });
-        if (result.exitCode !== 0) {
-          throw new Error(`Failed to write file: ${result.stderr}`);
         }
       }
     },
@@ -2133,6 +2168,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
 
       // JS-level retry safety net on top of curl's --retry, for transient
       // network/TLS errors that can survive curl's own retry loop:
+      //   6  = temporary DNS resolution failure
       //   7  = couldn't connect
       //   18 = partial transfer
       //   23 = write error
@@ -2143,7 +2179,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
       //   124 = local command wrapper timeout
       const transientExitCodes =
         httpClient === "curl"
-          ? new Set([7, 18, 23, 28, 35, 56, 92, 124])
+          ? new Set([6, 7, 18, 23, 28, 35, 56, 92, 124])
           : httpClient === "wget"
             ? new Set([4, 124])
             : new Set<number>();
@@ -2180,7 +2216,10 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           if (result.exitCode === 0) break;
           if (
             attempt === MAX_ATTEMPTS ||
-            !transientExitCodes.has(result.exitCode)
+            !transientExitCodes.has(result.exitCode) ||
+            /getaddrinfo\(\) thread failed to start|cannot allocate memory|resource temporarily unavailable/i.test(
+              result.stderr,
+            )
           ) {
             break;
           }
@@ -2201,10 +2240,17 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
           const diagCmd = useBash
             ? `test -d ${diagDir} && echo target_dir_exists=true || echo target_dir_exists=false; test -w ${diagDir} && echo target_dir_writable=true || echo target_dir_writable=false; df -h /tmp 2>&1 | sed -n '1,2p'`
             : `if exist ${diagDir} (echo target_dir_exists=true) else (echo target_dir_exists=false) & (pushd ${diagDir} >nul 2>nul && (copy /Y NUL .hackerai_write_probe.tmp >nul 2>nul && del /q .hackerai_write_probe.tmp >nul 2>nul && echo target_dir_writable=true || echo target_dir_writable=false) & popd >nul 2>nul) || echo target_dir_writable=false`;
-          const diag = await this.commands.run(diagCmd, {
-            displayName: "",
-            signal,
-          });
+          let diagnosticOutput = "unavailable";
+          try {
+            const diag = await this.commands.run(diagCmd, {
+              displayName: "",
+              timeoutMs: 5_000,
+              signal,
+            });
+            diagnosticOutput = diag.stdout.slice(0, 1024);
+          } catch (error) {
+            throwIfAttachmentAborted(signal, error);
+          }
           signal?.throwIfAborted();
           const safeStderr = redactTransferDetails(result.stderr, url, [
             rawPath,
@@ -2217,7 +2263,7 @@ Browser automation is host-dependent on this connection. Chromium and agent-brow
               `  destination: [redacted-destination-path]\n` +
               `  command: ${httpClient}\n` +
               `  exitCode: ${result.exitCode}\n` +
-              `  diagnostics: ${diag.stdout}`,
+              `  diagnostics: ${diagnosticOutput}`,
           );
         }
       } finally {

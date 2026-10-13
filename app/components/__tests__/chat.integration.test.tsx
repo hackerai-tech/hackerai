@@ -33,6 +33,10 @@ const mockStop = jest.fn();
 const mockHandleSubmit = jest.fn();
 const mockRegenerate = jest.fn();
 const mockResumeStream = jest.fn();
+const mockFetchAgentLongStream =
+  jest.fn<
+    typeof import("@/lib/chat/agent-long-transport").fetchAgentLongStream
+  >();
 const mockResumeAgentLongStream =
   jest.fn<
     typeof import("@/lib/chat/agent-long-transport").resumeAgentLongStream
@@ -41,6 +45,9 @@ jest.mock("@/lib/chat/agent-long-transport", () => ({
   ...jest.requireActual<typeof import("@/lib/chat/agent-long-transport")>(
     "@/lib/chat/agent-long-transport",
   ),
+  fetchAgentLongStream: (
+    ...args: Parameters<typeof mockFetchAgentLongStream>
+  ) => mockFetchAgentLongStream(...args),
   resumeAgentLongStream: (
     ...args: Parameters<typeof mockResumeAgentLongStream>
   ) => mockResumeAgentLongStream(...args),
@@ -56,7 +63,15 @@ let mockChatHandlerArgs: Parameters<
   typeof import("@/app/hooks/useChatHandlers").useChatHandlers
 >[0];
 let mockRestoredChat:
-  { id: string; sandbox_type?: string; default_model_slug: string } | undefined;
+  | {
+      id: string;
+      sandbox_type?: string;
+      default_model_slug: string;
+      finish_reason?: string;
+      active_stream_id?: string;
+      active_trigger_run_id?: string;
+    }
+  | undefined;
 let mockDesktopState: Partial<
   ReturnType<typeof import("@/app/contexts/GlobalState").useGlobalState>
 > = {};
@@ -223,8 +238,13 @@ jest.mock("../MemoizedMarkdown", () => ({
 }));
 
 jest.mock("../Messages", () => ({
-  Messages: ({ messages }: any) => (
-    <div data-testid="messages-component">{messages.length} messages</div>
+  Messages: ({ messages, acquisitionSurvey }: any) => (
+    <div
+      data-testid="messages-component"
+      data-survey-message={acquisitionSurvey?.messageId}
+    >
+      {messages.length} messages
+    </div>
   ),
 }));
 
@@ -289,6 +309,16 @@ const { useGlobalState } = jest.requireActual<
 const { useComposerActions } = jest.requireActual<
   typeof import("@/app/contexts/ComposerState")
 >("@/app/contexts/ComposerState");
+const mockUseAuth = require("@workos-inc/authkit-nextjs/components").useAuth;
+const defaultAuth = mockUseAuth();
+const originalFetch = global.fetch;
+const mockSurveyAuth = () => {
+  mockUseAuth.mockReturnValue({ ...defaultAuth, user: { id: "survey-user" } });
+  global.fetch = jest
+    .fn<typeof fetch>()
+    .mockResolvedValue({ ok: false } as Response);
+};
+
 const ForkDraftSetter = () => {
   const { setInput } = useComposerActions();
   useEffect(() => setInput("continue"), [setInput]);
@@ -328,19 +358,25 @@ const DisconnectedQueueHarness = () => {
   );
 };
 
-const QueueEditingHarness = () => {
+const QueueEditingHarness = ({
+  mode = "agent",
+}: {
+  mode?: "agent" | "ask";
+}) => {
   const {
     messageQueue,
     queueMessage,
+    setChatMode,
     updateQueuedMessage,
     setEditingQueuedMessageId,
   } = useGlobalState();
   const hasSetActualEditingId = useRef(false);
 
   useEffect(() => {
+    setChatMode(mode);
     queueMessage("original queued message");
     setEditingQueuedMessageId("queued-message-id");
-  }, [queueMessage, setEditingQueuedMessageId]);
+  }, [queueMessage, setEditingQueuedMessageId, setChatMode, mode]);
 
   useEffect(() => {
     if (messageQueue[0] && !hasSetActualEditingId.current) {
@@ -414,10 +450,13 @@ describe("Chat Component Integration", () => {
 
   afterAll(() => {
     window.matchMedia = originalMatchMedia;
+    global.fetch = originalFetch;
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockUseAuth.mockReturnValue(defaultAuth);
+    global.fetch = originalFetch;
     const convexReact = require("convex/react");
     convexReact.resetMockConvexAuth?.();
     convexReact.resetMockConvexQueries?.();
@@ -834,6 +873,219 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Message Display", () => {
+    it("arms the inline survey for a fresh completed response, hides during the next run, and ignores history", () => {
+      mockSurveyAuth();
+      mockRouteParams = { id: "survey-chat" };
+      mockRestoredChat = {
+        id: "survey-chat",
+        default_model_slug: "ask",
+        finish_reason: "stop",
+      };
+      const userMessage = {
+        id: "survey-question",
+        role: "user",
+        parts: [{ type: "text", text: "Explain HTTP" }],
+      };
+      const assistantMessage = {
+        id: "survey-answer",
+        role: "assistant",
+        parts: [{ type: "text", text: "HTTP is a protocol." }],
+      };
+      const update = (status: string, messages: unknown[]) =>
+        mockUseChat.mockReturnValue({
+          messages,
+          status,
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        });
+      const view = () => (
+        <TestWrapper>
+          <Chat autoResume={false} />
+        </TestWrapper>
+      );
+      update("ready", [userMessage, assistantMessage]);
+      const { rerender } = render(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+      update("submitted", [userMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+      update("ready", [userMessage, assistantMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).toHaveAttribute(
+        "data-survey-message",
+        "survey-answer",
+      );
+      update("streaming", [userMessage, assistantMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+    });
+
+    it("retains the first submission through the new-task remount but clears it on navigation and reload", () => {
+      mockSurveyAuth();
+      const userMessage = {
+        id: "first-question",
+        role: "user",
+        parts: [{ type: "text", text: "Explain HTTP" }],
+      };
+      const assistantMessage = {
+        id: "first-answer",
+        role: "assistant",
+        parts: [{ type: "text", text: "HTTP is a protocol." }],
+      };
+      const update = (status: string, messages: unknown[]) =>
+        mockUseChat.mockReturnValue({
+          messages,
+          status,
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        });
+      const view = () => (
+        <TestWrapper>
+          <Chat key={mockRouteParams.id ?? "new"} autoResume={false} />
+        </TestWrapper>
+      );
+      update("ready", []);
+      const { rerender, unmount } = render(view());
+      update("submitted", [userMessage]);
+      rerender(view());
+      mockRouteParams = { id: "queued-message-id" };
+      mockRestoredChat = {
+        id: "queued-message-id",
+        default_model_slug: "ask",
+        finish_reason: "stop",
+      };
+      update("ready", [userMessage, assistantMessage]);
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).toHaveAttribute(
+        "data-survey-message",
+        "first-answer",
+      );
+      mockRouteParams = { id: "another-task" };
+      rerender(view());
+      mockRouteParams = { id: "queued-message-id" };
+      rerender(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+      update("submitted", [userMessage]);
+      rerender(view());
+      unmount();
+      update("ready", [userMessage, assistantMessage]);
+      render(view());
+      expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+        "data-survey-message",
+      );
+    });
+
+    it.each(["account", "organization"])(
+      "clears survey activation when the %s changes",
+      (identity) => {
+        mockSurveyAuth();
+        mockRouteParams = { id: "survey-chat" };
+        const { result, rerender } = renderHook(() => useGlobalState(), {
+          wrapper: TestWrapper,
+        });
+        act(() =>
+          result.current.setSurveyActivation({
+            chatId: "survey-chat",
+            userMessageId: "survey-question",
+            mode: "ask",
+          }),
+        );
+        expect(result.current.surveyActivation).not.toBeNull();
+        mockUseAuth.mockReturnValue({
+          ...defaultAuth,
+          user: { id: identity === "account" ? "another-user" : "survey-user" },
+          organizationId:
+            identity === "organization" ? "another-org" : undefined,
+        });
+        rerender();
+        expect(result.current.surveyActivation).toBeNull();
+        mockSurveyAuth();
+        rerender();
+        expect(result.current.surveyActivation).toBeNull();
+      },
+    );
+
+    it.each(["abort", "error", "length", "active-run", "no-text"])(
+      "does not offer research after %s",
+      (outcome) => {
+        mockSurveyAuth();
+        mockRouteParams = { id: "survey-chat" };
+        mockRestoredChat = {
+          id: "survey-chat",
+          default_model_slug: "agent",
+          finish_reason: "stop",
+        };
+        const userMessage = {
+          id: "survey-question",
+          role: "user",
+          parts: [{ type: "text", text: "Explain HTTP" }],
+        };
+        const chatHelpers = {
+          sendMessage: mockSendMessage,
+          setMessages: mockSetMessages,
+          stop: mockStop,
+          error: null,
+          regenerate: mockRegenerate,
+          resumeStream: mockResumeStream,
+        };
+        mockUseChat.mockReturnValue({
+          ...chatHelpers,
+          status: "ready",
+          messages: [],
+        });
+        const view = () => (
+          <TestWrapper>
+            <Chat autoResume={false} />
+          </TestWrapper>
+        );
+        const { rerender } = render(view());
+        mockUseChat.mockReturnValue({
+          ...chatHelpers,
+          status: "submitted",
+          messages: [userMessage],
+        });
+        rerender(view());
+        if (outcome === "active-run")
+          mockRestoredChat.active_trigger_run_id = "running";
+        else if (outcome !== "no-text")
+          mockRestoredChat.finish_reason = outcome;
+        mockUseChat.mockReturnValue({
+          ...chatHelpers,
+          status: "ready",
+          messages: [
+            userMessage,
+            {
+              id: "survey-answer",
+              role: "assistant",
+              parts:
+                outcome === "no-text"
+                  ? [{ type: "reasoning", text: "Thinking" }]
+                  : [{ type: "text", text: "Partial output" }],
+            },
+          ],
+        });
+        rerender(view());
+        expect(screen.getByTestId("messages-component")).not.toHaveAttribute(
+          "data-survey-message",
+        );
+      },
+    );
     it("waits for restored preferences before auto-sending a fork loaded after its draft", async () => {
       mockRouteParams = { id: "late-fork" };
       mockLocalConnections = [];
@@ -940,13 +1192,85 @@ describe("Chat Component Integration", () => {
       rerender(view());
       await waitFor(() =>
         expect(mockSendMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ text: "continue" }),
+          expect.objectContaining({
+            parts: [{ type: "text", text: "continue" }],
+          }),
           expect.objectContaining({
             body: expect.objectContaining({ sandboxPreference: "desktop" }),
           }),
         ),
       );
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+    });
+
+    it("removes a queued item only when its actual Agent transport acknowledges the matching turn", async () => {
+      mockLocalConnections = [{ connectionId: "desktop-row", isDesktop: true }];
+      let finish!: () => void;
+      mockSendMessage.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      render(
+        <TestWrapper>
+          <DisconnectedQueueHarness />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Queue continue" }));
+      await waitFor(() => expect(mockSendMessage).toHaveBeenCalled());
+      expect(screen.getByTestId("pending-queue")).toHaveTextContent("1");
+      const payload = (
+        mockSendMessage.mock.calls.at(-1) as unknown as [unknown]
+      )[0];
+      const options = mockUseChat.mock.calls.at(-1)![0] as {
+        transport: {
+          fetch: (url: string, init: RequestInit) => Promise<Response>;
+        };
+      };
+      mockFetchAgentLongStream.mockImplementationOnce(
+        async (_init, onRunStarted) => {
+          onRunStarted?.({
+            chatId: "queued-message-id",
+            runId: "synthetic-run",
+          });
+          return {} as Response;
+        },
+      );
+      await act(async () => {
+        await options.transport.fetch("/api/chat", {
+          method: "POST",
+          body: JSON.stringify({
+            chatId: "queued-message-id",
+            messages: [payload],
+          }),
+        });
+      });
       expect(screen.getByTestId("pending-queue")).toHaveTextContent("0");
+      await act(async () => {
+        finish();
+      });
+    });
+
+    it("preserves automatic and manual Ask queue dispatch", async () => {
+      render(
+        <TestWrapper>
+          <QueueEditingHarness mode="ask" />
+          <Chat autoResume={false} />
+        </TestWrapper>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Save queued edit" }));
+      await waitFor(() =>
+        expect(mockSendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "updated queued message" }),
+          expect.objectContaining({
+            body: expect.objectContaining({ mode: "ask" }),
+          }),
+        ),
+      );
+      expect(screen.getByTestId("queue-state")).toHaveTextContent("Queued: 0");
+      expect(mockChatHandlerArgs.sendQueuedMessage).toBeUndefined();
     });
 
     it("keeps an edited queued message pending, then resumes with updated text", async () => {
@@ -969,11 +1293,13 @@ describe("Chat Component Integration", () => {
 
       await waitFor(() => {
         expect(mockSendMessage).toHaveBeenCalledWith(
-          expect.objectContaining({ text: "updated queued message" }),
+          expect.objectContaining({
+            parts: [{ type: "text", text: "updated queued message" }],
+          }),
           expect.anything(),
         );
         expect(screen.getByTestId("queue-state")).toHaveTextContent(
-          "Queued: 0",
+          "Queued: 1",
         );
       });
     });

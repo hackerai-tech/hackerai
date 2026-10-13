@@ -11,6 +11,12 @@ import {
   isInteractiveShellAction,
   stripAgentOnlyTerminalGuidance,
 } from "@/app/components/tools/shell-tool-utils";
+import {
+  createFindingFailureContent,
+  createReportToolFailureContent,
+  createToolInputErrorContent,
+  isToolInputValidationError,
+} from "@/lib/chat/tool-error-display";
 import { parseAgentAutoReviewLifecycle } from "@/types";
 
 interface MessagePart {
@@ -104,6 +110,28 @@ export function extractSidebarContentFromMessage(
       part.type.startsWith("tool-") &&
       !STREAMS_DURING_INPUT.has(part.type)
     ) {
+      return;
+    }
+
+    const validationToolType =
+      typeof part.type === "string" && part.type.startsWith("tool-")
+        ? part.type
+        : part.type === "dynamic-tool" && typeof part.toolName === "string"
+          ? `tool-${part.toolName}`
+          : null;
+
+    if (
+      validationToolType &&
+      part.state === "output-error" &&
+      isToolInputValidationError(part.errorText)
+    ) {
+      contentList.push(
+        createToolInputErrorContent({
+          toolType: validationToolType,
+          toolCallId: part.toolCallId || "",
+          errorText: part.errorText,
+        }),
+      );
       return;
     }
 
@@ -827,6 +855,109 @@ export function extractSidebarContentFromMessage(
         original,
         modified,
       });
+    }
+
+    if (
+      [
+        "tool-list_reports",
+        "tool-get_report",
+        "tool-update_vulnerability_report",
+      ].includes(part.type) &&
+      (part.state === "output-available" || part.state === "output-error")
+    ) {
+      const operation =
+        part.type === "tool-list_reports"
+          ? "list"
+          : part.type === "tool-get_report"
+            ? "get"
+            : "update";
+      const result = part.output?.result ?? part.output;
+      const report = operation === "get" ? result?.report : result;
+      if (part.state === "output-available" && result?.success === true) {
+        if (operation === "list") return;
+        if (
+          typeof report?.finding_id === "string" &&
+          report.finding_id &&
+          typeof report.title === "string" &&
+          report.title &&
+          typeof report.target === "string" &&
+          report.target &&
+          typeof report.severity === "string" &&
+          report.severity &&
+          typeof report.cvss_score === "number"
+        ) {
+          contentList.push({
+            findingId: report.finding_id,
+            title: report.title,
+            target: report.target,
+            endpoint: report.endpoint,
+            severity: report.severity,
+            cvssScore: report.cvss_score,
+            isExecuting: false,
+            toolCallId: part.toolCallId || "",
+          });
+          return;
+        }
+      }
+      contentList.push(
+        createReportToolFailureContent({
+          toolCallId: part.toolCallId || "",
+          operation,
+          reason:
+            result?.validation_kind === "evidence" ? "evidence" : result?.error,
+        }),
+      );
+      return;
+    }
+
+    if (
+      part.type === "tool-create_vulnerability_report" &&
+      (part.state === "output-available" || part.state === "output-error")
+    ) {
+      const result = part.output?.result ?? part.output;
+      if (
+        part.state === "output-available" &&
+        result?.success === true &&
+        typeof result.finding_id === "string" &&
+        result.finding_id &&
+        typeof result.title === "string" &&
+        result.title &&
+        typeof result.target === "string" &&
+        result.target &&
+        typeof result.severity === "string" &&
+        result.severity &&
+        typeof result.cvss_score === "number"
+      ) {
+        contentList.push({
+          findingId: result.finding_id,
+          title: result.title,
+          target: result.target,
+          endpoint: result.endpoint,
+          severity: result.severity,
+          cvssScore: result.cvss_score,
+          isExecuting: false,
+          toolCallId: part.toolCallId || "",
+        });
+      } else if (!(
+        result?.success === false &&
+        result.error === "duplicate" &&
+        part.state === "output-available"
+      )) {
+        contentList.push(
+          createFindingFailureContent({
+            toolCallId: part.toolCallId || "",
+            reason:
+              part.state === "output-error"
+                ? "general"
+                : result?.success === false
+                  ? result.error === "validation" ||
+                    result.error === "chat_not_found"
+                    ? result.error
+                    : "general"
+                  : "invalid_result",
+          }),
+        );
+      }
     }
   });
 

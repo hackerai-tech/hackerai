@@ -1,8 +1,8 @@
-/** Centralized plan prices in USD, expressed as monthly amounts. */
+/** Public plan prices for new customers in USD, expressed as monthly amounts. */
 export const PRICING = {
   pro: {
-    monthly: 25,
-    yearly: 21,
+    monthly: 29,
+    yearly: 24,
   },
   "pro-plus": {
     monthly: 60,

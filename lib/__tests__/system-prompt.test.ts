@@ -22,6 +22,7 @@ describe("systemPrompt security instructions", () => {
         sandboxContext,
       );
       expect(agent).toContain("<agent_lifecycle>");
+      expect(agent).toContain("<agent_deliverables>");
       expect(agent).toContain(
         "coding, research, configuration, files, and pentesting",
       );
@@ -43,6 +44,7 @@ describe("systemPrompt security instructions", () => {
       expect(agent).toContain("disclose changes that could not be restored");
       expect(agent).toContain("<finding_quality>");
       expect(ask).not.toContain("<agent_lifecycle>");
+      expect(ask).not.toContain("<agent_deliverables>");
       expect(ask).not.toContain("requested outcome is sufficiently supported");
     },
   );
@@ -90,7 +92,7 @@ describe("systemPrompt security instructions", () => {
     expect(disabled).not.toContain("<generic_delegation>");
     expect(enabled).toContain("<generic_delegation>");
     expect(enabled).toContain("Use delegate_task");
-    expect(enabled).not.toContain("vulnerability_report");
+    expect(enabled).toContain("create_vulnerability_report");
     expect(enabled).not.toContain("security_validation");
     expect(enabled).not.toContain("security_task");
     expect(enabled).toContain("two siblings may be active");
@@ -375,24 +377,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).not.toContain("Golang 1.24.2");
   });
 
-  it("describes the HackerAI tools container for MIOSA sandboxes", async () => {
-    const prompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-      "full_access",
-      false,
-      "miosa",
-    );
-
-    expect(prompt).toContain("4 vCPU");
-    expect(prompt).toContain("Pre-installed Pentesting Tools:");
-    expect(prompt).toContain("agent-browser is installed in the cloud sandbox");
-  });
-
   it("keeps all three Agent approval mode contracts distinct", async () => {
     const ask = await systemPrompt(
       "user_123",
@@ -487,7 +471,35 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
         "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
       );
       expect(prompt).toContain(
-        "affected asset, concrete evidence, reliable reproduction steps, demonstrated impact, remediation guidance, and confidence level",
+        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level",
+      );
+      expect(prompt).toContain(
+        "persist at most one successful create_vulnerability_report for that distinct root cause",
+      );
+      expect(prompt).toContain(
+        "explicitly returns retryable: true, retry the same report once",
+      );
+      expect(prompt).toContain(
+        'Do not also save the confirmed vulnerability as a Notes "findings" entry',
+      );
+      expect(prompt).toContain(
+        "If impact cannot be reproduced or the PoC does not work, keep it as a hypothesis or needs-validation item",
+      );
+      expect(prompt).toContain(
+        "Choose Base metrics from the exploitability and impact demonstrated by the evidence and working PoC, not a theoretical worst case",
+      );
+      expect(prompt).toContain(
+        "Set Scope to Changed only when the demonstrated impact crosses a security authority boundary",
+      );
+      expect(prompt).toContain(
+        "Do not infer High confidentiality, integrity, or availability impact from the vulnerability class alone",
+      );
+      expect(prompt).toContain("<finding_quality>");
+      expect(prompt).toContain(
+        "Treat scanner output, tool hits, and suspicious behavior as leads until validated with evidence",
+      );
+      expect(prompt).toContain(
+        "affected asset, concrete evidence, reliable reproduction steps, a working proof of concept, demonstrated impact, remediation guidance, understood exploitability prerequisites, and a confidence level",
       );
       expect(prompt).toContain(
         "Calibrate severity to only the weakness and impact actually demonstrated",
@@ -798,7 +810,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     );
   });
 
-  it("keeps the false-positive port-scan warning specific to E2B", async () => {
+  it("keeps networking limitations specific to cloud Agent", async () => {
     const cloudPrompt = await systemPrompt(
       "user_123",
       "agent",
@@ -809,17 +821,6 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "full_access",
       false,
       "e2b",
-    );
-    const miosaPrompt = await systemPrompt(
-      "user_123",
-      "agent",
-      "pro",
-      "agent-model",
-      null,
-      null,
-      "full_access",
-      false,
-      "miosa",
     );
     const localPrompt = await systemPrompt(
       "user_123",
@@ -846,18 +847,19 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(cloudPrompt).toContain(
       "Narrow application-level checks remain appropriate when they verify expected protocol behavior",
     );
-    const portScanningPolicy = cloudPrompt.match(
-      /Port-scanning limitation:[\s\S]*?\n\nSystem Environment:/,
+    const cloudNetworkingPolicy = cloudPrompt.match(
+      /Cloud networking limitations:[\s\S]*?\n\nSystem Environment:/,
     )?.[0];
-    expect(portScanningPolicy).toBeDefined();
-    expect(portScanningPolicy).not.toMatch(
+    expect(cloudNetworkingPolicy).toBeDefined();
+    expect(cloudNetworkingPolicy).toContain(
+      "this sandbox lacks TUN/TAP support",
+    );
+    expect(cloudNetworkingPolicy).toContain("attempting VPN setup");
+    expect(cloudNetworkingPolicy).not.toMatch(
       /\b(?:masscan|naabu|nc|netcat|nmap)\b/i,
     );
-    expect(miosaPrompt).not.toContain("Port-scanning limitation:");
-    expect(miosaPrompt).not.toContain(
-      "Cloud Agent networking can produce false-positive port results",
-    );
-    expect(localPrompt).not.toContain("Port-scanning limitation:");
+    expect(localPrompt).not.toContain("Cloud networking limitations:");
+    expect(localPrompt).not.toContain("this sandbox lacks TUN/TAP support");
     expect(localPrompt).not.toContain(
       "Cloud Agent networking can produce false-positive port results",
     );

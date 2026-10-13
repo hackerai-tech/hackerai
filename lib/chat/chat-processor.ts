@@ -18,7 +18,7 @@ import {
   type ModelName,
 } from "@/lib/ai/providers";
 import {
-  ABORTED_TOOL_ERROR_TEXT,
+  INTERRUPTED_TOOL_ERROR_TEXT,
   getIncompleteToolErrorText,
   hasMeaningfulToolInput,
 } from "@/lib/chat/tool-abort-utils";
@@ -113,7 +113,7 @@ export function selectModel(
 
   const autoModel: ModelName = isAgent
     ? subscription === "free"
-      ? "agent-model-free"
+      ? "model-glm-5.3-flash-agent"
       : hasProviderImage
         ? "model-grok-4.5"
         : paidAutoTextModel
@@ -186,6 +186,10 @@ const ABORT_RENDERABLE_TOOL_TYPES = new Set([
   "tool-list_notes",
   "tool-update_note",
   "tool-delete_note",
+  "tool-create_vulnerability_report",
+  "tool-list_reports",
+  "tool-get_report",
+  "tool-update_vulnerability_report",
   "tool-list_requests",
   "tool-view_request",
   "tool-send_request",
@@ -247,7 +251,7 @@ function logIncompleteToolPartHandled({
 
 function createAbortedToolPart(
   part: any,
-  errorText = ABORTED_TOOL_ERROR_TEXT,
+  errorText = INTERRUPTED_TOOL_ERROR_TEXT,
 ): any | null {
   if (
     !ABORT_RENDERABLE_TOOL_TYPES.has(part.type) ||
@@ -279,7 +283,10 @@ function createAbortedToolPart(
  */
 export function fixIncompleteMessageParts(
   parts: any[],
-  options?: { logContext?: IncompleteMessagePartsLogContext },
+  options?: {
+    logContext?: IncompleteMessagePartsLogContext;
+    userInitiatedAbort?: boolean;
+  },
 ): any[] {
   // First pass: fix incomplete tool invocations
   const partsWithFixedTools = parts.map((part: any) => {
@@ -302,7 +309,10 @@ export function fixIncompleteMessageParts(
       if (isIncomplete && part.output == null && part.result == null) {
         const abortedPart = createAbortedToolPart(
           part,
-          getIncompleteToolErrorText(options?.logContext?.finishReason),
+          getIncompleteToolErrorText(
+            options?.logContext?.finishReason,
+            options?.userInitiatedAbort,
+          ),
         );
         if (abortedPart) {
           logIncompleteToolPartHandled({
@@ -649,6 +659,7 @@ const UI_ONLY_PART_TYPES = new Set([
   "data-agent-auto-review",
   "data-agent-auto-review-lifecycle",
   "data-summarization",
+  "data-shared-finding",
 ]);
 
 /**
@@ -794,7 +805,6 @@ export async function processChatMessages({
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
-  // Check moderation for the last user message
   const moderationResult = await getModerationResult(
     cleanedMessages,
     subscription !== "free",
@@ -804,6 +814,7 @@ export async function processChatMessages({
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    moderationChecked: true,
     platformAuthorized: moderationResult.shouldUncensorResponse,
     allowsAbliterationContinuation:
       moderationResult.allowsAbliterationContinuation,

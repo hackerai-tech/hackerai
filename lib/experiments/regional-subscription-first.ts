@@ -1,7 +1,14 @@
 export const REGIONAL_SUBSCRIPTION_FIRST_KEY = "regional_subscription_first_v1";
 export const REGIONAL_SUBSCRIPTION_FIRST_EXPOSURE =
   "regional_subscription_first_exposed";
-export const SUBSCRIPTION_FIRST_COUNTRIES = ["IN", "PK", "BD", "NG"] as const;
+export const SUBSCRIPTION_FIRST_COUNTRIES = [
+  "IN",
+  "PK",
+  "BD",
+  "NG",
+  "ID",
+  "IR",
+] as const;
 
 export type RegionalSubscriptionAssignment = {
   variant: "control" | "test";

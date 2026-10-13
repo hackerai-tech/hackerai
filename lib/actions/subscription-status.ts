@@ -5,9 +5,14 @@ import { isExpectedBillingContextError } from "@/lib/actions/billing-action-erro
 import { getBillingStatusContext } from "@/lib/actions/billing-context";
 import { phLogger } from "@/lib/posthog/server";
 import type { SubscriptionCancellationStatus } from "@/lib/billing/api-types";
-import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  subscriptionCurrentPeriodEndMs,
+  subscriptionPlanFromPrice,
+} from "@/lib/billing/current-subscription";
 import { subscriptionPauseFromMetadata } from "@/lib/billing/retention-offers";
 import { resolvePendingPlanChange } from "@/lib/billing/subscription-schedule";
+import { hasRecentCanceledRenewalAtRisk } from "@/lib/billing/canceled-renewal-invoice";
+import { isPayableRenewalInvoice } from "@/lib/billing/renewal-invoice";
 import { planLookupKeyToTier } from "@/lib/analytics/paid-funnel";
 import {
   invoicePaymentIntentId,
@@ -91,9 +96,30 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   const currentSubscription = currentSubscriptions[0];
 
   if (!currentSubscription) {
+    let checkoutRequiresReview: boolean;
+    let billingReviewUnavailable = false;
+    try {
+      checkoutRequiresReview = await hasRecentCanceledRenewalAtRisk(
+        stripe,
+        stripeCustomerId,
+      );
+    } catch (error) {
+      phLogger.error("billing_subscription_status_action_failed", {
+        event: "billing_subscription_status_action_failed",
+        ...billingFields,
+        stage: "canceled_renewal_risk",
+        duration_ms: Date.now() - startedAt,
+        error,
+      });
+      checkoutRequiresReview = true;
+      billingReviewUnavailable = true;
+    }
     return {
       hasActiveSubscription: false,
       cancelAtPeriodEnd: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview,
+      ...(billingReviewUnavailable && { billingReviewUnavailable: true }),
     };
   }
 
@@ -160,6 +186,18 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
   );
   const pendingPrice = pendingChange?.price;
   return {
+    billingAccountAvailable: true,
+    ...(renewalPaymentRequired &&
+      typeof invoice === "object" &&
+      invoice && {
+        renewalInvoiceAmountRemaining: invoice.amount_remaining,
+        renewalInvoiceCurrency: invoice.currency,
+        renewalInvoicePayable: isPayableRenewalInvoice(
+          currentSubscription,
+          invoice,
+          stripeCustomerId,
+        ),
+      }),
     hasActiveSubscription: true,
     cancelAtPeriodEnd,
     currentPeriodEnd,
@@ -191,7 +229,9 @@ export default async function getSubscriptionCancellationStatusAction(): Promise
       invoice.status === "paid" && { renewalInvoicePaid: true }),
     ...(renewalPaymentFailure && { renewalPaymentFailure }),
     ...(price?.id && { stripePriceId: price.id }),
-    ...(price?.lookup_key && { stripePriceLookupKey: price.lookup_key }),
+    ...(subscriptionPlanFromPrice(price) && {
+      stripePriceLookupKey: subscriptionPlanFromPrice(price),
+    }),
     ...(renewalAmountDollars !== undefined && { renewalAmountDollars }),
     ...(price?.currency && { renewalCurrency: price.currency }),
     ...(price?.recurring?.interval && {

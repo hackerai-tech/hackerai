@@ -5,6 +5,8 @@ import { BILLING_ERRORS } from "@/lib/billing/billing-errors";
 export { BILLING_ERRORS };
 
 const BILLING_ERROR_STATUSES = new Map<string, number>([
+  ["No payable renewal invoice found. Check your billing status.", 409],
+  ["Invoice payment page is unavailable. Open billing to review it.", 409],
   ["User not authenticated", 401],
   ["No organization found", 404],
   ["User is not a member of this organization", 403],

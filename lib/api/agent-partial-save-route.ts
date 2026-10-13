@@ -9,7 +9,7 @@ import { assertUserCanAccessChatHistory } from "@/lib/suspensions";
 import { createRedisClient } from "@/lib/rate-limit/redis";
 import { verifyAgentRunCorrelationToken } from "@/lib/api/agent-run-correlation";
 
-const CLIENT_SAVED_FINISH_REASON = "trigger_crashed_client_saved";
+import { CLIENT_SAVED_FINISH_REASON } from "@/lib/chat/stop-conditions";
 const MAX_PARTIAL_SAVE_BODY_BYTES = 4 * 1024 * 1024;
 const PARTIAL_SAVE_RATE_LIMIT_MAX_REQUESTS = 60;
 const PARTIAL_SAVE_RATE_LIMIT_WINDOW_SECONDS = 10 * 60;

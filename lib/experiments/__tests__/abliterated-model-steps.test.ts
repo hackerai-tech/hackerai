@@ -30,6 +30,20 @@ describe("resolveAbliterationModelForGenerationStep", () => {
     },
   );
 
+  it.each([0, 1, 2, 3, 4, 499])(
+    "caps treatment at three steps for index %i",
+    (stepIndex) => {
+      expect(
+        resolveAbliterationModelForGenerationStep({
+          treatmentModel: "abliteration",
+          baselineModel: "openrouter",
+          stepIndex,
+          generationStepLimit: 3,
+        }),
+      ).toBe(stepIndex < 3 ? "abliteration" : "openrouter");
+    },
+  );
+
   it.each([-1, 1.5, Number.NaN])(
     "fails closed for invalid generation step index %s",
     (stepIndex) => {

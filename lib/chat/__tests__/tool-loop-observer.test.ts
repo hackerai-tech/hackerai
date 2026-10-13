@@ -48,6 +48,66 @@ describe("ToolLoopObserver", () => {
     });
   });
 
+  it("detects alternating failed commands despite fresh terminal sessions", () => {
+    const observer = new ToolLoopObserver();
+    let result;
+    for (let i = 0; i < 6; i++) {
+      result = observe(
+        observer,
+        { command: i % 2 ? "check-b" : "check-a" },
+        {
+          result: {
+            output: "missing fixture dependency",
+            exitCode: 2,
+            status: "failed",
+            session: `session-${i}`,
+            recordPath: `/records/session-${i}.json`,
+            pid: 100 + i,
+            rawSnapshot: `replay-${i}`,
+            executionEnvironment: "cloud",
+            workingDirectory: "/home/user",
+          },
+        },
+        "run_terminal_cmd",
+      );
+    }
+    expect(result).toEqual({
+      toolNames: ["run_terminal_cmd"],
+      repeatCount: 3,
+      cycleLength: 2,
+    });
+  });
+
+  it.each([
+    "output",
+    "exitCode",
+    "status",
+    "executionEnvironment",
+    "workingDirectory",
+  ])("preserves changing terminal %s as possible progress", (field) => {
+    const observer = new ToolLoopObserver();
+    for (let i = 0; i < 6; i++) {
+      expect(
+        observe(
+          observer,
+          { command: "check" },
+          {
+            result: {
+              output: "unchanged",
+              exitCode: 0,
+              status: "completed",
+              executionEnvironment: "cloud",
+              workingDirectory: "/home/user",
+              [field]: String(i),
+              session: `session-${i}`,
+            },
+          },
+          "run_terminal_cmd",
+        ),
+      ).toBeUndefined();
+    }
+  });
+
   it("does not confuse changed output with stalled work", () => {
     const observer = new ToolLoopObserver();
     for (let i = 0; i < 20; i++)

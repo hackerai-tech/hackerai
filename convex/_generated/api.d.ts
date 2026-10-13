@@ -22,6 +22,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as findings from "../findings.js";
 import type * as influencerAnalytics from "../influencerAnalytics.js";
 import type * as influencerValidators from "../influencerValidators.js";
 import type * as influencers from "../influencers.js";
@@ -89,6 +90,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
+  findings: typeof findings;
   influencerAnalytics: typeof influencerAnalytics;
   influencerValidators: typeof influencerValidators;
   influencers: typeof influencers;

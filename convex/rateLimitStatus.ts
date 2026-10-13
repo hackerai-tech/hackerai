@@ -9,24 +9,18 @@ import {
   getSubscriptionPrice,
 } from "../lib/rate-limit/token-bucket";
 import type { SubscriptionTier } from "../types";
+import { limitPaidBucket } from "../lib/rate-limit/paid-bucket";
 
 // Cache dynamic imports to avoid re-importing on every action call
-let _cachedModules: { Ratelimit: any; Redis: any } | null = null;
+let _cachedModules: { Redis: any } | null = null;
 async function getCachedModules() {
   if (!_cachedModules) {
-    const ratelimitModule = await import("@upstash/ratelimit");
     const redisModule = await import("@upstash/redis");
     _cachedModules = {
-      Ratelimit: ratelimitModule.default.Ratelimit,
       Redis: redisModule.Redis,
     };
   }
   return _cachedModules;
-}
-
-function finiteNonNegativeNumber(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return Math.max(0, value);
 }
 
 /**
@@ -113,32 +107,21 @@ export const getAgentRateLimitStatus = action({
     try {
       // Dynamic imports in Convex Node runtime expose modules via .default.
       // Cache at module level to avoid re-importing on every call.
-      const { Ratelimit, Redis } = await getCachedModules();
+      const { Redis } = await getCachedModules();
 
       const redis = new Redis({
         url: redisUrl,
         token: redisToken,
       });
 
-      const monthlyRatelimit = new Ratelimit({
-        redis,
-        limiter: Ratelimit.tokenBucket(monthlyLimit, "30 d", monthlyLimit),
-        prefix: "usage:monthly",
-      });
-
-      const monthlyKey = `${userId}:${subscription}`;
-      const monthlyResult = await monthlyRatelimit.limit(monthlyKey, {
-        rate: 0,
-      });
       const monthlyStorageKey = getMonthlyBucketKey(userId, subscription);
-      const storedCycleAllocation = finiteNonNegativeNumber(
-        await redis.hget(monthlyStorageKey, "cycleAllocation"),
+      const monthlyResult = await limitPaidBucket(
+        redis,
+        monthlyStorageKey,
+        monthlyLimit,
+        0,
       );
-
-      const cycleAllocation =
-        storedCycleAllocation === null
-          ? monthlyLimit
-          : Math.min(storedCycleAllocation, monthlyLimit);
+      const cycleAllocation = monthlyResult.limit;
       const monthlyRemaining = Math.min(
         Math.max(0, monthlyResult.remaining),
         cycleAllocation,

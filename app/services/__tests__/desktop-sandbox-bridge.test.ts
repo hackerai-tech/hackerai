@@ -1,3 +1,4 @@
+import { waitFor } from "@testing-library/dom";
 import { DesktopSandboxBridge } from "../desktop-sandbox-bridge";
 import {
   CentrifugoMessageReassembler,
@@ -20,6 +21,7 @@ const mockClient = {
   newSubscription: jest.fn().mockReturnValue(mockSubscription),
   connect: jest.fn(),
   disconnect: jest.fn(),
+  removeSubscription: jest.fn(),
   on: jest.fn(),
   ready: jest.fn().mockResolvedValue(undefined),
 };
@@ -148,6 +150,57 @@ beforeEach(() => {
 
 afterEach(() => {
   global.fetch = originalFetch;
+});
+
+it("publishes native file replies only on the requested operation channel", async () => {
+  const bridge = new DesktopSandboxBridge(buildConfig());
+  await bridge.start();
+  const reply = {
+    ...mockSubscription,
+    on: jest.fn(),
+    publish: jest.fn().mockResolvedValue(undefined),
+    unsubscribe: jest.fn(),
+    removeAllListeners: jest.fn(),
+  };
+  mockClient.newSubscription.mockReturnValueOnce(reply);
+  const native = mockInvokeHandler;
+  mockInvokeHandler = async (cmd, args) => {
+    if (cmd === "desktop_file_request")
+      return {
+        path: "/tmp/test",
+        sizeBytes: 5,
+        totalLines: 1,
+        content: "hello",
+      };
+    return native(cmd, args);
+  };
+  try {
+    getPublicationHandler()({
+      data: {
+        type: "file_read",
+        requestId: "isolated-file",
+        path: "/tmp/test",
+        targetConnectionId: "conn-123",
+        operationChannel: true,
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockClient.newSubscription).toHaveBeenCalledWith(
+      "sandbox:operation:conn-123:file:isolated-file#user-456",
+    );
+    expect(reply.publish).toHaveBeenCalledWith({
+      type: "operation_ready",
+      requestId: "isolated-file",
+    });
+    expect(reply.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "file_read_result", content: "hello" }),
+    );
+    expect(mockSubscription.publish).not.toHaveBeenCalled();
+    expect(reply.unsubscribe).toHaveBeenCalled();
+    expect(mockClient.removeSubscription).toHaveBeenCalledWith(reply);
+  } finally {
+    await bridge.stop();
+  }
 });
 
 // ── desktop capability registration ───────────────────────────────────
@@ -306,7 +359,12 @@ describe("desktop capability registration", () => {
 
     expect(config.connectDesktop).toHaveBeenCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
       }),
     );
   });
@@ -326,7 +384,12 @@ describe("desktop capability registration", () => {
     await bridge.start();
     expect(config.connectDesktop).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: false },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: false,
+          operationChannels: true,
+        },
       }),
     );
     expect(global.fetch).toHaveBeenCalledWith(
@@ -341,7 +404,12 @@ describe("desktop capability registration", () => {
     await bridge.start();
     expect(config.connectDesktop).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
       }),
     );
     await bridge.stop();
@@ -360,7 +428,12 @@ describe("desktop capability registration", () => {
     await bridge.start();
     expect(config.connectDesktop).toHaveBeenCalledWith(
       expect.objectContaining({
-        capabilities: { commands: true, pty: true, files: true },
+        capabilities: {
+          commands: true,
+          pty: true,
+          files: true,
+          operationChannels: true,
+        },
       }),
     );
     expect(global.fetch).not.toHaveBeenCalled();
@@ -382,7 +455,12 @@ describe("desktop capability registration", () => {
       await started;
       expect(config.connectDesktop).toHaveBeenCalledWith(
         expect.objectContaining({
-          capabilities: { commands: true, pty: true, files: false },
+          capabilities: {
+            commands: true,
+            pty: true,
+            files: false,
+            operationChannels: true,
+          },
         }),
       );
     } finally {
@@ -2003,4 +2081,123 @@ describe("pty_data publish ordering", () => {
     const receivedContent = publishOrder.join("");
     expect(receivedContent).toEqual(chunks.join(""));
   });
+});
+
+describe("desktop lifecycle recovery", () => {
+  it("finishes local shutdown while the remote disconnect stays offline", async () => {
+    let resolveDisconnect!: (value: { success: boolean }) => void;
+    const pending = new Promise<{ success: boolean }>((resolve) => {
+      resolveDisconnect = resolve;
+    });
+    const config = buildConfig({ disconnectDesktop: jest.fn(() => pending) });
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+    await bridge.stop();
+    expect(bridge.getConnectionId()).toBeNull();
+    expect(mockClient.disconnect).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.unsubscribe).toHaveBeenCalledTimes(1);
+    await bridge.stop();
+    expect(config.disconnectDesktop).toHaveBeenCalledTimes(1);
+    resolveDisconnect({ success: true });
+    await pending;
+  });
+
+  it.each(["token", "heartbeat"])(
+    "keeps session replacement terminal when detected by %s",
+    async (source) => {
+      const onTerminated = jest.fn();
+      const config = buildConfig({
+        onTerminated,
+        heartbeatDesktop: jest
+          .fn()
+          .mockResolvedValue({ success: source !== "heartbeat" }),
+        refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
+          ok: false,
+          reason: "connection_inactive",
+          disconnectReason: "desktop_kicked_by_new_session",
+        }),
+      });
+      const bridge = new DesktopSandboxBridge(config);
+      await bridge.start();
+      if (source === "token") {
+        await expect(mockClientOptions?.getToken?.()).rejects.toThrow();
+      }
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      expect(onTerminated).toHaveBeenCalledWith("session_replaced");
+      expect(bridge.getConnectionId()).toBeNull();
+      await bridge.stop();
+    },
+  );
+
+  it("still recovers a heartbeat rejected after presence expiry", async () => {
+    const onTerminated = jest.fn();
+    const bridge = new DesktopSandboxBridge(
+      buildConfig({
+        onTerminated,
+        heartbeatDesktop: jest.fn().mockResolvedValue({ success: false }),
+        refreshCentrifugoTokenDesktop: jest.fn().mockResolvedValue({
+          ok: false,
+          reason: "connection_inactive",
+          disconnectReason: "presence_sweep",
+        }),
+      }),
+    );
+    await bridge.start();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(onTerminated).toHaveBeenCalledWith("connection_inactive");
+    await bridge.stop();
+  });
+
+  it.each([false, true])(
+    "publishes readiness before native output and an immediate PTY exit (isolated=%s)",
+    async (operationChannel) => {
+      const bridge = new DesktopSandboxBridge(buildConfig());
+      await bridge.start();
+      const original = mockInvokeHandler;
+      mockInvokeHandler = async (cmd, args) => {
+        if (cmd === "execute_pty_create") {
+          capturedChannel?.onmessage?.("early output");
+          capturedChannel?.onmessage?.(
+            JSON.stringify({
+              type: "exit",
+              exitCode: 7,
+              sessionId: "fast-pty",
+            }),
+          );
+          return { pid: 123, session_id: "fast-pty" };
+        }
+        return original(cmd, args);
+      };
+      getPublicationHandler()({
+        data: {
+          type: "pty_create",
+          operationChannel,
+          sessionId: "fast-pty",
+          command: "exit 7",
+          targetConnectionId: "conn-123",
+        },
+      });
+      await waitFor(() => {
+        expect(
+          mockSubscription.publish.mock.calls.map(([message]) => message.type),
+        ).toEqual([
+          ...(operationChannel ? ["operation_ready"] : []),
+          "pty_ready",
+          "pty_data",
+          "pty_exit",
+        ]);
+      });
+      const messages = mockSubscription.publish.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.type !== "operation_ready");
+      expect(messages.map((message) => message.type)).toEqual([
+        "pty_ready",
+        "pty_data",
+        "pty_exit",
+      ]);
+      expect(messages[1].data).toBe("early output");
+      expect(messages[2].exitCode).toBe(7);
+      await bridge.stop();
+    },
+  );
 });

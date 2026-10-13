@@ -9,6 +9,16 @@ export function classifySandboxReadinessFailureSignal(
 ): SandboxReadinessFailureReason | undefined {
   if (!(error instanceof Error)) return undefined;
 
+  // A spent request budget blocks new work; it must not erase the reason the
+  // acquisition failed. Unwrap only our own wrapper, never arbitrary chains.
+  if (
+    error.name === "CloudAcquisitionBudgetExhaustedError" &&
+    error.cause instanceof Error &&
+    error.cause.name !== "CloudAcquisitionBudgetExhaustedError"
+  ) {
+    return classifySandboxReadinessFailureSignal(error.cause);
+  }
+
   const name = error.name.toLowerCase();
   const message = error.message.toLowerCase();
 

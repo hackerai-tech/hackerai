@@ -7,6 +7,7 @@ import {
 import type { PostHog } from "posthog-node";
 import { calculateRawModelUsageCostDollars } from "@/lib/rate-limit/token-bucket";
 import { isAbliterationModel } from "@/lib/ai/abliteration";
+import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 import { type AbliteratedAssignment } from "@/lib/experiments/abliterated-model";
 import { ABLITERATION_MAX_GENERATION_STEPS } from "@/lib/experiments/abliterated-model-steps";
 import type { ChatMode, SelectedModel, SubscriptionTier } from "@/types";
@@ -58,6 +59,8 @@ export class AbliteratedModelTelemetry {
     provider_tool_call_count: 0,
   };
   private exposed = false;
+  private annotatedAttempts = 0;
+  private annotatedServed = 0;
   private pendingRecovery?: { model: string; kind: "error" | "output" };
   private readonly routing = {
     model_routing_telemetry_version: 1 as const,
@@ -73,9 +76,10 @@ export class AbliteratedModelTelemetry {
     upstream_model_fallback_served: false,
   };
   private successfulAbliterationGeneration = false;
-  private selectionSource: "moderation" | "history";
+  private selectionSource: "moderation" | "history" | "paid_first_step";
   private readonly startedAt = Date.now();
   private readonly properties: Record<string, string | number | boolean>;
+  private readonly generationStepLimit: number;
 
   constructor(
     private readonly posthog: Pick<PostHog, "capture"> | null,
@@ -90,6 +94,8 @@ export class AbliteratedModelTelemetry {
     },
   ) {
     this.selectionSource = args.assignment.selectionSource ?? "moderation";
+    this.generationStepLimit =
+      args.assignment.generationStepLimit ?? ABLITERATION_MAX_GENERATION_STEPS;
     this.properties = {
       experiment_key: args.assignment.key,
       experiment_variant: args.assignment.variant,
@@ -102,8 +108,11 @@ export class AbliteratedModelTelemetry {
       selected_model_override: args.selectedModelOverride ?? "auto",
       baseline_model: args.assignment.baselineModel,
       assigned_model: args.assignment.modelKey,
-      generation_step_limit: ABLITERATION_MAX_GENERATION_STEPS,
-      moderation_eligible: this.selectionSource === "moderation",
+      generation_step_limit: this.generationStepLimit,
+      moderation_eligible:
+        args.assignment.moderationEligible ??
+        this.selectionSource === "moderation",
+      moderation_checked: args.assignment.moderationChecked ?? true,
       selection_source: this.selectionSource,
       independent_history_count: args.assignment.independentHistoryCount ?? 0,
       routing_version: 2,
@@ -152,6 +161,7 @@ export class AbliteratedModelTelemetry {
   getSummary() {
     return {
       telemetry_version: 2,
+      generation_step_limit: this.generationStepLimit,
       ...this.routing,
       // Planned step/vision selection never establishes a fallback. Evidence
       // must come from a recovering call or an actual upstream fallback model.
@@ -160,6 +170,9 @@ export class AbliteratedModelTelemetry {
         this.routing.output_recovery_fallback_served ||
         this.routing.upstream_model_fallback_served,
       provider_attempt_count: this.sequence,
+      provider_annotation_telemetry_version: 1,
+      provider_annotated_attempt_count: this.annotatedAttempts,
+      provider_annotated_served_count: this.annotatedServed,
       provider_pending_count:
         this.sequence - this.totals.provider_outcome_count,
       ...this.totals,
@@ -178,7 +191,18 @@ export class AbliteratedModelTelemetry {
       middleware: {
         specificationVersion: "v3",
         wrapStream: async ({ doStream, params }) => {
+          const annotationAppended = params.prompt.some(
+            (message) =>
+              message.role === "user" &&
+              message.content.some(
+                (part) =>
+                  part.type === "text" &&
+                  part.text.includes(PLATFORM_AUTHORIZATION_ANNOTATION),
+              ),
+          );
           const attempt = ++this.sequence;
+          if (annotationAppended) this.annotatedAttempts++;
+          let countedAnnotatedServing = false;
           const recovery = this.pendingRecovery;
           // A subsequent call is evidence of recovery; an error without another
           // call, or a user-aborted call, is not a fallback attempt.
@@ -206,6 +230,10 @@ export class AbliteratedModelTelemetry {
           let firstContentMs: number | undefined;
           let responseModel = model.modelId;
           const recordServedRouting = () => {
+            if (annotationAppended && !countedAnnotatedServing) {
+              this.annotatedServed++;
+              countedAnnotatedServing = true;
+            }
             if (errorRecovery) {
               this.routing.provider_error_recovery_served = true;
               if (changedRecoveryModel)
@@ -223,12 +251,12 @@ export class AbliteratedModelTelemetry {
             attempt,
             generation_step: stepIndex + 1,
             within_abliteration_step_limit:
-              stepIndex < ABLITERATION_MAX_GENERATION_STEPS,
+              stepIndex >= 0 && stepIndex < this.generationStepLimit,
             requested_model: model.modelId,
             response_model: responseModel,
-            platform_authorization_context: isAbliterationModel(model.modelId)
-              ? "not_appended"
-              : "standard",
+            platform_authorization_context: annotationAppended
+              ? "standard"
+              : "not_appended",
           });
           const finish = (
             outcome: ProviderOutcome,

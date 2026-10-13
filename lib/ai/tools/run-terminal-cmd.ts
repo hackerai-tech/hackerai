@@ -9,6 +9,7 @@ import type {
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { saveTruncatedOutput } from "./utils/terminal-output-saver";
+import { terminalExecutionProvenance } from "./utils/terminal-execution-provenance";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
@@ -22,7 +23,6 @@ import {
 import {
   isCloudSandbox,
   isE2BSandbox,
-  isMiosaSandbox,
   isCentrifugoSandbox,
 } from "./utils/sandbox-types";
 import {
@@ -106,6 +106,8 @@ const getTerminalProcessStatus = (
   return undefined;
 };
 
+type TerminalCommandResult = { result: Record<string, unknown> };
+
 type RunTerminalCmdInput = {
   command: string;
   brief?: string;
@@ -146,6 +148,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const recoveryFields = (session: PtySession | null) =>
     session
       ? {
+          ...terminalExecutionProvenance(
+            session.sandboxIdentity,
+            session.workingDirectory,
+          ),
           session: session.sessionId,
           ...(session.recordPath ? { recordPath: session.recordPath } : {}),
           ...(session.outputPath ? { outputPath: session.outputPath } : {}),
@@ -397,13 +403,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           const isCentrifugo = isCentrifugoSandbox(sandbox);
           const isE2B = isE2BSandbox(sandbox);
 
-          if (!isE2B && !isCentrifugo && !isMiosaSandbox(sandbox)) {
+          if (!isE2B && !isCentrifugo) {
             return {
               result: {
                 output: "",
                 exitCode: 1,
                 error:
-                  "Interactive PTY requires E2B, MIOSA, or local (Centrifugo) sandbox.",
+                  "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
               },
             };
           }
@@ -431,10 +437,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             interactive: true,
             isBackground: false,
           });
-          const agentBrowserEnv =
-            isE2B || isMiosaSandbox(sandbox)
-              ? getAgentBrowserRuntimeEnv(command)
-              : undefined;
+          const agentBrowserEnv = isE2B
+            ? getAgentBrowserRuntimeEnv(command)
+            : undefined;
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
@@ -459,16 +464,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   cols,
                   rows,
                   cwd: sandbox.getWorkingDirectory(),
-                });
-              }
-              if (isMiosaSandbox(sandbox)) {
-                const { createMiosaPtyHandle } =
-                  await import("./utils/miosa-pty-adapter");
-                return createMiosaPtyHandle(sandbox, {
-                  cols,
-                  rows,
-                  cwd: buildSandboxCommandOptions(sandbox).cwd,
-                  envs: agentBrowserEnv,
                 });
               }
               return createE2BPtyHandle(sandbox, {
@@ -785,7 +780,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             writer.write(part);
           };
 
-          return new Promise((resolve, reject) => {
+          const provenance = terminalExecutionProvenance(
+            getAgentApprovalSandboxIdentity(sandboxInstance),
+            isCentrifugoSandbox(sandboxInstance)
+              ? sandboxInstance.getWorkingDirectory?.()
+              : buildSandboxCommandOptions(sandboxInstance).cwd,
+          );
+          return new Promise<TerminalCommandResult>((resolve, reject) => {
             let resolved = false;
             let execution: any = null;
             let handler: ReturnType<typeof createTerminalHandler> | null = null;
@@ -812,16 +813,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             };
 
             const terminateManagedCommand = async (): Promise<boolean> => {
-              if (isMiosaSandbox(sandboxInstance)) {
-                commandAbortController.abort();
-                if (!runPromise) return false;
-                try {
-                  await runPromise;
-                  return false;
-                } catch (error) {
-                  return error instanceof Error && error.name === "AbortError";
-                }
-              }
               if (isCentrifugoSandbox(sandboxInstance)) {
                 if (cancelCentrifugoCommand) {
                   return cancelCentrifugoCommand();
@@ -1108,13 +1099,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     onStderr: forwardCommandOutput,
                   },
             );
-            // agent-browser is installed in MIOSA sandboxes too, and needs the
-            // same runtime env there. Gating this on E2B alone left Chromium
-            // running without its configured flags on MIOSA.
-            const agentBrowserEnv =
-              isE2BSandbox(sandboxInstance) || isMiosaSandbox(sandboxInstance)
-                ? getAgentBrowserRuntimeEnv(command)
-                : undefined;
+            const agentBrowserEnv = isE2BSandbox(sandboxInstance)
+              ? getAgentBrowserRuntimeEnv(command)
+              : undefined;
             const runOptions = isCentrifugoSandbox(sandboxInstance)
               ? {
                   ...commonOptions,
@@ -1131,15 +1118,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                     ...(agentBrowserEnv && { envs: agentBrowserEnv }),
                     signal: abortSignal,
                   }
-                : isMiosaSandbox(sandboxInstance)
-                  ? {
-                      ...commonOptions,
-                      signal: is_background
-                        ? abortSignal
-                        : commandAbortController.signal,
-                      ...(agentBrowserEnv && { envVars: agentBrowserEnv }),
-                    }
-                  : commonOptions;
+                : commonOptions;
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)
@@ -1412,7 +1391,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
                   await forgetUnexposedCommandSession();
                 }
               });
-          });
+          }).then((output) => ({
+            ...output,
+            result: { ...output.result, ...provenance },
+          }));
         } // end of executeCommand
       } catch (error) {
         return {

@@ -31,7 +31,7 @@ import {
   isUserRateLimitKey,
 } from "../lib/rate-limit/key-cleanup";
 import { createFreeQuotaSubjectWithSecret } from "../lib/auth/free-quota-subject-core";
-import { getTestUsersRecord } from "./test-users-config";
+import { getTestUserEmails } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
 config({ path: resolve(process.cwd(), ".env.e2e") });
@@ -43,7 +43,7 @@ const REDIS_SCAN_COUNT = 500;
 
 type TestUserTier = "free" | "pro" | "ultra";
 
-const TEST_USERS = getTestUsersRecord();
+const TEST_USERS = getTestUserEmails();
 
 async function scanRedisKeys(redis: Redis, pattern: string): Promise<string[]> {
   let cursor = "0";
@@ -154,7 +154,7 @@ async function resetRateLimitForUser(
 async function resetAllTestUsers(): Promise<void> {
   console.log("\n🔄 Resetting rate limits for all test users...\n");
 
-  for (const [user, { email }] of Object.entries(TEST_USERS)) {
+  for (const [user, email] of Object.entries(TEST_USERS)) {
     await resetRateLimitForUser(user as TestUserTier, email);
     console.log();
   }
@@ -195,9 +195,9 @@ Examples:
   pnpm rate-limit:reset --all
 
 Test Users:
-  free   -> ${TEST_USERS.free.email}
-  pro    -> ${TEST_USERS.pro.email}
-  ultra  -> ${TEST_USERS.ultra.email}
+  free   -> ${TEST_USERS.free}
+  pro    -> ${TEST_USERS.pro}
+  ultra  -> ${TEST_USERS.ultra}
 
 Note: This script automatically looks up user IDs from WorkOS
       and deletes user-scoped keys plus identity-scoped free quota keys when
@@ -240,7 +240,7 @@ Note: This script automatically looks up user IDs from WorkOS
     process.exit(1);
   }
 
-  const { email } = TEST_USERS[user];
+  const email = TEST_USERS[user];
   await resetRateLimitForUser(user, email);
 }
 

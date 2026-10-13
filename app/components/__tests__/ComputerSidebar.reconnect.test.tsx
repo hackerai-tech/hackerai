@@ -10,6 +10,7 @@ import {
   jest,
 } from "@jest/globals";
 import type { SidebarContent } from "@/types/chat";
+import { createToolInputErrorContent } from "@/lib/chat/tool-error-display";
 
 const mockUseQuery = jest.fn<any>();
 const mockOpenSidebar = jest.fn();
@@ -23,6 +24,11 @@ let mockSubagentRealtime: ReturnType<
   retry: mockRetrySubagentRealtime,
 };
 let mockSidebarContent: SidebarContent | null = null;
+let mockComputerSidebarOverlay = false;
+
+jest.mock("@/hooks/use-workspace-layout", () => ({
+  useComputerSidebarOverlay: () => mockComputerSidebarOverlay,
+}));
 
 jest.mock("next/dynamic", () => ({
   __esModule: true,
@@ -133,6 +139,7 @@ const otherToolMessage = {
 
 describe("ComputerSidebar reconnect behavior", () => {
   beforeEach(() => {
+    mockComputerSidebarOverlay = false;
     jest.useFakeTimers();
     jest.clearAllMocks();
     mockUseQuery.mockReset();
@@ -148,6 +155,89 @@ describe("ComputerSidebar reconnect behavior", () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+  });
+
+  it("expands and restores without closing or remounting the terminal", () => {
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        status="streaming"
+      />,
+    );
+    const terminal = screen.getByTestId("terminal-code-block");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByTestId("terminal-code-block")).toBe(terminal);
+
+    fireEvent.click(screen.getByRole("button", { name: "Exit full screen" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("terminal-code-block")).toBe(terminal);
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+  });
+
+  it("moves focus inside on pointer expansion and restores it on exit", () => {
+    render(
+      <>
+        <button type="button">Chat control</button>
+        <ComputerSidebarBase
+          sidebarOpen
+          sidebarContent={activeSidebarContent}
+          closeSidebar={mockCloseSidebar}
+          status="streaming"
+        />
+      </>,
+    );
+    const previousFocus = screen.getByRole("button", { name: "Chat control" });
+    previousFocus.focus();
+
+    // fireEvent.click does not focus the clicked button, matching browsers
+    // where pointer activation leaves focus outside the sidebar.
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(
+      screen.getByRole("button", { name: "Exit full screen" }),
+    ).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(previousFocus).toHaveFocus();
+  });
+
+  it("restores with Escape and closes with the separate minimize button", () => {
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        status="streaming"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mockCloseSidebar).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    fireEvent.click(screen.getByRole("button", { name: "Minimize sidebar" }));
+    expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps only the existing minimize control on small screens", () => {
+    mockComputerSidebarOverlay = true;
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={activeSidebarContent}
+        closeSidebar={mockCloseSidebar}
+        status="streaming"
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Expand sidebar" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Minimize sidebar" }));
+    expect(mockCloseSidebar).toHaveBeenCalledTimes(1);
   });
 
   it("does not close or jump while streaming replay temporarily misses active content", () => {
@@ -708,5 +798,46 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(onNavigate).toHaveBeenCalledWith(
       expect.objectContaining({ toolCallId: "new-tool" }),
     );
+  });
+  it("shows safe tool failure details and provides a clear close action", () => {
+    const closeSidebar = jest.fn();
+    const rawError =
+      'Invalid input for tool create_vulnerability_report: Value: {"evidence":"private"}';
+    const toolError = createToolInputErrorContent({
+      toolType: "tool-create_vulnerability_report",
+      toolCallId: "finding-error",
+      errorText: rawError,
+    });
+
+    render(
+      <ComputerSidebarBase
+        sidebarOpen
+        sidebarContent={toolError}
+        closeSidebar={closeSidebar}
+        messages={[
+          {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-create_vulnerability_report",
+                toolCallId: "finding-error",
+                state: "output-error",
+                errorText: rawError,
+              },
+            ],
+          },
+        ]}
+        status="ready"
+      />,
+    );
+
+    expect(
+      screen.getByText("The vulnerability report wasn’t saved"),
+    ).toBeVisible();
+    expect(screen.getByText("What to do next")).toBeVisible();
+    expect(screen.queryByText(rawError)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close details" }));
+    expect(closeSidebar).toHaveBeenCalledTimes(1);
   });
 });

@@ -26,6 +26,7 @@ export async function POST(request: NextRequest) {
     if (
       (surface !== undefined &&
         surface !== "account_settings" &&
+        surface !== "pricing_dialog" &&
         surface !== "blocked_chat") ||
       (returnPath !== undefined &&
         (typeof returnPath !== "string" ||

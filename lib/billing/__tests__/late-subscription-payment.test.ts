@@ -120,11 +120,14 @@ describe("late subscription payments", () => {
   );
 
   it.each(["cancellation_requested", "payment_disputed"] as const)(
-    "does not refund %s cancellations",
+    "requires reconciliation without automatically refunding %s cancellations",
     async (reason) => {
       const f = fixture();
       f.subscription.cancellation_details!.reason = reason;
-      expect(await f.run()).toEqual({ status: "not_applicable" });
+      expect(await f.run()).toEqual({
+        status: "manual_review",
+        reason: "payment_after_non_payment_failure_cancellation",
+      });
       expect(f.createRefund).not.toHaveBeenCalled();
     },
   );

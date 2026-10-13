@@ -114,6 +114,30 @@ describe("getModerationResult", () => {
       ],
     },
   ];
+  it.each([false, true])(
+    "uses the 0.05 threshold when isPaidUser is %s",
+    async (isPaidUser) => {
+      for (const [score, expected] of [
+        [0.049, false],
+        [0.05, true],
+        [0.075, true],
+        [0.1, true],
+      ] as const) {
+        mockModerationsCreate.mockResolvedValue({
+          results: [
+            {
+              categories: { illicit: false },
+              category_scores: { illicit: score },
+            },
+          ],
+        });
+        expect(
+          (await getModerationResult(request, isPaidUser))
+            .shouldUncensorResponse,
+        ).toBe(expected);
+      }
+    },
+  );
   it.each([
     {
       score: 0.01,
@@ -137,7 +161,7 @@ describe("getModerationResult", () => {
       independent: false,
     },
     {
-      score: 0.01,
+      score: 0.075,
       category: "sexual/minors",
       flagged: true,
       continuation: false,

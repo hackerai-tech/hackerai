@@ -30,6 +30,22 @@ in the transcript, with no new step or partial tail to trim. That specific local
 error may retain the completed tail for the existing bounded continuation;
 provider-supplied error wording alone does not enable it.
 
+Image-description requests have a separate two-attempt budget: a 20-second
+initial deadline and one 35-second retry for a local timeout or transient
+provider failure. Cancellation prevents retries. Abliteration image preparation
+also bounds the entire batch to 120 seconds and stops new calls/retries once
+reported vision spend reaches $0.25; already-running calls still settle and
+their reported charges count. Permanent input errors and content blocks are
+not retried.
+
+Completed attachment descriptions are saved through the existing owner-checked
+file cache before a sibling failure is reported. Later runs reuse descriptions
+from the server's attachment metadata reload, including when signed URLs have
+changed. Raw images remain stored unchanged. Tool screenshots only use the
+current run's content cache because they do not have a durable owned-file
+identity. Timeout errors retain their cause and surface as
+`category=timeout origin=auxiliary_vision`, with image-specific retry guidance.
+
 A rejection delivered through `streamText.onError` before any output can use
 the existing fallback, including an active Abliteration experiment's baseline
 route. This does not enable replay of arbitrary output-bearing 400 failures.

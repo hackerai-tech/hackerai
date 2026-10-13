@@ -1,5 +1,5 @@
 import { normalizeMessages } from "../message-processor";
-import { ABORTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
+import { INTERRUPTED_TOOL_ERROR_TEXT } from "@/lib/chat/tool-abort-utils";
 import type { ChatMessage } from "@/types/chat";
 
 describe("normalizeMessages", () => {
@@ -46,7 +46,7 @@ describe("normalizeMessages", () => {
     expect(result.hasChanges).toBe(true);
     expect(terminalPart.type).toBe(type);
     expect(terminalPart.state).toBe("output-error");
-    expect(terminalPart.errorText).toBe(ABORTED_TOOL_ERROR_TEXT);
+    expect(terminalPart.errorText).toBe(INTERRUPTED_TOOL_ERROR_TEXT);
     expect(
       terminalPart.output?.output ?? terminalPart.output?.result?.stdout,
     ).toBe("partial output\n");

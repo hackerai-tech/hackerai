@@ -380,6 +380,33 @@ export interface SidebarSharedFiles {
   toolCallId: string;
 }
 
+export interface SidebarFinding {
+  findingId: string;
+  title: string;
+  target: string;
+  endpoint?: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  cvssScore: number;
+  isExecuting: boolean;
+  toolCallId: string;
+}
+
+export interface SidebarToolError {
+  kind: "tool-error";
+  errorKind: "validation" | "execution" | "not_found";
+  toolName: string;
+  action: string;
+  title: string;
+  summary: string;
+  nextStep: string;
+  issues?: Array<{
+    field: string;
+    problem: string;
+  }>;
+  isExecuting: false;
+  toolCallId: string;
+}
+
 export interface SidebarSubagents {
   kind: "subagents";
   parentMessageId: string;
@@ -401,6 +428,8 @@ type SidebarContentValue =
   | SidebarProxy
   | SidebarWebSearch
   | SidebarNotes
+  | SidebarFinding
+  | SidebarToolError
   | SidebarSharedFiles
   | SidebarSubagents;
 
@@ -441,6 +470,18 @@ export const isSidebarNotes = (
   content: SidebarContent,
 ): content is SidebarNotes => {
   return "notes" in content && "action" in content;
+};
+
+export const isSidebarFinding = (
+  content: SidebarContent,
+): content is SidebarFinding => {
+  return "findingId" in content;
+};
+
+export const isSidebarToolError = (
+  content: SidebarContent,
+): content is SidebarToolError => {
+  return "kind" in content && content.kind === "tool-error";
 };
 
 export const isSidebarSharedFiles = (
@@ -500,6 +541,7 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
 };
 
 export type RateLimitInfo = {
+  freeDailyCost?: boolean;
   remaining: number;
   resetTime: Date;
   limit: number;
@@ -532,6 +574,8 @@ export interface ExtraUsageConfig {
 }
 
 export interface QueuedMessage {
+  deliveryStatus?: "sending" | "failed" | "active";
+  firstAttemptAt?: number;
   id: string;
   text: string;
   files?: import("@/types/file").FileMessagePart[];

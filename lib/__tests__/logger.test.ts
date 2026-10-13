@@ -38,19 +38,6 @@ it("retains chronological provider history and live outcomes across stream resta
   });
 });
 
-describe("sandbox logging", () => {
-  it("records Miosa as a cloud sandbox without labeling its type as E2B", () => {
-    const event = createWideEventBuilder("chat_123", "/api/agent-long")
-      .setSandbox({ type: "cloud", provider: "miosa" })
-      .build();
-
-    expect(event.sandbox).toEqual({
-      type: "cloud",
-      provider: "miosa",
-    });
-  });
-});
-
 describe("diagnostic logging context", () => {
   it("reuses an upstream request id and exposes model/provider attribution", () => {
     const builder = createWideEventBuilder(

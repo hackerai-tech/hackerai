@@ -29,7 +29,7 @@ const mockHandleInitialChatAndUserMessage = jest.fn<any>();
 const mockCancelAgentTriggerRun = jest.fn<any>();
 const mockCloseAgentApprovalSession = jest.fn<any>();
 const mockGetUserIDAndPro = jest.fn<any>();
-const mockGetFeatureFlag = jest.fn<any>();
+const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
 
 jest.mock("@/lib/auth/get-user-id", () => ({
@@ -43,7 +43,7 @@ jest.mock("@/lib/suspensions", () => ({
 jest.mock("@/app/posthog", () => ({
   __esModule: true,
   default: () => ({
-    getFeatureFlag: mockGetFeatureFlag,
+    getFeatureFlagResult: mockGetFeatureFlagResult,
     capture: jest.fn(),
     flush: jest.fn<any>().mockResolvedValue(undefined),
   }),
@@ -137,6 +137,44 @@ describe("Agent trigger route lifecycle", () => {
     expect(
       isAgentTriggerPayloadSizeTooLarge(AGENT_TRIGGER_PAYLOAD_MAX_BYTES + 1),
     ).toBe(true);
+  });
+
+  it("logs the slow startup stage without request content and clears its timer on failure", async () => {
+    jest.useFakeTimers();
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      let resolveBody!: (body: unknown) => void;
+      const body = new Promise((resolve) => {
+        resolveBody = resolve;
+      });
+      const post = createAgentTriggerPost({ endpoint: "/api/agent" });
+      const response = post({
+        headers: new Headers({ "x-vercel-id": "synthetic-request-id" }),
+        json: () => body,
+      } as any);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(warn.mock.calls[0][0] as string)).toMatchObject({
+        event: "agent_start_slow_request",
+        endpoint: "/api/agent",
+        request_id: "synthetic-request-id",
+        stage: "parse_request",
+        elapsed_ms: 10_000,
+      });
+      resolveBody({
+        chatId: "chat-1",
+        messages: [{ role: "user", content: "private request content" }],
+        temporary: true,
+      });
+      expect((await response).status).toBe(400);
+      expect(jest.getTimerCount()).toBe(0);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).not.toContain("private request content");
+    } finally {
+      warn.mockRestore();
+      jest.useRealTimers();
+    }
   });
 
   it("rejects an oversized approval request when its base payload fits", () => {
@@ -435,7 +473,12 @@ describe("regional subscription gate before Agent dispatch", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.VERCEL = "1";
-    mockGetFeatureFlag.mockResolvedValue("test");
+    mockGetFeatureFlagResult.mockResolvedValue({
+      key: "regional_subscription_first_v1",
+      enabled: true,
+      variant: "test",
+      payload: undefined,
+    });
     mockGetUserIDAndPro.mockResolvedValue({
       userId: "user-free",
       subscription: "free",

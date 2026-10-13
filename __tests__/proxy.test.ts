@@ -74,6 +74,9 @@ function createRequest({
       ...headers,
     }),
     cookies: {
+      delete: jest.fn((name: string) => {
+        delete cookieValues[name];
+      }),
       has: jest.fn(
         (name: string) =>
           (name === "wos-session" && hasSession) ||
@@ -739,6 +742,170 @@ describe("proxy", () => {
     }
   });
 
+  describe("malformed session cookie recovery", () => {
+    const invalidCookie = "bad*1*a*b*c*d*e*f";
+
+    it.each(["/", "/callback", "/share/example", "/signup"])(
+      "rebuilds anonymous AuthKit context once for %s",
+      async (pathname) => {
+        const warning = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => {});
+        try {
+          const request = createRequest({
+            pathname,
+            accept: "text/html",
+            cookieValues: { "wos-session": invalidCookie, harmless: "keep" },
+            headers: { "x-workos-session": "untrusted-session-header" },
+          });
+          const anonymousHeaders = new Headers({
+            "x-workos-middleware": "true",
+            "set-cookie": "wos-pkce=anonymous-state; Path=/; HttpOnly",
+          });
+          mockAuthkit
+            .mockRejectedValueOnce(new Error("Wrong mac prefix"))
+            .mockImplementationOnce((recoveredRequest: unknown) => {
+              const recovered = recoveredRequest as NextRequest;
+              expect(recovered.cookies.get("wos-session")).toBeUndefined();
+              expect(recovered.cookies.get("harmless")?.value).toBe("keep");
+              expect(recovered.headers.has("x-workos-session")).toBe(false);
+              return Promise.resolve({
+                session: { user: null },
+                headers: anonymousHeaders,
+                authorizationUrl: "https://auth.example/sign-in",
+              });
+            });
+          const { default: proxy } = await import("../proxy");
+          const response = await proxy(request);
+
+          expect(response).toMatchObject({ kind: "next" });
+          expect(mockAuthkit).toHaveBeenCalledTimes(2);
+          expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+          const init = mockNextResponseNext.mock.calls[0]?.[0] as {
+            request: { headers: Headers };
+            headers: Headers;
+          };
+          expect(init.request.headers.get("x-workos-middleware")).toBe("true");
+          expect(init.request.headers.has("x-workos-session")).toBe(false);
+          expect(init.headers.get("set-cookie")).toContain("wos-pkce=");
+          expect(warning).toHaveBeenCalledTimes(1);
+          expect(JSON.parse(warning.mock.calls[0]?.[0] as string)).toEqual({
+            event: "auth.invalid_session_cookie",
+            boundary: "proxy",
+            reason: "wrong_mac_prefix",
+          });
+        } finally {
+          warning.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      {
+        pathname: "/api/access-token",
+        accept: "application/json",
+        kind: "json",
+        status: 401,
+      },
+      {
+        pathname: "/c/example",
+        accept: "text/html",
+        kind: "redirect",
+        destination: "/login",
+      },
+      {
+        pathname: "/c/example",
+        accept: "text/html",
+        userAgent: "HackerAI-Desktop",
+        kind: "redirect",
+        destination: "/desktop-callback?error=unauthenticated",
+      },
+      {
+        pathname: "/",
+        method: "POST",
+        headers: { "next-action": "action" },
+        kind: "json",
+        status: 401,
+      },
+    ])(
+      "keeps terminal authentication for $pathname $kind",
+      async (testCase) => {
+        const warning = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => {});
+        try {
+          mockAuthkit.mockRejectedValue(new Error("Wrong mac prefix"));
+          const { default: proxy } = await import("../proxy");
+          const response = await proxy(
+            createRequest({
+              ...testCase,
+              cookieValues: { "wos-session": invalidCookie },
+            }),
+          );
+          expect(mockAuthkit).toHaveBeenCalledTimes(1);
+          expect(response).toMatchObject({ kind: testCase.kind });
+          expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+          expect(mockNextResponseNext).not.toHaveBeenCalled();
+          if (testCase.status)
+            expect(response).toMatchObject({
+              init: { status: testCase.status },
+            });
+          if (testCase.destination)
+            expect(mockNextResponseRedirect).toHaveBeenCalledWith(
+              new URL(testCase.destination, "https://hackerai.co"),
+            );
+        } finally {
+          warning.mockRestore();
+        }
+      },
+    );
+
+    it.each([new Error("Wrong mac prefix"), new Error("provider unavailable")])(
+      "propagates anonymous recovery failure without retrying again: %s",
+      async (recoveryError) => {
+        const warning = jest
+          .spyOn(console, "warn")
+          .mockImplementation(() => {});
+        try {
+          mockAuthkit
+            .mockRejectedValueOnce(new Error("Wrong mac prefix"))
+            .mockRejectedValueOnce(recoveryError);
+          const { default: proxy } = await import("../proxy");
+          await expect(
+            proxy(
+              createRequest({
+                pathname: "/",
+                cookieValues: { "wos-session": invalidCookie },
+              }),
+            ),
+          ).rejects.toBe(recoveryError);
+          expect(mockAuthkit).toHaveBeenCalledTimes(2);
+          expect(mockNextResponseNext).not.toHaveBeenCalled();
+        } finally {
+          warning.mockRestore();
+        }
+      },
+    );
+
+    it.each([
+      { error: new Error("Wrong mac prefix"), hasSession: false },
+      { error: new Error("Unknown authentication failure"), hasSession: true },
+      { error: new Error("provider: Wrong mac prefix"), hasSession: true },
+      { error: { message: "Wrong mac prefix" }, hasSession: true },
+    ])(
+      "preserves unknown errors or missing-cookie failures",
+      async ({ error, hasSession }) => {
+        mockAuthkit.mockRejectedValueOnce(error);
+        const { default: proxy } = await import("../proxy");
+        await expect(
+          proxy(createRequest({ pathname: "/", hasSession })),
+        ).rejects.toBe(error);
+        expect(mockAuthkit).toHaveBeenCalledTimes(1);
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   it("treats thrown ended-session refresh errors as unauthenticated home requests", async () => {
     const endedSessionError = Object.assign(
       new Error("Failed to refresh session: Error: invalid_grant"),
@@ -769,6 +936,72 @@ describe("proxy", () => {
     expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
     expect(mockNextResponseJson).not.toHaveBeenCalled();
     expect(mockNextResponseRedirect).not.toHaveBeenCalled();
+  });
+
+  it.each(["throw", "callback"])(
+    "returns signed-out 401 for terminal invalid refresh token through %s",
+    async (mode) => {
+      const error = {
+        name: "TokenRefreshError",
+        isTransient: false,
+        cause: {
+          status: 400,
+          error: "invalid_grant",
+          errorDescription: "Invalid refresh token.",
+        },
+      };
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        mockAuthkit.mockImplementation((_request, options: any) => {
+          if (mode === "throw") return Promise.reject(error);
+          options.onSessionRefreshError({ error: error.cause });
+          return Promise.resolve({
+            session: { user: null },
+            headers: new Headers(),
+            authorizationUrl: "https://auth.hackerai.co/login",
+          });
+        });
+        const { default: proxy } = await import("../proxy");
+        const response = await proxy(
+          createRequest({
+            pathname: "/",
+            method: "POST",
+            hasSession: true,
+            headers: { "next-action": "auth-action" },
+          }),
+        );
+        expect(response).toMatchObject({ kind: "json", init: { status: 401 } });
+        expect(response.cookies.delete).toHaveBeenCalledWith("wos-session");
+        expect(warn).toHaveBeenCalledWith(
+          JSON.stringify({
+            event: "auth.invalid_refresh_token",
+            boundary: "proxy",
+          }),
+        );
+        expect(mockNextResponseNext).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it("does not convert transient refresh failures into signed-out recovery", async () => {
+    const error = {
+      name: "TokenRefreshError",
+      isTransient: true,
+      cause: {
+        status: 400,
+        error: "invalid_grant",
+        errorDescription: "Invalid refresh token.",
+      },
+    };
+    mockAuthkit.mockRejectedValue(error);
+    const { default: proxy } = await import("../proxy");
+    await expect(
+      proxy(createRequest({ pathname: "/", hasSession: true })),
+    ).rejects.toBe(error);
+    expect(mockNextResponseNext).not.toHaveBeenCalled();
+    expect(mockNextResponseJson).not.toHaveBeenCalled();
   });
 
   it("stops root Server Actions when session refresh has ended", async () => {

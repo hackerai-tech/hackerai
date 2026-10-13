@@ -13,7 +13,11 @@ import {
   stripeCancellationFeedback,
   type CancellationReasonInputLike,
 } from "@/lib/billing/cancellation-reason-input";
-import { subscriptionCurrentPeriodEndMs } from "@/lib/billing/current-subscription";
+import {
+  subscriptionCurrentPeriodEndMs,
+  subscriptionPlanFromPrice,
+  subscriptionTierFromPrice,
+} from "@/lib/billing/current-subscription";
 import {
   releaseSubscriptionSchedule,
   subscriptionScheduleId,
@@ -24,14 +28,13 @@ import {
   PAID_FUNNEL_EVENTS,
   cancellationCompletionInsertId,
   paidFunnelProperties,
-  planLookupKeyToTier,
   subscriptionChurnHealthProperties,
 } from "@/lib/analytics/paid-funnel";
 import {
   priceBillingInterval,
   subscriptionMrrDollars,
 } from "@/lib/billing/subscription-mrr";
-import { voidOpenCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
+import { voidUnpaidCanceledRenewalInvoice } from "@/lib/billing/canceled-renewal-invoice";
 import type { SubscriptionTier } from "@/types";
 import {
   proMonthlyPricingAssignmentFromMetadata,
@@ -76,12 +79,6 @@ function parseCreatedAtMs(value: unknown): number | undefined {
   return undefined;
 }
 
-function subscriptionTierFromLookupKey(
-  lookupKey: string | null | undefined,
-): SubscriptionTier | undefined {
-  return planLookupKeyToTier(lookupKey ?? undefined) ?? undefined;
-}
-
 function subscriptionItemsMrrDollars(
   items: SubscriptionItemContext[],
 ): number | undefined {
@@ -119,9 +116,8 @@ async function getActiveSubscriptionContext(
     quantity: item.quantity ?? 1,
   }));
   const primaryItem =
-    items.find((item) =>
-      Boolean(subscriptionTierFromLookupKey(item.price.lookup_key)),
-    ) ?? items[0];
+    items.find((item) => Boolean(subscriptionTierFromPrice(item.price))) ??
+    items[0];
   const price = primaryItem?.price;
   const billingInterval = priceBillingInterval(price);
   const billingIntervalCount = price?.recurring?.interval_count;
@@ -136,8 +132,8 @@ async function getActiveSubscriptionContext(
     status: currentSubscription.status,
     items,
     priceId: price?.id,
-    plan: price?.lookup_key ?? undefined,
-    tier: subscriptionTierFromLookupKey(price?.lookup_key),
+    plan: subscriptionPlanFromPrice(price),
+    tier: subscriptionTierFromPrice(price),
     billingInterval: hasSharedBillingInterval ? billingInterval : undefined,
     billingIntervalCount: hasSharedBillingInterval
       ? billingIntervalCount
@@ -302,7 +298,7 @@ export default async function cancelSubscriptionAction(
 
   if (cancelImmediately) {
     try {
-      const invoiceResult = await voidOpenCanceledRenewalInvoice(
+      const invoiceResult = await voidUnpaidCanceledRenewalInvoice(
         stripe,
         updatedSubscription,
       );

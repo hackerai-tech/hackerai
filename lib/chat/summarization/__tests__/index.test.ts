@@ -115,6 +115,166 @@ const createMockWriter = (): UIMessageStreamWriter =>
 
 const mockLanguageModel = { modelId: "test-model" } as unknown as LanguageModel;
 
+describe("default compaction policy pipeline", () => {
+  const summary =
+    AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join("\n(none)\n");
+  const onDiscardedUsage = jest.fn();
+  const attempt = jest.fn();
+  const finish = jest.fn();
+  const start = jest.fn(() => ({ attempt, finish, onDiscardedUsage }));
+  const resolve = jest.fn<() => Promise<any>>();
+  const experiment = {
+    resolve,
+    start,
+  } as unknown as import("@/lib/chat/summarization/compaction-policy").CompactionModelPolicy;
+  const compact = (
+    abortSignal?: AbortSignal,
+    subscription: SubscriptionTier = "pro",
+  ) =>
+    checkAndSummarizeIfNeeded({
+      uiMessages: fourMessagesAboveThreshold,
+      subscription,
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "experiment-chat",
+      startupCompaction: {},
+      compactionPolicy: experiment,
+      abortSignal,
+    });
+  beforeEach(() => {
+    mockGenerateText.mockReset();
+    mockSaveChatSummary.mockReset();
+    mockProviderLanguageModel.mockClear();
+    resolve.mockReset();
+    start.mockClear();
+    attempt.mockClear();
+    finish.mockClear();
+    onDiscardedUsage.mockClear();
+    resolve.mockResolvedValue({ model: "model-abliterated" });
+  });
+  it.each(["free", "pro"] as const)(
+    "uses Abliteration for %s compaction and retains source user scope",
+    async (subscription) => {
+      mockGenerateText.mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      });
+      const result = await compact(undefined, subscription);
+      expect(result.needsSummarization).toBe(true);
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockGenerateText.mock.calls[0][0]).toMatchObject({
+        model: { modelId: "model-abliterated" },
+        maxRetries: 0,
+        timeout: 60000,
+        maxOutputTokens: 8192,
+        providerOptions: { abliteration: { reasoningEffort: "low" } },
+      });
+      expect(result.summaryText).toContain("<preserved_user_message>");
+      expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
+    },
+  );
+  it("rejects refusal output, accounts for discarded usage, and falls back to GLM", async () => {
+    mockGenerateText
+      .mockResolvedValueOnce({
+        text: "I cannot summarize this pentest",
+        finishReason: "stop",
+        usage: { inputTokens: 100, outputTokens: 10 },
+      })
+      .mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      });
+    const result = await compact();
+    expect(result.needsSummarization).toBe(true);
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated", "model-glm-5.3-flash"]);
+    expect(onDiscardedUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ inputTokens: 100, outputTokens: 10 }),
+    );
+    expect(attempt.mock.calls.map((call) => call[1])).toEqual([
+      "error",
+      "completed",
+    ]);
+  });
+  it("falls back to GLM on an Abliteration provider error", async () => {
+    mockGenerateText
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({
+        text: summary,
+        finishReason: "stop",
+        usage: { inputTokens: 50, outputTokens: 20 },
+      });
+    await compact();
+    expect(
+      mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
+    ).toEqual(["model-abliterated", "model-glm-5.3-flash"]);
+  });
+  it("does not retry a canceled primary", async () => {
+    const controller = new AbortController();
+    mockGenerateText.mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error("canceled");
+    });
+    await expect(compact(controller.signal)).rejects.toThrow();
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(finish).toHaveBeenCalledWith("aborted", undefined);
+  });
+  it("uses the same policy for rolling compaction", async () => {
+    mockGenerateText.mockResolvedValueOnce({
+      text: summary,
+      finishReason: "stop",
+      usage: { inputTokens: 50, outputTokens: 20 },
+    });
+    const result = await compactModelMessagesInRun({
+      modelMessages: [
+        { role: "user", content: "Authorized test of example.test only" },
+      ],
+      transcriptModelMessages: [],
+      sourceUiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "experiment-chat",
+      maxTokens: 100000,
+      compactionIndex: 2,
+      hasExistingSummary: true,
+      cacheAlignedSummary: {
+        languageModel: mockLanguageModel,
+        tools: {},
+        system: "Frozen",
+        providerOptions: {},
+      },
+      compactionPolicy: experiment,
+    });
+    expect(result).not.toBeNull();
+    expect(mockGenerateText.mock.calls[0][0].model.modelId).toBe(
+      "model-abliterated",
+    );
+    expect(start).toHaveBeenCalledWith(
+      { model: "model-abliterated" },
+      "run_scoped",
+    );
+  });
+  it("never evaluates assignment when compaction is unnecessary", async () => {
+    await checkAndSummarizeIfNeeded({
+      uiMessages: fourMessages,
+      subscription: "pro",
+      languageModel: mockLanguageModel,
+      mode: "agent",
+      writer: createMockWriter(),
+      chatId: "small-chat",
+      compactionPolicy: experiment,
+    });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+});
+
 describe("summary usage coverage", () => {
   it.each([true, false])(
     "preserves zero versus absent usage (reported=%s)",
@@ -1598,72 +1758,92 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
   });
 
-  it("does not wait for transcript saving before returning the summary", async () => {
-    mockGenerateText.mockResolvedValue({
-      finishReason: "stop",
-      text: "Fast summary",
-      usage: { inputTokens: 10, outputTokens: 2 },
-    });
-    let finishWrite!: () => void;
-    const writePending = new Promise<void>((resolve) => {
-      finishWrite = resolve;
-    });
-    const sandbox = {
-      commands: {
-        run: jest.fn<() => Promise<any>>().mockResolvedValue({
-          stdout: "",
-          stderr: "",
-          exitCode: 0,
-        }),
-      },
-      files: {
-        write: jest.fn<() => Promise<void>>().mockReturnValue(writePending),
-      },
-    };
-    const backgroundWork: Promise<void>[] = [];
-    const phaseDurations: Array<[string, number]> = [];
+  it.each([
+    [undefined, "/home/user/agent-transcripts/"],
+    [
+      "/Users/test/My Project",
+      "/Users/test/My Project/.hackerai/agent-transcripts/",
+    ],
+    [
+      "C:\\Users\\test\\My Project",
+      "C:/Users/test/My Project/.hackerai/agent-transcripts/",
+    ],
+  ])(
+    "saves the background transcript within the sandbox boundary %s",
+    async (project, expectedDirectory) => {
+      mockGenerateText.mockResolvedValue({
+        finishReason: "stop",
+        text: "Fast summary",
+        usage: { inputTokens: 10, outputTokens: 2 },
+      });
+      let finishWrite!: () => void;
+      const writePending = new Promise<void>((resolve) => {
+        finishWrite = resolve;
+      });
+      const sandbox = {
+        ...(project
+          ? {
+              sandboxKind: "centrifugo",
+              getWorkingDirectory: () => project,
+              supportsNativeFileRelay: () => true,
+              isWindows: () => project.startsWith("C:"),
+            }
+          : {}),
+        commands: {
+          run: jest.fn<() => Promise<any>>().mockResolvedValue({
+            stdout: "",
+            stderr: "",
+            exitCode: 0,
+          }),
+        },
+        files: {
+          write: jest.fn<() => Promise<void>>().mockReturnValue(writePending),
+        },
+      };
+      const backgroundWork: Promise<void>[] = [];
+      const phaseDurations: Array<[string, number]> = [];
 
-    const result = await checkAndSummarizeIfNeeded({
-      uiMessages: fourMessagesAboveThreshold,
-      subscription: "pro",
-      languageModel: mockLanguageModel,
-      mode: "agent",
-      writer: mockWriter,
-      chatId: "chat-background-transcript",
-      ensureSandbox: async () => sandbox as any,
-      onPhaseDuration: (phase, durationMs) =>
-        phaseDurations.push([phase, durationMs]),
-      registerBackgroundWork: (work) => backgroundWork.push(work),
-    });
-
-    expect(result.summaryText).toContain("Fast summary");
-    expect(sandbox.files.write).toHaveBeenCalledTimes(1);
-    expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
-    expect(backgroundWork).toHaveLength(1);
-    expect(phaseDurations.map(([phase]) => phase)).toContain(
-      "summary_generation",
-    );
-
-    finishWrite();
-    await Promise.all(backgroundWork);
-
-    expect(mockAttachChatSummaryTranscript).toHaveBeenCalledWith(
-      expect.objectContaining({
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: fourMessagesAboveThreshold,
+        subscription: "pro",
+        languageModel: mockLanguageModel,
+        mode: "agent",
+        writer: mockWriter,
         chatId: "chat-background-transcript",
-        summaryUpToMessageId: "msg-3",
-        transcriptPath: expect.stringContaining(
-          "/home/user/agent-transcripts/",
-        ),
-        summaryText: expect.stringContaining("Transcript location:"),
-      }),
-    );
-    expect(
-      (mockAttachChatSummaryTranscript.mock.calls[0][0] as any).summaryText,
-    ).toContain("<preserved_user_message>");
-    expect(phaseDurations.map(([phase]) => phase)).toContain(
-      "transcript_saving",
-    );
-  });
+        ensureSandbox: async () => sandbox as any,
+        onPhaseDuration: (phase, durationMs) =>
+          phaseDurations.push([phase, durationMs]),
+        registerBackgroundWork: (work) => backgroundWork.push(work),
+      });
+
+      expect(result.summaryText).toContain("Fast summary");
+      expect(sandbox.files.write).toHaveBeenCalledTimes(1);
+      expect(mockAttachChatSummaryTranscript).not.toHaveBeenCalled();
+      expect(backgroundWork).toHaveLength(1);
+      expect(phaseDurations.map(([phase]) => phase)).toContain(
+        "summary_generation",
+      );
+
+      finishWrite();
+      await Promise.all(backgroundWork);
+
+      expect(mockAttachChatSummaryTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chatId: "chat-background-transcript",
+          summaryUpToMessageId: "msg-3",
+          transcriptPath: expect.stringContaining(expectedDirectory),
+          summaryText: expect.stringContaining("Transcript location:"),
+        }),
+      );
+      expect(
+        (mockAttachChatSummaryTranscript.mock.calls[0][0] as any).summaryText,
+      ).toContain("<preserved_user_message>");
+      expect(phaseDurations.map(([phase]) => phase)).toContain(
+        "transcript_saving",
+      );
+      if (project) expect(sandbox.commands.run).not.toHaveBeenCalled();
+    },
+  );
 
   it("should skip database persistence when chatId is absent", async () => {
     mockGenerateText.mockResolvedValue({

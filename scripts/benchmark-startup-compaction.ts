@@ -16,7 +16,7 @@ const variants = [
   },
   {
     name: "deepseek-low",
-    model: "deepseek/deepseek-v4-flash-0731",
+    model: "deepseek/deepseek-v4.1-flash",
     reasoning: { enabled: true, effort: "low" },
     prompt: AGENT_SUMMARIZATION_PROMPT,
   },

@@ -1,5 +1,17 @@
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
 
+/** A canceled signal alone does not establish that an unrelated error is cancellation. */
+export const isCancellationError = (
+  error: unknown,
+  signal: AbortSignal,
+): boolean =>
+  signal.aborted &&
+  (error === signal.reason ||
+    (typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "AbortError"));
+
 /**
  * Extracts a readable error message from any error type.
  */
@@ -335,6 +347,12 @@ export const extractErrorDetails = (
   // Extract provider-specific error details (AI SDK format). Walk common
   // wrapper fields so stream/UI wrappers do not hide APICallError diagnostics.
   for (const source of records) {
+    if (source.origin === "auxiliary_vision") {
+      details.errorOrigin = "auxiliary_vision";
+      if (source.name === "AuxiliaryVisionTimeoutError") {
+        details.auxiliaryVisionTimedOut = true;
+      }
+    }
     if (details.statusCode === undefined && "statusCode" in source) {
       details.statusCode = source.statusCode;
     }
@@ -487,6 +505,8 @@ export const getProviderStatusCode = (
 export const getProviderErrorCategory = (
   details: Record<string, unknown>,
 ): ProviderErrorCategory => {
+  // SDK abort wrappers must not hide our locally attributed vision deadline.
+  if (details.auxiliaryVisionTimedOut === true) return "timeout";
   const statusCode =
     parseHttpStatus(details.statusCode) ??
     parseHttpStatus(details.providerErrorCode);
@@ -654,6 +674,12 @@ export const extractRetryAttempts = (
  *   "<friendly explanation>\n\nDetails: <provider_name> returned <status>: <detail>"
  */
 export const getUserFriendlyProviderError = (error: unknown): string => {
+  const diagnostics = extractErrorDetails(error);
+  if (diagnostics.errorOrigin === "auxiliary_vision") {
+    return getProviderErrorCategory(diagnostics) === "timeout"
+      ? "Image analysis took too long. Please retry or send fewer images."
+      : "Image analysis could not be completed. Please retry or send fewer images.";
+  }
   const statusCode = extractStatusCode(error);
   const { providerName, detail } = extractProviderDetails(error);
   const overflowKind = classifyProviderOverflowError(error);

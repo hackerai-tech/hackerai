@@ -8,6 +8,12 @@ const mockResumeSubscription = jest.fn();
 const mockReloadWithEntitlementRefresh = jest.fn();
 const mockToastSuccess = jest.fn();
 const mockToastError = jest.fn();
+const mockBillingStatus =
+  jest.fn<
+    () => Promise<
+      import("@/lib/billing/api-types").SubscriptionCancellationStatus
+    >
+  >();
 
 jest.mock("@/lib/auth/entitlement-refresh-navigation", () => ({
   reloadWithEntitlementRefresh: mockReloadWithEntitlementRefresh,
@@ -29,7 +35,7 @@ jest.mock("@/app/hooks/usePricingDialog", () => ({
 }));
 
 jest.mock("@/lib/billing/client", () => ({
-  getSubscriptionCancellationStatus: jest.fn(),
+  getSubscriptionCancellationStatus: mockBillingStatus,
   keepSubscription: jest.fn(),
   redirectToBillingPortal: jest.fn(),
   resumeSubscription: mockResumeSubscription,
@@ -84,7 +90,41 @@ function pausedRecord(overrides: Record<string, unknown> = {}) {
 describe("AccountTab while a retention pause is active", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockBillingStatus.mockResolvedValue({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+    });
     resetMockConvexQueries();
+  });
+
+  it("keeps payment management available to a former subscriber on Free", async () => {
+    setMockQueryResult(null);
+    mockBillingStatus.mockResolvedValue({
+      hasActiveSubscription: false,
+      cancelAtPeriodEnd: false,
+      billingAccountAvailable: true,
+      checkoutRequiresReview: true,
+    });
+    render(<AccountTab />);
+    expect(
+      await screen.findByRole("link", { name: "Get billing help" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Manage", exact: true }),
+    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Update card" })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Pay invoice" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer a portal to a brand new Free user without a billing account", async () => {
+    setMockQueryResult(null);
+    render(<AccountTab />);
+    await waitFor(() => expect(mockBillingStatus).toHaveBeenCalledTimes(1));
+    expect(
+      screen.queryByRole("button", { name: "Manage", exact: true }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows nothing extra for free users without a pause", () => {

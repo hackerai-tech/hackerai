@@ -35,7 +35,7 @@ function makeSandbox(size: number, e2b = false, windows = false) {
     isWindows: jest.fn(() => windows),
     commands: {
       run: jest.fn(async (command: string) => {
-        if (command.includes("stat -c%s")) {
+        if (command.includes("stat -Lc%s")) {
           return { stdout: String(size), stderr: "", exitCode: 0 };
         }
         if (command.startsWith("for %I")) {
@@ -240,7 +240,7 @@ describe("uploadSandboxFileToConvex", () => {
     const sandbox = makeSandbox(1234, true);
     (sandbox.commands.run as jest.Mock).mockImplementation(
       async (command: string) => {
-        if (command.includes("stat -c%s")) {
+        if (command.includes("stat -Lc%s")) {
           return { stdout: "1234", stderr: "", exitCode: 0 };
         }
         if (command.includes("curl -fsSL -X PUT")) {
@@ -292,7 +292,7 @@ describe("uploadSandboxFileToConvex", () => {
     const sandbox = makeSandbox(0, false, true);
     (sandbox.commands.run as jest.Mock).mockImplementation(
       async (command: string) => {
-        if (command.includes("stat -c%s")) {
+        if (command.includes("stat -Lc%s")) {
           return {
             stdout: "",
             stderr: "'[' is not recognized as an internal or external command",
@@ -335,7 +335,7 @@ describe("uploadSandboxFileToConvex", () => {
     const sandbox = makeSandbox(0, false, true);
     (sandbox.commands.run as jest.Mock).mockImplementation(
       async (command: string) => {
-        if (command.includes("stat -c%s")) {
+        if (command.includes("stat -Lc%s")) {
           return {
             stdout: "",
             stderr: "'[' is not recognized as an internal or external command",

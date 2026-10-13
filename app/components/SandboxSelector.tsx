@@ -4,6 +4,7 @@ import {
   Check,
   Cloud,
   Laptop,
+  LoaderCircle,
   Monitor,
   ChevronDown,
   ChevronRight,
@@ -36,6 +37,7 @@ interface SandboxSelectorProps {
   disabled?: boolean;
   size?: "sm" | "toolbar" | "md";
   triggerLabel?: string;
+  compact?: boolean;
 }
 
 interface ConnectionOption {
@@ -52,6 +54,7 @@ export function SandboxSelector({
   disabled = false,
   size = "sm",
   triggerLabel,
+  compact = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
@@ -97,11 +100,11 @@ export function SandboxSelector({
   const desktopLabel =
     isTauri && desktopBridgeStatus !== "connected"
       ? desktopBridgeStatus === "connecting"
-        ? "Local reconnecting"
+        ? "This computer reconnecting"
         : computerConnectionPending
-          ? "Local"
-          : "Local unavailable"
-      : "Local";
+          ? "This computer"
+          : "This computer unavailable"
+      : "This computer";
   const desktopConnection = connections?.find(
     (conn) =>
       conn.isDesktop &&
@@ -275,24 +278,28 @@ export function SandboxSelector({
     remoteConnections,
   ]);
 
+  const selectedComputerLabel =
+    selectedNativeDesktop || value === "desktop"
+      ? "This computer"
+      : "Selected computer";
   const unavailableLocalOption: ConnectionOption | null =
     value !== "e2b" && !valueMatchesOption
       ? {
           id: value,
           label:
             selectedNativeDesktop && desktopBridgeStatus === "connecting"
-              ? "Local reconnecting"
+              ? `${selectedComputerLabel} reconnecting`
               : computerConnectionPending
-                ? "Local"
-                : "Local unavailable",
+                ? selectedComputerLabel
+                : `${selectedComputerLabel} unavailable`,
           shortLabel:
             selectedNativeDesktop && desktopBridgeStatus === "connecting"
-              ? "Local reconnecting"
+              ? `${selectedComputerLabel} reconnecting`
               : computerConnectionPending
-                ? "Local"
+                ? selectedComputerLabel
                 : selectedNativeDesktop && desktopBridgeStatus === "connected"
-                  ? "Local"
-                  : "Local unavailable",
+                  ? selectedComputerLabel
+                  : `${selectedComputerLabel} unavailable`,
           icon: isDesktopPreference(value) ? Monitor : Laptop,
         }
       : null;
@@ -300,13 +307,22 @@ export function SandboxSelector({
     options.find((option) => option.id === value) ??
     unavailableLocalOption ??
     cloudOption;
-  const Icon = selectedOption?.icon || Cloud;
+  const showReconnecting =
+    compact &&
+    !triggerLabel &&
+    selectedNativeDesktop &&
+    desktopBridgeStatus === "connecting";
+  const Icon = showReconnecting ? LoaderCircle : selectedOption.icon;
+  const compactLabel =
+    selectedNativeDesktop || value === "desktop" || unavailableLocalOption
+      ? selectedComputerLabel
+      : selectedOption.shortLabel;
 
   const buttonClassName =
     size === "md"
       ? "h-9 max-w-full px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
       : size === "toolbar"
-        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-44"
+        ? "h-7 max-w-full px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink sm:max-w-64"
         : "h-7 max-w-full px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
@@ -321,10 +337,15 @@ export function SandboxSelector({
           disabled={disabled}
           className={buttonClassName}
           title={triggerLabel ?? selectedOption?.label}
+          aria-label={triggerLabel ?? selectedOption.label}
         >
-          <Icon className={iconClassName} />
+          <Icon
+            aria-hidden="true"
+            className={`${iconClassName}${showReconnecting ? " animate-spin motion-reduce:animate-none" : ""}`}
+          />
           <span className="min-w-0 flex-1 truncate text-left">
-            {triggerLabel ?? selectedOption?.shortLabel}
+            {triggerLabel ??
+              (compact ? compactLabel : selectedOption.shortLabel)}
           </span>
           <ChevronDown
             className={
@@ -341,7 +362,7 @@ export function SandboxSelector({
               if (isFreeUser) {
                 toast.info("Cloud sandbox requires a Pro plan", {
                   description:
-                    "Use a local sandbox or upgrade to Pro for cloud access.",
+                    "Use this computer or connect another computer for free, or upgrade to Pro for cloud access.",
                 });
                 return;
               }

@@ -1,3 +1,8 @@
+import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
+import {
+  freeAgentBudgetProperties,
+  type FreeAgentBudgetAssignment,
+} from "@/lib/experiments/free-agent-budget";
 import {
   regionalFreeLimitsProperties,
   type RegionalFreeLimitsPolicy,
@@ -40,7 +45,14 @@ import {
 } from "@/lib/analytics/experiment-context";
 import type { AgentStepLimitTelemetry } from "@/lib/analytics/agent-step-limit-telemetry";
 import type { AbliteratedModelTelemetry } from "@/lib/analytics/abliterated-model";
-import { ABLITERATED_EXPERIMENT_KEY } from "@/lib/experiments/abliteration-keys";
+import {
+  ABLITERATED_EXPERIMENT_KEY,
+  ABLITERATED_MAX_EXPERIMENT_KEY,
+  ABLITERATED_PAID_FIRST_STEP_KEY,
+  ABLITERATED_PAID_MODERATED_DEFAULT_KEY,
+  ABLITERATED_PAID_THREE_STEPS_KEY,
+  ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY,
+} from "@/lib/experiments/abliteration-keys";
 import { buildAgentPerformanceDiagnostics } from "@/lib/analytics/agent-performance-diagnostics";
 import {
   EXTRA_USAGE_MULTIPLIER,
@@ -266,7 +278,7 @@ const COMPACT_CHAT_ERROR_METADATA_KEYS = [
   "upload_failure_error_retryable",
   "upload_failure_protocol",
   "upload_failure_url_length",
-  "upload_retried_with_fresh_sandbox",
+  "upload_retried_after_reconnect",
   "localSandboxFallbackBlocked",
   "sandboxFallbackReason",
   "requestedPreference",
@@ -1365,6 +1377,7 @@ type AgentCompletionAnalyticsArgs = {
   isAutoContinue?: boolean;
   stepLimitTelemetry?: AgentStepLimitTelemetry;
   experiment?: ExperimentAnalyticsContext;
+  freeAgentBudget?: FreeAgentBudgetAssignment;
   upstreamProvider?: string;
   providerErrorProvider?: string;
   providerErrorCategory?: string;
@@ -1424,6 +1437,7 @@ export function captureAgentRun({
   isAutoContinue,
   stepLimitTelemetry,
   experiment,
+  freeAgentBudget,
   upstreamProvider,
   providerErrorProvider,
   providerErrorCategory,
@@ -1580,6 +1594,9 @@ export function captureAgentRun({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-agent_run",
+    ...(triggerRunId && {
+      uuid: agentRunEventUuid(triggerRunId, "hackerai-agent_run"),
+    }),
     properties: {
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
@@ -1737,6 +1754,7 @@ export function captureAgentRun({
         budget_abort_mid_stream: budgetAbortDetails.midStream,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeAgentBudgetProperties(freeAgentBudget),
     },
   });
 }
@@ -1769,7 +1787,14 @@ export function captureAgentCompletionAnalytics(
     }
   }
 
-  if (args.experiment?.key === ABLITERATED_EXPERIMENT_KEY) {
+  if (
+    args.experiment?.key === ABLITERATED_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_MAX_EXPERIMENT_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_FIRST_STEP_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_MODERATED_DEFAULT_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_THREE_STEPS_KEY ||
+    args.experiment?.key === ABLITERATED_PAID_MODERATED_THREE_STEPS_DEFAULT_KEY
+  ) {
     try {
       posthog?.capture({
         distinctId: userId,
@@ -1781,6 +1806,9 @@ export function captureAgentCompletionAnalytics(
           mode,
           subscription_tier: subscription,
           outcome,
+          has_response_content: args.hasResponseContent,
+          step_limit_reached:
+            args.stepLimitTelemetry?.stepLimitReached ?? false,
           abort_source: args.abortSource,
           finish_reason: args.finishReason,
           configured_model: args.configuredModelId,
@@ -1855,6 +1883,7 @@ export function captureAgentCompletionAnalytics(
     isAutoContinue: args.isAutoContinue,
     stepLimitTelemetry: args.stepLimitTelemetry,
     experiment: args.experiment,
+    freeAgentBudget: args.freeAgentBudget,
     upstreamProvider: args.upstreamProvider,
     providerErrorProvider: args.providerErrorProvider,
     providerErrorCategory: args.providerErrorCategory,
@@ -1893,6 +1922,7 @@ export function captureUsageCost({
   analyticsRequestContext,
   fallbackServed,
   experiment,
+  freeAgentBudget,
   regionalFreeLimits,
   triggerRunId,
 }: {
@@ -1926,6 +1956,7 @@ export function captureUsageCost({
   analyticsRequestContext?: AnalyticsRequestContext;
   fallbackServed?: boolean;
   experiment?: ExperimentAnalyticsContext;
+  freeAgentBudget?: FreeAgentBudgetAssignment;
   regionalFreeLimits?: RegionalFreeLimitsPolicy;
   triggerRunId?: string;
 }) {
@@ -1944,7 +1975,11 @@ export function captureUsageCost({
   posthog.capture({
     distinctId: userId,
     event: "hackerai-usage_cost",
+    ...(triggerRunId && {
+      uuid: agentRunEventUuid(triggerRunId, "hackerai-usage_cost"),
+    }),
     properties: {
+      cost_accounting_status: "recorded",
       ...cacheHistoryProperties(cacheHistoryTelemetry),
       ...usageMeasurement,
       user_id: userId,
@@ -1989,8 +2024,6 @@ export function captureUsageCost({
         sandbox_cost_accounting_version: 2,
         sandbox_cost_source: "request_runtime_rate",
         sandbox_cost_dollars: sandboxUsage.totalCostDollars,
-        sandbox_miosa_runtime_ms: sandboxUsage.miosaRuntimeMs,
-        sandbox_miosa_cost_dollars: sandboxUsage.miosaCostDollars,
         sandbox_e2b_runtime_ms: sandboxUsage.e2bRuntimeMs,
         sandbox_e2b_cost_dollars: sandboxUsage.e2bCostDollars,
       }),
@@ -2034,6 +2067,7 @@ export function captureUsageCost({
           paidDailyFreeAllowance.resetTimestamp,
       }),
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeAgentBudgetProperties(freeAgentBudget),
       ...regionalFreeLimitsProperties(regionalFreeLimits),
     },
   });
@@ -2063,6 +2097,7 @@ export function captureUsageSettlement({
   deduction,
   forced,
   experiment,
+  freeAgentBudget,
 }: {
   posthog: PostHog | null;
   userId: string;
@@ -2082,6 +2117,7 @@ export function captureUsageSettlement({
   deduction: UsageDeductionResult;
   forced: boolean;
   experiment?: ExperimentAnalyticsContext;
+  freeAgentBudget?: FreeAgentBudgetAssignment;
 }) {
   if (!posthog) return;
   const runSampled = isUsageSettlementSuccessSampled(usageSettlementId);
@@ -2131,6 +2167,7 @@ export function captureUsageSettlement({
       settlement_success_sample_rate: USAGE_SETTLEMENT_SUCCESS_SAMPLE_RATE,
       settlement_event_version: 2,
       ...getExperimentAnalyticsProperties(experiment),
+      ...freeAgentBudgetProperties(freeAgentBudget),
     },
   });
 }

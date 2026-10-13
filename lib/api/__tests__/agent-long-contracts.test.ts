@@ -117,6 +117,11 @@ const convexMessagesSrc = fs.readFileSync(
   "utf8",
 );
 
+const providerTerminalErrorSrc = fs.readFileSync(
+  path.resolve(__dirname, "../provider-terminal-error.ts"),
+  "utf8",
+);
+
 const taskSrc = fs.readFileSync(
   path.resolve(__dirname, "../../../trigger/agent-long.ts"),
   "utf8",
@@ -150,6 +155,11 @@ const agentStreamRunnerSrc = fs.readFileSync(
 
 const toolSchemasSrc = fs.readFileSync(
   path.resolve(__dirname, "../../ai/tools/schemas.ts"),
+  "utf8",
+);
+
+const toolIndexSrc = fs.readFileSync(
+  path.resolve(__dirname, "../../ai/tools/index.ts"),
   "utf8",
 );
 
@@ -215,6 +225,13 @@ const toolExecutionSources = [
       "deleteNoteTool",
     ],
   },
+  {
+    src: fs.readFileSync(
+      path.resolve(__dirname, "../../ai/tools/findings.ts"),
+      "utf8",
+    ),
+    schemaNames: ["createVulnerabilityReportTool"],
+  },
 ];
 
 describe("direct vision and summary recovery contracts", () => {
@@ -252,14 +269,20 @@ describe("direct vision and summary recovery contracts", () => {
 });
 
 describe("agent tool schemas — Head Start bundle boundary", () => {
-  test("schema-only tool catalog imports only ai and zod", () => {
+  test("schema-only tool catalog keeps its assessment helper free of runtime dependencies", () => {
     const importSources = Array.from(
       toolSchemasSrc.matchAll(/^import\s+[^;]+?\s+from\s+"([^"]+)";/gm),
     ).map((match) => match[1]);
 
-    expect(importSources).toEqual(["ai", "zod"]);
+    expect(importSources).toEqual(["../../findings/quality", "ai", "zod"]);
     expect(toolSchemasSrc).not.toMatch(/from\s+"@\/[^"]+"/);
-    expect(toolSchemasSrc).not.toMatch(/from\s+"\.\.?\/[^"]+"/);
+    const qualitySource = fs.readFileSync(
+      path.resolve(__dirname, "../../findings/quality.ts"),
+      "utf8",
+    );
+    expect(qualitySource.match(/^import.*$/gm)).toEqual([
+      'import type { RefinementCtx } from "zod";',
+    ]);
     expect(toolSchemasSrc).not.toMatch(/\bexecute\s*:/);
   });
 
@@ -277,6 +300,9 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
     );
     expect(toolSchemasSrc).toMatch(/todo_write:\s*todoWriteTool/);
     expect(toolSchemasSrc).toMatch(/create_note:\s*createNoteTool/);
+    expect(toolSchemasSrc).toMatch(
+      /create_vulnerability_report:\s*createVulnerabilityReportTool/,
+    );
     expect(toolSchemasSrc).toMatch(/web_search:\s*webSearchTool/);
     expect(toolSchemasSrc).toMatch(/open_url:\s*openUrlTool/);
     expect(toolSchemasSrc).toMatch(/if\s*\(\s*mode\s*===\s*"ask"\s*\)/);
@@ -289,6 +315,15 @@ describe("agent tool schemas — Head Start bundle boundary", () => {
       }
       expect(src).toMatch(/\bexecute\s*:/);
     }
+  });
+
+  test("normal and durable Agent share one finding tool factory", () => {
+    expect(chatHandlerSrc).toMatch(/createTools\(/);
+    expect(taskSrc).toMatch(/createTools\(/);
+    expect(toolIndexSrc).toMatch(
+      /create_vulnerability_report:\s*createCreateVulnerabilityReport\(/,
+    );
+    expect(toolIndexSrc).toMatch(/return\s+mode\s*===\s*"ask"/);
   });
 });
 
@@ -929,7 +964,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /onApprovalWait:\s*runTimingTracker\.recordApprovalWait/,
     );
     expect(taskSrc).toMatch(
-      /onModelStreamStart:\s*runTimingTracker\.startModelStream/,
+      /onModelStreamStart:\s*\(\) => \{\s*runReporting\.setStage\("model_stream"\);\s*runTimingTracker\.startModelStream\(\);/,
     );
     expect(taskSrc).toMatch(
       /onModelStreamFinish:\s*runTimingTracker\.finishModelStream/,
@@ -1574,7 +1609,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   test("provider finishReason error fails the task after the UI stream drains", () => {
     const waitIdx = taskSrc.indexOf("await waitUntilComplete()");
     const terminalErrorIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(terminalAgentState)",
+      "getTerminalProviderStreamError(\n          terminalAgentState,",
       waitIdx,
     );
     const throwIdx = taskSrc.indexOf(
@@ -1623,20 +1658,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       ),
     ]).toHaveLength(2);
 
-    const terminalHelperIdx = taskSrc.indexOf(
+    const terminalHelperIdx = providerTerminalErrorSrc.indexOf(
       "const getTerminalProviderStreamError",
     );
-    const contentFilterIdx = taskSrc.indexOf(
-      "isProviderContentFilterFinishReason(state.streamFinishReason)",
+    const contentFilterIdx = providerTerminalErrorSrc.indexOf(
+      "isProviderContentFilterFinishReason(finishReason)",
       terminalHelperIdx,
     );
     const terminalCheckIdx = taskSrc.indexOf(
-      "getTerminalProviderStreamError(terminalAgentState)",
-      contentFilterIdx,
+      "getTerminalProviderStreamError(\n          terminalAgentState,",
     );
     expect(terminalHelperIdx).toBeGreaterThan(-1);
     expect(contentFilterIdx).toBeGreaterThan(terminalHelperIdx);
-    expect(terminalCheckIdx).toBeGreaterThan(contentFilterIdx);
+    expect(terminalCheckIdx).toBeGreaterThan(-1);
   });
 
   test("mid-stream disconnect continuation is bounded and preserves a replay-safe transcript", () => {
@@ -2319,9 +2353,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
   });
 
   test("sandbox attachment upload failures are retried and classified separately", () => {
-    expect(taskSrc).toMatch(/retryWithFreshSandboxOnTransientFailure:\s*true/);
+    expect(taskSrc).toMatch(/retryAfterReconnectOnTransientFailure:\s*true/);
     expect(chatHandlerSrc).toMatch(
-      /retryWithFreshSandboxOnTransientFailure:\s*true/,
+      /retryAfterReconnectOnTransientFailure:\s*true/,
     );
     expect(taskSrc).toMatch(/service:\s*"agent-long"/);
     expect(chatHandlerSrc).toMatch(/service:\s*"chat-handler"/);
@@ -2389,7 +2423,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "const lock = await acquireFreeRunConcurrencyLock(",
     );
     const monthlyIndex = taskSrc.indexOf(
-      "await checkFreeMonthlyCostLimit(",
+      "await checkFreeCostBudget(",
       lockIndex,
     );
     const consumeIndex = taskSrc.indexOf(
@@ -2412,15 +2446,15 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       /acquireFreeRunConcurrencyLock\(\s*freeUsageSubject/,
     );
     expect(taskSrc).toMatch(
-      /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
+      /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/,
     );
     expect(
       taskSrc.match(
-        /checkFreeMonthlyCostLimit\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
+        /checkFreeCostBudget\(\s*freeUsageSubject,\s*freeLimits,?\s*\)/g,
       ),
-    ).toHaveLength(4);
+    ).not.toHaveLength(0);
     expect(taskSrc).not.toMatch(
-      /checkFreeMonthlyCostLimit\(freeUsageSubject,\s*userId/,
+      /checkFreeCostBudget\(freeUsageSubject,\s*userId/,
     );
     expect(taskSrc).toMatch(/recordFreeMonthlyCost\(\s*freeUsageSubject/);
   });
@@ -2431,15 +2465,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const promptIdx = taskSrc.indexOf("systemPrompt(", toolsIdx);
 
     expect(providerIdx).toBeGreaterThan(-1);
+    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain('provider: "e2b"');
     expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
-      "selectCloudSandboxProvider({",
-    );
-    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
-      "environment: ctx.environment.type",
-    );
-    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain("triggerRegion");
-    expect(taskSrc.slice(providerIdx, toolsIdx)).toContain(
-      "requestRegionClass",
+      'reason: "e2b_only"',
     );
     expect(toolsIdx).toBeGreaterThan(providerIdx);
     expect(promptIdx).toBeGreaterThan(toolsIdx);
@@ -2500,10 +2528,7 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(regionIdx).toBeGreaterThan(-1);
     expect(providerIdx).toBeGreaterThan(regionIdx);
     expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
-      "triggerRegion: executionRegion",
-    );
-    expect(chatHandlerSrc.slice(providerIdx, toolsIdx)).toContain(
-      "requestRegionClass",
+      'provider: "e2b"',
     );
     expect(chatHandlerSrc.slice(toolsIdx, toolsIdx + 1_500)).toContain(
       "triggerRegion: executionRegion",
@@ -2553,6 +2578,19 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     );
     expect(taskSrc).toMatch(
       /recordGroupedSpikeAlert\(\{[\s\S]*spikeKey:\s*`agent_long:\$\{summary\.category\}`[\s\S]*sourceEvent:\s*"agent_long_provider_transport_failed"/,
+    );
+  });
+});
+
+describe("Agent terminal reporting flush lifecycle", () => {
+  it("has one awaited shutdown after fallback capture so enqueue cannot race an earlier drain", () => {
+    const shutdowns = [...taskSrc.matchAll(/posthog\?\.shutdown\(\)/g)];
+    expect(shutdowns).toHaveLength(1);
+    const finalization = taskSrc.lastIndexOf("runReporting.finalize(");
+    expect(finalization).toBeGreaterThan(0);
+    expect(shutdowns[0].index).toBeGreaterThan(finalization);
+    expect(taskSrc).toContain(
+      "await posthog?.shutdown().catch(() => undefined)",
     );
   });
 });

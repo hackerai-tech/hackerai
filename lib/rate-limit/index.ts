@@ -7,7 +7,7 @@ import type { FreeLimitPolicy } from "./free-config";
  * 1. Token Bucket (Paid users - Pro, Pro+, Ultra, Team):
  *    - Used for both Agent and Ask modes (shared budget)
  *    - Points consumed based on token usage costs
- *    - Single monthly bucket: credits = subscription price, refills every 30 days
+ *    - Monthly paid cycles refresh once per paid invoice; annual plans use 30-day windows
  *    - Supports extra usage (prepaid balance) when limits exceeded
  *
  * 2. Fixed Window (Free users):
@@ -110,6 +110,9 @@ export {
   type PaidDailyFreeAllowanceCostRecordResult,
 } from "./paid-daily-free-allowance";
 
+export { checkFreeCostBudget } from "./free-cost-budget";
+import { checkFreeCostBudget } from "./free-cost-budget";
+
 // Import for internal use
 import { checkTokenBucketLimit } from "./token-bucket";
 import {
@@ -148,6 +151,16 @@ export const checkRateLimit = async (
   // Free users: fixed daily window
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
+    if (isAgentMode(mode) && freeLimits?.agentDailyBudget) {
+      const snapshot = await checkFreeCostBudget(quotaSubject, freeLimits);
+      return {
+        freeDailyCost: true,
+        limit: snapshot.monthlyLimitPoints,
+        remaining: snapshot.monthlyRemainingAtStart,
+        resetTime: snapshot.monthlyResetTime,
+        rateLimitSkipped: snapshot.rateLimitSkipped,
+      };
+    }
     if (isAgentMode(mode)) {
       // Free agent mode shares the daily free budget and consumes 1 unit.
       return checkFreeAgentRateLimit(quotaSubject, freeLimits);
@@ -182,6 +195,16 @@ export const checkRateLimitCapacity = async (
 ): Promise<RateLimitInfo> => {
   if (subscription === "free") {
     const quotaSubject = freeQuotaSubject ?? userId;
+    if (isAgentMode(mode) && freeLimits?.agentDailyBudget) {
+      const snapshot = await checkFreeCostBudget(quotaSubject, freeLimits);
+      return {
+        freeDailyCost: true,
+        limit: snapshot.monthlyLimitPoints,
+        remaining: snapshot.monthlyRemainingAtStart,
+        resetTime: snapshot.monthlyResetTime,
+        rateLimitSkipped: snapshot.rateLimitSkipped,
+      };
+    }
     return isAgentMode(mode)
       ? checkFreeAgentRateLimitCapacity(quotaSubject, freeLimits)
       : checkFreeUserRateLimitCapacity(quotaSubject, undefined, freeLimits);

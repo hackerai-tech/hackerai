@@ -17,7 +17,6 @@ describe("useChatHandlers chat action contracts", () => {
       "regenerate response",
       "retry response",
       "regenerate edited message",
-      "continue response",
       "send queued message",
     ]) {
       expect(useChatHandlersSrc).toContain(`runChatAction("${description}"`);

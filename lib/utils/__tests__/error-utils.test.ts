@@ -1,5 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import {
+  isCancellationError,
   classifyProviderOverflowError,
   createProviderContentBlockedFinishReasonError,
   extractErrorDetails,
@@ -728,5 +729,23 @@ describe("SSE upstream abort recovery", () => {
     expect(
       extractErrorDetails(error("messages[1].private_payload")),
     ).not.toHaveProperty("providerErrorParam");
+  });
+});
+
+describe("isCancellationError", () => {
+  it("preserves unrelated failures after cancellation", () => {
+    const controller = new AbortController();
+    const reason = new Error("Stopped");
+    const abort = Object.assign(new Error("Aborted"), { name: "AbortError" });
+    expect(isCancellationError(abort, controller.signal)).toBe(false);
+    controller.abort(reason);
+    expect(isCancellationError(reason, controller.signal)).toBe(true);
+    expect(isCancellationError(abort, controller.signal)).toBe(true);
+    expect(
+      isCancellationError(new Error("Database failed"), controller.signal),
+    ).toBe(false);
+    expect(
+      isCancellationError(new TypeError("terminated"), controller.signal),
+    ).toBe(false);
   });
 });

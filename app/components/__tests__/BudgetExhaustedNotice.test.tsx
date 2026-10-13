@@ -16,6 +16,8 @@ let mockIncludedUsageRemaining = 0;
 let mockMonthlyStatusConfirmed = true;
 let mockIncludedUsageLoading = false;
 let mockIncludedUsageError = false;
+let mockDailyAllowance:
+  { available: boolean; costRemainingDollars?: number } | undefined;
 const mockUseQuery = jest.fn();
 jest.mock("@/app/contexts/GlobalState", () => ({
   useGlobalState: () => ({
@@ -32,16 +34,21 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 }));
 jest.mock("swr", () => ({
   __esModule: true,
-  default: () => ({
-    data: mockIncludedUsageError
-      ? undefined
+  default: (key: string[] | null) =>
+    key?.[0] === "stopped-agent-daily-allowance"
+      ? { data: mockDailyAllowance }
       : {
-          monthlyStatusConfirmed: mockMonthlyStatusConfirmed,
-          monthly: { remaining: mockIncludedUsageRemaining },
+          data: mockIncludedUsageError
+            ? undefined
+            : {
+                monthlyStatusConfirmed: mockMonthlyStatusConfirmed,
+                monthly: { remaining: mockIncludedUsageRemaining },
+              },
+          isLoading: mockIncludedUsageLoading,
+          error: mockIncludedUsageError
+            ? new Error("usage unavailable")
+            : undefined,
         },
-    isLoading: mockIncludedUsageLoading,
-    error: mockIncludedUsageError ? new Error("usage unavailable") : undefined,
-  }),
 }));
 jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: jest.fn(),
@@ -71,6 +78,7 @@ describe("BudgetExhaustedNotice", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSubscription = "pro";
+    mockDailyAllowance = undefined;
     mockCheckingPlan = false;
     mockIncludedUsageRemaining = 0;
     mockMonthlyStatusConfirmed = true;
@@ -304,6 +312,56 @@ describe("BudgetExhaustedNotice", () => {
     expect(openSettingsDialog).toHaveBeenCalledWith("Usage");
     expect(
       screen.queryByRole("button", { name: "Add credits" }),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe("stopped Agent daily allowance", () => {
+  beforeEach(() => {
+    mockSubscription = "pro";
+    mockCheckingPlan = false;
+    mockIncludedUsageRemaining = 0;
+    mockMonthlyStatusConfirmed = true;
+    mockIncludedUsageLoading = false;
+    mockIncludedUsageError = false;
+    mockUseQuery.mockReturnValue(emptyEntitlement);
+  });
+  it("resumes saved progress with explicit Auto and rescue consent", () => {
+    mockDailyAllowance = { available: true, costRemainingDollars: 0.12 };
+    const onContinue = jest.fn();
+    render(<BudgetExhaustedNotice mode="agent" onContinue={onContinue} />);
+    expect(screen.getByText(/0.12 remaining/)).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continue with daily allowance" }),
+    );
+    expect(onContinue).toHaveBeenCalledWith("auto", {
+      type: "paid_daily_free_allowance",
+    });
+  });
+  it.each([false, undefined])(
+    "does not offer unavailable or unknown allowance (%s)",
+    (available) => {
+      mockDailyAllowance = available === undefined ? undefined : { available };
+      render(<BudgetExhaustedNotice mode="agent" onContinue={jest.fn()} />);
+      expect(
+        screen.queryByRole("button", { name: "Continue with daily allowance" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+  it("disables the fallback while continuation is pending", () => {
+    mockDailyAllowance = { available: true };
+    render(
+      <BudgetExhaustedNotice mode="agent" pending onContinue={jest.fn()} />,
+    );
+    screen
+      .getAllByRole("button", { name: "Resuming…" })
+      .forEach((button) => expect(button).toBeDisabled());
+  });
+  it("does not show the Agent fallback for Ask", () => {
+    mockDailyAllowance = { available: true };
+    render(<BudgetExhaustedNotice mode="ask" onContinue={jest.fn()} />);
+    expect(
+      screen.queryByRole("button", { name: "Continue with daily allowance" }),
     ).not.toBeInTheDocument();
   });
 });

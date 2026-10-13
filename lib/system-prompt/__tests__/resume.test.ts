@@ -32,3 +32,12 @@ describe("getResumeSection", () => {
     expect(section).toContain("Use tools when action is still needed");
   });
 });
+
+it.each([
+  "step-limit",
+  "tool-calls",
+  "timeout",
+  "trigger_crashed_client_saved",
+])("provides recovery context for %s", (reason) => {
+  expect(getResumeSection(reason)).toContain("<resume_context>");
+});

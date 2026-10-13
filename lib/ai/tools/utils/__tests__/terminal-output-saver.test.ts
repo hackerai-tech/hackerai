@@ -21,7 +21,7 @@ const createSandbox = ({
   statSizeBytes,
   listedFiles = [],
 }: {
-  sandboxKind?: "centrifugo" | "miosa";
+  sandboxKind?: "centrifugo";
   nativeFileRelay?: boolean;
   statSizeBytes?: number;
   listedFiles?: Array<{ name: string }>;
@@ -52,91 +52,38 @@ const createSandbox = ({
 });
 
 describe("saveFullOutputToFile", () => {
-  it.each([
-    { status: 422, retryable: true },
-    { status: 503, retryable: false },
-    { status: 504, retryable: true },
-  ])(
-    "does not replay Miosa rejected or ambiguous saves: %j",
-    async (details) => {
-      const sandbox = createSandbox({ sandboxKind: "miosa" });
-      sandbox.files.write.mockRejectedValueOnce(
-        Object.assign(new Error("network private-output"), {
-          ...details,
-          name: "MiosaError",
-          code: "UNKNOWN_ERROR",
-          requestId: "request-safe",
+  it.each(["/Users/test/My Project", "C:\\Users\\test\\My Project"])(
+    "writes and prunes native artifacts inside %s without shell setup",
+    async (project) => {
+      const sandbox = {
+        ...createSandbox({
+          sandboxKind: "centrifugo",
+          nativeFileRelay: true,
+          listedFiles: Array.from({ length: 12 }, (_, i) => ({
+            name: `2026-10-${String(i + 1).padStart(2, "0")}.txt`,
+          })),
         }),
-      );
-      const eventSpy = jest
-        .spyOn(phLogger, "event")
-        .mockImplementation(() => {});
-      const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
-      try {
-        await expect(
-          saveFullOutputToFile(sandbox as any, "private-output", CHAT_ID),
-        ).resolves.toBeNull();
-        expect(sandbox.files.write).toHaveBeenCalledTimes(1);
-        expect(eventSpy).toHaveBeenCalledWith(
-          "terminal_output_persistence_failure",
-          expect.objectContaining({
-            failure_stage: "write_output",
-            error_http_status: details.status,
-            error_request_id: "request-safe",
-            retry_decision: "not_retryable",
-          }),
-        );
-        expect(JSON.stringify(eventSpy.mock.calls)).not.toContain(
-          "private-output",
-        );
-      } finally {
-        eventSpy.mockRestore();
-        warnSpy.mockRestore();
-      }
-    },
-  );
-
-  it("retries a provider-confirmed transient 503 only for the fixed output save", async () => {
-    jest.useFakeTimers();
-    const sandbox = createSandbox({ sandboxKind: "miosa" });
-    sandbox.files.write.mockRejectedValueOnce(
-      Object.assign(new Error("unavailable"), {
-        status: 503,
-        retryable: true,
-        requestId: "request-503",
-      }),
-    );
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
-    try {
-      const pending = saveFullOutputToFile(
+        getWorkingDirectory: () => project,
+        isWindows: () => project.startsWith("C:"),
+      };
+      const directory = `${project.replaceAll("\\", "/")}/.hackerai/terminal_full_output/chat-${CHAT_KEY}`;
+      const savedPath = await saveFullOutputToFile(
         sandbox as any,
-        "full-output",
+        "output",
         CHAT_ID,
       );
-      await jest.advanceTimersByTimeAsync(250);
-      expect(await pending).not.toBeNull();
-      expect(sandbox.files.write).toHaveBeenCalledTimes(2);
-      expect(sandbox.files.write.mock.calls[0]).toEqual(
-        sandbox.files.write.mock.calls[1],
-      );
-      expect(eventSpy).toHaveBeenCalledWith(
-        "terminal_output_persistence_failure",
-        expect.objectContaining({
-          result: "recovered",
-          error_request_id: "request-503",
-          failure_stage: "write_output",
-        }),
-      );
-    } finally {
-      eventSpy.mockRestore();
-      infoSpy.mockRestore();
-      jest.useRealTimers();
-    }
-  });
-
+      expect(savedPath?.startsWith(`${directory}/`)).toBe(true);
+      expect(sandbox.files.write).toHaveBeenCalledWith(savedPath, "output");
+      expect(sandbox.files.list).toHaveBeenCalledWith(directory);
+      expect(sandbox.files.remove.mock.calls).toEqual([
+        [`${directory}/2026-10-02.txt`],
+        [`${directory}/2026-10-01.txt`],
+      ]);
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+    },
+  );
   it("does not attempt a file write when directory creation exits unsuccessfully", async () => {
-    const sandbox = createSandbox({ sandboxKind: "miosa" });
+    const sandbox = createSandbox();
     sandbox.commands.run.mockResolvedValueOnce({
       stdout: "",
       stderr: "private stderr",
@@ -153,7 +100,7 @@ describe("saveFullOutputToFile", () => {
         "terminal_output_persistence_failure",
         expect.objectContaining({
           failure_stage: "ensure_directory",
-          file_operation_exit_code: 1,
+          result: "failed",
         }),
       );
       expect(JSON.stringify(eventSpy.mock.calls)).not.toContain(
@@ -269,51 +216,6 @@ describe("saveFullOutputToFile", () => {
       "terminal_output_persistence_failure",
       expect.objectContaining({
         provider: "desktop",
-        attempt_count: 2,
-        result: "recovered",
-        failure_category: "transport",
-        retry_decision: "retried",
-      }),
-    );
-
-    infoSpy.mockRestore();
-    eventSpy.mockRestore();
-    jest.useRealTimers();
-  });
-
-  it("retries one transient Miosa file transport failure and records recovery", async () => {
-    jest.useFakeTimers().setSystemTime(new Date("2026-07-16T15:30:45.123Z"));
-    const sandbox = createSandbox({ sandboxKind: "miosa" });
-    sandbox.files.write
-      .mockRejectedValueOnce(
-        new Error("MiosaError: Sandbox file transport is unavailable"),
-      )
-      .mockResolvedValueOnce(undefined);
-    const infoSpy = jest.spyOn(console, "info").mockImplementation(() => {});
-    const eventSpy = jest.spyOn(phLogger, "event").mockImplementation(() => {});
-
-    const savePromise = saveFullOutputToFile(
-      sandbox as any,
-      "full output",
-      CHAT_ID,
-      {
-        service: "agent-long",
-        environment: "prod",
-        requestId: "run-1",
-        triggerRunId: "run-1",
-        chatId: CHAT_ID,
-      },
-    );
-    await jest.advanceTimersByTimeAsync(250);
-
-    await expect(savePromise).resolves.toContain(
-      `/home/user/terminal_full_output/chat-${CHAT_KEY}/`,
-    );
-    expect(sandbox.files.write).toHaveBeenCalledTimes(2);
-    expect(eventSpy).toHaveBeenCalledWith(
-      "terminal_output_persistence_failure",
-      expect.objectContaining({
-        provider: "miosa",
         attempt_count: 2,
         result: "recovered",
         failure_category: "transport",
@@ -541,6 +443,7 @@ describe("classifyTerminalOutputPersistenceFailure", () => {
       "relay_unavailable",
     ],
     ["Direct file mutation path is outside its allowed root", "permission"],
+    ["Path is outside the allowed project folder: /tmp/output", "permission"],
     ["ENOSPC: no space left on device", "filesystem"],
     ["opaque failure", "unknown"],
   ])("classifies %s as %s", (message, category) => {

@@ -998,9 +998,11 @@ describe("ChatInput - Integration Tests", () => {
       );
       expect(screen.getByTestId("chat-input-agent-context")).toHaveClass(
         "chat-input-glass-context",
-        "mx-6",
+        "mx-2",
+        "sm:mx-6",
         "-mt-2",
-        "h-10",
+        "min-h-10",
+        "flex-nowrap",
         "rounded-b-[18px]",
         "md:hidden",
       );
@@ -1010,7 +1012,7 @@ describe("ChatInput - Integration Tests", () => {
       );
       expect(screen.getByTestId("chat-input-mobile-permission")).toHaveClass(
         "ml-auto",
-        "max-w-[56%]",
+        "max-w-full",
         "shrink-0",
         "md:hidden",
       );

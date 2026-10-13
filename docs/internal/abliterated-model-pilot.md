@@ -6,25 +6,68 @@ The dashboard includes an assigned-model volume diagnostic
 ([insight gRZGMouh](https://us.posthog.com/project/144137/insights/gRZGMouh))
 so base and Large v2 traffic can be checked independently.
 
-## Free-user exclusion
+## Shipped three-step moderation policy
 
-Free-user Abliteration pilots are stopped. The shared assignment eligibility
-check excludes `subscription=free` in both Ask and Agent before any flag lookup,
-including requests with existing Abliteration chat history. Free users retain
-their normal baseline models even if a retired flag is re-enabled.
+[HAC-153](https://linear.app/hackerai/issue/HAC-153) owns the paid default.
+Paid Ask and Agent requests that meet the existing moderation decision
+use base `abliterated-model` for generation steps 1–3, then return to the exact
+saved baseline. Free users remain excluded and retain their existing Ask and Agent
+baselines. A response that finishes earlier does not force extra calls.
+Usage limits, allowance rescue, unsupported original attachments, missing provider
+configuration, cancellation and immediate provider recovery retain their existing
+checks and behavior. Step counts survive stream retries rather than restarting.
 
-In both Preview and Production, disable `abliterated_free_ask_moderated_v1`
-and remove the free-tier release condition from `abliterated_paid_moderated_v1`.
-Keep paid targeting and rollout intact. Flag rollback applies to new requests
-and runs; already-running work can retain its original assignment. Deploy the
-shared code guard to Vercel and Trigger independently for permanent enforcement.
+The application no longer evaluates `abliterated_paid_three_steps_v1`.
+New routing uses attribution key `abliterated_paid_moderated_three_steps_default_v1`,
+which is not a feature flag or randomized cohort. Historical one-step and
+three-step assignments remain readable for already-running requests and analytics.
+Do not pool new paid-default observations with the paid trial or treat the
+owner's adoption decision as proof of satisfaction or a statistically conclusive
+primary-metric result.
 
-Historical events and PostHog experiment records remain available for readouts.
-Analyze the original Ask and Agent cohorts separately, preserving assignment,
-exposure, prior-payer exclusions and equal follow-up windows. Stopping enrollment
-does not establish a statistical winner or remove historical data.
+Deploy and verify Vercel and Trigger separately in Preview and Production.
+Existing runs retain their worker and captured assignment. After both Production
+runtimes are verified, end the paid experiment and disable its separate Preview
+and Production flags. Keep the historical readout and response-quality view for
+review. Rollback requires a code revert and both runtime releases; the retired
+flag cannot restore one-step routing.
 
-## Routing contract
+## Retired paid first-step trial
+
+[HAC-142](https://linear.app/hackerai/issue/HAC-142) owns the historical
+`abliterated_paid_first_step_v2` trial. Its universal first-step route and
+pre-moderation enrollment have been removed. Every new request uses the existing
+moderation processing; a stale or re-enabled flag cannot skip that check or select
+Abliteration for an unmoderated request. Historical attribution keys remain for
+analytics, feedback and already-running requests. Do not reuse the retired key.
+
+Preview and Production flags are separate and must both remain disabled. Record
+flag disable, experiment end, Vercel and Trigger deployment boundaries in the
+owning issue. Flag changes affect new requests/runs after propagation; running
+requests retain their captured worker and routing context. Ending the experiment
+alone does not disable its flag.
+
+Retain the historical assignment, exposure and outcome data. Compare each
+allocation/continuation-policy phase separately, deduplicate requests, cluster by
+user and treat missing outcomes or reported cost as unknown. Subscriber follow-up
+after rollback is mixed exposure: use matched maturity and immutable pre-entry
+billing periods rather than calling it sustained exclusive treatment. Native
+stopped-experiment results end at the recorded cutoff; later cancellation/renewal
+follow-up needs a separately bounded readout. Keep decisions and readout dates in
+HAC-142 rather than treating the operational rollback as a proven churn result.
+
+## Retired paid default and Free-user pilots
+
+The earlier `abliterated_paid_moderated_default_v1` policy used only generation
+step 1 and excluded Free users. It is superseded by the paid three-step
+policy above. Its attribution key and the stopped Free-user pilot records remain
+historical; do not reuse them for new routing. Retired flags remain disabled and
+cannot change the current moderation-selected policy.
+
+## Historical pilot routing contract
+
+The contract below describes the retired pilots. The current policy is documented
+above; do not use these historical selector and step rules for new requests.
 
 Eligible paid requests in Ask and Agent may use an Abliteration model at
 `https://api.abliteration.ai/v1`. Auto/Standard routes use `abliterated-model`;
@@ -82,8 +125,10 @@ Feature-flag evaluation does not emit an exposure event.
 For the Abliteration treatment, provider-bound preparation does not append the
 trusted platform-authorization annotation. Forged authorization tags are still
 removed. Sandbox/resume reminders, saved notes, the normal system prompt, tools,
-and later agent-loop messages retain their existing behavior. Control and fallback
-providers retain their existing platform-authorization preparation.
+and the first Abliteration call retain their existing behavior. Later providers
+receive the latest-message annotation after a completed Abliteration step, or
+through the existing moderation decision. Recovery before any completed
+Abliteration step retains the existing moderation-based preparation.
 
 The provider uses the OpenAI-compatible AI SDK adapter, streaming usage, and native
 default reasoning. OpenRouter options, routing lists, user attribution, and PDF
@@ -338,36 +383,41 @@ Run the bounded live provider test from this checkout:
 
 ```sh
 corepack pnpm exec tsx scripts/test-abliteration.ts
-corepack pnpm exec tsx scripts/test-abliteration.ts --large-v2
+corepack pnpm exec tsx scripts/test-abliteration.ts --pro-baseline
 ```
 
 It loads only the provider credential, uses synthetic arithmetic and an in-memory
 tool, exercises the registered provider plus tool IDs and telemetry, caps output
-and duration, and does not ingest PostHog events. It is not full app verification.
+and duration, and does not ingest PostHog events. `--large-v2` remains a legacy
+alias for `--pro-baseline`; both select the base Abliteration provider. This is
+not full app verification.
 
-For release verification on the verified Preview custom URL:
+For release verification on the verified Preview URL and Production custom domain:
 
-1. Use a disposable paid-user Ask chat and an eligible synthetic authorized lab
-   request. Confirm moderation eligibility, streaming completion, model attribution,
-   one exposure, and reload persistence. Repeat in Agent with one bounded tool call.
-2. Confirm benign/unflagged requests, prohibited-category moderation results,
-   moderation failure, PDFs, other unsupported files, and free-allowance
-   rescue keep their baseline routes. Confirm image requests use the base Abliteration
-   model for Standard, Pro, and Max while text-only Pro/Max requests use Large v2.
-   Unit tests cover deterministic gates; use approved synthetic fixtures for
+1. Use a disposable paid Ask chat with a moderation-eligible synthetic authorized
+   lab request. Confirm streaming completion, the paid-default attribution key,
+   one actual-output exposure and reload persistence. Repeat in Agent with three
+   harmless, sequential tool calls. Confirm generation steps 1–3 use base
+   `abliterated-model`, then step 4 uses the exact saved baseline. A response that
+   finishes earlier must not force extra calls. Start a new response/run and
+   confirm its generation-step counter starts again at one.
+2. Confirm ordinary requests, prohibited-category moderation results, moderation
+   failure, unsupported original files and paid free-allowance rescue retain their
+   baseline routes. Paid Standard, Pro and Max selectors use base Abliteration
+   when eligible, including supported images; the new policy does not select
+   Large v2. Free requests remain excluded and retain their existing baselines.
+   Unit tests cover the deterministic gates; use approved synthetic fixtures for
    integration testing rather than customer content.
-   In Direct Ask and Agent, force one response/run through at least three sequential
-   model-generation steps. Confirm step 1 uses the assigned Abliteration route and
-   step 2 onward uses the exact OpenRouter baseline without flag re-evaluation. Start
-   a new response/run and confirm its generation-step counter starts again at one.
-3. Force the flag off/control and a provider outage. Verify fallback completes,
-   assignment stays unchanged in outcomes/costs, replacement messages can be rated,
-   and no duplicate tool action occurs.
-4. Stop, regenerate, rate, reload, and reconnect the disposable response. Confirm
-   message linkage, terminal outcomes, token/cost attribution, and no content in
-   analytics. Clean up the test chats. Repeat the bounded journey on the production
-   custom domain for the explicit test-user override and sampled treatment cohort
-   before any further rollout expansion.
+3. The retired experiment flag must not affect new assignments. Verify a provider
+   outage still recovers immediately to the existing baseline chain, records the
+   recovery separately from planned step-4 continuation, and does not duplicate a
+   tool action. Confirm historical outcomes remain separate from the paid default.
+4. Stop, regenerate, rate, reload and reconnect a disposable response. Confirm
+   message linkage, terminal outcomes and token/cost attribution contain no user
+   content. Check Vercel and the pinned Trigger worker independently in both
+   environments. After both Production runtimes are verified, end the paid trial
+   and disable its separate Preview and Production flags. Rollback requires a code
+   revert and both runtime releases.
 
 References: [provider models](https://docs.abliteration.ai/models),
 [provider pricing](https://docs.abliteration.ai/pricing),
@@ -375,7 +425,7 @@ References: [provider models](https://docs.abliteration.ai/models),
 [PostHog exposure semantics](https://posthog.com/docs/experiments/exposures),
 [PostHog retention](https://posthog.com/docs/product-analytics/retention).
 
-## Free-user rollback verification
+## Historical Free-user rollback verification
 
 Use a disposable free Ask chat and a free Agent chat with a connected local
 sandbox. Submit a bounded synthetic request that previously qualified for

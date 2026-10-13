@@ -1,6 +1,7 @@
 import PostHogClient from "@/app/posthog";
 import { emitPostHogLog, flushPostHogLogs } from "@/lib/posthog/logs";
 import { redactSensitiveErrorMessage } from "@/lib/utils/error-redaction";
+import { getPostHogFlagWithoutExposure } from "./flag-assignment";
 import type { PostHog } from "posthog-node";
 
 let cachedClient: PostHog | null | undefined;
@@ -24,6 +25,23 @@ export async function getPostHogFeatureFlagForUser(
       personProperties,
     )) === true
   );
+}
+
+/** Evaluate all survey targeting flags on the server, including PostHog's
+ * generated response/dismissal suppression flag. No client flag polling needed.
+ */
+export async function arePostHogSurveyFlagsEnabled(
+  flagKeys: string[],
+  userId: string,
+): Promise<boolean> {
+  const client = getClient();
+  if (!client || flagKeys.length === 0) return false;
+  try {
+    const flags = await client.evaluateFlags(userId, { flagKeys });
+    return flagKeys.every((key) => flags.getFlag(key) === true);
+  } catch {
+    return false;
+  }
 }
 
 /** Preserve an unavailable evaluation instead of mislabelling it as control. */
@@ -53,7 +71,8 @@ export async function getPostHogFeatureFlagValueForUser(
   const client = getClient();
   if (!client) return null;
   try {
-    const value = await client.getFeatureFlag(flagKey, userId);
+    const flags = await client.evaluateFlags(userId, { flagKeys: [flagKey] });
+    const value = flags.getFlag(flagKey);
     return typeof value === "boolean" ? value : null;
   } catch {
     return null;
@@ -71,7 +90,8 @@ export async function getPostHogFeatureFlagRawValueForUser(
   const client = getClient();
   if (!client) return null;
   try {
-    const value = await client.getFeatureFlag(flagKey, userId);
+    const flags = await client.evaluateFlags(userId, { flagKeys: [flagKey] });
+    const value = flags.getFlag(flagKey);
     return typeof value === "boolean" || typeof value === "string"
       ? value
       : null;
@@ -83,14 +103,30 @@ export async function getPostHogFeatureFlagRawValueForUser(
 export async function getPostHogFeatureFlagVariantForUser(
   flagKey: string,
   userId: string,
-  options?: { sendFeatureFlagEvents?: boolean },
+  options?: {
+    sendFeatureFlagEvents?: boolean;
+    personProperties?: Record<string, string>;
+  },
 ): Promise<string | undefined> {
   const client = getClient();
   if (!client) return undefined;
   try {
-    const value = options
-      ? await client.getFeatureFlag(flagKey, userId, options)
-      : await client.getFeatureFlag(flagKey, userId);
+    const value =
+      options?.sendFeatureFlagEvents === false
+        ? await getPostHogFlagWithoutExposure(
+            client,
+            flagKey,
+            userId,
+            options.personProperties,
+          )
+        : (
+            await client.evaluateFlags(userId, {
+              flagKeys: [flagKey],
+              ...(options?.personProperties && {
+                personProperties: options.personProperties,
+              }),
+            })
+          ).getFlag(flagKey);
     return typeof value === "string" ? value : undefined;
   } catch {
     return undefined;

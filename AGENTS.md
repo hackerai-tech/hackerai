@@ -44,6 +44,11 @@ sources under `third_party/` are a separate application dependency.
 
 ## Focused Validation
 
+When writing, reviewing, or removing HackerAI tests, follow the
+[test-quality skill](.agents/skills/hackerai-test-quality/SKILL.md). Require a
+concrete failure each test would catch; preserve unique regression coverage
+when simplifying the suite. Test count and coverage percentage are not goals.
+
 Use the smallest check that proves the changed behavior: targeted tests, lint,
 and type checking for the affected scope. Test outcomes and meaningful logic,
 not assertions that repeat the implementation. Preserve required commit hooks
@@ -54,6 +59,33 @@ For cross-cutting changes, identify the affected paths: Ask and Agent, web and
 desktop, cloud and local sandboxes, and relevant model providers. Check recovery
 as well as the happy path, including cancellation, retry, and reconnect when
 applicable. Apply the visual and manual verification rules below.
+
+## Preview-First Validation and Shared Host Resources
+
+For browser and web UI acceptance, prefer the task's Vercel Preview deployment
+instead of starting another local Next.js server or production build. Push a
+reviewable branch, wait for its Preview deployment, verify the deployed commit
+and the designated Preview backend/worker, and test through Computer Use. Keep
+Preview and Production environment boundaries; do not use Production as a test
+fallback. Preview UI success does not replace required tests or CI.
+
+Run focused local tests first, with one worker for small suites. The repository
+limits Jest to two workers by default so concurrent worktrees do not each consume
+half the host's CPU cores. Do not increase concurrency on a shared host without
+checking capacity. Avoid overlapping a full suite, typecheck, and frontend/native
+build in the same task. Let required hooks and CI complete; do not run duplicate
+full suites when an unchanged result already provides the needed evidence.
+
+For Desktop changes, still build and operate the actual local native app through
+Computer Use. Prefer a prebuilt local frontend for acceptance when practical;
+finish the build before starting the test so on-demand compilation cannot consume
+request deadlines. Retain local backend/worker/relay and transport verification.
+Use local web development when debugging requires it or Preview cannot exercise
+the affected behavior, and state that reason in the verification record.
+
+Track task-owned process IDs and ports. Stop unused servers, watchers, and test
+runners when finished; never stop another task's processes to reclaim capacity.
+Report any services intentionally left running for continued testing.
 
 ## Worktree Dependencies
 
@@ -218,6 +250,29 @@ is a plausible user-facing UI impact.
 Create a separate visual QA thread only for broad or high-risk UI changes where
 independent review is worth the handoff cost, such as multi-page flows, many
 responsive states, login/session setup, or visual polish passes.
+
+## Local Desktop Acceptance
+
+For changes affecting Desktop behavior, native commands, or the Desktop sandbox
+transport, follow [Local Desktop acceptance](docs/desktop-local-acceptance.md).
+Build and launch the actual native app from the task's source and exercise the
+affected journey through Computer Use before claiming Desktop verification.
+PR creation, CI, unit tests, and website testing alone do not establish native
+acceptance. Rebuild and retest after native-code changes.
+
+Use an isolated checkout with its own dependencies, environment files, local
+Convex state, and services. Verify the frontend, backend, worker, relay, account
+environment, and actual command transport independently. Prefer local services;
+verify designated Development/Preview targets before using external services.
+Never use Production as a local-test fallback or copy credentials/state between
+checkouts. Preserve the installed app and unrelated services.
+
+Test completion and relevant failure/recovery paths, including reload/reconnect,
+normal/narrow windows, and native file dialogs when affected. Report PASS, FAIL,
+or BLOCKED with screenshots and recorded commit/build/runtime identities. If
+login or graphical access needs human action, explain the exact blocker and
+preserve partial evidence. Keep researcher-feedback and human release gates;
+testing does not authorize merging or releasing.
 
 ## Manual Verification Notes
 

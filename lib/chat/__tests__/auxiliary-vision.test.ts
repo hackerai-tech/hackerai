@@ -36,6 +36,41 @@ describe("auxiliary vision", () => {
     });
     expect(AUXILIARY_VISION_SLUG).toBe("minimax/minimax-m3");
   });
+  it.each(["timeout", "caller_aborted"] as const)(
+    "attributes %s without logging image content",
+    async (reason) => {
+      jest.useFakeTimers();
+      const controller = new AbortController();
+      const pending = describeImageWithAuxiliaryVision({
+        image: "private-image-content",
+        mediaType: "image/png",
+        source: "attachment",
+        requestId: "request-1",
+        triggerRunId: "run-1",
+        abortSignal: controller.signal,
+        modelRunner: ({ abortSignal }) =>
+          new Promise((_, reject) => {
+            abortSignal.addEventListener(
+              "abort",
+              () => reject(abortSignal.reason),
+              { once: true },
+            );
+          }),
+      });
+      const assertion = expect(pending).rejects.toBeDefined();
+      if (reason === "caller_aborted") controller.abort();
+      else await jest.advanceTimersByTimeAsync(55_000);
+      await assertion;
+      const serialized = (console.warn as jest.Mock).mock.calls.at(-1)[0];
+      expect(JSON.parse(serialized)).toMatchObject({
+        failure_reason: reason,
+        request_id: "request-1",
+        trigger_run_id: "run-1",
+        service: "agent-long",
+      });
+      expect(serialized).not.toContain("private-image-content");
+    },
+  );
 
   it("prefixes sandbox base64, records cost, and returns text", async () => {
     const modelRunner = jest.fn(async () => ({

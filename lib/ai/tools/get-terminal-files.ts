@@ -1,5 +1,5 @@
 import { tool } from "ai";
-import type { ToolContext } from "@/types";
+import type { SandboxType, ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
@@ -83,6 +83,15 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         };
 
         const providedFiles: Array<{ path: string }> = [];
+        const deliveryReceipts: Array<{
+          fileId: string;
+          sourcePath: string;
+          name: string;
+          sizeBytes: number;
+          sourceEnvironment: SandboxType | "unknown";
+          storageStatus: "stored";
+          validation: "not_performed_by_delivery_tool";
+        }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (let i = 0; i < files.length; i++) {
@@ -98,8 +107,11 @@ export const createGetTerminalFiles = (context: ToolContext) => {
             // Already absolute, try as-is
             pathsToTry.push(originalPath);
           } else {
-            // Relative path: try both /home/user/ and as-is
-            pathsToTry.push(`/home/user/${originalPath}`);
+            // Only Cloud has the conventional /home/user fallback. A connected
+            // computer resolves relative paths using its own execution context.
+            if (sandboxManager.getSandboxInfo()?.type === "cloud") {
+              pathsToTry.push(`/home/user/${originalPath}`);
+            }
             pathsToTry.push(originalPath);
           }
 
@@ -163,6 +175,16 @@ export const createGetTerminalFiles = (context: ToolContext) => {
               }
 
               providedFiles.push({ path: originalPath });
+              deliveryReceipts.push({
+                fileId: saved.fileId,
+                sourcePath: filePath,
+                name: saved.name,
+                sizeBytes: saved.sizeBytes,
+                sourceEnvironment:
+                  sandboxManager.getSandboxInfo()?.type ?? "unknown",
+                storageStatus: "stored",
+                validation: "not_performed_by_delivery_tool",
+              });
               fileProcessed = true;
               break; // Success! No need to try other paths
             } catch (e) {
@@ -198,6 +220,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         return {
           result: result || "No files were retrieved",
           files: providedFiles,
+          deliveryReceipts,
           failedFiles: blockedFiles,
         };
       } catch (error) {
@@ -206,6 +229,7 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         return {
           result: `Failed to provide files to the user: ${errorMsg}. Do not tell the user these files were sent; explain the upload problem before retrying.`,
           files: [],
+          deliveryReceipts: [],
           failedFiles: files.map((path) => ({
             path,
             reason: errorMsg,

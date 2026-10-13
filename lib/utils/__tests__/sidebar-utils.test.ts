@@ -228,6 +228,117 @@ describe("terminal sidebar output", () => {
         "Interactive terminal sessions are unavailable on this local connection.",
     });
   });
+
+  it.each([
+    "tool-shell",
+    "tool-http_request",
+    "tool-file",
+    "tool-send_request",
+    "tool-create_vulnerability_report",
+    "tool-list_reports",
+    "tool-get_report",
+    "tool-update_vulnerability_report",
+  ])(
+    "replaces raw %s parameter validation errors with safe details",
+    (type) => {
+      const [error] = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type,
+            toolCallId: `call-${type}`,
+            state: "output-error",
+            input: { secret: "private payload" },
+            errorText:
+              'Invalid input for tool example: Type validation failed: Value: {"secret":"private payload"}',
+          },
+        ],
+      });
+
+      expect(error).toMatchObject({
+        kind: "tool-error",
+        errorKind: "validation",
+        toolCallId: `call-${type}`,
+        isExecuting: false,
+      });
+      expect(JSON.stringify(error)).not.toMatch(/private payload|Value:/);
+    },
+  );
+
+  it.each([
+    { state: "output-error", errorText: "private transport failure" },
+    {
+      state: "output-available",
+      output: { success: false, error: "general", message: "private failure" },
+    },
+    {
+      state: "output-available",
+      output: { result: { success: false, error: "chat_not_found" } },
+    },
+    {
+      state: "output-available",
+      output: { success: true, finding_id: "incomplete" },
+    },
+  ])(
+    "retains synthesized finding errors for sidebar navigation: %j",
+    (part) => {
+      const contents = extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-create_vulnerability_report",
+            toolCallId: "finding-failure",
+            ...part,
+          },
+        ],
+      });
+      expect(contents).toHaveLength(1);
+      expect(contents[0]).toMatchObject({
+        kind: "tool-error",
+        toolCallId: "finding-failure",
+        isExecuting: false,
+      });
+      expect(JSON.stringify(contents)).not.toContain("private");
+    },
+  );
+
+  it("does not offer sidebar details for duplicate finding rejections", () => {
+    expect(
+      extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-create_vulnerability_report",
+            toolCallId: "duplicate",
+            state: "output-available",
+            output: { success: false, error: "duplicate" },
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it("keeps dynamic tool parameter failures visible without copying payloads", () => {
+    const [error] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type: "dynamic-tool",
+          toolName: "custom_scanner",
+          toolCallId: "dynamic-call",
+          state: "output-error",
+          errorText: 'Invalid tool arguments: Value: {"token":"private"}',
+        },
+      ],
+    });
+
+    expect(error).toMatchObject({
+      kind: "tool-error",
+      toolName: "Custom scanner",
+      toolCallId: "dynamic-call",
+    });
+    expect(JSON.stringify(error)).not.toContain("private");
+  });
 });
 
 describe("web search sidebar output", () => {
@@ -251,6 +362,117 @@ describe("web search sidebar output", () => {
       query: "fallback sidebar query",
       isSearching: true,
       toolCallId: "call-search",
+    });
+  });
+});
+
+describe("report tool sidebar history", () => {
+  const report = {
+    finding_id: "finding-1",
+    title: "Saved finding",
+    target: "authorized lab",
+    severity: "medium",
+    cvss_score: 5.3,
+    updated_at: 123,
+  };
+  it.each(["tool-get_report", "tool-update_vulnerability_report"])(
+    "retains %s receipts without copying private proof",
+    (type) => {
+      const output =
+        type === "tool-get_report"
+          ? { success: true, report: { ...report, evidence: "private proof" } }
+          : { success: true, ...report };
+      const message = {
+        role: "assistant",
+        parts: [
+          {
+            type,
+            toolCallId: "report-call",
+            state: "output-available",
+            output,
+          },
+        ],
+      };
+      const contents = extractSidebarContentFromMessage(message);
+      expect(contents).toEqual([
+        {
+          findingId: "finding-1",
+          title: "Saved finding",
+          target: "authorized lab",
+          severity: "medium",
+          cvssScore: 5.3,
+          isExecuting: false,
+          toolCallId: "report-call",
+        },
+      ]);
+      expect(JSON.stringify(contents)).not.toContain("private proof");
+      expect(
+        extractSidebarContentFromMessage(JSON.parse(JSON.stringify(message))),
+      ).toEqual(contents);
+    },
+  );
+  it.each([
+    "tool-list_reports",
+    "tool-get_report",
+    "tool-update_vulnerability_report",
+  ])("retains safe %s failures for sidebar navigation", (type) => {
+    const contents = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type,
+          toolCallId: "report-failure",
+          state: "output-available",
+          output: {
+            success: false,
+            error: "conflict",
+            message: "private proof",
+          },
+        },
+      ],
+    });
+    expect(contents).toHaveLength(1);
+    expect(contents[0]).toMatchObject({
+      kind: "tool-error",
+      toolCallId: "report-failure",
+      isExecuting: false,
+    });
+    expect(JSON.stringify(contents)).not.toContain("private proof");
+  });
+  it("does not add successful metadata lists or pending calls to sidebar navigation", () => {
+    expect(
+      extractSidebarContentFromMessage({
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-list_reports",
+            state: "output-available",
+            output: { success: true, reports: [report] },
+          },
+          {
+            type: "tool-get_report",
+            state: "input-available",
+            input: { finding_id: "finding-1" },
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+  it("does not claim a malformed success is a saved report", () => {
+    const [content] = extractSidebarContentFromMessage({
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-get_report",
+          toolCallId: "malformed",
+          state: "output-available",
+          output: { success: true },
+        },
+      ],
+    });
+    expect(content).toMatchObject({
+      kind: "tool-error",
+      toolCallId: "malformed",
     });
   });
 });
