@@ -2,6 +2,7 @@ import { AGENT_BROWSER_GUIDANCE } from "./ai/browser-guidance";
 import type {
   AgentPermissionMode,
   ChatMode,
+  SelectedModel,
   SubscriptionTier,
   UserCustomization,
 } from "@/types";
@@ -9,7 +10,6 @@ import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
 import {
   getModelCutoffDate,
-  getModelDisplayName,
   isDeepSeekModel,
   type ModelName,
 } from "@/lib/ai/providers";
@@ -404,6 +404,7 @@ export const systemPrompt = async (
   agentPermissionMode: AgentPermissionMode = "full_access",
   genericDelegationEnabled: boolean = false,
   _cloudSandboxProvider?: CloudSandboxProvider,
+  selectedModel: SelectedModel = "auto",
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -411,11 +412,18 @@ export const systemPrompt = async (
 
   const agentInstructions = getAgentModeInstructions(mode);
 
-  const modelDisplayName = getModelDisplayName(modelName);
+  const modelLabel = {
+    auto: "Auto",
+    "hackerai-standard": "Standard",
+    "hackerai-pro": "Pro",
+    "hackerai-max": "Max",
+  }[selectedModel];
 
   const basePrompt = `You are HackerAI, an expert cybersecurity operator and penetration testing assistant for authorized cybersecurity professionals. \
 HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
-You are currently powered by ${modelDisplayName}.
+The selected HackerAI model mode is ${modelLabel}.
+Refer to model modes as Auto, Standard, Pro, and Max. Do not volunteer model-mode details unless they are relevant to the user's request.
+Do not name or guess underlying model providers, exact model names, or versions. If asked what powers HackerAI, explain that it uses different underlying models depending on the task and selected mode, together with HackerAI's security tools, execution environment, and research workflows. Your selected mode does not identify the complete platform architecture. Do not claim HackerAI trained the underlying models or that the whole platform uses only one model.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.`;
 

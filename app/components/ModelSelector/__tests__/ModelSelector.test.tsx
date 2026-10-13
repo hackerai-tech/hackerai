@@ -95,27 +95,37 @@ describe("ModelSelector", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("discloses the Agent Standard and Pro providers", async () => {
-    const user = userEvent.setup();
-    render(<ModelSelector value="auto" onChange={jest.fn()} mode="agent" />);
+  it.each(["ask", "agent"] as const)(
+    "shows capability descriptions without provider names in %s mode",
+    async (mode) => {
+      mockMaxEntitlement = {
+        extraUsageAvailable: false,
+        reason: "disabled",
+        hasBalance: false,
+        autoReloadEnabled: false,
+      };
+      const user = userEvent.setup();
+      render(<ModelSelector value="auto" onChange={jest.fn()} mode={mode} />);
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
 
-    fireEvent.click(screen.getByRole("button", { name: /^Auto$/i }));
+      await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
+      expect(
+        await screen.findAllByText("Superior performance for most assignments"),
+      ).not.toHaveLength(0);
+      expect(
+        screen.queryByText(/Powered by|DeepSeek|GLM|Z\.ai/i),
+      ).not.toBeInTheDocument();
 
-    await user.hover(
-      screen.getByRole("button", { name: /HackerAI Standard/i }),
-    );
-    expect(
-      await screen.findAllByText("Powered by Z.ai GLM 5.3 Flash"),
-    ).not.toHaveLength(0);
-
-    await user.unhover(
-      screen.getByRole("button", { name: /HackerAI Standard/i }),
-    );
-    await user.hover(screen.getByRole("button", { name: /HackerAI Pro/i }));
-    expect(
-      await screen.findAllByText("Powered by DeepSeek V4.1 Flash"),
-    ).not.toHaveLength(0);
-  });
+      await user.unhover(screen.getByRole("button", { name: /HackerAI Pro/i }));
+      await user.hover(screen.getByRole("button", { name: /HackerAI Max/i }));
+      expect(
+        await screen.findAllByText("Maximum intelligence for complex work"),
+      ).not.toHaveLength(0);
+      expect(
+        screen.queryByText(/Powered by|DeepSeek|GLM|Z\.ai/i),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("selects Auto as a first-class option", () => {
     const onChange = jest.fn();

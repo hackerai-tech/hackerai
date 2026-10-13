@@ -656,6 +656,7 @@ export const createChatHandler = () => {
         subscription,
         userId,
         selectedModel,
+        selectedModelOverride,
         userCustomization,
         truncatedMessages,
       });
@@ -1115,6 +1116,7 @@ export const createChatHandler = () => {
               "full_access",
               false,
               cloudSandboxSelection.provider,
+              selectedModelOverride,
             );
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);

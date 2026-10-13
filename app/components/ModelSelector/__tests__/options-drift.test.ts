@@ -68,36 +68,6 @@ describe("ModelSelector tier ↔ provider drift", () => {
     expect(tiered.length).toBeGreaterThan(0);
     for (const option of tiered) {
       expect(option.description).toBeTruthy();
-      expect(option.poweredBy).toBeTruthy();
     }
-  });
-
-  it("discloses GLM 5.3 Flash for Agent Standard", () => {
-    expect(
-      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-standard")
-        ?.poweredBy,
-    ).toBe("Z.ai GLM 5.3 Flash");
-  });
-
-  it("discloses each mode's provider for HackerAI Pro", () => {
-    expect(
-      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
-        ?.poweredBy,
-    ).toBe("DeepSeek V4 Pro 0813");
-    expect(
-      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-pro")
-        ?.poweredBy,
-    ).toBe("DeepSeek V4.1 Flash");
-  });
-
-  it("discloses GLM 5.3 for HackerAI Max", () => {
-    expect(
-      ASK_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
-        ?.poweredBy,
-    ).toBe("Z.ai GLM 5.3");
-    expect(
-      AGENT_MODEL_OPTIONS.find((option) => option.id === "hackerai-max")
-        ?.poweredBy,
-    ).toBe("Z.ai GLM 5.3");
   });
 });

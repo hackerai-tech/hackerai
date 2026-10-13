@@ -2086,6 +2086,7 @@ export const agentLongTask = task({
         subscription,
         userId,
         selectedModel,
+        selectedModelOverride,
         userCustomization,
         truncatedMessages: messagesForAccounting,
       });
@@ -2994,6 +2995,7 @@ export const agentLongTask = task({
                 agentPermissionMode,
                 genericDelegationEnabled,
                 cloudSandboxProvider,
+                selectedModelOverride,
               ),
               injectNotesIntoMessages(finalMessages, noteInjectionOpts),
             ]);

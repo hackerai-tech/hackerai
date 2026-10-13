@@ -6,8 +6,6 @@ export interface ModelOption {
   label: string;
   /** Short tagline shown in the hover popup (e.g. "Maximum intelligence for complex work") */
   description?: string;
-  /** "Powered by …" line shown beneath the description in the hover popup */
-  poweredBy?: string;
   thinking?: boolean;
 }
 
@@ -16,19 +14,16 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable performance for everyday tasks",
-    poweredBy: "Z.ai GLM 5.3 Flash",
   },
   {
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
-    poweredBy: "DeepSeek V4 Pro 0813",
   },
   {
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "Z.ai GLM 5.3",
   },
 ];
 
@@ -37,21 +32,18 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
     id: "hackerai-standard",
     label: "HackerAI Standard",
     description: "Reliable agent for everyday automation",
-    poweredBy: "Z.ai GLM 5.3 Flash",
     thinking: true,
   },
   {
     id: "hackerai-pro",
     label: "HackerAI Pro",
     description: "Superior performance for most assignments",
-    poweredBy: "DeepSeek V4.1 Flash",
     thinking: true,
   },
   {
     id: "hackerai-max",
     label: "HackerAI Max",
     description: "Maximum intelligence for complex work",
-    poweredBy: "Z.ai GLM 5.3",
     thinking: true,
   },
 ];
