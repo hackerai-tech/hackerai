@@ -22,6 +22,16 @@ describe("subagent profiles", () => {
     },
   );
   it("gives every profile the same built-in subagent tools", () => {
+    for (const name of ["general", "security_task", "security_validation"]) {
+      const instructions = getSubagentProfileDefinition(name).buildSystemPrompt(
+        { objective: "Test a browser flow" },
+      );
+      expect(instructions).toContain("<agent_browser>");
+      expect(instructions).toContain("Tabs within one session share cookies");
+      expect(instructions).toContain(
+        "Only when HACKERAI_BROWSER_STATE_DIR is set",
+      );
+    }
     const profile = getSubagentProfileDefinition("general");
     expect(profile.finalResultTool.name).toBe("submit_task_result");
     expect(profile.systemPrompt).toContain("durable work ledger");

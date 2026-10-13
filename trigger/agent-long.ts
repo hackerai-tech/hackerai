@@ -1381,6 +1381,7 @@ type RunCleanupState = {
   userId: string;
   subagentsEnabled: boolean;
   finishCloudSandboxLifecycle: () => Promise<void>;
+  cleanupBrowserSessions: () => Promise<void>;
 };
 const runCleanupMap = new Map<string, RunCleanupState>();
 
@@ -1569,6 +1570,7 @@ export const agentLongTask = task({
       ).catch(() => undefined);
     }
     await ptySessionManager.closeAll(cleanup.chatId).catch(() => {});
+    await cleanup.cleanupBrowserSessions();
     await cleanup.finishCloudSandboxLifecycle();
     await phLogger.flush().catch(() => {});
     runCleanupMap.delete(ctx.run.id);
@@ -1814,6 +1816,7 @@ export const agentLongTask = task({
         });
       }
     };
+    let cleanupBrowserSessions = async () => {};
     let cloudSandboxLifecyclePromise: Promise<void> | undefined;
     let finishE2BIdleLeaseRelease: (() => Promise<void>) | undefined;
     const finishCloudSandboxLifecycle = () => {
@@ -1834,6 +1837,7 @@ export const agentLongTask = task({
       userId,
       subagentsEnabled,
       finishCloudSandboxLifecycle,
+      cleanupBrowserSessions: () => cleanupBrowserSessions(),
     });
 
     // Available before the first database read, including failed setup.
@@ -2719,6 +2723,7 @@ export const agentLongTask = task({
               getSandboxSessionUsage,
               releaseE2BSandboxIdleLease,
               stopE2BSandboxRunLeaseHeartbeat,
+              cleanupBrowserSessions: cleanupToolBrowsers,
               setCurrentModelName,
               getToolsForModel,
             } = createTools(
@@ -2813,6 +2818,7 @@ export const agentLongTask = task({
                 profile: "general",
               });
             }
+            cleanupBrowserSessions = cleanupToolBrowsers;
             approvalSandboxManager = sandboxManager;
 
             const sendFileMetadataToStream = (
@@ -5539,6 +5545,7 @@ export const agentLongTask = task({
           );
         }
       }
+      await cleanupBrowserSessions();
       await finishE2BIdleLeaseRelease?.().catch((error) => {
         triggerLogger.warn("[agent-long] E2B idle lease release failed", {
           event: "agent_e2b_idle_lease_release_failed",

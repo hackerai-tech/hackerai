@@ -196,6 +196,7 @@ type CancellationCleanup = {
   parentTriggerRunId: string;
   profile: "general" | "security_task" | "security_validation";
   flushProviderHistory: () => void;
+  cleanupBrowserSessions: () => Promise<void>;
 };
 
 const cancellationCleanup = new Map<string, CancellationCleanup>();
@@ -399,6 +400,7 @@ export const subagentTask = task({
       cancelReason: "parent_or_user_canceled",
     }).catch(() => null);
     await ptySessionManager.closeAll(cleanup.subagentId).catch(() => undefined);
+    await cleanup.cleanupBrowserSessions();
     if (finishOutcome === "updated") {
       captureSubagentTerminalOutcome({
         userId: cleanup.userId,
@@ -461,11 +463,13 @@ export const subagentTask = task({
       (event) => triggerLogger.info("[subagent] provider call history", event),
     );
 
+    let cleanupBrowserSessions = async () => {};
     cancellationCleanup.set(ctx.run.id, {
       subagentId: row.subagent_id,
       userId: row.user_id,
       parentTriggerRunId: row.parent_trigger_run_id,
       profile: row.profile,
+      cleanupBrowserSessions: () => cleanupBrowserSessions(),
       flushProviderHistory: () =>
         providerHistory.flush(true, "cancellation_hook"),
     });
@@ -1051,6 +1055,7 @@ export const subagentTask = task({
               );
             const {
               tools: unguardedTools,
+              cleanupBrowserSessions: cleanupToolBrowsers,
               ensureSandbox,
               setCurrentModelName,
             } = createTools(
@@ -1099,6 +1104,7 @@ export const subagentTask = task({
                 environment: ctx.environment.type,
               },
             );
+            cleanupBrowserSessions = cleanupToolBrowsers;
             approvalEnsureSandbox = ensureSandbox;
             const authorizedTools = guardSubagentToolExecutions(
               unguardedTools,
@@ -2166,6 +2172,7 @@ export const subagentTask = task({
       triggerSignal.removeEventListener("abort", abortFromParent);
       cancellationCleanup.delete(ctx.run.id);
       await ptySessionManager.closeAll(row.subagent_id).catch(() => undefined);
+      await cleanupBrowserSessions();
       await phLogger.flush().catch(() => undefined);
     }
   },

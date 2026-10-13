@@ -667,7 +667,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("Chromium and agent-browser");
     expect(prompt).toContain("agent-browser snapshot -i");
     expect(prompt).toContain("agent-browser set viewport 1920 1080");
-    expect(prompt).toContain("/home/user/agent-browser-screenshots");
+    expect(prompt).toContain("view action on the returned path");
     expect(prompt).toContain("file tool's view action");
     expect(prompt).toContain("Inline image attachments are already visible");
     expect(prompt).toContain("do not call the file view action");
@@ -732,12 +732,18 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
       "authenticate again through the user-approved flow",
     );
     expect(cloudPrompt).toContain(
-      "Do not save cookies, local storage, or other authentication state to sandbox files",
+      "Only when HACKERAI_BROWSER_STATE_DIR is set",
     );
-    expect(cloudPrompt).not.toContain("agent-browser state save");
-    expect(cloudPrompt).not.toContain("agent-browser --state");
+    expect(cloudPrompt).toContain("runtime encrypts it");
+    expect(cloudPrompt).toContain("Do not promise recovery across Agent runs");
+    expect(localPrompt).toContain(
+      "use agent-browser only if already installed",
+    );
+    expect(localPrompt).toContain(
+      "On local/Desktop hosts, choose a unique session name",
+    );
 
-    for (const prompt of [localPrompt, askPrompt]) {
+    for (const prompt of [askPrompt]) {
       expect(prompt).not.toContain("<agent_browser>");
       expect(prompt).not.toContain("agent-browser doctor --fix");
       expect(prompt).not.toContain("authentication state to sandbox files");

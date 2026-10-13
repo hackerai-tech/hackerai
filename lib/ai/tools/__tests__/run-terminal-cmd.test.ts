@@ -1018,6 +1018,13 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       },
     };
     const { context } = makeContext({ sandbox: e2b });
+    const prepareBrowser = jest.fn(async () => ({
+      AGENT_BROWSER_SOCKET_DIR: "/dev/shm/test-browser/sockets",
+      HACKERAI_BROWSER_STATE_DIR: "/dev/shm/test-browser/state",
+    }));
+    context.browserSessions = {
+      prepare: prepareBrowser,
+    } as unknown as NonNullable<ToolContext["browserSessions"]>;
     const tool = createRunTerminalCmd(context);
 
     await runTool(tool, {
@@ -1049,15 +1056,23 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       "networkEvidenceLimitation",
     );
 
-    const browserCall = e2b.commands.run.mock.calls.find(
-      ([command]) => command === "agent-browser open https://example.com",
+    const browserCall = e2b.commands.run.mock.calls.find(([command]) =>
+      command.includes("agent-browser open https://example.com"),
     );
     const unrelatedCall = e2b.commands.run.mock.calls.find(
       ([command]) => command === "echo ok",
     );
+    expect(prepareBrowser).toHaveBeenCalledTimes(1);
+    expect(browserCall?.[0]).toContain(
+      "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;",
+    );
 
     expect(browserCall?.[1]).toMatchObject({
-      envs: { AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000" },
+      envs: {
+        AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
+        AGENT_BROWSER_SOCKET_DIR: "/dev/shm/test-browser/sockets",
+        HACKERAI_BROWSER_STATE_DIR: "/dev/shm/test-browser/state",
+      },
     });
     expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
   });

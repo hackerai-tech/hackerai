@@ -1,3 +1,4 @@
+import { AGENT_BROWSER_GUIDANCE } from "./ai/browser-guidance";
 import type {
   AgentPermissionMode,
   ChatMode,
@@ -94,35 +95,6 @@ Use established tools before writing custom scripts when they fit the task. Pick
 - Browser screenshot flow: use agent-browser for visual, authenticated, JavaScript-heavy, or evidence-driven workflows. Open the page, take an interactive snapshot, perform the action, capture a screenshot, then view the screenshot file for visual confirmation.
 </sandbox_tool_recipes>`;
 
-const AGENT_BROWSER_SECTION = `<agent_browser>
-agent-browser is installed in the cloud sandbox for headless Chromium automation through terminal commands.
-
-Preferred workflow:
-- Open a page: \`agent-browser open <url>\`
-- Inspect interactable elements: \`agent-browser snapshot -i\`
-- Interact with refs from the latest snapshot: \`agent-browser click @e3\`, \`agent-browser fill @e4 "value"\`, \`agent-browser press Enter\`
-- After any page change, wait for the expected URL/text/element and run \`agent-browser snapshot -i\` again because refs become stale.
-
-Useful reading commands:
-- \`agent-browser snapshot -i -u\` to include link URLs.
-- \`agent-browser get text @e1\`, \`agent-browser get attr @e1 href\`, \`agent-browser get url\`, and \`agent-browser get title\` for targeted extraction.
-- Use semantic locators such as \`agent-browser find role button click --name "Submit"\` when a snapshot ref is unavailable.
-
-Session lifetime:
-- The cloud browser shuts down after 15 minutes without an agent-browser command. The next command starts a new browser, so assume open tabs, in-memory browser state, and element refs are lost; reopen the URL and take a fresh snapshot instead of reusing old tabs or refs.
-- If login state is lost after relaunch, authenticate again through the user-approved flow. Do not save cookies, local storage, or other authentication state to sandbox files for idle recovery because a user's cloud sandbox can be reused across Agent runs.
-
-Recovery:
-- For daemon, socket, connection, or browser-not-running failures, run \`agent-browser doctor\`; use \`agent-browser doctor --fix\` only when the diagnosis identifies a repairable problem, then reopen the page and retry.
-- For malformed command syntax, correct the command. For stale or invalid element refs, run a fresh \`agent-browser snapshot -i\`; do not blindly retry the same failing action.
-- Invoke \`agent-browser\` directly through the terminal command tool; use a shell wrapper only when the command requires shell composition.
-
-Screenshots:
-- \`agent-browser screenshot\` writes an image under /home/user/agent-browser-screenshots by default and prints the path.
-- Use the file tool's view action on the printed screenshot path when visual inspection is needed.
-- For pages with responsive layouts, run \`agent-browser set viewport 1920 1080\` once before navigating.
-</agent_browser>`;
-
 const AGENT_DELIVERABLE_SECTION = `<agent_deliverables>
 - For a build or repair request, use the accessible project files to produce the requested result. Reproduce a reported failure, make a focused repair, and exercise the affected behavior. A new package or generic setup advice is not a substitute for the requested repair.
 - Before sharing a runnable archive, extract that exact archive into a new task-owned temporary directory and verify installation and the promised entry route or command there. Use its included dependency manifest and lockfile. Keep secrets, credentials, and installed dependency directories out of the archive. Report blockers and missing prerequisites directly; never invent live API results.
@@ -203,10 +175,9 @@ const getDefaultSandboxEnvironmentSection = (): string => {
 - Compute: 4 vCPU, 4 GiB RAM. Avoid running multiple CPU-intensive cracking, fuzzing, or scanning jobs concurrently.
 - User: \`root\` (with sudo privileges)`;
   const installedTools = `${PREINSTALLED_PENTESTING_TOOLS}
+agent-browser is installed in the cloud sandbox for headless Chromium automation through terminal commands.
 
-${SANDBOX_TOOL_RECIPES_SECTION}
-
-${AGENT_BROWSER_SECTION}`;
+${SANDBOX_TOOL_RECIPES_SECTION}`;
   const developmentEnvironment = `Development Environment:
 - Python 3.12.11 (commands: python3, pip3)
 - Node.js 20.19.4 (commands: node, npm)
@@ -468,6 +439,7 @@ Your main goal is to follow the USER's instructions at each message.`;
     sections.push(
       getAgentModeSection(subscription, sandboxContext, agentPermissionMode),
     );
+    sections.push(AGENT_BROWSER_GUIDANCE);
     sections.push(AGENT_DELIVERABLE_SECTION);
     if (genericDelegationEnabled) {
       sections.push(getGenericDelegationSection(agentPermissionMode));
