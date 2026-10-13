@@ -73,6 +73,17 @@ and the designated Preview backend/worker, and test through Computer Use. Keep
 Preview and Production environment boundaries; do not use Production as a test
 fallback. Preview UI success does not replace required tests or CI.
 
+Run `pnpm test:changed` for local iteration: it runs Jest tests related to
+uncommitted changes with one worker, plus the Node tooling suites outside Jest.
+The commit hook retains staged lint/format checks and type checking, then uses
+this focused command. It includes staged, unstaged and untracked files.
+Documentation-only changes may select no Jest tests. Configuration changes,
+dynamic imports, and missing dependency links can escape automatic selection, so
+this is a feedback shortcut, not full acceptance: required CI still runs the
+entire suite with coverage. Run an explicit affected suite when the dependency
+graph cannot represent the change. Do not rerun the full suite locally for every
+review correction; use `pnpm test` when a local full run is needed.
+
 Run focused local tests first, with one worker for small suites. The repository
 limits Jest to two workers by default so concurrent worktrees do not each consume
 half the host's CPU cores. Do not increase concurrency on a shared host without

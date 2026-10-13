@@ -26,6 +26,7 @@
     "format:check": "prettier --check .",
     "setup": "pnpm install && npx tsx scripts/setup.ts",
     "test": "jest",
+    "test:changed": "jest --onlyChanged --runInBand --passWithNoTests && pnpm test:user-research-runner && pnpm test:desktop-qa",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:user-research-runner && pnpm test:desktop-qa",

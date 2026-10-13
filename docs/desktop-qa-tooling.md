@@ -138,12 +138,19 @@ values or credentials are copied between worktrees or environments.
 
 ## Validation
 
-On a busy shared host, opt in to `HACKERAI_QA_SLOW_HOST=1` for local Jest runs
-or the normal `git commit` command. This uses one worker and a 30-second per-test
-timeout instead of two workers and five seconds. It keeps all assertions, hooks
-and suites enabled; default and CI behavior stay unchanged. Use it after checking
-host contention, not to hide a reproducible failure. Start with focused tests and
-avoid overlapping a full suite with builds.
+Use `pnpm test:changed` for local iteration and commit checks. Jest runs only
+tests related to uncommitted changes, in one process; the small Node tooling
+suites run separately because Jest does not discover them. Staged, unstaged and
+untracked files are included. This avoids repeating the full application suite
+for a tooling or documentation correction. The hook still runs staged
+lint/format checks and type checking. CI continues to run every test with
+coverage and normal timeouts.
+
+Changed-test selection cannot prove configuration changes or dynamic import
+relationships. Run an explicit affected suite when needed and wait for full CI
+before considering the PR ready. `pnpm test` remains available for an intentional
+local full run. Avoid overlapping tests with builds, and investigate contention
+instead of increasing test timeouts or retrying the full suite repeatedly.
 
 Run `corepack pnpm test:desktop-qa` for containment/hash checks, environment and
 credential rejection, bounded health probes, output privacy, process ownership

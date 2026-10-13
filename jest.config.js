@@ -5,16 +5,12 @@ const createJestConfig = nextJest({
   dir: "./",
 });
 
-// Opt in on a busy shared QA host; CI and normal runs keep their defaults.
-const slowQaHost = process.env.HACKERAI_QA_SLOW_HOST === "1";
-
 // Add any custom config to be passed to Jest
 const customJestConfig = {
   setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],
   // Keep concurrent worktrees and pre-commit hooks from each consuming half
   // the shared host. CI also uses two workers; focused runs can use --runInBand.
-  maxWorkers: slowQaHost ? 1 : 2,
-  testTimeout: slowQaHost ? 30000 : 5000,
+  maxWorkers: 2,
   workerIdleMemoryLimit: "1GB",
   testEnvironment: "jest-environment-jsdom",
   moduleNameMapper: {
