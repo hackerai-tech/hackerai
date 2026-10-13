@@ -1,5 +1,10 @@
 import "@testing-library/jest-dom";
-import { render, waitFor } from "@testing-library/react";
+import { render, waitFor, act, screen } from "@testing-library/react";
+import { useLayoutEffect, type ReactNode } from "react";
+import {
+  setMockConvexAuth,
+  resetMockConvexAuth,
+} from "@/__mocks__/convex-react";
 import { useAction } from "convex/react";
 import { FileUrlCacheProvider } from "@/app/contexts/FileUrlCacheContext";
 import { AllFilesDialog } from "../AllFilesDialog";
@@ -24,20 +29,34 @@ jest.mock("@/app/hooks/useTauri", () => ({
   openDownloadsFolder: jest.fn(),
 }));
 
+function CommitProbe({
+  children,
+  onCommit,
+}: {
+  children: ReactNode;
+  onCommit: () => void;
+}) {
+  useLayoutEffect(onCommit);
+  return children;
+}
+
 describe("AllFilesDialog", () => {
   let mockGetFileUrlsBatchAction: jest.Mock;
   let cache: Map<string, string>;
 
   beforeEach(() => {
+    resetMockConvexAuth();
     mockGetFileUrlsBatchAction = useAction({} as any) as unknown as jest.Mock;
     mockGetFileUrlsBatchAction.mockReset();
     cache = new Map();
   });
 
-  function renderWithCache(
+  afterEach(() => resetMockConvexAuth());
+
+  function cachedDialog(
     files: React.ComponentProps<typeof AllFilesDialog>["files"],
   ) {
-    return render(
+    return (
       <FileUrlCacheProvider
         getCachedUrl={(fileId) => cache.get(fileId) ?? null}
         setCachedUrl={(fileId, url) => cache.set(fileId, url)}
@@ -48,9 +67,13 @@ describe("AllFilesDialog", () => {
           files={files}
           chatTitle="Files"
         />
-      </FileUrlCacheProvider>,
+      </FileUrlCacheProvider>
     );
   }
+
+  const renderWithCache = (
+    files: React.ComponentProps<typeof AllFilesDialog>["files"],
+  ) => render(cachedDialog(files));
 
   it("fetches dialog file URLs in 50-file batches instead of per-file actions", async () => {
     mockGetFileUrlsBatchAction.mockImplementation(
@@ -88,5 +111,113 @@ describe("AllFilesDialog", () => {
     expect(mockGetFileUrlsBatchAction.mock.calls[1][0].fileIds).toEqual([
       "file-50",
     ]);
+  });
+
+  it("does not request URLs before authentication and resumes when ready", async () => {
+    setMockConvexAuth({ isAuthenticated: false, isLoading: true });
+    mockGetFileUrlsBatchAction.mockResolvedValue({
+      "file-0": "https://files.example/0",
+    });
+    const files = [
+      {
+        part: {
+          fileId: "file-0" as any,
+          name: "image.png",
+          mediaType: "image/png",
+          s3Key: "uploads/image",
+        },
+        partIndex: 0,
+        messageId: "message",
+      },
+    ];
+    const view = renderWithCache(files);
+    expect(mockGetFileUrlsBatchAction).not.toHaveBeenCalled();
+    setMockConvexAuth({ isAuthenticated: true, isLoading: false });
+    view.rerender(cachedDialog(files));
+    await waitFor(() =>
+      expect(cache.get("file-0")).toBe("https://files.example/0"),
+    );
+  });
+
+  it("stops remaining dialog batches and discards their late URLs after auth loss", async () => {
+    let finish!: (urls: Record<string, string>) => void;
+    mockGetFileUrlsBatchAction.mockReturnValue(
+      new Promise((r) => {
+        finish = r;
+      }),
+    );
+    const files = Array.from({ length: 51 }, (_, i) => ({
+      part: {
+        fileId: `file-${i}` as any,
+        name: `file-${i}.txt`,
+        mediaType: "text/plain",
+        s3Key: `uploads/${i}`,
+      },
+      partIndex: i,
+      messageId: "message",
+    }));
+    const view = renderWithCache(files);
+    expect(mockGetFileUrlsBatchAction).toHaveBeenCalledTimes(1);
+    setMockConvexAuth({ isAuthenticated: false });
+    view.rerender(cachedDialog(files));
+    await act(async () => finish({ "file-0": "https://files.example/late" }));
+    expect(mockGetFileUrlsBatchAction).toHaveBeenCalledTimes(1);
+    expect(cache.size).toBe(0);
+  });
+
+  it("does not expose old download URLs in the reauthenticated commit before effects run", async () => {
+    let finishNew!: (urls: Record<string, string>) => void;
+    mockGetFileUrlsBatchAction
+      .mockResolvedValueOnce({ "file-0": "https://files.example/old" })
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          finishNew = r;
+        }),
+      );
+    const files = [
+      {
+        part: {
+          fileId: "file-0" as any,
+          name: "file.txt",
+          mediaType: "text/plain",
+          s3Key: "uploads/file",
+        },
+        partIndex: 0,
+        messageId: "message",
+      },
+    ];
+    const commits: boolean[] = [];
+    const element = () => (
+      <CommitProbe
+        onCommit={() => {
+          commits.push(
+            Boolean(screen.queryByRole("button", { name: "Download file" })),
+          );
+        }}
+      >
+        {cachedDialog(files)}
+      </CommitProbe>
+    );
+    const view = render(element());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Download file" }),
+      ).toBeInTheDocument(),
+    );
+    setMockConvexAuth({ isAuthenticated: false });
+    view.rerender(element());
+    // The real message cache clears on auth loss; isolate the dialog's own URL state.
+    cache.clear();
+    commits.length = 0;
+    setMockConvexAuth({ isAuthenticated: true });
+    view.rerender(element());
+    expect(commits.length).toBeGreaterThan(0);
+    expect(commits).not.toContain(true);
+    await act(async () =>
+      finishNew({ "file-0": "https://files.example/current" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
+    ).toBeInTheDocument();
   });
 });

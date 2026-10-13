@@ -3,7 +3,15 @@ import type { ChatMessage } from "@/types";
 import { useFileUrlCache } from "../useFileUrlCache";
 
 const mockFetch = jest.fn();
-jest.mock("convex/react", () => ({ useAction: () => mockFetch }));
+let mockAuth: {
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  isRefreshing?: boolean;
+} = { isAuthenticated: true, isLoading: false };
+jest.mock("convex/react", () => ({
+  useAction: () => mockFetch,
+  useConvexAuth: () => mockAuth,
+}));
 jest.mock("@/convex/_generated/api", () => ({
   api: { s3Actions: { getFileUrlsBatchAction: "get-urls" } },
 }));
@@ -27,7 +35,113 @@ function images(count: number): ChatMessage[] {
 }
 
 describe("image URL prefetching", () => {
-  beforeEach(() => mockFetch.mockReset());
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockAuth = { isAuthenticated: true, isLoading: false };
+  });
+
+  it.each([false, true])(
+    "waits for authentication across streaming renders (loading: %s)",
+    async (isLoading) => {
+      mockAuth = { isAuthenticated: false, isLoading };
+      mockFetch.mockResolvedValue({ "file-0": "https://example.com/image" });
+      const { result, rerender } = renderHook(
+        ({ messages }) => useFileUrlCache(messages),
+        {
+          initialProps: { messages: images(1) },
+        },
+      );
+      for (let i = 0; i < 20; i++) rerender({ messages: images(1) });
+      expect(mockFetch).not.toHaveBeenCalled();
+      mockAuth = { isAuthenticated: true, isLoading: false };
+      rerender({ messages: images(1) });
+      await waitFor(() =>
+        expect(result.current.getCachedUrl("file-0")).toBe(
+          "https://example.com/image",
+        ),
+      );
+    },
+  );
+
+  it("pauses reads while an authenticated session refreshes its rejected token", () => {
+    mockAuth = { isAuthenticated: true, isLoading: false, isRefreshing: true };
+    const { rerender } = renderHook(
+      ({ messages }) => useFileUrlCache(messages),
+      { initialProps: { messages: images(1) } },
+    );
+    rerender({ messages: images(2) });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("releases abandoned pending IDs during StrictMode effect replay", async () => {
+    let finishOld!: (urls: Record<string, string>) => void;
+    mockFetch
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          finishOld = r;
+        }),
+      )
+      .mockResolvedValue({ "file-0": "https://example.com/current" });
+    const { result } = renderHook(() => useFileUrlCache(images(1)), {
+      reactStrictMode: true,
+    });
+    await waitFor(() =>
+      expect(result.current.getCachedUrl("file-0")).toBe(
+        "https://example.com/current",
+      ),
+    );
+    await act(async () =>
+      finishOld({ "file-0": "https://example.com/abandoned" }),
+    );
+    expect(result.current.getCachedUrl("file-0")).toBe(
+      "https://example.com/current",
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards an old auth scope without releasing the new scope's pending IDs", async () => {
+    let finishOld!: (urls: Record<string, string>) => void;
+    let finishNew!: (urls: Record<string, string>) => void;
+    mockFetch
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          finishOld = r;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          finishNew = r;
+        }),
+      )
+      .mockImplementation(async ({ fileIds }: { fileIds: string[] }) =>
+        Object.fromEntries(
+          fileIds.map((id) => [id, `https://example.com/new/${id}`]),
+        ),
+      );
+    const { result, rerender } = renderHook(
+      ({ messages }) => useFileUrlCache(messages),
+      { initialProps: { messages: images(101) } },
+    );
+    mockAuth = { isAuthenticated: false, isLoading: false };
+    rerender({ messages: images(101) });
+    mockAuth = { isAuthenticated: true, isLoading: false };
+    rerender({ messages: images(101) });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    await act(async () => finishOld({ "file-0": "https://example.com/old" }));
+    expect(result.current.getCachedUrl("file-0")).toBeNull();
+    rerender({ messages: images(101) });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    await act(async () => finishNew({ "file-0": "https://example.com/new" }));
+    await waitFor(() =>
+      expect(result.current.getCachedUrl("file-100")).toBe(
+        "https://example.com/new/file-100",
+      ),
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    expect(result.current.getCachedUrl("file-0")).toBe(
+      "https://example.com/new",
+    );
+  });
 
   it.each([false, true])(
     "queues newly arriving IDs behind a pending request (first fails: %s)",

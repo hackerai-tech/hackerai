@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from "react";
 import { X, Download, Circle, CircleCheck, File } from "lucide-react";
 import {
   Dialog,
@@ -9,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { useAction } from "convex/react";
+import { useAction, useConvexAuth } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import { useFileUrlCacheContext } from "@/app/contexts/FileUrlCacheContext";
@@ -149,6 +155,14 @@ const AllFilesDialog = ({
   files,
   chatTitle,
 }: AllFilesDialogProps) => {
+  const { isAuthenticated, isLoading, isRefreshing } = useConvexAuth();
+  const authReady = isAuthenticated && !isLoading && !isRefreshing;
+  const authScopeRef = useRef(new AbortController());
+  useLayoutEffect(() => {
+    const scope = new AbortController();
+    authScopeRef.current = scope;
+    return () => scope.abort();
+  }, [authReady]);
   const getFileUrlsBatchAction = useAction(
     api.s3Actions.getFileUrlsBatchAction,
   );
@@ -157,6 +171,13 @@ const AllFilesDialog = ({
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [fileUrls, setFileUrls] = useState<Map<number, string>>(new Map());
   const [isLoadingUrls, setIsLoadingUrls] = useState(false);
+  const [previousAuthReady, setPreviousAuthReady] = useState(authReady);
+  // Reset before committing children so a restored session cannot briefly
+  // display URLs retained from an earlier authentication scope.
+  if (previousAuthReady !== authReady) {
+    setPreviousAuthReady(authReady);
+    setFileUrls(new Map());
+  }
 
   const resolveFileUrls = useCallback(
     async (
@@ -166,6 +187,8 @@ const AllFilesDialog = ({
       }>,
     ): Promise<Map<number, string>> => {
       const urlMap = new Map<number, string>();
+      if (!authReady) return urlMap;
+      const scope = authScopeRef.current;
       const pendingByFileId = new Map<
         string,
         { fileId: Id<"files">; indexes: number[] }
@@ -204,12 +227,14 @@ const AllFilesDialog = ({
         start < pendingFiles.length;
         start += FILE_URL_BATCH_SIZE
       ) {
+        if (scope.signal.aborted) return new Map();
         const chunk = pendingFiles.slice(start, start + FILE_URL_BATCH_SIZE);
 
         try {
           const batchUrls = await getFileUrlsBatchAction({
             fileIds: chunk.map(({ fileId }) => fileId),
           });
+          if (scope.signal.aborted) return new Map();
 
           for (const { fileId, indexes } of chunk) {
             const url = batchUrls[fileId];
@@ -223,13 +248,14 @@ const AllFilesDialog = ({
             fileUrlCache?.setCachedUrl(fileId, url);
           }
         } catch (error) {
-          console.error("Failed to fetch file URL batch:", error);
+          if (!scope.signal.aborted)
+            console.error("Failed to fetch file URL batch:", error);
         }
       }
 
       return urlMap;
     },
-    [fileUrlCache, getFileUrlsBatchAction],
+    [fileUrlCache, getFileUrlsBatchAction, authReady],
   );
 
   const handleOpenChange = (newOpen: boolean) => {
@@ -244,6 +270,7 @@ const AllFilesDialog = ({
 
   // Batch fetch all URLs when dialog opens
   useEffect(() => {
+    if (!authReady) return;
     if (!open) {
       return;
     }
@@ -268,7 +295,7 @@ const AllFilesDialog = ({
     return () => {
       cancelled = true;
     };
-  }, [open, files, resolveFileUrls]);
+  }, [open, files, resolveFileUrls, authReady]);
 
   const handleEnterSelectionMode = () => {
     setSelectionMode(true);
@@ -302,6 +329,7 @@ const AllFilesDialog = ({
   };
 
   const handleBatchDownload = async () => {
+    if (!authReady) return;
     const filesToDownload = files
       .map((file, index) => ({ file, index }))
       .filter(({ index }) => selectedFiles.has(index.toString()));
@@ -473,7 +501,7 @@ const AllFilesDialog = ({
               <div className="text-center text-muted-foreground py-8">
                 No files
               </div>
-            ) : isLoadingUrls ? (
+            ) : authReady && isLoadingUrls ? (
               <div className="text-center text-muted-foreground py-8">
                 Loading files...
               </div>
@@ -481,7 +509,9 @@ const AllFilesDialog = ({
               files.map((file, index) => {
                 const fileId = index.toString();
                 const isSelected = selectedFiles.has(fileId);
-                const fileUrl = fileUrls.get(index) || file.part.url || null;
+                const fileUrl = authReady
+                  ? fileUrls.get(index) || file.part.url || null
+                  : null;
 
                 return (
                   <FileItem
