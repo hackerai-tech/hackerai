@@ -279,49 +279,76 @@ test(
   },
 );
 
-test(
-  "terminal hangup shuts down the owned child and records completion",
-  { timeout: 15000 },
-  async (t) => {
-    const dir = await temp(t);
-    const runnerFile = join(dir, "supervisor.mjs");
-    await writeFile(
-      runnerFile,
-      `import {supervise} from ${JSON.stringify(new URL("./qa.mjs", import.meta.url).href)};
+for (const duringSpawn of [false, true])
+  test(
+    `terminal hangup ${duringSpawn ? "during startup" : "while running"} shuts down the owned child`,
+    { timeout: 15000 },
+    async (t) => {
+      const dir = await temp(t);
+      const runnerFile = join(dir, "supervisor.mjs");
+      await writeFile(
+        runnerFile,
+        `import cp from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {writeFileSync} from 'node:fs';
+if (${duringSpawn}) {
+  const originalSpawn = cp.spawn;
+  cp.spawn = (...args) => {
+    const child = originalSpawn(...args);
+    writeFileSync('spawned.json', JSON.stringify({pid:child.pid}));
+    process.kill(process.pid, 'SIGHUP');
+    return child;
+  };
+  syncBuiltinESMExports();
+}
+const {supervise} = await import(${JSON.stringify(new URL("./qa.mjs", import.meta.url).href)});
 await supervise({command:process.execPath,args:['-e','setInterval(() => {}, 1000)'],cwd:process.cwd(),dir:process.cwd()});`,
-    );
-    const supervisor = spawn(process.execPath, [runnerFile], {
-      cwd: dir,
-      stdio: "ignore",
-    });
-    const exited = new Promise((resolve, reject) => {
-      supervisor.once("exit", (code, signal) => resolve({ code, signal }));
-      supervisor.once("error", reject);
-    });
-    let childPid;
-    t.after(() => {
-      supervisor.kill("SIGTERM");
-      if (childPid) {
-        try {
-          process.kill(childPid, "SIGTERM");
-        } catch (error) {
-          if (error.code !== "ESRCH") throw error;
+      );
+      const supervisor = spawn(process.execPath, [runnerFile], {
+        cwd: dir,
+        stdio: "ignore",
+      });
+      const exited = new Promise((resolve, reject) => {
+        supervisor.once("exit", (code, signal) => resolve({ code, signal }));
+        supervisor.once("error", reject);
+      });
+      let childPid;
+      t.after(() => {
+        supervisor.kill("SIGTERM");
+        if (childPid) {
+          try {
+            process.kill(childPid, "SIGTERM");
+          } catch (error) {
+            if (error.code !== "ESRCH") throw error;
+          }
         }
-      }
-    });
-    const status = await waitFor(
-      join(dir, "status.json"),
-      (value) => value.state === "running",
-    );
-    childPid = status.pid;
-    supervisor.kill("SIGHUP");
-    const outcome = await exited;
-    assert.deepEqual(outcome, { code: 0, signal: null });
-    assert.equal(
-      JSON.parse(await readFile(join(dir, "status.json"), "utf8")).state,
-      "stopped",
-    );
-    assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
-    childPid = undefined;
-  },
-);
+      });
+      const status = await waitFor(
+        join(dir, duringSpawn ? "spawned.json" : "status.json"),
+        (value) => duringSpawn || value.state === "running",
+      );
+      childPid = status.pid;
+      if (!duringSpawn) supervisor.kill("SIGHUP");
+      const outcome = await exited;
+      assert.deepEqual(outcome, { code: 0, signal: null });
+      assert.equal(
+        JSON.parse(await readFile(join(dir, "status.json"), "utf8")).state,
+        "stopped",
+      );
+      assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
+      childPid = undefined;
+    },
+  );
+
+test("a synchronous spawn failure restores the callers signal listeners", async (t) => {
+  const dir = await temp(t);
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const before = signals.map((name) => process.listenerCount(name));
+  await assert.rejects(supervise({ command: null, cwd: dir, dir }), {
+    code: "ERR_INVALID_ARG_TYPE",
+  });
+  assert.deepEqual(
+    signals.map((name) => process.listenerCount(name)),
+    before,
+  );
+});

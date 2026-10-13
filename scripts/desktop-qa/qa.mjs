@@ -250,12 +250,24 @@ export async function supervise({
     state: "starting",
     heartbeat: new Date().toISOString(),
   });
-  const child = spawn(command, args, {
-    cwd,
-    env,
-    detached: true,
-    stdio: "ignore",
-  });
+  let stopping = false;
+  const signal = () => {
+    stopping = true;
+  };
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const removeSignalHandlers = () => {
+    for (const name of signals) process.removeListener(name, signal);
+  };
+  // Install before spawn: an unhandled OS signal can terminate Node even
+  // between synchronous JavaScript statements, leaving a detached child.
+  for (const name of signals) process.on(name, signal);
+  let child;
+  try {
+    child = spawn(command, args, { cwd, env, detached: true, stdio: "ignore" });
+  } catch (error) {
+    removeSignalHandlers();
+    throw error;
+  }
   let ended = false;
   let failed = false;
   const completion = new Promise((done) => {
@@ -277,13 +289,6 @@ export async function supervise({
       if (error.code !== "ESRCH") throw error;
     }
   };
-  let stopping = false;
-  const signal = () => {
-    stopping = true;
-  };
-  process.on("SIGINT", signal);
-  process.on("SIGTERM", signal);
-  process.on("SIGHUP", signal);
   try {
     await emit("process-start", { pid: child.pid ?? null });
     while (!ended && !stopping) {
@@ -320,16 +325,18 @@ export async function supervise({
     });
     return state;
   } finally {
-    process.removeListener("SIGINT", signal);
-    process.removeListener("SIGTERM", signal);
-    process.removeListener("SIGHUP", signal);
-    if (!ended) {
-      signalChild("SIGTERM");
-      await Promise.race([completion, delay(3000)]);
+    try {
       if (!ended) {
-        signalChild("SIGKILL");
-        await completion;
+        signalChild("SIGTERM");
+        await Promise.race([completion, delay(3000)]);
+        if (!ended) {
+          signalChild("SIGKILL");
+          await completion;
+        }
       }
+    } finally {
+      // Keep handlers installed through cleanup, including forced shutdown.
+      removeSignalHandlers();
     }
   }
 }
