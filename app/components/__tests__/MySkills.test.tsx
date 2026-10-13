@@ -5,6 +5,8 @@ let mockUserId = "";
 let mockAuthenticated = true;
 let mockSelection: unknown[] = [];
 const mockSave = jest.fn();
+const mockGet = jest.fn();
+const mockDownload = jest.fn();
 const mockSelect = jest.fn();
 const mockCapture = jest.fn();
 const mockLibrary = [
@@ -20,7 +22,7 @@ jest.mock("@workos-inc/authkit-nextjs/components", () => ({
 }));
 jest.mock("convex/react", () => ({
   useConvexAuth: () => ({ isAuthenticated: mockAuthenticated }),
-  useConvex: () => ({ query: jest.fn() }),
+  useConvex: () => ({ query: mockGet }),
   useQuery: (name: string) => (name === "list" ? mockLibrary : mockSelection),
   useMutation: (name: string) =>
     name === "save" ? mockSave : name === "select" ? mockSelect : jest.fn(),
@@ -37,6 +39,10 @@ jest.mock("@/convex/_generated/api", () => ({
 }));
 jest.mock("@/lib/analytics/client", () => ({
   captureQueuedAuthenticatedEvent: (...args: unknown[]) => mockCapture(...args),
+}));
+
+jest.mock("@/lib/utils/file-download", () => ({
+  downloadFile: (...args: unknown[]) => mockDownload(...args),
 }));
 
 beforeEach(() => {
@@ -142,4 +148,24 @@ it("imports Markdown into the same review flow without saving automatically", as
     "Compare authorized accounts.",
   );
   expect(mockSave).not.toHaveBeenCalled();
+});
+
+it("exports through the shared native/browser save flow and handles cancellation", async () => {
+  mockGet.mockResolvedValue({
+    name: "API review",
+    description: "For APIs",
+    content: "Compare accounts.",
+  });
+  mockDownload.mockResolvedValue({ outcome: "canceled" });
+  render(<MySkills chatId="chat-1" />);
+  fireEvent.click(await screen.findByRole("button", { name: "My Skills" }));
+  fireEvent.click(screen.getByRole("button", { name: "Export API review" }));
+  await waitFor(() =>
+    expect(mockDownload).toHaveBeenCalledWith({
+      filename: "SKILL.md",
+      content: expect.stringContaining("Compare accounts."),
+      mimeType: "text/markdown;charset=utf-8",
+    }),
+  );
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });

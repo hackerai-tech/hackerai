@@ -5,6 +5,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useConvex, useConvexAuth, useMutation, useQuery } from "convex/react";
 import { BookOpen, Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
 import { api } from "@/convex/_generated/api";
+import { downloadFile } from "@/lib/utils/file-download";
 import type { Id } from "@/convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -414,19 +415,15 @@ function SkillsControl({
                                   api.userSkills.get,
                                   { id: skill.id },
                                 );
-                                const url = URL.createObjectURL(
-                                  new Blob([exportSkill(draft)], {
-                                    type: "text/markdown;charset=utf-8",
-                                  }),
-                                );
-                                const a = document.createElement("a");
-                                a.href = url;
-                                a.download = "SKILL.md";
-                                a.click();
-                                setTimeout(
-                                  () => URL.revokeObjectURL(url),
-                                  1000,
-                                );
+                                const result = await downloadFile({
+                                  filename: "SKILL.md",
+                                  content: exportSkill(draft),
+                                  mimeType: "text/markdown;charset=utf-8",
+                                });
+                                if (result.outcome === "failed")
+                                  throw new Error(
+                                    "Unable to export skill. Please retry.",
+                                  );
                               })
                             }
                           >
