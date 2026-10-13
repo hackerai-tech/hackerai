@@ -658,22 +658,7 @@ describe("ChatInput - Integration Tests", () => {
       expect(mockHandleRemoveFile).toHaveBeenCalledWith(0);
     });
 
-    it("should show only stop button when streaming in ask mode", () => {
-      render(
-        <TestWrapper>
-          <ChatInput
-            onSubmit={mockOnSubmit}
-            onStop={mockOnStop}
-            status="streaming"
-          />
-        </TestWrapper>,
-      );
-
-      expect(screen.getByLabelText("Stop generation")).toBeInTheDocument();
-      expect(screen.queryByLabelText("Queue message")).not.toBeInTheDocument();
-    });
-
-    it("should call onStop when stop button clicked", () => {
+    it("shows only the stop action while Ask is streaming and calls onStop when clicked", () => {
       render(
         <TestWrapper>
           <ChatInput
@@ -685,6 +670,8 @@ describe("ChatInput - Integration Tests", () => {
       );
 
       const stopButton = screen.getByLabelText("Stop generation");
+      expect(stopButton).toBeInTheDocument();
+      expect(screen.queryByLabelText("Queue message")).not.toBeInTheDocument();
       fireEvent.click(stopButton);
 
       expect(mockOnStop).toHaveBeenCalledTimes(1);
@@ -2263,30 +2250,6 @@ describe("ChatInput - Integration Tests", () => {
       mockSandboxState = { todos: [], sidebarOpen: false };
       rerender(content());
       expect(screen.getByTestId("rate-limit-warning")).not.toHaveClass("mx-4");
-    });
-
-    it("should accept rate limit warning props", () => {
-      // Note: Specific text matching removed due to component complexity
-      // The important test is that the component renders without errors when warning is provided
-      expect(() =>
-        render(
-          <TestWrapper>
-            <ChatInput
-              onSubmit={mockOnSubmit}
-              onStop={mockOnStop}
-              status="ready"
-              rateLimitWarning={{
-                warningType: "sliding-window",
-                remaining: 5,
-                resetTime: new Date(Date.now() + 3600000),
-                mode: "ask",
-                subscription: "free",
-              }}
-              onDismissRateLimitWarning={jest.fn()}
-            />
-          </TestWrapper>,
-        ),
-      ).not.toThrow();
     });
   });
 

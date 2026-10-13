@@ -179,6 +179,37 @@ describe("getTriggerRegionForVercelRequest", () => {
     ).not.toThrow();
   });
 
+  test.each(["us-east-1", "us-west-2", "eu-central-1"] as const)(
+    "accepts a qualified worker queue in the requested %s region",
+    (requestedRegion) => {
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion,
+          actualRegion: `${requestedRegion}:v2:ondemand:fresh:container:stable`,
+          environmentType: "PRODUCTION",
+        }),
+      ).not.toThrow();
+    },
+  );
+
+  test.each([
+    "us-east-1:v2:ondemand:fresh:container:stable",
+    "eu-central-1:v2:ondemand:fresh:container:stable",
+    "us-west-20:v2:ondemand:fresh:container:stable",
+    ":v2:ondemand:fresh:container:stable",
+  ])(
+    "rejects a qualified worker queue outside the requested region: %s",
+    (actualRegion) => {
+      expect(() =>
+        assertTriggerRunRegion({
+          requestedRegion: "us-west-2",
+          actualRegion,
+          environmentType: "PRODUCTION",
+        }),
+      ).toThrow(expect.objectContaining({ code: "TRIGGER_REGION_MISMATCH" }));
+    },
+  );
+
   test("fails a deployed European run when Trigger reports another region", () => {
     expect(() =>
       assertTriggerRunRegion({
@@ -243,26 +274,4 @@ describe("getTriggerRegionForVercelRequest", () => {
       }),
     ).not.toThrow();
   });
-
-  test.each(["us-east-1", "us-west-2", "eu-central-1"] as const)(
-    "accepts a qualified queue identifier for the requested %s region only",
-    (requestedRegion) => {
-      expect(() =>
-        assertTriggerRunRegion({
-          requestedRegion,
-          actualRegion: `${requestedRegion}:v2:ondemand:fresh:container:stable`,
-          environmentType: "PREVIEW",
-        }),
-      ).not.toThrow();
-      const otherRegion =
-        requestedRegion === "eu-central-1" ? "us-east-1" : "eu-central-1";
-      expect(() =>
-        assertTriggerRunRegion({
-          requestedRegion,
-          actualRegion: `${otherRegion}:v2:ondemand:fresh:container:stable`,
-          environmentType: "PRODUCTION",
-        }),
-      ).toThrow(expect.objectContaining({ code: "TRIGGER_REGION_MISMATCH" }));
-    },
-  );
 });

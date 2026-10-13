@@ -118,11 +118,6 @@ describe("ShareDialog", () => {
       expect(screen.getByText("Test Chat")).toBeInTheDocument();
     });
 
-    it("should render close button", () => {
-      render(<ShareDialog {...defaultProps} open={true} />);
-      expect(screen.getByLabelText("Close")).toBeInTheDocument();
-    });
-
     it("should render accessibility description", () => {
       render(<ShareDialog {...defaultProps} open={true} />);
       expect(

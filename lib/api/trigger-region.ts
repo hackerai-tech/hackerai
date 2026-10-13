@@ -293,9 +293,8 @@ export function assertTriggerRunRegion(options: {
     return;
   }
 
-  // Deployed workers can report a region-prefixed queue identifier, e.g.
-  // us-east-1:v2:ondemand:fresh:container:stable. Compare its region segment;
-  // missing or different placement evidence must still fail closed.
+  // Trigger may report a qualified worker queue, such as
+  // us-east-1:v2:ondemand:fresh:container:stable. Its region is before the colon.
   const actualRegion = options.actualRegion?.split(":", 1)[0];
   if (actualRegion !== options.requestedRegion) {
     throw new TriggerRegionMismatchError(
