@@ -179,7 +179,7 @@ const QueuedMessageRow = ({
         ) : (
           <>
             {canHover && message.text ? (
-              <Tooltip delayDuration={1500}>
+              <Tooltip delayDuration={500}>
                 <TooltipTrigger asChild>
                   <div
                     tabIndex={0}
