@@ -44,6 +44,11 @@ sources under `third_party/` are a separate application dependency.
 
 ## Focused Validation
 
+When writing, reviewing, or removing HackerAI tests, follow the
+[test-quality skill](.agents/skills/hackerai-test-quality/SKILL.md). Require a
+concrete failure each test would catch; preserve unique regression coverage
+when simplifying the suite. Test count and coverage percentage are not goals.
+
 Use the smallest check that proves the changed behavior: targeted tests, lint,
 and type checking for the affected scope. Test outcomes and meaningful logic,
 not assertions that repeat the implementation. Preserve required commit hooks
