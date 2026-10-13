@@ -49,6 +49,16 @@ export async function ensureCloudSandboxConnection(options: {
   const acquisitionId = randomUUID();
   let bootInfo: SandboxBootInfo | undefined;
   let selectionReason = options.context?.selectionReason ?? "e2b_only";
+  let workspaceGuardDiagnostics:
+    | {
+        workspace_guard_reason:
+          | "workspace_phase_unavailable"
+          | "trigger_region_missing"
+          | "workspace_region_mismatch";
+        workspace_phase: "e2b" | "cleanup" | "deleted";
+        workspace_region?: TriggerRunRegion;
+      }
+    | undefined;
   const recordOutcome = (outcome: "success" | "error") => {
     const fields = {
       chat_id: options.context?.chatId,
@@ -68,6 +78,7 @@ export async function ensureCloudSandboxConnection(options: {
       image_version: bootInfo?.image_version,
       sandbox_create_attempts: bootInfo?.create_attempts,
       cloud_sandbox_acquisition_completed_event_version: 1,
+      ...workspaceGuardDiagnostics,
     };
     if (outcome === "error")
       console.warn("Cloud sandbox acquisition completed", fields);
@@ -90,8 +101,19 @@ export async function ensureCloudSandboxConnection(options: {
         getE2BClusterRouting(state.region).createCluster.cluster !==
           getE2BClusterRouting(options.context.triggerRegion).createCluster
             .cluster
-      )
+      ) {
+        workspaceGuardDiagnostics = {
+          workspace_guard_reason:
+            state.phase !== "e2b"
+              ? "workspace_phase_unavailable"
+              : !options.context?.triggerRegion
+                ? "trigger_region_missing"
+                : "workspace_region_mismatch",
+          workspace_phase: state.phase,
+          ...(state.phase === "e2b" ? { workspace_region: state.region } : {}),
+        };
         throw new CloudWorkspaceUnavailableError();
+      }
       selectionReason = "recovered_workspace";
     }
     const result = await ensureSandboxConnection(
@@ -147,6 +169,7 @@ export async function ensureCloudSandboxConnection(options: {
       error_name: error instanceof Error ? error.name : "UnknownError",
       ...(error instanceof E2BAcquisitionError ? error.diagnostics : {}),
       cloud_sandbox_acquisition_failed_event_version: 6,
+      ...workspaceGuardDiagnostics,
     });
     throw error;
   }

@@ -132,7 +132,62 @@ describe("E2B cloud acquisition", () => {
     ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
     expect(ensure).not.toHaveBeenCalled();
     expect(setSandbox).not.toHaveBeenCalled();
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
   });
+
+  it.each(["cleanup", "deleted"] as const)(
+    "attributes a %s workspace rejection without logging the persisted record",
+    async (phase) => {
+      read.mockResolvedValue({
+        version: 1,
+        phase,
+        token: "private-cleanup-token",
+        migration: recovered,
+      });
+      const setSandbox = jest.fn();
+      await expect(
+        ensureCloudSandboxConnection({
+          userId: "user-1",
+          setSandbox,
+          context: { chatId: "chat-1", triggerRunId: "run-1" },
+        }),
+      ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
+      expect(ensure).not.toHaveBeenCalled();
+      expect(setSandbox).not.toHaveBeenCalled();
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_failed",
+        expect.objectContaining({
+          userId: "user-1",
+          chat_id: "chat-1",
+          trigger_run_id: "run-1",
+          workspace_guard_reason: "workspace_phase_unavailable",
+          workspace_phase: phase,
+        }),
+      );
+      expect(console.warn).toHaveBeenCalledWith(
+        "Cloud sandbox acquisition completed",
+        expect.objectContaining({
+          outcome: "error",
+          workspace_guard_reason: "workspace_phase_unavailable",
+          workspace_phase: phase,
+        }),
+      );
+      const logged = JSON.stringify([
+        jest.mocked(phLogger.event).mock.calls,
+        jest.mocked(console.warn).mock.calls,
+      ]);
+      for (const value of [
+        "private-cleanup-token",
+        recovered.token,
+        recovered.sourceId,
+        recovered.destinationId,
+      ]) {
+        expect(logged).not.toContain(value);
+      }
+    },
+  );
 
   it.each([undefined, "eu-central-1"] as const)(
     "does not reconnect a pin through an unverified or different cluster: %s",
@@ -148,8 +203,33 @@ describe("E2B cloud acquisition", () => {
         }),
       ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
       expect(ensure).not.toHaveBeenCalled();
+      expect(phLogger.event).toHaveBeenCalledWith(
+        "cloud_sandbox_acquisition_failed",
+        expect.objectContaining({
+          workspace_guard_reason: region
+            ? "workspace_region_mismatch"
+            : "trigger_region_missing",
+          workspace_phase: "e2b",
+          workspace_region: "us-east-1",
+          trigger_region: region,
+        }),
+      );
     },
   );
+
+  it("does not label different regions in the same E2B cluster as a mismatch", async () => {
+    read.mockResolvedValue(recovered);
+    const setSandbox = jest.fn();
+    await ensureCloudSandboxConnection({
+      userId: "user-1",
+      setSandbox,
+      context: { triggerRegion: "us-west-2" },
+    });
+    expect(setSandbox).toHaveBeenCalledWith({ sandboxId: "new-e2b" });
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
+  });
 
   it("never publishes a result if cleanup takes ownership during acquisition", async () => {
     available.mockRejectedValue(new CloudWorkspaceUnavailableError());
@@ -158,6 +238,9 @@ describe("E2B cloud acquisition", () => {
       ensureCloudSandboxConnection({ userId: "user-1", setSandbox }),
     ).rejects.toBeInstanceOf(CloudWorkspaceUnavailableError);
     expect(setSandbox).not.toHaveBeenCalled();
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
   });
 
   it("fences late results after cancellation without publishing a connection", async () => {
@@ -175,5 +258,8 @@ describe("E2B cloud acquisition", () => {
       }),
     ).rejects.toThrow();
     expect(setSandbox).not.toHaveBeenCalled();
+    expect(
+      jest.mocked(phLogger.event).mock.calls.at(-1)?.[1],
+    ).not.toHaveProperty("workspace_guard_reason");
   });
 });
