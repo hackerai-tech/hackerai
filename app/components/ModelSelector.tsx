@@ -265,11 +265,6 @@ const ModelOptionButton = ({
         <p className="text-sm font-semibold text-foreground leading-snug">
           {option.description}
         </p>
-        {option.poweredBy && (
-          <p className="text-xs text-muted-foreground">
-            Powered by {option.poweredBy}
-          </p>
-        )}
       </TooltipContent>
     </Tooltip>
   );
@@ -394,11 +389,6 @@ const ModelOptionList = ({
             ) : (
               <p className="text-sm font-semibold text-foreground leading-snug">
                 {option.label}
-              </p>
-            )}
-            {option.poweredBy && (
-              <p className="text-xs text-muted-foreground">
-                Powered by {option.poweredBy}
               </p>
             )}
             <p className="text-xs text-muted-foreground leading-relaxed pt-1">

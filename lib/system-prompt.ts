@@ -2,6 +2,7 @@ import { AGENT_BROWSER_GUIDANCE } from "./ai/browser-guidance";
 import type {
   AgentPermissionMode,
   ChatMode,
+  SelectedModel,
   SubscriptionTier,
   UserCustomization,
 } from "@/types";
@@ -9,7 +10,6 @@ import { generateUserBio } from "./system-prompt/bio";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
 import {
   getModelCutoffDate,
-  getModelDisplayName,
   isDeepSeekModel,
   type ModelName,
 } from "@/lib/ai/providers";
@@ -404,6 +404,7 @@ export const systemPrompt = async (
   agentPermissionMode: AgentPermissionMode = "full_access",
   genericDelegationEnabled: boolean = false,
   _cloudSandboxProvider?: CloudSandboxProvider,
+  selectedModel: SelectedModel = "auto",
 ): Promise<string> => {
   const shouldIncludeNotes =
     (subscription !== "free" || mode === "agent") &&
@@ -411,11 +412,16 @@ export const systemPrompt = async (
 
   const agentInstructions = getAgentModeInstructions(mode);
 
-  const modelDisplayName = getModelDisplayName(modelName);
+  const modelLabel = {
+    auto: "Auto",
+    "hackerai-standard": "Standard",
+    "hackerai-pro": "Pro",
+    "hackerai-max": "Max",
+  }[selectedModel];
 
   const basePrompt = `You are HackerAI, an expert cybersecurity operator and penetration testing assistant for authorized cybersecurity professionals. \
 HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
-You are currently powered by ${modelDisplayName}.
+The selected HackerAI model mode is ${modelLabel}. Mention it only when relevant, using Auto, Standard, Pro, or Max instead of underlying provider names or versions.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.`;
 

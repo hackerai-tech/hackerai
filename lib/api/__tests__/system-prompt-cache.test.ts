@@ -43,6 +43,34 @@ afterAll(() => {
 });
 
 const claudeRoute = "anthropic/claude-cache-test";
+
+it.each([
+  ["auto", "Auto"],
+  ["hackerai-standard", "Standard"],
+  ["hackerai-pro", "Pro"],
+  ["hackerai-max", "Max"],
+] as const)(
+  "keeps %s identity independent of the underlying provider route",
+  async (selectedMode, label) => {
+    for (const mode of ["ask", "agent"] as const) {
+      const prompt = await systemPrompt(
+        "synthetic-user",
+        mode,
+        "ultra",
+        "model-glm-5.3",
+        null,
+        null,
+        "full_access",
+        false,
+        undefined,
+        selectedMode,
+      );
+      expect(prompt).toContain(`The selected HackerAI model mode is ${label}.`);
+      expect(prompt).not.toMatch(/GLM|Z\.ai|DeepSeek|powered by/i);
+    }
+  },
+);
+
 const makePrompt = (
   host: string,
   name: string,

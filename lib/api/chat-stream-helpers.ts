@@ -1620,6 +1620,7 @@ export async function estimatePreflightInputTokens(args: {
   subscription: SubscriptionTier;
   userId: string;
   selectedModel: ModelName;
+  selectedModelOverride?: SelectedModel;
   userCustomization: UserCustomization | null | undefined;
   truncatedMessages: UIMessage[];
 }): Promise<number> {
@@ -1628,6 +1629,7 @@ export async function estimatePreflightInputTokens(args: {
     subscription,
     userId,
     selectedModel,
+    selectedModelOverride,
     userCustomization,
     truncatedMessages,
   } = args;
@@ -1641,6 +1643,10 @@ export async function estimatePreflightInputTokens(args: {
     selectedModel,
     userCustomization,
     null,
+    "full_access",
+    false,
+    undefined,
+    selectedModelOverride,
   );
   const systemTokens = safeCountTokens(estimatedSystemPrompt);
   const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
