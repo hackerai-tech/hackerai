@@ -293,7 +293,10 @@ export function assertTriggerRunRegion(options: {
     return;
   }
 
-  if (options.actualRegion !== options.requestedRegion) {
+  // Trigger may report a qualified worker queue, such as
+  // us-east-1:v2:ondemand:fresh:container:stable. Its region is before the colon.
+  const actualRegion = options.actualRegion?.split(":", 1)[0];
+  if (actualRegion !== options.requestedRegion) {
     throw new TriggerRegionMismatchError(
       options.requestedRegion,
       options.actualRegion,
