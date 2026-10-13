@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
-import { useAction } from "convex/react";
+import { useAction, useConvexAuth } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
@@ -23,6 +23,8 @@ const MAX_BATCH_SIZE = 50; // Must match server-side limit in convex/s3Actions.t
  * - Automatically cleans up expired URLs
  */
 export function useFileUrlCache(messages: ChatMessage[]) {
+  const { isAuthenticated, isLoading, isRefreshing } = useConvexAuth();
+  const authReady = isAuthenticated && !isLoading && !isRefreshing;
   const getFileUrlsBatchAction = useAction(
     api.s3Actions.getFileUrlsBatchAction,
   );
@@ -30,6 +32,22 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   const prefetchedIdsRef = useRef<Set<string>>(new Set());
   const pendingIdsRef = useRef<Set<string>>(new Set());
   const prefetchQueueRef = useRef<Promise<void> | null>(null);
+  const authScopeRef = useRef(new AbortController());
+
+  useEffect(() => {
+    const scope = new AbortController();
+    authScopeRef.current = scope;
+    // Each scope owns its reservations, including React's effect replay.
+    pendingIdsRef.current.clear();
+    prefetchQueueRef.current = null;
+    if (!authReady) {
+      urlCacheRef.current.clear();
+      prefetchedIdsRef.current.clear();
+    }
+    // Pending reads cannot be canceled by Convex, but their results and queued
+    // batches must not survive a loss of authentication or an unmount.
+    return () => scope.abort();
+  }, [authReady]);
 
   // Get cached URL for a file (returns null if expired or not cached)
   const getCachedUrl = useCallback((fileId: string): string | null => {
@@ -56,6 +74,8 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
   // Prefetch image URLs for messages
   useEffect(() => {
+    if (!authReady) return;
+    const scope = authScopeRef.current;
     async function prefetchImageUrls() {
       // Track seen fileIds within this run to avoid duplicates
       const seenInThisRun = new Set<string>();
@@ -129,8 +149,10 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
       const runBatches = async () => {
         for (const chunk of chunks) {
+          if (scope.signal.aborted) return;
           try {
             const urlMap = await getFileUrlsBatchAction({ fileIds: chunk });
+            if (scope.signal.aborted) return;
             const now = Date.now();
             if (urlMap && typeof urlMap === "object") {
               for (const [fileId, url] of Object.entries(urlMap) as Array<
@@ -141,9 +163,11 @@ export function useFileUrlCache(messages: ChatMessage[]) {
               }
             }
           } catch (error) {
-            console.error("Failed to prefetch image URLs:", error);
+            if (!scope.signal.aborted)
+              console.error("Failed to prefetch image URLs:", error);
           } finally {
-            for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
+            if (!scope.signal.aborted)
+              for (const fileId of chunk) pendingIdsRef.current.delete(fileId);
           }
         }
       };
@@ -157,7 +181,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
     }
 
     prefetchImageUrls();
-  }, [messages, getFileUrlsBatchAction]);
+  }, [messages, getFileUrlsBatchAction, authReady]);
 
   // Cleanup expired URLs periodically
   useEffect(() => {
