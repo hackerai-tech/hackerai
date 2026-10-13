@@ -73,3 +73,18 @@ describe("on-demand private skill tools", () => {
     expect(JSON.stringify(result)).not.toContain("private internal detail");
   });
 });
+
+it("preserves the reviewed library's five-skill limit and aggregate content budget", async () => {
+  const { listSubagentSkills } = await import("@/lib/ai/subagents/skills");
+  const catalog = [...listSubagentSkills()].sort(
+    (a, b) => a.contentBytes - b.contentBytes,
+  );
+  const tools = createPrivateSkillTools(selected, jest.fn(), true);
+  const small = { skills: catalog.slice(0, 5).map((s) => s.id) };
+  expect((tools.load_skill.inputSchema as any).safeParse(small).success).toBe(
+    true,
+  );
+  expect((await execute(tools.load_skill, small)).success).toBe(true);
+  const large = { skills: catalog.slice(-5).map((s) => s.id) };
+  expect((await execute(tools.load_skill, large)).success).toBe(false);
+});

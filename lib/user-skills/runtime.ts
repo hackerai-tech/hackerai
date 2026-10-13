@@ -1,4 +1,5 @@
 import { tool } from "ai";
+import { MAX_SUBAGENT_SKILLS } from "@/lib/ai/subagents/contracts";
 import { z } from "zod";
 import type { Id } from "@/convex/_generated/dataModel";
 import { api } from "@/convex/_generated/api";
@@ -80,25 +81,27 @@ export function createPrivateSkillTools(
       inputSchema: z
         .object({
           skills: z
-            .array(z.string().min(1).max(80))
+            .array(z.string().trim().min(1).max(80))
             .min(1)
-            .max(MAX_SELECTED_SKILLS),
+            .max(MAX_SUBAGENT_SKILLS),
         })
         .strict(),
       execute: async ({ skills }) => {
         const results = [];
-        for (const id of [...new Set(skills)]) {
-          if (!id.startsWith("user:")) {
-            results.push(
-              includeBuiltins
-                ? loadSubagentSkills({ skills: [id] })
-                : {
-                    success: false,
-                    error: "Only selected private skills are available.",
-                  },
-            );
-            continue;
-          }
+        const requested = [...new Set(skills)];
+        const builtinIds = requested.filter((id) => !id.startsWith("user:"));
+        if (builtinIds.length) {
+          // Keep the reviewed library's aggregate size/count validation intact.
+          results.push(
+            includeBuiltins
+              ? loadSubagentSkills({ skills: builtinIds })
+              : {
+                  success: false,
+                  error: "Only selected private skills are available.",
+                },
+          );
+        }
+        for (const id of requested.filter((id) => id.startsWith("user:"))) {
           if (!catalog.some((s) => s.id === id)) {
             results.push({
               success: false,
@@ -130,6 +133,7 @@ export function createPrivateSkillTools(
             results.push({
               success: true,
               id,
+              name: catalog.find((s) => s.id === id)!.name,
               source: "private-untrusted",
               boundary: PRIVATE_SKILL_BOUNDARY,
               content: skill.content,
@@ -146,6 +150,9 @@ export function createPrivateSkillTools(
         }
         return {
           success: results.every((r) => r.success),
+          error: results.every((r) => r.success)
+            ? undefined
+            : "One or more skills could not be loaded.",
           results,
           loaded_bytes: loadedBytes,
         };
