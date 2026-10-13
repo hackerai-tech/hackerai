@@ -278,3 +278,50 @@ test(
     await assert.rejects(main(["stop", "../stale"], root), /Invalid session/);
   },
 );
+
+test(
+  "terminal hangup shuts down the owned child and records completion",
+  { timeout: 15000 },
+  async (t) => {
+    const dir = await temp(t);
+    const runnerFile = join(dir, "supervisor.mjs");
+    await writeFile(
+      runnerFile,
+      `import {supervise} from ${JSON.stringify(new URL("./qa.mjs", import.meta.url).href)};
+await supervise({command:process.execPath,args:['-e','setInterval(() => {}, 1000)'],cwd:process.cwd(),dir:process.cwd()});`,
+    );
+    const supervisor = spawn(process.execPath, [runnerFile], {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    const exited = new Promise((resolve, reject) => {
+      supervisor.once("exit", (code, signal) => resolve({ code, signal }));
+      supervisor.once("error", reject);
+    });
+    let childPid;
+    t.after(() => {
+      supervisor.kill("SIGTERM");
+      if (childPid) {
+        try {
+          process.kill(childPid, "SIGTERM");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+      }
+    });
+    const status = await waitFor(
+      join(dir, "status.json"),
+      (value) => value.state === "running",
+    );
+    childPid = status.pid;
+    supervisor.kill("SIGHUP");
+    const outcome = await exited;
+    assert.deepEqual(outcome, { code: 0, signal: null });
+    assert.equal(
+      JSON.parse(await readFile(join(dir, "status.json"), "utf8")).state,
+      "stopped",
+    );
+    assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
+    childPid = undefined;
+  },
+);

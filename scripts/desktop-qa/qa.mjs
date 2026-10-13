@@ -283,6 +283,7 @@ export async function supervise({
   };
   process.on("SIGINT", signal);
   process.on("SIGTERM", signal);
+  process.on("SIGHUP", signal);
   try {
     await emit("process-start", { pid: child.pid ?? null });
     while (!ended && !stopping) {
@@ -321,6 +322,7 @@ export async function supervise({
   } finally {
     process.removeListener("SIGINT", signal);
     process.removeListener("SIGTERM", signal);
+    process.removeListener("SIGHUP", signal);
     if (!ended) {
       signalChild("SIGTERM");
       await Promise.race([completion, delay(3000)]);
