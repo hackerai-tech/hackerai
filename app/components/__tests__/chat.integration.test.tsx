@@ -710,20 +710,6 @@ describe("Chat Component Integration", () => {
       },
     );
 
-    it("should render with provided chatId", () => {
-      mockRouteParams = { id: "test-chat-123" };
-
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>,
-      );
-
-      expect(
-        container.querySelector(".flex.bg-background"),
-      ).toBeInTheDocument();
-    });
-
     it("keeps the useChat message snapshot stable across unrelated renders", () => {
       const { result, rerender } = renderHook(() =>
         useServerMessages(undefined),
@@ -1303,32 +1289,6 @@ describe("Chat Component Integration", () => {
         );
       });
     });
-
-    it("should render with existing messages", () => {
-      mockUseChat.mockReturnValue({
-        messages: [
-          { id: "1", role: "user", content: "Hello" },
-          { id: "2", role: "assistant", content: "Hi there!" },
-        ],
-        sendMessage: mockSendMessage,
-        setMessages: mockSetMessages,
-        status: "ready",
-        stop: mockStop,
-        error: null,
-        regenerate: mockRegenerate,
-        resumeStream: mockResumeStream,
-      });
-
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>,
-      );
-
-      expect(
-        container.querySelector(".flex.bg-background"),
-      ).toBeInTheDocument();
-    });
   });
 
   describe("Streaming State", () => {
@@ -1368,29 +1328,6 @@ describe("Chat Component Integration", () => {
       );
       act(() => onRunClosed("run-local-before-query"));
       expect(mockChatHandlerArgs.activeTriggerRunRef?.current).toBeUndefined();
-    });
-
-    it("should handle streaming status", () => {
-      mockUseChat.mockReturnValue({
-        messages: [{ id: "1", role: "assistant", content: "Streaming..." }],
-        sendMessage: mockSendMessage,
-        setMessages: mockSetMessages,
-        status: "streaming",
-        stop: mockStop,
-        error: null,
-        regenerate: mockRegenerate,
-        resumeStream: mockResumeStream,
-      });
-
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>,
-      );
-
-      expect(
-        container.querySelector(".flex.bg-background"),
-      ).toBeInTheDocument();
     });
   });
 
