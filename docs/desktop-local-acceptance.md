@@ -5,6 +5,10 @@ Desktop sandbox transport. It verifies the affected journey in the native app;
 browser/cloud verification must be recorded separately. For shared Ask/Agent or
 provider changes, also check the other affected callers and transports.
 
+For repeatable launch, health checks and local diagnostic artifacts, see
+[Desktop QA tooling](desktop-qa-tooling.md). It supplements the native checks
+below; starting the runner alone is not acceptance evidence.
+
 ## Prepare an isolated checkout
 
 1. Verify the host and graphical access. On the Mac mini, use the native macOS
