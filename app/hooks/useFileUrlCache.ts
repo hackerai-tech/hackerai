@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { useAction, useConvexAuth } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
@@ -34,7 +34,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   const prefetchQueueRef = useRef<Promise<void> | null>(null);
   const authScopeRef = useRef(new AbortController());
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scope = new AbortController();
     authScopeRef.current = scope;
     // Each scope owns its reservations, including React's effect replay.
@@ -44,6 +44,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
       urlCacheRef.current.clear();
       prefetchedIdsRef.current.clear();
     }
+    // Invalidate during commit, before pending responses can resume.
     // Pending reads cannot be canceled by Convex, but their results and queued
     // batches must not survive a loss of authentication or an unmount.
     return () => scope.abort();

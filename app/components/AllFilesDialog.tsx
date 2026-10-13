@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useCallback,
+  useRef,
+} from "react";
 import { X, Download, Circle, CircleCheck, File } from "lucide-react";
 import {
   Dialog,
@@ -152,7 +158,7 @@ const AllFilesDialog = ({
   const { isAuthenticated, isLoading, isRefreshing } = useConvexAuth();
   const authReady = isAuthenticated && !isLoading && !isRefreshing;
   const authScopeRef = useRef(new AbortController());
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scope = new AbortController();
     authScopeRef.current = scope;
     return () => scope.abort();
@@ -165,6 +171,13 @@ const AllFilesDialog = ({
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [fileUrls, setFileUrls] = useState<Map<number, string>>(new Map());
   const [isLoadingUrls, setIsLoadingUrls] = useState(false);
+  const [previousAuthReady, setPreviousAuthReady] = useState(authReady);
+  // Reset before committing children so a restored session cannot briefly
+  // display URLs retained from an earlier authentication scope.
+  if (previousAuthReady !== authReady) {
+    setPreviousAuthReady(authReady);
+    setFileUrls(new Map());
+  }
 
   const resolveFileUrls = useCallback(
     async (
