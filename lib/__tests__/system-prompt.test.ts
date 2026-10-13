@@ -667,7 +667,7 @@ Commands run directly on the host OS "workstation" without Docker isolation. Be 
     expect(prompt).toContain("Chromium and agent-browser");
     expect(prompt).toContain("agent-browser snapshot -i");
     expect(prompt).toContain("agent-browser set viewport 1920 1080");
-    expect(prompt).toContain("/home/user/agent-browser-screenshots");
+    expect(prompt).toContain("view action on the returned path");
     expect(prompt).toContain("file tool's view action");
     expect(prompt).toContain("Inline image attachments are already visible");
     expect(prompt).toContain("do not call the file view action");

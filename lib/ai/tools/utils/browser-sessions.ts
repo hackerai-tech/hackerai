@@ -8,21 +8,22 @@ import { browserSessionCommand } from "./browser-session-program";
 // a detached sandbox watchdog also expires checkpoints after a worker crash.
 export const BROWSER_SESSION_MAX_LIFETIME_MS = (4 * 60 + 5) * 60 * 1000;
 
+type BrowserSession = {
+  sandbox: AnySandbox;
+  directory: string;
+  ready: Promise<void>;
+};
+
 /** One owner per tool factory, never shared between a parent and its children. */
 export class BrowserSessions {
   private readonly encryptionKey = randomBytes(32).toString("hex");
   private readonly expiresAt = Date.now() + BROWSER_SESSION_MAX_LIFETIME_MS;
-  private readonly sessions = new Map<
-    string,
-    {
-      sandbox: AnySandbox;
-      directory: string;
-      ready: Promise<void>;
-    }
-  >();
+  private readonly sessions = new Map<string, BrowserSession>();
+  private readonly failedSessions = new Set<BrowserSession>();
   private closed = false;
   private cleanupPromise?: Promise<void>;
 
+  /** Retry failed setup on the next call, retaining every attempt for cleanup. */
   async prepare(sandbox: AnySandbox): Promise<Record<string, string>> {
     if (this.closed || Date.now() >= this.expiresAt) {
       throw new Error(
@@ -49,6 +50,13 @@ export class BrowserSessions {
         });
       session = { sandbox, directory, ready };
       this.sessions.set(sandboxId, session);
+      const created = session;
+      ready.catch(() => {
+        if (!this.closed && this.sessions.get(sandboxId) === created) {
+          this.sessions.delete(sandboxId);
+          this.failedSessions.add(created);
+        }
+      });
     }
     session.sandbox = sandbox;
     await session.ready;
@@ -63,28 +71,33 @@ export class BrowserSessions {
     };
   }
 
+  /** End ownership once, preventing any subsequent browser preparation. */
   cleanup(): Promise<void> {
     this.closed = true;
     this.cleanupPromise ??= this.cleanupAll();
     return this.cleanupPromise;
   }
 
+  /** Drain in-flight setup before erasing active and failed directories. */
   private async cleanupAll(): Promise<void> {
     const results = await Promise.allSettled(
-      [...this.sessions.values()].map(async (session) => {
-        const { sandbox } = session;
-        await session.ready.catch(() => undefined);
-        const result = await sandbox.commands.run(
-          browserSessionCommand("cleanup", session.directory, this.expiresAt),
-          { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20_000 },
-        );
-        if (result.exitCode !== 0) throw new Error("Browser cleanup failed.");
-      }),
+      [...this.sessions.values(), ...this.failedSessions].map(
+        async (session) => {
+          const { sandbox } = session;
+          await session.ready.catch(() => undefined);
+          const result = await sandbox.commands.run(
+            browserSessionCommand("cleanup", session.directory, this.expiresAt),
+            { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20_000 },
+          );
+          if (result.exitCode !== 0) throw new Error("Browser cleanup failed.");
+        },
+      ),
     );
     // Do not log command bodies, SDK errors, paths, or the encryption key.
     if (results.some((result) => result.status === "rejected")) {
       console.warn("[browser-sessions] cleanup incomplete");
     }
     this.sessions.clear();
+    this.failedSessions.clear();
   }
 }

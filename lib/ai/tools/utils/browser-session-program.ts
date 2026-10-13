@@ -63,6 +63,7 @@ else:
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+/** Quote a sandbox lifecycle command without embedding authentication data. */
 export function browserSessionCommand(
   action: "prepare" | "cleanup",
   directory: string,

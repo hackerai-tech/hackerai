@@ -103,4 +103,48 @@ describe("managed browser ownership", () => {
     await owner.cleanup();
     expect(target.commands.run).not.toHaveBeenCalled();
   });
+
+  it.each(["rejection", "nonzero exit"])(
+    "retries after a %s and cleans up both attempted directories",
+    async (failure) => {
+      const target = sandbox();
+      if (failure === "rejection") {
+        target.commands.run.mockRejectedValueOnce(new Error("unavailable"));
+      } else {
+        target.commands.run.mockResolvedValueOnce({ exitCode: 1 });
+      }
+      const owner = new BrowserSessions();
+      const attempts = await Promise.allSettled([
+        owner.prepare(target as unknown as AnySandbox),
+        owner.prepare(target as unknown as AnySandbox),
+      ]);
+      expect(attempts.map((attempt) => attempt.status)).toEqual([
+        "rejected",
+        "rejected",
+      ]);
+      expect(target.commands.run).toHaveBeenCalledTimes(1);
+      const failedDirectory = target.commands.run.mock.calls
+        .flat()
+        .join(" ")
+        .match(/\/dev\/shm\/hackerai-browser-[a-f0-9]+/)?.[0];
+      expect(failedDirectory).toBeDefined();
+
+      const recovered = await owner.prepare(target as unknown as AnySandbox);
+      expect(recovered.AGENT_BROWSER_SOCKET_DIR).not.toContain(failedDirectory);
+      expect(await owner.prepare(target as unknown as AnySandbox)).toEqual(
+        recovered,
+      );
+      expect(target.commands.run).toHaveBeenCalledTimes(2);
+      await owner.cleanup();
+      expect(target.commands.run).toHaveBeenCalledTimes(4);
+      const cleanupCommands = target.commands.run.mock.calls
+        .slice(2)
+        .flat()
+        .join(" ");
+      expect(cleanupCommands).toContain(failedDirectory);
+      expect(cleanupCommands).toContain(
+        recovered.AGENT_BROWSER_SOCKET_DIR.replace(/\/sockets$/, ""),
+      );
+    },
+  );
 });
