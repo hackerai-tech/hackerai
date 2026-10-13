@@ -17,7 +17,9 @@ jest.mock("@/lib/ai/providers", () => ({
   resolveTierToProviderKey: () => "model",
 }));
 jest.mock("@/lib/api/chat-stream-helpers", () => ({
-  getFallbackSlugs: () => [],
+  buildProviderOptions: () => ({
+    openrouter: { provider: { order: ["test"] } },
+  }),
 }));
 jest.mock("@/lib/db/actions", () => ({
   createFinding: jest.fn(),
@@ -82,9 +84,27 @@ it("skips the model for empty chats and exact matches", async () => {
       { ...context, exact_duplicate_id: "existing" },
       {},
     ),
-  ).toBe("existing");
+  ).toBeUndefined();
   expect(model).not.toHaveBeenCalled();
 });
+it.each([
+  { success: false, error: "duplicate", duplicate_of: "older-match" },
+  { success: true, finding_id: "new" },
+])(
+  "lets the mutation recheck an older exact match atomically (%j)",
+  async (outcome) => {
+    load.mockResolvedValue({ ...context, exact_duplicate_id: "older-match" });
+    save.mockImplementation(async (input) => {
+      // A deleted or edited exact match outside the snapshot is no longer a
+      // valid semantic candidate. Sending it would reject an otherwise valid save.
+      if (input.semanticDuplicateId) throw new Error("invalid comparison");
+      return outcome as any;
+    });
+    await expect(createFindingWithDedupe(args)).resolves.toEqual(outcome);
+    expect(model).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledTimes(1);
+  },
+);
 it("passes reworded root-cause summaries, accepts only a confident known ID, and accounts for cost", async () => {
   model.mockResolvedValue(result("existing"));
   const onCost = jest.fn();
@@ -99,7 +119,8 @@ it("passes reworded root-cause summaries, accepts only a confident known ID, and
   expect(call).toMatchObject({
     maxRetries: 0,
     timeout: 8000,
-    maxOutputTokens: 200,
+    maxOutputTokens: 2048,
+    providerOptions: { openrouter: { provider: { order: ["test"] } } },
   });
   expect(JSON.stringify(jest.mocked(console.info).mock.calls)).not.toMatch(
     /Invoice|example.test|PRIVATE_|existing/,
