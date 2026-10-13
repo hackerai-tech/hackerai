@@ -32,7 +32,8 @@ const TERMINAL_BOOKKEEPING_FIELDS = new Set([
 function comparisonOutput(toolName: string, output: unknown): unknown {
   try {
     if (
-      toolName !== "run_terminal_cmd" ||
+      (toolName !== "run_terminal_cmd" &&
+        toolName !== "interact_terminal_session") ||
       !output ||
       typeof output !== "object" ||
       Object.getPrototypeOf(output) !== Object.prototype
