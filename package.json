@@ -4,6 +4,8 @@
   "private": true,
   "packageManager": "pnpm@10.33.2",
   "scripts": {
+    "desktop:qa": "node scripts/desktop-qa/qa.mjs",
+    "test:desktop-qa": "node --test scripts/desktop-qa/qa.test.mjs",
     "check:local-dependencies": "node scripts/verify-local-dependencies.mjs",
     "predev": "pnpm run check:local-dependencies",
     "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
@@ -26,7 +28,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:user-research-runner",
+    "test:ci": "pnpm skills:sync:strix:check && jest --ci --coverage --maxWorkers=2 && pnpm test:user-research-runner && pnpm test:desktop-qa",
     "test:user-research-runner": "node --test .agents/skills/hackerai-user-research/scripts/run-research.test.mjs",
     "skills:sync:strix": "node scripts/sync-strix-skills.mjs",
     "skills:sync:strix:check": "node scripts/sync-strix-skills.mjs --check",

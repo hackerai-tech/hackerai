@@ -60,6 +60,10 @@ desktop, cloud and local sandboxes, and relevant model providers. Check recovery
 as well as the happy path, including cancellation, retry, and reconnect when
 applicable. Apply the visual and manual verification rules below.
 
+For native Desktop Computer Use, use the
+[hackerai-desktop-qa skill](.agents/skills/hackerai-desktop-qa/SKILL.md) and its
+local QA runner to reuse builds, record diagnostics and clean up owned processes.
+
 ## Preview-First Validation and Shared Host Resources
 
 For browser and web UI acceptance, prefer the task's Vercel Preview deployment
