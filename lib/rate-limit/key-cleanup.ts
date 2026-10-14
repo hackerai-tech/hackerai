@@ -7,6 +7,7 @@ export const isFreeQuotaSubjectRateLimitKey = (
     key === `free_referral_bonus:${freeQuotaSubject}` ||
     (key.startsWith("free_referral_bonus_grant:") &&
       key.endsWith(`:${freeQuotaSubject}`)) ||
+    key.startsWith(`free_agent_completed_daily:v1:${freeQuotaSubject}:`) ||
     key.startsWith(`free_agent_limit:${freeQuotaSubject}:`) ||
     key.startsWith(`free_monthly_cost:${freeQuotaSubject}:`) ||
     key === `free_usage_budget_started:v1:${freeQuotaSubject}` ||

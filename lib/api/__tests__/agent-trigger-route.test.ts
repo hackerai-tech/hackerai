@@ -31,6 +31,10 @@ const mockCloseAgentApprovalSession = jest.fn<any>();
 const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
+const mockDailyCompletionGet = jest.fn<any>();
+jest.mock("@/lib/rate-limit/redis", () => ({
+  createRedisClient: () => ({ get: mockDailyCompletionGet }),
+}));
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: mockGetUserIDAndPro,
@@ -585,6 +589,60 @@ describe("regional subscription gate before Agent dispatch", () => {
       expect(await response.json()).toMatchObject({
         metadata: { subscription_required: true },
       });
+      expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
+      expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("completed daily allowance before Agent dispatch", () => {
+  const previousVercel = process.env.VERCEL;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.VERCEL = "1";
+    mockGetFeatureFlagResult.mockResolvedValue({
+      enabled: true,
+      variant: "test",
+    });
+    mockDailyCompletionGet.mockResolvedValue("1");
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "user-free",
+      subscription: "free",
+      freeQuotaSubject: "subject",
+    });
+  });
+  afterEach(() => {
+    if (previousVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = previousVercel;
+  });
+  it.each(["/api/agent", "/api/agent-long"] as const)(
+    "blocks %s before persisting a chat or dispatching a worker, ignoring body overrides",
+    async (endpoint) => {
+      const response = await createAgentTriggerPost({ endpoint })({
+        headers: new Headers({ "x-vercel-ip-country": "US" }),
+        cookies: { get: () => undefined },
+        json: async () => ({
+          chatId: "test-chat",
+          messages: [
+            {
+              id: "message-1",
+              role: "user",
+              parts: [{ type: "text", text: "Explain HTTP headers." }],
+            },
+          ],
+          sandboxPreference: "local",
+          subscription: "pro",
+          freeAgentDailyCountry: "IN",
+          freeQuotaSubject: "different-subject",
+        }),
+      } as any);
+      expect(response.status).toBe(429);
+      expect(await response.json()).toMatchObject({
+        metadata: { capReason: "free_agent_daily_completed" },
+      });
+      expect(mockDailyCompletionGet).toHaveBeenCalledWith(
+        expect.stringContaining(":subject:"),
+      );
       expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
       expect(mockTriggerTask).not.toHaveBeenCalled();
     },

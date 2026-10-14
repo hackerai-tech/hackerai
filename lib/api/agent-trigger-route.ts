@@ -1,4 +1,9 @@
 import {
+  getFreeAgentDailyStatus,
+  enforceFreeAgentDailyStatus,
+  freeAgentDailyCountryFromRequest,
+} from "@/lib/experiments/free-agent-completed-daily.server";
+import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
@@ -545,6 +550,17 @@ export const createAgentTriggerPost =
         country: regionalSubscriptionCountry,
         surface: "agent",
       });
+      const freeAgentDailyCountry = freeAgentDailyCountryFromRequest(req);
+      await enforceFreeAgentDailyStatus(
+        await getFreeAgentDailyStatus({
+          userId,
+          subscription,
+          country: freeAgentDailyCountry,
+          quotaSubject: freeQuotaSubject,
+        }),
+        userId,
+        "agent",
+      );
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
@@ -776,6 +792,7 @@ export const createAgentTriggerPost =
         organizationId,
         freeQuotaSubject,
         regionalSubscriptionCountry,
+        freeAgentDailyCountry,
         regionalFreeCountry:
           subscription === "free"
             ? regionalFreeCountryFromRequest(req)
