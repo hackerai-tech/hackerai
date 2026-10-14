@@ -1253,13 +1253,12 @@ export const saveAssistantMessage = mutation({
       // Save parts as-is - fixing happens at read time in chat-processor.ts
       const content = extractTextFromParts(args.parts);
 
-      await ctx.db.insert("messages", {
+      const messageDocumentBase = {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
         parts: args.parts,
-        content: content || undefined,
         update_time: Date.now(),
         model: args.model,
         mode: args.mode,
@@ -1267,6 +1266,28 @@ export const saveAssistantMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: stripClientAbliterationRouting(args.usage),
+      };
+      const baseDocumentSizeBytes = getMessageDocumentSize(messageDocumentBase);
+      if (baseDocumentSizeBytes > MESSAGE_DOCUMENT_TARGET_BYTES) {
+        throw new ConvexError({
+          code: "MESSAGE_TOO_LARGE",
+          message: "Message is too large to save",
+          failureStage: "prepare_insert_message",
+          operation: "messages.saveAssistantMessage",
+          baseDocumentSizeBytes,
+          maxDocumentSizeBytes: CONVEX_DOCUMENT_MAX_BYTES,
+          targetDocumentSizeBytes: MESSAGE_DOCUMENT_TARGET_BYTES,
+          partCount: args.parts.length,
+        });
+      }
+      // Match backend saves: canonical parts remain intact while the duplicated
+      // search text uses only the space left in the complete document.
+      const indexedContent = content
+        ? fitSearchContentToDocument(messageDocumentBase, content)
+        : null;
+      await ctx.db.insert("messages", {
+        ...messageDocumentBase,
+        content: indexedContent?.content,
       });
 
       return null;
