@@ -839,6 +839,9 @@ export default defineSchema({
     caido_enabled: v.optional(v.boolean()),
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
+    // A saved product preference, not consent or eligibility for a data export.
+    model_improvement_enabled: v.optional(v.boolean()),
+    model_improvement_updated_at: v.optional(v.number()),
     // Legacy MAX Mode flag retained on historical rows. The feature was
     // removed and nothing reads or writes this anymore — kept in the schema
     // so old rows still pass validation.
