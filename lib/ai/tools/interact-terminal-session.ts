@@ -613,9 +613,8 @@ export const createInteractTerminalSession = (context: ToolContext) => {
 
       return errorResult(`Unknown action: ${action}`);
     },
-    // Strip rawSnapshot from the model's view: the agent only needs the
-    // cleaned `output` plus structural fields. rawSnapshot stays in the
-    // persisted tool result so the sidebar's xterm renderer can replay it.
+    // The model only needs cleaned output and structural fields. Keep timing
+    // in diagnostics and rawSnapshot in the persisted result for xterm replay.
     toModelOutput({ output }) {
       if (typeof output !== "object" || output === null) {
         return { type: "text", value: String(output ?? "") };
@@ -624,10 +623,11 @@ export const createInteractTerminalSession = (context: ToolContext) => {
       if (typeof result !== "object" || result === null) {
         return { type: "text", value: JSON.stringify(output) };
       }
-      const { rawSnapshot: _rawSnapshot, ...rest } = result as Record<
-        string,
-        unknown
-      >;
+      const {
+        rawSnapshot: _rawSnapshot,
+        callTiming: _callTiming,
+        ...rest
+      } = result as Record<string, unknown>;
       return { type: "text", value: JSON.stringify({ result: rest }) };
     },
   });

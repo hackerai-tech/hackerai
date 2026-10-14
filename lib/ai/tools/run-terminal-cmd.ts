@@ -1422,11 +1422,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
         };
       }
     },
-    // For interactive PTY results, strip rawSnapshot from what the model
-    // sees — the agent only needs the cleaned `output` plus structural
-    // fields. rawSnapshot stays in the persisted tool result so the
-    // sidebar's xterm renderer can replay it. No-op for non-interactive
-    // results, which never include rawSnapshot.
+    // The model only needs cleaned output and structural fields. Keep timing
+    // in diagnostics and rawSnapshot in the persisted result for xterm replay.
     //
     // Prepend a plain-language process state so partial stdout cannot be
     // mistaken for a successful command when the structural result explicitly
@@ -1439,10 +1436,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
       if (typeof result !== "object" || result === null) {
         return { type: "text", value: JSON.stringify(output) };
       }
-      const { rawSnapshot: _rawSnapshot, ...rest } = result as Record<
-        string,
-        unknown
-      >;
+      const {
+        rawSnapshot: _rawSnapshot,
+        callTiming: _callTiming,
+        ...rest
+      } = result as Record<string, unknown>;
       const processStatus = getTerminalProcessStatus(rest);
       const serializedResult = JSON.stringify({ result: rest });
 
