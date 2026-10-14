@@ -5,7 +5,7 @@ import {
   query,
   type MutationCtx,
   type QueryCtx,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import type { Id } from "./_generated/dataModel";
 import { assertUserCanAccessChatHistory } from "./lib/suspensionGuards";
 import { validateServiceKey } from "./lib/utils";
