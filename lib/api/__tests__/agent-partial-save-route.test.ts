@@ -249,6 +249,65 @@ describe("createAgentPartialSavePost", () => {
   });
 
   it.each([
+    ["chat_lookup", "bad_request:database", 400],
+    ["chat_lookup", "offline:database", 503],
+    ["save_message", "bad_request:database", 400],
+    ["save_message", "offline:database", 503],
+    ["update_chat", "bad_request:database", 400],
+    ["update_chat", "offline:database", 503],
+  ] as const)(
+    "logs wrapped %s failures while preserving the %s response",
+    async (stage, code, status) => {
+      const { createAgentPartialSavePost } =
+        await import("@/lib/api/agent-partial-save-route");
+      const error = new ChatSDKError(code, "Database temporarily unavailable", {
+        db_error_message: "PRIVATE_ERROR_CANARY",
+        serviceKey: "PRIVATE_SERVICE_CANARY",
+      });
+      mockGetChatById.mockResolvedValue(
+        chat({ id: diagnosticBody.chatId }) as never,
+      );
+      const failingOperation =
+        stage === "chat_lookup"
+          ? mockGetChatById
+          : stage === "save_message"
+            ? mockSaveMessage
+            : mockUpdateChat;
+      failingOperation.mockRejectedValue(error as never);
+      const toResponse = jest.spyOn(error, "toResponse");
+
+      const response = await createAgentPartialSavePost()(
+        request(diagnosticBody),
+      );
+      const output = String(errorSpy.mock.calls[0][0]);
+      const event = JSON.parse(output);
+
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({
+        code: "",
+        message: "Something went wrong. Please try again later.",
+      });
+      expect(toResponse).toHaveBeenCalledTimes(1);
+      expect(event).toMatchObject({
+        event: "agent_long_client_partial_save_failed",
+        stage,
+        status_code: status,
+        reason: "database_error",
+        error_type: "ChatSDKError",
+        run_correlation_verified: stage !== "chat_lookup",
+        message_save_completed: stage === "update_chat",
+      });
+      expect(event.trigger_run_id).toBe(
+        stage === "chat_lookup" ? undefined : diagnosticBody.triggerRunId,
+      );
+      expect(mockSaveMessage).toHaveBeenCalledTimes(
+        stage === "chat_lookup" ? 0 : 1,
+      );
+      expect(output).not.toContain("PRIVATE_");
+    },
+  );
+
+  it.each([
     "PRIVATE_HEADER_CANARY",
     `${"a".repeat(1024)}::${diagnosticRequestId}`,
   ])(

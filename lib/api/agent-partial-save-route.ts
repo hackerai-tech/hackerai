@@ -292,7 +292,13 @@ export const createAgentPartialSavePost =
 
       return NextResponse.json({ saved: true });
     } catch (error) {
-      if (error instanceof ChatSDKError) return error.toResponse();
+      const databaseError =
+        error instanceof ChatSDKError && error.surface === "database"
+          ? error
+          : undefined;
+      if (error instanceof ChatSDKError && !databaseError) {
+        return error.toResponse();
+      }
       const requestId = req.headers.get("x-vercel-id");
       const causeCode =
         error instanceof Error && error.cause instanceof Error
@@ -324,13 +330,15 @@ export const createAgentPartialSavePost =
           timestamp: new Date().toISOString(),
           stage,
           outcome: "error",
-          status_code: 500,
-          reason:
-            error instanceof TypeError && error.message === "fetch failed"
+          status_code: databaseError?.statusCode ?? 500,
+          reason: databaseError
+            ? "database_error"
+            : error instanceof TypeError && error.message === "fetch failed"
               ? "network_fetch_failed"
               : "unexpected_error",
-          error_type:
-            error instanceof TypeError
+          error_type: databaseError
+            ? "ChatSDKError"
+            : error instanceof TypeError
               ? "TypeError"
               : error instanceof Error
                 ? "Error"
@@ -365,6 +373,7 @@ export const createAgentPartialSavePost =
           message_save_completed: messageSaveCompleted,
         }),
       );
+      if (databaseError) return databaseError.toResponse();
       return NextResponse.json(
         { saved: false, message: "Failed to save partial response" },
         { status: 500 },
