@@ -4,6 +4,7 @@ import { phLogger } from "@/lib/posthog/server";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 import { isLocalCommandRelayUnsubscribedError } from "./utils/local-sandbox-errors";
 import { isCentrifugoSandbox } from "./utils/sandbox-types";
+import { waitForForegroundCommands } from "./utils/foreground-commands";
 import {
   getSandboxWithFallbackGuard,
   resolveToolErrorMessage,
@@ -21,14 +22,18 @@ export const createGetTerminalFiles = (context: ToolContext) => {
     inputSchema: createGetTerminalFilesToolSchema({
       modelName: context.getCurrentModelName?.() ?? context.modelName,
     }).inputSchema,
-    execute: async ({ files }: { files: string[] }) => {
+    execute: async ({ files }: { files: string[] }, { abortSignal }) => {
       let relayRecoveryAttempted = false;
       let relayRecoverySucceeded = false;
       let streamNotificationFailures = 0;
+      let foregroundCommandsWaited = 0;
       const recordOutcome = (delivered: number, failed: number) => {
         try {
           phLogger.event("agent_file_delivery_completed", {
             userId: context.userID,
+            chat_id: context.chatId,
+            trigger_run_id: context.triggerRunId ?? null,
+            foreground_commands_waited: foregroundCommandsWaited,
             stream_notification_failed_count: streamNotificationFailures,
             requested_file_count: files.length,
             delivered_file_count: delivered,
@@ -45,6 +50,18 @@ export const createGetTerminalFiles = (context: ToolContext) => {
         let { sandbox } = await getSandboxWithFallbackGuard({
           sandboxManager,
         });
+
+        // SDK tool calls in one model step execute concurrently. A file may
+        // still be being created by another foreground call in this context.
+        // Acquire first so immediately scheduled sibling calls can register.
+        foregroundCommandsWaited = await waitForForegroundCommands(
+          context,
+          abortSignal,
+        );
+        // A pending command can recover/reconnect the selected sandbox.
+        if (foregroundCommandsWaited > 0) {
+          ({ sandbox } = await getSandboxWithFallbackGuard({ sandboxManager }));
+        }
 
         const uploadWithRelayRecovery = async (filePath: string) => {
           try {

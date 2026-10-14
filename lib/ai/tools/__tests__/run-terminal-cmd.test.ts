@@ -48,12 +48,19 @@ jest.mock("@/lib/posthog/server", () => ({
   },
 }));
 
+jest.mock("../utils/sandbox-file-uploader", () => ({
+  uploadSandboxFileToConvex: jest.fn(),
+}));
+
 import { phLogger } from "@/lib/posthog/server";
 import { InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
+import { createGetTerminalFiles } from "../get-terminal-files";
+import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { spawn } from "node:child_process";
+import { setImmediate } from "node:timers";
 import { detectAgentBrowserUsage } from "../utils/agent-browser-usage";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
 import {
@@ -1174,6 +1181,78 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       ),
     );
   });
+
+  test.each([false, true])(
+    "delivery waits for foreground creation (delivery listed first: %s)",
+    async (deliveryFirst) => {
+      let finishCreation!: () => void;
+      let started!: () => void;
+      let fileExists = false;
+      const creation = new Promise<void>((resolve) => {
+        finishCreation = resolve;
+      });
+      const commandStarted = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const sandbox = {
+        sandboxKind: "centrifugo" as const,
+        isWindows: () => false,
+        commands: {
+          run: jest.fn(async (command: string) => {
+            if (command.includes("create-report")) {
+              started();
+              await creation;
+              fileExists = true;
+            }
+            return { stdout: "", stderr: "", exitCode: 0 };
+          }),
+        },
+      };
+      const { context, ptySessionManager } = makeContext({ sandbox });
+      Object.assign(context.backgroundProcessTracker, {
+        hasActiveProcessesForFiles: async () => ({
+          active: false,
+          processes: [],
+        }),
+      });
+      Object.assign(context.fileAccumulator, { add: jest.fn() });
+      const upload = jest.mocked(uploadSandboxFileToConvex);
+      upload.mockReset();
+      upload.mockImplementation(async () => {
+        if (!fileExists) throw new Error("File not found");
+        return {
+          fileId: "file-fixture",
+          name: "report.txt",
+          sizeBytes: 12,
+        } as never;
+      });
+      const deliver = () =>
+        (createGetTerminalFiles(context).execute as any)(
+          { files: ["/tmp/report.txt"] },
+          { toolCallId: "delivery", messages: [] },
+        );
+      let delivery = deliveryFirst ? deliver() : undefined;
+      const command = runTool(createRunTerminalCmd(context), {
+        command: "create-report",
+        timeout: 30,
+      });
+      await commandStarted;
+      delivery ??= deliver();
+      try {
+        // Drain ready work; only the explicitly held creation promise remains.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(upload).not.toHaveBeenCalled();
+      } finally {
+        finishCreation();
+        await command;
+        await ptySessionManager.closeAll(context.chatId);
+      }
+      expect(await delivery).toMatchObject({
+        files: [{ path: "/tmp/report.txt" }],
+        failedFiles: [],
+      });
+    },
+  );
 
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
     // Use a non-E2B sandbox (sandboxKind !== "centrifugo" is NOT enough after

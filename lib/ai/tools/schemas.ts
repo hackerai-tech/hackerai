@@ -212,6 +212,7 @@ Usage:
 - deliveryReceipts confirm storage, not that a package runs or satisfies the requested behavior
 - Files larger than 250 MB cannot be shared; reduce, split, or exclude bulky generated/dependency directories before sharing
 - Use this after generating reports, saving scan results, or creating any files the user needs to access
+- Finish file creation and check its exit status before requesting delivery. Do not put dependent creation, packaging, and delivery calls in the same parallel tool batch
 - Multiple files can be shared in a single call`,
     inputSchema: z.object({
       brief: createToolBriefSchema({ modelName }),
