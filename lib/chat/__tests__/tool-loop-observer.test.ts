@@ -64,6 +64,7 @@ describe("ToolLoopObserver", () => {
             recordPath: `/records/session-${i}.json`,
             pid: 100 + i,
             rawSnapshot: `replay-${i}`,
+            callTiming: { startedAt: `time-${i}`, elapsedMs: i * 100 },
             executionEnvironment: "cloud",
             workingDirectory: "/home/user",
           },
@@ -106,6 +107,54 @@ describe("ToolLoopObserver", () => {
         ),
       ).toBeUndefined();
     }
+  });
+
+  it("detects mixed terminal steps despite fresh timing on interactive results", () => {
+    const observer = new ToolLoopObserver();
+    let observation;
+    for (let i = 0; i < 3; i++) {
+      observation = observer.observe(
+        [
+          {
+            toolCallId: "exec",
+            toolName: "run_terminal_cmd",
+            input: { command: "check" },
+          },
+          {
+            toolCallId: "view",
+            toolName: "interact_terminal_session",
+            input: { action: "view", session: "existing" },
+          },
+        ],
+        [
+          {
+            toolCallId: "exec",
+            output: {
+              result: {
+                output: "unchanged",
+                exitCode: 1,
+                callTiming: { elapsedMs: i },
+              },
+            },
+          },
+          {
+            toolCallId: "view",
+            output: {
+              result: {
+                output: "unchanged",
+                callTiming: { startedAt: String(i), elapsedMs: i * 10 },
+              },
+            },
+          },
+        ],
+        tools,
+      );
+    }
+    expect(observation).toEqual({
+      toolNames: ["run_terminal_cmd", "interact_terminal_session"],
+      repeatCount: 3,
+      cycleLength: 1,
+    });
   });
 
   it("does not confuse changed output with stalled work", () => {
