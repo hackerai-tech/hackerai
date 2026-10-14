@@ -1750,6 +1750,30 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(lookupIdx).toBeGreaterThan(lookupGuardIdx);
   });
 
+  test("goal continuation claims ownership before persisting a fresh hidden model turn", () => {
+    const claim = taskSrc.indexOf("goalApi.agentGoals.claimRun");
+    const eligibility = taskSrc.indexOf(
+      "await assertGoalExecutionAllowed(payload)",
+      claim,
+    );
+    const continuation = taskSrc.indexOf(
+      "if (isAutomaticContinuation)",
+      eligibility,
+    );
+    const hiddenMessage = taskSrc.indexOf(
+      "id: `goal-continue:${ctx.run.id}`",
+      continuation,
+    );
+    const history = taskSrc.indexOf("getMessagesByChatId({", hiddenMessage);
+    expect(claim).toBeGreaterThan(-1);
+    expect(eligibility).toBeGreaterThan(claim);
+    expect(continuation).toBeGreaterThan(eligibility);
+    expect(hiddenMessage).toBeGreaterThan(continuation);
+    expect(history).toBeGreaterThan(hiddenMessage);
+    expect(taskSrc.slice(hiddenMessage, history)).toMatch(/role: "user"/);
+    expect(taskSrc.slice(hiddenMessage, history)).toMatch(/isHidden: true/);
+  });
+
   test("persistent goals suppress the separate client auto-continue loop", () => {
     expect(taskSrc).toMatch(
       /if \(\s*!activeGoal\s*&&\s*autoContinueStopSource[\s\S]{0,100}!isAutomaticContinuation\s*\) \{\s*writeAutoContinue/,

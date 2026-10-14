@@ -1941,6 +1941,27 @@ export const agentLongTask = task({
         if (!activeGoal) return { chatId, assistantMessageId };
         goalClaimed = true;
         await assertGoalExecutionAllowed(payload);
+        if (isAutomaticContinuation) {
+          // The previous slice ended with an assistant turn. Persist the same
+          // kind of hidden user nudge as ordinary auto-continue so providers
+          // begin a fresh turn instead of completing the old assistant prefix.
+          await saveMessage({
+            chatId,
+            userId,
+            message: {
+              id: `goal-continue:${ctx.run.id}`,
+              role: "user",
+              parts: [
+                {
+                  type: "text",
+                  text: `Automatic goal continuation: begin work slice ${activeGoal.runs} of ${activeGoal.maxRuns}. Continue from the saved goal progress and latest chat history. Do not restart completed work. Work only within the original scope and approvals, and save a new goal_checkpoint before ending.`,
+                },
+              ],
+            },
+            mode: "agent",
+            isHidden: true,
+          });
+        }
       }
       if (
         (agentPermissionMode === "ask_approval" ||
