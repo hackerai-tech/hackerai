@@ -104,7 +104,15 @@ export async function judgeGoalCompletion(
           reason: z.string().trim().min(1).max(500),
         }),
       }),
-      providerOptions: AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
+      providerOptions: {
+        ...AGENT_AUTO_REVIEW_PROVIDER_OPTIONS,
+        openrouter: {
+          ...AGENT_AUTO_REVIEW_PROVIDER_OPTIONS.openrouter,
+          // The Standard provider requires reasoning; disabling it rejects
+          // completion checks before generation. Keep work bounded below.
+          reasoning: { effort: "low" },
+        },
+      },
       maxOutputTokens: 700,
       maxRetries: 0,
       temperature: 0,

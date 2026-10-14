@@ -11,7 +11,9 @@ jest.mock("@/lib/ai/providers", () => ({
 }));
 jest.mock("@/lib/chat/agent-auto-review", () => ({
   AGENT_AUTO_REVIEW_MODEL: "standard",
-  AGENT_AUTO_REVIEW_PROVIDER_OPTIONS: {},
+  AGENT_AUTO_REVIEW_PROVIDER_OPTIONS: {
+    openrouter: { reasoning: { enabled: false }, models: ["fallback"] },
+  },
 }));
 jest.mock("@/lib/provider-usage-cost", () => ({
   getProviderUsageRawModelCost: () => 0.004,
@@ -79,6 +81,10 @@ describe("independent goal completion check", () => {
     );
     expect(call.tools).toBeUndefined();
     expect(call.maxRetries).toBe(0);
+    expect(call.providerOptions.openrouter.reasoning).toEqual({
+      effort: "low",
+    });
+    expect(call.providerOptions.openrouter.models).toEqual(["fallback"]);
     expect(cost).toHaveBeenCalledWith(0.004);
   });
   it("continues without spending on a judge when a verification gate fails", async () => {
