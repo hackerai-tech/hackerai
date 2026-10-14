@@ -3,8 +3,9 @@ const REDACTED_VALUE = "[Redacted]";
 const SENSITIVE_FIELD_PATTERN =
   /(["']?\b(?:serviceKey|service_key|apiKey|api_key|authorization|bearer|cookie|password|secret|token)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
 
+// Redact every conventional environment assignment, not a small provider list.
 const ENV_SECRET_PATTERN =
-  /(["']?\b(?:CONVEX_SERVICE_ROLE_KEY|POSTHOG_API_KEY|STRIPE_SECRET_KEY)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi;
+  /(["']?\b(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+)\b["']?)(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/g;
 
 const URL_PATTERN = /https?:\/\/[^\s"<>\\]+/gi;
 const SIGNED_URL_CREDENTIAL_PATTERN =

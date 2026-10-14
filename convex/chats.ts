@@ -1,8 +1,8 @@
 import { snapshotSkillSelection } from "./userSkills";
 import { scheduleFileDeletion } from "./lib/fileDeletion";
 import { deleteModelHistory } from "./modelHistory";
-import { query, mutation, internalMutation } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import { query, mutation, internalMutation } from "./lib/serviceFunctions";
+import type { MutationCtx } from "./lib/serviceFunctions";
 import type { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError, type Value } from "convex/values";
 import { paginationOptsValidator } from "convex/server";

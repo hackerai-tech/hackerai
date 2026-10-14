@@ -50,6 +50,7 @@ jest.mock("@/lib/posthog/server", () => ({
 
 import { phLogger } from "@/lib/posthog/server";
 import { InvalidArgumentError } from "@e2b/code-interpreter";
+import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import { createInteractTerminalSession } from "../interact-terminal-session";
 import { spawn } from "node:child_process";
@@ -394,6 +395,8 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         workingDirectory: "/tmp/fixture",
       });
       expect(recovered.result.output).toContain("FINAL_EVIDENCE");
+      expect(running.result.callTiming.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(recovered.result.callTiming.elapsedMs).toBeGreaterThanOrEqual(0);
       expect(sandbox.commands.run).toHaveBeenCalledTimes(countBeforeRecovery);
 
       const abort = new AbortController();
@@ -513,23 +516,55 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
-  test("makes running session status explicit in model output", async () => {
+  test("keeps timing in saved results but excludes it from live and rebuilt model output", async () => {
     const { context } = makeContext({ sandbox: null });
     const tool = createRunTerminalCmd(context);
 
-    await expect(
-      getModelOutput(tool, {
-        result: {
-          session: "session-abc",
-          pid: 4321,
-          output: "server starting\n",
-          rawSnapshot: "raw terminal bytes",
+    const output = {
+      result: {
+        session: "session-abc",
+        pid: 4321,
+        output: "server starting\n",
+        rawSnapshot: "raw terminal bytes",
+        callTiming: {
+          startedAt: "fixture-start",
+          finishedAt: "fixture-end",
+          elapsedMs: 123,
         },
-      }),
-    ).resolves.toEqual({
+      },
+    };
+    const modelOutput = await getModelOutput(tool, output);
+    expect(modelOutput).toEqual({
       type: "text",
       value:
         'Process running with session ID session-abc\n{"result":{"session":"session-abc","pid":4321,"output":"server starting\\n"}}',
+    });
+    const history = await convertToModelMessages(
+      [
+        {
+          id: "assistant-fixture",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-run_terminal_cmd",
+              toolCallId: "fixture-call",
+              state: "output-available",
+              input: { command: "fixture" },
+              output,
+            },
+          ],
+        },
+      ] as UIMessage[],
+      { tools: { run_terminal_cmd: tool } },
+    );
+    expect(history[1]).toMatchObject({
+      role: "tool",
+      content: [{ output: modelOutput }],
+    });
+    expect(output.result.callTiming).toEqual({
+      startedAt: "fixture-start",
+      finishedAt: "fixture-end",
+      elapsedMs: 123,
     });
   });
 

@@ -1,4 +1,4 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";

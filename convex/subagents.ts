@@ -7,7 +7,7 @@ import {
   query,
   type MutationCtx,
   type QueryCtx,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 import {
   MAX_ACTIVE_SUBAGENTS_PER_PARENT_RUN,

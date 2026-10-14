@@ -868,12 +868,12 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     expect(agentRouteErrorsSrc).toMatch(/handleAgentRouteError/);
   });
 
-  test("uses a four-hour task cap for every subscription tier", () => {
+  test("uses a six-hour task cap for every subscription tier", () => {
     expect(taskSrc).toMatch(
-      /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*4\s*\*\s*60\s*\*\s*60/,
+      /AGENT_LONG_FREE_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
-      /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*4\s*\*\s*60\s*\*\s*60/,
+      /AGENT_LONG_PAID_MAX_DURATION_SECONDS\s*=\s*6\s*\*\s*60\s*\*\s*60/,
     );
     expect(taskSrc).toMatch(
       /AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS\s*=\s*AGENT_LONG_PAID_MAX_DURATION_SECONDS/,

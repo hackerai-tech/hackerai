@@ -2,7 +2,7 @@ import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 
 const mockApplyUnitEconomicsDelta = jest.fn();
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),
 }));

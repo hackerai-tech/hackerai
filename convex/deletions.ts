@@ -4,7 +4,7 @@ import {
   internalQuery,
   query,
   type QueryCtx,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import type { Doc } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 

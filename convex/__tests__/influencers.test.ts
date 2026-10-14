@@ -1,4 +1,4 @@
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: (x: unknown) => x,
   query: (x: unknown) => x,
 }));

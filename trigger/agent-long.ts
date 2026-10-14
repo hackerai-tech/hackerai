@@ -345,8 +345,8 @@ import {
   buildAgentToolApprovalRequester,
 } from "@/lib/chat/agent-tool-approval-requester";
 
-const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 4 * 60 * 60;
-const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 4 * 60 * 60;
+const AGENT_LONG_FREE_MAX_DURATION_SECONDS = 6 * 60 * 60;
+const AGENT_LONG_PAID_MAX_DURATION_SECONDS = 6 * 60 * 60;
 const AGENT_LONG_CLEANUP_GRACE_MS = 2 * 60 * 1000;
 const AGENT_LONG_RUNTIME_SETTLEMENT_WATCHDOG_MS = 30 * 1000;
 const AGENT_LONG_TRIGGER_MAX_DURATION_SECONDS =
@@ -1773,6 +1773,7 @@ export const agentLongTask = task({
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
       endpoint,
+      requestId: ctx.run.id,
     });
     chatLogger.setRequestDetails({
       mode,

@@ -1,5 +1,5 @@
 import { v, ConvexError } from "convex/values";
-import { type MutationCtx, mutation, query } from "./_generated/server";
+import { type MutationCtx, mutation, query } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 import { isUserDeletionFenced } from "./lib/userDeletionFence";
 import {

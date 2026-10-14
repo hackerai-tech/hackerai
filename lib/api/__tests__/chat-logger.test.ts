@@ -1,5 +1,9 @@
 import { agentRunEventUuid } from "@/lib/analytics/agent-run-reporting";
 import { describe, expect, it, jest } from "@jest/globals";
+import fs from "fs";
+import path from "path";
+import vm from "vm";
+import ts from "typescript";
 
 (globalThis as any).Request = class Request {};
 (globalThis as any).Response = class Response {};
@@ -19,6 +23,75 @@ const {
 } = require("../chat-logger");
 const { ChatSDKError } = require("../../errors");
 const { phLogger } = require("../../posthog/server");
+
+it("correlates provider errors and final outcomes to distinct Agent runs in one chat", () => {
+  const source = ts.createSourceFile(
+    "agent-long.ts",
+    fs.readFileSync(
+      path.resolve(__dirname, "../../../trigger/agent-long.ts"),
+      "utf8",
+    ),
+    ts.ScriptTarget.Latest,
+    true,
+  );
+  const initializers: ts.CallExpression[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "createChatLogger"
+    ) {
+      initializers.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(initializers).toHaveLength(1);
+
+  const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+  const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+  const phErrorSpy = jest.spyOn(phLogger, "error").mockImplementation(() => {});
+  const runIds = ["run_first", "run_second"];
+  try {
+    for (const id of runIds) {
+      // Execute the real caller's initializer and logger, without importing
+      // the task's external services or mocking its diagnostic behavior.
+      const chatLogger = vm.runInNewContext(initializers[0].getText(source), {
+        createChatLogger,
+        chatId: "shared-chat",
+        endpoint: "/api/agent",
+        ctx: { run: { id } },
+      });
+      chatLogger.recordProviderError(
+        Object.assign(new Error("Invalid provider request"), {
+          statusCode: 400,
+        }),
+        { mode: "agent", model: "model-abliterated" },
+      );
+      chatLogger.emitSuccess({
+        finishReason: "stop",
+        wasAborted: false,
+        wasPreemptiveTimeout: false,
+        hadSummarization: false,
+      });
+    }
+
+    expect(
+      phErrorSpy.mock.calls.map(([, fields]) => fields.request_id),
+    ).toEqual(runIds);
+    expect(phErrorSpy.mock.calls.map(([, fields]) => fields.chatId)).toEqual([
+      "shared-chat",
+      "shared-chat",
+    ]);
+    expect(
+      logSpy.mock.calls.map(([entry]) => JSON.parse(String(entry)).request_id),
+    ).toEqual(runIds);
+  } finally {
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+    phErrorSpy.mockRestore();
+  }
+});
 
 it("emits the complete model history in the final request event", () => {
   const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});

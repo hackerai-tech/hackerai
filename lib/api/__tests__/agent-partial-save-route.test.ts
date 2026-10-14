@@ -144,6 +144,198 @@ describe("createAgentPartialSavePost", () => {
     warnSpy.mockRestore();
   });
 
+  const diagnosticUser = "user_01KPNCS7R5VE7QQSVFXMC7ENKK";
+  const diagnosticBody = {
+    ...validBody,
+    chatId: "00000000-0000-4000-8000-000000000001",
+    triggerRunId: "run_06gjlhptp1ugo15aeb9b75d4c1",
+    runCorrelationToken: "PRIVATE_CORRELATION_CANARY",
+    message: {
+      ...validBody.message,
+      parts: [{ type: "text", text: "PRIVATE_MESSAGE_CANARY" }],
+    },
+  };
+  const diagnosticRequestId = "96gzc-1791986448417-ffa75b7dd65b";
+
+  it("attributes an early failed read without consuming or logging the body", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    mockGetUserID.mockResolvedValue(diagnosticUser as never);
+    mockAssertUserCanAccessChatHistory.mockRejectedValue(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("PRIVATE_ERROR_CANARY"), {
+          code: "ECONNRESET",
+        }),
+      }) as never,
+    );
+    const req = request(diagnosticBody, {
+      "x-vercel-id": diagnosticRequestId,
+    });
+
+    const response = await createAgentPartialSavePost()(req);
+    const output = String(errorSpy.mock.calls[0][0]);
+    const event = JSON.parse(output);
+
+    expect(response.status).toBe(500);
+    expect(req.text).not.toHaveBeenCalled();
+    expect(mockGetChatById).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(event).toMatchObject({
+      stage: "history_access",
+      reason: "network_fetch_failed",
+      transport_code: "ECONNRESET",
+      request_id: diagnosticRequestId,
+      user_id: diagnosticUser,
+      message_save_completed: false,
+      run_correlation_verified: false,
+    });
+    expect(event.requested_chat_id).toBeUndefined();
+    expect(event.trigger_run_id).toBeUndefined();
+    expect(output).not.toContain("PRIVATE_");
+  });
+
+  it("correlates a chat lookup failure without trusting the client run or exposing error data", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    mockGetChatById.mockRejectedValue(
+      Object.assign(new Error("PRIVATE_ERROR_CANARY"), {
+        data: { serviceKey: "PRIVATE_SERVICE_CANARY" },
+      }) as never,
+    );
+
+    const response = await createAgentPartialSavePost()(
+      request(diagnosticBody),
+    );
+    const output = String(errorSpy.mock.calls[0][0]);
+    const event = JSON.parse(output);
+
+    expect(response.status).toBe(500);
+    expect(event.stage).toBe("chat_lookup");
+    expect(event.requested_chat_id).toBe(diagnosticBody.chatId);
+    expect(event.trigger_run_id).toBeUndefined();
+    expect(event.run_correlation_verified).toBe(false);
+    expect(mockVerifyAgentRunCorrelationToken).not.toHaveBeenCalled();
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(output).not.toContain("PRIVATE_");
+  });
+
+  it("distinguishes a post-save update failure without retrying the message write", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    mockGetChatById.mockResolvedValue(
+      chat({ id: diagnosticBody.chatId }) as never,
+    );
+    mockUpdateChat.mockRejectedValue(
+      new Error("PRIVATE_ERROR_CANARY") as never,
+    );
+
+    const response = await createAgentPartialSavePost()(
+      request(diagnosticBody),
+    );
+    const output = String(errorSpy.mock.calls[0][0]);
+    const event = JSON.parse(output);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      saved: false,
+      message: "Failed to save partial response",
+    });
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(event.stage).toBe("update_chat");
+    expect(event.message_save_completed).toBe(true);
+    expect(event.trigger_run_id).toBe(diagnosticBody.triggerRunId);
+    expect(event.run_correlation_verified).toBe(true);
+    expect(output).not.toContain("PRIVATE_");
+  });
+
+  it.each([
+    ["chat_lookup", "bad_request:database", 400],
+    ["chat_lookup", "offline:database", 503],
+    ["save_message", "bad_request:database", 400],
+    ["save_message", "offline:database", 503],
+    ["update_chat", "bad_request:database", 400],
+    ["update_chat", "offline:database", 503],
+  ] as const)(
+    "logs wrapped %s failures while preserving the %s response",
+    async (stage, code, status) => {
+      const { createAgentPartialSavePost } =
+        await import("@/lib/api/agent-partial-save-route");
+      const error = new ChatSDKError(code, "Database temporarily unavailable", {
+        db_error_message: "PRIVATE_ERROR_CANARY",
+        serviceKey: "PRIVATE_SERVICE_CANARY",
+      });
+      mockGetChatById.mockResolvedValue(
+        chat({ id: diagnosticBody.chatId }) as never,
+      );
+      const failingOperation =
+        stage === "chat_lookup"
+          ? mockGetChatById
+          : stage === "save_message"
+            ? mockSaveMessage
+            : mockUpdateChat;
+      failingOperation.mockRejectedValue(error as never);
+      const toResponse = jest.spyOn(error, "toResponse");
+
+      const response = await createAgentPartialSavePost()(
+        request(diagnosticBody),
+      );
+      const output = String(errorSpy.mock.calls[0][0]);
+      const event = JSON.parse(output);
+
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({
+        code: "",
+        message: "Something went wrong. Please try again later.",
+      });
+      expect(toResponse).toHaveBeenCalledTimes(1);
+      expect(event).toMatchObject({
+        event: "agent_long_client_partial_save_failed",
+        stage,
+        status_code: status,
+        reason: "database_error",
+        error_type: "ChatSDKError",
+        run_correlation_verified: stage !== "chat_lookup",
+        message_save_completed: stage === "update_chat",
+      });
+      expect(event.trigger_run_id).toBe(
+        stage === "chat_lookup" ? undefined : diagnosticBody.triggerRunId,
+      );
+      expect(mockSaveMessage).toHaveBeenCalledTimes(
+        stage === "chat_lookup" ? 0 : 1,
+      );
+      expect(output).not.toContain("PRIVATE_");
+    },
+  );
+
+  it.each([
+    "PRIVATE_HEADER_CANARY",
+    `${"a".repeat(1024)}::${diagnosticRequestId}`,
+  ])(
+    "omits arbitrary client identifiers and unbounded header values from failure logs",
+    async (requestId) => {
+      const { createAgentPartialSavePost } =
+        await import("@/lib/api/agent-partial-save-route");
+      mockGetChatById.mockRejectedValue(
+        new Error("PRIVATE_ERROR_CANARY") as never,
+      );
+      const response = await createAgentPartialSavePost()(
+        request(
+          { ...diagnosticBody, chatId: "PRIVATE_CHAT_CANARY" },
+          { "x-vercel-id": requestId },
+        ),
+      );
+      const output = String(errorSpy.mock.calls[0][0]);
+      const event = JSON.parse(output);
+
+      expect(response.status).toBe(500);
+      expect(event.request_id).toBeUndefined();
+      expect(event.requested_chat_id).toBeUndefined();
+      expect(event.trigger_run_id).toBeUndefined();
+      expect(output).not.toContain("PRIVATE_");
+      expect(output.length).toBeLessThan(1024);
+    },
+  );
+
   it("saves a valid assistant partial snapshot for the owning user", async () => {
     const { createAgentPartialSavePost } =
       await import("@/lib/api/agent-partial-save-route");

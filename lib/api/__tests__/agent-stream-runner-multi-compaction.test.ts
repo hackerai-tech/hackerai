@@ -132,12 +132,15 @@ jest.mock("@/lib/chat/compaction/prune-tool-outputs", () => ({
   }),
 }));
 jest.mock("@/lib/chat/multimodal-tool-result-recovery", () => ({
-  isProviderMultimodalToolResultRejectionError: () => false,
+  isProviderMultimodalToolResultRejectionError: (error: unknown) =>
+    jest
+      .requireActual("@/lib/chat/multimodal-tool-result-recovery")
+      .isProviderMultimodalToolResultRejectionError(error),
   toolResultsContainImageViewResult: (toolResults: unknown[]) =>
     jest
       .requireActual("@/lib/chat/multimodal-tool-result-recovery")
       .toolResultsContainImageViewResult(toolResults),
-  uiMessagesContainImageViewResult: () => false,
+  uiMessagesContainImageViewResult: jest.fn(() => false),
 }));
 jest.mock("@/lib/ai/providers", () => ({
   isAnthropicModel: () => false,
@@ -969,6 +972,120 @@ describe("createAgentStream repeated compaction", () => {
     await stream.onError({ error: new TypeError("terminated") });
     expect(state.providerErrorMetadata).toEqual({});
   });
+
+  it.each([
+    ["ask", "/api/chat", true, false],
+    ["agent", "/api/agent-long", true, false],
+    ["ask", "/api/chat", false, false],
+    ["agent", "/api/agent-long", false, false],
+    ["agent", "/api/agent-long", true, true],
+  ])(
+    "handles HTTP415 in %s at %s (tool image: %s, cancelled: %s)",
+    async (mode, endpoint, hasToolImage, cancelled) => {
+      const mediaRecovery = jest.requireActual(
+        "@/lib/chat/multimodal-tool-result-recovery",
+      );
+      const containsImage = jest.mocked(
+        require("@/lib/chat/multimodal-tool-result-recovery")
+          .uiMessagesContainImageViewResult,
+      );
+      containsImage.mockImplementation(
+        mediaRecovery.uiMessagesContainImageViewResult,
+      );
+      const upload = {
+        id: "original-upload",
+        role: "user",
+        parts: [
+          {
+            type: "file",
+            mediaType: "image/png",
+            url: "https://example.test/original.png",
+          },
+        ],
+      } as UIMessage;
+      const completedTool = {
+        type: "tool-terminal",
+        toolCallId: "completed-command",
+        state: "output-available",
+        output: { stdout: "Completed once", exitCode: 0 },
+      };
+      const messages = [
+        upload,
+        {
+          id: "assistant-tools",
+          role: "assistant",
+          parts: [
+            { type: "step-start" },
+            completedTool,
+            ...(hasToolImage
+              ? [
+                  {
+                    type: "tool-file",
+                    toolCallId: "completed-image-view",
+                    state: "output-available",
+                    output: {
+                      action: "view",
+                      kind: "image",
+                      mediaType: "image/png",
+                      data: "synthetic-image",
+                    },
+                  },
+                ]
+              : []),
+          ],
+        },
+      ] as UIMessage[];
+      const state = initAgentStreamState(messages, {
+        usedTokens: 1_000,
+        maxTokens: 128_000,
+      });
+      const controller = new AbortController();
+      try {
+        const stream = (await createAgentStream(
+          "test-model",
+          createTestStreamContext({
+            mode,
+            endpoint,
+            abortController: controller,
+            usageTracker: { hasUsage: true },
+            summarizationTracker: {
+              hasSummarized: false,
+              summarizationCount: 0,
+            },
+          }) as any,
+          state,
+        )) as any;
+        if (cancelled) controller.abort();
+        await stream.onError({
+          error: { code: 415, message: "URL did not return an image" },
+        });
+        expect(state.providerRejectedMultimodalToolResults).toBe(
+          hasToolImage && !cancelled,
+        );
+        if (!state.providerRejectedMultimodalToolResults) return;
+
+        const recovered =
+          mediaRecovery.omitImageViewToolResultsForProviderRetry(
+            state.finalMessages,
+          );
+        expect(recovered.omittedCount).toBe(1);
+        expect(recovered.messages[0]).toBe(upload);
+        expect(recovered.messages[1].parts[1]).toBe(completedTool);
+        expect(recovered.messages[1].parts[2]).toMatchObject({
+          toolCallId: "completed-image-view",
+          state: "output-available",
+          output: { imageOmittedAfterProviderRejection: true },
+        });
+        expect(
+          mediaRecovery.omitImageViewToolResultsForProviderRetry(
+            recovered.messages,
+          ).omittedCount,
+        ).toBe(0);
+      } finally {
+        containsImage.mockImplementation(() => false);
+      }
+    },
+  );
 
   it.each([true, false, null])(
     "samples one start across retries and keeps initial assignment %s",

@@ -6,7 +6,7 @@ import { v } from "convex/values";
 
 import type { AgentEntitlementClients } from "../lib/auth/agent-auto-review-entitlements";
 import { resolveCurrentAgentEntitlementContext } from "../lib/auth/agent-auto-review-entitlements";
-import { action } from "./_generated/server";
+import { action } from "./lib/serviceFunctions";
 import { validateServiceKey } from "./lib/utils";
 
 const subscriptionTierValidator = v.union(

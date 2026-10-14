@@ -3,7 +3,7 @@ import {
   mutation,
   query,
   type MutationCtx,
-} from "./_generated/server";
+} from "./lib/serviceFunctions";
 import type { Doc } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";

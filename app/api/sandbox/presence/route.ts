@@ -7,7 +7,7 @@ import {
 import { trackPresenceTraffic } from "@/lib/centrifugo/presence-traffic";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
-import { ConvexHttpClient } from "convex/browser";
+import { createServiceConvexClient } from "@/lib/db/service-client";
 import { api } from "@/convex/_generated/api";
 import { phLogger } from "@/lib/posthog/server";
 import { sandboxConnectionChannel } from "@/lib/centrifugo/types";
@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const convex = new ConvexHttpClient(convexUrl);
+  const convex = createServiceConvexClient(convexUrl);
   const connections = await convex.query(
     api.localSandbox.listConnectionsForBackend,
     { serviceKey, userId },

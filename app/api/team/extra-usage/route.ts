@@ -3,6 +3,16 @@ import { workos } from "../../workos";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { api } from "@/convex/_generated/api";
 import { requireAdminOrg } from "../team-auth";
+import { z } from "zod";
+import { stringifyRedactedError } from "@/lib/utils/error-redaction";
+
+const settingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  autoReloadEnabled: z.boolean().optional(),
+  autoReloadThresholdDollars: z.number().finite().optional(),
+  autoReloadAmountDollars: z.number().finite().optional(),
+  monthlyCapDollars: z.number().finite().nullable().optional(),
+});
 
 /**
  * GET /api/team/extra-usage
@@ -60,10 +70,14 @@ export const GET = async (req: NextRequest) => {
       members,
     });
   } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "An error occurred";
-    console.error("Failed to fetch team extra-usage state:", error);
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    console.error(
+      "Failed to fetch team extra-usage state:",
+      stringifyRedactedError(error),
+    );
+    return NextResponse.json(
+      { error: "Unable to load team usage settings" },
+      { status: 500 },
+    );
   }
 };
 
@@ -86,7 +100,14 @@ export const POST = async (req: NextRequest) => {
       monthlyCapDollars?: number | null;
     };
     try {
-      body = await req.json();
+      const parsed = settingsSchema.safeParse(await req.json());
+      if (!parsed.success) {
+        return NextResponse.json(
+          { error: "Invalid usage settings" },
+          { status: 400 },
+        );
+      }
+      body = parsed.data;
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
     }
@@ -106,9 +127,13 @@ export const POST = async (req: NextRequest) => {
 
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
-    const errorMessage =
-      error instanceof Error ? error.message : "An error occurred";
-    console.error("Failed to update team extra-usage settings:", error);
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    console.error(
+      "Failed to update team extra-usage settings:",
+      stringifyRedactedError(error),
+    );
+    return NextResponse.json(
+      { error: "Unable to update team usage settings" },
+      { status: 500 },
+    );
   }
 };
