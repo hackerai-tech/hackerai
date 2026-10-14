@@ -23,6 +23,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { AgentGoalPanel } from "./AgentGoalPanel";
 import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
@@ -809,6 +810,10 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
 
   const activeTriggerRunId = (chatDataForCurrentChat as any)
     ?.active_trigger_run_id as string | undefined;
+  const persistedGoal = useQuery(
+    api.agentGoals.get,
+    chatDataForCurrentChat ? { chatId } : "skip",
+  );
   // The pending request is its own persisted lifecycle. Do not gate it on the
   // run id: Convex can publish those fields in separate snapshots during
   // reload, and hiding an otherwise-pending request briefly shows the composer.
@@ -2231,6 +2236,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
     isExistingChat,
     status,
     isSendingNowRef,
+    goalState: persistedGoal?.state,
     hasManuallyStoppedRef,
     activeTriggerRunRef: cancellationTriggerRunRef,
     resumeActiveRun: resumeStream,
@@ -2414,6 +2420,31 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               isExistingChat={isExistingChat}
               isChatNotFound={isChatNotFound}
               branchedFromChatTitle={branchedFromChatTitle}
+            />
+
+            <AgentGoalPanel
+              key={chatId}
+              chatId={chatId}
+              exists={!!chatDataForCurrentChat}
+              eligible={chatMode === "agent" && subscription !== "free"}
+              idle={
+                status === "ready" &&
+                !activeTriggerRunId &&
+                messageQueue.length === 0
+              }
+              disabledReason={computerSendDisabledReason}
+              send={async (message, options) => {
+                hasManuallyStoppedRef.current = false;
+                resetAutoContinueCount();
+                if (!isExistingChat)
+                  window.history.replaceState({}, "", `/c/${chatId}`);
+                await sendMessage(message, options);
+              }}
+              settings={{
+                sandboxPreference,
+                agentPermissionMode,
+                selectedModel: requestSelectedModel,
+              }}
             />
 
             {/* Chat interface */}
