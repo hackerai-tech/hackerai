@@ -1004,6 +1004,7 @@ export async function createAgentStream(
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
     compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
+  let namelessToolCallRepairReported = false;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
@@ -1027,6 +1028,35 @@ export async function createAgentStream(
         : telemetryModel,
     );
     const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
+      onPromptRepaired: (report) => {
+        if (namelessToolCallRepairReported) return;
+        namelessToolCallRepairReported = true;
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "provider_prompt_tool_name_repaired",
+            reason: "empty_tool_name",
+            model: activeStepModelName,
+            step: stepIndex + 1,
+            mode: ctx.mode,
+            user_id: /^user_[0-9A-HJKMNP-TV-Z]{26}$/.test(ctx.userId)
+              ? ctx.userId
+              : undefined,
+            chat_id:
+              /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+                ctx.chatId,
+              )
+                ? ctx.chatId
+                : undefined,
+            trigger_run_id:
+              ctx.triggerRunId && /^run_[a-z0-9]{20,32}$/.test(ctx.triggerRunId)
+                ? ctx.triggerRunId
+                : undefined,
+            removed_tool_call_count: report.removedToolCallCount,
+            removed_tool_result_count: report.removedToolResultCount,
+          }),
+        );
+      },
       onToolCallsDropped: ({ droppedToolCallCount, maxToolCalls }) => {
         console.warn("[agent-stream] provider tool calls bounded", {
           event: "provider_tool_call_guard_applied",
