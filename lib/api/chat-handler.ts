@@ -412,7 +412,9 @@ export const createChatHandler = () => {
         country: freeAgentDailyCountryFromRequest(req),
         quotaSubject: freeUsageSubject,
       });
-      await enforceFreeAgentDailyStatus(freeAgentDailyStatus, userId, "agent");
+      await enforceFreeAgentDailyStatus(freeAgentDailyStatus, userId, "agent", {
+        defer: after,
+      });
       const userLocation = geolocation(req);
       const { triggerRegion: executionRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);

@@ -2307,6 +2307,7 @@ export const agentLongTask = task({
               freeAgentDailyStatus,
               userId,
               "agent_worker",
+              { client: posthog },
             );
 
             const freeMonthlyBudgetSnapshot =

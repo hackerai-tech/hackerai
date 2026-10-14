@@ -8,7 +8,7 @@ import {
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
 import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
@@ -560,6 +560,7 @@ export const createAgentTriggerPost =
         }),
         userId,
         "agent",
+        { defer: after },
       );
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =

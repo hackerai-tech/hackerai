@@ -117,7 +117,7 @@ export function FreeAgentDailyAllowance({
         className="mx-auto mt-2 flex max-w-3xl flex-wrap items-center gap-2 px-4 text-sm text-muted-foreground"
         data-testid="free-agent-daily-allowance"
       >
-        <p className="min-w-0 flex-1">
+        <p className="min-w-0 w-full sm:w-auto sm:flex-1">
           {status.completed
             ? `You've used today's free Agent allowance. Resets ${resetLabel}.`
             : "Free Agent includes one completed response per day, within your existing usage limits. Failed starts don't use this allowance."}

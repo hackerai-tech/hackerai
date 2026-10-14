@@ -169,3 +169,41 @@ it("records idempotently on completion day and unlocks at UTC midnight", async (
   await getFreeAgentDailyStatus(input);
   expect(mockGet.mock.calls.at(-1)[0]).not.toBe(key);
 });
+
+it("defers route exposure delivery without delaying a quota decision, including blocked responses", async () => {
+  let flush: (() => Promise<void>) | undefined;
+  const defer = (callback: () => Promise<void>) => {
+    flush = callback;
+  };
+  const status = await getFreeAgentDailyStatus(input);
+  await enforceFreeAgentDailyStatus(status, "user", "agent", { defer });
+  expect(mockCapture).toHaveBeenCalled();
+  expect(mockFlush).not.toHaveBeenCalled();
+  await flush?.();
+  expect(mockFlush).toHaveBeenCalledTimes(1);
+  mockGet.mockResolvedValue("1");
+  await expect(
+    enforceFreeAgentDailyStatus(
+      await getFreeAgentDailyStatus(input),
+      "user",
+      "agent",
+      { defer },
+    ),
+  ).rejects.toMatchObject({ statusCode: 429 });
+  expect(mockFlush).toHaveBeenCalledTimes(1);
+  await flush?.();
+  expect(mockFlush).toHaveBeenCalledTimes(2);
+});
+it("uses the worker lifecycle client without flushing on the start path", async () => {
+  const capture = jest.fn();
+  const flush = jest.fn();
+  await enforceFreeAgentDailyStatus(
+    await getFreeAgentDailyStatus(input),
+    "user",
+    "agent_worker",
+    { client: { capture, flush } },
+  );
+  expect(capture).toHaveBeenCalled();
+  expect(flush).not.toHaveBeenCalled();
+  expect(mockCapture).not.toHaveBeenCalled();
+});

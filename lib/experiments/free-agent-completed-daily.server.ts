@@ -1,3 +1,4 @@
+import type { PostHog } from "posthog-node";
 import type { NextRequest } from "next/server";
 import PostHogClient from "@/app/posthog";
 import { ChatSDKError } from "@/lib/errors";
@@ -100,26 +101,40 @@ export async function enforceFreeAgentDailyStatus(
   status: FreeAgentDailyStatus | undefined,
   userId: string,
   surface: "agent" | "agent_worker",
+  delivery?:
+    | { defer: (flush: () => Promise<void>) => void }
+    | { client: Pick<PostHog, "capture" | "flush"> | null },
 ) {
   if (!status) return;
-  const posthog = PostHogClient();
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  // Workers pass their existing client, which is shut down in finally.
+  // Routes register the flush with Next's after(), including blocked responses.
+  const posthog =
+    delivery && "client" in delivery ? delivery.client : PostHogClient();
+  const flush = async () => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        posthog?.flush(),
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, 750);
+        }),
+      ]);
+    } catch {
+      // Telemetry failure must not alter the quota decision.
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
   try {
     posthog?.capture({
       distinctId: userId,
       event: FREE_AGENT_COMPLETED_DAILY_EXPOSURE,
       properties: freeAgentDailyExposureProperties(status.assignment, surface),
     });
-    await Promise.race([
-      posthog?.flush(),
-      new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, 750);
-      }),
-    ]);
+    if (delivery && "defer" in delivery) delivery.defer(flush);
+    else if (!delivery) await flush();
   } catch {
     // Telemetry failure must not alter the quota decision.
-  } finally {
-    clearTimeout(timeout);
   }
   if (status.assignment.variant !== "test" || !status.completed) return;
   const capReason = "free_agent_daily_completed";
