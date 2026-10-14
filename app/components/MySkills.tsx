@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useConvex, useConvexAuth, useMutation, useQuery } from "convex/react";
 import { BookOpen, Download, Pencil, Plus, Trash2, Upload } from "lucide-react";
@@ -75,6 +83,50 @@ const capture = (
     properties,
     dedupeKey: crypto.randomUUID(),
   });
+const SkillsManagerContext = createContext<(() => void) | undefined>(undefined);
+export const useSkillsManager = () => useContext(SkillsManagerContext);
+
+// Keep the editor mounted when the chat switches between its centered and mobile composers.
+export function SkillsManagerProvider({
+  children,
+  scopeKey,
+}: {
+  children: ReactNode;
+  scopeKey: string;
+}) {
+  const [manager, setManager] = useState({ scopeKey, open: false });
+  if (manager.scopeKey !== scopeKey) {
+    setManager({ scopeKey, open: false });
+  }
+  const open = manager.scopeKey === scopeKey && manager.open;
+  const setOpen = useCallback(
+    (value: boolean) => setManager({ scopeKey, open: value }),
+    [scopeKey],
+  );
+  const openManager = useCallback(() => setOpen(true), [setOpen]);
+  return (
+    <SkillsManagerContext.Provider value={openManager}>
+      {children}
+      {open && (
+        <MySkills
+          open
+          onOpenChange={(value) => {
+            setOpen(value);
+            if (!value)
+              requestAnimationFrame(() =>
+                document
+                  .querySelector<HTMLTextAreaElement>(
+                    'textarea[data-testid="chat-input"]',
+                  )
+                  ?.focus(),
+              );
+          }}
+        />
+      )}
+    </SkillsManagerContext.Provider>
+  );
+}
+
 const emptyDraft: SkillDraft = { name: "", description: "", content: "" };
 type Editor = {
   id?: Id<"user_skills">;
@@ -307,8 +359,8 @@ function SkillsControl({
             ) : (
               <div className="space-y-4">
                 {!!library?.length && (
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                       {library.length}{" "}
                       {library.length === 1 ? "skill" : "skills"}
                     </span>
@@ -417,10 +469,16 @@ function SkillsControl({
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="text-sm font-medium break-words">
+                            <p
+                              title={skill.name}
+                              className="line-clamp-2 text-sm font-medium break-words"
+                            >
                               {skill.name}
                             </p>
-                            <p className="text-sm text-muted-foreground break-words">
+                            <p
+                              title={skill.description}
+                              className="line-clamp-2 text-sm text-muted-foreground break-words"
+                            >
                               {skill.description}
                             </p>
                           </div>

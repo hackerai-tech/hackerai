@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MySkills } from "../MySkills";
+import { MySkills, SkillsManagerProvider, useSkillsManager } from "../MySkills";
 
 let mockUserId = "";
 let mockAuthenticated = true;
@@ -188,4 +188,42 @@ it("supports a library opened outside the picker without a duplicate trigger", a
   expect(screen.getByLabelText("Name")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
   expect(onOpenChange).toHaveBeenCalledWith(false);
+});
+
+it("preserves an unsaved editor when the composer remounts, and closes it on chat change", async () => {
+  function Composer() {
+    const open = useSkillsManager();
+    return <button onClick={open}>Open library</button>;
+  }
+  const { rerender } = render(
+    <SkillsManagerProvider scopeKey="chat-1">
+      <Composer key="desktop" />
+    </SkillsManagerProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Open library" }));
+  fireEvent.click(await screen.findByRole("button", { name: "New skill" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
+    target: { value: "Unsaved draft" },
+  });
+  fireEvent.change(
+    screen.getByRole("textbox", { name: "Methodology (Markdown)" }),
+    { target: { value: "Keep the draft" } },
+  );
+  rerender(
+    <SkillsManagerProvider scopeKey="chat-1">
+      <Composer key="mobile" />
+    </SkillsManagerProvider>,
+  );
+  expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue(
+    "Unsaved draft",
+  );
+  expect(
+    screen.getByRole("textbox", { name: "Methodology (Markdown)" }),
+  ).toHaveValue("Keep the draft");
+  rerender(
+    <SkillsManagerProvider scopeKey="chat-2">
+      <Composer key="mobile" />
+    </SkillsManagerProvider>,
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

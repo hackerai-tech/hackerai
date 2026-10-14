@@ -51,6 +51,7 @@ const mockSaving = jest.fn();
 const mockSubmit = jest.fn();
 jest.mock("../../MySkills", () => ({
   useSkillsAccess: () => mockAccess,
+  useSkillsManager: () => undefined,
   MySkills: ({
     open,
     onOpenChange,
@@ -268,4 +269,13 @@ it("closes the picker when opening the library and keeps the library mounted", a
   expect(screen.queryByRole("listbox", { name: "Skills" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
   expect(screen.getByRole("listbox", { name: "Skills" })).toBeVisible();
+});
+
+it("does not select a skill when moving keyboard focus backward", () => {
+  render(<Harness />);
+  fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
+  const search = screen.getByRole("combobox", { name: "Search skills" });
+  fireEvent.keyDown(search, { key: "Tab", shiftKey: true });
+  expect(mockSelect).not.toHaveBeenCalled();
+  expect(screen.getByRole("listbox")).toBeVisible();
 });

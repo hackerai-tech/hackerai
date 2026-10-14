@@ -24,7 +24,7 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "@/components/ui/popover";
-import { MySkills, useSkillsAccess } from "../MySkills";
+import { MySkills, useSkillsAccess, useSkillsManager } from "../MySkills";
 
 type Skill = { id: Id<"user_skills">; name: string; description: string };
 type SkillInput = {
@@ -54,6 +54,7 @@ export function ComposerSkillsProvider({
   children,
 }: Props) {
   const enabled = useSkillsAccess();
+  const openManager = useSkillsManager();
   const available = enabled && !!chatId;
   const library = useQuery(api.userSkills.list, available ? {} : "skip");
   const selection = useQuery(
@@ -220,7 +221,7 @@ export function ComposerSkillsProvider({
     }
     if (
       (event.key === "Enter" && !event.shiftKey) ||
-      (event.key === "Tab" && matches.length > 0)
+      (event.key === "Tab" && !event.shiftKey && matches.length > 0)
     ) {
       event.preventDefault();
       if (matches[activeIndex]) pick(matches[activeIndex]);
@@ -381,7 +382,8 @@ export function ComposerSkillsProvider({
               className="h-8 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:text-foreground"
               onClick={() => {
                 close();
-                setManagerOpen(true);
+                if (openManager) openManager();
+                else setManagerOpen(true);
               }}
             >
               <BookOpen className="size-3.5" />

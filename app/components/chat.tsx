@@ -23,6 +23,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import { SkillsManagerProvider } from "./MySkills";
 import { ComposerOverlay } from "./ComposerOverlay";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import ChatHeader from "./ChatHeader";
@@ -2365,7 +2366,7 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
       : !currentAgentRunUiId);
 
   return (
-    <>
+    <SkillsManagerProvider scopeKey={chatId}>
       <StreamEffects
         sendDisabledReason={computerSendDisabledReason}
         key={chatId}
@@ -2606,6 +2607,6 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
           </div>
         )}
       </div>
-    </>
+    </SkillsManagerProvider>
   );
 };
