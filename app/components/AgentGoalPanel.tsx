@@ -224,7 +224,7 @@ export function AgentGoalPanel({
               aria-expanded={expanded}
               aria-controls={detailsId}
               onClick={() => setExpanded(!expanded)}
-              className="flex min-w-0 flex-1 items-center gap-2 rounded-md p-1 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex min-w-0 flex-1 basis-full sm:basis-0 items-center gap-2 rounded-md p-1 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Target
                 className="size-4 shrink-0 text-muted-foreground"
@@ -248,7 +248,7 @@ export function AgentGoalPanel({
                 aria-hidden="true"
               />
             </button>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex w-full flex-wrap justify-end gap-1 empty:hidden sm:w-auto">
               {active &&
                 ["queued", "running", "needs_approval", "waiting"].includes(
                   goal.state,
