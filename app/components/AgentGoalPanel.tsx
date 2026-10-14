@@ -302,6 +302,69 @@ export function AgentGoalPanel({
               id={detailsId}
               className="max-h-[35dvh] space-y-3 overflow-y-auto overscroll-contain border-t p-3 break-words [overflow-wrap:anywhere]"
             >
+              {resumable && (
+                <div className="space-y-2">
+                  {goal.runs >= goal.maxRuns &&
+                    goal.maxRuns < GOAL_MAX_RUNS && (
+                      <label className="block">
+                        Additional runs (normal plan usage)
+                        <Input
+                          aria-label="Additional goal runs"
+                          type="number"
+                          min={0}
+                          max={GOAL_MAX_RUNS - goal.maxRuns}
+                          step={1}
+                          value={additionalRuns}
+                          onChange={(e) =>
+                            setAdditionalRuns(Number(e.target.value))
+                          }
+                          className="w-24"
+                        />
+                        <span className="text-xs text-muted-foreground">
+                          Add 1–{GOAL_MAX_RUNS - goal.maxRuns} runs, then choose
+                          Resume goal.
+                        </span>
+                        {!validAdditionalRuns && (
+                          <span role="alert" className="block text-destructive">
+                            Choose a whole number from 1 to{" "}
+                            {GOAL_MAX_RUNS - goal.maxRuns}.
+                          </span>
+                        )}
+                      </label>
+                    )}
+                  <label className="block">
+                    Reply or new information (optional)
+                    <Textarea
+                      aria-label="Goal reply"
+                      value={reply}
+                      maxLength={4000}
+                      onChange={(e) => setReply(e.target.value)}
+                    />
+                  </label>
+                  {goal.runs >= GOAL_MAX_RUNS && (
+                    <p className="text-muted-foreground">
+                      This goal used all {GOAL_MAX_RUNS} runs.{" "}
+                      {active
+                        ? "Stop it, then set a new goal to continue with a fresh budget."
+                        : "Set a new goal to continue with a fresh budget."}
+                    </p>
+                  )}
+                  {disabledReason && (
+                    <p className="text-muted-foreground">{disabledReason}</p>
+                  )}
+                  {(!enabled || !eligible) && (
+                    <p className="text-muted-foreground">
+                      Starting or resuming goals requires Agent mode, a paid
+                      plan, and goal access.
+                    </p>
+                  )}
+                  {formError && (
+                    <p role="alert" className="text-destructive">
+                      {formError}
+                    </p>
+                  )}
+                </div>
+              )}
               <p className="whitespace-pre-wrap">{goal.objective}</p>
               <p>{goal.reason}</p>
               {goal.state !== "achieved" &&
@@ -331,69 +394,6 @@ export function AgentGoalPanel({
                   </li>
                 ))}
               </ul>
-              {resumable && (
-                <div className="space-y-2">
-                  <label className="block">
-                    Reply or new information (optional)
-                    <Textarea
-                      aria-label="Goal reply"
-                      value={reply}
-                      maxLength={4000}
-                      onChange={(e) => setReply(e.target.value)}
-                    />
-                  </label>
-                  {goal.runs >= goal.maxRuns &&
-                    goal.maxRuns < GOAL_MAX_RUNS && (
-                      <label className="block">
-                        Additional runs (normal plan usage)
-                        <Input
-                          aria-label="Additional goal runs"
-                          type="number"
-                          min={0}
-                          max={GOAL_MAX_RUNS - goal.maxRuns}
-                          step={1}
-                          value={additionalRuns}
-                          onChange={(e) =>
-                            setAdditionalRuns(Number(e.target.value))
-                          }
-                          className="w-24"
-                        />
-                        <span className="text-xs text-muted-foreground">
-                          Add 1–{GOAL_MAX_RUNS - goal.maxRuns} runs, then choose
-                          Resume goal.
-                        </span>
-                        {!validAdditionalRuns && (
-                          <span role="alert" className="block text-destructive">
-                            Choose a whole number from 1 to{" "}
-                            {GOAL_MAX_RUNS - goal.maxRuns}.
-                          </span>
-                        )}
-                      </label>
-                    )}
-                  {goal.runs >= GOAL_MAX_RUNS && (
-                    <p className="text-muted-foreground">
-                      This goal used all {GOAL_MAX_RUNS} runs.{" "}
-                      {active
-                        ? "Stop it, then set a new goal to continue with a fresh budget."
-                        : "Set a new goal to continue with a fresh budget."}
-                    </p>
-                  )}
-                  {disabledReason && (
-                    <p className="text-muted-foreground">{disabledReason}</p>
-                  )}
-                  {(!enabled || !eligible) && (
-                    <p className="text-muted-foreground">
-                      Starting or resuming goals requires Agent mode, a paid
-                      plan, and goal access.
-                    </p>
-                  )}
-                  {formError && (
-                    <p role="alert" className="text-destructive">
-                      {formError}
-                    </p>
-                  )}
-                </div>
-              )}
               <details>
                 <summary className="cursor-pointer">
                   Completion contract and evidence
