@@ -249,6 +249,9 @@ importers:
       date-fns:
         specifier: 4.4.0
         version: 4.4.0
+      dompurify:
+        specifier: 3.4.16
+        version: 3.4.16
       e2b:
         specifier: 2.52.1
         version: 2.52.1

@@ -7,14 +7,22 @@ import {
   Download,
   File,
   Folder,
+  FolderTree,
   LayoutGrid,
   List,
   RefreshCw,
   Search,
-  X,
 } from "lucide-react";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
-import Image from "next/image";
+import { WorkspaceFileTree } from "./WorkspaceFileTree";
+import WorkspaceFilePreview, {
+  type WorkspacePreview,
+} from "./WorkspaceFilePreview";
+import {
+  workspaceImageTypes as imageTypes,
+  workspaceTextExtensions as textExtensions,
+} from "@/lib/workspace-preview/format";
+
 import { Button } from "@/components/ui/button";
 import {
   WORKSPACE_DOWNLOAD_LIMIT,
@@ -53,15 +61,6 @@ const sizeLabel = (size: number) =>
     : size < 1048576
       ? `${(size / 1024).toFixed(1)} KB`
       : `${(size / 1048576).toFixed(1)} MB`;
-const textExtensions =
-  /\.(txt|md|json|jsonl|csv|tsv|log|py|js|jsx|ts|tsx|sh|bash|zsh|yaml|yml|toml|ini|cfg|conf|xml|html|css|sql|rs|go|java|c|cpp|h|http|env)$/i;
-const imageTypes: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-};
 
 export function WorkspaceFilesPanel({
   messages,
@@ -76,16 +75,14 @@ export function WorkspaceFilesPanel({
   const [offset, setOffset] = useState(0);
   const [version, setVersion] = useState(0);
   const [grid, setGrid] = useState(false);
+  const [tree, setTree] = useState(true);
+  const [treeSearch, setTreeSearch] = useState("");
   const [listing, setListing] = useState<WorkspaceListing | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<{
-    name: string;
-    text?: string;
-    url?: string;
-  } | null>(null);
+  const [preview, setPreview] = useState<WorkspacePreview | null>(null);
   const [savedOpen, setSavedOpen] = useState(false);
   const sandboxId = useRef<string | undefined>(undefined);
   const fileRequest = useRef<AbortController | null>(null);
@@ -177,14 +174,19 @@ export function WorkspaceFilesPanel({
     setQuery("");
     setOffset(0);
   };
-  const readFile = async (entry: WorkspaceEntry, download: boolean) => {
+  const readFile = async (
+    entry: WorkspaceEntry,
+    download: boolean,
+    selectedPath?: string,
+  ) => {
     fileRequest.current?.abort();
     const controller = new AbortController();
     fileRequest.current = controller;
     setFileBusy(true);
     setError(null);
     try {
-      const filePath = path ? `${path}/${entry.name}` : entry.name;
+      const filePath =
+        selectedPath ?? (path ? `${path}/${entry.name}` : entry.name);
       const data = await request(
         download ? "download" : "preview",
         { path: filePath },
@@ -241,12 +243,16 @@ export function WorkspaceFilesPanel({
         if (type)
           setPreview({
             name: entry.name,
+            path: filePath,
             url: URL.createObjectURL(new Blob([bytes], { type })),
           });
         else {
           let text: string;
           try {
-            text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            text = new TextDecoder("utf-8", {
+              fatal: true,
+              ignoreBOM: true,
+            }).decode(bytes);
           } catch {
             throw new Error(
               "This binary file has no preview. Download it to open it.",
@@ -256,7 +262,7 @@ export function WorkspaceFilesPanel({
             throw new Error(
               "This binary file has no preview. Download it to open it.",
             );
-          setPreview({ name: entry.name, text });
+          setPreview({ name: entry.name, path: filePath, text });
         }
       }
     } catch (cause) {
@@ -275,70 +281,106 @@ export function WorkspaceFilesPanel({
         Live cloud workspace · shared across your tasks. Download files you want
         to keep.
       </div>
-      <div className="flex items-center gap-1 rounded-lg border p-1">
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-8 w-8 shrink-0"
-          aria-label="Parent folder"
-          disabled={!path || busy}
-          onClick={() => navigate(path.split("/").slice(0, -1).join("/"))}
-        >
-          <ArrowLeft size={16} />
-        </Button>
-        <nav
-          aria-label="Workspace path"
-          className="flex min-w-0 flex-1 items-center overflow-x-auto whitespace-nowrap text-xs"
-        >
-          <button
-            className="rounded px-1 py-2 hover:bg-muted"
-            onClick={() => navigate("")}
+      {!tree && (
+        <div className="flex items-center gap-1 rounded-lg border p-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0"
+            aria-label="Parent folder"
+            disabled={!path || busy}
+            onClick={() => navigate(path.split("/").slice(0, -1).join("/"))}
           >
-            /home/user
-          </button>
-          {path
-            .split("/")
-            .filter(Boolean)
-            .map((part, index, parts) => (
-              <span className="flex items-center" key={index}>
-                <ChevronRight size={12} />
-                <button
-                  className="max-w-40 truncate rounded px-1 py-2 hover:bg-muted"
-                  onClick={() => navigate(parts.slice(0, index + 1).join("/"))}
-                >
-                  {part}
-                </button>
-              </span>
-            ))}
-        </nav>
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-8 w-8 shrink-0"
-          aria-label="Refresh workspace files"
-          disabled={busy}
-          onClick={() => setVersion((value) => value + 1)}
-        >
-          <RefreshCw size={16} className={busy ? "animate-spin" : ""} />
-        </Button>
-      </div>
+            <ArrowLeft size={16} />
+          </Button>
+          <nav
+            aria-label="Workspace path"
+            className="flex min-w-0 flex-1 items-center overflow-x-auto whitespace-nowrap text-xs"
+          >
+            <button
+              className="rounded px-1 py-2 hover:bg-muted"
+              onClick={() => navigate("")}
+            >
+              /home/user
+            </button>
+            {path
+              .split("/")
+              .filter(Boolean)
+              .map((part, index, parts) => (
+                <span className="flex items-center" key={index}>
+                  <ChevronRight size={12} />
+                  <button
+                    className="max-w-40 truncate rounded px-1 py-2 hover:bg-muted"
+                    onClick={() =>
+                      navigate(parts.slice(0, index + 1).join("/"))
+                    }
+                  >
+                    {part}
+                  </button>
+                </span>
+              ))}
+          </nav>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0"
+            aria-label="Refresh workspace files"
+            disabled={busy}
+            onClick={() => setVersion((value) => value + 1)}
+          >
+            <RefreshCw size={16} className={busy ? "animate-spin" : ""} />
+          </Button>
+        </div>
+      )}
       <div className="flex gap-2">
         <label className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2">
           <Search size={14} className="shrink-0 text-muted-foreground" />
           <input
-            aria-label="Search this folder"
-            placeholder="Search this folder"
+            aria-label={tree ? "Search expanded folders" : "Search this folder"}
+            placeholder={
+              tree ? "Search expanded folders" : "Search this folder"
+            }
             className="h-9 min-w-0 w-full bg-transparent text-sm outline-none"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            value={tree ? treeSearch : search}
+            onChange={(event) =>
+              tree
+                ? setTreeSearch(event.target.value)
+                : setSearch(event.target.value)
+            }
           />
         </label>
+        {tree && (
+          <Button
+            size="icon"
+            variant="outline"
+            aria-label="Refresh workspace files"
+            disabled={busy}
+            onClick={() => setVersion((value) => value + 1)}
+          >
+            <RefreshCw size={16} />
+          </Button>
+        )}
+        <Button
+          size="icon"
+          variant="outline"
+          aria-label="Tree view"
+          aria-pressed={tree}
+          onClick={() => {
+            navigate("");
+            setTree(true);
+          }}
+        >
+          <FolderTree size={16} />
+        </Button>
         <Button
           size="icon"
           variant="outline"
           aria-label="List view"
-          aria-pressed={!grid}
-          onClick={() => setGrid(false)}
+          aria-pressed={!tree && !grid}
+          onClick={() => {
+            setTree(false);
+            setGrid(false);
+          }}
         >
           <List size={16} />
         </Button>
@@ -346,8 +388,11 @@ export function WorkspaceFilesPanel({
           size="icon"
           variant="outline"
           aria-label="Grid view"
-          aria-pressed={grid}
-          onClick={() => setGrid(true)}
+          aria-pressed={!tree && grid}
+          onClick={() => {
+            setTree(false);
+            setGrid(true);
+          }}
         >
           <LayoutGrid size={16} />
         </Button>
@@ -361,7 +406,7 @@ export function WorkspaceFilesPanel({
         </div>
       )}
       <div
-        className="min-h-0 flex-1 overflow-auto rounded-lg border bg-muted/10 p-2"
+        className={`min-h-0 overflow-auto rounded-lg border bg-muted/10 p-2 ${preview ? "max-h-[40%] flex-1" : "flex-1"}`}
         aria-busy={busy || fileBusy}
       >
         {busy ? (
@@ -400,7 +445,36 @@ export function WorkspaceFilesPanel({
             saved chat files remain available below.
           </p>
         ) : (
-          listing && (
+          listing &&
+          (tree ? (
+            <WorkspaceFileTree
+              key={version}
+              initial={listing}
+              filter={treeSearch}
+              busy={fileBusy}
+              selected={preview?.path}
+              load={async (folderPath, pageOffset, signal) => {
+                const data = await request(
+                  "list",
+                  { path: folderPath, offset: pageOffset },
+                  signal,
+                );
+                if (signal.aborted) return null;
+                if (!data.entries) {
+                  setStatus(data);
+                  setListing(null);
+                  setPreview(null);
+                  fileRequest.current?.abort();
+                  setFileBusy(false);
+                  return null;
+                }
+                return data;
+              }}
+              onFile={(entry, filePath, download) =>
+                void readFile(entry, download, filePath)
+              }
+            />
+          ) : (
             <>
               <p className="px-2 py-1 text-xs text-muted-foreground">
                 {listing.total} {query ? "matching " : ""}items
@@ -520,42 +594,23 @@ export function WorkspaceFilesPanel({
                 </div>
               )}
             </>
-          )
+          ))
         )}
       </div>
       {preview && (
-        <section
-          aria-label={`Preview ${preview.name}`}
-          className="flex max-h-[45%] min-h-0 flex-col overflow-hidden rounded-lg border"
-        >
-          <div className="flex items-center justify-between gap-2 border-b px-3 py-1">
-            <span className="truncate text-sm">{preview.name}</span>
-            <Button
-              size="icon"
-              variant="ghost"
-              aria-label="Close file preview"
-              onClick={() => setPreview(null)}
-            >
-              <X size={14} />
-            </Button>
-          </div>
-          <div className="overflow-auto p-3">
-            {preview.url ? (
-              <Image
-                unoptimized
-                width={1200}
-                height={800}
-                src={preview.url}
-                alt={preview.name}
-                className="max-h-64 max-w-full object-contain"
-              />
-            ) : (
-              <pre className="whitespace-pre-wrap break-words font-mono text-xs">
-                {preview.text}
-              </pre>
-            )}
-          </div>
-        </section>
+        <WorkspaceFilePreview
+          key={preview.path}
+          file={preview}
+          busy={fileBusy}
+          onClose={() => setPreview(null)}
+          onDownload={() =>
+            void readFile(
+              { name: preview.name, kind: "file", size: 0, modified: 0 },
+              true,
+              preview.path,
+            )
+          }
+        />
       )}
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
         <span>Preview ≤256 KB · Download ≤2 MB</span>

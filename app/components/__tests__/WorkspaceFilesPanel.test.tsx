@@ -8,6 +8,12 @@ import {
 import { WorkspaceFilesPanel } from "../WorkspaceFilesPanel";
 import { captureAuthenticatedEvent } from "@/lib/analytics/client";
 
+jest.mock("../ComputerCodeBlock", () => ({
+  ComputerCodeBlock: ({ children }: { children: string }) => (
+    <pre>{children}</pre>
+  ),
+}));
+
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: jest.fn(),
 }));
@@ -45,7 +51,10 @@ it("navigates, searches and refreshes the pinned live workspace, then previews e
       });
     return response(listing(body.path === "reports" ? [file] : [folder]));
   });
-  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  await act(async () => {
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "List view" }));
   fireEvent.click(
     await screen.findByRole("button", { name: "Open folder reports" }),
   );
@@ -79,7 +88,10 @@ it("offers explicit resume for a paused workspace and keeps saved artifacts acce
   fetchMock
     .mockResolvedValueOnce(response({ state: "paused", sandboxId: "owned" }))
     .mockResolvedValueOnce(response(listing([file])));
-  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  await act(async () => {
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "List view" }));
   fireEvent.click(
     await screen.findByRole("button", { name: "Resume workspace" }),
   );
@@ -99,7 +111,10 @@ it("recovers a disconnected listing by refresh without displaying stale entries"
     .mockResolvedValueOnce(response(listing([file])))
     .mockResolvedValueOnce(response({ error: "workspace_unavailable" }, false))
     .mockResolvedValueOnce(response(listing([folder])));
-  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  await act(async () => {
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "List view" }));
   await screen.findByRole("button", { name: "Preview report.txt" });
   fireEvent.click(screen.getByLabelText("Refresh workspace files"));
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -124,7 +139,10 @@ it("aborts an in-flight preview when navigating away and never displays its late
       });
     return response(listing(body.path === "reports" ? [file] : [folder]));
   });
-  render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  await act(async () => {
+    render(<WorkspaceFilesPanel chatId="chat" messages={[]} />);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "List view" }));
   fireEvent.click(
     await screen.findByRole("button", { name: "Open folder reports" }),
   );
