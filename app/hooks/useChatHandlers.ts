@@ -498,6 +498,14 @@ export const useChatHandlers = ({
     }
     if (goalCommand) {
       if (["status", "pause", "stop"].includes(goalCommand.action)) {
+        // New chats have no persisted owner record to reconcile yet.
+        if (!isExistingChat) {
+          toast.info(
+            "No goal in this chat. Use /goal followed by an objective.",
+          );
+          clearInput();
+          return true;
+        }
         try {
           const response =
             goalCommand.action === "status"

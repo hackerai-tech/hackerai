@@ -150,6 +150,38 @@ describe("useChatHandlers steer todo handoff", () => {
     });
   });
 
+  it.each(["/goal", "/goal status", "/goal pause", "/goal clear"])(
+    "handles %s in an unsaved chat without a backend request or model run",
+    async (command) => {
+      mockInput = command;
+      const { result } = renderHook(() =>
+        useChatHandlers({
+          chatId: "new-chat",
+          messages: [],
+          sendMessage: mockSendMessage,
+          stop: mockStop,
+          regenerate: jest.fn(),
+          setMessages: mockSetMessages,
+          isExistingChat: false,
+          status: "ready",
+          isSendingNowRef: { current: false },
+          hasManuallyStoppedRef: { current: false },
+        }),
+      );
+      let accepted: boolean | undefined;
+      await act(async () => {
+        accepted = await result.current.handleSubmit({
+          preventDefault: jest.fn(),
+        } as unknown as React.FormEvent);
+      });
+      expect(accepted).toBe(true);
+      expect(mockClearInput).toHaveBeenCalledTimes(1);
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+      expect(mockQueueMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("retries the latest queued message without native findLast or replacing an uncertain run", async () => {
     mockQueuedDeliveryStatus = "failed";
     const sendQueuedMessage = jest.fn(async () => {});

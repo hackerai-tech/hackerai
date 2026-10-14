@@ -226,7 +226,7 @@ describe("goal controls", () => {
         { target: { value } },
       );
       expect(screen.getByRole("alert")).toHaveTextContent(
-        "Choose a whole number from 0 to 7",
+        "Choose a whole number from 1 to 7",
       );
       expect(
         screen.queryByRole("button", { name: "Resume goal" }),

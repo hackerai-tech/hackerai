@@ -364,7 +364,7 @@ export function AgentGoalPanel({
                         </span>
                         {!validAdditionalRuns && (
                           <span role="alert" className="block text-destructive">
-                            Choose a whole number from 0 to{" "}
+                            Choose a whole number from 1 to{" "}
                             {GOAL_MAX_RUNS - goal.maxRuns}.
                           </span>
                         )}
