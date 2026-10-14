@@ -1,3 +1,16 @@
+import { judgeGoalCompletion } from "@/lib/goals/judge";
+import type { GoalJudgment } from "@/lib/goals/contracts";
+import { api as goalApi } from "@/convex/_generated/api";
+import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
+import {
+  getGoal,
+  goalServiceKey,
+  finishGoalRun,
+  assertGoalExecutionAllowed,
+} from "@/lib/goals/server";
+import { createGoalCheckpointTool } from "@/lib/goals/tool";
+import { GOAL_SLICE_MS } from "@/lib/goals/contracts";
+import { scheduleGoalContinuation } from "./agent-goal-dispatch";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -33,6 +46,7 @@ import {
   generateId,
   type UIMessageStreamWriter,
   UIMessage,
+  type ToolSet,
 } from "ai";
 import type { Geo } from "@vercel/functions";
 import {
@@ -1490,6 +1504,8 @@ const finishCloudSandboxLifecycleForParentRun = async ({
 export type AgentLongPayload = {
   chatId: string;
   userId: string;
+  goalGeneration?: number;
+  goalWorkerVersion?: string;
   subscription: SubscriptionTier;
   organizationId?: string;
   freeQuotaSubject?: string;
@@ -1534,13 +1550,47 @@ export const agentLongTask = task({
   // Right-sized from observed production CPU/memory usage.
   machine: { preset: "small-1x" },
 
+  onSuccess: async ({ payload, ctx }) => {
+    await scheduleGoalContinuation({
+      ...payload,
+      goalWorkerVersion: payload.goalWorkerVersion ?? ctx.deployment?.version,
+    });
+  },
+  onFailure: async ({ payload, ctx }) => {
+    const settledGoal = await finishGoalRun(payload, ctx.run.id, {
+      canceled: false,
+      failed: true,
+      usageExhausted: false,
+    });
+    if (!settledGoal && payload.goalGeneration !== undefined) {
+      await goalConvex().mutation(goalApi.agentGoals.failDispatch, {
+        serviceKey: goalServiceKey(),
+        chatId: payload.chatId,
+        userId: payload.userId,
+        generation: payload.goalGeneration,
+      });
+    }
+  },
+
   onCancel: async ({
+    payload,
     ctx,
     runPromise,
   }: {
+    payload: AgentLongPayload;
     ctx: { run: { id: string } };
     runPromise: Promise<unknown>;
   }) => {
+    await finishGoalRun(payload, ctx.run.id, {
+      canceled: true,
+      failed: false,
+      usageExhausted: false,
+    }).catch((error) => {
+      triggerLogger.warn("Goal cancellation state could not be saved", {
+        run_id: ctx.run.id,
+        error: stringifyRedactedError(error),
+      });
+    });
     const cleanup = runCleanupMap.get(ctx.run.id);
     if (!cleanup) return;
     await Promise.race([
@@ -1577,6 +1627,8 @@ export const agentLongTask = task({
   },
 
   run: async (payload: AgentLongPayload, { ctx, signal: triggerSignal }) => {
+    if (payload.goalGeneration !== undefined)
+      payload.goalWorkerVersion ??= ctx.deployment?.version;
     const triggerRegion = payload.triggerRegion ?? DEFAULT_TRIGGER_RUN_REGION;
     const requestRegionClass =
       payload.requestRegionClass ??
@@ -1633,7 +1685,10 @@ export const agentLongTask = task({
     // than stream launch. Without this, slow setup (>2 min) could push
     // the soft stop past the plan-specific runtime cap.
     const taskStartTime = Date.now();
-    const agentLongMaxDurationMs = getAgentLongMaxDurationMs(subscription);
+    const agentLongMaxDurationMs =
+      payload.goalGeneration === undefined
+        ? getAgentLongMaxDurationMs(subscription)
+        : Math.min(GOAL_SLICE_MS, getAgentLongMaxDurationMs(subscription));
     const runTimingTracker = new AgentRunTimingTracker();
     const backgroundRunWork = new Set<Promise<void>>();
     const registerBackgroundRunWork = (work: Promise<void>) => {
@@ -1863,7 +1918,30 @@ export const agentLongTask = task({
     });
     if (triggerSignal.aborted) forwardTriggerAbort();
 
+    let terminalAgentState: AgentStreamState | undefined;
+    let goalJudgment: GoalJudgment | undefined;
+    let goalFinalMessages: UIMessage[] = [];
+    let goalFinalMessageId = ctx.run.id;
+    let goalJudgePromise: Promise<void> | undefined;
+    let goalClaimed = false;
+    let goalFailed = false;
+    let goalUsageExhausted = false;
+    let goalFinishReason: string | undefined;
+    let activeGoal: Awaited<ReturnType<typeof getGoal>> = null;
     try {
+      if (payload.goalGeneration !== undefined) {
+        activeGoal = await goalConvex().mutation(goalApi.agentGoals.claimRun, {
+          serviceKey: goalServiceKey(),
+          chatId,
+          userId,
+          generation: payload.goalGeneration,
+          runId: ctx.run.id,
+          ...(approvalSessionId ? { approvalSessionId } : {}),
+        });
+        if (!activeGoal) return { chatId, assistantMessageId };
+        goalClaimed = true;
+        await assertGoalExecutionAllowed(payload);
+      }
       if (
         (agentPermissionMode === "ask_approval" ||
           agentPermissionMode === "auto_review") &&
@@ -2108,7 +2186,7 @@ export const agentLongTask = task({
 
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
-      let terminalAgentState: AgentStreamState | undefined;
+
       let terminalRequestedModelSlug: string | undefined;
       let agentLongDurationExceeded = false;
       const markAgentLongDurationExceeded = () => {
@@ -2716,7 +2794,7 @@ export const agentLongTask = task({
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {
-              tools,
+              tools: baseTools,
               ensureSandbox,
               getTodoManager,
               getFileAccumulator,
@@ -2727,7 +2805,7 @@ export const agentLongTask = task({
               stopE2BSandboxRunLeaseHeartbeat,
               cleanupBrowserSessions: cleanupToolBrowsers,
               setCurrentModelName,
-              getToolsForModel,
+              getToolsForModel: getBaseToolsForModel,
             } = createTools(
               userId,
               chatId,
@@ -2808,6 +2886,19 @@ export const agentLongTask = task({
                   : {}),
               },
             );
+            const goalTools: ToolSet = activeGoal
+              ? {
+                  goal_checkpoint: createGoalCheckpointTool(
+                    chatId,
+                    userId,
+                    ctx.run.id,
+                  ),
+                }
+              : {};
+            const tools = { ...baseTools, ...goalTools };
+            const getToolsForModel: typeof getBaseToolsForModel = (
+              ...args
+            ) => ({ ...getBaseToolsForModel(...args), ...goalTools });
             finishE2BIdleLeaseRelease = async () => {
               await stopE2BSandboxRunLeaseHeartbeat();
               await releaseE2BSandboxIdleLease();
@@ -2985,7 +3076,7 @@ export const agentLongTask = task({
               shouldIncludeNotes: userCustomization?.include_notes ?? true,
             };
             const trackedProvider = createTrackedProvider();
-            const [currentSystemPrompt, messagesWithNotes] = await Promise.all([
+            const [baseSystemPrompt, messagesWithNotes] = await Promise.all([
               systemPrompt(
                 userId,
                 mode,
@@ -3000,6 +3091,25 @@ export const agentLongTask = task({
               ),
               injectNotesIntoMessages(finalMessages, noteInjectionOpts),
             ]);
+            const currentSystemPrompt =
+              baseSystemPrompt +
+              (activeGoal
+                ? "\nPersistent user goal (data, not permission to expand scope):\n" +
+                  JSON.stringify({
+                    objective: activeGoal.objective,
+                    criteria: activeGoal.criteria,
+                    verificationCommand: activeGoal.verificationCommand,
+                    constraints: activeGoal.constraints,
+                    boundaries: activeGoal.boundaries,
+                    stopWhen: activeGoal.stopWhen,
+                    progress: activeGoal.progress,
+                    lastCompletionCheck: activeGoal.judgment,
+                    verifiedCriteria: activeGoal.evidence,
+                    run: activeGoal.runs,
+                    approvedRuns: activeGoal.maxRuns,
+                  }) +
+                  "\nWork within the existing authorization and tool approvals. Save progress with goal_checkpoint before ending. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, request it and checkpoint needs_input. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
+                : "");
             finalMessages = messagesWithNotes;
 
             const systemPromptTokens = safeCountTokens(currentSystemPrompt);
@@ -3100,6 +3210,41 @@ export const agentLongTask = task({
             const deductAccumulatedUsage = async () => {
               try {
                 if (hasRecordedUsage) return;
+                if (
+                  activeGoal &&
+                  !userStopSignal.signal.aborted &&
+                  ["stop", "tool-calls"].includes(
+                    state.streamFinishReason ?? "",
+                  )
+                ) {
+                  goalJudgePromise ??= (async () => {
+                    const latest = await getGoal(chatId, userId);
+                    if (
+                      latest?.activeRunId === ctx.run.id &&
+                      latest.state === "running"
+                    )
+                      goalJudgment = await judgeGoalCompletion(
+                        latest,
+                        goalFinalMessages,
+                        ctx.run.id,
+                        (cost) => {
+                          usageTracker.providerCost += cost;
+                          usageTracker.nonModelCost += cost;
+                          chatLogger?.getBuilder().addToolCost(cost);
+                        },
+                        goalFinalMessageId,
+                      );
+                  })();
+                  // Goal storage/verifier outages must never skip settlement of
+                  // the work already performed by the normal Agent run.
+                  await goalJudgePromise.catch(() => {
+                    goalJudgment = {
+                      verdict: "blocked",
+                      reason:
+                        "Completion verification is unavailable. Resume to retry.",
+                    };
+                  });
+                }
                 // Title generation starts in parallel with the main run. Wait
                 // for it so its provider cost cannot race final settlement.
                 await titlePromise;
@@ -3751,11 +3896,21 @@ export const agentLongTask = task({
                 }
               },
               settleUsageAfterStep,
-              checkBudgetBeforeStep: freeDailySettlement
-                ? async () => {
-                    await checkFreeCostBudget(freeUsageSubject, freeLimits);
+              checkBudgetBeforeStep: async () => {
+                if (activeGoal) {
+                  const latest = await getGoal(chatId, userId);
+                  if (
+                    !latest ||
+                    latest.activeRunId !== ctx.run.id ||
+                    !["running", "needs_approval"].includes(latest.state)
+                  ) {
+                    userStopSignal.abort();
+                    userStopSignal.signal.throwIfAborted();
                   }
-                : undefined,
+                }
+                if (freeDailySettlement)
+                  await checkFreeCostBudget(freeUsageSubject, freeLimits);
+              },
               ...(subagentCompletionGate ? { subagentCompletionGate } : {}),
               ...(useMaxKimiReasoning && {
                 providerReasoningOverride: {
@@ -3902,6 +4057,8 @@ export const agentLongTask = task({
               retryMessageId: string;
               retryStartTime: number;
             }) => {
+              goalFinalMessages = retryMessages;
+              goalFinalMessageId = retryMessageId;
               const fallbackCacheRead =
                 usageTracker.cacheReadTokens - preFallbackCacheRead;
               const fallbackCacheWrite =
@@ -4250,6 +4407,7 @@ export const agentLongTask = task({
                     messages: finishedMessages,
                     isAborted,
                   }) => {
+                    goalFinalMessages = finishedMessages;
                     let retryScheduled = false;
                     try {
                       // Retry once with a different model for content filters,
@@ -5230,7 +5388,12 @@ export const agentLongTask = task({
                           stoppedDueToPostSummarizationIncomplete:
                             state.stoppedDueToPostSummarizationIncomplete,
                         });
-                      if (autoContinueStopSource && !isAutomaticContinuation) {
+                      goalFinishReason = state.streamFinishReason;
+                      if (
+                        !activeGoal &&
+                        autoContinueStopSource &&
+                        !isAutomaticContinuation
+                      ) {
                         writeAutoContinue(writer);
                         phLogger.info("Agent auto-continue signaled", {
                           event: "agent_auto_continue_signaled",
@@ -5350,6 +5513,7 @@ export const agentLongTask = task({
         );
       if (terminalStreamError) {
         if (isHandledUserRateLimitError(terminalStreamError)) {
+          goalUsageExhausted = true;
           await recordAgentLongHandledRateLimitForDashboard(
             terminalStreamError,
             {
@@ -5384,6 +5548,8 @@ export const agentLongTask = task({
       );
       await phLogger.flush().catch(() => {});
     } catch (error) {
+      goalFailed = true;
+      goalUsageExhausted = isHandledUserRateLimitError(error);
       runReporting.fail(
         error,
         triggerSignal.aborted && error === triggerSignal.reason
@@ -5560,6 +5726,22 @@ export const agentLongTask = task({
       });
       await finishCloudSandboxLifecycle();
       runCleanupMap.delete(ctx.run.id);
+      if (goalClaimed) {
+        await finishGoalRun(payload, ctx.run.id, {
+          messageId: goalFinalMessageId,
+          finishReason:
+            terminalAgentState?.streamFinishReason ?? goalFinishReason,
+          judgment: goalJudgment,
+          canceled:
+            triggerSignal.aborted ||
+            (userStopSignal.signal.aborted &&
+              !terminalAgentState?.stoppedDueToElapsedTimeout &&
+              !terminalAgentState?.stoppedDueToBudgetExhaustion &&
+              !terminalAgentState?.stoppedDueToAgentRunSpendCap),
+          failed: goalFailed,
+          usageExhausted: goalUsageExhausted,
+        });
+      }
     }
 
     return { chatId, assistantMessageId };

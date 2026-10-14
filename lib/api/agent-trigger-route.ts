@@ -1,3 +1,8 @@
+import { api as goalApi } from "@/convex/_generated/api";
+import { getConvexClient as goalConvex } from "@/lib/db/convex-client";
+import { goalEnabled, goalServiceKey, reconcileGoal } from "@/lib/goals/server";
+import type { GoalContract } from "@/lib/goals/contracts";
+import { validGoalRequest } from "@/lib/goals/contracts";
 import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
@@ -193,7 +198,16 @@ export const shouldRequireAgentApprovalDeploymentPin = (
     ? environment.VERCEL_ENV === "production"
     : environment.NODE_ENV === "production";
 
+type AgentGoalRequest =
+  | ({
+      action: "start";
+      objective: string;
+      criteria: string[];
+      maxRuns: number;
+    } & GoalContract)
+  | { action: "resume"; additionalRuns?: number };
 type AgentTriggerRequestBody = {
+  goal?: AgentGoalRequest;
   messages: UIMessage[];
   chatId: string;
   todos?: Todo[];
@@ -277,9 +291,16 @@ const parseAgentTriggerRequestBody = async (
     };
   }
 
+  if (body.goal !== undefined && !validGoalRequest(body.goal)) {
+    return {
+      ok: false,
+      response: new NextResponse("Invalid goal request", { status: 400 }),
+    };
+  }
   return {
     ok: true,
     body: {
+      goal: body.goal as AgentGoalRequest | undefined,
       messages: body.messages as UIMessage[],
       chatId: body.chatId,
       todos: Array.isArray(body.todos) ? (body.todos as Todo[]) : undefined,
@@ -395,10 +416,12 @@ export const finalizeStartedAgentRun = async ({
   chatId,
   runId,
   approvalSessionId,
+  workerAssociatesGoal = false,
 }: {
   chatId: string;
   runId: string;
   approvalSessionId: string | undefined;
+  workerAssociatesGoal?: boolean;
 }): Promise<StartedAgentRunAccess> => {
   try {
     const [publicAccessToken, approvalSessionPublicAccessToken, association] =
@@ -416,11 +439,13 @@ export const finalizeStartedAgentRun = async ({
               expirationTime: AGENT_APPROVAL_TOKEN_EXPIRATION,
             })
           : Promise.resolve(undefined),
-        setActiveTriggerRun({
-          chatId,
-          triggerRunId: runId,
-          approvalSessionId: approvalSessionId ?? null,
-        }),
+        workerAssociatesGoal
+          ? Promise.resolve("updated")
+          : setActiveTriggerRun({
+              chatId,
+              triggerRunId: runId,
+              approvalSessionId: approvalSessionId ?? null,
+            }),
       ]);
 
     if (association !== "updated") {
@@ -502,6 +527,8 @@ export const createAgentTriggerPost =
         }),
       );
     }, 10_000);
+    let reservedGoal:
+      { chatId: string; userId: string; generation: number } | undefined;
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
@@ -520,6 +547,7 @@ export const createAgentTriggerPost =
         limitRescue,
         agentRunRequestId,
         projectId: requestedProjectId,
+        goal: goalRequest,
       } = parsedBody.body;
 
       diagnosticContext.chatId = chatId.slice(0, 128);
@@ -589,6 +617,45 @@ export const createAgentTriggerPost =
         getUserCustomization({ userId }),
       ]);
 
+      if (
+        goalRequest &&
+        (subscription === "free" ||
+          limitRescue ||
+          regenerate ||
+          !(await goalEnabled(userId, subscription)))
+      )
+        throw new ChatSDKError(
+          "forbidden:chat",
+          "Persistent goals are unavailable for this request.",
+        );
+      if (existingChat && existingChat.user_id !== userId)
+        throw new ChatSDKError("forbidden:chat");
+      const existingGoal = existingChat
+        ? await reconcileGoal(chatId, userId)
+        : null;
+      if (
+        !goalRequest &&
+        existingGoal &&
+        (existingGoal.activeRunId ||
+          ["queued", "running", "waiting", "needs_approval"].includes(
+            existingGoal.state,
+          ))
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Pause the goal and wait for its current run to settle before sending another Agent request.",
+        );
+      if (
+        goalRequest?.action === "resume" &&
+        existingGoal &&
+        (existingGoal.sandboxPreference !== (sandboxPreference ?? "e2b") ||
+          existingGoal.permissionMode !== agentPermissionMode ||
+          existingGoal.selectedModel !== (selectedModelOverride ?? "auto"))
+      )
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Restore the goal’s original sandbox, model and permission mode before resuming.",
+        );
       // Fetch existing chat to: (a) detect isNewChat for title generation,
       // (b) pass to handleInitialChatAndUserMessage so it skips saveChat on
       //     regenerate/auto-continue and does the ownership check instead.
@@ -698,6 +765,38 @@ export const createAgentTriggerPost =
         localDesktopAttachmentsPrepared = true;
       }
 
+      const reserveGoal = async () => {
+        if (!goalRequest) return;
+        const savedGoal =
+          goalRequest.action === "start"
+            ? await goalConvex().mutation(goalApi.agentGoals.start, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                userId,
+                objective: goalRequest.objective,
+                criteria: goalRequest.criteria,
+                verificationCommand: goalRequest.verificationCommand,
+                constraints: goalRequest.constraints,
+                boundaries: goalRequest.boundaries,
+                stopWhen: goalRequest.stopWhen,
+                maxRuns: goalRequest.maxRuns,
+                sandboxPreference: sandboxPreference ?? "e2b",
+                permissionMode: agentPermissionMode,
+                selectedModel: selectedModelOverride ?? "auto",
+              })
+            : await goalConvex().mutation(goalApi.agentGoals.control, {
+                serviceKey: goalServiceKey(),
+                chatId,
+                userId,
+                action: "resume",
+                additionalRuns: goalRequest.additionalRuns,
+              });
+        reservedGoal = { chatId, userId, generation: savedGoal.generation };
+      };
+
+      // Fence an existing goal before writing input that a queued worker could
+      // otherwise consume. New chats must exist before reserving their goal.
+      if (existingChat) await reserveGoal();
       stage = "persist_user_message";
       await handleInitialChatAndUserMessage({
         chatId,
@@ -709,6 +808,7 @@ export const createAgentTriggerPost =
         projectId: projectContext.projectId,
       });
 
+      if (!existingChat) await reserveGoal();
       // Snapshot permission behavior once for this run. UI changes made while
       // it is active apply to the next run and cannot mutate a resumed run.
       const permissionSnapshot =
@@ -770,6 +870,7 @@ export const createAgentTriggerPost =
       // The v2 worker must reject unsupported approvalProtocolVersion values;
       // old workers ignore this field, so the route that emits v2 deploys last.
       const agentPayload = {
+        ...(reservedGoal ? { goalGeneration: reservedGoal.generation } : {}),
         chatId,
         userId,
         subscription,
@@ -942,6 +1043,7 @@ export const createAgentTriggerPost =
           chatId,
           runId,
           approvalSessionId,
+          workerAssociatesGoal: !!reservedGoal,
         });
 
       console.info(`[${endpoint}] started trigger run`, {
@@ -974,6 +1076,13 @@ export const createAgentTriggerPost =
       });
       return response;
     } catch (error) {
+      if (reservedGoal)
+        await goalConvex()
+          .mutation(goalApi.agentGoals.failDispatch, {
+            serviceKey: goalServiceKey(),
+            ...reservedGoal,
+          })
+          .catch(() => undefined);
       return handleAgentRouteError({
         error,
         endpoint,

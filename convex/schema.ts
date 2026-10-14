@@ -1,3 +1,4 @@
+import { goalFields } from "./lib/goalValidators";
 import {
   findingRevisionValidator,
   findingFeedbackValidator,
@@ -232,6 +233,8 @@ export default defineSchema({
     .index("by_user_and_created", ["user_id", "created_at"])
     .index("by_user_and_updated", ["user_id", "updated_at"])
     .index("by_user_and_pinned", ["user_id", "pinned_at"]),
+
+  agent_goals: defineTable(goalFields).index("by_chatId", ["chatId"]),
 
   chats: defineTable({
     id: v.string(),

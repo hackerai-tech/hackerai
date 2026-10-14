@@ -10,6 +10,7 @@
 
 import type * as accountIdentities from "../accountIdentities.js";
 import type * as agentAutoReviewActions from "../agentAutoReviewActions.js";
+import type * as agentGoals from "../agentGoals.js";
 import type * as cancellationReasons from "../cancellationReasons.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
@@ -22,6 +23,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as findingValidators from "../findingValidators.js";
 import type * as findings from "../findings.js";
 import type * as influencerAnalytics from "../influencerAnalytics.js";
 import type * as influencerValidators from "../influencerValidators.js";
@@ -32,6 +34,7 @@ import type * as lib_chatAccessSuspensions from "../lib/chatAccessSuspensions.js
 import type * as lib_extraUsagePricing from "../lib/extraUsagePricing.js";
 import type * as lib_extraUsageValidation from "../lib/extraUsageValidation.js";
 import type * as lib_fileDeletion from "../lib/fileDeletion.js";
+import type * as lib_goalValidators from "../lib/goalValidators.js";
 import type * as lib_influencerAnalytics from "../lib/influencerAnalytics.js";
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_retainedTail from "../lib/retainedTail.js";
@@ -43,6 +46,7 @@ import type * as lib_userResearchAuth from "../lib/userResearchAuth.js";
 import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as messages from "../messages.js";
+import type * as modelHistory from "../modelHistory.js";
 import type * as notes from "../notes.js";
 import type * as platformCosts from "../platformCosts.js";
 import type * as projects from "../projects.js";
@@ -78,6 +82,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   accountIdentities: typeof accountIdentities;
   agentAutoReviewActions: typeof agentAutoReviewActions;
+  agentGoals: typeof agentGoals;
   cancellationReasons: typeof cancellationReasons;
   chatStreams: typeof chatStreams;
   chats: typeof chats;
@@ -90,6 +95,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
+  findingValidators: typeof findingValidators;
   findings: typeof findings;
   influencerAnalytics: typeof influencerAnalytics;
   influencerValidators: typeof influencerValidators;
@@ -100,6 +106,7 @@ declare const fullApi: ApiFromModules<{
   "lib/extraUsagePricing": typeof lib_extraUsagePricing;
   "lib/extraUsageValidation": typeof lib_extraUsageValidation;
   "lib/fileDeletion": typeof lib_fileDeletion;
+  "lib/goalValidators": typeof lib_goalValidators;
   "lib/influencerAnalytics": typeof lib_influencerAnalytics;
   "lib/logger": typeof lib_logger;
   "lib/retainedTail": typeof lib_retainedTail;
@@ -111,6 +118,7 @@ declare const fullApi: ApiFromModules<{
   "lib/utils": typeof lib_utils;
   localSandbox: typeof localSandbox;
   messages: typeof messages;
+  modelHistory: typeof modelHistory;
   notes: typeof notes;
   platformCosts: typeof platformCosts;
   projects: typeof projects;
