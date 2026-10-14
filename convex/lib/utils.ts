@@ -4,7 +4,10 @@ import { Id } from "../_generated/dataModel";
 import type { RetainedTailDoc } from "./retainedTail";
 
 export function validateServiceKey(serviceKey: string): void {
-  if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
+  if (
+    !process.env.CONVEX_SERVICE_ROLE_KEY ||
+    serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
+  ) {
     throw new Error("Unauthorized: Invalid service key");
   }
 }

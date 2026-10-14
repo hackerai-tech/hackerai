@@ -1,6 +1,6 @@
 /** Real local file/HTTP transfers; Convex persistence and URL signing are in-memory fixtures. */
 jest.mock("server-only", () => ({}), { virtual: true });
-jest.mock("@/convex/_generated/server", () => ({
+jest.mock("@/convex/lib/serviceFunctions", () => ({
   action: (config: unknown) => config,
 }));
 jest.mock("@/convex/s3Utils", () => ({

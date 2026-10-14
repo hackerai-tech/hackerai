@@ -13,7 +13,7 @@ import {
   extraUsagePointsToDollars,
 } from "../lib/extraUsagePricing";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   action: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   internalMutation: jest.fn((config: any) => config),

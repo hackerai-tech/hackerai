@@ -40,6 +40,21 @@ describe("error redaction", () => {
     expect(redacted).not.toContain("stripe-secret");
   });
 
+  it("redacts environment assignments for any provider and configuration", () => {
+    const message =
+      'TRIGGER_SECRET_KEY="trigger-fixture" REDIS_URL=redis://fixture NODE_ENV=production {"WORKOS_COOKIE_PASSWORD":"cookie-fixture"}';
+    const redacted = redactSensitiveErrorMessage(message);
+    for (const value of [
+      "trigger-fixture",
+      "redis://fixture",
+      "production",
+      "cookie-fixture",
+    ]) {
+      expect(redacted).not.toContain(value);
+    }
+    expect(redacted).toContain('NODE_ENV="[Redacted]"');
+  });
+
   it("strips ANSI escapes and control bytes before redacting secrets", () => {
     const esc = String.fromCharCode(0x1b);
     const bell = String.fromCharCode(0x07);

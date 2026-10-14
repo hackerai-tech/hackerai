@@ -1,4 +1,4 @@
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   mutation: (config: unknown) => config,
 }));
 jest.mock("../lib/utils", () => ({ validateServiceKey: jest.fn() }));

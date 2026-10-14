@@ -1,5 +1,5 @@
 import { scheduleFileDeletion } from "./lib/fileDeletion";
-import { mutation, type MutationCtx } from "./_generated/server";
+import { mutation, type MutationCtx } from "./lib/serviceFunctions";
 import { getDocumentSize, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";

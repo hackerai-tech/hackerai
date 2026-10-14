@@ -1,6 +1,6 @@
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   internalQuery: jest.fn((config: any) => config),
   mutation: jest.fn((config: any) => config),
   query: jest.fn((config: any) => config),

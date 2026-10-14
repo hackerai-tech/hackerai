@@ -3,8 +3,8 @@ import {
   getAbliterationHistoryEntry,
   stripClientAbliterationRouting,
 } from "../lib/experiments/abliteration-history";
-import { query, mutation, internalQuery } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import { query, mutation, internalQuery } from "./lib/serviceFunctions";
+import type { MutationCtx } from "./lib/serviceFunctions";
 import { v, ConvexError, getDocumentSize, type Value } from "convex/values";
 import { internal } from "./_generated/api";
 import type { DataModel, Doc, Id } from "./_generated/dataModel";

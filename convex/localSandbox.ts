@@ -1,7 +1,7 @@
-import { internalMutation, mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./lib/serviceFunctions";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
-import { DatabaseReader } from "./_generated/server";
+import { DatabaseReader } from "./lib/serviceFunctions";
 import { SignJWT } from "jose";
 import { isEnvironmentPreference } from "../lib/sandbox/environment";
 

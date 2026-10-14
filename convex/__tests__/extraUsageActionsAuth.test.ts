@@ -9,7 +9,7 @@ import {
 } from "@jest/globals";
 import { extraUsagePointsToDollars } from "../lib/extraUsagePricing";
 
-jest.mock("../_generated/server", () => ({
+jest.mock("../lib/serviceFunctions", () => ({
   action: jest.fn((config: any) => config),
 }));
 jest.mock("convex/values", () => ({

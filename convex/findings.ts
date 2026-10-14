@@ -10,8 +10,8 @@ import {
   findingFeedbackAnswerValidator,
 } from "./findingValidators";
 import { evidenceVerificationSchema } from "../lib/ai/subagents/contracts";
-import { mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
+import { mutation, query } from "./lib/serviceFunctions";
+import type { QueryCtx } from "./lib/serviceFunctions";
 import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
