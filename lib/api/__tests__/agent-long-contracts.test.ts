@@ -1756,9 +1756,17 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
       "await assertGoalExecutionAllowed(payload)",
       claim,
     );
-    const continuation = taskSrc.indexOf(
-      "if (isAutomaticContinuation)",
+    const protocol = taskSrc.indexOf(
+      "approvalProtocolVersion !== AGENT_TOOL_APPROVAL_PROTOCOL_VERSION",
       eligibility,
+    );
+    const regional = taskSrc.indexOf(
+      "await enforceRegionalSubscriptionFirst({",
+      protocol,
+    );
+    const continuation = taskSrc.indexOf(
+      "if (activeGoal && isAutomaticContinuation)",
+      regional,
     );
     const hiddenMessage = taskSrc.indexOf(
       "id: `goal-continue:${ctx.run.id}`",
@@ -1767,7 +1775,9 @@ describe("agent-long task — Trigger.dev dashboard error visibility", () => {
     const history = taskSrc.indexOf("getMessagesByChatId({", hiddenMessage);
     expect(claim).toBeGreaterThan(-1);
     expect(eligibility).toBeGreaterThan(claim);
-    expect(continuation).toBeGreaterThan(eligibility);
+    expect(protocol).toBeGreaterThan(eligibility);
+    expect(regional).toBeGreaterThan(protocol);
+    expect(continuation).toBeGreaterThan(regional);
     expect(hiddenMessage).toBeGreaterThan(continuation);
     expect(history).toBeGreaterThan(hiddenMessage);
     expect(taskSrc.slice(hiddenMessage, history)).toMatch(/role: "user"/);
