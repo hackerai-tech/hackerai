@@ -1,4 +1,5 @@
 import { withTerminalCallTiming } from "./utils/terminal-call-timing";
+import { trackForegroundCommand } from "./utils/foreground-commands";
 import { tool, type Tool } from "ai";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
@@ -1469,14 +1470,19 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     execute: withTerminalCallTiming(
       context,
       "run_terminal_cmd",
-      async (
+      (
         input: Parameters<NonNullable<typeof terminalTool.execute>>[0],
         options,
-      ) =>
+      ) => {
         // Terminal tools return one result, never an AsyncIterable.
-        (await terminalTool.execute!(input, options)) as {
-          result: Record<string, unknown>;
-        },
+        const execute = async () =>
+          (await terminalTool.execute!(input, options)) as {
+            result: Record<string, unknown>;
+          };
+        return input.is_background || input.interactive
+          ? execute()
+          : trackForegroundCommand(context, execute);
+      },
     ),
   };
 };

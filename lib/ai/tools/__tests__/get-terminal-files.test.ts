@@ -10,6 +10,7 @@ import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import type { ToolContext } from "@/types";
 import { phLogger } from "@/lib/posthog/server";
 import { LocalCommandRelayUnsubscribedError } from "../utils/local-sandbox-errors";
+import { trackForegroundCommand } from "../utils/foreground-commands";
 
 const mockUploadSandboxFileToConvex =
   uploadSandboxFileToConvex as jest.MockedFunction<
@@ -73,6 +74,35 @@ async function runTool(
 describe("get_terminal_files", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it("does not upload when delivery is stopped while creation is pending", async () => {
+    const context = makeContext();
+    let finish!: () => void;
+    const command = trackForegroundCommand(
+      context,
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const delivery = (createGetTerminalFiles(context).execute as any)(
+      { files: ["/tmp/report.txt"] },
+      { toolCallId: "delivery", messages: [], abortSignal: controller.signal },
+    );
+    controller.abort(new DOMException("Stopped", "AbortError"));
+    try {
+      expect(await delivery).toMatchObject({
+        files: [],
+        deliveryReceipts: [],
+        failedFiles: [{ path: "/tmp/report.txt" }],
+      });
+      expect(mockUploadSandboxFileToConvex).not.toHaveBeenCalled();
+    } finally {
+      finish();
+      await command;
+    }
   });
 
   it.each(["cloud", "desktop", "remote-connection"] as const)(
