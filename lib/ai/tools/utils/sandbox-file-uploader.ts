@@ -145,6 +145,27 @@ async function getSandboxFileSize(
   sandbox: AnySandbox,
   fullPath: string,
 ): Promise<number> {
+  if (isCentrifugoSandbox(sandbox) && sandbox.supportsNativeFileRelay?.()) {
+    // Desktop already provides shell-independent metadata. A POSIX stat or
+    // cmd.exe fallback can fail even when the native bridge can read the file.
+    // Preserve native errors instead of bypassing them through another adapter.
+    const metadata = await sandbox.files.stat(fullPath);
+    if (metadata.kind === "missing") {
+      throw new Error(`File not found: ${fullPath}`);
+    }
+    if (metadata.kind !== "file") {
+      throw new Error(`Cannot upload ${fullPath}: not a regular file`);
+    }
+    if (
+      typeof metadata.sizeBytes !== "number" ||
+      !Number.isSafeInteger(metadata.sizeBytes) ||
+      metadata.sizeBytes < 0
+    ) {
+      throw new Error("Desktop file bridge returned an invalid file size");
+    }
+    return metadata.sizeBytes;
+  }
+
   const quotedPath = shellQuote(fullPath);
   const commandOptions = buildSandboxCommandOptions(sandbox);
   let statResult: SandboxCommandResult;

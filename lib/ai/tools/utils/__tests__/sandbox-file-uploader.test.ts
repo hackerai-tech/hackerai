@@ -204,6 +204,96 @@ describe("uploadSandboxFileToConvex", () => {
     });
   });
 
+  test.each([0, 4321])(
+    "uses native Desktop metadata for a %s-byte file when shell size checks cannot run",
+    async (size) => {
+      const sandbox = {
+        ...makeSandbox(size, false, true),
+        supportsNativeFileRelay: () => true,
+      };
+      const stat = jest.fn().mockResolvedValue({
+        kind: "file",
+        path: "C:\\repo\\report & review!.zip",
+        sizeBytes: size,
+      });
+      Object.assign(sandbox.files, { stat });
+      sandbox.commands.run.mockResolvedValue({
+        stdout: "ECHO is on.\r\n",
+        stderr: "The syntax of the command is incorrect.",
+        exitCode: 1,
+      });
+
+      const saved = await uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "C:\\repo\\report & review!.zip",
+      });
+
+      expect(saved.sizeBytes).toBe(size);
+      expect(stat).toHaveBeenCalledWith("C:\\repo\\report & review!.zip");
+      expect(sandbox.commands.run).not.toHaveBeenCalled();
+      expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
+        "report & review!.zip",
+        "application/octet-stream",
+        "u1",
+        size,
+      );
+    },
+  );
+
+  test.each([
+    [{ kind: "missing", path: "C:\\repo\\report.zip" }, /File not found/],
+    [{ kind: "not_file", path: "C:\\repo\\report.zip" }, /not a regular file/],
+    [{ kind: "file", sizeBytes: -1 }, /invalid file size/],
+    [{ kind: "file", sizeBytes: NaN }, /invalid file size/],
+    [{ kind: "file", sizeBytes: 1.5 }, /invalid file size/],
+    [{ kind: "file", sizeBytes: undefined }, /invalid file size/],
+    [
+      { kind: "file", sizeBytes: MAX_GENERATED_FILE_SIZE_BYTES + 1 },
+      /exceeds the maximum generated file size/,
+    ],
+  ])("rejects native preflight %j before upload", async (metadata, message) => {
+    const sandbox = {
+      ...makeSandbox(42, false, true),
+      supportsNativeFileRelay: () => true,
+    };
+    Object.assign(sandbox.files, {
+      stat: jest.fn().mockResolvedValue(metadata),
+    });
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "C:\\repo\\report.zip",
+      }),
+    ).rejects.toThrow(message);
+
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+    expect(sandbox.files.uploadToUrl).not.toHaveBeenCalled();
+    expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+    expect(mockConvexAction).not.toHaveBeenCalled();
+  });
+
+  test("preserves a native permission denial without falling back to a shell", async () => {
+    const sandbox = {
+      ...makeSandbox(42),
+      supportsNativeFileRelay: () => true,
+    };
+    const error = new Error("Metadata error: permission denied");
+    Object.assign(sandbox.files, { stat: jest.fn().mockRejectedValue(error) });
+
+    await expect(
+      uploadSandboxFileToConvex({
+        sandbox: sandbox as any,
+        userId: "u1",
+        fullPath: "/protected/report.zip",
+      }),
+    ).rejects.toBe(error);
+    expect(sandbox.commands.run).not.toHaveBeenCalled();
+    expect(mockGenerateS3UploadUrl).not.toHaveBeenCalled();
+  });
+
   test("falls back to command upload when native Centrifugo upload fails", async () => {
     const sandbox = makeSandbox(1234);
     sandbox.files.uploadToUrl.mockRejectedValueOnce(new Error("exit status 1"));

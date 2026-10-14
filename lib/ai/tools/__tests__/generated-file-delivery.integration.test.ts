@@ -16,7 +16,14 @@ jest.mock("pdfjs-serverless", () => ({ getDocument: jest.fn() }));
 jest.mock("isbinaryfile", () => ({ isBinaryFile: jest.fn() }));
 
 import { createServer, request, type Server } from "node:http";
-import { mkdtemp, readFile, writeFile, rm, symlink } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  rm,
+  symlink,
+  stat,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -158,8 +165,12 @@ describe("generated artifact delivery over HTTP", () => {
   async function deliverAfterReconnect(
     useSymlink = false,
     disconnectStream = false,
+    nativeMetadata = false,
   ) {
-    const source = join(directory, "report.txt");
+    const source = join(
+      directory,
+      nativeMetadata ? "report & review!.txt" : "report.txt",
+    );
     await rm(source, { force: true });
     if (useSymlink) {
       const target = join(directory, "original-report.txt");
@@ -172,13 +183,22 @@ describe("generated artifact delivery over HTTP", () => {
       sandboxKind: "centrifugo",
       getConnectionId: () => "reconnected-same-machine",
       isWindows: () => false,
+      supportsNativeFileRelay: () => nativeMetadata,
       commands: {
-        run: async (command: string) => ({
-          ...(await exec("/bin/sh", ["-c", command])),
-          exitCode: 0,
-        }),
+        run: async (command: string) => {
+          if (nativeMetadata) throw new Error("Shell metadata is unavailable");
+          return {
+            ...(await exec("/bin/sh", ["-c", command])),
+            exitCode: 0,
+          };
+        },
       },
       files: {
+        stat: async (path: string) => ({
+          kind: "file",
+          path,
+          sizeBytes: (await stat(path)).size,
+        }),
         uploadToUrl: async (path: string, url: string) => {
           const response = await transfer(url, "PUT", await readFile(path));
           if (response.status !== 200) throw new Error("Upload failed");
@@ -188,6 +208,12 @@ describe("generated artifact delivery over HTTP", () => {
     const stale = {
       ...connected,
       getConnectionId: () => "stale",
+      files: {
+        ...connected.files,
+        stat: async () => {
+          throw new LocalCommandRelayUnsubscribedError("stale");
+        },
+      },
       commands: {
         run: async () => {
           throw new LocalCommandRelayUnsubscribedError("stale");
@@ -228,6 +254,31 @@ describe("generated artifact delivery over HTTP", () => {
     );
     return { source, context, result };
   }
+
+  it("delivers native metadata files after reconnect without a shell size check", async () => {
+    const { source, context, result } = await deliverAfterReconnect(
+      false,
+      false,
+      true,
+    );
+    expect(context.sandboxManager.recoverLocalConnection).toHaveBeenCalledWith(
+      "stale",
+      "command_relay_unsubscribed",
+    );
+    expect(result.failedFiles).toEqual([]);
+    expect(result.deliveryReceipts[0]).toMatchObject({
+      fileId: "file-fixture",
+      sizeBytes: Buffer.byteLength(contents),
+      storageStatus: "stored",
+    });
+    expect(runMutation).toHaveBeenCalledTimes(1);
+    await rm(source);
+    const url = await getSandboxUploadedFileUrl({
+      fileId: "file-fixture" as never,
+      userId: "test-user",
+    });
+    expect((await transfer(url!)).body.toString("utf8")).toBe(contents);
+  });
 
   it.each([false, true])(
     "reconnects and opens the stored bytes without the source (symlink: %s)",
