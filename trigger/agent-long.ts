@@ -1773,6 +1773,7 @@ export const agentLongTask = task({
     let chatLogger: ChatLogger | undefined = createChatLogger({
       chatId,
       endpoint,
+      requestId: ctx.run.id,
     });
     chatLogger.setRequestDetails({
       mode,
