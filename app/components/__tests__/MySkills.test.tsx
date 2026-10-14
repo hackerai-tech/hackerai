@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MySkills } from "../MySkills";
 
 let mockUserId = "";
@@ -151,3 +157,24 @@ it("exports through the shared native/browser save flow and handles cancellation
   );
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
+
+it.each(["network", "server"])(
+  "retries a failed %s access check on the next mount",
+  async (failure) => {
+    const fetchMock = jest.mocked(fetch);
+    if (failure === "network")
+      fetchMock.mockRejectedValueOnce(new Error("Offline"));
+    else fetchMock.mockResolvedValueOnce({ ok: false } as Response);
+    const first = render(<MySkills />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    // Flush the request's rejection and the fail-closed state update.
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: "Manage skills" })).toBeNull();
+    first.unmount();
+    render(<MySkills />);
+    expect(
+      await screen.findByRole("button", { name: "Manage skills" }),
+    ).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  },
+);

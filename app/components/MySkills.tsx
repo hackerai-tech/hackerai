@@ -45,9 +45,15 @@ export function useSkillsAccess() {
         expires: Date.now() + 30_000,
         promise: Promise.resolve()
           .then(() => fetch("/api/user-skills/access"))
-          .then((r) => (r.ok ? r.json() : null))
+          .then((r) => {
+            if (!r.ok) throw new Error("Skills access check failed");
+            return r.json();
+          })
           .then((r) => r?.enabled === true)
-          .catch(() => false),
+          .catch(() => {
+            if (accessRequests.get(id) === request) accessRequests.delete(id);
+            return false;
+          }),
       };
       accessRequests.set(id, request);
     }
