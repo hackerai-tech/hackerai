@@ -49,7 +49,7 @@ describe("goal controls", () => {
       />,
     );
     expect(
-      screen.queryByRole("button", { name: "Set an Agent goal" }),
+      screen.queryByRole("button", { name: /Set goal/ }),
     ).not.toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -70,6 +70,7 @@ describe("goal controls", () => {
     expect(
       screen.queryByRole("button", { name: "Resume goal" }),
     ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add runs" }));
     fireEvent.change(
       screen.getByRole("spinbutton", { name: "Additional goal runs" }),
       { target: { value: "2" } },
@@ -148,6 +149,125 @@ describe("goal controls", () => {
           body: JSON.stringify({ chatId: "chat", action: "pause" }),
         }),
       ),
+    );
+  });
+  it("keeps completed goals compact and shows the verified result without stale progress", async () => {
+    setMockQueryResult({
+      ...goal,
+      state: "achieved",
+      reason: "Completion verified",
+      progress: "Pending independent verification",
+      evidence: [{ criterion: 0, runId: "r1", explanation: "File read" }],
+    });
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={jest.fn()}
+        settings={settings}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Completed");
+    expect(screen.queryByText("Completion verified")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
+    expect(screen.getByText("Completion verified")).toBeVisible();
+    expect(
+      screen.queryByText(/Pending independent verification/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Resume goal" }),
+    ).not.toBeInTheDocument();
+    await act(async () => {});
+  });
+
+  it("does not mark saved evidence as verified for an unfinished goal", async () => {
+    setMockQueryResult({
+      ...goal,
+      evidence: [{ criterion: 0, runId: "r1", explanation: "File read" }],
+    });
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists
+        eligible
+        idle
+        send={jest.fn()}
+        settings={settings}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show goal details" }));
+    expect(
+      screen.getByText(/Evidence saved, awaiting verification/),
+    ).toBeVisible();
+    expect(screen.queryByText(/✓/)).not.toBeInTheDocument();
+    await act(async () => {});
+  });
+
+  it.each(["-1", "0.5", "8"])(
+    "rejects an invalid additional budget of %s before sending",
+    async (value) => {
+      setMockQueryResult(goal);
+      const send = jest.fn();
+      render(
+        <AgentGoalPanel
+          chatId="chat"
+          exists
+          eligible
+          idle
+          send={send}
+          settings={settings}
+        />,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Add runs" }));
+      fireEvent.change(
+        screen.getByRole("spinbutton", { name: "Additional goal runs" }),
+        { target: { value } },
+      );
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Choose a whole number from 0 to 7",
+      );
+      expect(
+        screen.queryByRole("button", { name: "Resume goal" }),
+      ).not.toBeInTheDocument();
+      expect(send).not.toHaveBeenCalled();
+      await act(async () => {});
+    },
+  );
+
+  it("validates each criterion before starting and preserves the dialog draft", async () => {
+    const send = jest.fn();
+    render(
+      <AgentGoalPanel
+        chatId="chat"
+        exists={false}
+        eligible
+        idle
+        send={send}
+        settings={settings}
+      />,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /Set goal/ }));
+    expect(
+      screen.getByRole("dialog", { name: "Set an Agent goal" }),
+    ).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+      target: { value: "Create marker" },
+    });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Goal success criteria" }),
+      { target: { value: "x".repeat(1001) } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start goal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "1,000 characters each",
+    );
+    expect(send).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: /Set goal/ }));
+    expect(screen.getByRole("textbox", { name: "Goal objective" })).toHaveValue(
+      "Create marker",
     );
   });
 });
