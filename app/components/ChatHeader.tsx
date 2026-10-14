@@ -14,6 +14,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { WorkspaceFilesButton } from "./WorkspaceFilesButton";
 import { ShareDialog } from "./ShareDialog";
 import { navigateToAuth } from "@/app/hooks/useTauri";
 import { captureUpgradeCtaImpression } from "@/lib/analytics/client";
@@ -269,6 +270,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               </div>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
+              {isExistingChat && id && user && (
+                <WorkspaceFilesButton chatId={id} />
+              )}
               {/* Share button stays in the desktop layout so title loading does not shift it. */}
               <button
                 aria-label="Share"
