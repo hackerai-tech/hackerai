@@ -61,7 +61,9 @@ export const sanitizeFindingPartsForShare = (parts: any[]): any[] =>
         ["search_skills", "load_skill"].includes(part?.toolName));
     if (
       skillTool &&
-      (part?.output?.boundary ||
+      (part?.output?.success !== true ||
+        part?.input?.category === "my-skills" ||
+        part?.output?.boundary ||
         part?.output?.results?.some(
           (r: any) => r?.source === "private-untrusted",
         ) ||

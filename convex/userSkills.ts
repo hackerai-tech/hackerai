@@ -249,10 +249,12 @@ export const select = mutation({
           .query("user_skill_drafts")
           .withIndex("by_user", (q) => q.eq("user_id", userId))
           .take(32);
-        if (drafts.length >= 32)
-          throw new ConvexError(
-            "Too many unfinished skill selections. Send a message in an existing draft first.",
+        if (drafts.length >= 32) {
+          const oldest = drafts.reduce((a, b) =>
+            a.updated_at <= b.updated_at ? a : b,
           );
+          await ctx.db.delete(oldest._id);
+        }
         await ctx.db.insert("user_skill_drafts", {
           user_id: userId,
           chat_id: args.chatId,

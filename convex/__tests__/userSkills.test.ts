@@ -129,6 +129,41 @@ describe("private skill ownership and selections", () => {
       await skills.snapshotSkillSelection(alice, "alice", "third-chat"),
     ).toEqual([]);
   });
+  it("evicts the least recently updated draft without blocking new selections or touching another owner", async () => {
+    const id = await call(skills.save, alice, draft);
+    const other = await db.insert("user_skill_drafts", {
+      user_id: "bob",
+      chat_id: "other",
+      ids: [],
+      updated_at: -1,
+    });
+    const pending = [];
+    for (let i = 0; i < 32; i++) {
+      pending.push(
+        await db.insert("user_skill_drafts", {
+          user_id: "alice",
+          chat_id: `abandoned-${i}`,
+          ids: [],
+          updated_at: i,
+        }),
+      );
+    }
+    // A draft that is still being edited must survive eviction.
+    await call(skills.select, alice, { chatId: "abandoned-0", ids: [id] });
+    await call(skills.select, alice, { chatId: "fresh", ids: [id] });
+    expect(await db.get(pending[0])).not.toBeNull();
+    expect(await db.get(pending[1])).toBeNull();
+    expect(await db.get(other)).not.toBeNull();
+    expect(
+      await call(skills.selection, alice, { chatId: "fresh" }),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .query("user_skill_drafts")
+        .withIndex("by_user", (q: any) => q.eq("user_id", "alice"))
+        .take(33),
+    ).toHaveLength(32);
+  });
   it("requires owned chat and selected skill at every runtime load", async () => {
     const id = await call(skills.save, alice, draft);
     const chat = await db.insert("chats", {
