@@ -340,6 +340,7 @@ function SkillsControl({
                 <input
                   ref={fileInput}
                   type="file"
+                  tabIndex={-1}
                   accept=".md,text/markdown"
                   className="sr-only"
                   aria-label="Upload skill Markdown"
