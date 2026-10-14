@@ -46,7 +46,9 @@ export function AgentGoalPanel({
   const [stopWhen, setStopWhen] = useState("");
   const [reply, setReply] = useState("");
   const [additionalRuns, setAdditionalRuns] = useState(0);
-  const [busy, setBusy] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [controlling, setControlling] = useState(false);
+  const busy = submitting || controlling;
   const exposure = useRef(false);
   useEffect(() => {
     if (!eligible) return;
@@ -79,7 +81,7 @@ export function AgentGoalPanel({
     !["queued", "running", "needs_approval", "waiting"].includes(goal.state) &&
     (goal.runs < goal.maxRuns || additionalRuns > 0);
   async function control(action: "pause" | "stop") {
-    setBusy(true);
+    setControlling(true);
     try {
       const r = await fetch("/api/agent-goal", {
         method: "POST",
@@ -92,12 +94,12 @@ export function AgentGoalPanel({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Goal control failed");
     } finally {
-      setBusy(false);
+      setControlling(false);
     }
   }
   async function submit(resume: boolean) {
     if (busy || !idle || disabledReason || !eligible || !enabled) return;
-    setBusy(true);
+    setSubmitting(true);
     try {
       const successCriteria = criteria
         .split("\n")
@@ -160,7 +162,7 @@ export function AgentGoalPanel({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Goal could not start");
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   }
   return (
@@ -186,6 +188,11 @@ export function AgentGoalPanel({
           </p>
           {goal.progress && (
             <p className="text-muted-foreground">{goal.reason}</p>
+          )}
+          {goal.judgment && goal.judgment.reason !== goal.reason && (
+            <p className="text-muted-foreground">
+              Completion check: {goal.judgment.reason}
+            </p>
           )}
           <ul className="space-y-1">
             {goal.criteria.map((criterion, i) => (
@@ -268,7 +275,7 @@ export function AgentGoalPanel({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={busy}
+                  disabled={controlling}
                   onClick={() => control("pause")}
                 >
                   Pause goal
@@ -289,7 +296,7 @@ export function AgentGoalPanel({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy}
+                disabled={controlling}
                 onClick={() => control("stop")}
               >
                 Stop goal

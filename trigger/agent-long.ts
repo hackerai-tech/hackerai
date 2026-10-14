@@ -3129,7 +3129,7 @@ export const agentLongTask = task({
                     run: activeGoal.runs,
                     approvedRuns: activeGoal.maxRuns,
                   }) +
-                  "\nWork within the existing authorization and tool approvals. Save progress with goal_checkpoint before ending. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, request it and checkpoint needs_input. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
+                  "\nWork within the existing authorization and tool approvals. Save progress with goal_checkpoint before ending. If a verificationCommand is set, run that exact command as a separate terminal invocation without prepending or appending anything, including exit-code echoes; the terminal result records its exit code. An achieved checkpoint requests independent verification; describe completion as pending verification until the goal status confirms it. Use evidence from executed tools for every criterion; never infer completion from time, step, context or budget limits. If information or approval is missing, request it and checkpoint needs_input. Two runs without verified progress stop for review. Continue from saved history and compaction; do not repeat completed work."
                 : "");
             finalMessages = messagesWithNotes;
 

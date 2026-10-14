@@ -31,6 +31,15 @@ const mockCloseAgentApprovalSession = jest.fn<any>();
 const mockGetUserIDAndPro = jest.fn<any>();
 const mockGetFeatureFlagResult = jest.fn<any>();
 const mockTriggerTask = jest.fn<any>();
+const mockGoalMutation = jest.fn<any>();
+jest.mock("@/lib/db/convex-client", () => ({
+  getConvexClient: () => ({ mutation: mockGoalMutation }),
+}));
+jest.mock("@/lib/goals/server", () => ({
+  goalEnabled: async () => true,
+  goalServiceKey: () => "synthetic",
+  reconcileGoal: async () => null,
+}));
 
 jest.mock("@/lib/auth/get-user-id", () => ({
   getUserIDAndPro: mockGetUserIDAndPro,
@@ -587,6 +596,72 @@ describe("regional subscription gate before Agent dispatch", () => {
       });
       expect(mockHandleInitialChatAndUserMessage).not.toHaveBeenCalled();
       expect(mockTriggerTask).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("goal reservations on oversized dispatch", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetUserIDAndPro.mockResolvedValue({
+      userId: "owner",
+      subscription: "pro",
+    });
+    mockGoalMutation.mockResolvedValue({ generation: 1 });
+  });
+  it.each(["full_access", "ask_approval", "trigger_api_413"])(
+    "releases the reserved goal for %s",
+    async (path) => {
+      mockTriggerTask.mockRejectedValue(
+        Object.assign(new Error("Request body too large"), {
+          name: "TriggerApiError",
+          status: 413,
+        }),
+      );
+      const response = await createAgentTriggerPost({ endpoint: "/api/agent" })(
+        {
+          headers: new Headers(),
+          cookies: { get: () => undefined },
+          json: async () => ({
+            chatId: "goal-chat",
+            messages: [
+              {
+                id: "input",
+                role: "user",
+                parts: [{ type: "text", text: "Create marker" }],
+              },
+            ],
+            goal: {
+              action: "start",
+              objective: "Create marker",
+              criteria: ["Marker exists"],
+              maxRuns: 1,
+            },
+            agentPermissionMode:
+              path === "ask_approval" ? "ask_approval" : "full_access",
+            todos:
+              path === "trigger_api_413"
+                ? []
+                : [
+                    {
+                      id: "todo",
+                      content: "x".repeat(AGENT_TRIGGER_PAYLOAD_MAX_BYTES),
+                      status: "pending",
+                    },
+                  ],
+          }),
+        } as any,
+      );
+      expect(response.status).toBe(413);
+      expect(mockGoalMutation).toHaveBeenCalledTimes(2);
+      expect(mockGoalMutation).toHaveBeenLastCalledWith(expect.anything(), {
+        serviceKey: "synthetic",
+        chatId: "goal-chat",
+        userId: "owner",
+        generation: 1,
+      });
+      if (path !== "trigger_api_413")
+        expect(mockTriggerTask).not.toHaveBeenCalled();
     },
   );
 });

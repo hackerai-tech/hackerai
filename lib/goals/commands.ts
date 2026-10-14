@@ -25,6 +25,13 @@ export function parseGoalCommand(text: string): GoalCommand | null {
     return { action: "status" };
   if (/^(pause|stop|clear)$/i.test(content))
     return { action: content.toLowerCase() === "pause" ? "pause" : "stop" };
+  if (
+    /^resume\s+\+\d+/i.test(content) &&
+    !/^resume\s+\+[1-8](?:\s|$)/i.test(content)
+  )
+    throw new Error(
+      "Add between 1 and 8 runs, within the cumulative goal budget.",
+    );
   const resume = content.match(/^resume(?:\s+\+([1-8]))?(?:\s+([\s\S]*))?$/i);
   if (resume)
     return {
@@ -37,9 +44,11 @@ export function parseGoalCommand(text: string): GoalCommand | null {
     criteria: string[] = [];
   let maxRuns = GOAL_DEFAULT_RUNS;
   for (const line of content.replace(/^(?:--|start)\s+/i, "").split("\n")) {
-    const field = line.match(
-      /^(criterion|criteria|verify|verification|constraints|preserve|boundaries|scope|stop when|runs):\s*(.+)$/i,
-    );
+    const field = line
+      .trim()
+      .match(
+        /^(criterion|criteria|verify|verification|constraints|preserve|boundaries|scope|stop when|runs):\s*(.+)$/i,
+      );
     if (!field) {
       if (line.trim()) headline.push(line.trim());
       continue;

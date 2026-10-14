@@ -153,6 +153,18 @@ describe("goal commands and contract validation", () => {
       stopWhen: "Credentials are missing",
       maxRuns: 2,
     });
+    expect(
+      parseGoalCommand(
+        "/goal start Fix\n  criterion: Tests pass\n  runs: 1\n  scope: Fixture only",
+      ),
+    ).toEqual({
+      action: "start",
+      objective: "Fix",
+      criteria: ["Tests pass"],
+      maxRuns: 1,
+      boundaries: "Fixture only",
+    });
+    expect(() => parseGoalCommand("/goal resume +9")).toThrow();
     expect(parseGoalCommand("a normal prompt")).toBeNull();
   });
   it("bounds the budget and contract at admission", () => {

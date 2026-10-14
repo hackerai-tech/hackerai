@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { NextRequest } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
@@ -10,6 +11,10 @@ import {
 } from "@/lib/api/agent-approval-session";
 import { ChatSDKError } from "@/lib/errors";
 
+const controlRequest = z.object({
+  chatId: z.string().trim().min(1).max(128),
+  action: z.enum(["pause", "stop"]),
+});
 export const maxDuration = 30;
 export async function GET(req: NextRequest) {
   try {
@@ -29,15 +34,13 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const { userId } = await getUserIDAndPro(req);
-    const body = await req.json();
-    if (
-      typeof body.chatId !== "string" ||
-      !["pause", "stop"].includes(body.action)
-    )
+    const parsed = controlRequest.safeParse(await req.json().catch(() => null));
+    if (!parsed.success)
       return Response.json(
         { message: "Use pause or stop with a chat ID" },
         { status: 400 },
       );
+    const body = parsed.data;
     const chat = await getChatById({ id: body.chatId });
     if (!chat || chat.user_id !== userId)
       return Response.json({ message: "Chat unavailable" }, { status: 403 });

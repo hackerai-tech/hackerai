@@ -529,6 +529,19 @@ export const createAgentTriggerPost =
     }, 10_000);
     let reservedGoal:
       { chatId: string; userId: string; generation: number } | undefined;
+    const releaseReservedGoal = async () => {
+      if (!reservedGoal) return;
+      const goal = reservedGoal;
+      reservedGoal = undefined;
+      try {
+        await goalConvex().mutation(goalApi.agentGoals.failDispatch, {
+          serviceKey: goalServiceKey(),
+          ...goal,
+        });
+      } catch {
+        // A persistence outage leaves the goal fenced for explicit recovery.
+      }
+    };
     try {
       const parsedBody = await parseAgentTriggerRequestBody(req);
       if (!parsedBody.ok) return parsedBody.response;
@@ -946,7 +959,7 @@ export const createAgentTriggerPost =
         metadata: triggerMetadata,
       };
       let triggerRequestBodyBytes: number | undefined;
-      const triggerPayloadTooLargeResponse = (
+      const triggerPayloadTooLargeResponse = async (
         reason: "payload_limit_exceeded" | "trigger_api_413",
       ) => {
         console.warn(
@@ -976,6 +989,7 @@ export const createAgentTriggerPost =
           }),
         );
 
+        await releaseReservedGoal();
         return createAgentTriggerPayloadTooLargeResponse();
       };
 
@@ -1076,13 +1090,7 @@ export const createAgentTriggerPost =
       });
       return response;
     } catch (error) {
-      if (reservedGoal)
-        await goalConvex()
-          .mutation(goalApi.agentGoals.failDispatch, {
-            serviceKey: goalServiceKey(),
-            ...reservedGoal,
-          })
-          .catch(() => undefined);
+      await releaseReservedGoal();
       return handleAgentRouteError({
         error,
         endpoint,
