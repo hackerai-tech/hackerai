@@ -139,6 +139,7 @@ describe("createAgentPartialSavePost", () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     errorSpy.mockRestore();
     infoSpy.mockRestore();
     warnSpy.mockRestore();
@@ -156,6 +157,171 @@ describe("createAgentPartialSavePost", () => {
     },
   };
   const diagnosticRequestId = "96gzc-1791986448417-ffa75b7dd65b";
+
+  const deferred = () => {
+    let resolve!: (value?: any) => void;
+    const promise = new Promise<any>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  };
+
+  it("bounds snapshots across the whole request and never reads private input during an early stall", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    jest.useFakeTimers();
+    const history = deferred();
+    const lookup = deferred();
+    mockGetUserID.mockResolvedValue(diagnosticUser as never);
+    mockAssertUserCanAccessChatHistory.mockReturnValue(
+      history.promise as never,
+    );
+    mockGetChatById.mockReturnValue(lookup.promise as never);
+    const req = request(diagnosticBody, { "x-vercel-id": diagnosticRequestId });
+    const pending = createAgentPartialSavePost()(req);
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    const first = JSON.parse(String(warnSpy.mock.calls[0][0]));
+    expect(first).toMatchObject({
+      event: "agent_long_client_partial_save_slow",
+      stage: "history_access",
+      outcome: "pending",
+      elapsed_ms: 10_000,
+      request_id: diagnosticRequestId,
+      user_id: diagnosticUser,
+      run_correlation_verified: false,
+      message_save_completed: false,
+    });
+    expect(first.requested_chat_id).toBeUndefined();
+    expect(first.trigger_run_id).toBeUndefined();
+    expect(req.text).not.toHaveBeenCalled();
+    history.resolve();
+    await jest.advanceTimersByTimeAsync(10_000);
+    const second = JSON.parse(String(warnSpy.mock.calls[1][0]));
+    expect(second).toMatchObject({
+      stage: "chat_lookup",
+      outcome: "pending",
+      elapsed_ms: 20_000,
+      requested_chat_id: diagnosticBody.chatId,
+      run_correlation_verified: false,
+      message_save_completed: false,
+    });
+    expect(second.trigger_run_id).toBeUndefined();
+    await jest.advanceTimersByTimeAsync(40_000);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("PRIVATE_");
+    lookup.resolve(chat({ user_id: diagnosticUser }));
+    expect((await pending).status).toBe(200);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("distinguishes an unacknowledged save from a stalled chat update without retrying either", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    jest.useFakeTimers();
+    const save = deferred();
+    const update = deferred();
+    mockGetUserID.mockResolvedValue(diagnosticUser as never);
+    mockGetChatById.mockResolvedValue(
+      chat({ user_id: diagnosticUser }) as never,
+    );
+    mockSaveMessage.mockReturnValue(save.promise as never);
+    mockUpdateChat.mockReturnValue(update.promise as never);
+    const pending = createAgentPartialSavePost()(request(diagnosticBody));
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(JSON.parse(String(warnSpy.mock.calls[0][0]))).toMatchObject({
+      stage: "save_message",
+      outcome: "pending",
+      trigger_run_id: diagnosticBody.triggerRunId,
+      run_correlation_verified: true,
+      message_save_completed: false,
+    });
+    expect(infoSpy).not.toHaveBeenCalled();
+    save.resolve();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(JSON.parse(String(warnSpy.mock.calls[1][0]))).toMatchObject({
+      stage: "update_chat",
+      outcome: "pending",
+      elapsed_ms: 20_000,
+      message_save_completed: true,
+    });
+    await jest.advanceTimersByTimeAsync(40_000);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockUpdateChat).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("PRIVATE_");
+    update.resolve();
+    expect((await pending).status).toBe(200);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it.each(["success", "guard", "generic_error", "database_error"])(
+    "cleans up snapshots after a fast %s response",
+    async (outcome) => {
+      const { createAgentPartialSavePost } =
+        await import("@/lib/api/agent-partial-save-route");
+      jest.useFakeTimers();
+      if (outcome === "guard")
+        mockVerifyAgentRunCorrelationToken.mockReturnValue(false);
+      if (outcome === "generic_error")
+        mockSaveMessage.mockRejectedValue(
+          new Error("PRIVATE_ERROR_CANARY") as never,
+        );
+      if (outcome === "database_error")
+        mockSaveMessage.mockRejectedValue(
+          new ChatSDKError("bad_request:database") as never,
+        );
+      const response = await createAgentPartialSavePost()(request());
+      expect(response.status).toBe(
+        outcome === "success"
+          ? 200
+          : outcome === "guard"
+            ? 403
+            : outcome === "database_error"
+              ? 400
+              : 500,
+      );
+      expect(jest.getTimerCount()).toBe(0);
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(warnSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("stops snapshots after a slow failure and omits identifiers with unknown shapes", async () => {
+    const { createAgentPartialSavePost } =
+      await import("@/lib/api/agent-partial-save-route");
+    jest.useFakeTimers();
+    let reject!: (error: Error) => void;
+    mockSaveMessage.mockReturnValue(
+      new Promise((_, fail) => {
+        reject = fail;
+      }) as never,
+    );
+    const pending = createAgentPartialSavePost()(
+      request(validBody, { "x-vercel-id": "PRIVATE_HEADER_CANARY" }),
+    );
+    await jest.advanceTimersByTimeAsync(10_000);
+    const event = JSON.parse(String(warnSpy.mock.calls[0][0]));
+    expect(event).toMatchObject({
+      stage: "save_message",
+      run_correlation_verified: true,
+      message_save_completed: false,
+    });
+    for (const key of [
+      "request_id",
+      "user_id",
+      "requested_chat_id",
+      "trigger_run_id",
+    ])
+      expect(event[key]).toBeUndefined();
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("PRIVATE_");
+    reject(new Error("PRIVATE_ERROR_CANARY"));
+    expect((await pending).status).toBe(500);
+    expect(jest.getTimerCount()).toBe(0);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
 
   it("attributes an early failed read without consuming or logging the body", async () => {
     const { createAgentPartialSavePost } =

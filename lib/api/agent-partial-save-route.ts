@@ -226,6 +226,58 @@ export const createAgentPartialSavePost =
     let body: PartialSaveBody | undefined;
     let correlationVerified = false;
     let messageSaveCompleted = false;
+    const startedAt = Date.now();
+    // A platform timeout can bypass catch. Take two snapshots across the whole
+    // request, using the same bounded identifiers as terminal diagnostics.
+    const getDiagnosticContext = () => {
+      const requestId = req.headers.get("x-vercel-id");
+      return {
+        stage,
+        request_id:
+          requestId &&
+          requestId.length <= 128 &&
+          /^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
+            requestId,
+          )
+            ? requestId
+            : undefined,
+        user_id:
+          userId && /^user_[0-9A-HJKMNP-TV-Z]{26}$/.test(userId)
+            ? userId
+            : undefined,
+        requested_chat_id:
+          body &&
+          /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+            body.chatId,
+          )
+            ? body.chatId
+            : undefined,
+        trigger_run_id:
+          correlationVerified &&
+          body &&
+          /^run_[a-z0-9]{20,32}$/.test(body.triggerRunId)
+            ? body.triggerRunId
+            : undefined,
+        run_correlation_verified: correlationVerified,
+        message_save_completed: messageSaveCompleted,
+      };
+    };
+    const slowRequestTimers = [10_000, 20_000].map((delayMs) =>
+      setTimeout(() => {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "agent_long_client_partial_save_slow",
+            service: "chat-handler",
+            route: "/api/agent/partial-save",
+            timestamp: new Date().toISOString(),
+            elapsed_ms: Date.now() - startedAt,
+            outcome: "pending",
+            ...getDiagnosticContext(),
+          }),
+        );
+      }, delayMs),
+    );
     try {
       userId = await getUserID(req);
       stage = "history_access";
@@ -299,7 +351,6 @@ export const createAgentPartialSavePost =
       if (error instanceof ChatSDKError && !databaseError) {
         return error.toResponse();
       }
-      const requestId = req.headers.get("x-vercel-id");
       const causeCode =
         error instanceof Error && error.cause instanceof Error
           ? (error.cause as NodeJS.ErrnoException).code
@@ -328,7 +379,6 @@ export const createAgentPartialSavePost =
           service: "chat-handler",
           route: "/api/agent/partial-save",
           timestamp: new Date().toISOString(),
-          stage,
           outcome: "error",
           status_code: databaseError?.statusCode ?? 500,
           reason: databaseError
@@ -344,33 +394,7 @@ export const createAgentPartialSavePost =
                 ? "Error"
                 : "NonError",
           transport_code: transportCode,
-          request_id:
-            requestId &&
-            requestId.length <= 128 &&
-            /^(?:[a-z0-9-]{1,32}::)?[a-z0-9]{3,12}-\d{13}-[a-f0-9]{12,64}$/.test(
-              requestId,
-            )
-              ? requestId
-              : undefined,
-          user_id:
-            userId && /^user_[0-9A-HJKMNP-TV-Z]{26}$/.test(userId)
-              ? userId
-              : undefined,
-          requested_chat_id:
-            body &&
-            /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
-              body.chatId,
-            )
-              ? body.chatId
-              : undefined,
-          trigger_run_id:
-            correlationVerified &&
-            body &&
-            /^run_[a-z0-9]{20,32}$/.test(body.triggerRunId)
-              ? body.triggerRunId
-              : undefined,
-          run_correlation_verified: correlationVerified,
-          message_save_completed: messageSaveCompleted,
+          ...getDiagnosticContext(),
         }),
       );
       if (databaseError) return databaseError.toResponse();
@@ -378,5 +402,7 @@ export const createAgentPartialSavePost =
         { saved: false, message: "Failed to save partial response" },
         { status: 500 },
       );
+    } finally {
+      for (const timer of slowRequestTimers) clearTimeout(timer);
     }
   };
