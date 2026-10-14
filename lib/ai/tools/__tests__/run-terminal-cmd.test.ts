@@ -1135,6 +1135,46 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
   });
 
+  test("owns a cloud shell's browser state before a later browser command", async () => {
+    const fakeHandle = makeFakeHandle();
+    const e2b = makeFakeE2BSandbox();
+    mockCreateE2BPtyHandle.mockResolvedValue(fakeHandle);
+    const { context } = makeContext({ sandbox: e2b });
+    const prepareBrowser = jest.fn(async () => ({
+      AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
+      AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+    }));
+    context.browserSessions = {
+      prepare: prepareBrowser,
+    } as unknown as NonNullable<ToolContext["browserSessions"]>;
+
+    setTimeout(() => fakeHandle.resolveExit(0), 10);
+    await runTool(createRunTerminalCmd(context), {
+      command: "python3 -c 'print(123)'",
+      brief: "open a shell before using the browser",
+      is_background: false,
+      timeout: 5,
+      interactive: true,
+    });
+
+    expect(prepareBrowser).toHaveBeenCalledWith(e2b);
+    expect(mockCreateE2BPtyHandle).toHaveBeenCalledWith(
+      e2b,
+      expect.objectContaining({
+        envs: {
+          AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
+          AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
+          AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+        },
+      }),
+    );
+    expect(fakeHandle.sendInput).toHaveBeenCalledWith(
+      new TextEncoder().encode(
+        "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
+      ),
+    );
+  });
+
   test("regression: legacy schema {command, brief, is_background, timeout} still works", async () => {
     // Use a non-E2B sandbox (sandboxKind !== "centrifugo" is NOT enough after
     // the isE2BSandbox hardening — a sandbox with sandboxKind: "centrifugo" is
