@@ -109,7 +109,7 @@ ${largeOutputGuidance}
         .optional()
         .default(RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Time in seconds to wait for command output before returning; reaching this limit does not terminate the process. Prefer short waits of 10-30 seconds for long work, then inspect the returned session rather than rerunning the command. A foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy it exactly and never derive one from a PID. Captured output is retained in a bounded execution record when available. Explicit cancellation and infrastructure resource limits can still stop execution. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Time in seconds to wait for command output before returning; reaching this limit does not terminate the process. A foreground command that is still running returns a reusable opaque session ID for interact_terminal_session; copy it exactly and never derive one from a PID. Captured output is retained in a bounded execution record when available. Explicit cancellation and infrastructure resource limits can still stop execution. Capped at ${RUN_TERMINAL_MAX_TIMEOUT_SECONDS} seconds. Defaults to ${RUN_TERMINAL_DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
         ),
       interactive: z
         .boolean()
