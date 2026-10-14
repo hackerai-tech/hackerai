@@ -60,12 +60,12 @@ beforeEach(() => {
 it("waits for Convex authentication before exposing skills or requesting access", async () => {
   mockAuthenticated = false;
   const { rerender } = render(<MySkills chatId="chat-1" />);
-  expect(screen.queryByRole("button", { name: "My Skills" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Manage skills" })).toBeNull();
   expect(fetch).not.toHaveBeenCalled();
   mockAuthenticated = true;
   rerender(<MySkills chatId="chat-1" />);
   expect(
-    await screen.findByRole("button", { name: "My Skills" }),
+    await screen.findByRole("button", { name: "Manage skills" }),
   ).toBeVisible();
 });
 
@@ -97,39 +97,21 @@ it("requires review and explicit save for conversation text", async () => {
   );
 });
 
-it("keeps an explicit empty chat selection separate from defaults and exposes selection failures", async () => {
-  mockSelect.mockRejectedValue(
-    new Error("Wait for the current response to finish"),
-  );
-  render(<MySkills chatId="chat-1" />);
-  fireEvent.click(await screen.findByRole("button", { name: "My Skills" }));
+it("manages new-chat defaults separately from the composer's selection", async () => {
+  render(<MySkills />);
+  fireEvent.click(await screen.findByRole("button", { name: "Manage skills" }));
   expect(
-    screen.getByRole("checkbox", { name: "Use in this chat" }),
-  ).not.toBeChecked();
+    screen.queryByRole("checkbox", { name: "Use in this chat" }),
+  ).toBeNull();
   expect(
     screen.getByRole("checkbox", { name: "Default for new chats" }),
   ).toBeChecked();
-  fireEvent.click(screen.getByRole("checkbox", { name: "Use in this chat" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Wait for the current response to finish",
-  );
-  expect(mockSelect).toHaveBeenCalledWith({
-    chatId: "chat-1",
-    ids: ["skill-1"],
-  });
-  expect(
-    screen.getByRole("checkbox", { name: "Use in this chat" }),
-  ).not.toBeChecked();
-  expect(
-    mockCapture.mock.calls.some(
-      ([event]) => event.event === "user_skills_selected",
-    ),
-  ).toBe(false);
+  expect(mockSelect).not.toHaveBeenCalled();
 });
 
 it("imports Markdown into the same review flow without saving automatically", async () => {
   render(<MySkills chatId="chat-1" />);
-  fireEvent.click(await screen.findByRole("button", { name: "My Skills" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Manage skills" }));
   const file = new File(["placeholder"], "SKILL.md", { type: "text/markdown" });
   Object.defineProperty(file, "arrayBuffer", {
     value: async () =>
@@ -158,7 +140,7 @@ it("exports through the shared native/browser save flow and handles cancellation
   });
   mockDownload.mockResolvedValue({ outcome: "canceled" });
   render(<MySkills chatId="chat-1" />);
-  fireEvent.click(await screen.findByRole("button", { name: "My Skills" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Manage skills" }));
   fireEvent.click(screen.getByRole("button", { name: "Export API review" }));
   await waitFor(() =>
     expect(mockDownload).toHaveBeenCalledWith({

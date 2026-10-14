@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { ComposerSkillSelections, useComposerSkills } from "./ComposerSkills";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -43,6 +44,7 @@ export function ChatInputTextarea({
   autoFocus = true,
 }: ChatInputTextareaProps) {
   const input = useComposerInput();
+  const skills = useComposerSkills();
   const { setInput } = useComposerActions();
   const { subscription } = useGlobalState();
   const { handlePasteEvent, handlePastedTextAttachment } =
@@ -164,30 +166,45 @@ export function ChatInputTextarea({
   ]);
 
   return (
-    <div className="overflow-y-auto pl-4 pr-2">
-      <TextareaAutosize
-        ref={textareaRef}
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        placeholder={
-          placeholder !== undefined
-            ? placeholder
-            : chatMode === "agent"
-              ? "Do anything"
-              : "Ask, learn, brainstorm"
-        }
-        className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"
-        minRows={minRows}
-        autoFocus={autoFocus}
-        disabled={disabled}
-        data-testid="chat-input"
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            onEnterSubmit(e);
+    <>
+      <ComposerSkillSelections />
+      <div className="overflow-y-auto pl-4 pr-2">
+        <TextareaAutosize
+          ref={textareaRef}
+          value={input}
+          onChange={(e) => {
+            setInput(e.target.value);
+            skills?.inspect(e.currentTarget);
+          }}
+          onSelect={(e) => skills?.inspect(e.currentTarget)}
+          aria-autocomplete={skills ? "list" : undefined}
+          aria-controls={skills?.open ? skills.listId : undefined}
+          aria-activedescendant={skills?.activeId}
+          placeholder={
+            placeholder !== undefined
+              ? placeholder
+              : chatMode === "agent"
+                ? "Do anything"
+                : "Ask, learn, brainstorm"
           }
-        }}
-      />
-    </div>
+          className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"
+          minRows={minRows}
+          autoFocus={autoFocus}
+          disabled={disabled}
+          data-testid="chat-input"
+          onKeyDown={(e) => {
+            if (skills?.keyDown(e)) return;
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing
+            ) {
+              e.preventDefault();
+              onEnterSubmit(e);
+            }
+          }}
+        />
+      </div>
+    </>
   );
 }

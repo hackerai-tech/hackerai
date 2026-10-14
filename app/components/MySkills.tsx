@@ -31,7 +31,7 @@ const accessRequests = new Map<
   string,
   { expires: number; promise: Promise<boolean> }
 >();
-function useSkillsAccess() {
+export function useSkillsAccess() {
   const { user } = useAuth();
   const { isAuthenticated } = useConvexAuth();
   const [allowedUser, setAllowedUser] = useState<string>();
@@ -77,7 +77,6 @@ type Editor = {
 };
 
 export function MySkills({
-  chatId,
   disabled = false,
   conversationText,
 }: {
@@ -87,15 +86,10 @@ export function MySkills({
 }) {
   const enabled = useSkillsAccess();
   return enabled ? (
-    <SkillsControl
-      chatId={chatId}
-      disabled={disabled}
-      conversationText={conversationText}
-    />
+    <SkillsControl disabled={disabled} conversationText={conversationText} />
   ) : null;
 }
 function SkillsControl({
-  chatId,
   disabled,
   conversationText,
 }: {
@@ -110,22 +104,10 @@ function SkillsControl({
   const fileInput = useRef<HTMLInputElement>(null);
   const client = useConvex();
   const library = useQuery(api.userSkills.list, {});
-  const selection = useQuery(
-    api.userSkills.selection,
-    chatId ? { chatId } : "skip",
-  );
   const save = useMutation(api.userSkills.save);
   const remove = useMutation(api.userSkills.remove);
   const setDefault = useMutation(api.userSkills.setDefault);
-  const select = useMutation(api.userSkills.select);
-  const selected = chatId
-    ? (selection ?? [])
-    : (library?.filter((s) => s.isDefault) ?? []);
-  const ids = selected.map((s) => s.id);
-  useEffect(() => {
-    if (conversationText === undefined)
-      capture("user_skills_exposed", { surface: "composer" });
-  }, [conversationText]);
+
   async function perform(action: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -153,11 +135,7 @@ function SkillsControl({
       surface: conversationText === undefined ? "library" : "conversation",
     });
   }
-  const ready =
-    !busy &&
-    !disabled &&
-    library !== undefined &&
-    (!chatId || selection !== undefined);
+  const ready = !busy && !disabled && library !== undefined;
   return (
     <>
       <Button
@@ -168,17 +146,13 @@ function SkillsControl({
         onClick={begin}
         disabled={disabled}
         aria-label={
-          conversationText === undefined ? "My Skills" : "Save as skill"
+          conversationText === undefined ? "Manage skills" : "Save as skill"
         }
-        title={
-          selected.length
-            ? `Available in this chat: ${selected.map((s) => s.name).join(", ")}. Loaded only when needed.`
-            : "My Skills"
-        }
+        title="Manage private skills"
       >
         <BookOpen className="size-4" />
         {conversationText === undefined ? (
-          <span>Skills{selected.length ? ` (${selected.length})` : ""}</span>
+          <span>Manage skills</span>
         ) : (
           <span className="sr-only">Save as skill</span>
         )}
@@ -200,7 +174,7 @@ function SkillsControl({
             <DialogDescription>
               {editor
                 ? "Keep reusable methodology and context. Remove private targets, credentials, and details that belong only to this conversation."
-                : "Private Markdown you can reuse across chats. Select up to 3 skills; content loads only when needed."}
+                : "Create reusable methodology, import Markdown, and manage your private library. Use $ in the composer to select a skill."}
             </DialogDescription>
           </DialogHeader>
           {error && (
@@ -337,27 +311,10 @@ function SkillsControl({
                   });
                 }}
               />
-              {chatId && (
-                <div className="rounded-md border p-3 text-sm">
-                  <strong>Available in this chat</strong>
-                  <p>
-                    {selection === undefined
-                      ? "Loading selection…"
-                      : selected.length
-                        ? selected.map((s) => s.name).join(", ")
-                        : "No skills selected"}
-                  </p>
-                  <p className="mt-1 text-muted-foreground">
-                    Changes apply to the next response. Previously loaded text
-                    can remain in chat history. Start a new chat to fully remove
-                    that context.
-                  </p>
-                </div>
-              )}
               <p className="text-sm text-muted-foreground">
-                Defaults are selected for new chats only. Selecting a skill
-                makes it available; the “Loading skills” message shows when its
-                content is used.
+                Defaults are selected for new chats only. Removing a skill from
+                a chat stops future loads; previously loaded text can remain in
+                that chat’s history.
               </p>
               {library === undefined ? (
                 <p>Loading skills…</p>
@@ -448,28 +405,6 @@ function SkillsControl({
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-4 text-sm">
-                        {chatId && (
-                          <label className="flex items-center gap-2">
-                            <input
-                              type="checkbox"
-                              checked={ids.includes(skill.id)}
-                              disabled={!ready}
-                              onChange={(e) =>
-                                void perform(async () => {
-                                  const next = e.target.checked
-                                    ? [...ids, skill.id]
-                                    : ids.filter((id) => id !== skill.id);
-                                  await select({ chatId, ids: next });
-                                  capture("user_skills_selected", {
-                                    chat_id: chatId,
-                                    selected_count: next.length,
-                                  });
-                                })
-                              }
-                            />
-                            Use in this chat
-                          </label>
-                        )}
                         <label className="flex items-center gap-2">
                           <input
                             type="checkbox"
