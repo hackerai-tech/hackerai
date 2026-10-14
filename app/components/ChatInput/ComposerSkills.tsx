@@ -63,6 +63,7 @@ export function ComposerSkillsProvider({
   const select = useMutation(api.userSkills.select);
   const { getInput, setInput } = useComposerActions();
   const [open, setOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -86,6 +87,7 @@ export function ComposerSkillsProvider({
     token.current = null;
     dismissed.current = null;
     setOpen(false);
+    setManagerOpen(false);
     setError("");
   }, [chatId, available]);
   useEffect(() => {
@@ -372,7 +374,19 @@ export function ComposerSkillsProvider({
             </p>
           )}
           <div className="flex min-h-9 items-center justify-between gap-2 border-t border-border/60 px-2">
-            <MySkills compact />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                close();
+                setManagerOpen(true);
+              }}
+            >
+              <BookOpen className="size-3.5" />
+              Manage skills
+            </Button>
             {matches.length > 0 && (
               <div
                 className="hidden items-center gap-3 pr-1.5 text-[11px] text-muted-foreground sm:flex"
@@ -394,6 +408,15 @@ export function ComposerSkillsProvider({
           </div>
         </PopoverContent>
       </Popover>
+      {available && managerOpen && (
+        <MySkills
+          open={managerOpen}
+          onOpenChange={(value) => {
+            setManagerOpen(value);
+            if (!value) requestAnimationFrame(() => textarea.current?.focus());
+          }}
+        />
+      )}
     </SkillInputContext.Provider>
   );
 }

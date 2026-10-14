@@ -51,7 +51,18 @@ const mockSaving = jest.fn();
 const mockSubmit = jest.fn();
 jest.mock("../../MySkills", () => ({
   useSkillsAccess: () => mockAccess,
-  MySkills: () => <button>Manage skills</button>,
+  MySkills: ({
+    open,
+    onOpenChange,
+  }: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+  }) =>
+    open ? (
+      <div role="dialog" aria-label="Skills">
+        <button onClick={() => onOpenChange(false)}>Close library</button>
+      </div>
+    ) : null,
 }));
 jest.mock("convex/react", () => ({
   useQuery: (name: string, args: unknown) =>
@@ -241,4 +252,20 @@ it("preserves the mounted composer draft when access becomes available", () => {
   expect(screen.getByRole("textbox", { name: "Message" })).toBe(input);
   expect(input).toHaveValue("Unsubmitted draft");
   expect(screen.getByRole("button", { name: "Add skill" })).toBeVisible();
+});
+
+it("closes the picker when opening the library and keeps the library mounted", async () => {
+  render(<Harness />);
+  const input = typeAt("Review $API");
+  expect(screen.getByRole("listbox", { name: "Skills" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Manage skills" }));
+  expect(screen.getByRole("dialog", { name: "Skills" })).toBeVisible();
+  expect(screen.queryByRole("listbox", { name: "Skills" })).toBeNull();
+  expect(input).toHaveValue("Review $API");
+  fireEvent.click(screen.getByRole("button", { name: "Close library" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() => expect(input).toHaveFocus());
+  expect(screen.queryByRole("listbox", { name: "Skills" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Add skill" }));
+  expect(screen.getByRole("listbox", { name: "Skills" })).toBeVisible();
 });

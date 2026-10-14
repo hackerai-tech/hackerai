@@ -178,3 +178,14 @@ it.each(["network", "server"])(
     expect(fetchMock).toHaveBeenCalledTimes(2);
   },
 );
+
+it("supports a library opened outside the picker without a duplicate trigger", async () => {
+  const onOpenChange = jest.fn();
+  render(<MySkills open onOpenChange={onOpenChange} />);
+  expect(await screen.findByRole("dialog", { name: "Skills" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Manage skills" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "New skill" }));
+  expect(screen.getByLabelText("Name")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
+  expect(onOpenChange).toHaveBeenCalledWith(false);
+});
