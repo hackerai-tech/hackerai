@@ -264,7 +264,9 @@ export function ComposerSkillsProvider({
         <PopoverContent
           side="top"
           align="start"
-          className="w-[min(32rem,calc(100vw-2rem))] p-0 overflow-hidden rounded-xl"
+          sideOffset={8}
+          collisionPadding={16}
+          className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] overflow-hidden rounded-2xl border-border/70 bg-background p-0 text-foreground shadow-lg shadow-black/10 dark:bg-muted dark:shadow-black/30"
           onOpenAutoFocus={(event) => {
             if (token.current) event.preventDefault();
           }}
@@ -273,10 +275,13 @@ export function ComposerSkillsProvider({
             if (event.target === textarea.current) event.preventDefault();
           }}
         >
-          <div className="flex items-center gap-2 border-b px-3 py-2">
-            <Search className="size-4 text-muted-foreground" />
+          <div className="flex h-10 items-center gap-2.5 border-b border-border/60 px-3.5">
+            <Search
+              aria-hidden="true"
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
             {token.current ? (
-              <span className="py-1 text-sm">
+              <span className="truncate text-xs text-muted-foreground">
                 {query ? `Skills matching “${query}”` : "Select a skill"}
               </span>
             ) : (
@@ -296,18 +301,18 @@ export function ComposerSkillsProvider({
                   setActive(0);
                 }}
                 onKeyDown={navigate}
-                className="h-8 border-0 bg-transparent p-0 shadow-none focus-visible:ring-0"
+                className="h-9 rounded-none border-0 bg-transparent p-0 text-[13px] shadow-none placeholder:text-muted-foreground focus-visible:ring-0 dark:bg-transparent md:text-[13px]"
               />
             )}
-            <span className="ml-auto text-xs text-muted-foreground">
-              {selected.length}/3
+            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+              Your skills
             </span>
           </div>
           <div
             id={listId}
             role="listbox"
             aria-label="Skills"
-            className="max-h-64 overflow-y-auto p-1.5"
+            className="max-h-60 overflow-y-auto p-1"
           >
             {matches.map((skill, index) => (
               <button
@@ -320,33 +325,45 @@ export function ComposerSkillsProvider({
                 onMouseEnter={() => setActive(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => pick(skill)}
-                className={`flex w-full min-w-0 items-center gap-3 rounded-lg px-2.5 py-2 text-left text-sm disabled:opacity-50 ${index === activeIndex ? "bg-accent" : "hover:bg-accent/60"}`}
+                className={`flex min-h-9 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left disabled:opacity-50 ${index === activeIndex ? "bg-muted text-foreground dark:bg-background/60" : "text-foreground/80 hover:bg-muted dark:hover:bg-background/40"}`}
               >
-                <BookOpen className="size-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-medium">
+                <BookOpen
+                  aria-hidden="true"
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
+                  <span className="truncate text-[13px] font-medium sm:max-w-[45%] sm:shrink-0">
                     {skill.name}
                   </span>
-                  <span className="block truncate text-xs text-muted-foreground">
+                  <span className="min-w-0 truncate text-xs text-muted-foreground">
                     {skill.description || "Reusable methodology"}
                   </span>
                 </span>
                 {ids.includes(skill.id) && (
-                  <Check className="size-4 shrink-0" aria-label="Selected" />
+                  <Check
+                    className="size-3.5 shrink-0 text-foreground"
+                    aria-label="Selected"
+                  />
                 )}
-                <span className="shrink-0 rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  Private
-                </span>
               </button>
             ))}
             {!matches.length && (
-              <p className="p-3 text-sm text-muted-foreground">
-                {library === undefined
-                  ? "Loading skills…"
-                  : library.length
-                    ? "No matching skills."
-                    : "No skills yet. Create or import one in Manage skills."}
-              </p>
+              <div className="px-2.5 py-3">
+                <p className="text-[13px] text-foreground/80">
+                  {library === undefined
+                    ? "Loading skills…"
+                    : library.length
+                      ? "No matching skills"
+                      : "No skills yet"}
+                </p>
+                {library !== undefined && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {library.length
+                      ? "Try a different name or description."
+                      : "Create or import a workflow to use in your chats."}
+                  </p>
+                )}
+              </div>
             )}
           </div>
           {error && (
@@ -354,11 +371,26 @@ export function ComposerSkillsProvider({
               {error}
             </p>
           )}
-          <div className="flex items-center justify-between border-t px-2 py-1.5">
-            <MySkills />
-            <span className="pr-1 text-xs text-muted-foreground">
-              ↑↓ navigate · Enter select
-            </span>
+          <div className="flex min-h-9 items-center justify-between gap-2 border-t border-border/60 px-2">
+            <MySkills compact />
+            {matches.length > 0 && (
+              <div
+                className="hidden items-center gap-3 pr-1.5 text-[11px] text-muted-foreground sm:flex"
+                aria-hidden="true"
+              >
+                <span>
+                  <kbd className="font-sans">↑↓</kbd> Navigate
+                </span>
+                <span>
+                  <kbd className="font-sans">↵</kbd> Select
+                </span>
+              </div>
+            )}
+            {selected.length > 0 && !matches.length && (
+              <span className="pr-1.5 text-[11px] text-muted-foreground">
+                {selected.length} of 3 selected
+              </span>
+            )}
           </div>
         </PopoverContent>
       </Popover>
@@ -373,7 +405,10 @@ export function ComposerSkillsButton() {
       type="button"
       variant="ghost"
       size="icon"
-      className="size-8 shrink-0"
+      className="size-8 shrink-0 text-muted-foreground hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
+      data-active={skills.open || skills.selected.length > 0}
+      aria-expanded={skills.open}
+      aria-controls={skills.open ? skills.listId : undefined}
       aria-label="Add skill"
       title="Add a skill ($)"
       disabled={skills.disabled}
@@ -394,7 +429,7 @@ export function ComposerSkillSelections() {
       {skills.selected.map((skill) => (
         <span
           key={skill.id}
-          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border bg-muted/40 py-1 pl-2 pr-1 text-xs"
+          className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-border/60 bg-background/70 py-1 pl-2 pr-1 text-xs text-foreground/90 dark:bg-muted"
           title={`${skill.description || skill.name}. Available for this chat; content loads when relevant.`}
         >
           <BookOpen className="size-3 shrink-0 text-muted-foreground" />

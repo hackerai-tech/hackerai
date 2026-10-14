@@ -84,23 +84,31 @@ type Editor = {
 
 export function MySkills({
   disabled = false,
+  compact = false,
   conversationText,
 }: {
   chatId?: string;
   disabled?: boolean;
+  compact?: boolean;
   conversationText?: string;
 }) {
   const enabled = useSkillsAccess();
   return enabled ? (
-    <SkillsControl disabled={disabled} conversationText={conversationText} />
+    <SkillsControl
+      disabled={disabled}
+      compact={compact}
+      conversationText={conversationText}
+    />
   ) : null;
 }
 function SkillsControl({
   disabled,
+  compact,
   conversationText,
 }: {
   chatId?: string;
   disabled: boolean;
+  compact: boolean;
   conversationText?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -148,7 +156,11 @@ function SkillsControl({
         type="button"
         variant="ghost"
         size="sm"
-        className="shrink-0"
+        className={
+          compact
+            ? "h-8 shrink-0 gap-1.5 px-2 text-xs font-normal text-muted-foreground hover:text-foreground [&_svg]:size-3.5"
+            : "shrink-0"
+        }
         onClick={begin}
         disabled={disabled}
         aria-label={
@@ -172,9 +184,9 @@ function SkillsControl({
           }
         }}
       >
-        <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="max-h-[90dvh] overflow-y-auto rounded-2xl border-border/70 bg-background sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>
+            <DialogTitle className="text-base">
               {editor ? "Review and save skill" : "My Skills"}
             </DialogTitle>
             <DialogDescription>
@@ -278,6 +290,7 @@ function SkillsControl({
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
                 <Button
+                  className="bg-foreground text-background hover:bg-foreground/90"
                   onClick={() =>
                     setEditor({ source: "manual", draft: { ...emptyDraft } })
                   }
@@ -334,7 +347,7 @@ function SkillsControl({
                   {library.map((skill) => (
                     <li
                       key={skill.id}
-                      className="rounded-md border p-3 space-y-2"
+                      className="space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
