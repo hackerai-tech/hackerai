@@ -1,6 +1,12 @@
 import { useQuery } from "convex/react";
 import { MousePointerClick, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { api } from "@/convex/_generated/api";
 
 type BrowserFrame = {
@@ -64,8 +70,11 @@ export function AgentBrowserPreview({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     sessionIdRef.current = sessionId ?? null;
+  }, [sessionId]);
+
+  useEffect(() => {
     setFrame(null);
     setFrameSeenAt(0);
     setPreviewState("loading");

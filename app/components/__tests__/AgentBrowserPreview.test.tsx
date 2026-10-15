@@ -241,3 +241,44 @@ it("keeps a new session usable when an older resume fails late", async () => {
   expect(screen.getByRole("application")).toBeVisible();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
+
+it("ignores old resume failures before the new session's passive effects run", async () => {
+  let failResume!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "resume"
+      ? new Promise((resolve) => {
+          failResume = resolve;
+        })
+      : Promise.resolve(response({ grant: "grant-a", frame }));
+  const view = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("checkbox"));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+  });
+  // Model a commit whose passive effects have not yet been scheduled by React.
+  const effects: React.EffectCallback[] = [];
+  const useEffect = React.useEffect;
+  const delayed = jest
+    .spyOn(React, "useEffect")
+    .mockImplementation((effect, deps) => {
+      useEffect(() => {
+        effects.push(effect);
+      }, deps);
+    });
+  try {
+    mockSession = { sessionId: "session-b", state: "agent" };
+    view.rerender(
+      <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+    );
+    await act(async () => {
+      failResume(response({ state: "expired" }, false));
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    delayed.mockRestore();
+    // Deferred effects were intentionally never started; unmount cleans up the
+    // effects that were installed before the session changed.
+    view.unmount();
+  }
+});
