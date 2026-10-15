@@ -237,6 +237,52 @@ it("continues a tool-only stop from the completed result without replaying its a
   expect(execute).toHaveBeenCalledTimes(1);
 });
 
+it("shows an unknown tool outcome as failed before the saved empty-answer failure", async () => {
+  const messages = [
+    {
+      id: "assistant-unknown",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-save",
+          toolCallId: "unknown",
+          state: "input-available",
+          input: {},
+        },
+      ],
+    },
+  ] as UIMessage[];
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: "start", messageId: "assistant-unknown" });
+      writer.write({
+        type: "tool-input-available",
+        toolCallId: "unknown",
+        toolName: "save",
+        input: {},
+      });
+      appendProviderEmptyResponseFailure(messages, "assistant-unknown", writer);
+      writer.write({ type: "finish" });
+    },
+  });
+  let final: UIMessage | undefined;
+  for await (const message of readUIMessageStream({ stream })) final = message;
+  expect(final?.parts).toContainEqual(
+    expect.objectContaining({
+      type: "tool-save",
+      toolCallId: "unknown",
+      state: "output-error",
+      errorText: expect.stringContaining("outcome is unknown"),
+    }),
+  );
+  expect(messages[0].parts).toContainEqual(
+    expect.objectContaining({
+      toolCallId: "unknown",
+      state: "output-error",
+    }),
+  );
+});
+
 it.each([
   [false, false, true],
   [true, false, true],
