@@ -3,27 +3,18 @@ import {
   ABLITERATION_MODEL_KEY,
   isAbliterationConfigured,
 } from "@/lib/ai/abliteration";
-import {
-  getPostHogBooleanFlagDecisionForUser,
-  phLogger,
-} from "@/lib/posthog/server";
+import { phLogger } from "@/lib/posthog/server";
 import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
-export const MODERATION_COMPACTION_FLAG_KEY = "moderation_compaction_v1";
-export const MODERATION_COMPACTION_POLICY_VERSION =
-  "moderation_glm53_abliteration_fallback_v1";
 export const COMPACTION_FALLBACK_MODEL = "model-glm-5.3-flash";
 export const COMPACTION_PRIMARY_MODEL = ABLITERATION_MODEL_KEY;
 export type CompactionSelection = {
   model: typeof COMPACTION_PRIMARY_MODEL | typeof COMPACTION_FALLBACK_MODEL;
   fallbackModel?:
     typeof COMPACTION_PRIMARY_MODEL | typeof COMPACTION_FALLBACK_MODEL;
-  policy:
-    | typeof COMPACTION_POLICY_VERSION
-    | typeof MODERATION_COMPACTION_POLICY_VERSION;
-  flagEnabled: boolean | null;
+  policy: typeof COMPACTION_POLICY_VERSION;
 };
 
 // Missing sections catch plain refusal prose; headings cannot prove fidelity.
@@ -68,8 +59,6 @@ export class CompactionModelPolicy {
       mode: ChatMode;
       subscription: SubscriptionTier;
       baselineModel: string;
-      /** Existing shouldUncensorResponse result, never the continuation signal. */
-      platformAuthorized: boolean;
       onDiscardedUsage: (usage: SummarizationUsage) => void;
     },
   ) {}
@@ -79,29 +68,11 @@ export class CompactionModelPolicy {
   }
 
   private async evaluate(): Promise<CompactionSelection> {
-    const flagEnabled = await getPostHogBooleanFlagDecisionForUser(
-      MODERATION_COMPACTION_FLAG_KEY,
-      this.context.userId,
-      { subscription_tier: this.context.subscription },
-      { sendFeatureFlagEvents: false },
-    );
     const configured = isAbliterationConfigured();
-    const useAbliteration =
-      configured && (flagEnabled !== true || this.context.platformAuthorized);
     return {
-      model: useAbliteration
-        ? COMPACTION_PRIMARY_MODEL
-        : COMPACTION_FALLBACK_MODEL,
-      fallbackModel: useAbliteration
-        ? COMPACTION_FALLBACK_MODEL
-        : flagEnabled === true && configured
-          ? COMPACTION_PRIMARY_MODEL
-          : undefined,
-      policy:
-        flagEnabled === true
-          ? MODERATION_COMPACTION_POLICY_VERSION
-          : COMPACTION_POLICY_VERSION,
-      flagEnabled,
+      model: configured ? COMPACTION_PRIMARY_MODEL : COMPACTION_FALLBACK_MODEL,
+      fallbackModel: configured ? COMPACTION_FALLBACK_MODEL : undefined,
+      policy: COMPACTION_POLICY_VERSION,
     };
   }
 
@@ -109,9 +80,6 @@ export class CompactionModelPolicy {
     const properties = {
       userId: this.context.userId,
       compaction_policy: assignment.policy,
-      compaction_flag_key: MODERATION_COMPACTION_FLAG_KEY,
-      compaction_flag_enabled: assignment.flagEnabled,
-      compaction_moderation_routed: this.context.platformAuthorized,
       compaction_run_id: this.context.runId,
       compaction_id: randomUUID(),
       chat_id: this.context.chatId,
@@ -120,7 +88,7 @@ export class CompactionModelPolicy {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
-      telemetry_version: 2,
+      telemetry_version: 3,
       $process_person_profile: false,
     };
     phLogger.event("compaction_model_started", properties);

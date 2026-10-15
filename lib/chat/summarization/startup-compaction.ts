@@ -6,9 +6,7 @@ export const STARTUP_COMPACTION_FALLBACK_MODELS = [
 ] as const;
 
 export type StartupCompactionVariant =
-  | typeof STARTUP_COMPACTION_VARIANT
-  | "abliteration_glm53_fallback_v1"
-  | "moderation_glm53_abliteration_fallback_v1";
+  typeof STARTUP_COMPACTION_VARIANT | "abliteration_glm53_fallback_v1";
 export type StartupCompactionAttempt = {
   variant: StartupCompactionVariant;
   fallbackUsed: boolean;
