@@ -1004,7 +1004,7 @@ export async function createAgentStream(
   let lastCompactionRawMessageCount = -1;
   const canSummarizeAgain = () =>
     compactionAttemptCount < MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM;
-  let namelessToolCallRepairReported = false;
+  let toolHistoryRepairReported = false;
   const getNamespacedLanguageModel = (
     languageModel: LanguageModel,
     stepIndex: number,
@@ -1029,13 +1029,19 @@ export async function createAgentStream(
     );
     const guardedModel = guardLanguageModelProviderResponse(recoveryModel, {
       onPromptRepaired: (report) => {
-        if (namelessToolCallRepairReported) return;
-        namelessToolCallRepairReported = true;
+        if (toolHistoryRepairReported) return;
+        toolHistoryRepairReported = true;
         console.warn(
           JSON.stringify({
             level: "warn",
-            event: "provider_prompt_tool_name_repaired",
-            reason: "empty_tool_name",
+            event:
+              report.repairedToolInputCount > 0
+                ? "provider_prompt_tool_history_repaired"
+                : "provider_prompt_tool_name_repaired",
+            reason:
+              report.repairedToolInputCount > 0
+                ? "invalid_tool_input"
+                : "empty_tool_name",
             model: activeStepModelName,
             step: stepIndex + 1,
             mode: ctx.mode,
@@ -1054,6 +1060,7 @@ export async function createAgentStream(
                 : undefined,
             removed_tool_call_count: report.removedToolCallCount,
             removed_tool_result_count: report.removedToolResultCount,
+            repaired_tool_input_count: report.repairedToolInputCount,
           }),
         );
       },

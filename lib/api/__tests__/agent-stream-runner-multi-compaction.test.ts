@@ -687,9 +687,14 @@ describe("createAgentStream repeated compaction", () => {
     mockGetProviderPromptPressure.mockReset();
   });
 
-  it.each(["ask", "agent"] as const)(
-    "repairs prompts across %s steps while logging only one bounded event per stream",
-    async (mode) => {
+  it.each([
+    { mode: "ask", inputRepair: false },
+    { mode: "agent", inputRepair: false },
+    { mode: "ask", inputRepair: true },
+    { mode: "agent", inputRepair: true },
+  ] as const)(
+    "repairs prompts across $mode steps (input repair: $inputRepair) while logging one bounded event",
+    async ({ mode, inputRepair }) => {
       const state = initAgentStreamState([uiMessage("initial", "Continue")], {
         usedTokens: 1000,
         maxTokens: 128000,
@@ -734,9 +739,11 @@ describe("createAgentStream repeated compaction", () => {
               content: [
                 {
                   type: "tool-call",
-                  toolName: "",
+                  toolName: inputRepair ? "run_terminal_cmd" : "",
                   toolCallId: "PRIVATE_CALL_CANARY",
-                  input: { value: "PRIVATE_ARGUMENT_CANARY" },
+                  input: inputRepair
+                    ? '{"command":"PRIVATE_ARGUMENT_CANARY'
+                    : { value: "PRIVATE_ARGUMENT_CANARY" },
                 },
               ],
             },
@@ -745,7 +752,7 @@ describe("createAgentStream repeated compaction", () => {
               content: [
                 {
                   type: "tool-result",
-                  toolName: "",
+                  toolName: inputRepair ? "run_terminal_cmd" : "",
                   toolCallId: "PRIVATE_CALL_CANARY",
                   output: { type: "error-text", value: "PRIVATE_ERROR_CANARY" },
                 },
@@ -755,9 +762,18 @@ describe("createAgentStream repeated compaction", () => {
           ],
         };
         for (const transform of repairs)
-          expect((await transform({ params })).prompt).toEqual([
-            params.prompt[2],
-          ]);
+          expect((await transform({ params })).prompt).toEqual(
+            inputRepair
+              ? [
+                  {
+                    ...params.prompt[0],
+                    content: [{ ...params.prompt[0].content[0], input: {} }],
+                  },
+                  params.prompt[1],
+                  params.prompt[2],
+                ]
+              : [params.prompt[2]],
+          );
         const events = warning.mock.calls
           .map((call) => {
             try {
@@ -767,14 +783,19 @@ describe("createAgentStream repeated compaction", () => {
             }
           })
           .filter(
-            (event) => event?.event === "provider_prompt_tool_name_repaired",
+            (event) =>
+              event?.event ===
+              (inputRepair
+                ? "provider_prompt_tool_history_repaired"
+                : "provider_prompt_tool_name_repaired"),
           );
         expect(events).toHaveLength(1);
         expect(events[0]).toMatchObject({
           mode,
-          reason: "empty_tool_name",
-          removed_tool_call_count: 1,
-          removed_tool_result_count: 1,
+          reason: inputRepair ? "invalid_tool_input" : "empty_tool_name",
+          removed_tool_call_count: inputRepair ? 0 : 1,
+          removed_tool_result_count: inputRepair ? 0 : 1,
+          repaired_tool_input_count: inputRepair ? 1 : 0,
         });
         expect(JSON.stringify(events)).not.toContain("PRIVATE_");
         expect(params.prompt).toHaveLength(3);

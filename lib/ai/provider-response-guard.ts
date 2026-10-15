@@ -41,9 +41,10 @@ export type ProviderToolCallDropReport = {
   maxToolCalls: number;
 };
 
-export type NamelessToolCallRepairReport = {
+export type ProviderPromptRepairReport = {
   removedToolCallCount: number;
   removedToolResultCount: number;
+  repairedToolInputCount: number;
 };
 
 type ProviderPrompt = MiddlewareGenerateOptions["params"]["prompt"];
@@ -54,61 +55,87 @@ type ProviderPrompt = MiddlewareGenerateOptions["params"]["prompt"];
 const isNamelessTool = (name: unknown) =>
   typeof name === "string" && name.trim().length === 0;
 
-const repairNamelessToolCalls = (prompt: ProviderPrompt) => {
+const isToolInputObject = (input: unknown) =>
+  input !== null && typeof input === "object" && !Array.isArray(input);
+
+const repairToolCallHistory = (prompt: ProviderPrompt) => {
   const namelessIds = new Set<string>();
+  let hasInvalidInput = false;
   for (const message of prompt) {
     if (message.role !== "assistant") continue;
     for (const part of message.content) {
       if (part.type !== "tool-call") continue;
       if (isNamelessTool(part.toolName)) namelessIds.add(part.toolCallId);
+      if (!isToolInputObject(part.input)) hasInvalidInput = true;
     }
   }
-  if (namelessIds.size === 0) return undefined;
+  if (namelessIds.size === 0 && !hasInvalidInput) return undefined;
 
   const pendingNamedCalls = new Map<string, number>();
   let removedToolCallCount = 0;
   let removedToolResultCount = 0;
+  let repairedToolInputCount = 0;
   const repaired: ProviderPrompt = [];
   for (const message of prompt) {
     if (message.role !== "assistant" && message.role !== "tool") {
       repaired.push(message);
       continue;
     }
-    const content = message.content.filter((part) => {
-      if (part.type === "tool-call") {
-        if (isNamelessTool(part.toolName)) {
-          removedToolCallCount++;
-          return false;
+    const previousInputRepairCount = repairedToolInputCount;
+    const content = message.content
+      .filter((part) => {
+        if (part.type === "tool-call") {
+          if (isNamelessTool(part.toolName)) {
+            removedToolCallCount++;
+            return false;
+          }
+          if (namelessIds.has(part.toolCallId))
+            pendingNamedCalls.set(
+              part.toolCallId,
+              (pendingNamedCalls.get(part.toolCallId) ?? 0) + 1,
+            );
         }
-        if (namelessIds.has(part.toolCallId))
-          pendingNamedCalls.set(
-            part.toolCallId,
-            (pendingNamedCalls.get(part.toolCallId) ?? 0) + 1,
-          );
-      }
-      if (part.type === "tool-result" && namelessIds.has(part.toolCallId)) {
-        const pending = pendingNamedCalls.get(part.toolCallId) ?? 0;
-        if (pending === 0 || isNamelessTool(part.toolName)) {
-          removedToolResultCount++;
-          return false;
+        if (part.type === "tool-result" && namelessIds.has(part.toolCallId)) {
+          const pending = pendingNamedCalls.get(part.toolCallId) ?? 0;
+          if (pending === 0 || isNamelessTool(part.toolName)) {
+            removedToolResultCount++;
+            return false;
+          }
+          if (pending === 1) pendingNamedCalls.delete(part.toolCallId);
+          else pendingNamedCalls.set(part.toolCallId, pending - 1);
         }
-        if (pending === 1) pendingNamedCalls.delete(part.toolCallId);
-        else pendingNamedCalls.set(part.toolCallId, pending - 1);
-      }
-      return true;
-    });
-    if (content.length === message.content.length) repaired.push(message);
+        return true;
+      })
+      .map((part) => {
+        if (part.type !== "tool-call" || isToolInputObject(part.input))
+          return part;
+        // Persisted output-error parts can carry raw strings or missing input.
+        // Providers need object arguments in replay history. Keep the paired
+        // result and canonical input intact; this projection never executes tools.
+        repairedToolInputCount++;
+        return { ...part, input: {} };
+      });
+    if (
+      content.length === message.content.length &&
+      repairedToolInputCount === previousInputRepairCount
+    )
+      repaired.push(message);
     else if (content.length > 0)
       repaired.push({ ...message, content } as typeof message);
   }
-  return { prompt: repaired, removedToolCallCount, removedToolResultCount };
+  return {
+    prompt: repaired,
+    removedToolCallCount,
+    removedToolResultCount,
+    repairedToolInputCount,
+  };
 };
 
 export type ProviderResponseGuardOptions = {
   maxToolCalls?: number;
   perToolCallLimits?: Readonly<Record<string, number>>;
   onToolCallsDropped?: (report: ProviderToolCallDropReport) => void;
-  onPromptRepaired?: (report: NamelessToolCallRepairReport) => void;
+  onPromptRepaired?: (report: ProviderPromptRepairReport) => void;
 };
 
 // One provider response maps to one AI SDK step, whose tool executions run
@@ -269,7 +296,7 @@ export const guardLanguageModelProviderResponse = (
       specificationVersion: "v3",
       transformParams: async ({ params }) => {
         if (!Array.isArray(params.prompt)) return params;
-        const repair = repairNamelessToolCalls(params.prompt);
+        const repair = repairToolCallHistory(params.prompt);
         if (!repair) return params;
         const { prompt, ...report } = repair;
         try {
