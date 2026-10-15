@@ -113,7 +113,11 @@ export class CompactionModelPolicy {
       compaction_policy: assignment.policy,
       compaction_flag_key: MODERATION_COMPACTION_FLAG_KEY,
       compaction_flag_enabled: assignment.flagEnabled,
-      compaction_moderation_routed: this.context.platformAuthorized,
+      compaction_moderation_selected: this.context.platformAuthorized,
+      compaction_moderation_routed:
+        assignment.flagEnabled === true &&
+        this.context.platformAuthorized &&
+        assignment.model === COMPACTION_PRIMARY_MODEL,
       compaction_run_id: this.context.runId,
       compaction_id: randomUUID(),
       chat_id: this.context.chatId,

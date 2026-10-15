@@ -156,6 +156,28 @@ describe("compaction model assignment and telemetry", () => {
       expect.objectContaining({ compaction_flag_enabled: null }),
     );
   });
+  it.each([
+    [false, true],
+    [true, false],
+  ])(
+    "does not report moderation routing for flag=%s configured=%s",
+    async (flagEnabled, configured) => {
+      mockFlag.mockResolvedValue(flagEnabled);
+      mockConfigured.mockReturnValue(configured);
+      const policy = new CompactionModelPolicy({
+        ...context,
+        platformAuthorized: true,
+      });
+      policy.start(await policy.resolve(), "durable");
+      expect(mockEvent).toHaveBeenLastCalledWith(
+        "compaction_model_started",
+        expect.objectContaining({
+          compaction_moderation_selected: true,
+          compaction_moderation_routed: false,
+        }),
+      );
+    },
+  );
   it("keeps GLM without an Abliteration fallback when credentials are absent", async () => {
     mockFlag.mockResolvedValue(true);
     mockConfigured.mockReturnValue(false);
