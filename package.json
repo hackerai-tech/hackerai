@@ -121,6 +121,7 @@
     "convex": "1.46.0",
     "date-fns": "4.4.0",
     "e2b": "2.52.1",
+    "eventsource-parser": "3.0.8",
     "gpt-tokenizer": "^4.0.0",
     "iron-session": "^8.0.4",
     "isbinaryfile": "^6.0.0",
