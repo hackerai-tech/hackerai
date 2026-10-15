@@ -38,7 +38,7 @@ export const metadata: Metadata = {
   title,
   description,
   openGraph: {
-    title,
+    title: { absolute: title },
     description,
     type: "website",
     url: "/product",
@@ -46,7 +46,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title,
+    title: { absolute: title },
     description,
     images: ["/images/hackerai-workspace.png"],
   },
