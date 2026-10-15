@@ -268,7 +268,9 @@ describe("bounded RPC failure diagnostics", () => {
   });
 
   it("identifies body-read failure and preserves the original error", async () => {
-    const failure = new Error("PRIVATE_BODY_FAILURE");
+    const failure = Object.assign(new Error("PRIVATE_BODY_FAILURE"), {
+      code: "UND_ERR_BODY_TIMEOUT",
+    });
     const response = new Response("unused");
     jest.spyOn(response, "text").mockRejectedValue(failure);
     await expect(
@@ -281,6 +283,7 @@ describe("bounded RPC failure diagnostics", () => {
       expect.objectContaining({
         stage: "response_body",
         reason: "transport_error",
+        transport_code: "UND_ERR_BODY_TIMEOUT",
       }),
     ]);
     expect(JSON.stringify(diagnostics())).not.toContain("PRIVATE_BODY_FAILURE");

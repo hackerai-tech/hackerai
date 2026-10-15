@@ -3,6 +3,7 @@ import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { signServiceArgs, type ServiceScope } from "./service-proof";
 import { redactSensitiveErrorMessage } from "../utils/error-redaction";
 
+/** Wrap SDK RPCs with scoped service proofs, error redaction and bounded diagnostics. */
 export function createServiceFetch(
   deployment: string,
   transport: typeof fetch = globalThis.fetch,
@@ -86,6 +87,7 @@ export function createServiceFetch(
               "EAI_AGAIN",
               "UND_ERR_CONNECT_TIMEOUT",
               "UND_ERR_HEADERS_TIMEOUT",
+              "UND_ERR_BODY_TIMEOUT",
               "UND_ERR_SOCKET",
             ].includes(code ?? "")
               ? { transport_code: code }
