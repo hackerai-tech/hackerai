@@ -42,6 +42,7 @@ export function AgentBrowserPreview({
   const mountedRef = useRef(true);
   const exposedRef = useRef<string | null>(null);
   const inputQueue = useRef<Promise<void>>(Promise.resolve());
+  const pendingInputs = useRef(0);
   const lastMoveAt = useRef(0);
   const resumeButtonRef = useRef<HTMLButtonElement>(null);
   const sessionId = session?.sessionId;
@@ -237,6 +238,9 @@ export function AgentBrowserPreview({
   const sendInput = (input: BrowserInput) => {
     const activeGrant = grantRef.current;
     if (!activeGrant || frameStale) return;
+    // Moves are advisory; do not let them delay clicks or keystrokes.
+    if (input.kind === "move" && pendingInputs.current > 0) return;
+    pendingInputs.current += 1;
     inputQueue.current = inputQueue.current
       .catch(() => undefined)
       .then(async () => {
@@ -248,6 +252,9 @@ export function AgentBrowserPreview({
         setGrant(null);
         setPreviewState("recovery");
         setError("Browser input disconnected. Reconnect before continuing.");
+      })
+      .finally(() => {
+        pendingInputs.current -= 1;
       });
   };
 

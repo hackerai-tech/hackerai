@@ -247,16 +247,24 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     interactiveShell = false,
   ) => {
     const env = getAgentBrowserRuntimeEnv(command);
-    const managed =
+    const required = !!context.browserSessions && (interactiveShell || !!env);
+    const gateOnly =
       !!context.browserSessions &&
-      (interactiveShell ||
-        !!env ||
-        (await context.browserSessions.handoffEnabledForRun()));
-    if (!env && !managed) return undefined;
+      !required &&
+      (await context.browserSessions.handoffEnabledForRun());
+    if (!env && !required && !gateOnly) return undefined;
+    let sessionEnv: Record<string, string> | undefined;
+    try {
+      sessionEnv = await context.browserSessions?.prepare(sandbox);
+    } catch (error) {
+      if (!gateOnly) throw error;
+      console.warn("[run-terminal-cmd] browser gate unavailable");
+      return undefined;
+    }
     return {
       AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_TIMEOUT_MS),
       ...env,
-      ...(await context.browserSessions?.prepare(sandbox)),
+      ...sessionEnv,
     };
   };
 

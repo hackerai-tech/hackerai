@@ -28,16 +28,26 @@ export async function connectBrowserSandbox(session: BrowserSessionLocation) {
   const region = session.triggerRegion as TriggerRunRegion | null;
   const cluster = getE2BClusterRouting(region ?? undefined).createCluster;
   const options = cluster.connectionOptions ?? {};
-  const info = await Sandbox.getInfo(session.sandboxId, {
-    ...options,
-    requestTimeoutMs: 8_000,
-  });
+  let info: Awaited<ReturnType<typeof Sandbox.getInfo>>;
+  try {
+    info = await Sandbox.getInfo(session.sandboxId, {
+      ...options,
+      requestTimeoutMs: 8_000,
+    });
+  } catch {
+    console.warn("[browser-preview] sandbox lookup unavailable");
+    throw new BrowserPreviewUnavailable("disconnected");
+  }
   if (
     info.state !== "running" ||
     info.metadata?.userID !== session.userId ||
-    info.metadata?.e2bCluster !== cluster.cluster ||
+    // Older reusable sandboxes predate cluster metadata. The selected E2B
+    // account and endpoint still bind discovery to the intended region.
+    (info.metadata?.e2bCluster != null &&
+      info.metadata.e2bCluster !== cluster.cluster) ||
     info.metadata?.template !== cluster.template
   ) {
+    console.warn("[browser-preview] sandbox identity mismatch");
     throw new BrowserPreviewUnavailable("disconnected");
   }
   return Sandbox.connect(session.sandboxId, {

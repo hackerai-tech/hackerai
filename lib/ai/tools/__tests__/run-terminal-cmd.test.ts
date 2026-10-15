@@ -1033,7 +1033,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     });
   });
 
-  test("injects the idle timeout only for cloud agent-browser commands", async () => {
+  test("injects browser settings and preserves ordinary commands after optional gate failure", async () => {
     const e2b = {
       jupyterUrl: "http://fake",
       sandboxId: "sandbox-browser-env",
@@ -1118,6 +1118,32 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       },
     });
     expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
+
+    (
+      context.browserSessions.handoffEnabledForRun as jest.Mock
+    ).mockResolvedValue(true);
+    prepareBrowser.mockRejectedValueOnce(new Error("gate unavailable"));
+    const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const fallback = await runTool(tool, {
+        command: "echo gate",
+        brief: "check ordinary command",
+        is_background: false,
+        timeout: 5,
+        interactive: false,
+      });
+      expect(fallback).toMatchObject({ result: { exitCode: 0 } });
+      expect(warning).toHaveBeenCalledWith(
+        "[run-terminal-cmd] browser gate unavailable",
+      );
+      expect(
+        e2b.commands.run.mock.calls.find(
+          ([command]) => command === "echo gate",
+        )?.[1],
+      ).not.toHaveProperty("envs");
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   test("injects the idle timeout into cloud interactive browser shells", async () => {
