@@ -107,7 +107,7 @@ describe("startup compaction through the real AI SDK", () => {
     });
 
   beforeEach(() => {
-    mockFlag.mockReset().mockResolvedValue(false);
+    mockFlag.mockResolvedValue(false);
     saveSummary.mockClear();
     primary = new MockLanguageModelV3({
       modelId: "synthetic-primary",
@@ -175,6 +175,7 @@ describe("startup compaction through the real AI SDK", () => {
           subscription,
           mode,
           baselineModel: "agent-model",
+          platformAuthorized: false,
           onDiscardedUsage: () => {},
         }),
         providerPromptPressure: {
@@ -217,7 +218,7 @@ describe("startup compaction through the real AI SDK", () => {
     ["pro", "ask"],
     ["pro", "agent"],
   ] as const)(
-    "uses Abliteration and accounts for invalid-output fallback through the SDK for %s %s",
+    "executes moderation-gated compaction through the SDK for %s %s",
     async (subscription, mode) => {
       mockFlag.mockResolvedValue(true);
       const checkpoint = (
@@ -232,10 +233,6 @@ describe("startup compaction through the real AI SDK", () => {
       let refuse = false;
       const glm = new MockLanguageModelV3({
         modelId: "synthetic-glm",
-        doGenerate: async () => valid(),
-      });
-      const abliteration = new MockLanguageModelV3({
-        modelId: "synthetic-abliteration",
         doGenerate: async () =>
           refuse
             ? {
@@ -244,25 +241,30 @@ describe("startup compaction through the real AI SDK", () => {
               }
             : valid(),
       });
+      const abliteration = new MockLanguageModelV3({
+        modelId: "synthetic-abliteration",
+        doGenerate: async () => valid(),
+      });
       models.set("model-glm-5.3-flash", glm);
       models.set("model-abliterated", abliteration);
       const discardedUsage = jest.fn();
-      const compact = () =>
+      const compact = (platformAuthorized: boolean) =>
         checkAndSummarizeIfNeeded({
           uiMessages: messages,
           subscription,
           languageModel: primary,
           mode,
           writer,
-          chatId: "synthetic-default-policy",
+          chatId: "synthetic-moderation-policy",
           startupCompaction: {},
           compactionPolicy: new CompactionModelPolicy({
             userId: "synthetic",
             runId: "synthetic",
-            chatId: "synthetic-default-policy",
+            chatId: "synthetic-moderation-policy",
             subscription,
             mode,
             baselineModel: "agent-model",
+            platformAuthorized,
             onDiscardedUsage: discardedUsage,
           }),
           providerPromptPressure: {
@@ -273,21 +275,93 @@ describe("startup compaction through the real AI SDK", () => {
             summarizationMaxTokensOverride: 128000,
           },
         });
-      const ordinary = await compact();
+      const ordinary = await compact(false);
       expect(ordinary.needsSummarization).toBe(true);
       expect(ordinary.summaryText).toContain("pending check C");
-      expect(glm.doGenerateCalls).toHaveLength(0);
+      expect(glm.doGenerateCalls).toHaveLength(1);
+      expect(abliteration.doGenerateCalls).toHaveLength(0);
+      expect((await compact(true)).needsSummarization).toBe(true);
+      expect(glm.doGenerateCalls).toHaveLength(1);
       expect(abliteration.doGenerateCalls).toHaveLength(1);
       refuse = true;
-      expect((await compact()).needsSummarization).toBe(true);
-      expect(glm.doGenerateCalls).toHaveLength(1);
+      expect((await compact(false)).needsSummarization).toBe(true);
+      expect(glm.doGenerateCalls).toHaveLength(2);
       expect(abliteration.doGenerateCalls).toHaveLength(2);
-      expect(mockFlag).not.toHaveBeenCalled();
       expect(discardedUsage).toHaveBeenCalledWith(
         expect.objectContaining({ inputTokens: 100, outputTokens: 20 }),
       );
       expect(fallback.doGenerateCalls).toHaveLength(0);
-      expect(saveSummary).toHaveBeenCalledTimes(2);
+      expect(saveSummary).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it.each([400, 403])(
+    "recovers a non-retryable cheaper-provider HTTP %s through Abliteration",
+    async (statusCode) => {
+      mockFlag.mockResolvedValue(true);
+      const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
+        "\nScope fixture.test only; session 73142 still running; check C pending.\n",
+      );
+      const glm = new MockLanguageModelV3({
+        modelId: "synthetic-glm",
+        doGenerate: async () => {
+          throw new APICallError({
+            message: "Synthetic provider rejection",
+            url: "https://synthetic.invalid",
+            requestBodyValues: {},
+            statusCode,
+            isRetryable: false,
+          });
+        },
+      });
+      const abliteration = new MockLanguageModelV3({
+        modelId: "synthetic-abliteration",
+        doGenerate: async () => ({
+          ...summary(),
+          content: [{ type: "text", text: checkpoint }],
+        }),
+      });
+      models.set("model-glm-5.3-flash", glm);
+      models.set("model-abliterated", abliteration);
+      const original = JSON.stringify(messages);
+      const discarded = jest.fn();
+      const result = await checkAndSummarizeIfNeeded({
+        uiMessages: messages,
+        subscription: "pro",
+        languageModel: primary,
+        mode: "agent",
+        writer,
+        chatId: "synthetic-rejection",
+        compactionPolicy: new CompactionModelPolicy({
+          userId: "synthetic",
+          runId: "synthetic",
+          chatId: "synthetic-rejection",
+          subscription: "pro",
+          mode: "agent",
+          baselineModel: "agent-model",
+          platformAuthorized: false,
+          onDiscardedUsage: discarded,
+        }),
+        providerPromptPressure: {
+          reason: "message_count",
+          reasons: ["message_count"],
+          toolResultCount: 0,
+          messageCount: 120,
+          summarizationMaxTokensOverride: 128000,
+        },
+      });
+      expect(result.needsSummarization).toBe(true);
+      expect(result.summaryText).toContain(
+        "session 73142 still running; check C pending",
+      );
+      expect(glm.doGenerateCalls).toHaveLength(1);
+      expect(abliteration.doGenerateCalls).toHaveLength(1);
+      expect(abliteration.doGenerateCalls[0].prompt).toEqual(
+        glm.doGenerateCalls[0].prompt,
+      );
+      expect(saveSummary).toHaveBeenCalledTimes(1);
+      expect(discarded).not.toHaveBeenCalled(); // The rejected call returned no usage.
+      expect(JSON.stringify(messages)).toBe(original);
     },
   );
 

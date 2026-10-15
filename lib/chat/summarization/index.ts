@@ -620,6 +620,11 @@ const generateSummaryTextWithRetry = async ({
               abortSignal?.aborted ? "aborted" : "error",
               Date.now() - attemptStartedAt,
               discardedUsage,
+              abortSignal?.aborted
+                ? "canceled"
+                : error instanceof InvalidCompactionSummaryError
+                  ? error.reason
+                  : "provider_error",
             );
             markSummarizationAttemptError(
               error,
@@ -631,6 +636,11 @@ const generateSummaryTextWithRetry = async ({
               index === models.length - 1 ||
               !(
                 modelName === COMPACTION_PRIMARY_MODEL ||
+                // A cheaper primary can reject a request with a non-retryable
+                // provider error (for example HTTP 400). Still try the assigned
+                // Abliteration fallback once; never retry caller cancellation.
+                (index === 0 &&
+                  assignment.fallbackModel === COMPACTION_PRIMARY_MODEL) ||
                 error instanceof InvalidCompactionSummaryError ||
                 isMalformedProviderJsonError(error) ||
                 isRecoverableStartupCompactionError(error)
