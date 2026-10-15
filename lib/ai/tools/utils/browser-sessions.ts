@@ -1,5 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { AnySandbox } from "@/types";
+import { api } from "@/convex/_generated/api";
+import { getConvexClient } from "@/lib/db/convex-client";
+import { getPostHogBooleanFlagDecisionForUser } from "@/lib/posthog/server";
 import { isE2BSandbox } from "./sandbox-types";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { browserSessionCommand } from "./browser-session-program";
@@ -9,9 +12,23 @@ import { browserSessionCommand } from "./browser-session-program";
 export const BROWSER_SESSION_MAX_LIFETIME_MS = (4 * 60 + 5) * 60 * 1000;
 
 type BrowserSession = {
+  sessionId: string;
   sandbox: AnySandbox;
   directory: string;
-  ready: Promise<void>;
+  ready: Promise<string | undefined>;
+  registered: boolean;
+  registration?: Promise<void>;
+};
+
+export const BROWSER_HANDOFF_FLAG = "agent-browser-human-handoff";
+
+type BrowserHandoffScope = {
+  userId: string;
+  chatId: string;
+  runId: string;
+  agentId: string;
+  triggerRegion?: string;
+  serviceKey: string;
 };
 
 /** One owner per tool factory, never shared between a parent and its children. */
@@ -22,6 +39,21 @@ export class BrowserSessions {
   private readonly failedSessions = new Set<BrowserSession>();
   private closed = false;
   private cleanupPromise?: Promise<void>;
+  private handoffEnabled?: Promise<boolean>;
+
+  constructor(private readonly handoffScope?: BrowserHandoffScope) {}
+
+  handoffEnabledForRun(): Promise<boolean> {
+    this.handoffEnabled ??= this.handoffScope
+      ? getPostHogBooleanFlagDecisionForUser(
+          BROWSER_HANDOFF_FLAG,
+          this.handoffScope.userId,
+          undefined,
+          { sendFeatureFlagEvents: false },
+        ).then((decision) => decision === true)
+      : Promise.resolve(false);
+    return this.handoffEnabled;
+  }
 
   /** Retry failed setup on the next call, retaining every attempt for cleanup. */
   async prepare(sandbox: AnySandbox): Promise<Record<string, string>> {
@@ -34,21 +66,34 @@ export class BrowserSessions {
     const sandboxId = sandbox.sandboxId;
     if (!sandboxId)
       throw new Error("Browser session sandbox identity is unavailable.");
+    const gate = this.handoffScope ? await this.handoffEnabledForRun() : false;
     let session = this.sessions.get(sandboxId);
     if (!session) {
       // Short enough for Unix socket paths, random across factories/runs, and
       // memory-backed so checkpoints are not part of the reusable workspace.
       const directory = `/dev/shm/hackerai-browser-${randomBytes(12).toString("hex")}`;
       const ready = sandbox.commands
-        .run(browserSessionCommand("prepare", directory, this.expiresAt), {
-          ...buildSandboxCommandOptions(sandbox),
-          timeoutMs: 20_000,
-        })
+        .run(
+          browserSessionCommand("prepare", directory, this.expiresAt, gate),
+          {
+            ...buildSandboxCommandOptions(sandbox),
+            timeoutMs: 20_000,
+          },
+        )
         .then((result) => {
           if (result.exitCode !== 0)
             throw new Error("Could not prepare private browser sessions.");
+          if (gate && !result.stdout?.trim())
+            throw new Error("Browser command gate is unavailable.");
+          return gate ? result.stdout.trim() : undefined;
         });
-      session = { sandbox, directory, ready };
+      session = {
+        sessionId: randomBytes(16).toString("hex"),
+        sandbox,
+        directory,
+        ready,
+        registered: false,
+      };
       this.sessions.set(sandboxId, session);
       const created = session;
       ready.catch(() => {
@@ -59,8 +104,36 @@ export class BrowserSessions {
       });
     }
     session.sandbox = sandbox;
-    await session.ready;
+    const originalPath = await session.ready;
     if (this.closed) throw new Error("Browser session ownership has ended.");
+    if (gate && this.handoffScope && !session.registered) {
+      const current = session;
+      current.registration ??= getConvexClient()
+        .mutation(api.browserHandoffs.registerForBackend, {
+          serviceKey: this.handoffScope.serviceKey,
+          sessionId: current.sessionId,
+          userId: this.handoffScope.userId,
+          chatId: this.handoffScope.chatId,
+          runId: this.handoffScope.runId,
+          agentId: this.handoffScope.agentId,
+          sandboxId,
+          triggerRegion: this.handoffScope.triggerRegion,
+          directory: current.directory,
+          expiresAt: this.expiresAt,
+        })
+        .then((registered) => {
+          current.registered = registered;
+        })
+        .catch(() => {
+          // Browser automation remains available if the optional viewer is
+          // unavailable. No control grant can exist without registration.
+          console.warn("[browser-sessions] viewer registration unavailable");
+        })
+        .finally(() => {
+          current.registration = undefined;
+        });
+      await current.registration;
+    }
     return {
       AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
       AGENT_BROWSER_SESSION: "default",
@@ -68,6 +141,11 @@ export class BrowserSessions {
       // Explicit checkpoints only. Never let the CLI auto-save in ~/.agent-browser.
       AGENT_BROWSER_ENCRYPTION_KEY: this.encryptionKey,
       HACKERAI_BROWSER_STATE_DIR: `${session.directory}/state`,
+      ...(gate && originalPath
+        ? {
+            PATH: `/tmp/${session.directory.split("/").at(-1)}/bin:${originalPath}`,
+          }
+        : {}),
     };
   }
 
@@ -85,11 +163,31 @@ export class BrowserSessions {
         async (session) => {
           const { sandbox } = session;
           await session.ready.catch(() => undefined);
-          const result = await sandbox.commands.run(
-            browserSessionCommand("cleanup", session.directory, this.expiresAt),
-            { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20_000 },
-          );
-          if (result.exitCode !== 0) throw new Error("Browser cleanup failed.");
+          try {
+            const result = await sandbox.commands.run(
+              browserSessionCommand(
+                "cleanup",
+                session.directory,
+                this.expiresAt,
+              ),
+              { ...buildSandboxCommandOptions(sandbox), timeoutMs: 20_000 },
+            );
+            if (result.exitCode !== 0)
+              throw new Error("Browser cleanup failed.");
+          } finally {
+            if (session.registered && this.handoffScope) {
+              await getConvexClient()
+                .mutation(api.browserHandoffs.closeForBackend, {
+                  serviceKey: this.handoffScope.serviceKey,
+                  sessionId: session.sessionId,
+                })
+                .catch(() => {
+                  console.warn(
+                    "[browser-sessions] viewer revocation unavailable",
+                  );
+                });
+            }
+          }
         },
       ),
     );

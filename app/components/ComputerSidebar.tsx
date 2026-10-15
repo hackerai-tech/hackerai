@@ -65,6 +65,7 @@ import { useSubagentRealtime } from "@/app/hooks/useSubagentRealtime";
 import { SUBAGENT_ACTIVE_STATUSES } from "@/lib/ai/subagents/contracts";
 import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
 import { useComputerSidebarOverlay } from "@/hooks/use-workspace-layout";
+import { AgentBrowserPreview } from "./AgentBrowserPreview";
 
 const SubagentsSidebar = dynamic(
   () => import("./SubagentsSidebar").then((module) => module.SubagentsSidebar),
@@ -90,6 +91,8 @@ interface ComputerSidebarProps {
   realtimeRecovery?: {
     onRetry: () => void;
   };
+  browserChatId?: string;
+  browserAgentId?: string;
 }
 
 const DiffView = dynamic(() => import("./DiffView").then((m) => m.DiffView), {
@@ -327,6 +330,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   onFollowingLiveChange,
   backNavigation,
   realtimeRecovery,
+  browserChatId,
+  browserAgentId = "parent",
 }) => {
   const computerSidebarOverlay = useComputerSidebarOverlay();
   const [isExpanded, setIsExpanded] = useState(false);
@@ -716,6 +721,19 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
               </div>
             </div>
+
+            {sidebarOpen && browserChatId && (
+              <AgentBrowserPreview
+                chatId={browserChatId}
+                agentId={browserAgentId}
+                liveSelection={isAtLive && isFollowingLive}
+                browserRequested={/\bagent-browser\b/.test(
+                  resolvedTerminal?.command ?? "",
+                )}
+                runActive={status === "streaming" || status === "submitted"}
+                onJumpToLive={handleJumpToLive}
+              />
+            )}
 
             {realtimeRecovery && (
               <div
@@ -1258,12 +1276,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 };
 
 const SubagentComputerSidebar = ({
+  chatId,
   closeSidebar,
   parentMessages,
   openSidebar,
   origin,
   sidebarContent,
 }: {
+  chatId: string;
   closeSidebar: () => void;
   parentMessages: any[];
   openSidebar: (content: SidebarContent) => void;
@@ -1366,6 +1386,8 @@ const SubagentComputerSidebar = ({
   return (
     <ComputerSidebarBase
       sidebarOpen
+      browserChatId={chatId}
+      browserAgentId={origin.subagentId}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}
@@ -1389,9 +1411,10 @@ const SubagentComputerSidebar = ({
 
 // Wrapper for normal chats using GlobalState
 export const ComputerSidebar: React.FC<{
+  chatId?: string;
   messages?: any[];
   status?: ChatStatus;
-}> = ({ messages, status }) => {
+}> = ({ chatId, messages, status }) => {
   const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
     useGlobalState();
 
@@ -1409,6 +1432,7 @@ export const ComputerSidebar: React.FC<{
     return (
       <SubagentComputerSidebar
         key={sidebarContent.origin.subagentId}
+        chatId={chatId ?? ""}
         closeSidebar={closeSidebar}
         parentMessages={messages ?? []}
         openSidebar={openSidebar}
@@ -1421,6 +1445,7 @@ export const ComputerSidebar: React.FC<{
   return (
     <ComputerSidebarBase
       sidebarOpen={sidebarOpen}
+      browserChatId={chatId}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
       messages={messages}
