@@ -1,14 +1,9 @@
 import {
-  getFreeAgentDailyStatus,
-  enforceFreeAgentDailyStatus,
-  freeAgentDailyCountryFromRequest,
-} from "@/lib/experiments/free-agent-completed-daily.server";
-import {
   enforceRegionalSubscriptionFirst,
   subscriptionFirstCountryFromRequest,
 } from "@/lib/experiments/regional-subscription-first.server";
 import { regionalFreeCountryFromRequest } from "@/lib/rate-limit/regional-free-limits-request";
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { tasks, auth, idempotencyKeys, sessions } from "@trigger.dev/sdk";
 import type { agentLongTask } from "@/trigger/agent-long";
@@ -550,18 +545,6 @@ export const createAgentTriggerPost =
         country: regionalSubscriptionCountry,
         surface: "agent",
       });
-      const freeAgentDailyCountry = freeAgentDailyCountryFromRequest(req);
-      await enforceFreeAgentDailyStatus(
-        await getFreeAgentDailyStatus({
-          userId,
-          subscription,
-          country: freeAgentDailyCountry,
-          quotaSubject: freeQuotaSubject,
-        }),
-        userId,
-        "agent",
-        { defer: after },
-      );
       const userLocation = geolocation(req);
       const { triggerRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
@@ -793,7 +776,6 @@ export const createAgentTriggerPost =
         organizationId,
         freeQuotaSubject,
         regionalSubscriptionCountry,
-        freeAgentDailyCountry,
         regionalFreeCountry:
           subscription === "free"
             ? regionalFreeCountryFromRequest(req)
