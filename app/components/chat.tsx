@@ -2577,7 +2577,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
               data-testid="computer-sidebar-container"
             >
               {sidebarOpen && (
-                <ComputerSidebar messages={messages} status={status} />
+                <ComputerSidebar
+                  chatId={chatId}
+                  messages={messages}
+                  status={status}
+                />
               )}
             </div>
           )}
@@ -2602,7 +2606,11 @@ const ChatContent = ({ autoResume }: { autoResume: boolean }) => {
             data-testid="computer-sidebar-container"
           >
             <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
+              <ComputerSidebar
+                chatId={chatId}
+                messages={messages}
+                status={status}
+              />
             </div>
           </div>
         )}

@@ -81,6 +81,7 @@ export type CreateToolsRuntimePolicy = {
   triggerRegion?: TriggerRunRegion;
   environment?: string;
   keepE2BLeaseAliveForRun?: boolean;
+  browserAgentId?: string;
 };
 
 export type SandboxSessionUsage = {
@@ -250,7 +251,20 @@ export const createTools = (
     triggerRunId,
   });
 
-  const browserSessions = triggerRunId ? new BrowserSessions() : undefined;
+  const browserSessions = triggerRunId
+    ? new BrowserSessions(
+        serviceKey
+          ? {
+              userId: userID,
+              chatId,
+              runId: triggerRunId,
+              agentId: runtimePolicy.browserAgentId ?? "parent",
+              triggerRegion: runtimePolicy.triggerRegion,
+              serviceKey,
+            }
+          : undefined,
+      )
+    : undefined;
   const context: ToolContext = {
     browserSessions,
     sandboxManager,
