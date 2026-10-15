@@ -349,7 +349,9 @@ export function AgentBrowserPreview({
         : effectiveState === "resuming"
           ? "Resuming Agent…"
           : frameStale
-            ? "Preview unavailable"
+            ? previewState === "loading"
+              ? "Connecting browser…"
+              : "Preview unavailable"
             : effectiveState === "recovery"
               ? "Paused for handoff"
               : effectiveState === "human"
@@ -379,7 +381,9 @@ export function AgentBrowserPreview({
           </button>
         )}
       </div>
-      <div className="relative max-h-[38vh] overflow-auto bg-muted/30">
+      <div
+        className={`relative max-h-[38vh] overflow-auto bg-muted/30 ${session && !frame ? "min-h-24" : ""}`}
+      >
         {frame && (
           <div
             role={human ? "application" : undefined}
