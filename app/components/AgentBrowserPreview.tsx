@@ -23,10 +23,16 @@ export function AgentBrowserPreview({
   chatId,
   agentId,
   liveSelection,
+  browserRequested = false,
+  runActive = false,
+  onJumpToLive,
 }: {
   chatId: string;
   agentId: string;
   liveSelection: boolean;
+  browserRequested?: boolean;
+  runActive?: boolean;
+  onJumpToLive?: () => void;
 }) {
   const session = useQuery(api.browserHandoffs.getForUser, { chatId, agentId });
   const [frame, setFrame] = useState<BrowserFrame | null>(null);
@@ -45,6 +51,7 @@ export function AgentBrowserPreview({
   const pendingInputs = useRef(0);
   const lastMoveAt = useRef(0);
   const resumeButtonRef = useRef<HTMLButtonElement>(null);
+  const resumingRef = useRef(false);
   const sessionId = session?.sessionId;
   const endpoint = sessionId
     ? `/api/agent/browser/${encodeURIComponent(sessionId)}`
@@ -66,6 +73,7 @@ export function AgentBrowserPreview({
     setGrant(null);
     grantRef.current = null;
     exposedRef.current = null;
+    resumingRef.current = false;
   }, [sessionId]);
 
   const post = useCallback(
@@ -208,16 +216,28 @@ export function AgentBrowserPreview({
   };
 
   const resumeAgent = async () => {
-    if (!canResume || !frame) return;
+    if (!canResume || !frame || resumingRef.current) return;
+    resumingRef.current = true;
+    const activeGrant = grantRef.current;
     setBusy(true);
     setError(null);
     try {
+      // Finish accepted keystrokes before revoking control. Once resume starts,
+      // new input is ignored so the queue cannot grow while it drains.
+      await inputQueue.current;
+      if (
+        !mountedRef.current ||
+        sessionIdRef.current !== sessionId ||
+        grantRef.current !== activeGrant
+      )
+        return;
       const data = await post({
         action: "resume",
-        grant: grantRef.current,
+        grant: activeGrant,
         browserSessionName: frame.browserSessionName,
         confirmedIdentity: true,
       });
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       grantRef.current = null;
       setGrant(null);
       setConfirmedIdentity(false);
@@ -231,13 +251,16 @@ export function AgentBrowserPreview({
       );
       setPreviewState("recovery");
     } finally {
-      setBusy(false);
+      if (mountedRef.current && sessionIdRef.current === sessionId) {
+        resumingRef.current = false;
+        setBusy(false);
+      }
     }
   };
 
   const sendInput = (input: BrowserInput) => {
     const activeGrant = grantRef.current;
-    if (!activeGrant || frameStale) return;
+    if (!activeGrant || frameStale || resumingRef.current) return;
     // Moves are advisory; do not let them delay clicks or keystrokes.
     if (input.kind === "move" && pendingInputs.current > 0) return;
     pendingInputs.current += 1;
@@ -311,24 +334,50 @@ export function AgentBrowserPreview({
     }
   };
 
-  if (!session) return null;
+  if (!session && !browserRequested) return null;
+
+  const statusLabel = !session
+    ? session === undefined
+      ? "Checking browser…"
+      : runActive
+        ? "Browser unavailable"
+        : "Session ended"
+    : human
+      ? "You control this browser"
+      : effectiveState === "claiming"
+        ? "Pausing Agent…"
+        : effectiveState === "resuming"
+          ? "Resuming Agent…"
+          : frameStale
+            ? "Preview unavailable"
+            : effectiveState === "recovery"
+              ? "Paused for handoff"
+              : effectiveState === "human"
+                ? "Controlled in another window"
+                : "Live preview";
 
   return (
     <section
       className="mt-3 overflow-hidden rounded-xl border border-border bg-background"
       aria-label="Agent browser preview"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
         <span className="font-medium text-foreground">Agent browser</span>
         <span className="text-muted-foreground" role="status">
-          {human
-            ? "You control this browser"
-            : frameStale
-              ? previewState
-              : effectiveState === "recovery"
-                ? "Paused for handoff"
-                : "Live preview"}
+          {statusLabel}
         </span>
+        {!human && (
+          <button
+            type="button"
+            onClick={() => void takeControl()}
+            disabled={!canTake || busy}
+            aria-label="Take control of Agent browser"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <MousePointerClick className="h-3.5 w-3.5" aria-hidden />
+            {busy ? "Taking control…" : "Take control"}
+          </button>
+        )}
       </div>
       <div className="relative max-h-[38vh] overflow-auto bg-muted/30">
         {frame && (
@@ -406,7 +455,7 @@ export function AgentBrowserPreview({
             />
           </div>
         )}
-        {frameStale && (
+        {session && frameStale && (
           <div className="absolute inset-0 flex min-h-24 items-center justify-center bg-background/80 px-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
             {previewState === "loading"
               ? "Waiting for Agent browser…"
@@ -417,20 +466,6 @@ export function AgentBrowserPreview({
                   : "Browser preview disconnected. Input is paused."}
           </div>
         )}
-        {canTake && (
-          <button
-            type="button"
-            onClick={() => void takeControl()}
-            disabled={busy}
-            aria-label="Take control of Agent browser"
-            className="group absolute bottom-[10px] right-[10px] z-10 flex h-10 min-h-10 w-10 min-w-10 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-border bg-popover text-foreground shadow-lg backdrop-blur transition-[width,background-color,color] duration-300 hover:w-[136px] hover:bg-blue-600 hover:text-white focus-visible:w-[136px] focus-visible:bg-blue-600 focus-visible:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed [@media(hover:none)]:w-[136px]"
-          >
-            <MousePointerClick className="h-4 w-4 shrink-0" aria-hidden />
-            <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium opacity-0 transition-[max-width,opacity] duration-300 group-hover:ml-2 group-hover:max-w-24 group-hover:opacity-100 group-focus-visible:ml-2 group-focus-visible:max-w-24 group-focus-visible:opacity-100 [@media(hover:none)]:ml-2 [@media(hover:none)]:max-w-24 [@media(hover:none)]:opacity-100">
-              Take control
-            </span>
-          </button>
-        )}
       </div>
       <div className="flex flex-col gap-2 px-3 py-2 text-xs text-muted-foreground">
         {human || effectiveState === "recovery" ? (
@@ -440,7 +475,7 @@ export function AgentBrowserPreview({
                 type="checkbox"
                 checked={confirmedIdentity}
                 onChange={(event) => setConfirmedIdentity(event.target.checked)}
-                className="mt-0.5"
+                className="mt-0.5 accent-foreground"
               />
               <span>
                 I verified the site and, if signed in, the account shown.
@@ -451,25 +486,41 @@ export function AgentBrowserPreview({
               type="button"
               onClick={() => void resumeAgent()}
               disabled={!canResume || busy}
-              className="self-start rounded-md bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              className="self-start rounded-md bg-foreground px-3 py-1.5 font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
             >
               Resume agent
             </button>
           </>
         ) : (
           <span>
-            Open this sidebar to view. Take control to use the browser.
+            {!session
+              ? session === undefined
+                ? "Checking whether this Agent has an active browser session."
+                : runActive
+                  ? "Take control is available after an eligible Cloud Agent opens its browser."
+                  : "This Agent run has ended, so browser control is unavailable. Ask the Agent to reopen the page and wait for you to take control."
+              : !liveSelection
+                ? "You’re viewing an earlier tool. Return to the live tool to take control."
+                : frameStale
+                  ? "Take control will be available when the live browser preview connects."
+                  : "Take control to click and type. The Agent’s browser actions pause until you resume."}
           </span>
         )}
-        {!liveSelection && (
-          <span>Return to the live tool to control this browser.</span>
+        {session && !liveSelection && onJumpToLive && (
+          <button
+            type="button"
+            onClick={onJumpToLive}
+            className="self-start font-medium text-foreground underline underline-offset-2"
+          >
+            Return to live browser
+          </button>
         )}
         {error && (
           <span role="alert" className="text-destructive">
             {error}
           </span>
         )}
-        {frameStale && (
+        {session && frameStale && (
           <button
             type="button"
             onClick={() => {

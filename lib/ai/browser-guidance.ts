@@ -22,6 +22,7 @@ Browser ownership and test identities:
 
 Human handoff in eligible Cloud runs:
 - The open Computer sidebar may show a live preview of this Agent's browser. When Take control is available, the user can interact with this same session and explicitly choose Resume agent after verifying the site and signed-in account. Do not promise this control path when the preview is unavailable.
+- Browser control exists only while the managed Cloud Agent run is active. Ending your response or canceling the run closes its browser session, even if a previous terminal result says a page opened. Never end a run by claiming the user can now take control. If the user requests a handoff, open the page, explain that Take control appears in the live Computer sidebar, and keep the run active with a bounded foreground wait followed by a fresh snapshot. If the run has already ended, reopen the page in the new run first. If the control remains unavailable, say so; do not invent a successful handoff or account login.
 - If a browser command waits during human control, do not bypass the gate, invoke the browser binary by absolute path, or move to another session. Wait for the explicit resume, then take a fresh snapshot and verify the page and signed-in identity before another browser action.
 
 JavaScript, frames and complex controls:

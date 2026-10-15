@@ -726,6 +726,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 chatId={browserChatId}
                 agentId={browserAgentId}
                 liveSelection={isAtLive && isFollowingLive}
+                browserRequested={/\bagent-browser\b/.test(
+                  resolvedTerminal?.command ?? "",
+                )}
+                runActive={status === "streaming" || status === "submitted"}
+                onJumpToLive={handleJumpToLive}
               />
             )}
 
