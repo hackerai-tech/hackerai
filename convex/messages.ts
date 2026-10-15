@@ -1953,8 +1953,11 @@ export const branchChat = mutation({
         return null;
       }
 
-      // Get all messages up to and including this message using index range
-      const messagesToCopy = await ctx.db
+      // Branching is one atomic transaction. Bound the entire history read,
+      // leaving room for ownership reads, pagination lookahead and the summary.
+      // Never continue pages here: that would restore the transaction-wide
+      // byte overflow, and copying only the first page would lose history.
+      const branchPage = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) =>
           q
@@ -1962,7 +1965,35 @@ export const branchChat = mutation({
             .lte("_creationTime", message._creationTime),
         )
         .order("asc")
-        .collect();
+        .paginate({
+          cursor: null,
+          numItems: 1000,
+          maximumRowsRead: 1001,
+          maximumBytesRead: MESSAGE_PAGE_MAX_BYTES,
+        });
+
+      const messagesToCopy = branchPage.page;
+      const historyBytes = messagesToCopy.reduce(
+        (bytes, msg) => bytes + getMessageDocumentSize(msg),
+        0,
+      );
+      if (
+        !branchPage.isDone ||
+        branchPage.pageStatus === "SplitRequired" ||
+        historyBytes > MESSAGE_PAGE_MAX_BYTES
+      ) {
+        convexLogger.warn("branch_chat_history_limit", {
+          reason: "atomic_history_budget",
+          message_count: messagesToCopy.length,
+          history_bytes: historyBytes,
+          max_history_bytes: MESSAGE_PAGE_MAX_BYTES,
+        });
+        throw new ConvexError({
+          code: "BRANCH_HISTORY_TOO_LARGE",
+          message:
+            "This task is too large to branch at this message. Try branching from an earlier message. Your original task is unchanged.",
+        });
+      }
 
       // Create new chat with same title as original
       const newChatId = crypto.randomUUID();
