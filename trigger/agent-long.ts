@@ -63,6 +63,7 @@ import {
   describeImageWithAuxiliaryVision,
 } from "@/lib/chat/auxiliary-vision";
 import { summarizeIncompleteToolParts } from "@/lib/chat/tool-abort-utils";
+import { createAgentStopSignal } from "@/lib/chat/agent-stop-signal";
 import {
   hasVisibleAssistantContent,
   shouldSkipAbortedMessageSave,
@@ -1853,11 +1854,23 @@ export const agentLongTask = task({
     });
     let activeRuntimeBudget: ActiveRuntimeBudget | undefined;
     let runtimeSettlementWatchdog: RuntimeSettlementWatchdog | undefined;
+    let terminalAgentState: AgentStreamState | undefined;
+    const stopSignal = createAgentStopSignal({
+      onAbort: (source) => {
+        triggerLogger.warn("[agent-long] stop signal aborted", {
+          event: "agent_long_stop_signal_aborted",
+          run_id: ctx.run.id,
+          chat_id: chatId,
+          stop_source: source,
+        });
+      },
+      getStreamState: () => terminalAgentState,
+    });
     // Register before async setup and handle a signal already canceled while
     // the task was starting. Abort events are not replayed to late listeners.
-    const userStopSignal = new AbortController();
+    const userStopSignal = stopSignal.controller;
     const forwardTriggerAbort = () =>
-      userStopSignal.abort(triggerSignal.reason);
+      stopSignal.abort("trigger_platform", triggerSignal.reason);
     triggerSignal.addEventListener("abort", forwardTriggerAbort, {
       once: true,
     });
@@ -2108,7 +2121,6 @@ export const agentLongTask = task({
 
       const summarizationTracker = new SummarizationTracker();
       chatLogger.startStream();
-      let terminalAgentState: AgentStreamState | undefined;
       let terminalRequestedModelSlug: string | undefined;
       let agentLongDurationExceeded = false;
       const markAgentLongDurationExceeded = () => {
@@ -2125,7 +2137,7 @@ export const agentLongTask = task({
         onExceeded: () => {
           markAgentLongDurationExceeded();
           runtimeSettlementWatchdog?.arm();
-          userStopSignal.abort();
+          stopSignal.abort("active_runtime_budget");
           triggerLogger.warn("[agent-long] active runtime budget exhausted", {
             event: "agent_long_runtime_budget_exhausted",
             run_id: ctx.run.id,
@@ -2711,8 +2723,10 @@ export const agentLongTask = task({
                 usageTracker.nonModelCost += costDollars;
                 chatLogger?.getBuilder().addToolCost(costDollars);
               },
-              onAutoReviewCircuitBreaker: () => userStopSignal.abort(),
-              onPostWaitAuthorizationDenied: () => userStopSignal.abort(),
+              onAutoReviewCircuitBreaker: () =>
+                stopSignal.abort("auto_review_circuit_breaker"),
+              onPostWaitAuthorizationDenied: () =>
+                stopSignal.abort("post_wait_authorization_denied"),
               onApprovalWait: runTimingTracker.recordApprovalWait,
             });
             const {
@@ -3470,7 +3484,7 @@ export const agentLongTask = task({
                     cumulativeDeduction.usageDeductionFailureReason,
                   force,
                 });
-                userStopSignal.abort();
+                stopSignal.abort("usage_settlement_uncovered");
               };
 
             let parentFinishBlockedObserved = false;
@@ -5523,6 +5537,7 @@ export const agentLongTask = task({
       // Flush fallback records and quota-check exposure before the worker exits.
       await posthog?.shutdown().catch(() => undefined);
       triggerSignal.removeEventListener("abort", forwardTriggerAbort);
+      stopSignal.dispose();
       await releaseFreeRunLockBestEffort("outer_finally");
       runtimeSettlementWatchdog?.dispose();
       memoryTelemetry.dispose();
