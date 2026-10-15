@@ -1108,7 +1108,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     expect(prepareBrowser).toHaveBeenCalledTimes(1);
     expect(browserCall?.[0]).toContain(
-      'export PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
+      'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
     );
 
     expect(browserCall?.[1]).toMatchObject({
@@ -1137,7 +1137,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         command.includes("echo gated"),
       )?.[0],
     ).toContain(
-      'export PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH";',
+      'source /tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-000000000000000000000000/bin/../guard.sh PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH";',
     );
     prepareBrowser.mockRejectedValueOnce(new Error("gate unavailable"));
     const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -1223,7 +1223,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     expect(fakeHandle.sendInput).toHaveBeenCalledWith(
       new TextEncoder().encode(
-        "export PATH=/tmp/hackerai-browser-111111111111111111111111/bin:\"$PATH\"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
+        "source /tmp/hackerai-browser-111111111111111111111111/bin/../guard.sh || exit 75; export BASH_ENV=/tmp/hackerai-browser-111111111111111111111111/bin/../guard.sh PATH=/tmp/hackerai-browser-111111111111111111111111/bin:\"$PATH\"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
       ),
     );
   });

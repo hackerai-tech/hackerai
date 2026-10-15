@@ -277,9 +277,11 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     const gateBin = path.split(":", 1)[0];
     if (!/^\/tmp\/hackerai-browser-[a-f0-9]{24}\/bin$/.test(gateBin))
       throw new Error("Browser command gate path is invalid.");
-    // E2B's command shell restores its own PATH after applying envs. Export
-    // inside that shell so this invocation and later PTY input use the gate.
-    return `export PATH=${gateBin}:"$PATH"; ${command}`;
+    // E2B's command shell restores its own PATH after applying envs. Source
+    // the command guard and export PATH inside it, including for later PTY
+    // input and nested Bash scripts.
+    const guard = `${gateBin}/../guard.sh`;
+    return `source ${guard} || exit 75; export BASH_ENV=${guard} PATH=${gateBin}:"$PATH"; ${command}`;
   };
 
   const terminalTool = tool({

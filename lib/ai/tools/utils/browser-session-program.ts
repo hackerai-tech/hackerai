@@ -90,6 +90,25 @@ sys.exit(__import__('subprocess').run([%r, *sys.argv[1:]], close_fds=True).retur
         path = gate_bin / 'agent-browser'
         path.write_text(wrapper)
         path.chmod(0o700)
+        # Bash commands can call the real CLI by absolute path and skip PATH.
+        # Guard each command in the E2B shell, including nested Bash scripts.
+        # The wrapper remains the serialized gate for ordinary CLI calls.
+        guard = '''_hackerai_browser_guard() {
+  case "$1" in
+    *agent-browser*)
+      if [[ "$1" =~ (^|[[:space:]])/[^[:space:]]*/agent-browser([[:space:]]|$) ]]; then
+        printf 'Use agent-browser from PATH so human handoff remains enforced.\\n' >&2
+        exit 75
+      fi
+      while [[ -e %s ]]; do sleep 0.2; done
+      ;;
+  esac
+}
+trap '_hackerai_browser_guard "$BASH_COMMAND"' DEBUG
+''' % str(root / 'paused')
+        guard_path = shim_root / 'guard.sh'
+        guard_path.write_text(guard)
+        guard_path.chmod(0o700)
         subprocess.run([str(path), '--version'], env=os.environ,
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=10, check=True)
