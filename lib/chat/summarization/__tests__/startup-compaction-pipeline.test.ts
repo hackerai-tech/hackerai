@@ -41,8 +41,9 @@ jest.doMock("@/lib/ai/abliteration", () => ({
   isAbliterationConfigured: () => true,
 }));
 const mockFlag = jest.fn<() => Promise<boolean | null>>();
+const recordEvent = jest.fn();
 jest.doMock("@/lib/posthog/server", () => ({
-  phLogger: { event: jest.fn() },
+  phLogger: { event: recordEvent },
   getPostHogBooleanFlagDecisionForUser: mockFlag,
 }));
 const { CompactionModelPolicy } =
@@ -109,6 +110,7 @@ describe("startup compaction through the real AI SDK", () => {
   beforeEach(() => {
     mockFlag.mockResolvedValue(false);
     saveSummary.mockClear();
+    recordEvent.mockClear();
     primary = new MockLanguageModelV3({
       modelId: "synthetic-primary",
       doGenerate: async () => summary(),
@@ -294,6 +296,179 @@ describe("startup compaction through the real AI SDK", () => {
       expect(saveSummary).toHaveBeenCalledTimes(3);
     },
   );
+
+  it.each([61_000, 91_000])(
+    "allows a long GLM checkpoint but recovers after its deadline (%i ms)",
+    async (completionMs) => {
+      jest.useFakeTimers();
+      // Node's native AbortSignal.timeout bypasses Jest's clock. Preserve its
+      // contract while allowing the real SDK's deadline to advance virtually.
+      const timeout = jest
+        .spyOn(AbortSignal, "timeout")
+        .mockImplementation((ms) => {
+          const controller = new AbortController();
+          setTimeout(
+            () =>
+              controller.abort(new DOMException("Timed out", "TimeoutError")),
+            ms,
+          );
+          return controller.signal;
+        });
+      try {
+        mockFlag.mockResolvedValue(true);
+        const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
+          "\nScope fixture.test only; PID 73142 still running.\n",
+        );
+        const valid = () => ({
+          ...summary(),
+          content: [{ type: "text" as const, text: checkpoint }],
+        });
+        const glm = new MockLanguageModelV3({
+          doGenerate: ({ abortSignal }) =>
+            new Promise((resolve, reject) => {
+              const timer = setTimeout(() => resolve(valid()), completionMs);
+              abortSignal?.addEventListener(
+                "abort",
+                () => {
+                  clearTimeout(timer);
+                  reject(abortSignal.reason);
+                },
+                { once: true },
+              );
+            }),
+        });
+        const recovery = new MockLanguageModelV3({
+          doGenerate: async () => valid(),
+        });
+        models.set("model-glm-5.3-flash", glm);
+        models.set("model-abliterated", recovery);
+        const pending = checkAndSummarizeIfNeeded({
+          uiMessages: messages,
+          subscription: "pro",
+          languageModel: primary,
+          mode: "agent",
+          writer,
+          chatId: "synthetic-deadline",
+          compactionPolicy: new CompactionModelPolicy({
+            userId: "synthetic",
+            runId: "synthetic",
+            chatId: "synthetic-deadline",
+            mode: "agent",
+            subscription: "pro",
+            baselineModel: "agent-model",
+            platformAuthorized: false,
+            onDiscardedUsage: jest.fn(),
+          }),
+          providerPromptPressure: {
+            reason: "message_count",
+            reasons: ["message_count"],
+            toolResultCount: 0,
+            messageCount: 120,
+            summarizationMaxTokensOverride: 128000,
+          },
+        });
+        await jest.advanceTimersByTimeAsync(completionMs);
+        expect((await pending).summaryText).toContain("73142 still running");
+        expect(saveSummary).toHaveBeenCalledTimes(1);
+        expect(glm.doGenerateCalls[0].providerOptions).toMatchObject({
+          openrouter: {
+            provider: { sort: "latency", data_collection: "deny" },
+          },
+        });
+        expect(recovery.doGenerateCalls).toHaveLength(
+          completionMs > 90_000 ? 1 : 0,
+        );
+        if (completionMs > 90_000) {
+          expect(recordEvent).toHaveBeenCalledWith(
+            "compaction_model_attempt_finished",
+            expect.objectContaining({
+              failure_reason: "timeout",
+              served_model: "model-glm-5.3-flash",
+            }),
+          );
+        }
+      } finally {
+        timeout.mockRestore();
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  it("retains provider diagnostics and bills discarded empty output once", async () => {
+    mockFlag.mockResolvedValue(true);
+    const glm = new MockLanguageModelV3({
+      doGenerate: async () => ({
+        ...summary(),
+        content: [{ type: "reasoning", text: "Synthetic private reasoning" }],
+        usage: {
+          ...summary().usage,
+          outputTokens: { total: 20, text: 0, reasoning: 20 },
+        },
+        providerMetadata: {
+          openrouter: {
+            provider: "Fixture Provider",
+            privateBody: "Never send to analytics",
+          },
+        },
+        response: { id: "gen-fixture", modelId: "fixture-model" },
+      }),
+    });
+    const checkpoint = AGENT_SUMMARIZATION_PROMPT.match(/^## .+$/gm)!.join(
+      "\nScope fixture.test.\n",
+    );
+    models.set("model-glm-5.3-flash", glm);
+    models.set(
+      "model-abliterated",
+      new MockLanguageModelV3({
+        doGenerate: async () => ({
+          ...summary(),
+          content: [{ type: "text", text: checkpoint }],
+        }),
+      }),
+    );
+    const discarded = jest.fn();
+    const result = await checkAndSummarizeIfNeeded({
+      uiMessages: messages,
+      subscription: "pro",
+      languageModel: primary,
+      mode: "agent",
+      writer,
+      chatId: "synthetic-diagnostics",
+      compactionPolicy: new CompactionModelPolicy({
+        userId: "synthetic",
+        runId: "synthetic",
+        chatId: "synthetic-diagnostics",
+        mode: "agent",
+        subscription: "pro",
+        baselineModel: "agent-model",
+        platformAuthorized: false,
+        onDiscardedUsage: discarded,
+      }),
+      providerPromptPressure: {
+        reason: "message_count",
+        reasons: ["message_count"],
+        toolResultCount: 0,
+        messageCount: 120,
+        summarizationMaxTokensOverride: 128000,
+      },
+    });
+    expect(result.needsSummarization).toBe(true);
+    expect(discarded).toHaveBeenCalledTimes(1);
+    expect(recordEvent).toHaveBeenCalledWith(
+      "compaction_model_attempt_finished",
+      expect.objectContaining({
+        failure_reason: "empty_summary",
+        upstream_provider: "Fixture Provider",
+        generation_id: "gen-fixture",
+        finish_reason: "stop",
+        reasoning_tokens: 20,
+      }),
+    );
+    expect(JSON.stringify(recordEvent.mock.calls)).not.toMatch(
+      /Synthetic private reasoning|Never send to analytics/,
+    );
+    expect(saveSummary).toHaveBeenCalledTimes(1);
+  });
 
   it.each([400, 403])(
     "recovers a non-retryable cheaper-provider HTTP %s through Abliteration",

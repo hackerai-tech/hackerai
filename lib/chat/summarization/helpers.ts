@@ -36,6 +36,7 @@ import {
 import { buildTodoContext } from "../todo-context";
 import type { RetainedTailMetadata } from "./retained-tail";
 import { InvalidCompactionSummaryError } from "./startup-compaction";
+import { extractOpenRouterMetadata } from "@/lib/api/openrouter-metadata";
 
 export interface SummarizationUsage {
   inputTokens: number;
@@ -47,6 +48,11 @@ export interface SummarizationUsage {
   cacheWriteTokens?: number;
   cost?: number;
   model?: string;
+  /** Content-free provider diagnostics for completed and discarded checkpoints. */
+  upstreamProvider?: string;
+  generationId?: string;
+  finishReason?: string;
+  reasoningTokens?: number;
 }
 
 export interface SummaryPersistenceMetadata {
@@ -821,6 +827,7 @@ export const generateSummaryText = async (
       };
     }
   )?.inputTokenDetails;
+  const routerMetadata = extractOpenRouterMetadata(result);
   const usage: SummarizationUsage = {
     inputTokens: result.usage?.inputTokens ?? 0,
     inputTokensReported:
@@ -846,6 +853,10 @@ export const generateSummaryText = async (
       : undefined),
     model:
       result.response?.modelId ?? getLanguageModelIdentifier(languageModel),
+    upstreamProvider: routerMetadata.provider_name?.slice(0, 80),
+    generationId: routerMetadata.openrouter_generation_id?.slice(0, 128),
+    finishReason: result.finishReason,
+    reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens,
   };
   // A discarded warm attempt can still be billable. Account for its reported
   // usage separately before trying a differently priced bounded fallback.

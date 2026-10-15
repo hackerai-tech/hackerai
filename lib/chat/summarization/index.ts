@@ -31,6 +31,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { KIMI_K3_SLUG, myProvider } from "@/lib/ai/providers";
 import {
   isRecoverableStartupCompactionError,
+  isCompactionTimeout,
   STARTUP_COMPACTION_FALLBACK_MODELS,
   STARTUP_COMPACTION_VARIANT,
   InvalidCompactionSummaryError,
@@ -262,10 +263,14 @@ const buildContextCompactionProviderOptions = (
 
 const buildStartupCompactionProviderOptions = (
   providerOptions?: Record<string, Record<string, unknown>>,
+  latencyRouting = false,
 ): Record<string, Record<string, unknown>> => ({
   openrouter: {
     ...buildContextCompactionProviderOptions(providerOptions).openrouter,
-    provider: { sort: "throughput", data_collection: "deny" },
+    provider: {
+      sort: latencyRouting ? "latency" : "throughput",
+      data_collection: "deny",
+    },
   },
 });
 
@@ -565,6 +570,9 @@ const generateSummaryTextWithRetry = async ({
           abortSignal?.throwIfAborted();
           const languageModel = myProvider.languageModel(modelName);
           const attemptStartedAt = Date.now();
+          const isTreatmentGlm =
+            assignment.flagEnabled === true &&
+            modelName === "model-glm-5.3-flash";
           let discardedUsage: SummarizationUsage | undefined;
           startupCompaction?.onAttempt?.({
             variant: assignment.policy,
@@ -584,13 +592,18 @@ const generateSummaryTextWithRetry = async ({
                       reasoningEffort: "low",
                     },
                   }
-                : buildStartupCompactionProviderOptions(providerOptions),
+                : buildStartupCompactionProviderOptions(
+                    providerOptions,
+                    isTreatmentGlm,
+                  ),
               abortSignal,
               modelMessages,
               summaryInputMaxTokens,
               {
                 maxRetries: 0,
-                timeout: 60_000,
+                // GLM failures cluster at the 60s total deadline. Allow longer
+                // checkpoints to finish while keeping recovery bounded.
+                timeout: isTreatmentGlm ? 90_000 : 60_000,
                 maxOutputTokens: 8192,
                 validateText: (text) =>
                   hasStructuredCompactionSummary(text, mode),
@@ -624,7 +637,10 @@ const generateSummaryTextWithRetry = async ({
                 ? "canceled"
                 : error instanceof InvalidCompactionSummaryError
                   ? error.reason
-                  : "provider_error",
+                  : isCompactionTimeout(error)
+                    ? "timeout"
+                    : "provider_error",
+              error,
             );
             markSummarizationAttemptError(
               error,
