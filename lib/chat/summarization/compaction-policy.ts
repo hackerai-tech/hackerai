@@ -10,6 +10,7 @@ import {
 import type { SummarizationUsage } from "@/lib/chat/summarization/helpers";
 import type { InvalidCompactionSummaryError } from "./startup-compaction";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import { extractOpenRouterMetadataFromError } from "@/lib/api/openrouter-metadata";
 
 export const COMPACTION_POLICY_VERSION = "abliteration_glm53_fallback_v1";
 export const MODERATION_COMPACTION_FLAG_KEY =
@@ -126,7 +127,7 @@ export class CompactionModelPolicy {
       baseline_model: this.context.baselineModel,
       assigned_model: assignment.model,
       persistence: scope,
-      telemetry_version: 4,
+      telemetry_version: 5,
       $process_person_profile: false,
     };
     phLogger.event("compaction_model_started", properties);
@@ -142,9 +143,12 @@ export class CompactionModelPolicy {
         failureReason?:
           | InvalidCompactionSummaryError["reason"]
           | "provider_error"
+          | "timeout"
           | "canceled",
+        error?: unknown,
       ) => {
         attempts++;
+        const errorMetadata = extractOpenRouterMetadataFromError(error);
         phLogger.event("compaction_model_attempt_finished", {
           ...properties,
           attempt_index: attempts,
@@ -158,6 +162,16 @@ export class CompactionModelPolicy {
           usage_reported: usage?.inputTokensReported === true,
           cost_dollars: usage?.cost ?? null,
           cost_reported: usage?.cost !== undefined,
+          upstream_provider:
+            usage?.upstreamProvider ??
+            errorMetadata.provider_name?.slice(0, 80) ??
+            null,
+          generation_id:
+            usage?.generationId ??
+            errorMetadata.openrouter_generation_id?.slice(0, 128) ??
+            null,
+          finish_reason: usage?.finishReason ?? null,
+          reasoning_tokens: usage?.reasoningTokens ?? null,
         });
       },
       finish: (outcome: "completed" | "error" | "aborted", model?: string) =>

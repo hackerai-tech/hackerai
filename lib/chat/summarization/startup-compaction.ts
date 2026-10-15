@@ -30,6 +30,18 @@ export class InvalidCompactionSummaryError extends Error {
   }
 }
 
+/** SDK total deadlines can be nested in a retry or API error. */
+export function isCompactionTimeout(error: unknown, depth = 0): boolean {
+  if (depth > 5 || typeof error !== "object" || error === null) return false;
+  const value = error as { name?: string; cause?: unknown; errors?: unknown[] };
+  return (
+    value.name === "TimeoutError" ||
+    isCompactionTimeout(value.cause, depth + 1) ||
+    (Array.isArray(value.errors) &&
+      value.errors.some((nested) => isCompactionTimeout(nested, depth + 1)))
+  );
+}
+
 /** Only retry transient failures; caller cancellation is checked separately. */
 export function isRecoverableStartupCompactionError(
   error: unknown,
