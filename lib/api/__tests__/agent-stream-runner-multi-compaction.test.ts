@@ -785,7 +785,7 @@ describe("createAgentStream repeated compaction", () => {
   );
 
   it.each(["ask", "agent"] as const)(
-    "uses Abliteration-first for %s compaction regardless of moderation or continuation eligibility",
+    "passes the original moderation signal into %s compaction instead of continuation eligibility",
     async (mode) => {
       mockAbliterationConfigured.mockReturnValue(true);
       mockHistoryFlag.mockResolvedValue(true);
@@ -813,8 +813,9 @@ describe("createAgentStream repeated compaction", () => {
             state,
           );
           expect(await state.compactionPolicy!.resolve()).toMatchObject({
-            model: "model-abliterated",
-            fallbackModel: "model-glm-5.3-flash",
+            model: platformAuthorized
+              ? "model-abliterated"
+              : "model-glm-5.3-flash",
           });
           expect(phLogger.event).not.toHaveBeenCalledWith(
             "compaction_model_started",

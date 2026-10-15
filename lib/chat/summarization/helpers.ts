@@ -857,7 +857,13 @@ export const generateSummaryText = async (
   ) {
     generationOptions?.onDiscardedUsage?.(usage);
     abortSignal?.throwIfAborted();
-    throw new InvalidCompactionSummaryError();
+    throw new InvalidCompactionSummaryError(
+      !result.text.trim()
+        ? "empty_summary"
+        : result.finishReason !== "stop"
+          ? "non_stop_finish"
+          : "missing_sections",
+    );
   }
   return { text: result.text, usage };
 };
