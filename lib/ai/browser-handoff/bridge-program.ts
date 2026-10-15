@@ -53,11 +53,14 @@ function connect() {
         finish(5); return;
       }
       const metadata = message.metadata || {};
+      const capturedAt = Number(metadata.timestamp);
       finish(0, {
         data: message.data,
         width: Number(metadata.deviceWidth) || 0,
         height: Number(metadata.deviceHeight) || 0,
-        capturedAt: Number(metadata.timestamp) || Date.now(),
+        // Older producers can omit this value. Keep unknown age explicit;
+        // takeover and resume request a separate fresh screenshot.
+        capturedAt: Number.isFinite(capturedAt) && capturedAt > 0 ? capturedAt : 0,
       });
     } catch { finish(5); }
   });

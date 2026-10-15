@@ -170,6 +170,7 @@ export async function POST(
         sandbox,
         session,
         body.browserSessionName,
+        true,
       );
       const active = await convex.mutation(
         api.browserHandoffs.finishTakeoverForBackend,
@@ -237,6 +238,7 @@ export async function POST(
         sandbox,
         session,
         body.browserSessionName,
+        true,
       );
       if (Date.now() - frame.capturedAt > 15_000)
         throw new BrowserPreviewUnavailable("disconnected");

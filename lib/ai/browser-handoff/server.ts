@@ -1,4 +1,5 @@
 import "server-only";
+import { randomBytes } from "node:crypto";
 
 import { Sandbox } from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
@@ -119,6 +120,7 @@ export async function captureBrowserFrame(
   sandbox: Sandbox,
   session: BrowserSessionLocation,
   browserSessionName: string,
+  requireFresh = false,
 ) {
   const port = await getPrivateStreamPort(sandbox, session, browserSessionName);
   const result = await sandbox.commands.run(
@@ -161,11 +163,61 @@ export async function captureBrowserFrame(
         ? "image/png"
         : null;
   if (!mime) throw new BrowserPreviewUnavailable("disconnected");
+  let imageUrl = `data:${mime};base64,${frame.data}`;
+  let capturedAt = frame.capturedAt;
+  if (requireFresh) {
+    // agent-browser 0.26 can replay cached frames with timestamp=0. A new
+    // screenshot proves freshness without assigning a new age to that cache.
+    const path = `${session.directory}/preview-${randomBytes(16).toString("hex")}.jpg`;
+    capturedAt = Date.now();
+    try {
+      const screenshot = await sandbox.commands.run(
+        `agent-browser --json --screenshot-format jpeg --screenshot-quality 65 screenshot '${path}'`,
+        {
+          ...buildSandboxCommandOptions(sandbox),
+          envs: {
+            AGENT_BROWSER_SOCKET_DIR: `${session.directory}/sockets`,
+            AGENT_BROWSER_CONFIG: `${session.directory}/config.json`,
+            AGENT_BROWSER_SESSION: browserSessionName,
+          },
+          timeoutMs: 8_000,
+        },
+      );
+      if (screenshot.exitCode !== 0)
+        throw new BrowserPreviewUnavailable("disconnected");
+      const info = await sandbox.files.getInfo(path, {
+        user: "root",
+        requestTimeoutMs: 4_000,
+      });
+      if (info.size < 4 || info.size > 675_000)
+        throw new BrowserPreviewUnavailable("disconnected");
+      const fresh = Buffer.from(
+        await sandbox.files.read(path, {
+          format: "bytes",
+          user: "root",
+          requestTimeoutMs: 4_000,
+        }),
+      );
+      if (
+        fresh.byteLength < 4 ||
+        fresh.byteLength > 675_000 ||
+        fresh[0] !== 0xff ||
+        fresh[1] !== 0xd8
+      )
+        throw new BrowserPreviewUnavailable("disconnected");
+      imageUrl = `data:image/jpeg;base64,${fresh.toString("base64")}`;
+    } finally {
+      // The private memory-backed run directory is also erased at run cleanup.
+      await sandbox.files
+        .remove(path, { user: "root", requestTimeoutMs: 4_000 })
+        .catch(() => undefined);
+    }
+  }
   return {
-    image: `data:${mime};base64,${frame.data}`,
+    image: imageUrl,
     width: frame.width,
     height: frame.height,
-    capturedAt: frame.capturedAt,
+    capturedAt,
     browserSessionName,
   };
 }
