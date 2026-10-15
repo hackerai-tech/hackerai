@@ -445,7 +445,7 @@ export function AgentBrowserPreview({
                 className="mt-0.5"
               />
               <span>
-                I verified the signed-in test identity in this browser.
+                I verified the site and, if signed in, the account shown.
               </span>
             </label>
             <button

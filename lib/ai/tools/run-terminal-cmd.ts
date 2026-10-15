@@ -268,6 +268,20 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     };
   };
 
+  const withBrowserGatePath = (
+    command: string,
+    browserEnv: Record<string, string> | undefined,
+  ) => {
+    const path = browserEnv?.PATH;
+    if (!path) return command;
+    const gateBin = path.split(":", 1)[0];
+    if (!/^\/tmp\/hackerai-browser-[a-f0-9]{24}\/bin$/.test(gateBin))
+      throw new Error("Browser command gate path is invalid.");
+    // E2B's command shell restores its own PATH after applying envs. Export
+    // inside that shell so this invocation and later PTY input use the gate.
+    return `export PATH=${gateBin}:"$PATH"; ${command}`;
+  };
+
   const terminalTool = tool({
     ...runTerminalCmdTool,
     execute: async (
@@ -517,9 +531,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           if (!isCentrifugo) {
             await session.handle.sendInput(
               new TextEncoder().encode(
-                (context.browserSessions && agentBrowserEnv
-                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
-                  : command) + "\n",
+                withBrowserGatePath(
+                  context.browserSessions && agentBrowserEnv
+                    ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                    : command,
+                  agentBrowserEnv,
+                ) + "\n",
               ),
             );
           }
@@ -1194,11 +1211,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Augment PATH for local sandboxes so user-installed tools
             // (e.g. ~/go/bin/waybackurls) are found without full paths.
             const effectiveCommand = augmentCommandPath(
-              context.browserSessions &&
-                isE2BSandbox(sandboxInstance) &&
-                detectAgentBrowserUsage(command)
-                ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
-                : command,
+              withBrowserGatePath(
+                context.browserSessions &&
+                  isE2BSandbox(sandboxInstance) &&
+                  detectAgentBrowserUsage(command)
+                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                  : command,
+                agentBrowserEnv,
+              ),
               sandboxInstance,
             );
 

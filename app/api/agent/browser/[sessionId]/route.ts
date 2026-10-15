@@ -211,7 +211,10 @@ export async function POST(
       typeof body.browserSessionName !== "string" ||
       body.browserSessionName.length > 80
     )
-      return json({ error: "Confirm the signed-in test identity first" }, 400);
+      return json(
+        { error: "Confirm the browser site and identity first" },
+        400,
+      );
     const started = await convex.mutation(
       api.browserHandoffs.beginResumeForBackend,
       {

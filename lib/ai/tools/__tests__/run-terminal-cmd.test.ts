@@ -1063,6 +1063,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const prepareBrowser = jest.fn(async () => ({
       AGENT_BROWSER_SOCKET_DIR: "/dev/shm/test-browser/sockets",
       HACKERAI_BROWSER_STATE_DIR: "/dev/shm/test-browser/state",
+      PATH: "/tmp/hackerai-browser-000000000000000000000000/bin:/usr/bin",
     }));
     context.browserSessions = {
       prepare: prepareBrowser,
@@ -1107,7 +1108,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     );
     expect(prepareBrowser).toHaveBeenCalledTimes(1);
     expect(browserCall?.[0]).toContain(
-      "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;",
+      'export PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE;',
     );
 
     expect(browserCall?.[1]).toMatchObject({
@@ -1115,6 +1116,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
         AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
         AGENT_BROWSER_SOCKET_DIR: "/dev/shm/test-browser/sockets",
         HACKERAI_BROWSER_STATE_DIR: "/dev/shm/test-browser/state",
+        PATH: "/tmp/hackerai-browser-000000000000000000000000/bin:/usr/bin",
       },
     });
     expect(unrelatedCall?.[1]).not.toHaveProperty("envs");
@@ -1122,6 +1124,21 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     (
       context.browserSessions.handoffEnabledForRun as jest.Mock
     ).mockResolvedValue(true);
+    const gated = await runTool(tool, {
+      command: "echo gated",
+      brief: "check shell gate",
+      is_background: false,
+      timeout: 5,
+      interactive: false,
+    });
+    expect(gated).toMatchObject({ result: { exitCode: 0 } });
+    expect(
+      e2b.commands.run.mock.calls.find(([command]) =>
+        command.includes("echo gated"),
+      )?.[0],
+    ).toContain(
+      'export PATH=/tmp/hackerai-browser-000000000000000000000000/bin:"$PATH";',
+    );
     prepareBrowser.mockRejectedValueOnce(new Error("gate unavailable"));
     const warning = jest.spyOn(console, "warn").mockImplementation(() => {});
     try {
@@ -1177,6 +1194,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const prepareBrowser = jest.fn(async () => ({
       AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
       AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+      PATH: "/tmp/hackerai-browser-111111111111111111111111/bin:/usr/bin",
     }));
     context.browserSessions = {
       prepare: prepareBrowser,
@@ -1199,12 +1217,13 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
           AGENT_BROWSER_IDLE_TIMEOUT_MS: "900000",
           AGENT_BROWSER_SOCKET_DIR: "/dev/shm/owned-browser/sockets",
           AGENT_BROWSER_CONFIG: "/dev/shm/owned-browser/config.json",
+          PATH: "/tmp/hackerai-browser-111111111111111111111111/bin:/usr/bin",
         },
       }),
     );
     expect(fakeHandle.sendInput).toHaveBeenCalledWith(
       new TextEncoder().encode(
-        "umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
+        "export PATH=/tmp/hackerai-browser-111111111111111111111111/bin:\"$PATH\"; umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; python3 -c 'print(123)'\n",
       ),
     );
   });
