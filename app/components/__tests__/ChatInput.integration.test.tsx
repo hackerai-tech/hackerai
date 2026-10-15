@@ -62,6 +62,7 @@ jest.mock("react-hotkeys-hook", () => ({
 
 // Mock Convex hooks used by useFileUpload
 jest.mock("convex/react", () => ({
+  useConvexAuth: () => ({ isAuthenticated: false, isLoading: false }),
   useAuth: () => ({ user: null, entitlements: [] }),
   useMutation: () => jest.fn(),
   useAction: () => jest.fn(),

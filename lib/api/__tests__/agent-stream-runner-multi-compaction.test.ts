@@ -15,6 +15,13 @@ afterAll(() => {
 import { MAX_CONTEXT_COMPACTION_ATTEMPTS_PER_AGENT_STREAM } from "@/lib/chat/summarization/constants";
 import { PLATFORM_AUTHORIZATION_ANNOTATION } from "@/lib/chat/platform-authorization";
 
+const mockPrivateSkillTools = jest.fn(async (): Promise<any> => null);
+jest.mock("@/lib/user-skills/runtime", () => ({
+  ...jest.requireActual("@/lib/user-skills/runtime"),
+  resolvePrivateSkillTools: (...args: unknown[]) =>
+    mockPrivateSkillTools(...args),
+}));
+
 const mockStreamText = jest.fn();
 const mockRunSummarizationStep = jest.fn();
 const mockCompactModelMessagesInRun = jest.fn();
@@ -666,6 +673,7 @@ describe("createAgentStream repeated compaction", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockHistoryFlag.mockResolvedValue(false);
+    mockPrivateSkillTools.mockReset().mockResolvedValue(null);
     mockLoadHistory
       .mockReset()
       .mockResolvedValue({ revision: 0, payload: null });
@@ -825,6 +833,52 @@ describe("createAgentStream repeated compaction", () => {
       } finally {
         mockAbliterationConfigured.mockReturnValue(false);
       }
+    },
+  );
+
+  it.each(["ask", "agent"])(
+    "discovers selected metadata once in %s without bypassing budget checks",
+    async (mode) => {
+      mockPrivateSkillTools.mockResolvedValue({
+        search_skills: { description: "Discover selected private metadata" },
+        load_skill: {},
+      });
+      const checkBudgetBeforeStep = jest.fn().mockResolvedValue(undefined);
+      const state = initAgentStreamState(
+        [uiMessage("initial", "API checklist")],
+        { usedTokens: 1_000, maxTokens: 128_000 },
+      );
+      const stream = (await createAgentStream(
+        "test-model",
+        createTestStreamContext({
+          mode,
+          checkBudgetBeforeStep,
+          usageTracker: {},
+          summarizationTracker: { hasSummarized: false, summarizationCount: 0 },
+        }) as any,
+        state,
+      )) as any;
+      const messages = [{ role: "user", content: "API checklist" }];
+      expect(
+        (await stream.prepareStep({ steps: [], messages, stepNumber: 0 }))
+          .toolChoice,
+      ).toEqual({ type: "tool", toolName: "search_skills" });
+      expect(
+        (
+          await stream.prepareStep({
+            steps: [
+              { toolCalls: [{ toolName: "search_skills" }], toolResults: [] },
+            ],
+            messages,
+            stepNumber: 1,
+          })
+        ).toolChoice,
+      ).toBeUndefined();
+      const exhausted = new Error("Shared budget exhausted");
+      checkBudgetBeforeStep.mockRejectedValueOnce(exhausted);
+      await expect(
+        stream.prepareStep({ steps: [], messages, stepNumber: 0 }),
+      ).rejects.toBe(exhausted);
     },
   );
 

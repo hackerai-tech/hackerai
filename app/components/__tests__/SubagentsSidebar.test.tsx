@@ -15,6 +15,7 @@ const mockUseQuery = jest.fn<any>();
 const mockSetMessageFeedback = jest.fn<any>();
 const mockUseSubagentRealtime = jest.fn<any>();
 jest.mock("convex/react", () => ({
+  useConvexAuth: () => ({ isAuthenticated: false, isLoading: false }),
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
   useMutation: () => mockSetMessageFeedback,
 }));

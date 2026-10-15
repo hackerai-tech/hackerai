@@ -52,6 +52,27 @@ const sanitizeFindingToolPart = (part: any): SharedFindingPart | null => {
 
 export const sanitizeFindingPartsForShare = (parts: any[]): any[] =>
   parts.flatMap((part) => {
+    // Private methodology must not travel with public shares or their forks.
+    // Mixed reviewed/private results are omitted as a whole to fail closed.
+    const skillTool =
+      part?.type === "tool-search_skills" ||
+      part?.type === "tool-load_skill" ||
+      (part?.type === "dynamic-tool" &&
+        ["search_skills", "load_skill"].includes(part?.toolName));
+    if (
+      skillTool &&
+      (part?.output?.success !== true ||
+        part?.input?.category === "my-skills" ||
+        part?.output?.boundary ||
+        part?.output?.results?.some(
+          (r: any) => r?.source === "private-untrusted",
+        ) ||
+        part?.input?.skills?.some(
+          (id: unknown) => typeof id === "string" && id.startsWith("user:"),
+        ))
+    )
+      return [];
+
     if (
       part?.type === "dynamic-tool" &&
       [

@@ -102,7 +102,19 @@ const makeCtx = ({
               .mockResolvedValue(deletionFenced ? { _id: "fence-1" } : null),
           })),
         }
-      : { withIndex },
+      : table === "user_skill_drafts"
+        ? {
+            withIndex: jest.fn(() => ({
+              unique: jest.fn<any>().mockResolvedValue(null),
+            })),
+          }
+        : table === "user_skills"
+          ? {
+              withIndex: jest.fn(() => ({
+                take: jest.fn<any>().mockResolvedValue([]),
+              })),
+            }
+          : { withIndex },
   );
   const insert = jest.fn<any>().mockResolvedValue(insertResult);
   const normalizeId = jest.fn<any>((_table: string, id: string) => id);
@@ -167,6 +179,7 @@ describe("saveChat", () => {
       id: "chat-1",
       title: "hello",
       user_id: "user-1",
+      user_skill_ids: [],
       update_time: expect.any(Number),
     });
   });
