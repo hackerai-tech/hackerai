@@ -79,9 +79,9 @@ verify = root / 'verify-required'
 if verify.exists():
     args = sys.argv[1:]
     if 'snapshot' not in args:
-        print('Browser handoff resumed. Take a fresh snapshot and verify the signed-in test identity before another browser action.', file=sys.stderr)
+        print('Browser handoff resumed. Take a fresh snapshot and verify the page and signed-in identity, if any, before another browser action.', file=sys.stderr)
         sys.exit(75)
-    result = __import__('subprocess').run([%r, *args])
+    result = __import__('subprocess').run([%r, *args], close_fds=True)
     if result.returncode == 0:
         verify.unlink(missing_ok=True)
     sys.exit(result.returncode)

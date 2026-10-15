@@ -265,20 +265,18 @@ export function AgentBrowserPreview({
     if (!frame) return null;
     const rect = event.currentTarget.getBoundingClientRect();
     if (!rect.width || !rect.height) return null;
+    // CDP's screencast metadata can report a taller device viewport than the
+    // encoded frame. Input coordinates must follow the pixels the user sees.
+    const width = event.currentTarget.naturalWidth || frame.width;
+    const height = event.currentTarget.naturalHeight || frame.height;
     return {
       x: Math.max(
         0,
-        Math.min(
-          frame.width,
-          ((event.clientX - rect.left) * frame.width) / rect.width,
-        ),
+        Math.min(width, ((event.clientX - rect.left) * width) / rect.width),
       ),
       y: Math.max(
         0,
-        Math.min(
-          frame.height,
-          ((event.clientY - rect.top) * frame.height) / rect.height,
-        ),
+        Math.min(height, ((event.clientY - rect.top) * height) / rect.height),
       ),
     };
   };
