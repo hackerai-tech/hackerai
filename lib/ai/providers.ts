@@ -1,4 +1,5 @@
 import { customProvider } from "ai";
+import { createOpenRouterCompletionObserver } from "./openrouter-stream-completion";
 import {
   abliteration,
   ABLITERATION_LARGE_V2_MODEL_ID,
@@ -1006,25 +1007,44 @@ export const enrichOpenRouterStreamError = (
 /** Retain response IDs when the response body fails after headers arrived. */
 export const attachOpenRouterStreamErrorMetadata = (
   response: Response,
+  options: { expectChatCompletion?: boolean; signal?: AbortSignal | null } = {},
 ): Response => {
   if (!response.ok || !response.body) return response;
 
+  const observer =
+    options.expectChatCompletion &&
+    response.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      .trim()
+      .toLowerCase() === "text/event-stream"
+      ? createOpenRouterCompletionObserver()
+      : undefined;
+  let cancelled = false;
   const reader = response.body.getReader();
   const responseHeaders = Object.fromEntries(response.headers.entries());
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const chunk = await reader.read();
+        if (cancelled) return;
         if (chunk.done) {
+          options.signal?.throwIfAborted();
+          observer?.finish();
           controller.close();
           return;
         }
+        observer?.feed(chunk.value);
         controller.enqueue(chunk.value);
       } catch (error) {
-        controller.error(enrichOpenRouterStreamError(error, responseHeaders));
+        observer?.reset();
+        if (!cancelled)
+          controller.error(enrichOpenRouterStreamError(error, responseHeaders));
       }
     },
     cancel(reason) {
+      cancelled = true;
+      observer?.reset();
       return reader.cancel(reason);
     },
   });
@@ -1097,10 +1117,22 @@ export const createOpenRouterPatchFetch =
       return fetchImplementation(url, guarded.init);
     };
 
+    const requestUrl = new URL(
+      typeof url === "string" ? url : url instanceof URL ? url.href : url.url,
+    );
+    const wrapResponse = (response: Response) =>
+      attachOpenRouterStreamErrorMetadata(response, {
+        expectChatCompletion:
+          requestUrl.pathname.endsWith("/chat/completions") &&
+          isRecord(parsedRequestBody) &&
+          parsedRequestBody.stream === true,
+        signal: nextInit.signal,
+      });
+
     const initialResponse = await fetchWithinRequestLimit(nextInit);
     const parserFailure = await classifyPdfParserFailure(initialResponse);
     if (!parserFailure) {
-      return attachOpenRouterStreamErrorMetadata(initialResponse);
+      return wrapResponse(initialResponse);
     }
 
     if (
@@ -1113,7 +1145,7 @@ export const createOpenRouterPatchFetch =
         parserFailure === "generic_parse",
       );
       if (!sandboxBody.changed) {
-        return attachOpenRouterStreamErrorMetadata(initialResponse);
+        return wrapResponse(initialResponse);
       }
 
       logPdfParserRecovery("unknown", "sandbox", parserFailure);
@@ -1121,7 +1153,7 @@ export const createOpenRouterPatchFetch =
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
-      return attachOpenRouterStreamErrorMetadata(
+      return wrapResponse(
         withPrivateResponseHeader(
           sandboxResponse,
           PDF_PARSER_RECOVERY_HEADER,
@@ -1133,7 +1165,7 @@ export const createOpenRouterPatchFetch =
     if (requestUsesPdfParserEngine(parsedRequestBody, "cloudflare-ai")) {
       const sandboxBody = createSandboxPdfRecoveryBody(parsedRequestBody);
       if (!sandboxBody.changed) {
-        return attachOpenRouterStreamErrorMetadata(initialResponse);
+        return wrapResponse(initialResponse);
       }
 
       logPdfParserRecovery("cloudflare-ai", "sandbox", parserFailure);
@@ -1141,7 +1173,7 @@ export const createOpenRouterPatchFetch =
         ...nextInit,
         body: JSON.stringify(sandboxBody.body),
       });
-      return attachOpenRouterStreamErrorMetadata(
+      return wrapResponse(
         withPrivateResponseHeader(
           sandboxResponse,
           PDF_PARSER_RECOVERY_HEADER,
@@ -1156,7 +1188,7 @@ export const createOpenRouterPatchFetch =
       "cloudflare-ai",
     );
     if (!cloudflareBody.changed) {
-      return attachOpenRouterStreamErrorMetadata(initialResponse);
+      return wrapResponse(initialResponse);
     }
 
     logPdfParserRecovery("mistral-ocr", "cloudflare-ai", parserFailure);
@@ -1167,7 +1199,7 @@ export const createOpenRouterPatchFetch =
     const cloudflareFailure =
       await classifyPdfParserFailure(cloudflareResponse);
     if (!cloudflareFailure) {
-      return attachOpenRouterStreamErrorMetadata(
+      return wrapResponse(
         withPrivateResponseHeader(
           cloudflareResponse,
           PDF_PARSER_ENGINE_HEADER,
@@ -1178,7 +1210,7 @@ export const createOpenRouterPatchFetch =
 
     const sandboxBody = createSandboxPdfRecoveryBody(cloudflareBody.body);
     if (!sandboxBody.changed) {
-      return attachOpenRouterStreamErrorMetadata(cloudflareResponse);
+      return wrapResponse(cloudflareResponse);
     }
 
     logPdfParserRecovery("cloudflare-ai", "sandbox", cloudflareFailure);
@@ -1186,7 +1218,7 @@ export const createOpenRouterPatchFetch =
       ...nextInit,
       body: JSON.stringify(sandboxBody.body),
     });
-    return attachOpenRouterStreamErrorMetadata(
+    return wrapResponse(
       withPrivateResponseHeader(
         sandboxResponse,
         PDF_PARSER_RECOVERY_HEADER,

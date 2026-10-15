@@ -185,3 +185,39 @@ describe("MessageActions branching", () => {
     ).toHaveClass("rotate-90");
   });
 });
+
+it("opens citations without loading source URLs through external images", () => {
+  const sources = [
+    {
+      title: "Public source",
+      url: "https://example.com/private?q=secret#fragment",
+    },
+    { title: "Internal source", url: "https://user:pass@internal.test/report" },
+    { title: "Malformed source", url: "not-a-url?secret=value" },
+  ];
+  render(
+    <MessageActions
+      messageText="Answer"
+      isUser={false}
+      isLastAssistantMessage
+      canRegenerate={false}
+      onRegenerate={jest.fn()}
+      onEdit={jest.fn()}
+      canEdit={false}
+      isHovered
+      isEditing={false}
+      status="ready"
+      sources={sources}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "View sources" });
+  expect(button.querySelector("img, image")).toBeNull();
+  fireEvent.click(button);
+  const dialog = screen.getByRole("dialog", { name: "Citations" });
+  expect(dialog.querySelector("img, image")).toBeNull();
+  for (const source of sources) {
+    expect(
+      screen.getByRole("link", { name: new RegExp(source.title) }),
+    ).toHaveAttribute("href", source.url);
+  }
+});

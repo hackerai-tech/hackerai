@@ -1,4 +1,5 @@
 import {
+  Globe,
   Copy,
   Check,
   RotateCcw,
@@ -8,7 +9,6 @@ import {
   Split,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import Image from "next/image";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Button } from "@/components/ui/button";
@@ -50,19 +50,6 @@ interface MessageActionVisibility {
 
 const timestampClassName =
   "flex h-7 items-center px-1.5 text-sm leading-none text-muted-foreground tabular-nums whitespace-nowrap transition-opacity duration-200 ease-in-out";
-
-const getFaviconUrl = (domain: string) => {
-  return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-};
-
-const getDomain = (url: string) => {
-  try {
-    const u = new URL(url);
-    return `${u.protocol}//${u.hostname}`;
-  } catch {
-    return url;
-  }
-};
 
 export function getMessageActionVisibility({
   isUser,
@@ -393,28 +380,11 @@ export const MessageActions = ({
               className="group/footnote bg-background hover:bg-muted flex w-fit items-center gap-1.5 rounded-3xl px-3 py-1.5 h-auto"
               aria-label="View sources"
             >
-              <div className="flex flex-row-reverse">
-                {sources.slice(0, 3).map((src, idx) => {
-                  const domain = getDomain(src.url);
-                  return (
-                    <div
-                      key={`src-${idx}`}
-                      className="border-background bg-background flex items-center overflow-clip rounded-full -ms-1.5 first:me-0 border-2 group-hover/footnote:border-muted relative"
-                    >
-                      <div className="relative inline-block shrink-0">
-                        <Image
-                          alt=""
-                          width={20}
-                          height={20}
-                          className="w-5 h-5 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.05)] duration-200 motion-safe:transition-opacity opacity-100"
-                          src={getFaviconUrl(domain)}
-                          unoptimized
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              <Globe
+                aria-hidden="true"
+                size={16}
+                className="shrink-0 text-muted-foreground"
+              />
               <div className="text-muted-foreground mt-[-1px] text-[13px] font-medium">
                 Sources
               </div>

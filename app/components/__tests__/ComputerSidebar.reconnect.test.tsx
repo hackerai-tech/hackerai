@@ -841,3 +841,32 @@ describe("ComputerSidebar reconnect behavior", () => {
     expect(closeSidebar).toHaveBeenCalledTimes(1);
   });
 });
+
+it("shows search results without sending their URLs to an icon service", () => {
+  const url = "https://internal.test/private?token=secret#details";
+  render(
+    <ComputerSidebarBase
+      sidebarOpen
+      sidebarContent={{
+        query: "test",
+        results: [
+          {
+            title: "Private result",
+            url,
+            content: "Result excerpt",
+            date: null,
+            lastUpdated: null,
+          },
+        ],
+        isSearching: false,
+        toolCallId: "search",
+      }}
+      closeSidebar={mockCloseSidebar}
+      status="ready"
+    />,
+  );
+  const link = screen.getByRole("link", { name: "Private result" });
+  expect(link).toHaveAttribute("href", url);
+  expect(link.querySelector("img, image")).toBeNull();
+  expect(screen.getByText("Result excerpt")).toBeInTheDocument();
+});

@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
+  Globe,
   ArrowLeft,
   Eye,
   FileText,
@@ -934,12 +935,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     rel="noreferrer"
                                     className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
                                   >
-                                    <img
-                                      width={16}
-                                      height={16}
-                                      alt="favicon"
-                                      className="float-left mr-2 mt-0.5 rounded-full border border-border"
-                                      src={`https://s2.googleusercontent.com/s2/favicons?domain=${encodeURIComponent(result.url)}&sz=32`}
+                                    <Globe
+                                      aria-hidden="true"
+                                      size={16}
+                                      className="float-left mr-2 mt-0.5 text-muted-foreground"
                                     />
                                     {result.title}
                                   </a>
