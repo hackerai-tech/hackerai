@@ -1,9 +1,3 @@
-import type { FreeAgentDailyStatus } from "@/lib/experiments/free-agent-completed-daily";
-import {
-  getFreeAgentDailyStatus,
-  enforceFreeAgentDailyStatus,
-  recordFreeAgentDailyCompletion,
-} from "@/lib/experiments/free-agent-completed-daily.server";
 import { createAgentRunReporting } from "@/lib/analytics/agent-run-reporting";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
@@ -1501,7 +1495,6 @@ export type AgentLongPayload = {
   freeQuotaSubject?: string;
   regionalFreeCountry?: string;
   regionalSubscriptionCountry?: string;
-  freeAgentDailyCountry?: string;
   messages: UIMessage[];
   localDesktopAttachmentsPrepared?: boolean;
   baseTodos: Todo[];
@@ -1629,7 +1622,6 @@ export const agentLongTask = task({
     let selectedModelOverride = rawSelectedModelOverride;
     const endpoint = payloadEndpoint ?? LEGACY_AGENT_API_ENDPOINT;
     const freeUsageSubject = freeQuotaSubject ?? userId;
-    let freeAgentDailyStatus: FreeAgentDailyStatus | undefined;
 
     // Stable across retries so a failed-then-retried run upserts the same
     // message record rather than creating a duplicate.
@@ -2279,36 +2271,6 @@ export const agentLongTask = task({
               );
               releaseFreeRunLock = lock.release;
             }
-
-            freeAgentDailyStatus = await getFreeAgentDailyStatus({
-              userId,
-              subscription,
-              country: payload.freeAgentDailyCountry,
-              quotaSubject: freeUsageSubject,
-            });
-            // A subscription can change while this task waits in the queue.
-            if (
-              freeAgentDailyStatus?.assignment.variant === "test" &&
-              freeAgentDailyStatus.completed
-            ) {
-              try {
-                const current = await getCurrentAgentEntitlementContext({
-                  userId,
-                  organizationId,
-                });
-                if (current.subscription !== "free")
-                  freeAgentDailyStatus = undefined;
-              } catch {
-                // Never block a potentially upgraded account on a stale snapshot.
-                freeAgentDailyStatus = undefined;
-              }
-            }
-            await enforceFreeAgentDailyStatus(
-              freeAgentDailyStatus,
-              userId,
-              "agent_worker",
-              { client: posthog },
-            );
 
             const freeMonthlyBudgetSnapshot =
               subscription === "free"
@@ -4092,25 +4054,6 @@ export const agentLongTask = task({
                   ),
                 });
               }
-              await recordFreeAgentDailyCompletion({
-                assignment: freeAgentDailyStatus?.assignment,
-                quotaSubject: freeUsageSubject,
-                outcome,
-                finishReason: state.streamFinishReason,
-                hasResponseContent: hasCompletedAssistantText(
-                  retryMessages,
-                  retryMessageId,
-                ),
-                truncated:
-                  state.stoppedDueToStepLimit ||
-                  state.stoppedDueToBudgetExhaustion ||
-                  state.stoppedDueToAgentRunSpendCap ||
-                  state.stoppedDueToElapsedTimeout ||
-                  state.stoppedDueToDoomLoop ||
-                  state.stoppedDueToAssistantContentLoop ||
-                  state.stoppedDueToTokenExhaustion ||
-                  state.stoppedDueToPostSummarizationIncomplete,
-              });
               writer.write({
                 type: "message-metadata",
                 messageMetadata: {
@@ -5260,25 +5203,6 @@ export const agentLongTask = task({
                           }
                         }
 
-                        await recordFreeAgentDailyCompletion({
-                          assignment: freeAgentDailyStatus?.assignment,
-                          quotaSubject: freeUsageSubject,
-                          outcome,
-                          finishReason: state.streamFinishReason,
-                          hasResponseContent: hasCompletedAssistantText(
-                            finishedMessages,
-                            assistantMessageId,
-                          ),
-                          truncated:
-                            state.stoppedDueToStepLimit ||
-                            state.stoppedDueToBudgetExhaustion ||
-                            state.stoppedDueToAgentRunSpendCap ||
-                            state.stoppedDueToElapsedTimeout ||
-                            state.stoppedDueToDoomLoop ||
-                            state.stoppedDueToAssistantContentLoop ||
-                            state.stoppedDueToTokenExhaustion ||
-                            state.stoppedDueToPostSummarizationIncomplete,
-                        });
                         if (savedAssistantMessage) {
                           writer.write({
                             type: "message-metadata",

@@ -1,9 +1,3 @@
-import {
-  getFreeAgentDailyStatus,
-  enforceFreeAgentDailyStatus,
-  recordFreeAgentDailyCompletion,
-  freeAgentDailyCountryFromRequest,
-} from "@/lib/experiments/free-agent-completed-daily.server";
 import { FreeDailyCostSettlement } from "@/lib/rate-limit/free-cost-budget";
 import {
   evaluateFreeAgentBudget,
@@ -405,16 +399,6 @@ export const createChatHandler = () => {
         );
         releaseFreeRunLock = lock.release;
       }
-      const freeAgentDailyStatus = await getFreeAgentDailyStatus({
-        userId,
-        subscription,
-        mode,
-        country: freeAgentDailyCountryFromRequest(req),
-        quotaSubject: freeUsageSubject,
-      });
-      await enforceFreeAgentDailyStatus(freeAgentDailyStatus, userId, "agent", {
-        defer: after,
-      });
       const userLocation = geolocation(req);
       const { triggerRegion: executionRegion, requestRegionClass } =
         getRegionalExecutionContextForVercelRequest(req, userLocation);
@@ -2523,27 +2507,6 @@ export const createChatHandler = () => {
                                     });
                                   }
 
-                                  await recordFreeAgentDailyCompletion({
-                                    assignment:
-                                      freeAgentDailyStatus?.assignment,
-                                    quotaSubject: freeUsageSubject,
-                                    outcome,
-                                    finishReason: state.streamFinishReason,
-                                    hasResponseContent:
-                                      hasCompletedAssistantText(
-                                        retryMessages,
-                                        retryMessageId,
-                                      ),
-                                    truncated:
-                                      state.stoppedDueToStepLimit ||
-                                      state.stoppedDueToBudgetExhaustion ||
-                                      state.stoppedDueToAgentRunSpendCap ||
-                                      state.stoppedDueToElapsedTimeout ||
-                                      state.stoppedDueToDoomLoop ||
-                                      state.stoppedDueToAssistantContentLoop ||
-                                      state.stoppedDueToTokenExhaustion ||
-                                      state.stoppedDueToPostSummarizationIncomplete,
-                                  });
                                   // Send file metadata via stream for resumable stream clients
                                   sendFileMetadataToStream(accumulatedFiles);
                                 }
@@ -3064,25 +3027,6 @@ export const createChatHandler = () => {
                         }
                       }
                       logStep("save_messages", stepStart);
-                      await recordFreeAgentDailyCompletion({
-                        assignment: freeAgentDailyStatus?.assignment,
-                        quotaSubject: freeUsageSubject,
-                        outcome,
-                        finishReason: state.streamFinishReason,
-                        hasResponseContent: hasCompletedAssistantText(
-                          messages,
-                          assistantMessageId,
-                        ),
-                        truncated:
-                          state.stoppedDueToStepLimit ||
-                          state.stoppedDueToBudgetExhaustion ||
-                          state.stoppedDueToAgentRunSpendCap ||
-                          state.stoppedDueToElapsedTimeout ||
-                          state.stoppedDueToDoomLoop ||
-                          state.stoppedDueToAssistantContentLoop ||
-                          state.stoppedDueToTokenExhaustion ||
-                          state.stoppedDueToPostSummarizationIncomplete,
-                      });
 
                       // Send file metadata via stream for resumable stream clients
                       // Uses accumulated metadata directly - no DB query needed!

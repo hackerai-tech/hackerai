@@ -2,7 +2,6 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RegionalSubscriptionGate } from "../RegionalSubscriptionGate";
-import { FreeAgentDailyAllowance } from "../FreeAgentDailyAllowance";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
@@ -243,25 +242,7 @@ export const ChatInput = (props: ChatInputProps) => {
         !!props.storedApprovalRequest
       }
     >
-      <FreeAgentDailyAllowance
-        running={
-          props.status === "submitted" ||
-          props.status === "streaming" ||
-          !!activeToolApprovalRequest ||
-          !!props.storedApprovalRequest
-        }
-      >
-        {(blocked) => (
-          <ChatInputContent
-            {...props}
-            sendDisabledReason={
-              blocked
-                ? "Today's free Agent allowance is used. Use Ask or upgrade."
-                : props.sendDisabledReason
-            }
-          />
-        )}
-      </FreeAgentDailyAllowance>
+      <ChatInputContent {...props} />
     </RegionalSubscriptionGate>
   );
 };
