@@ -70,6 +70,8 @@ export function AgentBrowserPreview({
     setFrameSeenAt(0);
     setPreviewState("loading");
     setConfirmedIdentity(false);
+    setBusy(false);
+    setError(null);
     setGrant(null);
     grantRef.current = null;
     exposedRef.current = null;
@@ -137,6 +139,12 @@ export function AgentBrowserPreview({
     if (!endpoint || !grant) return;
     const timer = setInterval(() => {
       void post({ action: "heartbeat", grant }).catch(() => {
+        if (
+          !mountedRef.current ||
+          sessionIdRef.current !== sessionId ||
+          grantRef.current !== grant
+        )
+          return;
         grantRef.current = null;
         setGrant(null);
         setPreviewState("recovery");
@@ -144,7 +152,7 @@ export function AgentBrowserPreview({
       });
     }, 10_000);
     return () => clearInterval(timer);
-  }, [endpoint, grant, post]);
+  }, [endpoint, grant, post, sessionId]);
 
   // Closing the sidebar or changing runs releases input without resuming the
   // Agent. A lost network is covered by the short lease and paused gate.
@@ -207,11 +215,13 @@ export function AgentBrowserPreview({
       setPreviewState("ready");
       setConfirmedIdentity(false);
     } catch (cause) {
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       setError(
         cause instanceof Error ? cause.message : "Could not take control",
       );
     } finally {
-      if (mountedRef.current) setBusy(false);
+      if (mountedRef.current && sessionIdRef.current === sessionId)
+        setBusy(false);
     }
   };
 
@@ -244,6 +254,7 @@ export function AgentBrowserPreview({
       setFrame(data.frame);
       setFrameSeenAt(Date.now());
     } catch (cause) {
+      if (!mountedRef.current || sessionIdRef.current !== sessionId) return;
       grantRef.current = null;
       setGrant(null);
       setError(
@@ -271,6 +282,12 @@ export function AgentBrowserPreview({
         await post({ action: "input", grant: activeGrant, input });
       })
       .catch(() => {
+        if (
+          !mountedRef.current ||
+          sessionIdRef.current !== sessionId ||
+          grantRef.current !== activeGrant
+        )
+          return;
         grantRef.current = null;
         setGrant(null);
         setPreviewState("recovery");

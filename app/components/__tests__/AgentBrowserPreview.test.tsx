@@ -211,3 +211,33 @@ it("offers a route back to live control from an older tool", async () => {
   );
   expect(jump).toHaveBeenCalledTimes(1);
 });
+
+it("keeps a new session usable when an older resume fails late", async () => {
+  let failResume!: (value: Response) => void;
+  handleAction = (body) =>
+    body.action === "resume"
+      ? new Promise((resolve) => {
+          failResume = resolve;
+        })
+      : Promise.resolve(response({ grant: mockSession?.sessionId, frame }));
+  const view = await mount();
+  await takeControl();
+  fireEvent.click(screen.getByRole("checkbox"));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Resume agent" }));
+  });
+  mockSession = { sessionId: "session-b", state: "agent" };
+  view.rerender(
+    <AgentBrowserPreview chatId="chat" agentId="parent" liveSelection />,
+  );
+  await act(async () => {});
+  expect(
+    screen.getByRole("button", { name: "Take control of Agent browser" }),
+  ).toBeEnabled();
+  await takeControl();
+  await act(async () => {
+    failResume(response({ state: "expired" }, false));
+  });
+  expect(screen.getByRole("application")).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
