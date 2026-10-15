@@ -1,5 +1,5 @@
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Globe } from "lucide-react";
+import { SourceIcon } from "./SourceIcon";
 
 interface Source {
   title?: string;
@@ -60,8 +60,8 @@ export const SourcesDialog = ({
                       className="hover:bg-secondary flex flex-col gap-1 rounded-xl px-3 py-2.5"
                     >
                       <div className="line-clamp-1 flex h-6 items-center gap-2 text-xs">
-                        <Globe
-                          aria-hidden="true"
+                        <SourceIcon
+                          url={src.url}
                           size={16}
                           className="shrink-0 text-muted-foreground"
                         />

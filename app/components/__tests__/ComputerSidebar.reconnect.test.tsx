@@ -842,8 +842,13 @@ describe("ComputerSidebar reconnect behavior", () => {
   });
 });
 
-it("shows search results without sending their URLs to an icon service", () => {
-  const url = "https://internal.test/private?token=secret#details";
+it.each([
+  ["https://internal.test/private?token=secret#details", null],
+  [
+    "https://owasp.org/private?token=secret#details",
+    "https://www.google.com/s2/favicons?domain=owasp.org&sz=32",
+  ],
+])("filters search result icon requests for %s", (url, favicon) => {
   render(
     <ComputerSidebarBase
       sidebarOpen
@@ -867,6 +872,10 @@ it("shows search results without sending their URLs to an icon service", () => {
   );
   const link = screen.getByRole("link", { name: "Private result" });
   expect(link).toHaveAttribute("href", url);
-  expect(link.querySelector("img, image")).toBeNull();
+  if (favicon) {
+    expect(link.querySelector("img")).toHaveAttribute("src", favicon);
+  } else {
+    expect(link.querySelector("img, image")).toBeNull();
+  }
   expect(screen.getByText("Result excerpt")).toBeInTheDocument();
 });

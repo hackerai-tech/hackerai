@@ -1,3 +1,4 @@
+import { SourceIcon } from "./SourceIcon";
 import React from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
@@ -5,7 +6,6 @@ import { createPortal } from "react-dom";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
-  Globe,
   ArrowLeft,
   Eye,
   FileText,
@@ -935,8 +935,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     rel="noreferrer"
                                     className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
                                   >
-                                    <Globe
-                                      aria-hidden="true"
+                                    <SourceIcon
+                                      url={result.url}
                                       size={16}
                                       className="float-left mr-2 mt-0.5 text-muted-foreground"
                                     />

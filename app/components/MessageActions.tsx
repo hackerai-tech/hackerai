@@ -1,5 +1,5 @@
+import { SourceIcon } from "./SourceIcon";
 import {
-  Globe,
   Copy,
   Check,
   RotateCcw,
@@ -380,11 +380,20 @@ export const MessageActions = ({
               className="group/footnote bg-background hover:bg-muted flex w-fit items-center gap-1.5 rounded-3xl px-3 py-1.5 h-auto"
               aria-label="View sources"
             >
-              <Globe
-                aria-hidden="true"
-                size={16}
-                className="shrink-0 text-muted-foreground"
-              />
+              <div className="flex flex-row-reverse">
+                {sources.slice(0, 3).map((src, idx) => (
+                  <div
+                    key={`src-${idx}`}
+                    className="border-background bg-background flex items-center overflow-clip rounded-full -ms-1.5 first:me-0 border-2 group-hover/footnote:border-muted relative"
+                  >
+                    <SourceIcon
+                      url={src.url}
+                      size={20}
+                      className="shrink-0 rounded-full text-muted-foreground"
+                    />
+                  </div>
+                ))}
+              </div>
               <div className="text-muted-foreground mt-[-1px] text-[13px] font-medium">
                 Sources
               </div>

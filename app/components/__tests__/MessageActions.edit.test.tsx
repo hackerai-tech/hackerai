@@ -186,7 +186,7 @@ describe("MessageActions branching", () => {
   });
 });
 
-it("opens citations without loading source URLs through external images", () => {
+it("keeps public favicons while withholding private sources in actions and citations", () => {
   const sources = [
     {
       title: "Public source",
@@ -211,10 +211,18 @@ it("opens citations without loading source URLs through external images", () => 
     />,
   );
   const button = screen.getByRole("button", { name: "View sources" });
-  expect(button.querySelector("img, image")).toBeNull();
+  expect(button.querySelectorAll("img")).toHaveLength(1);
+  expect(button.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://www.google.com/s2/favicons?domain=example.com&sz=32",
+  );
   fireEvent.click(button);
   const dialog = screen.getByRole("dialog", { name: "Citations" });
-  expect(dialog.querySelector("img, image")).toBeNull();
+  expect(dialog.querySelectorAll("img")).toHaveLength(1);
+  expect(dialog.querySelector("img")).toHaveAttribute(
+    "src",
+    "https://www.google.com/s2/favicons?domain=example.com&sz=32",
+  );
   for (const source of sources) {
     expect(
       screen.getByRole("link", { name: new RegExp(source.title) }),
