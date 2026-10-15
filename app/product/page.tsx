@@ -16,6 +16,7 @@ import {
 
 import Header from "@/app/components/Header";
 import { PublicSiteFooter } from "@/components/public/PublicSiteFooter";
+import { PentestExample } from "@/components/public/PentestExample";
 import { ZoomableImage } from "@/components/public/ZoomableImage";
 import { JsonLd } from "@/components/seo/JsonLd";
 import { Button } from "@/components/ui/button";
@@ -29,14 +30,15 @@ import {
 } from "@/lib/seo/site";
 
 const description =
-  "See how HackerAI combines security-focused AI, Agent mode, terminal and browser tools, files, and local or cloud execution for penetration testing.";
+  "Use HackerAI for AI-assisted penetration testing with terminal and browser tools, local or cloud execution, and reproducible evidence. Explore a worked access-control example.";
+const title = "AI Penetration Testing Agent | HackerAI";
 
 export const metadata: Metadata = {
   ...canonicalMetadata("/product"),
-  title: "Product | HackerAI",
+  title,
   description,
   openGraph: {
-    title: "HackerAI Product",
+    title,
     description,
     type: "website",
     url: "/product",
@@ -44,7 +46,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "HackerAI Product",
+    title,
     description,
     images: ["/images/hackerai-workspace.png"],
   },
@@ -172,6 +174,22 @@ export default function ProductPage() {
                   </p>
                 </article>
               ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="border-b border-border/80">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-24">
+            <h2 className={sectionTitle}>
+              A penetration test you can reproduce.
+            </h2>
+            <p className={`${sectionLead} max-w-2xl`}>
+              Start with one question and keep the evidence needed to answer it.
+              Here is a concrete access-control example you can run in a local
+              lab.
+            </p>
+            <div className="mt-10">
+              <PentestExample />
             </div>
           </div>
         </section>

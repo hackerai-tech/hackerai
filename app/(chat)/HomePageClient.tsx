@@ -31,7 +31,11 @@ const LOGIN_TYPING_TAILS = [
 ];
 
 // Simple unauthenticated content that redirects to signup on message send
-const UnauthenticatedContent = () => {
+const UnauthenticatedContent = ({
+  children,
+}: {
+  children?: React.ReactNode;
+}) => {
   const input = useComposerInput();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -74,36 +78,40 @@ const UnauthenticatedContent = () => {
         <Header />
       </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {/* Centered content area */}
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-[15vh] pb-[18vh] min-h-0">
-          {/* Title */}
-          <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
-            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl">
-              What will you hack today?
-            </h1>
-            <p className="text-muted-foreground text-lg leading-tight md:text-xl">
-              Find and fix vulnerabilities by working with AI.
-            </p>
+        <main>
+          <div className="flex min-h-[calc(100svh-8rem)] flex-col items-center justify-center px-6 py-16 sm:py-24">
+            {/* Title */}
+            <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
+              <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl">
+                What will you hack today?
+              </h1>
+              <p className="text-muted-foreground text-lg leading-tight md:text-xl">
+                Find and fix vulnerabilities by working with AI.
+              </p>
+            </div>
+
+            {/* Input */}
+            <div className="w-full max-w-3xl">
+              <ChatInput
+                onSubmit={handleSubmit}
+                onStop={handleStop}
+                onSendNow={() => {}}
+                status="ready"
+                isCentered={true}
+                isNewChat={true}
+                clearDraftOnSubmit={false}
+                placeholder={animatedPlaceholder}
+                autoFocus={false}
+                restoreDraftAttachments={false}
+                offlineProtection={false}
+              />
+            </div>
           </div>
 
-          {/* Input */}
-          <div className="w-full max-w-3xl">
-            <ChatInput
-              onSubmit={handleSubmit}
-              onStop={handleStop}
-              onSendNow={() => {}}
-              status="ready"
-              isCentered={true}
-              isNewChat={true}
-              clearDraftOnSubmit={false}
-              placeholder={animatedPlaceholder}
-              autoFocus={false}
-              restoreDraftAttachments={false}
-              offlineProtection={false}
-            />
-          </div>
-        </div>
+          {children}
+        </main>
 
         {/* Footer */}
         <div className="flex-shrink-0">
@@ -120,7 +128,11 @@ const AuthenticatedContent = () => {
 };
 
 // Main page component with Convex authentication
-export default function HomePageClient() {
+export default function HomePageClient({
+  children,
+}: {
+  children?: React.ReactNode;
+}) {
   const {
     subscription,
     teamWelcomeDialogOpen,
@@ -168,5 +180,5 @@ export default function HomePageClient() {
     );
   }
 
-  return <UnauthenticatedContent />;
+  return <UnauthenticatedContent>{children}</UnauthenticatedContent>;
 }

@@ -20,8 +20,8 @@ export const REFUND_HELP_URL =
 export const STATUS_PAGE_URL = "https://status.hackerai.co/";
 
 export const PUBLIC_PAGE_LAST_MODIFIED = {
-  home: "2026-09-02",
-  product: "2026-09-02",
+  home: "2026-10-15",
+  product: "2026-10-15",
   pricing: "2026-10-06",
   download: "2026-09-02",
   trust: "2026-10-14",
