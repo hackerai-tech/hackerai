@@ -78,7 +78,19 @@ if not name or len(name) > 80 or '/' in name or '\\x00' in name:
 verify = root / 'verify-required'
 if verify.exists():
     args = sys.argv[1:]
-    if 'snapshot' not in args:
+    command = None
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+        elif arg == '--session':
+            skip_next = True
+        elif arg.startswith('--session=') or arg.startswith('-'):
+            continue
+        else:
+            command = arg
+            break
+    if command != 'snapshot':
         print('Browser handoff resumed. Take a fresh snapshot and verify the page and signed-in identity, if any, before another browser action.', file=sys.stderr)
         sys.exit(75)
     result = __import__('subprocess').run([%r, *args], close_fds=True)
