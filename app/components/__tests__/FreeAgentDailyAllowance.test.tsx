@@ -1,10 +1,19 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { FreeAgentDailyAllowance } from "../FreeAgentDailyAllowance";
 let mockUser = { id: "user-1" };
 let mockSubscription = "free";
 let mockMode = "agent";
 const mockFetch = jest.fn();
 const mockCapture = jest.fn();
+const mockImpression = jest.fn();
+let mockAnalyticsUser: string | null = "user-1";
+const mockAnalyticsListeners = new Set<() => void>();
 const mockSetMode = jest.fn();
 const mockPricing = jest.fn();
 jest.mock("@workos-inc/authkit-nextjs/components", () => ({
@@ -20,6 +29,12 @@ jest.mock("@/app/contexts/GlobalState", () => ({
 }));
 jest.mock("@/lib/analytics/client", () => ({
   captureAuthenticatedEvent: (...args: unknown[]) => mockCapture(...args),
+  captureUpgradeCtaImpression: (...args: unknown[]) => mockImpression(...args),
+  getIdentifiedAnalyticsUserId: () => mockAnalyticsUser,
+  subscribeAuthenticatedAnalytics: (listener: () => void) => {
+    mockAnalyticsListeners.add(listener);
+    return () => mockAnalyticsListeners.delete(listener);
+  },
 }));
 jest.mock("@/app/hooks/usePricingDialog", () => ({
   redirectToPricing: (...args: unknown[]) => mockPricing(...args),
@@ -42,6 +57,7 @@ const view = (running = false) => (
 beforeEach(() => {
   jest.clearAllMocks();
   mockUser = { id: "user-1" };
+  mockAnalyticsUser = "user-1";
   mockSubscription = "free";
   mockMode = "agent";
   mockCapture.mockReturnValue(true);
@@ -69,7 +85,7 @@ it("blocks another send, retains composer, and offers Ask and the existing prici
   expect(mockSetMode).toHaveBeenCalledWith("ask");
   fireEvent.click(screen.getByText("Upgrade"));
   expect(mockPricing).toHaveBeenCalledWith(
-    expect.objectContaining({ source: "free_agent_daily_allowance" }),
+    expect.objectContaining({ source: "free_agent_daily_allowance_exhausted" }),
   );
 });
 it("preserves control and records its actual composer exposure", async () => {
@@ -106,4 +122,62 @@ it("does not fetch or show an Agent gate in Ask", () => {
   render(view());
   expect(mockFetch).not.toHaveBeenCalled();
   expect(screen.getByText("Send task")).toBeEnabled();
+});
+
+it("records visible exhaustion only after a response and attributes its Upgrade separately", async () => {
+  render(view());
+  await screen.findByText(/one completed response per day/);
+  expect(mockImpression).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("Upgrade"));
+  expect(mockPricing).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      source: "free_agent_daily_allowance",
+      reason: "free_agent_daily_allowance",
+    }),
+  );
+  mockFetch.mockResolvedValue(response(true));
+  fireEvent(window, new Event("focus"));
+  await screen.findByText(/used today's/);
+  expect(mockImpression).toHaveBeenCalledWith(
+    expect.objectContaining({
+      source: "free_agent_daily_allowance_exhausted",
+      surface: "composer",
+      from_tier: "free",
+      reason: "free_agent_daily_completed",
+      "$feature/free-agent-completed-daily-v1": "test",
+    }),
+  );
+  fireEvent.click(screen.getByText("Upgrade"));
+  expect(mockPricing).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      source: "free_agent_daily_allowance_exhausted",
+      reason: "free_agent_daily_completed",
+    }),
+  );
+});
+
+it("waits for the displayed account's analytics identity before recording exhaustion", async () => {
+  mockAnalyticsUser = "previous-account";
+  mockFetch.mockResolvedValue(response(true));
+  render(view());
+  await screen.findByText(/used today's/);
+  expect(mockImpression).not.toHaveBeenCalled();
+  act(() => {
+    mockAnalyticsUser = "user-1";
+    mockAnalyticsListeners.forEach((listener) => listener());
+  });
+  await waitFor(() => expect(mockImpression).toHaveBeenCalled());
+});
+
+it("does not record exhaustion for control, paid, or running states", async () => {
+  mockFetch.mockResolvedValue(response(true, "control"));
+  const { rerender } = render(view());
+  await waitFor(() => expect(mockCapture).toHaveBeenCalled());
+  expect(mockImpression).not.toHaveBeenCalled();
+  mockSubscription = "pro";
+  rerender(view());
+  expect(mockImpression).not.toHaveBeenCalled();
+  mockSubscription = "free";
+  rerender(view(true));
+  expect(mockImpression).not.toHaveBeenCalled();
 });
