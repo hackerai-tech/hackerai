@@ -180,6 +180,7 @@ describe("nameless provider prompt tool-call repair", () => {
       expect(report).toHaveBeenCalledWith({
         removedToolCallCount: 1,
         removedToolResultCount: 1,
+        repairedToolInputCount: 0,
       });
       expect(JSON.stringify(report.mock.calls)).not.toContain("PRIVATE_");
       expect(canonical).toEqual(snapshot);
@@ -207,6 +208,7 @@ describe("nameless provider prompt tool-call repair", () => {
       expect(report).toHaveBeenCalledWith({
         removedToolCallCount: 40,
         removedToolResultCount: 40,
+        repairedToolInputCount: 0,
       });
       expect(
         JSON.stringify(jest.mocked(base.doGenerate).mock.calls[0][0].prompt),
@@ -301,6 +303,7 @@ describe("nameless provider prompt tool-call repair", () => {
     expect(report).toHaveBeenCalledWith({
       removedToolCallCount: 1,
       removedToolResultCount: 1,
+      repairedToolInputCount: 0,
     });
   });
 
@@ -526,6 +529,7 @@ describe("nameless provider prompt tool-call repair", () => {
     expect(report).toHaveBeenCalledWith({
       removedToolCallCount: 1,
       removedToolResultCount: 1,
+      repairedToolInputCount: 0,
     });
   });
 
