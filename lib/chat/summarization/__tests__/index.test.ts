@@ -283,12 +283,12 @@ describe("default compaction policy pipeline", () => {
     ["missing sections", "## Current State\nPending authorized check", "stop"],
     ["truncated", summary, "length"],
   ])(
-    "retries %s GLM output with Abliteration and retains both usage records",
+    "retries %s Abliteration output with GLM and retains both usage records",
     async (_label, text, finishReason) => {
       resolve.mockResolvedValue({
-        model: "model-glm-5.3-flash",
-        fallbackModel: "model-abliterated",
-        policy: "moderation_glm53_abliteration_fallback_v1",
+        model: "model-abliterated",
+        fallbackModel: "model-glm-5.3-flash",
+        policy: "abliteration_glm53_fallback_v1",
       });
       mockGenerateText
         .mockResolvedValueOnce({
@@ -305,7 +305,7 @@ describe("default compaction policy pipeline", () => {
       expect(result.needsSummarization).toBe(true);
       expect(
         mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-      ).toEqual(["model-glm-5.3-flash", "model-abliterated"]);
+      ).toEqual(["model-abliterated", "model-glm-5.3-flash"]);
       expect(onDiscardedUsage).toHaveBeenCalledWith(
         expect.objectContaining({ inputTokens: 100, outputTokens: 10 }),
       );
@@ -314,14 +314,14 @@ describe("default compaction policy pipeline", () => {
         outputTokens: 20,
       });
       expect(mockSaveChatSummary).toHaveBeenCalledTimes(1);
-      expect(finish).toHaveBeenCalledWith("completed", "model-abliterated");
+      expect(finish).toHaveBeenCalledWith("completed", "model-glm-5.3-flash");
     },
   );
-  it("retries a transient GLM failure but does not retry a canceled treatment", async () => {
+  it("retries a transient Abliteration failure but does not retry canceled compaction", async () => {
     resolve.mockResolvedValue({
-      model: "model-glm-5.3-flash",
-      fallbackModel: "model-abliterated",
-      policy: "moderation_glm53_abliteration_fallback_v1",
+      model: "model-abliterated",
+      fallbackModel: "model-glm-5.3-flash",
+      policy: "abliteration_glm53_fallback_v1",
     });
     mockGenerateText
       .mockRejectedValueOnce({ statusCode: 503 })
@@ -333,7 +333,7 @@ describe("default compaction policy pipeline", () => {
     expect((await compact()).needsSummarization).toBe(true);
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-glm-5.3-flash", "model-abliterated"]);
+    ).toEqual(["model-abliterated", "model-glm-5.3-flash"]);
     mockGenerateText.mockClear();
     const controller = new AbortController();
     mockGenerateText.mockImplementationOnce(async () => {
@@ -344,11 +344,11 @@ describe("default compaction policy pipeline", () => {
     expect(mockGenerateText).toHaveBeenCalledTimes(1);
     expect(finish).toHaveBeenLastCalledWith("aborted", undefined);
   });
-  it("uses GLM then Abliteration for rolling treatment compaction", async () => {
+  it("uses Abliteration then GLM for rolling compaction", async () => {
     resolve.mockResolvedValue({
-      model: "model-glm-5.3-flash",
-      fallbackModel: "model-abliterated",
-      policy: "moderation_glm53_abliteration_fallback_v1",
+      model: "model-abliterated",
+      fallbackModel: "model-glm-5.3-flash",
+      policy: "abliteration_glm53_fallback_v1",
     });
     mockGenerateText
       .mockResolvedValueOnce({
@@ -380,10 +380,10 @@ describe("default compaction policy pipeline", () => {
     expect(result).not.toBeNull();
     expect(
       mockGenerateText.mock.calls.map(([args]) => args.model.modelId),
-    ).toEqual(["model-glm-5.3-flash", "model-abliterated"]);
+    ).toEqual(["model-abliterated", "model-glm-5.3-flash"]);
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
     expect(start).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "model-glm-5.3-flash" }),
+      expect.objectContaining({ model: "model-abliterated" }),
       "run_scoped",
     );
   });

@@ -152,14 +152,14 @@ describe("phLogger", () => {
       );
       await expect(
         getPostHogBooleanFlagDecisionForUser(
-          "moderation_compaction_v1",
+          "deferred-boolean-test",
           "user",
           { subscription_tier: "free" },
           { sendFeatureFlagEvents: false },
         ),
       ).resolves.toBe(enabled ?? null);
       expect(mockGetFeatureFlagResult).toHaveBeenCalledWith(
-        "moderation_compaction_v1",
+        "deferred-boolean-test",
         "user",
         {
           personProperties: { subscription_tier: "free" },
