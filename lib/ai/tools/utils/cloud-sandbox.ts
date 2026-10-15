@@ -55,7 +55,7 @@ export async function ensureCloudSandboxConnection(options: {
           | "workspace_phase_unavailable"
           | "trigger_region_missing"
           | "workspace_region_mismatch";
-        workspace_phase: "e2b" | "cleanup" | "deleted";
+        workspace_phase: "e2b" | "cleanup" | "deleted" | "recovery";
         workspace_region?: TriggerRunRegion;
       }
     | undefined;
@@ -116,6 +116,13 @@ export async function ensureCloudSandboxConnection(options: {
       }
       selectionReason = "recovered_workspace";
     }
+    // Register activity before any provider connect or create. The recovery
+    // claim requires this 15-minute activity key to be absent, so it cannot
+    // fence an acquisition after lookup but before the provider request.
+    await assertCloudWorkspaceAvailable(
+      options.userId,
+      state?.phase === "e2b" ? state.destinationId : undefined,
+    );
     const result = await ensureSandboxConnection(
       {
         userID: options.userId,

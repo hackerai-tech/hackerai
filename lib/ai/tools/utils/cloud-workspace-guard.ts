@@ -18,7 +18,21 @@ type CleanupState = {
   token: string;
   migration?: RecoveredWorkspace;
 };
-type WorkspaceState = RecoveredWorkspace | CleanupState;
+export type RecoveryState = {
+  version: 1;
+  phase: "recovery";
+  token: string;
+  operatorId: string;
+  sandboxId: string;
+  region: TriggerRunRegion;
+  startedAt: string;
+  previous: RecoveredWorkspace | null;
+  step?: string;
+  backupSnapshotId?: string;
+  entryCount?: number;
+  metadataHmacSha256?: string;
+};
+type WorkspaceState = RecoveredWorkspace | CleanupState | RecoveryState;
 
 export class CloudWorkspaceUnavailableError extends Error {
   constructor() {
@@ -34,6 +48,8 @@ export class CloudWorkspaceUnavailableError extends Error {
 const keyFor = (userId: string) => `cloud_workspace_migration:v1:${userId}`;
 const activityKeyFor = (userId: string) =>
   `cloud_workspace_activity:v1:${userId}`;
+const recoveryResultKeyFor = (userId: string) =>
+  `cloud_workspace_recovery_result:v1:${userId}`;
 const ACTIVITY_TTL_SECONDS = 15 * 60;
 const e2bUsers = new WeakMap<Sandbox, string>();
 
@@ -53,6 +69,31 @@ function isRecoveredWorkspace(value: unknown): value is RecoveredWorkspace {
   );
 }
 
+function isRecoveryState(value: unknown): value is RecoveryState {
+  if (!value || typeof value !== "object") return false;
+  const state = value as RecoveryState;
+  return (
+    state.version === 1 &&
+    state.phase === "recovery" &&
+    typeof state.token === "string" &&
+    !!state.token &&
+    typeof state.operatorId === "string" &&
+    !!state.operatorId &&
+    typeof state.sandboxId === "string" &&
+    !!state.sandboxId &&
+    ["us-east-1", "us-west-2", "eu-central-1"].includes(state.region) &&
+    typeof state.startedAt === "string" &&
+    !!state.startedAt &&
+    (state.step === undefined || typeof state.step === "string") &&
+    (state.backupSnapshotId === undefined ||
+      typeof state.backupSnapshotId === "string") &&
+    (state.entryCount === undefined || typeof state.entryCount === "number") &&
+    (state.metadataHmacSha256 === undefined ||
+      typeof state.metadataHmacSha256 === "string") &&
+    (state.previous === null || isRecoveredWorkspace(state.previous))
+  );
+}
+
 export async function readCloudWorkspaceState(
   userId: string,
 ): Promise<WorkspaceState | null> {
@@ -66,6 +107,7 @@ export async function readCloudWorkspaceState(
     const value = await redis.get<unknown>(keyFor(userId));
     if (value === null) return null;
     if (isRecoveredWorkspace(value)) return value;
+    if (isRecoveryState(value)) return value;
     if (value && typeof value === "object") {
       const state = value as CleanupState;
       if (
@@ -82,6 +124,114 @@ export async function readCloudWorkspaceState(
   } catch {
     throw new CloudWorkspaceUnavailableError();
   }
+}
+
+/**
+ * A durable, non-expiring fence. An interrupted provider call can complete
+ * after the caller has timed out, so only an operator may resolve this state.
+ * The activity key must have expired before claiming, which drains ordinary
+ * lease heartbeats and recent acquisitions before the reboot starts.
+ */
+export async function claimE2BDiskRecovery(args: {
+  userId: string;
+  sandboxId: string;
+  region: TriggerRunRegion;
+  token: string;
+  operatorId: string;
+}): Promise<{
+  state: RecoveryState;
+  update: (
+    progress: Pick<
+      RecoveryState,
+      "step" | "backupSnapshotId" | "entryCount" | "metadataHmacSha256"
+    >,
+  ) => Promise<void>;
+  finish: (result: string) => Promise<void>;
+}> {
+  const redis = createRedisClient();
+  if (!redis) throw new CloudWorkspaceUnavailableError();
+  const previous = await readCloudWorkspaceState(args.userId);
+  if (
+    previous &&
+    (previous.phase !== "e2b" ||
+      previous.destinationId !== args.sandboxId ||
+      previous.region !== args.region ||
+      previous.recoveryPending !== undefined)
+  )
+    throw new CloudWorkspaceUnavailableError();
+  const state: RecoveryState = {
+    version: 1,
+    phase: "recovery",
+    token: args.token,
+    operatorId: args.operatorId,
+    sandboxId: args.sandboxId,
+    region: args.region,
+    startedAt: new Date().toISOString(),
+    previous,
+  };
+  let serialized = JSON.stringify(state);
+  // Compare the complete prior record and require no recent normal activity.
+  // A different owner, malformed record, or cleanup fence is never overwritten.
+  const claimed = await redis.eval(
+    `local raw = redis.call('GET', KEYS[1]);
+     if redis.call('EXISTS', KEYS[2]) == 1 then return 0 end
+     local last = redis.call('GET', KEYS[3]);
+     if last then local ok, result = pcall(cjson.decode, last); if not ok or type(result) ~= 'table' or type(result.token) ~= 'string' or result.status ~= 'verified_paused' or result.token == ARGV[3] then return 0 end end
+     if ARGV[1] == '' then if raw then return 0 end
+     else
+       local function equal(a, b)
+         if type(a) ~= type(b) then return false end
+         if type(a) ~= 'table' then return a == b end
+         for k, v in pairs(a) do if not equal(v, b[k]) then return false end end
+         for k in pairs(b) do if a[k] == nil then return false end end
+         return true
+       end
+       local ok, current = pcall(cjson.decode, raw or '')
+       local expectedOk, expected = pcall(cjson.decode, ARGV[1])
+       if not ok or not expectedOk or not equal(current, expected) then return 0 end
+     end
+     redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+    [
+      keyFor(args.userId),
+      activityKeyFor(args.userId),
+      recoveryResultKeyFor(args.userId),
+    ],
+    [previous ? JSON.stringify(previous) : "", serialized, args.token],
+  );
+  if (claimed !== 1) throw new CloudWorkspaceUnavailableError();
+  return {
+    state,
+    update: async (progress) => {
+      const next = JSON.stringify({ ...state, ...progress });
+      const updated = await redis.eval(
+        `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end redis.call('SET', KEYS[1], ARGV[2]); return 1`,
+        [keyFor(args.userId)],
+        [serialized, next],
+      );
+      if (updated !== 1) throw new CloudWorkspaceUnavailableError();
+      Object.assign(state, progress);
+      serialized = next;
+    },
+    finish: async (result: string) => {
+      const finished = await redis.eval(
+        `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+         redis.call('SET', KEYS[2], ARGV[3]);
+         if ARGV[2] == '' then redis.call('DEL', KEYS[1]) else redis.call('SET', KEYS[1], ARGV[2]) end
+         return 1`,
+        [keyFor(args.userId), recoveryResultKeyFor(args.userId)],
+        [serialized, previous ? JSON.stringify(previous) : "", result],
+      );
+      if (finished !== 1) throw new CloudWorkspaceUnavailableError();
+    },
+  };
+}
+
+export async function readE2BDiskRecoveryResult(
+  userId: string,
+): Promise<unknown> {
+  const redis = createRedisClient();
+  if (!redis) throw new CloudWorkspaceUnavailableError();
+  return redis.get(recoveryResultKeyFor(userId));
 }
 
 export function registerE2BWorkspaceLease(
