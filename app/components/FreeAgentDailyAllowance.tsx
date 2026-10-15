@@ -1,10 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
-import { captureAuthenticatedEvent } from "@/lib/analytics/client";
+import {
+  captureAuthenticatedEvent,
+  captureUpgradeCtaImpression,
+  getIdentifiedAnalyticsUserId,
+  subscribeAuthenticatedAnalytics,
+} from "@/lib/analytics/client";
 import { Button } from "@/components/ui/button";
 import {
   FREE_AGENT_COMPLETED_DAILY_EXPOSURE,
@@ -23,6 +34,11 @@ export function FreeAgentDailyAllowance({
   const { subscription, isCheckingProPlan, chatMode, setChatMode } =
     useGlobalState();
   const userId = user?.id;
+  const analyticsUserId = useSyncExternalStore(
+    subscribeAuthenticatedAnalytics,
+    getIdentifiedAnalyticsUserId,
+    () => null,
+  );
   const eligible =
     !!userId &&
     subscription === "free" &&
@@ -89,7 +105,7 @@ export function FreeAgentDailyAllowance({
 
   const status = eligible && result?.userId === userId ? result.status : null;
   useEffect(() => {
-    if (!status || !userId) return;
+    if (!status || !userId || analyticsUserId !== userId) return;
     const key = `${userId}:${status.assignment.variant}`;
     if (captured.current === key) return;
     if (
@@ -99,7 +115,35 @@ export function FreeAgentDailyAllowance({
       )
     )
       captured.current = key;
-  }, [status, userId]);
+  }, [status, userId, analyticsUserId]);
+
+  const pricingSource = status?.completed
+    ? "free_agent_daily_allowance_exhausted"
+    : "free_agent_daily_allowance";
+  const pricingReason = status?.completed
+    ? "free_agent_daily_completed"
+    : "free_agent_daily_allowance";
+  useEffect(() => {
+    if (
+      !userId ||
+      analyticsUserId !== userId ||
+      status?.assignment.variant !== "test" ||
+      !status.completed
+    )
+      return;
+    // A disabled composer never reaches the server's limit_hit. Record the
+    // visible exhausted state separately; the shared helper deduplicates per
+    // identified user, surface, source and UTC day, including across reloads.
+    captureUpgradeCtaImpression({
+      ...freeAgentDailyExposureProperties(status.assignment, "composer"),
+      source: pricingSource,
+      surface: "composer",
+      from_tier: "free",
+      reason: pricingReason,
+      cap_reason: "free_agent_daily_completed",
+      cta_text: "Upgrade",
+    });
+  }, [status, userId, analyticsUserId, pricingSource, pricingReason]);
 
   if (!status || status.assignment.variant === "control")
     return children(false);
@@ -136,10 +180,10 @@ export function FreeAgentDailyAllowance({
           variant={status.completed ? "default" : "ghost"}
           onClick={() =>
             redirectToPricing({
-              source: "free_agent_daily_allowance",
+              source: pricingSource,
               surface: "composer",
               from_tier: "free",
-              reason: "free_agent_daily_completed",
+              reason: pricingReason,
             })
           }
         >
