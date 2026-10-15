@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Sandbox, type SandboxInfo } from "@e2b/code-interpreter";
 import type { TriggerRunRegion } from "@/lib/api/trigger-region";
 import { getE2BClusterRouting } from "./e2b-cluster";
@@ -12,6 +12,7 @@ export const REBOOT_REQUEST_TIMEOUT_MS = 300_000;
 const VERIFICATION_TIMEOUT_MS = 30_000;
 const WORKSPACE_PATH = "/home/user";
 const INTENT = "I accept loss of running processes and unflushed writes";
+const KEY_PROOF_CONTEXT = "hackerai-e2b-disk-recovery-target-v1";
 
 export type DiskRecoveryAuthorization = {
   version: 1;
@@ -23,7 +24,7 @@ export type DiskRecoveryAuthorization = {
   region: TriggerRunRegion;
   e2bAccount: string;
   e2bProject: string;
-  expectedApiKeySha256: string;
+  expectedApiKeyHmacSha256: string;
   expectedRedisHost: string;
   expectedConvexUrl: string;
   expectedTemplate: string;
@@ -43,8 +44,10 @@ export class DiskRecoveryError extends Error {
   }
 }
 
-const sha256 = (value: string) =>
-  createHash("sha256").update(value).digest("hex");
+const hmac = (key: string, value: string) =>
+  createHmac("sha256", key).update(value).digest("hex");
+const matchesHmac = (actual: string, expected: string) =>
+  timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
 
 export function validateDiskRecoveryAuthorization(
   raw: unknown,
@@ -82,8 +85,8 @@ export function validateDiskRecoveryAuthorization(
     ) ||
     value.intent !== INTENT ||
     value.trafficQuiesced !== true ||
-    typeof value.expectedApiKeySha256 !== "string" ||
-    !/^[a-f0-9]{64}$/.test(value.expectedApiKeySha256)
+    typeof value.expectedApiKeyHmacSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.expectedApiKeyHmacSha256)
   )
     throw new DiskRecoveryError(
       "authorization",
@@ -97,7 +100,7 @@ export function validateDiskRecoveryAuthorization(
     !key ||
     !redisUrl ||
     !env.UPSTASH_REDIS_REST_TOKEN ||
-    sha256(key) !== auth.expectedApiKeySha256 ||
+    !matchesHmac(hmac(key, KEY_PROOF_CONTEXT), auth.expectedApiKeyHmacSha256) ||
     new URL(redisUrl).host !== auth.expectedRedisHost ||
     env.NEXT_PUBLIC_CONVEX_URL !== auth.expectedConvexUrl ||
     env.HACKERAI_ENVIRONMENT !== auth.environment
@@ -130,7 +133,8 @@ function assertIdentity(
 
 async function observeWorkspace(
   sandbox: Sandbox,
-): Promise<{ count: number; metadataSha256: string }> {
+  key: string,
+): Promise<{ count: number; metadataHmacSha256: string }> {
   const command = await sandbox.commands.run("true", {
     timeoutMs: VERIFICATION_TIMEOUT_MS,
     requestTimeoutMs: VERIFICATION_TIMEOUT_MS,
@@ -155,7 +159,7 @@ async function observeWorkspace(
     .sort((a, b) => a.name.localeCompare(b.name));
   return {
     count: entries.length,
-    metadataSha256: sha256(JSON.stringify(metadata)),
+    metadataHmacSha256: hmac(key, JSON.stringify(metadata)),
   };
 }
 
@@ -188,6 +192,10 @@ export async function recoverE2BDiskOnly(
       "Recovery is already fenced; inspect provider state before any continuation",
     );
   const cluster = getE2BClusterRouting(auth.region).createCluster;
+  const fingerprintKey =
+    auth.region === "eu-central-1"
+      ? process.env.E2B_EU_API_KEY!
+      : process.env.E2B_API_KEY!;
   const connectionOptions = cluster.connectionOptions ?? {};
   const getInfo = () =>
     Sandbox.getInfo(auth.sandboxId, {
@@ -221,7 +229,7 @@ export async function recoverE2BDiskOnly(
       );
     await claim.update({ step: "reboot_connected" });
     stage = "inventory";
-    const observed = await observeWorkspace(sandbox);
+    const observed = await observeWorkspace(sandbox, fingerprintKey);
     await claim.update({ step: "inventory_observed", ...observed });
     stage = "backup";
     // A separate ready-state snapshot is required before replacing the
@@ -248,8 +256,8 @@ export async function recoverE2BDiskOnly(
       requestTimeoutMs: REBOOT_REQUEST_TIMEOUT_MS,
       timeoutMs: 30 * 60 * 1000,
     });
-    const after = await observeWorkspace(resumed);
-    if (after.metadataSha256 !== observed.metadataSha256)
+    const after = await observeWorkspace(resumed, fingerprintKey);
+    if (after.metadataHmacSha256 !== observed.metadataHmacSha256)
       throw new DiskRecoveryError(
         stage,
         "Top-level file metadata changed after normal resume",
@@ -273,7 +281,7 @@ export async function recoverE2BDiskOnly(
       sandboxId: auth.sandboxId,
       region: auth.region,
       entryCount: observed.count,
-      metadataSha256: observed.metadataSha256,
+      metadataHmacSha256: observed.metadataHmacSha256,
       backupSnapshotId: backup.snapshotId,
       completedAt: new Date().toISOString(),
     };

@@ -30,7 +30,7 @@ export type RecoveryState = {
   step?: string;
   backupSnapshotId?: string;
   entryCount?: number;
-  metadataSha256?: string;
+  metadataHmacSha256?: string;
 };
 type WorkspaceState = RecoveredWorkspace | CleanupState | RecoveryState;
 
@@ -88,8 +88,8 @@ function isRecoveryState(value: unknown): value is RecoveryState {
     (state.backupSnapshotId === undefined ||
       typeof state.backupSnapshotId === "string") &&
     (state.entryCount === undefined || typeof state.entryCount === "number") &&
-    (state.metadataSha256 === undefined ||
-      typeof state.metadataSha256 === "string") &&
+    (state.metadataHmacSha256 === undefined ||
+      typeof state.metadataHmacSha256 === "string") &&
     (state.previous === null || isRecoveredWorkspace(state.previous))
   );
 }
@@ -143,7 +143,7 @@ export async function claimE2BDiskRecovery(args: {
   update: (
     progress: Pick<
       RecoveryState,
-      "step" | "backupSnapshotId" | "entryCount" | "metadataSha256"
+      "step" | "backupSnapshotId" | "entryCount" | "metadataHmacSha256"
     >,
   ) => Promise<void>;
   finish: (result: string) => Promise<void>;

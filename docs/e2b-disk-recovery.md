@@ -43,7 +43,7 @@ Authorization JSON schema:
   "region": "us-east-1",
   "e2bAccount": "dashboard-verified-account",
   "e2bProject": "dashboard-verified-project",
-  "expectedApiKeySha256": "64-lowercase-hex-characters",
+  "expectedApiKeyHmacSha256": "64-lowercase-hex-characters",
   "expectedRedisHost": "verified.upstash.io",
   "expectedConvexUrl": "https://verified-deployment.convex.cloud",
   "expectedTemplate": "template-from-e2b-metadata",
@@ -56,6 +56,21 @@ Authorization JSON schema:
 Use `corepack pnpm exec tsx scripts/recover-e2b-disk-only.ts < authorization.json`
 from the verified checkout. Protect and remove the local authorization file
 according to the incident record policy.
+
+The key proof is HMAC-SHA256 of the fixed context string
+`hackerai-e2b-disk-recovery-target-v1`, keyed by the verified regional E2B API
+key. Generate it in a protected process with the key in its environment, not
+in shell arguments or the authorization file. Confirm the key's project in
+the E2B dashboard before recording this proof.
+
+For the US region, with the verified key already loaded into the protected
+process environment:
+
+```sh
+node -e 'const {createHmac}=require("node:crypto"); const key=process.env.E2B_API_KEY; if (!key) process.exit(1); process.stdout.write(createHmac("sha256",key).update("hackerai-e2b-disk-recovery-target-v1").digest("hex")+"\n")'
+```
+
+For Europe, use `E2B_EU_API_KEY` in that snippet.
 
 ## What the command does
 

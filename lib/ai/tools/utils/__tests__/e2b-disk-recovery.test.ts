@@ -9,7 +9,7 @@ import {
   validateDiskRecoveryAuthorization,
   REBOOT_REQUEST_TIMEOUT_MS,
 } from "../e2b-disk-recovery";
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 
 jest.mock("@e2b/code-interpreter", () => ({
   Sandbox: { getInfo: jest.fn(), connect: jest.fn() },
@@ -43,7 +43,9 @@ const auth = {
   region: "us-east-1" as const,
   e2bAccount: "verified-account",
   e2bProject: "verified-project",
-  expectedApiKeySha256: createHash("sha256").update(key).digest("hex"),
+  expectedApiKeyHmacSha256: createHmac("sha256", key)
+    .update("hackerai-e2b-disk-recovery-target-v1")
+    .digest("hex"),
   expectedRedisHost: "example.upstash.io",
   expectedConvexUrl: "https://preview.convex.cloud",
   expectedTemplate: "template-1",
