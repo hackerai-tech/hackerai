@@ -1066,6 +1066,7 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     }));
     context.browserSessions = {
       prepare: prepareBrowser,
+      handoffEnabledForRun: jest.fn(async () => false),
     } as unknown as NonNullable<ToolContext["browserSessions"]>;
     const tool = createRunTerminalCmd(context);
 

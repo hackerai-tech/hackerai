@@ -247,8 +247,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     interactiveShell = false,
   ) => {
     const env = getAgentBrowserRuntimeEnv(command);
-    if (!env && !(interactiveShell && context.browserSessions))
-      return undefined;
+    const managed =
+      !!context.browserSessions &&
+      (interactiveShell ||
+        !!env ||
+        (await context.browserSessions.handoffEnabledForRun()));
+    if (!env && !managed) return undefined;
     return {
       AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_TIMEOUT_MS),
       ...env,
