@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { api } from "@/convex/_generated/api";
 import { getConvexClient } from "@/lib/db/convex-client";
 import { getUserID } from "@/lib/auth/get-user-id";
@@ -130,6 +130,7 @@ export async function POST(
         trigger_run_id: session.runId,
         agent_id: session.agentId,
       });
+      after(() => phLogger.flush());
     }
     return json({ ok: true });
   }
@@ -185,6 +186,7 @@ export async function POST(
         trigger_run_id: session.runId,
         agent_id: session.agentId,
       });
+      after(() => phLogger.flush());
       return json({ state: "human", grant, frame });
     } catch (error) {
       if (paused) {
@@ -251,6 +253,7 @@ export async function POST(
         trigger_run_id: session.runId,
         agent_id: session.agentId,
       });
+      after(() => phLogger.flush());
       return json({ state: "agent", frame });
     } catch (error) {
       if (unpaused) {
