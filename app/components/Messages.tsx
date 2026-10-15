@@ -37,6 +37,7 @@ import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
 import type { RetryOptions } from "../hooks/useChatHandlers";
 import { toast } from "sonner";
+import { getBranchErrorMessage } from "@/lib/chat/branch-error";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { hasTextContent } from "@/lib/utils/message-utils";
 import { useDataStreamState } from "./DataStreamProvider";
@@ -513,7 +514,7 @@ export const Messages = ({
           await onBranchMessage(messageId);
         } catch (error) {
           console.error("Failed to branch message:", error);
-          toast.error("Failed to branch task. Please try again.");
+          toast.error(getBranchErrorMessage(error));
         }
       }
     },
