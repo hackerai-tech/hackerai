@@ -275,7 +275,15 @@ const buildStartupCompactionProviderOptions = (
       : {}),
     provider: {
       sort: structuredMode ? "latency" : "throughput",
-      ...(structuredMode ? { require_parameters: true } : {}),
+      ...(structuredMode
+        ? {
+            require_parameters: true,
+            // Modal can stop with reasoning but no final checkpoint. Prefer the
+            // validated route, retaining other providers and model fallback.
+            order: ["baseten"],
+            ignore: ["modal"],
+          }
+        : {}),
       data_collection: "deny",
     },
   },
