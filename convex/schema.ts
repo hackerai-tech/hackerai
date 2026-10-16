@@ -309,6 +309,38 @@ export default defineSchema({
       filterFields: ["user_id"],
     }),
 
+  // One private cloud Chromium owner per Agent tool factory. Browser paths and
+  // sandbox identifiers are returned only to service-authenticated functions.
+  browser_handoffs: defineTable({
+    session_id: v.string(),
+    user_id: v.string(),
+    chat_id: v.string(),
+    run_id: v.string(),
+    agent_id: v.string(),
+    sandbox_id: v.string(),
+    trigger_region: v.optional(v.string()),
+    directory: v.string(),
+    state: v.union(
+      v.literal("agent"),
+      v.literal("claiming"),
+      v.literal("human"),
+      v.literal("recovery"),
+      v.literal("resuming"),
+      v.literal("closed"),
+    ),
+    grant: v.optional(v.string()),
+    grant_expires_at: v.optional(v.number()),
+    controlled_session_name: v.optional(v.string()),
+    input_id: v.optional(v.string()),
+    input_expires_at: v.optional(v.number()),
+    exit_note_ids: v.optional(v.array(v.string())),
+    exposed_at: v.optional(v.number()),
+    expires_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_session_id", ["session_id"])
+    .index("by_chat_and_agent", ["chat_id", "agent_id"]),
+
   // Backend-only bounded replay state. Never copied into shared/branched chats.
   model_history: defineTable({
     chat_id: v.string(),
@@ -373,6 +405,8 @@ export default defineSchema({
     trigger_run_id: v.optional(v.string()),
     usage: v.optional(v.any()),
     is_hidden: v.optional(v.boolean()),
+    // Private takeover context is retained in model history, never client history.
+    is_browser_handoff: v.optional(v.boolean()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])

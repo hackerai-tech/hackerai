@@ -247,13 +247,41 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     interactiveShell = false,
   ) => {
     const env = getAgentBrowserRuntimeEnv(command);
-    if (!env && !(interactiveShell && context.browserSessions))
+    const required = !!context.browserSessions && (interactiveShell || !!env);
+    const gateOnly =
+      !!context.browserSessions &&
+      !required &&
+      (await context.browserSessions.handoffEnabledForRun());
+    if (!env && !required && !gateOnly) return undefined;
+    let sessionEnv: Record<string, string> | undefined;
+    try {
+      sessionEnv = await context.browserSessions?.prepare(sandbox);
+    } catch (error) {
+      if (!gateOnly) throw error;
+      console.warn("[run-terminal-cmd] browser gate unavailable");
       return undefined;
+    }
     return {
       AGENT_BROWSER_IDLE_TIMEOUT_MS: String(AGENT_BROWSER_IDLE_TIMEOUT_MS),
       ...env,
-      ...(await context.browserSessions?.prepare(sandbox)),
+      ...sessionEnv,
     };
+  };
+
+  const withBrowserGatePath = (
+    command: string,
+    browserEnv: Record<string, string> | undefined,
+  ) => {
+    const path = browserEnv?.PATH;
+    if (!path) return command;
+    const gateBin = path.split(":", 1)[0];
+    if (!/^\/tmp\/hackerai-browser-[a-f0-9]{24}\/bin$/.test(gateBin))
+      throw new Error("Browser command gate path is invalid.");
+    // E2B's command shell restores its own PATH after applying envs. Source
+    // the command guard and export PATH inside it, including for later PTY
+    // input and nested Bash scripts.
+    const guard = `${gateBin}/../guard.sh`;
+    return `source ${guard} || exit 75; export BASH_ENV=${guard} PATH=${gateBin}:"$PATH"; ${command}`;
   };
 
   const terminalTool = tool({
@@ -505,9 +533,12 @@ export const createRunTerminalCmd = (context: ToolContext) => {
           if (!isCentrifugo) {
             await session.handle.sendInput(
               new TextEncoder().encode(
-                (context.browserSessions && agentBrowserEnv
-                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
-                  : command) + "\n",
+                withBrowserGatePath(
+                  context.browserSessions && agentBrowserEnv
+                    ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                    : command,
+                  agentBrowserEnv,
+                ) + "\n",
               ),
             );
           }
@@ -1182,11 +1213,14 @@ export const createRunTerminalCmd = (context: ToolContext) => {
             // Augment PATH for local sandboxes so user-installed tools
             // (e.g. ~/go/bin/waybackurls) are found without full paths.
             const effectiveCommand = augmentCommandPath(
-              context.browserSessions &&
-                isE2BSandbox(sandboxInstance) &&
-                detectAgentBrowserUsage(command)
-                ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
-                : command,
+              withBrowserGatePath(
+                context.browserSessions &&
+                  isE2BSandbox(sandboxInstance) &&
+                  detectAgentBrowserUsage(command)
+                  ? `umask 077; unset AGENT_BROWSER_SESSION_NAME AGENT_BROWSER_PROFILE AGENT_BROWSER_STATE; ${command}`
+                  : command,
+                agentBrowserEnv,
+              ),
               sandboxInstance,
             );
 

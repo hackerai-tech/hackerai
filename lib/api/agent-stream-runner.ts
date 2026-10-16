@@ -725,6 +725,7 @@ const buildProviderRequestDiagnostics = (args: {
 // ---------------------------------------------------------------------------
 
 export type AgentStreamContext = {
+  getBrowserHandoffNotes?: () => Promise<Array<{ id: string; text: string }>>;
   cacheVisionDescription?: AuxiliaryVisionDescriptionCacheWriter;
   triggerRunId?: string;
   onAgentGuardrail?: (observation: AgentGuardrailObservation) => void;
@@ -1662,6 +1663,29 @@ export async function createAgentStream(
       // Keep admission outside preparation recovery: an exhausted shared ledger
       // must never fall back to an unchecked provider request.
       await ctx.checkBudgetBeforeStep?.();
+      // Saved handoff notes can change the user's instructions. If the read
+      // fails, retry/fail this step rather than act with silently missing context.
+      const handoffNotes = (await ctx.getBrowserHandoffNotes?.()) ?? [];
+      const withHandoffNotes = (messages: ModelMessage[]): ModelMessage[] => {
+        const existing = new Set(
+          messages.flatMap((message) =>
+            message.role === "user" && typeof message.content === "string"
+              ? [message.content]
+              : [],
+          ),
+        );
+        const result = [...messages];
+        for (const note of handoffNotes) {
+          if (existing.has(note.text)) continue;
+          result.push({ role: "user", content: note.text });
+          existing.add(note.text);
+        }
+        return result;
+      };
+      if (handoffNotes.length && historyEnabled) {
+        historyEnabled = false;
+        historyReplay.reset();
+      }
       preparedToolCycleRecovery = undefined;
       const localGenerationStepIndex =
         Number.isInteger(stepNumber) && stepNumber >= 0
@@ -1687,6 +1711,7 @@ export async function createAgentStream(
         rollingModelMessages = limitModelImageToolResults(
           rollingModelMessages as Array<Record<string, unknown>>,
         ).messages as ModelMessage[];
+      rollingModelMessages = withHandoffNotes(rollingModelMessages);
       const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
       const toolResults =
         (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
@@ -1844,6 +1869,11 @@ export async function createAgentStream(
                   rawModelMessages.length - initialModelMessages.length;
                 lastHistoryResponseCursor = sourceResponseCursor;
               }
+              // Keep notes out of the durable checkpoint; fetch the current
+              // handoff context again on each step, including after compaction.
+              summarizedModelMessages = withHandoffNotes(
+                summarizedModelMessages,
+              );
               const preparedMessages = await prepareProviderMessages(
                 summarizedModelMessages,
                 continuationModelInfo.modelName,
