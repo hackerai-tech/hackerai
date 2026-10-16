@@ -12,7 +12,6 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
-import { createVerifyAuthentication } from "./verify-authentication";
 import {
   createCreateNote,
   createListNotes,
@@ -289,7 +288,6 @@ export const createTools = (
     // provider fallback legs.
     const allTools = {
       run_terminal_cmd: createRunTerminalCmd(context),
-      verify_authentication: createVerifyAuthentication(context),
       interact_terminal_session: createInteractTerminalSession(context),
       get_terminal_files: createGetTerminalFiles(context),
       file: createFile(context),

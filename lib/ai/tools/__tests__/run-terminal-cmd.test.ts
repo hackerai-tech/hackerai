@@ -56,7 +56,6 @@ import { phLogger } from "@/lib/posthog/server";
 import { InvalidArgumentError } from "@e2b/code-interpreter";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { createRunTerminalCmd } from "../run-terminal-cmd";
-import { createVerifyAuthentication } from "../verify-authentication";
 import { createGetTerminalFiles } from "../get-terminal-files";
 import { uploadSandboxFileToConvex } from "../utils/sandbox-file-uploader";
 import { createInteractTerminalSession } from "../interact-terminal-session";
@@ -265,35 +264,6 @@ async function getModelOutput(
 }
 
 describe("run_terminal_cmd — PTY action dispatch", () => {
-  test("authentication diagnostics use terminal approval before any sandbox access", async () => {
-    const requestToolApproval = jest.fn(async () => ({
-      approved: false as const,
-      reason: "User denied this diagnostic",
-    }));
-    const { context, sandboxManager } = makeContext({
-      sandbox: null,
-      requestToolApproval,
-    });
-    const diagnostic = createVerifyAuthentication(context);
-    const result = await diagnostic.execute!(
-      {
-        url: "https://app.example/me",
-        credential_file: "/private/cookies",
-        credential_format: "netscape",
-        expectation_file: "/private/alice.json",
-      },
-      { toolCallId: "auth-check", messages: [] },
-    );
-    expect(result).toMatchObject({ result: { approvalDenied: true } });
-    expect(sandboxManager.getSandbox).not.toHaveBeenCalled();
-    expect(requestToolApproval).toHaveBeenCalledWith(
-      expect.objectContaining({
-        toolCallId: "auth-check",
-        toolName: "run_terminal_cmd",
-        operation: "terminal_execute",
-      }),
-    );
-  });
   test("real subprocess output is recoverable in another turn and explicit stop still terminates work", async () => {
     const files = new Map<string, string>();
     const children: ReturnType<typeof spawn>[] = [];

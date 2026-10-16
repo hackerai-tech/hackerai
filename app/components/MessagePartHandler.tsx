@@ -325,30 +325,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
     }
 
-    case "tool-verify_authentication":
-      return (
-        <TerminalToolHandler
-          message={message}
-          part={{
-            ...part,
-            input: {
-              command: [
-                `Verify authentication: ${part.input?.url ?? ""}`,
-                `Credential file: ${part.input?.credential_file ?? ""}`,
-                `Format: ${part.input?.credential_format ?? ""}`,
-                `Expected account file: ${part.input?.expectation_file ?? ""}`,
-              ].join("\n"),
-              is_background: false,
-              interactive: false,
-            },
-          }}
-          status={status}
-          precomputedStreamingOutput={terminalOutputByToolCallId?.get(
-            part.toolCallId,
-          )}
-        />
-      );
-
     // Legacy tool
     case "tool-http_request":
       return (
