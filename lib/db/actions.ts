@@ -8,6 +8,7 @@ import {
 
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
+import { STOPPED_WORK_ERRORS, StoppedWorkError } from "@/lib/chat/stopped-work";
 import { getConvexClient, setConvexUrl } from "./convex-client";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
@@ -555,6 +556,12 @@ const databaseError = (
   const { message: dbErrorMessage, upstreamHttpError } =
     getDatabaseErrorDiagnostic(error);
   const dbErrorData = getErrorData(error);
+  if (operation === "messages.saveMessage") {
+    for (const [code, message] of Object.entries(STOPPED_WORK_ERRORS)) {
+      if (hasDatabaseErrorCode(dbErrorData, code))
+        return new StoppedWorkError(message);
+    }
+  }
   const isChatNotFound = isChatNotFoundMessageSaveError(operation, dbErrorData);
   const isChatCanceled = isChatCanceledMessageSaveError(operation, dbErrorData);
   const isChatUnauthorized = isChatUnauthorizedError(dbErrorData);

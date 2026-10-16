@@ -1,24 +1,36 @@
+import { ChatSDKError } from "@/lib/errors";
+
+export const STOPPED_WORK_ERRORS = {
+  STOPPED_WORK_SOURCE_TOO_LARGE:
+    "Agent instructions must be 24,000 characters or fewer so stop requests can be reviewed in full. Shorten the instructions and attach scan output or logs as a file.",
+  STOPPED_WORK_PENDING:
+    "Your previous message is still awaiting stopped-work review. Use Retry on that turn before sending another message. If a usage limit or service outage prevents retry, wait until it clears. Your saved restrictions have been preserved.",
+  STOPPED_WORK_CAPACITY:
+    "This chat has reached its stopped-work history limit. Existing restrictions and the pending instruction were preserved, and new work is blocked. Retrying cannot increase this limit. Start a new chat with the intended scope and all exclusions explicitly stated; restrictions do not transfer automatically.",
+} as const;
+
 /** Private, chat-owned user constraints. Never reconstructed from model history. */
 export type StoppedWorkDirective = {
   id: string;
   instruction: string;
   sourceMessageId: string;
-  sourceText: string;
+  sourceText?: string;
   quote: string;
   taskIds: string[];
   createdAt: number;
-  reopenedBy?: { messageId: string; sourceText: string; quote: string };
+  reopenedBy?: { messageId: string; sourceText?: string; quote: string };
 };
 export type StoppedWorkSnapshot = {
   revision: number;
   directives: StoppedWorkDirective[];
   source?: { messageId: string; text: string; processed: boolean };
 };
-export class StoppedWorkError extends Error {
+export class StoppedWorkError extends ChatSDKError {
   constructor(
     message = "Stopped-work authorization is unavailable. No new work was dispatched.",
   ) {
-    super(message);
+    super("bad_request:chat", message);
+    this.message = message;
     this.name = "StoppedWorkError";
   }
 }

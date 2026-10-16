@@ -951,6 +951,9 @@ export const saveMessage = mutation({
       return null;
     } catch (error) {
       const causeData = getConvexErrorData(error);
+      if (getConvexErrorCode(causeData)?.startsWith("STOPPED_WORK_")) {
+        throw error;
+      }
       if (getConvexErrorCode(causeData) === "MESSAGE_TOO_LARGE") {
         console.warn(
           JSON.stringify({

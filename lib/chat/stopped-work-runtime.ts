@@ -11,6 +11,7 @@ import {
   activeStoppedWork,
   stoppedWorkPrompt,
   StoppedWorkError,
+  STOPPED_WORK_ERRORS,
   type StoppedWorkSnapshot,
 } from "./stopped-work";
 import { stoppedWorkStore } from "@/lib/db/stopped-work";
@@ -133,6 +134,12 @@ export class StoppedWorkRuntime {
       await this.refresh();
     } catch (error) {
       if (error instanceof StoppedWorkError) throw error;
+      const code = (error as { data?: { code?: string } } | null)?.data?.code;
+      if (code && Object.hasOwn(STOPPED_WORK_ERRORS, code)) {
+        throw new StoppedWorkError(
+          STOPPED_WORK_ERRORS[code as keyof typeof STOPPED_WORK_ERRORS],
+        );
+      }
       throw new StoppedWorkError(
         "Unable to save user work restrictions. This run has not started new work. Retry the turn.",
       );

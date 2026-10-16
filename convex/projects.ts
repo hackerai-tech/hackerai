@@ -364,7 +364,13 @@ export const getProjectThreads = query({
     return {
       ...result,
       page: result.page.map(
-        ({ objective_checkpoint: _privateObjectiveCheckpoint, ...chat }) => ({
+        ({
+          objective_checkpoint: _privateObjectiveCheckpoint,
+          agent_work_directives: _privateWorkDirectives,
+          agent_work_source: _privateWorkSource,
+          agent_work_revision: _privateWorkRevision,
+          ...chat
+        }) => ({
           ...chat,
           ...(chat.branched_from_chat_id
             ? {

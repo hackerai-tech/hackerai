@@ -1,6 +1,10 @@
 import type { ToolSet } from "ai";
 import { StoppedWorkRuntime } from "../stopped-work-runtime";
 import { stoppedWorkPrompt } from "../stopped-work";
+import {
+  serializeChatSDKErrorForStream,
+  deserializeChatSDKErrorFromStream,
+} from "@/lib/errors";
 import { assertStoppedWorkAdmission } from "@/convex/lib/stoppedWork";
 
 jest.mock("@/lib/ai/providers", () => ({
@@ -163,13 +167,53 @@ const tool = (execute: any): ToolSet => ({
 });
 
 describe("persistent user stopped work", () => {
+  it("stores multiple directives without duplicating a long source, and surfaces capacity without dropping restrictions", async () => {
+    const f = fixture();
+    await f.user("long-source", "Stop synthetic work." + "x".repeat(23_900));
+    const changes = Array.from({ length: 6 }, () => ({
+      action: "stop",
+      directiveId: null,
+      instruction: "Do not run synthetic work",
+      quote: "Stop synthetic work.",
+      taskIds: [],
+    }));
+    await new StoppedWorkRuntime(f.store, {
+      modelRunner: (async () => ({ changes })) as any,
+    }).capture();
+    const saved = await f.store.load();
+    expect(saved.directives).toHaveLength(6);
+    expect(
+      saved.directives.every(
+        (d: any) => !d.sourceText && d.sourceMessageId === "long-source",
+      ),
+    ).toBe(true);
+    f.tables.chats[0].agent_work_directives = Array.from(
+      { length: 32 },
+      (_, i) => ({ ...saved.directives[0], id: `existing-${i}` }),
+    );
+    await f.user("overflow", "Stop synthetic work.");
+    try {
+      await new StoppedWorkRuntime(f.store, {
+        modelRunner: (async () => ({ changes: [changes[0]] })) as any,
+      }).capture();
+      throw new Error("Expected capacity error");
+    } catch (error: any) {
+      const recovered = deserializeChatSDKErrorFromStream(
+        new Error(serializeChatSDKErrorForStream(error)),
+      );
+      expect(recovered?.cause).toContain("Retrying cannot increase this limit");
+    }
+    expect((await f.store.load()).directives).toHaveLength(32);
+    expect((await f.store.load()).source?.processed).toBe(false);
+  });
+
   it("does not overwrite a pending instruction and makes extraction retries idempotent", async () => {
     const f = fixture();
     await f.store.register("user-stop");
     const source = await f.store.load();
-    await expect(f.user("later", "Do something else")).rejects.toThrow(
-      "Previous user instructions",
-    );
+    await expect(f.user("later", "Do something else")).rejects.toMatchObject({
+      data: { code: "STOPPED_WORK_PENDING" },
+    });
     expect((await f.store.load()).source?.messageId).toBe("user-stop");
     const request = {
       expectedRevision: source.revision,

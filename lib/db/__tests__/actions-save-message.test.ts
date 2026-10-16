@@ -1012,6 +1012,46 @@ describe("saveMessage", () => {
     }
   });
 
+  it.each([
+    ["STOPPED_WORK_SOURCE_TOO_LARGE", "attach scan output"],
+    ["STOPPED_WORK_PENDING", "Use Retry"],
+    ["STOPPED_WORK_CAPACITY", "Retrying cannot increase"],
+  ])("surfaces actionable stopped-work error %s", async (code, recovery) => {
+    const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
+    mockMutation.mockRejectedValueOnce(
+      Object.assign(new Error("Server Error"), {
+        data: { code },
+      }) as never,
+    );
+    try {
+      await saveMessage({
+        chatId: "chat-1",
+        userId: "user-1",
+        message: {
+          id: "message-1",
+          role: "user",
+          parts: [{ type: "text", text: "Continue" }],
+        },
+      });
+      throw new Error("Expected rejected message");
+    } catch (error: any) {
+      expect(error.cause).toContain(recovery);
+      expect(error).toMatchObject({
+        type: "bad_request",
+        surface: "chat",
+        statusCode: 400,
+      });
+      const {
+        serializeChatSDKErrorForStream,
+        deserializeChatSDKErrorFromStream,
+      } = await import("@/lib/errors");
+      const response = deserializeChatSDKErrorFromStream(
+        new Error(serializeChatSDKErrorForStream(error)),
+      );
+      expect(response?.cause).toContain(recovery);
+    }
+  });
+
   it("maps Convex message-size rejections to a user-facing bad request", async () => {
     const { saveMessage, mockMutation } = await loadSaveMessageWithMocks();
     const convexError = new Error("[Request ID: abc] Server Error") as Error & {

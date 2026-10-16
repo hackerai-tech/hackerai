@@ -13,14 +13,14 @@ export const stoppedWorkDirectiveValidator = v.object({
   id: v.string(),
   instruction: v.string(),
   sourceMessageId: v.string(),
-  sourceText: v.string(),
+  sourceText: v.optional(v.string()),
   quote: v.string(),
   taskIds: v.array(v.string()),
   createdAt: v.number(),
   reopenedBy: v.optional(
     v.object({
       messageId: v.string(),
-      sourceText: v.string(),
+      sourceText: v.optional(v.string()),
       quote: v.string(),
     }),
   ),
@@ -98,18 +98,14 @@ export async function registerStoppedWorkSource(
     .map((p) => p.text)
     .join("\n");
   if (text.length > 24_000)
-    throw new ConvexError(
-      "User instruction is too long for stopped-work review; split the message",
-    );
+    throw new ConvexError({ code: "STOPPED_WORK_SOURCE_TOO_LARGE" });
   if (
     chat.agent_work_source?.messageId === source.id &&
     chat.agent_work_source.text === text
   )
     return null;
   if (chat.agent_work_source && !chat.agent_work_source.processed) {
-    throw new ConvexError(
-      "Previous user instructions await stopped-work review. Retry the previous turn before submitting another instruction.",
-    );
+    throw new ConvexError({ code: "STOPPED_WORK_PENDING" });
   }
   await ctx.db.patch(chat._id, {
     agent_work_source: { messageId: source.id, text, processed: false },
@@ -223,15 +219,12 @@ export const applyStoppedWorkForBackend = mutation({
           throw new ConvexError("Invalid stopped-work reopening");
         directive.reopenedBy = {
           messageId: source.messageId,
-          sourceText: source.text,
           quote: change.quote,
         };
         continue;
       }
       if (directives.length >= 32)
-        throw new ConvexError(
-          "Stopped-work history is full; no constraints were discarded",
-        );
+        throw new ConvexError({ code: "STOPPED_WORK_CAPACITY" });
       const id = `${source.messageId}:${args.expectedRevision}:${index}`;
       for (const taskId of new Set(change.taskIds)) {
         const task = await ctx.db
@@ -259,15 +252,12 @@ export const applyStoppedWorkForBackend = mutation({
         instruction: change.instruction,
         quote: change.quote,
         sourceMessageId: source.messageId,
-        sourceText: source.text,
         taskIds: [...new Set(change.taskIds)],
         createdAt: Date.now(),
       });
     }
     if (JSON.stringify(directives).length > 128_000)
-      throw new ConvexError(
-        "Stopped-work history is full; no constraints were discarded",
-      );
+      throw new ConvexError({ code: "STOPPED_WORK_CAPACITY" });
     const revision = args.expectedRevision + 1;
     await ctx.db.patch(chat._id, {
       agent_work_directives: directives,

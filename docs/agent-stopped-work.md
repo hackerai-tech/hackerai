@@ -16,7 +16,17 @@ a newer explicit user source; generic continuation does not reopen work. Reopeni
 a restriction never restarts an already cancelled worker automatically.
 
 Private chat fields hold the bounded history (32 directives, 128,000 serialized
-characters) and source snapshot. Capacity errors preserve existing restrictions.
+characters) and source snapshot. Directives retain message IDs and verbatim quotes;
+full source text is stored once in the current source snapshot, not copied into
+every directive. Historical sourceText fields remain readable for compatibility.
+Capacity errors preserve existing restrictions and the pending instruction. This
+bounded implementation does not support in-chat recovery once history is full:
+the actionable error explains that retry cannot help and a new chat requires the
+user to explicitly restate scope and exclusions. Long messages receive an
+actionable 24,000-character validation error directing logs to file attachments.
+Pending-review failures instruct the user to retry the saved turn after any usage
+limit or outage clears. These errors survive both HTTP and durable-stream error
+serialization rather than appearing as generic database/provider failures.
 Deleting the chat or account deletes these fields with their owning chat. Public
 chat serializers omit them. A branch/new chat does not inherit them. Cross-chat
 engagement binding is not implemented.
